@@ -70,7 +70,7 @@ fixture_bins=(
 # CI stages the producer-built executables; a missing one is a setup failure.
 # Anywhere else, build what is needed so a developer never has to prepare the
 # environment by hand.
-in_ci="${CI:-}"
+in_ci="${CI:-}${TRELLIS_TEST_STAGED:-}"
 
 require_or_build() {
   local path="$1"
@@ -163,6 +163,7 @@ export TRELLIS_TESTKIT_LIVE_BIN="$testkit_live"
 export TRELLIS_TEST_SERVER_BIN="$server_bin"
 export TRELLIS_TEST_CLI_BIN="$cli_bin"
 export TRELLIS_TEST_HEALTH_WATCH_BIN="$health_watch_bin"
+[[ -z "${TRELLIS_TEST_BUILD_ONLY:-}" ]] || exit 0
 if [[ $# -eq 0 ]]; then
   set -- ts/integration/*_test.ts ts/integration/*.test.ts ts/packages/trellis/native/*.live_test.ts
 fi
@@ -176,5 +177,5 @@ if [[ -n "${TRELLIS_TEST_SHARD:-}" ]]; then
 fi
 exec node --experimental-transform-types --test \
   --test-timeout=600000 \
-  --test-concurrency="${TRELLIS_TEST_CONCURRENCY:-4}" \
+  --test-concurrency="${TRELLIS_TEST_CONCURRENCY:-$(( $(nproc) / 2 > 4 ? $(nproc) / 2 : 4 ))}" \
   "${shard_args[@]}" "$@"

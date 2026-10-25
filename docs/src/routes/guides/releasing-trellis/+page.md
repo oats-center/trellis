@@ -38,7 +38,21 @@ runtime, fake auth, or fake generated-client workflows to prove Trellis behavior
 Use real SQLite component tests for deterministic transaction invariants; do not
 add synthetic failure controls to the runtime for tests.
 
-Before committing or ending an implementation cycle, run the focused checks that match the files touched. Build the server/CLI and set their paths as described in `integration/README.md`. Each live test owns its real runtime lifecycle:
+Before pushing, run every suite Check runs:
+
+```sh
+npm test
+```
+
+Like Check, it builds once (contract artifacts, the embedded Console and Portal,
+and every executable the suites launch), then runs the Rust workspace, TypeScript
+live integration, TypeScript package, and browser suites concurrently against
+those executables, with test files inside each suite also concurrent. Each suite
+logs to `target/test-logs/`. `TRELLIS_TEST_CONCURRENCY` and
+`TRELLIS_BROWSER_CONCURRENCY` override the per-suite concurrency sized from the
+host's cores.
+
+While iterating, run the focused checks that match the files touched. Build the server/CLI and set their paths as described in `integration/README.md`. Each live test owns its real runtime lifecycle:
 
 ```sh
 cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
