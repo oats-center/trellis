@@ -1149,7 +1149,6 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
             ("decision", "approve"),
             ("approved", f.read.as_str()),
             ("approved", "trellis.auth.v1:users.manage"),
-            ("confirm_device", device.user_code.as_str()),
             ("confirm_administration", "true"),
         ])
         .send()
@@ -1195,7 +1194,6 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
             ("decision", "approve"),
             ("approved", f.read.as_str()),
             ("approved", "trellis.auth.v1:users.manage"),
-            ("confirm_device", device.user_code.as_str()),
             ("confirm_administration", "true"),
         ])
         .send()

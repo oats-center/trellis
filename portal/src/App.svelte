@@ -688,14 +688,10 @@
           <span class="muted">Code</span>
           <code>{view.deviceUserCode}</code>
         </div>
-        <label class="check"
-          ><input
-            type="checkbox"
-            name="confirm_device"
-            value={view.deviceUserCode}
-            required
-          /><span>This matches the code on my device</span></label
-        >
+        <p class="alert warn">
+          Make sure this code matches the one on your device. If someone sent
+          you this code or link, stop here: approving gives them access as you.
+        </p>
       {/if}
 
       <div hidden={confirming}>

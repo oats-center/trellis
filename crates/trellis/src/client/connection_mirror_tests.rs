@@ -248,7 +248,6 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         ("transaction", transaction.as_str()),
         ("presentation", view["presentationId"].as_str().unwrap()),
         ("decision", "approve"),
-        ("confirm_device", login.user_code()),
     ];
     for item in view["capabilities"].as_array().unwrap() {
         if item["available"] == true {

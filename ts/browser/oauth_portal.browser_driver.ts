@@ -43,9 +43,6 @@ test("real OAuth portal signs in and approves the requesting device", async () =
     await page
       .getByRole("heading", { name: "Native client wants to use your account" })
       .waitFor();
-    await page
-      .getByRole("checkbox", { name: /This matches the code on my device/ })
-      .check();
     await page.getByRole("button", { name: "Allow", exact: true }).click();
     await page
       .getByRole("heading", { name: "Your device is connected" })

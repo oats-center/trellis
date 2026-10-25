@@ -249,7 +249,6 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
                     ("presentation", view["presentationId"].as_str().unwrap()),
                     ("decision", "approve"),
                     ("approved", "trellis.auth.v1:account.read"),
-                    ("confirm_device", user_code.as_str()),
                 ])
                 .send()
                 .await

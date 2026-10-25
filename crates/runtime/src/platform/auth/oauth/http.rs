@@ -945,13 +945,6 @@ async fn approve(
         ))
         .into_response();
     };
-    if validated
-        .device_user_code
-        .as_ref()
-        .is_some_and(|code| form.get("confirm_device") != Some(code))
-    {
-        return error(ErrorCode::InvalidRequest);
-    }
     let requested = match super::RequestedAuthority::parse(&validated.authorization_details) {
         Ok(request) => request,
         Err(_) => return error(ErrorCode::InvalidRequest),

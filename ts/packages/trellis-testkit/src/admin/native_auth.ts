@@ -170,7 +170,6 @@ export async function approveNativeDeviceCode(options: {
     transaction,
     presentation: view.presentationId,
     decision: "approve",
-    confirm_device: options.userCode,
   });
   for (const item of view.capabilities) {
     if (item.required && !item.available)

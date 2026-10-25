@@ -215,7 +215,6 @@ pub(crate) async fn approve_device(
         ("transaction", transaction.as_str()),
         ("presentation", presentation),
         ("decision", "approve"),
-        ("confirm_device", user_code),
     ];
     let mut administrative = false;
     for item in view["capabilities"]

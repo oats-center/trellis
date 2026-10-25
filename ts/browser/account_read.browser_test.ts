@@ -93,7 +93,6 @@ test(
           });
           assert.equal(await approve.isDisabled(), decision === "unavailable");
           if (decision === "approved") {
-            await page.locator('input[name="confirm_device"]').check();
             await page.screenshot({
               path: "target/review-account-consent.png",
               fullPage: true,

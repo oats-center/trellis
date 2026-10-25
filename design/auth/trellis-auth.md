@@ -325,13 +325,15 @@ disabled. Administrative choices are never remembered and take a separate
 confirmation step. A requested group is shown with the capabilities it
 includes. Selection is presentation, not authorization: the user must still
 submit approval, and the server rechecks the submitted selection against current
-authority. Bulk access selection never checks the separate Device Code
-confirmation.
+authority.
 
 Registered-client implied capability consent is browser-only and limited to the
 configured subset, the requested selection and the user's current entitlement.
-It never substitutes for native approval; Device Code flows additionally require
-the matching user-code confirmation.
+It never substitutes for native approval. Device Code consent shows the user
+code beside a warning to compare it with the device and to stop if someone else
+sent the code or link; it is not a separate required confirmation. Device codes
+last 15 minutes, and the issuer returns `verification_uri_complete` so native
+clients print and QR-encode a link with the code filled in.
 
 Code and device consent presentations are retained in their encrypted,
 expiring authorization artifacts. Approval submits the presentation identity and

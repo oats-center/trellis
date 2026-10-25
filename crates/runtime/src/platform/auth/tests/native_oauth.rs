@@ -341,7 +341,6 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
                 ("transaction", transaction.as_str()),
                 ("presentation", consent["presentationId"].as_str().unwrap()),
                 ("decision", "approve"),
-                ("confirm_device", flow.user_code()),
             ])
             .send()
             .await
@@ -361,7 +360,6 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
                 ("presentation", consent["presentationId"].as_str().unwrap()),
                 ("decision", "approve"),
                 ("approved", f.read.as_str()),
-                ("confirm_device", flow.user_code()),
             ])
             .send()
             .await
