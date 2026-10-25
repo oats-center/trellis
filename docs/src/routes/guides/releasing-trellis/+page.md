@@ -195,7 +195,12 @@ The published Rust crate set is:
 Publication follows this dependency order, waiting for each crate's actual
 version to enter the index before publishing its consumers. SDK-only releases
 retain protocol/model/native-contract versions; explicit component updates use
-the release preparation flags. Model snapshots require distinct Cargo
+the release preparation flags (`--protocol-version`, `--models-version`,
+`--contracts-version`). A prerelease never publishes a component as a stable
+version: `release prepare` refuses one whose retained or requested version has
+no prerelease suffix. A changed component needs a version newer than the one
+already published, because crates.io and `trellis publish` keep published
+versions. Model snapshots require distinct Cargo
 compatibility lines when their native identity/digest or Rust ABI changes.
 `trellis-models` therefore carries its own version, which may lead the workspace
 version (for example `0.102.0-rc.4` beside `0.100.0-rc.3`); do not realign it

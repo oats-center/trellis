@@ -132,6 +132,53 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
             {
                 semver::Version::parse(version).into_diagnostic()?;
             }
+            // A prerelease never publishes a component as a stable version:
+            // a component keeping its checked-in version must already be a
+            // prerelease, and a changed one needs an explicit prerelease.
+            if release.version.contains('-') {
+                for (name, path, flag, explicit) in [
+                    (
+                        "trellis-protocol",
+                        "crates/protocol/Cargo.toml",
+                        "--protocol-version",
+                        &protocol_version,
+                    ),
+                    (
+                        "trellis-models",
+                        "crates/models/Cargo.toml",
+                        "--models-version",
+                        &models_version,
+                    ),
+                    (
+                        "trellis",
+                        "crates/builtin-contracts/trellis.toml",
+                        "--contracts-version",
+                        &contracts_version,
+                    ),
+                ] {
+                    let version = match explicit {
+                        Some(version) => version.clone(),
+                        None => std::fs::read_to_string(repo_root.join(path))
+                            .into_diagnostic()?
+                            .parse::<toml_edit::DocumentMut>()
+                            .into_diagnostic()?["package"]["version"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned(),
+                    };
+                    if semver::Version::parse(&version)
+                        .into_diagnostic()?
+                        .pre
+                        .is_empty()
+                    {
+                        return Err(miette!(
+                            "prerelease {} would publish {name} as stable {version}; pass \
+                            {flag} with a prerelease version",
+                            release.version
+                        ));
+                    }
+                }
+            }
             let mut changed = prepare_release(repo_root, &release)?;
             for (name, path, version) in [
                 (
@@ -217,7 +264,7 @@ mod tests {
         rewrite_cargo_manifest_versions_for_release, rewrite_js_internal_npm_dependency_versions,
         rewrite_json_manifest_version, version_base, ReleaseVersion,
     };
-    use super::{parse_release_command, ReleaseCommand};
+    use super::{parse_release_command, run_release, ReleaseCommand};
     use std::fs;
 
     #[test]
@@ -653,6 +700,46 @@ mod tests {
     #[test]
     fn version_base_accepts_prerelease_versions() {
         assert_eq!(version_base("0.9.0-rc.1").expect("version base"), "0.9.0");
+    }
+
+    #[test]
+    fn prerelease_refuses_a_stable_component_version() {
+        let root = temp_repo_root();
+        for (path, contents) in [
+            (
+                "crates/protocol/Cargo.toml",
+                "[package]\nname = \"trellis-protocol\"\nversion = \"0.100.0-rc.3\"\n",
+            ),
+            (
+                "crates/models/Cargo.toml",
+                "[package]\nname = \"trellis-models\"\nversion = \"0.102.0-rc.4\"\n",
+            ),
+            (
+                "crates/builtin-contracts/trellis.toml",
+                "[package]\nname = \"trellis\"\nversion = \"0.100.0\"\n",
+            ),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        let error = run_release(
+            &root,
+            ReleaseCommand::Prepare {
+                tag: Some("v0.100.0-rc.4".into()),
+                protocol_version: Some("0.100.0-rc.4".into()),
+                models_version: None,
+                contracts_version: None,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("--contracts-version"), "{error}");
+        // Nothing was written before the refusal.
+        assert!(fs::read_to_string(root.join("crates/protocol/Cargo.toml"))
+            .unwrap()
+            .contains("0.100.0-rc.3"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn temp_repo_root() -> std::path::PathBuf {
