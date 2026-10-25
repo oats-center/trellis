@@ -208,6 +208,74 @@ async fn run_profile_child(child_name: &str, label: &str) -> std::path::PathBuf 
     profile
 }
 
+/// A request that violates the contract's declared bounds is rejected before the
+/// Rust provider's handler runs; the generated input type alone cannot tell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_violating_declared_bounds_never_reaches_the_handler() {
+    use trellis_test_fixture::{NonEmpty, Strict};
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("strict provider")
+        .await
+        .expect("register provider");
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect provider");
+    let calls = Arc::new(AtomicUsize::new(0));
+    {
+        let handler_calls = Arc::clone(&calls);
+        Provider::new(&mut service)
+            .trellis_test_fixture_echo_v1()
+            .register_strict(move |_context, input| {
+                handler_calls.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(input) }
+            });
+    }
+    let task = tokio::spawn(async move { service.run().await });
+    let caller_identity = runtime
+        .register_client::<CallerRequest>("caller")
+        .await
+        .expect("register caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
+    let api = caller.trellis_test_fixture_echo_v1();
+    let strict = |text: &str| Strict {
+        value: NonEmpty(text.to_owned()),
+        extra: Default::default(),
+    };
+    // `Strict.value` declares min_length=1.
+    let error = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match api.strict(&strict("")).await {
+                Err(trellis_rs::client::CallError::ServiceUnavailable(_)) => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                other => break other.expect_err("an empty value is rejected"),
+            }
+        }
+    })
+    .await
+    .expect("the provider answers");
+    match &error {
+        trellis_rs::client::CallError::Remote(payload) => {
+            assert_eq!(payload.error_type(), Some("ValidationError"), "{error}");
+        }
+        other => panic!("expected a validation error, got {other:?}"),
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(api.strict(&strict("ok")).await.unwrap().value.0, "ok");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.unwrap();
+}
+
 /// T04: a real runtime bootstraps, authenticates, registers a Provider and
 /// Caller, performs the typed RPC, and receives the real typed event.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

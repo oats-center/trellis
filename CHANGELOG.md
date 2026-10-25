@@ -20,6 +20,13 @@ and this project adheres to
   with `ServiceImplementationMismatch`. Without `deployment`, a different
   participant now gets a deployment of its own; registering the same
   participant again still adds a replica.
+- Rust providers passed RPC inputs that violated declared constraints (for
+  example `""` for a `min_length=1` field) straight to the handler: the
+  generated types do not encode constraints, and only operation inputs were
+  checked against the contract schema. Generated RPC descriptors now carry
+  their input JSON Schema (`RpcDescriptor::INPUT_SCHEMA_JSON`), and providers
+  reject a violating request with `ValidationError` before the handler runs, as
+  TypeScript providers already did. Regenerate Rust packages.
 
 ### Changed
 

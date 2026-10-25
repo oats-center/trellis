@@ -1156,6 +1156,11 @@ fn render_action(
             } else {
                 format!("{rust_name}Error::decode(value)")
             };
+            let input_schema = serde_json::to_string(
+                &trellis_idl::json_schema(graph, input)
+                    .map_err(|error| CodegenRustError::Semantic(error.to_string()))?,
+            )
+            .map_err(|error| CodegenRustError::Semantic(error.to_string()))?;
             out.push_str(&format!(
                 "impl trellis_rs::generated::RpcDescriptor for {rust_name} {{ type \
                 Input = {rust_name}Input; type Output = {rust_name}Output; type Error \
@@ -1163,7 +1168,8 @@ fn render_action(
                 DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME; const SUBJECT: \
                 &'static str = Self::SUBJECT; const KEY: &'static str = Self::KEY; \
                 const CALLER_CAPABILITIES: &'static [&'static str] = \
-                Self::CALLER_CAPABILITIES; const DOWNLOAD: bool = Self::DOWNLOAD; fn \
+                Self::CALLER_CAPABILITIES; const DOWNLOAD: bool = Self::DOWNLOAD; \
+                const INPUT_SCHEMA_JSON: &'static str = {input_schema:?}; fn \
                 decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, \
                 serde_json::Error> {{ {decode_error} }} }}\n"
             ));

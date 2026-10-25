@@ -681,7 +681,10 @@ malformed offer, a declared error, or a failed Operation.
 
 Declare expected RPC and Operation errors in IDL to obtain typed generated error
 handling. Runtime validation and transport failures remain distinct from those
-business errors. Cursor-paginated RPCs end only when `nextCursor` is absent, and
+business errors. Declared constraints (`min_length`, `max`, `max_items`, ...)
+are not encoded in generated types; providers in both SDKs reject an RPC or
+Operation input that violates them with `ValidationError` before the handler
+runs, so handlers need not re-check them. Cursor-paginated RPCs end only when `nextCursor` is absent, and
 pagination does not generally promise a snapshot.
 
 ### Events

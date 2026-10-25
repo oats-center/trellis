@@ -136,6 +136,8 @@ impl crate::generated::RpcDescriptor for ConsumerReportDelivery {
     const KEY: &'static str = "events.Consumers.ReportDelivery";
     const CALLER_CAPABILITIES: &'static [&'static str] = &[];
     const DOWNLOAD: bool = false;
+    // Only called through, never served here; the events service validates.
+    const INPUT_SCHEMA_JSON: &'static str = "{}";
 
     fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error> {
         Ok(Some(value))
@@ -153,6 +155,8 @@ impl crate::generated::RpcDescriptor for ConsumerDeadLetterInspect {
     const KEY: &'static str = "events.DeadLetters.Inspect";
     const CALLER_CAPABILITIES: &'static [&'static str] = &[];
     const DOWNLOAD: bool = false;
+    // Only called through, never served here; the events service validates.
+    const INPUT_SCHEMA_JSON: &'static str = "{}";
 
     fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error> {
         Ok(Some(value))

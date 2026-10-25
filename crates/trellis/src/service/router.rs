@@ -589,6 +589,12 @@ impl Router {
         Fut: Future<Output = HandlerResult<D::Output>> + Send + 'static,
     {
         let handler = Arc::new(handler);
+        // The generated input type does not encode declared constraints, so the
+        // request is checked against the contract schema before decoding.
+        let input_schema = Arc::new(
+            PreparedSchema::new(D::INPUT_SCHEMA_JSON)
+                .expect("generated RPC input schemas are valid JSON Schema"),
+        );
         let capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         self.handlers.insert(
             D::SUBJECT.to_owned(),
@@ -605,8 +611,9 @@ impl Router {
                 live: false,
                 handler: Box::new(move |ctx, payload| -> HandlerFuture {
                     let handler = Arc::clone(&handler);
+                    let input_schema = Arc::clone(&input_schema);
                     Box::pin(async move {
-                        let input = decode_generated_input::<D::Input>(&payload)?;
+                        let input = decode_generated_input::<D::Input>(&payload, &input_schema)?;
                         let output = handler(ctx, input).await?;
                         let output = crate::generated::Codec::encode(&output)
                             .map_err(|error| ServerError::Nats(error.to_string()))?;
@@ -1203,7 +1210,7 @@ impl Router {
     }
 }
 
-fn decode_generated_input<T>(payload: &[u8]) -> Result<T, ServerError>
+fn decode_generated_input<T>(payload: &[u8], schema: &PreparedSchema) -> Result<T, ServerError>
 where
     T: crate::generated::Codec,
 {
@@ -1214,6 +1221,7 @@ where
                 message: format!("Invalid JSON: {error}"),
             }]),
         })?;
+    schema.validate(&value)?;
     T::decode(value).map_err(|error| ServerError::Validation {
         issues: Box::new(vec![ValidationIssue {
             path: String::new(),

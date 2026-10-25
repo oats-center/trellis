@@ -210,7 +210,11 @@ are the only reserved finite generic forms.
 
 Scalars are `string`, `bool`, `int32`, `uint32`, `int64`, `uint64`, `number`,
 `bytes`, `timestamp`, and `ulid`. Constraints are `min_length`, `max_length`,
-`min`, `max`, `min_items`, and `max_items`. Durations in resource/retry config
+`min`, `max`, `min_items`, and `max_items`. Constraints apply only through a
+package-level named type alias. Generated types carry the value shapes, not the
+constraints; providers in both SDKs check RPC and operation inputs against the
+contract's JSON Schema before a handler runs, and reject a violation with
+`ValidationError`, so handlers never see an out-of-bounds input. Durations in resource/retry config
 use integer `ms`, `s`, `m`, `h`, or `d`; capacities use `B`, `KiB`, `MiB`, or
 `GiB`.
 

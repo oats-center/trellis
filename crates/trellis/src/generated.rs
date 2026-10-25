@@ -444,6 +444,9 @@ pub trait RpcDescriptor {
     const CALLER_CAPABILITIES: &'static [&'static str];
     /// Whether the success value may carry a runtime-issued download grant.
     const DOWNLOAD: bool;
+    /// JSON Schema of the request, carrying the contract's declared constraints
+    /// (lengths, ranges, patterns) that the generated types do not encode.
+    const INPUT_SCHEMA_JSON: &'static str;
 
     /// Decode a matching generated error, or return `None` for an unknown error type.
     fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error>;

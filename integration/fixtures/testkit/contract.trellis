@@ -1,6 +1,8 @@
 import { auth } from trellis;
 
 model Value { value: string; }
+type NonEmpty = string(min_length=1);
+model Strict { value: NonEmpty; }
 model Status { stage: string; }
 model Preview { text: string; }
 
@@ -8,6 +10,7 @@ api echo@v1 {
   title "Testkit echo";
   description "External Rust testkit acceptance fixture.";
   rpc Echo { input Value; output Value; }
+  rpc Strict { input Strict; output Strict; }
   operation Work {
     input Value;
     output Value;
@@ -21,7 +24,7 @@ api echo@v1 {
   operation Upload { input Value; output Value; upload; }
   event Observed { payload Value; }
   capabilities {
-    capability echo.invoke { title "Invoke and observe"; description "Invoke fixture work and observe its events."; grants "The caller may invoke Echo, work operations, and observe results."; allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
+    capability echo.invoke { title "Invoke and observe"; description "Invoke fixture work and observe its events."; grants "The caller may invoke Echo, work operations, and observe results."; allows { rpc Echo; rpc Strict; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
     capability files.upload { title "Upload"; description "Upload fixture values."; grants "The caller may execute uploads."; allows { operation Upload; } }
     capability events.publishObserved { title "Publish observations"; description "Publish fixture observations."; grants "The publisher may emit Observed events."; allows { publish event Observed; } }
     capability echo.optionalSilent {
