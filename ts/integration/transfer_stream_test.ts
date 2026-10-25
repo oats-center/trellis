@@ -278,7 +278,7 @@ for (const language of ["rust", "node"] as const) {
   );
 }
 
-test("a download source that never finishes cancelling cannot block provider shutdown", async () => {
+test("a download source whose cancellation never settles cannot block provider shutdown", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "stalled-download",
@@ -297,18 +297,18 @@ test("a download source that never finishes cancelling cannot block provider shu
       const transfer = await service
         .createTransfer({
           direction: "receive",
-          // Application code that misbehaves twice: it yields more bytes
-          // than it declared, failing the download, and its cleanup never
-          // finishes, so cancelling the iterator waits on it forever.
-          stream: (async function* () {
-            try {
-              yield first;
-              yield first;
-            } finally {
+          // Application code that misbehaves twice: it keeps producing past
+          // the size it declared, failing the download, and its cancel never
+          // settles. The failure starts that cancellation before shutdown.
+          stream: new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(first);
+            },
+            cancel() {
               stalled.resolve();
-              await new Promise<never>(() => {});
-            }
-          })(),
+              return new Promise<never>(() => {});
+            },
+          }),
           info: {
             key: "stalled",
             size: first.length,

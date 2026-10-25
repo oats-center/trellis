@@ -60,6 +60,9 @@ import {
 import { fileInfoFromStoreInfo } from "./transfer/protocol.ts";
 
 /** Resolved runtime store boundary; physical storage remains behind TypedStore. */
+/** How long a finished download waits for its source's cancel to settle. */
+const SOURCE_CANCEL_GRACE_MS = 1_000;
+
 export type TransferStoreHandle = {
   open(): AsyncResult<TypedStore, StoreError>;
 };
@@ -1625,7 +1628,17 @@ export class ServiceTransfer {
       session.wire.lease.nc.publish(grant.dataSubject, payload, { headers });
       recordTransferMessage("receive", "provider", "eof", headers, 0);
     } finally {
-      await reader.cancel().catch(() => {});
+      // The source's cancel is application code. Give it a moment to finish
+      // cooperatively, but never let one that does not settle hold the
+      // session's settlement, and with it provider shutdown.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        reader.cancel().catch(() => {}),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, SOURCE_CANCEL_GRACE_MS);
+        }),
+      ]);
+      clearTimeout(timer);
       reader.releaseLock();
       session.reader = undefined;
     }
