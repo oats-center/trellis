@@ -790,8 +790,7 @@ mod tests {
         // GHCR's valid final pagination response must terminate enumeration,
         // not fail before a first publication or dependency resolution.
         let page: oci_client::client::TagResponse =
-            serde_json::from_str(r#"{"name":"oats-center/trellis-apis/trellis","tags":null}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"name":"oats-center/trellis","tags":null}"#).unwrap();
         assert!(page.tags.is_empty());
     }
 

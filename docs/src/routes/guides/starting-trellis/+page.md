@@ -344,20 +344,20 @@ docker volume create trellis-bundle
 docker volume create trellis-state
 # Generate the bundle into the state volume once (as the image's non-root user):
 docker run --rm --user 10001:10001 --entrypoint trellis \
-  --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis:latest \
+  --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis-server:latest \
   init config --out /var/lib/trellis/bundle
 # Prepare the writable system data/state volume for the image's uid:
 docker run --rm --user root --entrypoint sh \
-  --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis:latest \
+  --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis-server:latest \
   -c 'chown -R 10001:10001 /var/lib/trellis'
 # Copy the generated bundle into its own named volume:
 docker run --rm --user root --entrypoint cp \
-  --volume trellis-state:/from:ro --volume trellis-bundle:/to ghcr.io/oats-center/trellis:latest \
+  --volume trellis-state:/from:ro --volume trellis-bundle:/to ghcr.io/oats-center/trellis-server:latest \
   -a /from/bundle/. /to/
 # The bundle's creds/secrets are 0o600: the run container uid must own the
 # bundle volume contents to read them:
 docker run --rm --user root --entrypoint chown \
-  --volume trellis-bundle:/to ghcr.io/oats-center/trellis:latest \
+  --volume trellis-bundle:/to ghcr.io/oats-center/trellis-server:latest \
   -R 10001:10001 /to
 # Run: read-only rootfs, read-only bundle volume, writable state volume; managed
 # NATS state in /var/lib/trellis/nats from the system profile:
@@ -367,7 +367,7 @@ docker run --rm --name trellis --read-only --tmpfs /tmp \
   --user 10001:10001 --publish 127.0.0.1:3000:3000 --publish 127.0.0.1:3001:3001 \
   --volume trellis-bundle:/etc/trellis:ro,Z \
   --volume trellis-state:/var/lib/trellis:rw,Z \
-  --entrypoint trellis-server ghcr.io/oats-center/trellis:latest \
+  --entrypoint trellis-server ghcr.io/oats-center/trellis-server:latest \
   --system all --local-nats=/usr/local/bin/nats-server
 ```
 

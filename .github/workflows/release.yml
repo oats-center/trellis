@@ -731,7 +731,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: trellis
+          - image: trellis-server
           - image: console
 
     steps:

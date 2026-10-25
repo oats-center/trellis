@@ -5,7 +5,7 @@ root = "client-upgrade-fixture"
 name = "client-upgrade-fixture"
 version = "0.100.0"
 digest = "1wqsq8xCaBAf2fUOhpkgg_q6UEyL2PvH73QMIGqW4IQ"
-distribution-digest = "sha256:c2a819b97f7e79632c827367702d0e7f6ca274e4a1ead146f1c6cb3f8befadc9"
+distribution-digest = "sha256:2842bd965c4c25ad60e55e31ee33072504cb59a3b8bfb502e06aad176ff2e61e"
 
 [[packages.dependencies]]
 name = "trellis"
@@ -20,7 +20,7 @@ path = "."
 name = "trellis"
 version = "0.100.0"
 digest = "5oikZNdhNiboROjZwa26SfHYhaoe7wV9QT25-iMR1Ow"
-distribution-digest = "sha256:4e34bf1a8bf6105b6f5dfee21ad2ef920cc9f154ccddbf36daa9f939deab6142"
+distribution-digest = "sha256:3827f1c727bfcfce0df4b288df8b04ffb0a2122091e44488f68bc2e01c16d566"
 dependencies = []
 
 [packages.source]

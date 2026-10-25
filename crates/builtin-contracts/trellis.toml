@@ -16,4 +16,4 @@ events = "src/builtin_source/events.trellis"
 participants = "src/builtin_source/participants.trellis"
 
 [registries.trellis]
-prefix = "ghcr.io/oats-center/trellis-apis"
+prefix = "ghcr.io/oats-center"

@@ -853,9 +853,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - image: trellis
+          - image: trellis-server
             file: crates/runtime/Containerfile.release
-            title: trellis
+            title: trellis-server
             description: Trellis Rust runtime
           - image: console
             file: web/Containerfile
@@ -873,14 +873,14 @@ jobs:
           portal: true
 
       - name: Download native Linux runtime archives
-        if: matrix.image == 'trellis'
+        if: matrix.image == 'trellis-server'
         uses: actions/download-artifact@v4
         with:
           name: trellis-cli-x86_64-unknown-linux-gnu
           path: ${{ runner.temp }}/native-runtime
 
       - name: Stage native binaries for image assembly
-        if: matrix.image == 'trellis'
+        if: matrix.image == 'trellis-server'
         shell: bash
         run: |
           set -euo pipefail
@@ -910,7 +910,7 @@ jobs:
             org.opencontainers.image.description=${{ matrix.description }}
 
       - name: Build native trellis image for the managed-mode smoke
-        if: matrix.image == 'trellis'
+        if: matrix.image == 'trellis-server'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -923,7 +923,7 @@ jobs:
             TRELLIS_REVISION=${{ github.sha }}
 
       - name: Smoke-test managed NATS in the trellis image
-        if: matrix.image == 'trellis'
+        if: matrix.image == 'trellis-server'
         shell: bash
         run: bash scripts/check.sh images --smoke-only
 

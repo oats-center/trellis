@@ -129,6 +129,11 @@ grants; capability …; }` bundles of its own
 
 ### Changed
 
+- **Breaking:** The runtime image is `ghcr.io/oats-center/trellis-server`
+  (previously `ghcr.io/oats-center/trellis`), and the built-in canonical APIs
+  publish to `ghcr.io/oats-center/trellis` (previously
+  `ghcr.io/oats-center/trellis-apis/trellis`).
+
 - **Breaking:** Capabilities and groups no longer declare `consent_revision`,
   and `consequence` is renamed `grants`. Users approve the `grants` text: Auth
   asks them again exactly when an accepted API changes a capability's or
