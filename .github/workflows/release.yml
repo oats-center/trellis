@@ -99,6 +99,11 @@ jobs:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
 
+      # Keep the build output, never stale generated files or downloads.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: git clean -ffdx --exclude=/target/
+
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
@@ -175,6 +180,11 @@ jobs:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
 
+      # Keep the build output, never stale generated files or downloads.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: git clean -ffdx --exclude=/target/
+
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
@@ -236,6 +246,11 @@ jobs:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
 
+      # Keep the build output, never stale generated files or downloads.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: git clean -ffdx --exclude=/target/
+
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
         with:
@@ -277,6 +292,11 @@ jobs:
         with:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: git clean -ffdx --exclude=/target/
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
@@ -372,6 +392,11 @@ jobs:
         with:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: git clean -ffdx --exclude=/target/
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
