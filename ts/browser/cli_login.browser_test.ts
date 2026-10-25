@@ -144,6 +144,12 @@ test("CLI login authorizes independent runtime keys through one durable login", 
         await page.goto(loginUrl.href, { waitUntil: "domcontentloaded" });
         const code = page.getByLabel("Code", { exact: true });
         assert.equal(await code.inputValue(), challenge.userCode);
+        // A code typed by hand is grouped and uppercased as it is entered.
+        await code.clear();
+        await code.pressSequentially(
+          challenge.userCode.replace("-", "").toLowerCase(),
+        );
+        assert.equal(await code.inputValue(), challenge.userCode);
         await page.getByRole("button", { name: /continue|review/i }).click();
         await signInIfPrompted(page, {
           username: runtime.adminUsername,

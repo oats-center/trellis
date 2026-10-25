@@ -66,6 +66,16 @@
   }
 
   const query = new URL(window.location.href).searchParams;
+
+  /** Uppercases a typed device code and groups it as `XXXX-XXXX`. */
+  function formatDeviceCode(value: string): string {
+    const code = value
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "")
+      .slice(0, 8);
+    return code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+  }
+  let deviceCode = $state(formatDeviceCode(query.get("user_code") ?? ""));
   const transaction = query.get("transaction") ?? "";
   const login = window.location.pathname === "/login";
   const device = window.location.pathname === "/device";
@@ -566,8 +576,11 @@
         class="code-input"
         name="user_code"
         type="text"
-        value={query.get("user_code") ?? ""}
-        maxlength="32"
+        bind:value={
+          () => deviceCode, (value) => (deviceCode = formatDeviceCode(value))
+        }
+        placeholder="XXXX-XXXX"
+        maxlength="9"
         autocomplete="off"
         autocapitalize="characters"
         spellcheck="false"
