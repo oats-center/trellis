@@ -18,6 +18,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 logs="$root/target/test-logs"
+# Start from empty logs so a failed run never shows an earlier run's results.
+rm -rf "$logs"
 mkdir -p "$logs"
 
 suites=(rust integration sdk browser)
