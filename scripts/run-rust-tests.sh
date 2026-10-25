@@ -4,12 +4,12 @@
 #
 #   scripts/run-rust-tests.sh [-- <cargo test filter and flags>]
 #
-# No environment variable has to be preset. Locally the runner acquires the
-# pinned NATS server and Dex identity provider, builds the CLI, server and
-# Events fixture the tests launch, and then runs every workspace test, so no
-# test fails merely because an executable was never provided. In CI the
-# producer jobs stage those executables and set the variables; the runner then
-# only checks that they exist. `scripts/check.sh` uses the same staged mode
+# No environment variable has to be preset. The runner downloads the pinned
+# NATS server and Dex release; locally it builds the CLI, server and Events
+# fixture the tests launch, and then runs every workspace test, so no test fails
+# merely because an executable was never provided. In CI the producer jobs stage
+# the Trellis executables and set the variables; the runner then only checks
+# that they exist. `scripts/check.sh` uses the same staged mode
 # (TRELLIS_TEST_STAGED=1) after building once, and TRELLIS_TEST_BUILD_ONLY=1
 # builds the executables and test binaries without running them.
 set -euo pipefail
@@ -21,18 +21,19 @@ features="trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres"
 
 nats_version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
 nats_bin="${TRELLIS_TEST_NATS_BIN:-${TRELLIS_NATS_SERVER_BIN:-$root/target/test-nats/$nats_version/nats-server}}"
-dex_bin="${TRELLIS_TEST_DEX_BIN:-$root/target/test-identity/$(bash scripts/acquire-test-dex.sh --print-commit)/dex}"
+dex_bin="${TRELLIS_TEST_DEX_BIN:-$root/target/test-identity/$(bash scripts/acquire-test-dex.sh --print-version)/dex}"
 cli_bin="${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"
 server_bin="${TRELLIS_TEST_SERVER_BIN:-$root/target/debug/trellis-server}"
 events_bin="${TRELLIS_TEST_EVENTS_BIN:-$root/target/debug/fixtures/events}"
 
+# Released dependencies are downloaded and verified, never built.
+[[ -x "$nats_bin" ]] || bash scripts/acquire-test-nats.sh --dest "$(dirname "$nats_bin")"
+[[ -x "$dex_bin" ]] || bash scripts/acquire-test-dex.sh --dest "$(dirname "$dex_bin")"
 if [[ -n "${CI:-}${TRELLIS_TEST_STAGED:-}" ]]; then
-  for bin in "$nats_bin" "$dex_bin" "$cli_bin" "$server_bin" "$events_bin"; do
+  for bin in "$cli_bin" "$server_bin" "$events_bin"; do
     [[ -x "$bin" ]] || { echo "missing staged executable $bin" >&2; exit 1; }
   done
 else
-  [[ -x "$nats_bin" ]] || bash scripts/acquire-test-nats.sh --dest "$(dirname "$nats_bin")"
-  [[ -x "$dex_bin" ]] || bash scripts/acquire-test-dex.sh --dest "$(dirname "$dex_bin")"
   # Cargo is incremental, so rebuilding every run is cheap and never stale.
   cargo build -p trellis-cli --bin trellis -p trellis-server --bin trellis-server
   CARGO_TARGET_DIR="$root/target" cargo build --bin events \

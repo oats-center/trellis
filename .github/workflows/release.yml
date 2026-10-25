@@ -188,42 +188,6 @@ jobs:
           path: ts/packages/trellis/auth/protocol_wasm
           retention-days: 1
 
-  dex:
-    name: Build test identity provider
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    # scripts/acquire-test-dex.sh owns the pinned Dex revision for Check and
-    # local runs alike; rebuild only when that pin changes.
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Restore built Dex
-        id: dex-cache
-        uses: actions/cache@v4
-        with:
-          path: dex-bin
-          key: dex-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/acquire-test-dex.sh') }}
-
-      - name: Set up Go
-        if: steps.dex-cache.outputs.cache-hit != 'true'
-        uses: actions/setup-go@v5
-        with:
-          go-version: stable
-
-      - name: Build Dex
-        if: steps.dex-cache.outputs.cache-hit != 'true'
-        run: bash scripts/acquire-test-dex.sh --dest dex-bin
-
-      - name: Upload test identity provider
-        uses: actions/upload-artifact@v4
-        with:
-          name: check-dex
-          path: dex-bin/dex
-          retention-days: 1
-
   portal:
     name: Embedded browser apps
     needs: [install, wasm]
@@ -443,7 +407,7 @@ jobs:
 
   rust:
     name: Rust
-    needs: [install, wasm, portal, build, build-fixtures, dex]
+    needs: [install, wasm, portal, build, build-fixtures]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -454,7 +418,6 @@ jobs:
       TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
       TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
       TRELLIS_TEST_EVENTS_BIN: ${{ github.workspace }}/dist/runtime-binaries/fixtures/events
-      TRELLIS_TEST_DEX_BIN: ${{ github.workspace }}/dist/test-identity/dex
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -480,15 +443,6 @@ jobs:
           mkdir -p dist/runtime-binaries
           tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C dist/runtime-binaries
           tar --zstd -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar.zst" -C dist/runtime-binaries
-
-      - name: Download test identity provider
-        uses: actions/download-artifact@v4
-        with:
-          name: check-dex
-          path: dist/test-identity
-
-      - name: Make test identity provider executable
-        run: chmod +x dist/test-identity/dex
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"

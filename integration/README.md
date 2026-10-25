@@ -13,7 +13,7 @@ npm run test:integration
 ```
 
 Neither runner needs a preset environment. `scripts/run-rust-tests.sh` acquires
-the pinned NATS server and Dex identity provider (Go is required to build Dex),
+the pinned NATS server and Dex release,
 builds the CLI, server, and Events fixture, sets the test executable variables,
 and accepts ordinary filters after `--`, for example
 `scripts/run-rust-tests.sh -- upstream_oidc`.

@@ -78,8 +78,8 @@ then run the whole catalog with:
 scripts/run-rust-tests.sh
 ```
 
-Locally it acquires the pinned NATS server, builds the pinned Dex revision
-(`scripts/acquire-test-dex.sh`, which needs Go), builds the CLI, server, and
+It downloads the pinned NATS server and Dex release
+(`scripts/acquire-test-dex.sh`), locally builds the CLI, server, and
 Events fixture, and sets every test executable variable. The pipeline stages the same
 executables once and runs the same script; tests never rebuild them.
 
