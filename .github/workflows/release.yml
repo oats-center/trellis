@@ -1286,6 +1286,15 @@ jobs:
               return 0
             fi
             npm publish --access public --tag "$npm_tag" "./$1"
+            # The registry serves a new version only after processing it; the
+            # testkit smoke installs these immediately.
+            for attempt in {1..30}; do
+              if npm view "$name@$version" version >/dev/null 2>&1; then return 0; fi
+              echo "Waiting for $name@$version on npm ($attempt/30)"
+              sleep 10
+            done
+            echo "::error::$name@$version did not become available on npm"
+            return 1
           }
           packages=(ts/packages/result/npm ts/packages/trellis/npm ts/packages/trellis-svelte/npm ts/packages/trellis-testkit/npm)
           # npm compares the repository with GitHub provenance case-sensitively.
