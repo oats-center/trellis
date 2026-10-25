@@ -25,7 +25,7 @@ tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-th
 toml = "1.1.2"
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.3" }
 trellis-protocol = { path = "../protocol", version = "0.100.0-rc.3" }
-trellis-models = { path = "../models", version = "0.102.0-rc.4" }
+trellis-models = { path = "../models", version = "0.100.0-rc.3" }
 flate2 = "1.1.9"
 tar = "0.4.46"
 libc = "0.2.186"

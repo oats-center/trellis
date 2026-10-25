@@ -200,11 +200,12 @@ the release preparation flags (`--protocol-version`, `--models-version`,
 version: `release prepare` refuses one whose retained or requested version has
 no prerelease suffix. A changed component needs a version newer than the one
 already published, because crates.io and `trellis publish` keep published
-versions. Model snapshots require distinct Cargo
-compatibility lines when their native identity/digest or Rust ABI changes.
-`trellis-models` therefore carries its own version, which may lead the workspace
-version (for example `0.102.0-rc.4` beside `0.100.0-rc.3`); do not realign it
-by hand.
+versions. Component versions stay on the release's own version line (for
+example `0.100.0-rc.4`); never invent a minor version that no Trellis release
+has. Check's model publication guard refuses a model snapshot or Rust ABI
+change within a Cargo compatibility line that already has a published model,
+because generated clients bound to that line would resolve the new snapshot;
+such a change needs a deliberate release decision, not a new minor line.
 Server/compiler/bootstrap implementation crates are private and non-publishable.
 
 `publish-crates` restores `check-generated`, accepted production native archives, and

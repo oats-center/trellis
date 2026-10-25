@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.102.0-rc.4"
+version = "0.100.0-rc.3"
 dependencies = [
  "serde",
  "serde_json",
