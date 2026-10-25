@@ -99,7 +99,18 @@ pub async fn start_jobs_projector(
         let mut owners: HashMap<String, JobResourceBinding> = HashMap::new();
         while let Some(message) = messages.next().await {
             let mut batch = Vec::new();
-            collect_projector_message(message, &consumer_name, &jobs_stream, &mut batch).await?;
+            // Every message in the batch counts toward the processed horizon,
+            // including ones that are never projected: key lookups wait for
+            // the horizon to reach the stream's last sequence.
+            let mut horizon = 0;
+            collect_projector_message(
+                message,
+                &consumer_name,
+                &jobs_stream,
+                &mut batch,
+                &mut horizon,
+            )
+            .await?;
             while batch.len() < PROJECTOR_BATCH_SIZE {
                 let Some(message) = messages.next().now_or_never() else {
                     break;
@@ -107,12 +118,19 @@ pub async fn start_jobs_projector(
                 let Some(message) = message else {
                     break;
                 };
-                collect_projector_message(message, &consumer_name, &jobs_stream, &mut batch)
-                    .await?;
+                collect_projector_message(
+                    message,
+                    &consumer_name,
+                    &jobs_stream,
+                    &mut batch,
+                    &mut horizon,
+                )
+                .await?;
             }
             // Project only what each event's authorized subject owns. An Auth
             // lookup failure fails the batch unacknowledged, preserving order.
             let mut authorized = Vec::with_capacity(batch.len());
+            let mut rejected = Vec::new();
             for (message, event) in batch {
                 let owner = match subject_coordinates(&event.subject) {
                     Some((prefix, _)) => match owners.get(prefix) {
@@ -144,13 +162,10 @@ pub async fn start_jobs_projector(
                         job_id = %event.event.job_id,
                         "rejected jobs event outside its publisher's queue"
                     );
-                    let _ = message.ack().await;
+                    rejected.push(message);
                 }
             }
             let batch = authorized;
-            if batch.is_empty() {
-                continue;
-            }
 
             let started = Instant::now();
             let events = batch
@@ -160,11 +175,8 @@ pub async fn start_jobs_projector(
             let batch_store = store.clone();
             let projected = tokio::task::spawn_blocking(move || {
                 let projected = project_job_events_with_payloads(&batch_store, &events)?;
-                let horizon = events
-                    .iter()
-                    .map(|event| event.stream_sequence)
-                    .max()
-                    .unwrap_or_default();
+                // Batches project in stream order, so no accepted event at
+                // or below this horizon is left unprojected.
                 batch_store.advance_projected_sequence(horizon)?;
                 Ok::<_, SqliteJobsStoreError>(projected)
             })
@@ -183,8 +195,11 @@ pub async fn start_jobs_projector(
                 "projected jobs event batch"
             );
 
-            let ack_count = batch.len();
+            let ack_count = batch.len() + rejected.len();
             for (message, _) in batch {
+                let _ = message.ack().await;
+            }
+            for message in rejected {
                 let _ = message.ack().await;
             }
             tracing::debug!(
@@ -210,6 +225,7 @@ async fn collect_projector_message(
     consumer_name: &str,
     jobs_stream: &str,
     batch: &mut Vec<(JobsRuntimeMessage, ProjectorEvent)>,
+    horizon: &mut u64,
 ) -> Result<(), ServerError> {
     let message = message.map_err(|error| {
         ServerError::Nats(format!(
@@ -217,6 +233,9 @@ async fn collect_projector_message(
             stream '{jobs_stream}': {error}"
         ))
     })?;
+    if let Ok(sequence) = message.stream_sequence() {
+        *horizon = (*horizon).max(sequence);
+    }
     let Some(event) = parse_projector_message(&message) else {
         tracing::debug!(
             subject = %message.subject(),

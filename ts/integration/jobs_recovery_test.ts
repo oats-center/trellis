@@ -1330,3 +1330,78 @@ test("jobs rerun automatically after a handler failure and after their worker di
     }
   });
 });
+
+test("a rejected Jobs event at the stream tail does not stall key lookups", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "key-horizon",
+      contract: participants.Provider.participant,
+    });
+    const admin = await runtime.connectClient({
+      name: "key-horizon-admin",
+      contract: apps.JobsAdmin.request,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    service.jobs.keyedWork.handle(({ job }) =>
+      Promise.resolve(Result.ok(job.payload)),
+    );
+    const serviceExit = service.wait().catch((error: unknown) => error);
+    // The runtime's own credentials can publish anywhere on the stream, as a
+    // misbehaving or compromised publisher could on its queue.
+    const nc = await connect({
+      servers: runtime.natsUrl,
+      authenticator: credsAuthenticator(
+        await readFile(
+          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
+        ),
+      ),
+    });
+    try {
+      const job = await service.jobs.keyedWork
+        .create({ key: "horizon", value: "horizon" })
+        .orThrow();
+      assert.deepEqual((await job.wait().orThrow()).state, "completed");
+      const projected = await runtime.waitFor(
+        async () =>
+          (await admin.query({}).orThrow()).items.find(
+            (row) => row.id === job.id && row.state === "completed",
+          ) ?? false,
+      );
+      const lookup = {
+        service: projected.service,
+        type: projected.type,
+        key: "horizon",
+      };
+      await admin.getKey(lookup).orThrow();
+
+      // A copy of the job's last event that claims another service is
+      // rejected by the projector, and is now the stream's newest message.
+      const jsm = await jetstreamManager(nc);
+      const last = await jsm.streams.getMessage("JOBS", {
+        last_by_subj: `trellis.jobs.*.*.${job.id}.completed`,
+      });
+      assert(last);
+      const forged = {
+        ...last.json<Record<string, unknown>>(),
+        service: "elsewhere",
+      };
+      await jetstream(nc).publish(last.subject, JSON.stringify(forged));
+
+      const started = Date.now();
+      const key = await admin.getKey(lookup).orThrow();
+      assert.deepEqual(key.active, []);
+      assert(
+        Date.now() - started < 3_000,
+        "the lookup waited for an event the projector will never accept",
+      );
+    } finally {
+      await nc.close();
+      await service.stop();
+      await serviceExit;
+    }
+  });
+});
