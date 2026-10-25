@@ -1213,3 +1213,120 @@ test("expired work with a persisted pre-Started slot releases a block-policy key
     }
   });
 });
+
+test("jobs rerun automatically after a handler failure and after their worker dies mid-run", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const firstIdentity = await runtime.registerService({
+      name: "restart-first",
+      contract: participants.Provider.participant,
+    });
+    const secondIdentity = await runtime.services.createInstance({
+      name: "restart-second",
+      contract: participants.Provider.participant,
+    });
+    // A separate instance submits and observes jobs without handling them.
+    const submitterIdentity = await runtime.services.createInstance({
+      name: "restart-submitter",
+      contract: participants.Provider.participant,
+    });
+    const submitter = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: participants.Provider.participant,
+      seed: submitterIdentity.seed,
+    }).orThrow();
+    const submitterExit = submitter.wait();
+    const [command, ...args] = rustFixtureArgv("jobs");
+    const start = (role: string, seed: string) => {
+      const child = spawnTracked(command, args, {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: seed,
+          TRELLIS_RESTART_WORK: role,
+        },
+      });
+      child.stderr.pipe(process.stderr);
+      const lines: string[] = [];
+      const output = (async () => {
+        let pending = "";
+        for await (const text of Readable.toWeb(child.stdout).pipeThrough(
+          new TextDecoderStream(),
+        )) {
+          pending += text;
+          const complete = pending.split("\n");
+          pending = complete.pop()!;
+          lines.push(...complete);
+        }
+      })();
+      let exited = false;
+      const status = child.exited.then((value) => {
+        exited = true;
+        return value;
+      });
+      const ready = runtime.waitFor(
+        () => {
+          if (exited) throw new Error(`${role} worker exited before readiness`);
+          return lines.includes("ready");
+        },
+        { timeoutMs: 60_000 },
+      );
+      return { child, lines, output, status, ready };
+    };
+    const first = start("first", firstIdentity.seed);
+    let second: ReturnType<typeof start> | undefined;
+    try {
+      await first.ready;
+
+      // A retryable handler failure is retried without any operator action.
+      const flaky = await submitter.jobs.restartWork
+        .create({ value: "flaky" })
+        .orThrow();
+      await runtime.waitFor(
+        async () => (await flaky.get().orThrow()).state === "completed",
+        { timeoutMs: 60_000 },
+      );
+      const flakyJob = await flaky.get().orThrow();
+      assert.deepEqual(flakyJob.tries, 2);
+      assert.deepEqual(flakyJob.result, { value: "flaky" });
+      assert.deepEqual(
+        first.lines.filter((line) => line.startsWith("execute flaky ")),
+        ["execute flaky first 1", "execute flaky first 2"],
+      );
+
+      // A worker that dies mid-handler never settles its job; the broker
+      // redelivers it and a replacement worker completes it.
+      const crash = await submitter.jobs.restartWork
+        .create({ value: "crash" })
+        .orThrow();
+      await runtime.waitFor(
+        () => first.lines.includes("execute crash first 1"),
+        { timeoutMs: 30_000 },
+      );
+      second = start("second", secondIdentity.seed);
+      await second.ready;
+      first.child.kill("SIGKILL");
+      await Promise.all([first.status, first.output]);
+      await runtime.waitFor(
+        async () => (await crash.get().orThrow()).state === "completed",
+        { timeoutMs: 60_000 },
+      );
+      const crashJob = await crash.get().orThrow();
+      assert.deepEqual(crashJob.tries, 2);
+      assert.deepEqual(crashJob.result, { value: "crash" });
+      assert(
+        second.lines.includes("execute crash second 2"),
+        second.lines.join("\n"),
+      );
+    } finally {
+      for (const worker of [first, second]) {
+        if (!worker) continue;
+        if (worker.child.exitCode === null && worker.child.signalCode === null)
+          worker.child.kill("SIGKILL");
+        await Promise.all([worker.status, worker.output]);
+      }
+      await submitter.stop();
+      await submitterExit;
+    }
+  });
+});

@@ -63,6 +63,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if let Ok(role) = std::env::var("TRELLIS_RESTART_WORK") {
+        // A `flaky` job fails once and then succeeds. The `first` worker never
+        // finishes a `crash` job, so the test can kill it mid-handler; any
+        // other worker completes it.
+        use std::io::Write;
+        let flaky = Arc::new(AtomicUsize::new(0));
+        Provider::new(&mut service)
+            .register_restart_work(move |job| {
+                let role = role.clone();
+                let flaky = Arc::clone(&flaky);
+                async move {
+                    let value = job.payload().value.clone();
+                    println!("execute {value} {role} {}", job.tries());
+                    std::io::stdout().flush().expect("stdout");
+                    if value == "flaky" && flaky.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return Err(JobProcessError::Retryable("transient failure"));
+                    }
+                    if value == "crash" && role == "first" {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(job.payload().clone())
+                }
+            })
+            .await?;
+        println!("ready");
+        std::io::stdout().flush()?;
+        service.run().await?;
+        return Ok(());
+    }
+
     if std::env::var_os("TRELLIS_PRE_STARTED_WORK").is_some() {
         use std::io::Write;
         let stop = Arc::new(tokio::sync::Notify::new());
