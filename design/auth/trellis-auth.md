@@ -825,7 +825,8 @@ status before atomically changing the password and revoking login/grant
 families. Bootstrap-administrator reset remains on the existing local recovery
 path. Until the protected administrator sets a password, each startup issues and
 prints a fresh setup link before provider admission, superseding prior pending
-links. Once a password exists, startup never issues a link without explicit
+links. A setup link stays valid until it is used once; recovery and
+administrative reset links expire after five minutes. Once a password exists, startup never issues a link without explicit
 local recovery. Linking requires the exact initiating portal user and a fresh
 nonce/PKCE-verified upstream exchange; provider disablement or a revision change
 invalidates the action, and another user's identity cannot be reassigned. Native

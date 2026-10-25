@@ -237,10 +237,12 @@ Offline initialization and server startup share host-profile path resolution;
 explicit `[paths]` overrides remain authoritative.
 
 Until the protected administrator sets a password, each startup prints a fresh
-setup link and invalidates earlier links, including expired or lost ones. After
-setup, restart preserves credentials and prints no link.
+setup link and invalidates earlier links, including lost ones. A setup link does
+not expire; it works once. After setup, restart preserves credentials and prints
+no link.
 To reset an established password, start with `--reset-admin`. This prints a
-replacement one-time reset URL and revokes earlier pending links. Completing the
+replacement one-time reset URL, valid for five minutes, and revokes earlier
+pending links. Completing the
 reset preserves the protected principal and its existing authority while revoking
 its login sessions. Ordinary administrative RPCs cannot reset this protected
 account. Local recovery targets it even when other administrators exist.

@@ -280,7 +280,7 @@ impl SqliteAuthorizationStore {
                             Some(storage) => {
                                 let response =
                                     super::oauth::account::create_local_reset_in_transaction(
-                                        connection, &principal, now,
+                                        connection, &principal, now, false,
                                     )?;
                                 Some(
                                     storage
@@ -341,20 +341,27 @@ impl super::OAuthStorage {
             Some(self),
             now,
         )?;
-        let url = initialized.setup_response.as_deref().map(|sealed| {
-            let response: trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateResponse =
-                self.decode("administrator-setup", &initialized.principal_id, sealed)
+        let url = initialized
+            .setup_response
+            .as_deref()
+            .map(|sealed| {
+                let token: String = self
+                    .decode("administrator-setup", &initialized.principal_id, sealed)
                     .map_err(|_| AuthError::Unavailable)?;
-            Ok::<_, AuthError>(format!(
-                "{}/account/reset?token={}",
-                self.authority.settings.oauth_origin, response.token
-            ))
-        }).transpose()?;
+                Ok::<_, AuthError>(format!(
+                    "{}/account/reset?token={token}",
+                    self.authority.settings.oauth_origin
+                ))
+            })
+            .transpose()?;
         Ok((initialized.principal_id, url))
     }
 
     /// Supersede pending setup links, unless password setup is already complete.
     /// Explicit recovery may also reset an administrator with a password.
+    ///
+    /// A reissued setup link (`only_without_password`) stays valid until used,
+    /// like the one from initialization; a recovery link lasts five minutes.
     pub(crate) fn reset_local_administrator(
         &self,
         now: i64,
@@ -387,19 +394,22 @@ impl super::OAuthStorage {
                 &principal,
                 now,
                 |connection| {
-                    let response = super::oauth::account::create_local_reset_in_transaction(
-                        connection, &principal, now,
+                    let token = super::oauth::account::create_local_reset_in_transaction(
+                        connection,
+                        &principal,
+                        now,
+                        !only_without_password,
                     )?;
-                    self.encode("administrator-reset", &identity.request_id, &response)
+                    self.encode("administrator-reset", &identity.request_id, &token)
                         .map_err(|_| AuthError::Unavailable)
                 },
             )?;
-            let response: trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateResponse =
-                self.decode("administrator-reset", &identity.request_id, &sealed)
-                    .map_err(|_| AuthError::Unavailable)?;
+            let token: String = self
+                .decode("administrator-reset", &identity.request_id, &sealed)
+                .map_err(|_| AuthError::Unavailable)?;
             Ok(Some(format!(
-                "{}/account/reset?token={}",
-                self.authority.settings.oauth_origin, response.token
+                "{}/account/reset?token={token}",
+                self.authority.settings.oauth_origin
             )))
         })
     }

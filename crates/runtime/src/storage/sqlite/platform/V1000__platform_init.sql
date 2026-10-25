@@ -286,10 +286,12 @@ CREATE TABLE auth_account_flows (
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     state TEXT NOT NULL CHECK (state IN ('pending', 'consumed', 'expired', 'revoked')),
     created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
-    expires_at INTEGER NOT NULL CHECK (expires_at BETWEEN 0 AND 9007199254740991),
+    -- NULL only for the initial administrator setup link, valid until used.
+    expires_at INTEGER CHECK (expires_at BETWEEN 0 AND 9007199254740991),
     consumed_at INTEGER CHECK (consumed_at BETWEEN 0 AND 9007199254740991),
     version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 9007199254740991),
     CHECK (expires_at >= created_at),
+    CHECK (expires_at IS NOT NULL OR kind = 'password_reset'),
     CHECK ((state = 'consumed') = (consumed_at IS NOT NULL))
 );
 CREATE INDEX auth_account_flows_target_idx

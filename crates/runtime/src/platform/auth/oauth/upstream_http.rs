@@ -112,9 +112,13 @@ pub(super) async fn start(
             Ok(action) => action,
             Err(_) => return error(ErrorCode::AccessDenied),
         };
+        // Identity links always expire; only the setup reset may not.
+        let Some(expires) = action.expires else {
+            return error(ErrorCode::AccessDenied);
+        };
         (
             action.id,
-            action.expires,
+            expires,
             "account-link".to_owned(),
             Some(token.clone()),
         )

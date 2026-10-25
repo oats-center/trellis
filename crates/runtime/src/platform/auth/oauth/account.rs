@@ -60,7 +60,8 @@ pub(super) struct Action {
     pub(super) id: String,
     pub(super) target: String,
     pub(super) provider: Option<String>,
-    pub(super) expires: i64,
+    /// `None` only for the initial administrator setup link.
+    pub(super) expires: Option<i64>,
     payload: Payload,
 }
 
@@ -120,28 +121,33 @@ fn action(connection: &Connection, token: &str, kind: &str, now: i64) -> Result<
     {
         return Err(AuthError::Denied);
     }
-    let (id, target, provider, expires, payload): (String, String, Option<String>, i64, String) =
-        connection
-            .query_row(
-                "SELECT flow_id,target_principal_id,target_provider_id,expires_at,\
+    let (id, target, provider, expires, payload): (
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+        String,
+    ) = connection
+        .query_row(
+            "SELECT flow_id,target_principal_id,target_provider_id,expires_at,\
                 payload_json \
                 FROM auth_account_flows \
                 WHERE token_hash=?1 \
                 AND kind=?2 AND state='pending' \
-                AND expires_at>?3",
-                params![hash(token), kind, now],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .optional()?
-            .ok_or(AuthError::Denied)?;
+                AND (expires_at IS NULL OR expires_at>?3)",
+            params![hash(token), kind, now],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::Denied)?;
     Ok(Action {
         id,
         target,
@@ -218,6 +224,7 @@ pub(crate) fn create_reset(
                 None,
                 &payload,
                 now,
+                Some(now + 300),
             )?;
             let response = AuthPasswordResetCreateResponse {
                 token,
@@ -299,6 +306,7 @@ pub(crate) fn create_link(
                 Some(&provider),
                 &payload,
                 now,
+                Some(now + 300),
             )?;
             let response = AuthIdentityLinkCreateResponse {
                 authorization_url: format!(
@@ -319,12 +327,15 @@ pub(crate) fn create_link(
 }
 
 /// Issue an account reset under local filesystem/operator authority, never RPC
-/// authority. Initialization and explicit local recovery share this issuer.
+/// authority, returning its one-time token. Initialization and explicit local
+/// recovery share this issuer. The initial administrator setup link (`expires`
+/// false) stays valid until used; other links last five minutes.
 pub(crate) fn create_local_reset_in_transaction(
     connection: &Connection,
     principal: &str,
     now: i64,
-) -> Result<AuthPasswordResetCreateResponse, AuthError> {
+    expires: bool,
+) -> Result<String, AuthError> {
     let (username, version): (String, u64) = connection
         .query_row(
             "SELECT c.normalized_username,c.version \
@@ -369,14 +380,12 @@ pub(crate) fn create_local_reset_in_transaction(
         None,
         &payload,
         now,
+        expires.then_some(now + 300),
     )?;
-    Ok(AuthPasswordResetCreateResponse {
-        token,
-        expires_at: super::super::sqlite::timestamp(now + 300)?,
-        extra: Default::default(),
-    })
+    Ok(token)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert(
     connection: &Connection,
     token: &str,
@@ -385,6 +394,7 @@ fn insert(
     provider: Option<&str>,
     payload: &Payload,
     now: i64,
+    expires_at: Option<i64>,
 ) -> Result<(), AuthError> {
     connection.execute(
         "INSERT INTO auth_account_flows(flow_id,kind,token_hash,\
@@ -399,7 +409,7 @@ fn insert(
             provider,
             serde_json::to_string(payload)?,
             now,
-            now + 300
+            expires_at
         ],
     )?;
     Ok(())
@@ -685,7 +695,7 @@ fn consume(connection: &Connection, id: &str, now: i64) -> Result<(), AuthError>
         "UPDATE auth_account_flows \
         SET state='consumed',consumed_at=?1,version=version+1 \
         WHERE flow_id=?2 AND state='pending' \
-        AND expires_at>?1",
+        AND (expires_at IS NULL OR expires_at>?1)",
         params![now, id],
     )? != 1
     {
@@ -868,7 +878,9 @@ pub(super) async fn submit(
                 }
                 action.payload.handoff = Some(LinkHandoff {
                     session: login.session_id,
-                    expires: action.expires.min(now + 60),
+                    expires: action
+                        .expires
+                        .map_or(now + 60, |expires| expires.min(now + 60)),
                     used: false,
                 });
                 connection.execute(
@@ -1051,6 +1063,75 @@ mod tests {
     };
 
     #[test]
+    fn initial_administrator_setup_link_lasts_until_used_once_but_recovery_links_expire() {
+        use crate::platform::auth::tests::{open, NOW};
+        use ed25519_dalek::SigningKey;
+        let directory = tempfile::tempdir().unwrap();
+        let authority = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));
+        authority.initialize_issuer(NOW).unwrap();
+        let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
+        let token_of = |url: &str| {
+            url::Url::parse(url)
+                .unwrap()
+                .query_pairs()
+                .find(|(name, _)| name == "token")
+                .unwrap()
+                .1
+                .into_owned()
+        };
+        let (_, url) = storage
+            .initialize_local_administrator("https://console.example", "operator", None, NOW)
+            .unwrap();
+        let setup = token_of(&url.unwrap());
+
+        // An operator may open the setup link long after initialization.
+        let later = NOW + 24 * 60 * 60;
+        let guest = authority.create_portal_session(later).unwrap();
+        let password = hash_password("administrator setup password", 12).unwrap();
+        complete_reset(
+            &storage,
+            &setup,
+            &guest.cookie,
+            &guest.csrf,
+            &password,
+            later,
+        )
+        .unwrap();
+        assert!(matches!(
+            complete_reset(
+                &storage,
+                &setup,
+                &guest.cookie,
+                &guest.csrf,
+                &password,
+                later
+            ),
+            Err(AuthError::Denied)
+        ));
+
+        // Explicit recovery of an administrator with a password still expires.
+        let recovery = token_of(
+            &storage
+                .reset_local_administrator(later, false)
+                .unwrap()
+                .unwrap(),
+        );
+        let expired = later + 301;
+        let guest = authority.create_portal_session(expired).unwrap();
+        assert!(matches!(
+            complete_reset(
+                &storage,
+                &recovery,
+                &guest.cookie,
+                &guest.csrf,
+                &password,
+                expired
+            ),
+            Err(AuthError::Denied)
+        ));
+    }
+
+    #[test]
     fn passwordless_administrator_setup_survives_reopen_and_does_not_replace_completed_credentials()
     {
         use crate::platform::auth::tests::{open, NOW};
@@ -1174,7 +1255,9 @@ mod tests {
         let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
         let now = crate::clock::unix_now();
         let first = authority
-            .transaction(|connection| create_local_reset_in_transaction(connection, &f.admin, now))
+            .transaction(|connection| {
+                create_local_reset_in_transaction(connection, &f.admin, now, true)
+            })
             .unwrap();
         assert!(storage
             .reset_local_administrator(now, true)
@@ -1196,7 +1279,7 @@ mod tests {
         assert!(matches!(
             complete_reset(
                 &storage,
-                &first.token,
+                &first,
                 &guest.cookie,
                 &guest.csrf,
                 &replacement,
