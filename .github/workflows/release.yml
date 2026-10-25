@@ -90,11 +90,14 @@ jobs:
     name: Install generated artifacts
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -108,10 +111,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Reset isolated installation state
-        run: rm -rf target
-
+      # Self-hosted runners keep target/ instead.
       - name: Cache installation build
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: target
@@ -164,11 +166,14 @@ jobs:
     name: Protocol WASM
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -222,11 +227,14 @@ jobs:
   clippy:
     name: Rust lint
     needs: [install, portal]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
@@ -243,7 +251,9 @@ jobs:
         with:
           components: clippy
 
+      # Self-hosted runners keep target/ instead.
       - name: Cache Rust lint artifacts
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: target
@@ -259,11 +269,14 @@ jobs:
   build-fixtures:
     name: Build integration fixture binaries
     needs: [install, portal]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
@@ -278,7 +291,9 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Self-hosted runners keep target/ instead.
       - name: Cache fixture build artifacts
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: target
@@ -349,11 +364,14 @@ jobs:
   build:
     name: Build runtime binaries
     needs: [install, wasm, portal]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs

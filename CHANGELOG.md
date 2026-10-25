@@ -68,9 +68,12 @@ grants; capability …; }` bundles of its own
   release. Each run reports the `trellis-server` version it tests against, and
   explicit binaries no longer have to match the testkit version. The TypeScript
   testkit also honors `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`.
-- One `Pipeline` workflow on GitHub-hosted runners replaces Check, Lint and
-  Release: a `release/v*` push verifies and then publishes the same run's
-  artifacts. Publication runs no further tests, so a version that passed the
+- One `Pipeline` workflow replaces Check, Lint and Release. Compile-heavy jobs
+  (generated artifacts, protocol WASM, Rust lint and the builds) run on
+  self-hosted runners that keep their `target/` between runs, so Cargo rebuilds
+  only what changed; tests, images and publication run on GitHub-hosted
+  runners, and pull requests from forks run entirely on GitHub-hosted runners.
+  A `release/v*` push verifies and then publishes the same run's artifacts. Publication runs no further tests, so a version that passed the
   acceptance gate publishes in full. Until the first stable release, the npm `latest`
   dist-tag and the `latest` image tag follow the newest prerelease.
 - Transfer receivers choose their outstanding window, up to 1,024 frames and
