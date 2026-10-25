@@ -29,6 +29,18 @@ export type ConnectionObservation = {
 type ConnectionState = ConnectionObservation & {
   writer: SerialWriter;
   heldPongs: Uint8Array[];
+  /** Client `PING`s the server has not answered yet. */
+  unansweredPings: number;
+};
+
+type PongHold = {
+  connectionId: number;
+  /** Earlier `PING`s whose `PONG`s still flow before the held one. */
+  skip: number;
+  /** Whether the client has sent the `PING` whose `PONG` is held. */
+  pinged: boolean;
+  frame: Uint8Array | undefined;
+  held: PromiseWithResolvers<void>;
 };
 
 type DeliveryWaiter = {
@@ -115,6 +127,7 @@ export class NativeTransportGate {
   #holding = false;
   #released = false;
   #responseHold: ResponseHold | undefined;
+  #pongHold: PongHold | undefined;
 
   /** Allocate the next proxied connection id. */
   connectionOpened(writer: SerialWriter): number {
@@ -127,6 +140,7 @@ export class NativeTransportGate {
       deliveries: [],
       writer,
       heldPongs: [],
+      unansweredPings: 0,
     });
     return id;
   }
@@ -169,6 +183,38 @@ export class NativeTransportGate {
   /** Resolves with the connection id once the readiness barrier is held. */
   barrierHeld(): Promise<number> {
     return this.#barrier.promise;
+  }
+
+  /**
+   * Withhold the server `PONG` answering the next client `PING` on
+   * `connectionId`, leaving a client flush unacknowledged. `held` resolves once
+   * that `PONG` is withheld; `release` forwards it. Interrupting the transport
+   * instead fails the flush as a real disconnect does.
+   */
+  holdNextPong(connectionId: number): {
+    held: Promise<void>;
+    release(): Promise<void>;
+  } {
+    const connection = this.#connections.get(connectionId);
+    if (!connection) throw new Error(`no proxied connection ${connectionId}`);
+    if (this.#pongHold !== undefined)
+      throw new Error("a PONG hold is already armed");
+    const hold: PongHold = {
+      connectionId,
+      skip: connection.unansweredPings,
+      pinged: false,
+      frame: undefined,
+      held: Promise.withResolvers<void>(),
+    };
+    this.#pongHold = hold;
+    return {
+      held: hold.held.promise,
+      release: async () => {
+        if (this.#pongHold === hold) this.#pongHold = undefined;
+        if (hold.frame !== undefined && !connection.closed)
+          await connection.writer.write(hold.frame);
+      },
+    };
   }
 
   /**
@@ -283,6 +329,10 @@ export class NativeTransportGate {
     if (!connection) return false;
     void raw;
     switch (op.kind) {
+      case "ping":
+        connection.unansweredPings++;
+        if (this.#pongHold?.connectionId === id) this.#pongHold.pinged = true;
+        break;
       case "sub":
         connection.subs.push({
           subject: op.subject,
@@ -416,6 +466,20 @@ export class NativeTransportGate {
         return false;
       }
       case "pong": {
+        connection.unansweredPings = Math.max(
+          0,
+          connection.unansweredPings - 1,
+        );
+        const pongHold = this.#pongHold;
+        if (pongHold?.connectionId === id && pongHold.frame === undefined) {
+          if (pongHold.skip > 0) {
+            pongHold.skip--;
+          } else if (pongHold.pinged) {
+            pongHold.frame = raw;
+            pongHold.held.resolve();
+            return true;
+          }
+        }
         if (
           this.#armed &&
           !this.#released &&

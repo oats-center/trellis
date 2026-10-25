@@ -1941,7 +1941,9 @@ export class Trellis<
   }
 
   /*
-   * Mount a handler to process requests made to a specific Trellis API
+   * Mount a handler to process requests made to a specific Trellis API.
+   * On a service's admitted generations, resolves once the broker has
+   * confirmed the subscriptions and rejects when it cannot.
    */
   async mount(
     method: string,
@@ -1962,8 +1964,13 @@ export class Trellis<
     );
     this.#tasks.add(methodName, task);
     // On generations the task is just the broker acknowledgement; on a fixed
-    // connection it is the long-running intake and must not be awaited.
-    if (this.#adaptiveTransport) await task;
+    // connection it is the long-running intake and must not be awaited. A
+    // subscription the broker never confirmed may have no responder, so that
+    // failure rejects the mount.
+    if (this.#adaptiveTransport) {
+      const mounted = await task;
+      if (isErr(mounted)) throw mounted.error;
+    }
   }
 
   #handleRPC(
