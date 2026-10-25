@@ -90,7 +90,7 @@ jobs:
     name: Install generated artifacts
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -179,7 +179,7 @@ jobs:
     name: Protocol WASM
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -253,7 +253,7 @@ jobs:
   clippy:
     name: Rust lint
     needs: [install, portal]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -308,7 +308,7 @@ jobs:
   build-fixtures:
     name: Build integration fixture binaries
     needs: [install, portal]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -416,7 +416,7 @@ jobs:
   build:
     name: Build runtime binaries
     needs: [install, wasm, portal]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
