@@ -1,5 +1,6 @@
 use runtime_trellis::participants::runtime_trellis_operation_provider::{Participant, Provider};
 use runtime_trellis::types::{Update, UpdateDetail, Value};
+use futures_util::StreamExt;
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -49,7 +50,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 op.started().await?;
                 println!("entered");
                 std::io::stdout().flush().expect("stdout");
+                // Only the ownership check may refuse a retired execution's
+                // write; a refusal for any other reason would hide a missing one.
+                let outcome = |result: Result<(), ServerError>| match result {
+                    Err(ServerError::Nats(message)) if message.contains("stale") => "refused",
+                    Err(_) => "failed otherwise",
+                    Ok(()) => "accepted",
+                };
+                if input.value == "unreadable-signals" {
+                    // Proceed once the test withholds this provider's state reads.
+                    cleanup.notified().await;
+                    let mut signals = op.signals().await?;
+                    assert!(matches!(signals.next().await, Some(Err(_))));
+                    println!("signals failed");
+                    std::io::stdout().flush().expect("stdout");
+                    cleanup.notified().await;
+                    let completed = op
+                        .complete(Value {
+                            value: "after-interruption".to_owned(),
+                            extra: Default::default(),
+                        })
+                        .await;
+                    println!("complete {}", outcome(completed.map(drop)));
+                    std::io::stdout().flush().expect("stdout");
+                    return Ok(());
+                }
                 if input.value == "unreadable-state" {
+                    // The test sends one signal so its acknowledgement is real.
+                    let signal = op
+                        .signals()
+                        .await?
+                        .next()
+                        .await
+                        .expect("a signal")?;
+                    println!("signal received");
+                    std::io::stdout().flush().expect("stdout");
                     // Proceed once the test withholds this provider's state reads.
                     cleanup.notified().await;
                     op.progress(Update {
@@ -72,16 +107,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Storage answers again within the lease: the execution
                     // that saw its state become unreadable must not write.
                     cleanup.notified().await;
+                    println!("cancel {}", outcome(op.cancel().await.map(drop)));
+                    println!(
+                        "acknowledge {}",
+                        outcome(op.acknowledge_signal(signal.signal_sequence).await)
+                    );
                     let completed = op
                         .complete(Value {
                             value: "after-interruption".to_owned(),
                             extra: Default::default(),
                         })
                         .await;
-                    println!(
-                        "{}",
-                        if completed.is_err() { "complete refused" } else { "complete accepted" }
-                    );
+                    println!("complete {}", outcome(completed.map(drop)));
                     std::io::stdout().flush().expect("stdout");
                     return Ok(());
                 }

@@ -2788,11 +2788,12 @@ async fn coalesce_operation_upload_progress(
                 // while this checkpoint awaits its transaction.
                 checkpoint_bytes.store(progress.transferred_bytes, Ordering::Relaxed);
                 let _guard = gate.lock().await;
-                let current = repository.get(&operation_id).await?.ok_or_else(|| {
-                    ServerError::OperationNotFound {
+                let current = fence
+                    .read(&repository, &operation_id)
+                    .await?
+                    .ok_or_else(|| ServerError::OperationNotFound {
                         operation_id: operation_id.clone(),
-                    }
-                })?;
+                    })?;
                 if !fence.matches(&current.record)
                     || current.record.snapshot.state.is_terminal()
                     || current.record.cancellation_requested
@@ -3284,6 +3285,13 @@ where
             .ok_or_else(|| ServerError::OperationNotFound {
                 operation_id: self.operation_ref.id.clone(),
             })?;
+        // Repository CAS checks the stored owner, not this execution's
+        // retirement, so every write checks the live fence first.
+        if !durable.fence.matches(&current.record) {
+            return Err(ServerError::Nats(
+                "operation owner fence is stale".to_owned(),
+            ));
+        }
         if current.record.snapshot.state.is_terminal() {
             return Err(operation_terminal_error(&current.record));
         }
@@ -3325,7 +3333,7 @@ where
             |(repository, fence, gate, id, mut sequence)| async move {
                 loop {
                     let _guard = gate.lock().await;
-                    let current = match repository.get(&id).await {
+                    let current = match fence.read(&repository, &id).await {
                         Ok(Some(current)) => current,
                         Ok(None) => {
                             return Some((
@@ -3394,6 +3402,11 @@ where
             .ok_or_else(|| ServerError::OperationNotFound {
                 operation_id: self.operation_ref.id.clone(),
             })?;
+        if !durable.fence.matches(&current.record) {
+            return Err(ServerError::Nats(
+                "operation owner fence is stale".to_owned(),
+            ));
+        }
         if current.record.snapshot.state.is_terminal() {
             return Err(operation_terminal_error(&current.record));
         }

@@ -14,7 +14,10 @@ for (const mode of [
   "lease-loss",
   "pending-control",
   "unreadable-state",
+  "unreadable-signals",
 ] as const) {
+  const unreadable =
+    mode === "unreadable-state" || mode === "unreadable-signals";
   const pendingControl = mode === "pending-control";
   test(
     {
@@ -23,7 +26,9 @@ for (const mode of [
       "pending-control":
         "native pending control remains polled while heartbeat awaits its gate",
       "unreadable-state":
-        "an execution whose state read failed cannot write after storage recovers",
+        "an execution whose state read failed cannot cancel, acknowledge or complete after storage recovers",
+      "unreadable-signals":
+        "an execution whose signal read failed cannot write after storage recovers",
     }[mode],
     async () => {
       await withTrellisRuntime(
@@ -105,32 +110,48 @@ for (const mode of [
               .start()
               .orThrow();
             await event("entered");
-            if (mode === "unreadable-state") {
+            if (unreadable) {
+              if (mode === "unreadable-state") {
+                await operation
+                  .signal("Continue", { value: "continue" })
+                  .orThrow();
+                await event("signal received");
+              }
               // Withhold this provider's next state read, then let the
               // handler make it.
               hold = gate.armResponseHold("$JS.API.DIRECT.GET.", connection.id);
               await writer.write(new TextEncoder().encode("cleanup\n"));
               await hold.held;
-              await event("read failed", 30_000);
+              await event(
+                mode === "unreadable-state" ? "read failed" : "signals failed",
+                30_000,
+              );
               await hold.release();
               hold = undefined;
+              // Storage answers again within the lease; every write by the
+              // execution that saw its state become unreadable is refused.
               await writer.write(new TextEncoder().encode("cleanup\n"));
               await runtime.waitFor(
-                () =>
-                  lines.includes("complete refused") ||
-                  lines.includes("complete accepted"),
+                () => lines.some((line) => line.startsWith("complete ")),
                 { timeoutMs: 15_000 },
               );
-              assert(
-                lines.includes("complete refused"),
-                "a retired execution must not complete the operation",
+              assert.deepEqual(
+                lines.filter((line) =>
+                  /^(cancel|acknowledge|complete) /.test(line),
+                ),
+                mode === "unreadable-state"
+                  ? [
+                      "cancel refused",
+                      "acknowledge refused",
+                      "complete refused",
+                    ]
+                  : ["complete refused"],
               );
-              assert.notEqual(
-                (await operation.get().orThrow()).state,
-                "completed",
-              );
+              const after = await operation.get().orThrow();
+              assert.notEqual(after.state, "completed");
+              assert.notEqual(after.state, "cancelled");
             }
-            if (mode !== "unreadable-state") {
+            if (!unreadable) {
               hold = gate.armResponseHold("$KV.", connection.id);
               let held: Awaited<typeof hold.held> | undefined;
               const heldReply = hold.held.then((value) => {
