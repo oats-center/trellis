@@ -432,13 +432,16 @@ impl<D: 'static> StateResourceClient for BoundStateResourceClient<D> {
                 ("replace", Some(revision.into_backend().to_string()))
             }
         };
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "resourceName": resource_name,
             "value": base64::engine::general_purpose::STANDARD.encode(value),
             "representationVersion": representation_version,
             "mode": mode,
-            "revision": revision,
         });
+        // An optional field is absent, never null, on the contract wire.
+        if let Some(revision) = revision {
+            body["revision"] = revision.into();
+        }
         match self.call("Put", body).await {
             Ok(response) => response
                 .get("entry")
@@ -458,10 +461,10 @@ impl<D: 'static> StateResourceClient for BoundStateResourceClient<D> {
         resource_name: &str,
         revision: Option<ResourceRevision>,
     ) -> Result<(), RawStateWriteError> {
-        let body = serde_json::json!({
-            "resourceName": resource_name,
-            "revision": revision.map(|value| value.into_backend().to_string())
-        });
+        let mut body = serde_json::json!({ "resourceName": resource_name });
+        if let Some(revision) = revision {
+            body["revision"] = revision.into_backend().to_string().into();
+        }
         match self.call("Delete", body).await {
             Ok(_) => Ok(()),
             Err(error) => match state_conflict(&error) {
