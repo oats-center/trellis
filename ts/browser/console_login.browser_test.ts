@@ -15,6 +15,33 @@ import {
 } from "./browser_test_support.ts";
 import { openConsoleAsRuntimeAdmin } from "./console_test_support.ts";
 
+test("Console sign-in recovery returns to the protected page it left", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      // Auth recovery sends the Console here; with no session left, sign-in
+      // leaves for the authorization server and comes back to bare /login.
+      await page.goto(
+        `${runtime.trellisUrl}/login?redirectTo=${encodeURIComponent("/console/admin/users?search=admin")}`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await completeConsoleEntry(page, {
+        username: runtime.adminUsername,
+        password: runtime.adminPassword,
+      });
+      await page.waitForURL(
+        (url) =>
+          url.pathname === "/console/admin/users" &&
+          url.searchParams.get("search") === "admin",
+        { timeout: 30_000 },
+      );
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 test("Console reaches NATS on its own origin when the runtime relays WebSockets", async () => {
   await withTrellisRuntime(
     async (runtime) => {

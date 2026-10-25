@@ -11,6 +11,16 @@
   let problem = $state("");
 
   onMount(() => {
+    // A requested destination must survive the round trip to the
+    // authorization server, which returns to this page without it. Only a
+    // same-origin Console target is kept, and it stays until sign-in succeeds
+    // so a retry still returns there.
+    const requested = new URL(window.location.href);
+    if (requested.searchParams.has("redirectTo"))
+      sessionStorage.setItem(
+        consoleReturnKey(),
+        getConsoleRedirectTarget(requested),
+      );
     const abort = new AbortController();
     let redirecting = false;
     void (async () => {
