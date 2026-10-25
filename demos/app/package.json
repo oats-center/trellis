@@ -15,9 +15,9 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.check.json"
   },
   "dependencies": {
-    "@oatscenter/result": "^0.100.0-rc.3",
-    "@oatscenter/trellis": "^0.100.0-rc.3",
-    "@oatscenter/trellis-svelte": "^0.100.0-rc.3",
+    "@oatscenter/result": "^0.100.0-rc.4",
+    "@oatscenter/trellis": "^0.100.0-rc.4",
+    "@oatscenter/trellis-svelte": "^0.100.0-rc.4",
     "typebox": "^1.1.33",
     "ulid": "^3.0.2"
   },
