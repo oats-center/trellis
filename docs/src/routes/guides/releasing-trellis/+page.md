@@ -44,14 +44,21 @@ Before pushing, run every suite Check runs:
 npm test
 ```
 
-Like Check, it type-checks the TypeScript packages, integration tests, Console
-and Portal, builds once (contract artifacts, the embedded Console and Portal,
-and every executable the suites launch), then runs the Rust workspace, TypeScript
-live integration, TypeScript package, and browser suites concurrently against
-those executables, with test files inside each suite also concurrent. Each suite
-logs to `target/test-logs/`. `TRELLIS_TEST_CONCURRENCY` and
-`TRELLIS_BROWSER_CONCURRENCY` override the per-suite concurrency sized from the
-host's cores.
+Check and `npm test` share one script, `scripts/check.sh`: every Check and Lint
+job runs `scripts/check.sh <job>`, and `npm test` runs every job on this host. It
+builds once (contract artifacts, the embedded Console and Portal, npm packages,
+and every executable the jobs launch), then runs formatting, Clippy, the Rust
+workspace, TypeScript checks and package tests, Rust and TypeScript live
+integration, the demo and documented-example consumers, and the browser suite
+concurrently, logging each to `target/test-logs/`. Jobs Check splits across
+runners run whole locally, with concurrency sized from the host's cores
+(`TRELLIS_TEST_CONCURRENCY` and `TRELLIS_BROWSER_CONCURRENCY` override it). Local
+runs use debug builds; Check tests its release build.
+
+`npm test -- --all` adds the slower packaging and container-image jobs: the Rust
+testkit crate bundle and its artifact-only consumer, the npm testkit package,
+and the runtime and Console images with the runtime image's managed-NATS smoke
+test (Docker or Podman). To run one job, use `scripts/check.sh <job>`.
 
 While iterating, run the focused checks that match the files touched. Build the server/CLI and set their paths as described in `integration/README.md`. Each live test owns its real runtime lifecycle:
 

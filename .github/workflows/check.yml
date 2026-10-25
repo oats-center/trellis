@@ -260,14 +260,10 @@ jobs:
           restore-keys: |
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-clippy-ci-linetables-v1-
 
+      # Each verification command lives in scripts/check.sh, which local
+      # `npm test` runs too.
       - name: Lint Rust
-        run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres -- -D warnings
-
-      - name: Lint the Rust SDK's reduced feature sets
-        run: |
-          for features in "" native-oauth device telemetry-otlp; do
-            cargo clippy --manifest-path Cargo.toml -p trellis-rs --lib --no-default-features --features "$features" -- -D warnings
-          done
+        run: bash scripts/check.sh clippy
 
   build-fixtures:
     name: Build integration fixture binaries
@@ -508,7 +504,7 @@ jobs:
       # Nextest runs every test binary in parallel instead of one binary at a
       # time; it does not run documentation examples, so those run separately.
       - name: Test Rust workspace
-        run: bash scripts/run-rust-tests.sh
+        run: bash scripts/check.sh rust
 
   typescript:
     name: TypeScript
@@ -536,24 +532,14 @@ jobs:
         run: mkdir -p dist/runtime-binaries && tar -xzf dist/runtime-binaries.tar.gz -C dist/runtime-binaries ./trellis ./trellis-server
 
       - name: Install Node workspace dependencies
-        id: deps
         run: npm ci
 
-      # The checks are independent: each one reports even when another fails.
-      - name: Check TypeScript packages
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        run: npm run check:sdk
-
-      - name: Check TypeScript integration
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
-        run: npm run check:integration
-
-      - name: Test TypeScript packages
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+      # Each check reports even when another fails.
+      - name: Check and test TypeScript
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
-        run: npm run test:sdk
+        run: bash scripts/check.sh typescript
 
   demos:
     name: Demo consumers
@@ -596,13 +582,8 @@ jobs:
       - name: Install workspace dependencies
         run: npm ci
 
-      - name: Check TypeScript demos with packaged dependencies
-        run: |
-          npm run build:packages
-          node --experimental-transform-types ts/tools/package_build/demo_consumers.ts
-
-      - name: Verify TypeScript publication
-        run: bash scripts/release-ts-dry-run.sh
+      - name: Check demos and the TypeScript publication
+        run: bash scripts/check.sh demos
 
       - name: Upload npm packages
         uses: actions/upload-artifact@v4
@@ -614,32 +595,6 @@ jobs:
             ts/packages/trellis/npm
             ts/packages/trellis-svelte/npm
           retention-days: 3
-
-      - name: Check Rust service demo
-        working-directory: demos/rust/service
-        run: |
-          trellis generate
-          cargo check --locked --config "$GITHUB_WORKSPACE/.cargo/publication.toml"
-          consumer="$(mktemp -d)"
-          trap 'rm -rf "$consumer"' EXIT
-          cp -R Cargo.toml src trellis "$consumer/"
-          export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
-          export TRELLIS_CACHE="$consumer/empty-api-cache"
-          cd "$consumer"
-          cargo check --config "$GITHUB_WORKSPACE/.cargo/publication.toml"
-
-      - name: Check Rust device demo
-        working-directory: demos/rust/device
-        run: |
-          trellis generate
-          cargo check --locked --config "$GITHUB_WORKSPACE/.cargo/publication.toml"
-          consumer="$(mktemp -d)"
-          trap 'rm -rf "$consumer"' EXIT
-          cp -R Cargo.toml src trellis "$consumer/"
-          export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
-          export TRELLIS_CACHE="$consumer/empty-api-cache"
-          cd "$consumer"
-          cargo check --config "$GITHUB_WORKSPACE/.cargo/publication.toml"
 
   live-rust:
     name: Rust live integration
@@ -676,7 +631,7 @@ jobs:
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-        run: cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
+        run: bash scripts/check.sh live-rust
 
   live-typescript:
     name: TypeScript live integration (${{ matrix.shard }}/8)
@@ -724,7 +679,7 @@ jobs:
           # Two active file workers per hosted runner. The suite mostly waits on
           # real authorization expiry, so more hosts shorten the slowest shard.
           TRELLIS_TEST_CONCURRENCY: "2"
-        run: npm run test:integration
+        run: bash scripts/check.sh live-typescript
 
   examples:
     name: Documented examples
@@ -759,14 +714,19 @@ jobs:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
         run: |
           npm ci
-          npm run build:packages
-          node ts/tools/package_build/orders_example.ts
+          bash scripts/check.sh examples
 
-  ui-hosting:
-    name: Built-in UI hosting
+  browser:
+    name: Browser (${{ matrix.shard }}/8)
     needs: [install, wasm, portal, build]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Every browser test file, split across hosted runners; every shard must
+    # pass, and one shard's failure must not cancel another's evidence.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -791,7 +751,7 @@ jobs:
           mkdir -p target/debug
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
-      - name: Prepare web development server
+      - name: Install Node workspace dependencies
         run: npm ci
 
       - name: Install pinned Chromium and browser dependencies
@@ -801,76 +761,19 @@ jobs:
       - name: Provide NSS certutil for generated-CA browser trust
         run: bash scripts/ensure-ci-certutil.sh
 
-      - name: Test built-in UI hosting
+      - name: Run browser tests
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-        run: npm run test:browser:ui-hosting
-
-      - name: Test functional browser journeys
-        env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-        run: npm run test:browser:auth
-
-  console:
-    name: Console (${{ matrix.suite }})
-    needs: [install, wasm, portal, build]
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        suite:
-          - services_devices
-          - clients_roles
-          - users_sessions
-          - observability
-          - navigation_permissions
-          - administration_consent
-          - resources
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Restore Check inputs
-        uses: ./.github/actions/check-inputs
-        with:
-          generated: true
-          protocol-wasm: true
-          portal: true
-          node: true
-
-      - name: Download runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: check-runtime-binaries
-          path: ${{ runner.temp }}/runtime-binaries
-
-      - name: Stage runtime binaries
-        run: |
-          set -euo pipefail
-          mkdir -p target/debug
-          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
-
-      - name: Provide NSS certutil for generated-CA browser trust
-        run: bash scripts/ensure-ci-certutil.sh
-
-      - name: Run console browser suite
-        env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          SUITE: ${{ matrix.suite }}
-        run: |
-          npm ci
-          node --experimental-transform-types --test \
-            "ts/browser/console_${SUITE}.browser_test.ts"
+          TRELLIS_TEST_SHARD: ${{ matrix.shard }}/8
+          TRELLIS_BROWSER_CONCURRENCY: "2"
+        run: bash scripts/check.sh browser
 
       - name: Upload sanitized failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: console-failure-${{ matrix.suite }}
+          name: browser-failure-${{ matrix.shard }}
           path: |
             ts/browser/test-results/**
           if-no-files-found: ignore
@@ -893,35 +796,16 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Verify publication content comparison
-        run: python3 scripts/tests/test_rust_crate_contents.py
-
       - name: Download production native archives
         uses: actions/download-artifact@v4
         with:
           name: trellis-cli-x86_64-unknown-linux-gnu
           path: dist/native
 
-      - name: Prepare testkit native acquisition metadata
-        run: |
-          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-          python3 scripts/prepare-rust-native.py dist/native crates/trellis-testkit/generated/trellis-binaries.json "$version"
-
-      - name: Package the public crates
-        # Prepare the complete publication closure together. The required
-        # artifact-only consumer compiles these unmodified archives and runs
-        # their full live acceptance; Release compares its verified publication
-        # contents against these accepted inputs before uploading each crate.
-        run: |
-          cargo package --manifest-path Cargo.toml --allow-dirty --locked --no-verify \
-            -p trellis-protocol -p trellis-models -p trellis-rs -p trellis-testkit \
-            --config .cargo/publication.toml
-
-      - name: Verify publication preparation from an empty target
-        run: |
-          target="$(mktemp -d "$RUNNER_TEMP/rust-publication.XXXXXX")"
-          bash scripts/prepare-rust-publication.sh target/package "$target" \
-            trellis-protocol trellis-models trellis-rs trellis-testkit
+      # Packages the public crates and stages the artifact-only bundle that
+      # the next job verifies without a checkout.
+      - name: Package the public crates and the verification bundle
+        run: bash scripts/check.sh rust-testkit "$RUNNER_TEMP/rust-testkit-bundle.tar.gz"
 
       - name: Upload public Rust packages
         uses: actions/upload-artifact@v4
@@ -929,34 +813,6 @@ jobs:
           name: rust-testkit-packages
           path: target/package/*.crate
           retention-days: 3
-
-      - name: Stage the verification bundle
-        run: |
-          set -euo pipefail
-          bundle="$RUNNER_TEMP/testkit-bundle"
-          rm -rf "$bundle"
-          mkdir -p "$bundle/packages" "$bundle/nats" "$bundle/native" "$bundle/consumer"
-          cp target/package/trellis-protocol-*.crate \
-             target/package/trellis-models-*.crate \
-             target/package/trellis-rs-*.crate \
-             target/package/trellis-testkit-*.crate "$bundle/packages/"
-          tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C "$bundle/native"
-          cp -R integration/fixtures/testkit/package-consumer \
-             integration/fixtures/testkit/tests integration/fixtures/testkit/crates "$bundle/consumer/"
-          cp -R integration/fixtures/compiler-portable "$bundle/consumer/compiler-project"
-          bash scripts/acquire-test-nats.sh --dest "$bundle/nats"
-          cp scripts/verify-rust-test-package.sh "$bundle/"
-
-      - name: Package the verification bundle
-        run: |
-          set -euo pipefail
-          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-          bash scripts/stage-rust-test-bundle.sh \
-            --bundle "$RUNNER_TEMP/testkit-bundle" \
-            --output "$RUNNER_TEMP/rust-testkit-bundle.tar.gz" \
-            --source-sha "$GITHUB_SHA" \
-            --target "$(rustc -vV | sed -n 's/^host: //p')" \
-            --version "$version"
 
       - name: Upload the verification bundle
         uses: actions/upload-artifact@v4
@@ -1069,7 +925,7 @@ jobs:
       - name: Smoke-test managed NATS in the trellis image
         if: matrix.image == 'trellis'
         shell: bash
-        run: bash scripts/smoke-trellis-image.sh --image trellis-smoke:test
+        run: bash scripts/check.sh images --smoke-only
 
       - name: Upload verified image archive
         uses: actions/upload-artifact@v4
@@ -1106,18 +962,9 @@ jobs:
         with:
           name: npm-packages
           path: ts/packages
-      - name: Generate pins from the verified Check archives and stage the package
-        run: node ts/tools/stage_testkit.ts dist/native dist/testkit-npm
-      - name: Dry-run the staged npm publication input
-        run: npm publish --dry-run --access public --tag rc ./dist/testkit-npm
-      - name: Test the installed staged package through public clients
-        run: |
-          mkdir -p dist/runtime
-          tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C dist/runtime
-          TRELLIS_TEST_CLI_BIN="$PWD/dist/runtime/trellis" TRELLIS_TEST_SERVER_BIN="$PWD/dist/runtime/trellis-server" \
-            node ts/tools/verify_testkit_package.ts dist/testkit-npm ts/packages/result/npm ts/packages/trellis/npm
-      - name: Freeze the staged package
-        run: tar -C dist/testkit-npm -czf dist/testkit-npm.tar.gz .
+      - name: Stage, dry-run publish and test the testkit package
+        run: bash scripts/check.sh typescript-testkit
+
       - uses: actions/upload-artifact@v4
         with:
           name: check-testkit-npm
@@ -1133,8 +980,7 @@ jobs:
       - typescript
       - demos
       - examples
-      - ui-hosting
-      - console
+      - browser
       - live-rust
       - live-typescript
       - rust-testkit-consumer

@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust-format:
-    name: Rust formatting
+  lint:
+    name: Formatting
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -31,21 +31,6 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path Cargo.toml --all --check
-
-      # rustfmt silently leaves statements it cannot fit unformatted.
-      - name: Check Rust statements rustfmt could not format
-        run: python3 scripts/check-rust-width.py
-
-  prettier:
-    name: Prettier formatting
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -55,8 +40,7 @@ jobs:
       - name: Install formatter
         run: npm ci --ignore-scripts
 
+      # The same command local `npm test` runs; every check reports even when
+      # another fails.
       - name: Check formatting
-        run: npm exec -- prettier --ignore-path .gitignore --check ts/packages ts/tools
-
-      - name: Check the generated complete LLM guide
-        run: node docs/scripts/build_llms_full.ts --check
+        run: bash scripts/check.sh lint

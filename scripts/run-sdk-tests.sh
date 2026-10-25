@@ -19,7 +19,7 @@ if [[ -z "${TRELLIS_TEST_CLI_BIN:-}" || -z "${TRELLIS_TEST_SERVER_BIN:-}" ]]; th
     echo "CI must supply TRELLIS_TEST_CLI_BIN and TRELLIS_TEST_SERVER_BIN" >&2
     exit 1
   }
-  # Staged runs (scripts/run-tests.sh) have already built both.
+  # Staged runs (scripts/check.sh) have already built both.
   [[ -n "${TRELLIS_TEST_STAGED:-}" ]] \
     || cargo build -p trellis-cli --bin trellis -p trellis-server --bin trellis-server
   export TRELLIS_TEST_CLI_BIN="${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"

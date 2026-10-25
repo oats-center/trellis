@@ -9,7 +9,7 @@
 # Events fixture the tests launch, and then runs every workspace test, so no
 # test fails merely because an executable was never provided. In CI the
 # producer jobs stage those executables and set the variables; the runner then
-# only checks that they exist. `scripts/run-tests.sh` uses the same staged mode
+# only checks that they exist. `scripts/check.sh` uses the same staged mode
 # (TRELLIS_TEST_STAGED=1) after building once, and TRELLIS_TEST_BUILD_ONLY=1
 # builds the executables and test binaries without running them.
 set -euo pipefail

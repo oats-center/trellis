@@ -88,9 +88,9 @@ the dedicated OAuth listener and returns to the Console.
 - **Contract changes**: run `cargo xtask install`.
 - **CLI changes**: run `cargo build -p trellis-cli` in the `rust/` directory, then re-run `trellis ...` commands.
 - **Type checking**: run `npm run check:sdk` and `npm run check:integration`.
-- **Tests**: run `npm test` for every suite, built once and run concurrently,
-  or one suite with `npm run test:sdk`, `npm run test:integration`,
-  `npm run test:browser`, or `scripts/run-rust-tests.sh`.
+- **Tests**: run `npm test` for everything Check runs, built once and run
+  concurrently (`npm test -- --all` adds packaging and images), or one Check job
+  with `scripts/check.sh <job>`.
 
 ## Verify
 
