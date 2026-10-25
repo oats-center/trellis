@@ -277,3 +277,76 @@ for (const language of ["rust", "node"] as const) {
     },
   );
 }
+
+test("a download source that never finishes cancelling cannot block provider shutdown", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "stalled-download",
+      contract: participants.OperationProvider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: participants.OperationProvider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    const serviceExit = service.wait().catch((error: unknown) => error);
+    const stalled = Promise.withResolvers<void>();
+    const first = pattern(1024);
+    await service.handleGenerate(async ({ input, context }) => {
+      assert(context.caller.type === "verified");
+      const transfer = await service
+        .createTransfer({
+          direction: "receive",
+          // Application code that misbehaves twice: it yields more bytes
+          // than it declared, failing the download, and its cleanup never
+          // finishes, so cancelling the iterator waits on it forever.
+          stream: (async function* () {
+            try {
+              yield first;
+              yield first;
+            } finally {
+              stalled.resolve();
+              await new Promise<never>(() => {});
+            }
+          })(),
+          info: {
+            key: "stalled",
+            size: first.length,
+            updatedAt: new Date().toISOString(),
+            digest: sha256(first),
+            contentType: "application/octet-stream",
+            metadata: {},
+          },
+          sessionKey: context.caller.sessionPublicKey,
+          connectionId: context.caller.runtimeId,
+          contextDigest: context.caller.authorityDigest,
+          permission: context.permission,
+          requiredCapabilities: context.requiredCapabilities,
+          inboxPrefix: context.inboxPrefix,
+        })
+        .orThrow();
+      return Result.ok({ ...input, transfer });
+    });
+    const client = await runtime.connectClient({
+      name: "stalled-download-caller",
+      contract: apps.Caller.request,
+    });
+    // The provider answers once its handlers are subscribed.
+    await runtime.waitFor(async () =>
+      (await client.generate({ value: "ready" })).isOk(),
+    );
+    const response = await client.generate({ value: "stalled" }).orThrow();
+    const grant = decodeTransferGrant(response.transfer).orThrow();
+    assert(grant.direction === "receive");
+    const download = client.transfer(grant).bytes();
+    await stalled.promise;
+
+    const stopped = await Promise.race([
+      service.stop().then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 20_000)),
+    ]);
+    assert(stopped, "provider shutdown waited on the stalled download source");
+    await serviceExit;
+    assert((await download).isErr());
+  });
+});
