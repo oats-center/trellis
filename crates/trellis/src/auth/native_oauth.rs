@@ -306,6 +306,7 @@ pub struct NativeDeviceAuthorization {
     device_code: String,
     user_code: String,
     verification_uri: String,
+    verification_uri_complete: Option<String>,
     interval: Duration,
     deadline: Instant,
 }
@@ -315,6 +316,8 @@ struct DeviceResponse {
     device_code: String,
     user_code: String,
     verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: Option<String>,
     expires_in: u64,
     #[serde(default = "default_interval")]
     interval: u64,
@@ -395,21 +398,36 @@ impl NativeOAuthClient {
             .map_err(exchange_error)?;
         let response: DeviceResponse =
             serde_json::from_slice(&bytes).map_err(|_| NativeOAuthError::InvalidResponse)?;
-        let uri = url::Url::parse(&response.verification_uri)
-            .map_err(|_| NativeOAuthError::InvalidResponse)?;
-        if uri.origin().ascii_serialization()
-            != self
-                .lease
-                .lock()
-                .map_err(|_| NativeOAuthError::RecoveryRequired)?
-                .scope()
-                .issuer
-            || !uri.username().is_empty()
-            || uri.password().is_some()
+        let issuer = self
+            .lease
+            .lock()
+            .map_err(|_| NativeOAuthError::RecoveryRequired)?
+            .scope()
+            .issuer
+            .clone();
+        // Both links must lead to the selected issuer; the complete link
+        // must carry exactly the code the user compares on the page.
+        let on_issuer = |value: &str| {
+            url::Url::parse(value).ok().filter(|uri| {
+                uri.origin().ascii_serialization() == issuer
+                    && uri.username().is_empty()
+                    && uri.password().is_none()
+            })
+        };
+        if on_issuer(&response.verification_uri).is_none()
+            || response
+                .verification_uri_complete
+                .as_deref()
+                .is_some_and(|value| {
+                    !on_issuer(value).is_some_and(|uri| {
+                        uri.query_pairs()
+                            .any(|(name, code)| name == "user_code" && code == response.user_code)
+                    })
+                })
             || response.device_code.is_empty()
             || response.user_code.is_empty()
             || response.expires_in == 0
-            || response.expires_in > 300
+            || response.expires_in > 30 * 60
             || response.interval == 0
             || response.interval > 300
         {
@@ -420,6 +438,7 @@ impl NativeOAuthClient {
             device_code: response.device_code,
             user_code: response.user_code,
             verification_uri: response.verification_uri,
+            verification_uri_complete: response.verification_uri_complete,
             interval: Duration::from_secs(response.interval),
             deadline: Instant::now() + Duration::from_secs(response.expires_in),
         })
@@ -803,6 +822,13 @@ impl NativeDeviceAuthorization {
     /// Open this selected-issuer portal URI and enter the displayed code manually.
     pub fn verification_uri(&self) -> &str {
         &self.verification_uri
+    }
+
+    /// The selected-issuer portal URI with the code already filled in, when
+    /// the issuer offers one. Show it as a link or QR code; the page still
+    /// displays the code to compare with [`Self::user_code`].
+    pub fn verification_uri_complete(&self) -> Option<&str> {
+        self.verification_uri_complete.as_deref()
     }
 
     /// Poll according to RFC 8628, respecting pending/slow-down and the original

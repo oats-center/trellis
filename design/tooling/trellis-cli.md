@@ -41,7 +41,9 @@ trellis logout
 trellis whoami
 ```
 
-Login uses public OAuth Device Code with explicit capability consent; the
+Login uses public OAuth Device Code with explicit capability consent. It prints
+and QR-encodes the issuer's link with the code filled in, plus the code to
+compare on the page, and waits up to 15 minutes for approval; the
 administrative `trellis.*` capabilities are optional and take the Portal's
 separate confirmation step. The registered client is `trellis.cli`; no app
 participant installation is involved. The native SDK owns durable P-256 custody,

@@ -35,7 +35,12 @@ const deviceSchema = z.object({
   device_code: z.string().min(1),
   user_code: z.string().min(1),
   verification_uri: z.string().url(),
-  expires_in: z.number().int().positive().max(300),
+  verification_uri_complete: z.string().url().optional(),
+  expires_in: z
+    .number()
+    .int()
+    .positive()
+    .max(30 * 60),
   interval: z.number().int().positive().max(300).default(5),
 });
 
@@ -153,14 +158,32 @@ export class NativeOAuthClient {
           options.signal,
         ),
       );
-      const uri = new URL(data.verification_uri);
-      if (uri.origin !== this.scope.issuer || uri.username || uri.password)
+      // Both links must lead to the selected issuer; the complete link must
+      // carry exactly the code the user compares on the page.
+      const onIssuer = (value: string) => {
+        const uri = new URL(value);
+        return uri.origin === this.scope.issuer &&
+          !uri.username &&
+          !uri.password
+          ? uri
+          : undefined;
+      };
+      const complete =
+        data.verification_uri_complete === undefined
+          ? undefined
+          : onIssuer(data.verification_uri_complete);
+      if (
+        !onIssuer(data.verification_uri) ||
+        (data.verification_uri_complete !== undefined &&
+          complete?.searchParams.get("user_code") !== data.user_code)
+      )
         throw new AuthError({ reason: "InvalidOAuthResponse" });
       return new NativeDeviceAuthorization(
         this,
         data.device_code,
         data.user_code,
         data.verification_uri,
+        data.verification_uri_complete,
         data.interval,
         performance.now() + data.expires_in * 1000,
       );
@@ -436,6 +459,11 @@ export class NativeOAuthClient {
 export class NativeDeviceAuthorization {
   readonly userCode: string;
   readonly verificationUri: string;
+  /**
+   * The issuer's portal URI with the code already filled in, when offered.
+   * Show it as a link or QR code; the page still displays the code to compare.
+   */
+  readonly verificationUriComplete: string | undefined;
   readonly #client: NativeOAuthClient;
   readonly #code: string;
   readonly #deadline: number;
@@ -447,6 +475,7 @@ export class NativeDeviceAuthorization {
     code: string,
     userCode: string,
     verificationUri: string,
+    verificationUriComplete: string | undefined,
     interval: number,
     deadline: number,
   ) {
@@ -454,6 +483,7 @@ export class NativeDeviceAuthorization {
     this.#code = code;
     this.userCode = userCode;
     this.verificationUri = verificationUri;
+    this.verificationUriComplete = verificationUriComplete;
     this.#interval = interval;
     this.#deadline = deadline;
   }

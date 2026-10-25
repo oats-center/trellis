@@ -102,7 +102,9 @@ use trellis_rs::client::UserConnectOptions;
 let server = discover_native_oauth("https://auth.example.com").await?;
 let client = NativeOAuthClient::open(custody_dir, scope, server.trust.clone()).await?;
 let device = client.start_device(&authorization_details).await?;
-println!("Open {} and enter {}", device.verification_uri(), device.user_code());
+// The complete URI already carries the code; the page shows it to compare.
+let link = device.verification_uri_complete().unwrap_or(device.verification_uri());
+println!("Open {link} and check the code is {}", device.user_code());
 let session = device.complete().await?;
 let options = UserConnectOptions::new(server.nats_servers, 30_000, session);
 ```

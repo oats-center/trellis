@@ -382,7 +382,10 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
         }]))
         .await
         .into_diagnostic()?;
-    let login_url = challenge.verification_uri().to_owned();
+    let login_url = challenge
+        .verification_uri_complete()
+        .unwrap_or(challenge.verification_uri())
+        .to_owned();
 
     if let Some(path) = &args.login_url_file {
         write_login_url_file(path, &login_url)?;

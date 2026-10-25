@@ -425,7 +425,10 @@ impl OAuthEngine {
         config.access_token_ttl = Duration::from_secs(300);
         config.refresh_token_ttl = Some(Duration::from_secs(30 * 24 * 60 * 60));
         config.require_dpop = true;
-        config.device_code_ttl = Duration::from_secs(300);
+        // Reviewing a long capability list takes time; the printed link and
+        // QR code carry the code so the user does not type it.
+        config.device_code_ttl = Duration::from_secs(15 * 60);
+        config.include_verification_uri_complete = true;
         config.authorization_details_types_supported = Some(vec!["trellis_capabilities".into()]);
         config.allowed_resources = Some(Vec::new().into_boxed_slice());
         let server = AuthorizationServer::with_clock(config, storage, SystemClock)

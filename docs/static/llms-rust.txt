@@ -100,7 +100,9 @@ Apps and agents acquire native OAuth admission through the selected
 authorization origin. Pass the verified `NativeOAuthSession` and explicit broker
 endpoints to `UserConnectOptions::new(nats_servers, timeout_ms, session)`. Use
 Authorization Code with PKCE or Device Code according to the registered native
-client's flow; do not persist a bare session seed as a substitute for OAuth
+client's flow. For Device Code, show `verification_uri_complete()` (the link
+with the code filled in; fall back to `verification_uri()`) and `user_code()`
+for comparison. Do not persist a bare session seed as a substitute for OAuth
 custody. The SDK retains credential custody and renews admission with the same
 runtime identity and key, using its owner's authenticated issuer pin. Recovery
 failure closes application transport without deleting the durable credential

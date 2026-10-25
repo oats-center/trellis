@@ -1084,7 +1084,9 @@ retransmit the request or bypass lost coverage.
 Node native applications import `@oatscenter/trellis/native`, not browser
 custody. Use `discoverNativeOAuth`, `NativeOAuthClient.open` with explicit scope
 and trust, Device Code or `resume`, and `connectNativeClient` with a generated
-native request. The entrypoint is Node/npm-only and defaults to process-local
+native request. For Device Code, show `verificationUriComplete` (the link with
+the code filled in; fall back to `verificationUri`) and `userCode` for
+comparison. The entrypoint is Node/npm-only and defaults to process-local
 memory, with no credential files or SQLite requirement. Retain an explicit
 `MemoryNativeOAuthCustody` object to resume the same family across connections
 within one process. For remembered login across process restarts, supply an
@@ -1490,7 +1492,9 @@ Apps and agents acquire native OAuth admission through the selected
 authorization origin. Pass the verified `NativeOAuthSession` and explicit broker
 endpoints to `UserConnectOptions::new(nats_servers, timeout_ms, session)`. Use
 Authorization Code with PKCE or Device Code according to the registered native
-client's flow; do not persist a bare session seed as a substitute for OAuth
+client's flow. For Device Code, show `verification_uri_complete()` (the link
+with the code filled in; fall back to `verification_uri()`) and `user_code()`
+for comparison. Do not persist a bare session seed as a substitute for OAuth
 custody. The SDK retains credential custody and renews admission with the same
 runtime identity and key, using its owner's authenticated issuer pin. Recovery
 failure closes application transport without deleting the durable credential

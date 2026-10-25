@@ -75,7 +75,9 @@ retransmit the request or bypass lost coverage.
 Node native applications import `@oatscenter/trellis/native`, not browser
 custody. Use `discoverNativeOAuth`, `NativeOAuthClient.open` with explicit scope
 and trust, Device Code or `resume`, and `connectNativeClient` with a generated
-native request. The entrypoint is Node/npm-only and defaults to process-local
+native request. For Device Code, show `verificationUriComplete` (the link with
+the code filled in; fall back to `verificationUri`) and `userCode` for
+comparison. The entrypoint is Node/npm-only and defaults to process-local
 memory, with no credential files or SQLite requirement. Retain an explicit
 `MemoryNativeOAuthCustody` object to resume the same family across connections
 within one process. For remembered login across process restarts, supply an

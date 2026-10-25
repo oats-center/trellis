@@ -131,16 +131,19 @@ test("CLI login authorizes independent runtime keys through one durable login", 
           .split("\n")
           .find((line) => line.includes("loginUrl"))!,
       );
-      const loginUrl = challenge.loginUrl;
-      assert.equal(new URL(loginUrl).origin, runtime.oauthIssuer);
+      const loginUrl = new URL(challenge.loginUrl);
+      assert.equal(loginUrl.origin, runtime.oauthIssuer);
+      // The printed link and QR code carry the code, so nothing is typed.
+      assert.equal(loginUrl.searchParams.get("user_code"), challenge.userCode);
 
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
         const pageErrors: string[] = [];
         page.on("pageerror", (error) => pageErrors.push(String(error)));
-        await page.goto(loginUrl, { waitUntil: "domcontentloaded" });
-        await page.getByLabel("Code", { exact: true }).fill(challenge.userCode);
+        await page.goto(loginUrl.href, { waitUntil: "domcontentloaded" });
+        const code = page.getByLabel("Code", { exact: true });
+        assert.equal(await code.inputValue(), challenge.userCode);
         await page.getByRole("button", { name: /continue|review/i }).click();
         await signInIfPrompted(page, {
           username: runtime.adminUsername,
