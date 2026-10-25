@@ -5971,6 +5971,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "trellis-local-nats",
  "trellis-protocol",
  "trellis-rs",
  "trellis-runtime",
@@ -6026,6 +6027,7 @@ name = "trellis-local-nats"
 version = "0.100.0-rc.3"
 dependencies = [
  "flate2",
+ "getrandom 0.3.4",
  "libc",
  "serde",
  "serde_json",

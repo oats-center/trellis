@@ -47,6 +47,93 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static DOWNLOAD_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 
+/// A loopback TCP port held for a listener another bind will open.
+///
+/// A port read from a `127.0.0.1:0` listener and then released comes from the
+/// kernel's ephemeral range, so a concurrent outbound connection or `:0` bind
+/// can take it before the intended listener binds. A reservation instead
+/// selects a port outside that range (and above Fetch's restricted ports) and
+/// also holds a UDP socket on it. [`ReservedPort::release_for_bind`] closes
+/// only the TCP listener, so other reservations still skip the port until
+/// this one is dropped after the real listener is up.
+#[derive(Debug)]
+pub struct ReservedPort {
+    port: u16,
+    listener: Option<TcpListener>,
+    _ownership: std::net::UdpSocket,
+}
+
+impl ReservedPort {
+    /// Reserves a free loopback port outside the kernel's ephemeral range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ephemeral range cannot be read or no port is
+    /// free after repeated random choices.
+    pub fn reserve() -> io::Result<Self> {
+        const MIN_AUTOMATIC_PORT: u32 = 10_240;
+        let range = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")?;
+        let bounds = range
+            .split_whitespace()
+            .map(str::parse::<u16>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let [first, last] = bounds[..] else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid ephemeral port range",
+            ));
+        };
+        let lower_count = u32::from(first).saturating_sub(MIN_AUTOMATIC_PORT);
+        let upper_start = (u32::from(last) + 1).max(MIN_AUTOMATIC_PORT);
+        let available = lower_count + 65_536 - upper_start;
+        if available == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "no listener ports outside the ephemeral range",
+            ));
+        }
+        for _ in 0..64 {
+            let mut bytes = [0; 4];
+            getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+            let offset = u32::from_ne_bytes(bytes) % available;
+            let port = u16::try_from(if offset < lower_count {
+                MIN_AUTOMATIC_PORT + offset
+            } else {
+                upper_start + offset - lower_count
+            })
+            .expect("selected port is below 65536");
+            let Ok(ownership) = std::net::UdpSocket::bind(("127.0.0.1", port)) else {
+                continue;
+            };
+            let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) else {
+                continue;
+            };
+            return Ok(Self {
+                port,
+                listener: Some(listener),
+                _ownership: ownership,
+            });
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "no free listener port outside the ephemeral range",
+        ))
+    }
+
+    /// The reserved port.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Closes the TCP listener so the intended listener can bind the port,
+    /// keeping the reservation until this value is dropped.
+    pub fn release_for_bind(&mut self) {
+        self.listener = None;
+    }
+}
+
 /// Errors from managed local NATS operations.
 #[derive(Debug, Error)]
 pub enum LocalNatsError {
@@ -675,15 +762,15 @@ impl LocalNatsBuilder {
         let (ports, reservations) = match self.ports {
             PortPolicy::Fixed(ports) => (ports, Vec::new()),
             PortPolicy::Ephemeral => {
-                let listeners = (0..3)
-                    .map(|_| TcpListener::bind(("127.0.0.1", 0)))
+                let reservations = (0..3)
+                    .map(|_| ReservedPort::reserve())
                     .collect::<io::Result<Vec<_>>>()?;
                 let ports = LocalNatsPorts {
-                    nats: listeners[0].local_addr()?.port(),
-                    monitor: listeners[1].local_addr()?.port(),
-                    websocket: listeners[2].local_addr()?.port(),
+                    nats: reservations[0].port(),
+                    monitor: reservations[1].port(),
+                    websocket: reservations[2].port(),
                 };
-                (ports, listeners)
+                (ports, reservations)
             }
             PortPolicy::Missing => {
                 return Err(LocalNatsError::InvalidPolicy(
@@ -738,7 +825,10 @@ impl LocalNatsBuilder {
         let log_path = match &output {
             NatsOutput::Log { path, .. } => path.clone(),
         };
-        drop(reservations);
+        let mut reservations = reservations;
+        for reservation in &mut reservations {
+            reservation.release_for_bind();
+        }
         let server = ManagedNatsServer::start(
             &binary,
             &config,
@@ -748,6 +838,7 @@ impl LocalNatsBuilder {
             &pid_file,
             &output,
         )?;
+        drop(reservations);
         let (native, websocket) = match &tls {
             Some(files) if files.websocket_behind_proxy => ("tls", "ws"),
             Some(_) => ("tls", "wss"),

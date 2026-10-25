@@ -759,9 +759,10 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
     use trellis_runtime_apis::participants::{trellis_health_runtime, trellis_platform};
     let f = fixture();
     let directory = tempfile::tempdir().unwrap();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // Held until the broker's listener is up; see ReservedPort.
+    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let port = reservation.port();
+    reservation.release_for_bind();
     let mut server = tokio::process::Command::new(
         std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
     )

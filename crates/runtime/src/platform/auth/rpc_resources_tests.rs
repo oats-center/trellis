@@ -157,9 +157,10 @@ async fn detached_state_retains_values_and_delayed_destroy_cannot_erase_replacem
     )
     .unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // Held until the broker's listener is up; see ReservedPort.
+    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let port = reservation.port();
+    reservation.release_for_bind();
     let mut server = tokio::process::Command::new(
         std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
     )
@@ -387,9 +388,10 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     }
     let omitted = evidence(format!("{}{}", &source[..start], &source[end..]));
     let directory = tempfile::tempdir().unwrap();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // Held until the broker's listener is up; see ReservedPort.
+    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let port = reservation.port();
+    reservation.release_for_bind();
     let mut server = tokio::process::Command::new(
         std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
     )

@@ -104,9 +104,10 @@ async fn upstream_oidc_verifies_nonce_and_maps_real_signed_group_claims_into_tre
     let dex = std::env::var_os("TRELLIS_TEST_DEX_BIN")
         .expect("TRELLIS_TEST_DEX_BIN must point to the producer-built production Dex binary");
     let certificate = super::oauth_transport::certificate();
-    let idp_socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let idp_address = idp_socket.local_addr().unwrap();
-    drop(idp_socket);
+    // Held until Dex is listening; see ReservedPort.
+    let mut idp_reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let idp_address = std::net::SocketAddr::from(([127, 0, 0, 1], idp_reservation.port()));
+    idp_reservation.release_for_bind();
     let public_idp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let issuer =
         url::Url::parse(&format!("https://{}/dex", public_idp.local_addr().unwrap())).unwrap();

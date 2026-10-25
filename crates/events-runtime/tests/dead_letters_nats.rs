@@ -57,9 +57,10 @@ impl Drop for Server {
 }
 
 async fn start_nats() -> (Server, tempfile::TempDir, async_nats::Client) {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve port");
-    let port = listener.local_addr().expect("local address").port();
-    drop(listener);
+    // Held until the broker's listener is up; see ReservedPort.
+    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let port = reservation.port();
+    reservation.release_for_bind();
     let directory = tempfile::tempdir().expect("temporary NATS state");
     let server = Server(
         Command::new(nats_server())

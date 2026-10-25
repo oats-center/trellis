@@ -28,5 +28,6 @@ trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0-rc.3" }
 [dev-dependencies]
 tempfile.workspace = true
 trellis-testkit = { path = "../trellis-testkit" }
+trellis-local-nats = { path = "../local-nats" }
 trellis-runtime = { path = "../runtime" }
 ulid.workspace = true

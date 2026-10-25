@@ -12,11 +12,10 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
         super::super::broker::ATTACHMENT_MARKER_PREFIX
     );
     let directory = tempfile::tempdir().unwrap();
-    let listeners =
-        std::array::from_fn::<_, 3, _>(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap());
-    let [port, http, websocket] = listeners
-        .each_ref()
-        .map(|socket| socket.local_addr().unwrap().port());
+    // Held until the broker's listeners are up; see ReservedPort.
+    let mut reservations =
+        std::array::from_fn::<_, 3, _>(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
+    let [port, http, websocket] = reservations.each_ref().map(|reserved| reserved.port());
     let config = directory.path().join("nats.conf");
     std::fs::write(
         &config,
@@ -30,7 +29,9 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
         ),
     )
     .unwrap();
-    drop(listeners);
+    for reservation in &mut reservations {
+        reservation.release_for_bind();
+    }
     // CI supplies its producer-resolved executable. There is no rebuilt runtime,
     // fake broker, test-support feature, readiness bypass, or hidden skip.
     let binary =

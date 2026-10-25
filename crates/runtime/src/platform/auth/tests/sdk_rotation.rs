@@ -317,9 +317,10 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         catalog.digest().unwrap()
     );
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // Held until the broker's listener is up; see ReservedPort.
+    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let port = reservation.port();
+    reservation.release_for_bind();
     let binary =
         std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into());
     let mut broker = tokio::process::Command::new(binary)
