@@ -921,14 +921,19 @@ export class TrellisTestRuntime implements AsyncDisposable {
     }
   }
 
-  /** Registers a service contract and creates a service instance key. */
+  /**
+   * Registers a service contract and creates a service instance key. Without
+   * `deployment`, a service uses the runtime's default deployment unless a
+   * different participant already runs there; then it gets its own deployment.
+   * Registering the same participant again adds an instance to its deployment.
+   */
   async registerService(args: {
     name: string;
     contract: TrellisTestParticipantLike;
     deployment?: string;
   }): Promise<TrellisTestServiceKey> {
     return await this.#admin.registerService({
-      deployment: args.deployment ?? this.#deployment,
+      deployment: args.deployment,
       contract: args.contract,
     });
   }

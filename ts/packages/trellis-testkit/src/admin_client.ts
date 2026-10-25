@@ -50,6 +50,7 @@ export class TrellisTestAdminAutomation {
     this.#getBootstrapUrl = args.getBootstrapUrl;
     this.#deployment = {
       defaultDeployment: args.defaultDeployment,
+      deploymentParticipants: new Map(),
       deploymentIds: new Map(),
       deploymentRevisions: new Map(),
       deploymentDigests: new Map(),

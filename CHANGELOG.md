@@ -14,6 +14,12 @@ and this project adheres to
   exact project path in trellis.lock": the CLI checked each pulled package's own
   lock entry as if it were the project root. Projects can depend on published
   packages again, including the `trellis` package.
+- The TypeScript testkit's `registerService` put every service in the
+  runtime's default deployment, so registering a second, different service
+  re-applied the first one's deployment and its key then failed to connect
+  with `ServiceImplementationMismatch`. Without `deployment`, a different
+  participant now gets a deployment of its own; registering the same
+  participant again still adds a replica.
 
 ### Changed
 

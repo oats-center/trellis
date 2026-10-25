@@ -23,12 +23,31 @@ export type AdminDeploymentRpc = <M extends TrellisTestAdminRpcMethod>(
 /** Per-runtime deployment identities and accepted source evidence. */
 export type AdminDeploymentContext = {
   defaultDeployment: string;
+  /** The participant each created deployment runs, by deployment key. */
+  deploymentParticipants: Map<string, string>;
   deploymentIds: Map<string, ReturnType<typeof codecs.ulid.decode>>;
   deploymentRevisions: Map<string, bigint>;
   deploymentDigests: Map<string, string>;
   acceptedApis: Map<string, string>;
   rpc: AdminDeploymentRpc;
 };
+
+/**
+ * The deployment a call targets: the named one, else the runtime default, unless
+ * the default already runs a different participant. Then the participant gets
+ * its own deployment, so registering a second service never re-applies the
+ * first one's deployment.
+ */
+function deploymentKey(
+  context: AdminDeploymentContext,
+  args: { deployment?: string; contract: TrellisTestParticipantLike },
+): string {
+  if (args.deployment) return args.deployment;
+  const running = context.deploymentParticipants.get(context.defaultDeployment);
+  return running === undefined || running === args.contract.identity
+    ? context.defaultDeployment
+    : args.contract.identity;
+}
 
 /** Accepts the generated participant's APIs through ordinary catalog review. */
 export async function installParticipant(
@@ -72,7 +91,7 @@ export async function createDeployment(
   context: AdminDeploymentContext,
   args: { deployment?: string; contract: TrellisTestParticipantLike },
 ): Promise<void> {
-  const deployment = args.deployment ?? context.defaultDeployment;
+  const deployment = deploymentKey(context, args);
   if (context.deploymentIds.has(deployment)) return;
   await installParticipant(context, args);
   const { deployment: created } = await context.rpc("authDeploymentsCreate", {
@@ -85,6 +104,7 @@ export async function createDeployment(
     idempotencyKey: ulid(),
   });
   context.deploymentIds.set(deployment, created.deploymentId);
+  context.deploymentParticipants.set(deployment, args.contract.identity);
   context.deploymentRevisions.set(created.deploymentId, created.revision);
   context.deploymentDigests.set(
     created.deploymentId,
@@ -98,10 +118,10 @@ export async function applyParticipant(
   context: AdminDeploymentContext,
   args: { deployment?: string; contract: TrellisTestParticipantLike },
 ): Promise<TrellisTestParticipantApproval> {
-  const deployment = args.deployment ?? context.defaultDeployment;
+  const deployment = deploymentKey(context, args);
   const existing = context.deploymentIds.get(deployment);
   await installParticipant(context, args);
-  if (!existing) await createDeployment(context, args);
+  if (!existing) await createDeployment(context, { ...args, deployment });
   const deploymentId = context.deploymentIds.get(deployment);
   if (!deploymentId)
     throw new Error(`Deployment ${deployment} was not created`);
@@ -136,18 +156,17 @@ export async function provisionServiceInstance(
   context: AdminDeploymentContext,
   args: { deployment?: string; contract: TrellisTestParticipantLike },
 ): Promise<TrellisTestServiceKey> {
-  const deploymentId = context.deploymentIds.get(
-    args.deployment ?? context.defaultDeployment,
-  );
+  const deployment = deploymentKey(context, args);
+  const deploymentId = context.deploymentIds.get(deployment);
   const digest = types.AuthPackageEvidenceCodec.decode(
     args.contract.packageEvidence,
   ).rootDigest;
   const approved =
     deploymentId && context.deploymentDigests.get(deploymentId) === digest
       ? { deploymentId, participantId: args.contract.identity }
-      : await applyParticipant(context, args);
+      : await applyParticipant(context, { ...args, deployment });
   if (!approved.deploymentId) throw new Error("Deployment has no identity");
-  const identity = await provisionServiceInstanceOnly(context, args);
+  const identity = await provisionServiceInstanceOnly(context, { deployment });
   return {
     ...identity,
     deploymentId: approved.deploymentId,

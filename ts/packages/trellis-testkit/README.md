@@ -32,6 +32,11 @@ const client = await runtime.connectClient({
 });
 ```
 
+Each `registerService` call returns a new instance key. Without `deployment`,
+a service uses the runtime's default deployment unless a different participant
+already runs there; then it gets a deployment of its own. Registering the same
+participant again adds an instance (a replica) to its deployment.
+
 Register generated handlers before starting the service. Exercise generated
 caller methods and inspect their `Result` values with ordinary assertions. Stop
 the service in `finally`, await its run task, and let `await using` stop the
