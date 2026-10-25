@@ -126,11 +126,33 @@ try {
       {
         cwd: destination,
         env: childEnv,
-        stdio: ["ignore", "inherit", "inherit"],
+        stdio: ["ignore", "pipe", "inherit"],
       },
     );
     const serviceExit = once(service, "exit");
     try {
+      // The service prints its banner once every handler is registered; a
+      // device started earlier can find its requests unanswered.
+      service.stdout.setEncoding("utf8");
+      let serviceOutput = "";
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error(`demo service not ready: ${serviceOutput}`)),
+          60_000,
+        );
+        void serviceExit.then(() => {
+          clearTimeout(timeout);
+          reject(new Error(`demo service exited early: ${serviceOutput}`));
+        });
+        service.stdout.on("data", (chunk: string) => {
+          process.stdout.write(chunk);
+          serviceOutput += chunk;
+          if (serviceOutput.includes("== Field Ops demo service")) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        });
+      });
       const device = spawn(
         process.execPath,
         [
