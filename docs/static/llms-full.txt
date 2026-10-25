@@ -202,9 +202,10 @@ start with `NODE_EXTRA_CA_CERTS=<ca path>`. `trellis login <oauth-origin>`
 shows an untrusted CA's fingerprint and pins it once accepted (prompt, or
 `--ca-fingerprint <sha256>`); `--ca-certificate <ca path>` trusts a CA file
 directly. A pinned CA that changes is a hard error. Browsers trust the CA
-through the operating system or browser trust store; with `trellis init config
---nats-websocket-via-runtime` the runtime relays NATS WebSockets at
-`wss://<console host>/nats`, so one host and certificate cover both.
+through the operating system or browser trust store. With generated TLS,
+`trellis init config` has the runtime relay NATS WebSockets at
+`wss://<console host>/nats` by default (`--nats-websocket direct` opts out), so
+one host and certificate cover both.
 
 #### OAuth portal and issuer custody
 

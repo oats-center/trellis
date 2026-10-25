@@ -108,7 +108,11 @@ export async function discoverNativeOAuth(
         !endpoint.hostname ||
         endpoint.username ||
         endpoint.password ||
-        (endpoint.pathname && endpoint.pathname !== "/") ||
+        // A WebSocket may be served at a path, such as the runtime's
+        // same-origin `/nats` relay; native endpoints have none.
+        (endpoint.pathname &&
+          endpoint.pathname !== "/" &&
+          !["ws:", "wss:"].includes(endpoint.protocol)) ||
         endpoint.search ||
         endpoint.hash
       )

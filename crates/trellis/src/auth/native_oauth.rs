@@ -131,7 +131,9 @@ pub async fn discover_native_oauth(
             || parsed.host().is_none()
             || !parsed.username().is_empty()
             || parsed.password().is_some()
-            || !matches!(parsed.path(), "" | "/")
+            // A WebSocket may be served at a path, such as the runtime's
+            // same-origin `/nats` relay; native endpoints have none.
+            || !(matches!(parsed.path(), "" | "/") || matches!(parsed.scheme(), "ws" | "wss"))
             || parsed.query().is_some()
             || parsed.fragment().is_some()
         {

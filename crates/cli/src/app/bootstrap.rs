@@ -75,7 +75,26 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
         .public_origin
         .clone()
         .unwrap_or_else(|| format!("{http}://localhost:{}", args.trellis_port));
-    if args.nats_websocket_via_runtime {
+    let relay = match args.nats_websocket {
+        Some(InitWebsocketMode::Relay) => {
+            if args.nats_websocket_url.is_some() || args.nats_websocket_behind_proxy {
+                return Err(miette!(
+                    "--nats-websocket relay cannot be combined with --nats-websocket-url or \
+                    --nats-websocket-behind-proxy"
+                ));
+            }
+            true
+        }
+        Some(InitWebsocketMode::Direct) => false,
+        // Out of the box, a browser trusting the generated CA for the Console
+        // also reaches NATS; a separate WebSocket port would need its own trust.
+        None => {
+            args.tls == InitTlsMode::Generated
+                && args.nats_websocket_url.is_none()
+                && !args.nats_websocket_behind_proxy
+        }
+    };
+    if relay {
         // Reported for operators; the runtime derives the same URL itself.
         options.runtime.nats_websocket_url = format!(
             "{}{}",
@@ -113,7 +132,7 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     };
     options.runtime.trusted_proxies = args.trusted_proxy.clone();
     options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
-    options.runtime.nats_websocket_via_runtime = args.nats_websocket_via_runtime;
+    options.runtime.nats_websocket_via_runtime = relay;
     options.runtime.extra_origins = args.extra_origin.clone();
     options.runtime.bind_address = args.bind_address;
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
@@ -163,8 +182,7 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
                     .then(|| trellis_bootstrap::NatsTlsFiles {
                         certificate: nats.join("tls/nats.crt").display().to_string(),
                         private_key: nats.join("tls/nats.key").display().to_string(),
-                        websocket_behind_proxy: args.nats_websocket_behind_proxy
-                            || args.nats_websocket_via_runtime,
+                        websocket_behind_proxy: args.nats_websocket_behind_proxy || relay,
                     })
                     .as_ref(),
             ),
@@ -373,15 +391,15 @@ mod tests {
             (listeners.native, listeners.monitor, listeners.websocket),
             (4333, 8333, 8183)
         );
+        // Generated TLS relays browser WebSockets through the Console origin
+        // to the broker's WebSocket listener.
         assert_eq!(
-            config
-                .client
-                .as_ref()
-                .unwrap()
-                .ws_nats_servers
-                .as_ref()
-                .unwrap(),
-            &["wss://localhost:8183"]
+            http.nats_websocket_upstream.as_deref(),
+            Some("localhost:8183")
+        );
+        assert_eq!(
+            config.same_origin_websocket_url().as_deref(),
+            Some("wss://localhost:3444/nats")
         );
         let auth = config.resolve_authorization().unwrap();
         assert_eq!(auth.context_lifetime_seconds, 90);

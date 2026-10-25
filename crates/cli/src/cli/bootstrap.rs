@@ -6,6 +6,17 @@ use clap::{Args, Subcommand, ValueEnum};
 
 #[cfg(feature = "runtime")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// How browsers reach the broker's NATS WebSocket.
+pub enum InitWebsocketMode {
+    /// On the Console origin at `/nats`, relayed by the runtime, so browsers
+    /// trust one host and certificate. Default with generated TLS.
+    Relay,
+    /// At the broker's own WebSocket listener and certificate.
+    Direct,
+}
+
+#[cfg(feature = "runtime")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 /// Certificate source for generated listeners.
 pub enum InitTlsMode {
     /// Generate an installation CA and short-lived certificates (default).
@@ -136,11 +147,14 @@ pub struct InitConfigArgs {
     /// proxy. Native NATS always terminates its own TLS.
     pub nats_websocket_behind_proxy: bool,
 
-    #[arg(long, conflicts_with_all = ["nats_websocket_url", "nats_websocket_behind_proxy"])]
-    /// Serve browser NATS WebSockets on the Console origin at `/nats`, relayed
-    /// by the runtime, so browsers trust one host and certificate. The broker's
-    /// WebSocket port then serves plaintext and must stay private.
-    pub nats_websocket_via_runtime: bool,
+    #[arg(long, value_enum)]
+    /// How browsers reach NATS WebSockets. `relay` serves them on the Console
+    /// origin at `/nats` through the runtime, so one certificate covers both;
+    /// the broker's WebSocket port then serves plaintext and must stay
+    /// private. Defaults to `relay` with generated TLS unless
+    /// --nats-websocket-url or --nats-websocket-behind-proxy is given, and to
+    /// `direct` otherwise.
+    pub nats_websocket: Option<InitWebsocketMode>,
 
     #[arg(long = "extra-origin", value_name = "ORIGIN")]
     /// Additional allowed browser origin, for callers served elsewhere; repeatable.

@@ -61,7 +61,7 @@ export type TrellisTestRuntimeStartOptions = {
   rotatableWebsocketProxy?: boolean;
   /**
    * Serve browser NATS WebSockets on the application origin at `/nats`,
-   * relayed by the runtime, as `init config --nats-websocket-via-runtime` does.
+   * relayed by the runtime, as `init config` does by default with generated TLS.
    */
   sameOriginWebsocket?: boolean;
   /**
