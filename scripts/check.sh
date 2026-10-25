@@ -68,15 +68,13 @@ each() {
 }
 
 job_lint() {
-  # rustfmt silently leaves statements it cannot fit unformatted, hence the
-  # width check. Prettier honors nested .gitignore files too, so local build
+  # Prettier honors nested .gitignore files too, so local build
   # output a package ignores is not checked.
   local ignores
   ignores="--ignore-path .gitignore$(find ts/packages ts/tools -name .gitignore \
     -not -path '*/node_modules/*' -printf ' --ignore-path %p')"
   each \
     "cargo fmt --manifest-path Cargo.toml --all --check" \
-    "cargo xtask rust-width" \
     "npm exec -- prettier $ignores --check ts/packages ts/tools" \
     "node docs/scripts/build_llms_full.ts --check"
 }
@@ -91,6 +89,9 @@ job_clippy() {
     cargo clippy --manifest-path Cargo.toml -p trellis-rs --lib --no-default-features \
       --features "$features" -- -D warnings
   done
+  # rustfmt silently leaves statements it cannot fit unformatted. xtask is
+  # already compiled here, unlike in the uncached formatting job.
+  cargo xtask rust-width
 }
 
 job_rust() {
@@ -182,7 +183,6 @@ semver_checks() {
 
 job_rust_testkit() {
   local output="${1:-$temp/rust-testkit-bundle.tar.gz}" version bundle
-  cargo test --manifest-path xtask/Cargo.toml
   semver_checks
   native_archive
   version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
