@@ -2,7 +2,6 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Page } from "playwright";
 import { ulid } from "ulid";
 
 import {
