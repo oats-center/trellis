@@ -6,6 +6,7 @@
 #   npm test
 #
 # The build phase regenerates contract artifacts and the embedded Console and
+# Portal, type-checks the TypeScript packages, integration tests, Console and
 # Portal, then lets each suite's runner build what it launches. The suites then
 # run in staged mode (TRELLIS_TEST_STAGED=1), so none of them compiles while
 # another is running, and each writes its log under target/test-logs/. Within a
@@ -37,6 +38,14 @@ if [[ -z "${TRELLIS_TEST_SKIP_PREPARE:-}" ]]; then
     && npm run browser:embedded >> "$logs/prepare.log" 2>&1 \
     || { echo "preparation failed; see $logs/prepare.log" >&2; exit 1; }
 fi
+# Type checks run before the suites: check:sdk rebuilds the npm packages the
+# package tests load.
+for check in "check:sdk" "check:integration" "check --workspace @trellis/console" \
+  "check --workspace @trellis/oauth-portal"; do
+  echo "type-checking ${check#check }"
+  npm run $check > "$logs/typecheck.log" 2>&1 \
+    || { echo "type check failed: npm run $check; see $logs/typecheck.log" >&2; exit 1; }
+done
 # Builds share Cargo's lock, so they run one runner at a time.
 for suite in "${suites[@]}"; do
   echo "building for $suite"

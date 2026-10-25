@@ -44,7 +44,8 @@ Before pushing, run every suite Check runs:
 npm test
 ```
 
-Like Check, it builds once (contract artifacts, the embedded Console and Portal,
+Like Check, it type-checks the TypeScript packages, integration tests, Console
+and Portal, builds once (contract artifacts, the embedded Console and Portal,
 and every executable the suites launch), then runs the Rust workspace, TypeScript
 live integration, TypeScript package, and browser suites concurrently against
 those executables, with test files inside each suite also concurrent. Each suite
