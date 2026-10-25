@@ -2,7 +2,6 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Buffer } from "node:buffer";
 import type { Page } from "playwright";
 import { ulid } from "ulid";
 
@@ -27,8 +26,8 @@ import {
   fixtureName,
   openConsoleAsRuntimeAdmin,
   waitForConsoleShell,
+  wireNatsGate,
 } from "./console_test_support.ts";
-import { NatsResponseGate } from "./nats_response_gate.ts";
 
 /**
  * Seeds a connected service provider so jobs, events, and health have real
@@ -83,54 +82,6 @@ const EVENTS_PAGE_QUERIES = [
   EVENTS_DEAD_LETTERS_QUERY,
   EVENTS_DEAD_LETTERS_INSPECT,
 ];
-
-function toWsBytes(message: string | Buffer): Uint8Array {
-  return typeof message === "string"
-    ? new TextEncoder().encode(message)
-    : new Uint8Array(message);
-}
-
-function sendWs(
-  socket: { send: (message: string | Buffer) => void },
-  chunks: Uint8Array[],
-): void {
-  for (const chunk of chunks) socket.send(Buffer.from(chunk));
-}
-
-async function wireNatsGate(page: Page): Promise<{
-  gate: NatsResponseGate;
-  releaseToPage: () => Uint8Array[];
-  resumeLiveToPage: () => void;
-}> {
-  const gate = new NatsResponseGate();
-  let pageSocket: { send: (message: string | Buffer) => void } | undefined;
-  await page.routeWebSocket(
-    (url) => url.protocol === "ws:" || url.protocol === "wss:",
-    (ws) => {
-      const server = ws.connectToServer();
-      pageSocket = ws;
-      ws.onMessage((message) => {
-        sendWs(server, gate.ingestClient(toWsBytes(message)));
-      });
-      server.onMessage((message) => {
-        sendWs(ws, gate.ingestServer(toWsBytes(message)));
-      });
-    },
-  );
-  return {
-    gate,
-    releaseToPage() {
-      if (!pageSocket) return [];
-      const chunks = gate.release();
-      sendWs(pageSocket, chunks);
-      return chunks;
-    },
-    resumeLiveToPage() {
-      const chunks = gate.resumeLive();
-      if (pageSocket) sendWs(pageSocket, chunks);
-    },
-  };
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

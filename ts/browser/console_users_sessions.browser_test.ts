@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
 import { codecs } from "@oatscenter/trellis/generated";
+import { API as authApi } from "../packages/trellis/internal_sdk/generated/apis/auth/mod.js";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -18,7 +19,77 @@ import {
   captureBrowserErrors,
   openConsoleAsRuntimeAdmin,
   waitForConsoleShell,
+  wireNatsGate,
 } from "./console_test_support.ts";
+
+test("a late reply to an earlier user search does not replace newer results", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const suffix = ulid().toLowerCase();
+    for (const name of ["alpha", "beta"])
+      await runtime.callAdminRpc("authUsersCreate", {
+        idempotencyKey: ulid(),
+        displayName: `Search ${name} ${suffix}`,
+        username: `search-${name}-${suffix}`,
+      });
+
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const wired = await wireNatsGate(page);
+      try {
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+          waitUntil: "domcontentloaded",
+        });
+        await waitForConsoleShell(page);
+        const rows = page.locator(".users-row");
+        await rows.first().waitFor({ state: "visible", timeout: 30_000 });
+        const search = page.getByLabel("Search users");
+
+        const held = wired.gate.armNextReply(
+          authApi.actions["rpc:Users.List"].subject,
+        );
+        await search.fill(`search-alpha-${suffix}`);
+        await search.press("Enter");
+        await held;
+        await wired.gate.waitHeld();
+        await search.fill(`search-beta-${suffix}`);
+        await search.press("Enter");
+        // The first page lists both users; wait for the newer search's own
+        // result, which narrows the list to one row.
+        await runtime.waitFor(
+          async () =>
+            (await rows.count()) === 1 &&
+            (await rows
+              .filter({ hasText: `Search beta ${suffix}` })
+              .count()) === 1,
+          { timeoutMs: 30_000 },
+        );
+
+        // The earlier search's reply now arrives after the newer one and must
+        // not replace the newer results.
+        wired.releaseToPage();
+        const stale = await rows
+          .filter({ hasText: `Search alpha ${suffix}` })
+          .waitFor({ state: "visible", timeout: 3_000 })
+          .then(
+            () => true,
+            () => false,
+          );
+        assert.equal(stale, false, "the stale search results were shown");
+        assert.equal(await rows.count(), 1);
+        await rows
+          .filter({ hasText: `Search beta ${suffix}` })
+          .waitFor({ state: "visible" });
+      } finally {
+        wired.gate.dispose();
+      }
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
 
 test("B25 users list renders and exact edit reloads on query change", async () => {
   await withTrellisRuntime(async (runtime) => {

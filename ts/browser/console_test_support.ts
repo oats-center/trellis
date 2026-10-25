@@ -2,6 +2,7 @@
 // generated client only: never inject authorization or fake an RPC response.
 
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import type { Page } from "playwright";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { codecs } from "@oatscenter/trellis/generated";
@@ -11,6 +12,7 @@ import { ulid } from "ulid";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { types } from "../packages/trellis-testkit/trellis/index.js";
 import { openConsole } from "./browser_test_support.ts";
+import { NatsResponseGate } from "./nats_response_gate.ts";
 /**
  * Opens the console as the harness-created administrator. Ensures the
  * first-administrator bootstrap through the real harness workflow first, so a
@@ -234,4 +236,56 @@ export async function assertNoBrowserErrors(
     [],
     `unexpected browser errors:\n${errors.join("\n")}`,
   );
+}
+
+function toWsBytes(message: string | Buffer): Uint8Array {
+  return typeof message === "string"
+    ? new TextEncoder().encode(message)
+    : new Uint8Array(message);
+}
+
+function sendWs(
+  socket: { send: (message: string | Buffer) => void },
+  chunks: Uint8Array[],
+): void {
+  for (const chunk of chunks) socket.send(Buffer.from(chunk));
+}
+
+/**
+ * Routes the page's broker WebSockets through a {@link NatsResponseGate} that
+ * forwards real bytes and can hold chosen RPC replies.
+ */
+export async function wireNatsGate(page: Page): Promise<{
+  gate: NatsResponseGate;
+  releaseToPage: () => Uint8Array[];
+  resumeLiveToPage: () => void;
+}> {
+  const gate = new NatsResponseGate();
+  let pageSocket: { send: (message: string | Buffer) => void } | undefined;
+  await page.routeWebSocket(
+    (url) => url.protocol === "ws:" || url.protocol === "wss:",
+    (ws) => {
+      const server = ws.connectToServer();
+      pageSocket = ws;
+      ws.onMessage((message) => {
+        sendWs(server, gate.ingestClient(toWsBytes(message)));
+      });
+      server.onMessage((message) => {
+        sendWs(ws, gate.ingestServer(toWsBytes(message)));
+      });
+    },
+  );
+  return {
+    gate,
+    releaseToPage() {
+      if (!pageSocket) return [];
+      const chunks = gate.release();
+      sendWs(pageSocket, chunks);
+      return chunks;
+    },
+    resumeLiveToPage() {
+      const chunks = gate.resumeLive();
+      if (pageSocket) sendWs(pageSocket, chunks);
+    },
+  };
 }

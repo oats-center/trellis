@@ -96,9 +96,7 @@
         return { items: response.items, cursor: response.page.nextCursor };
       }),
       traverseAll(async (page) => {
-        const response = await trellis
-          .capabilityGrantsList({ page })
-          .orThrow();
+        const response = await trellis.capabilityGrantsList({ page }).orThrow();
         return { items: response.items, cursor: response.page.nextCursor };
       }),
     ]);
@@ -120,7 +118,9 @@
     const adminRoles = new Set(
       roles.items
         .filter((role) =>
-          role.capabilities.some(({ capabilityId }) => administers(capabilityId)),
+          role.capabilities.some(({ capabilityId }) =>
+            administers(capabilityId),
+          ),
         )
         .map((role) => role.roleId),
     );
@@ -137,7 +137,12 @@
     ]);
   }
 
+  // Only the latest search or page request may update the list and cursor;
+  // a slower earlier reply is discarded.
+  let generation = 0;
+
   async function load() {
+    const current = ++generation;
     loading = true;
     error = null;
     try {
@@ -152,6 +157,7 @@
           },
         })
         .take();
+      if (current !== generation) return;
       if (isErr(usersResponse)) {
         error = errorMessage(usersResponse);
         return;
@@ -159,9 +165,9 @@
       users = usersResponse.items ?? [];
       nextCursor = usersResponse.page.nextCursor;
     } catch (e) {
-      error = errorMessage(e);
+      if (current === generation) error = errorMessage(e);
     } finally {
-      loading = false;
+      if (current === generation) loading = false;
     }
   }
 
