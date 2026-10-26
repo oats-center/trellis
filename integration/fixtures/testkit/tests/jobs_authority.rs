@@ -26,7 +26,8 @@ async fn node_worker_recovers_and_reconstructs_signed_job_history() {
             "--experimental-transform-types",
             "ts/packages/trellis/native/jobs_interop.ts",
         ])
-        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+        .current_dir("../../..")
+        .env("NODE_EXTRA_CA_CERTS", runtime.trust_roots()[0].clone())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

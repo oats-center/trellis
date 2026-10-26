@@ -29,7 +29,8 @@ async fn rust_upload_to_typescript_reads_persisted_bytes() {
             "--experimental-transform-types",
             "ts/packages/trellis/native/transfer_interop_provider.ts",
         ])
-        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+        .current_dir("../../..")
+        .env("NODE_EXTRA_CA_CERTS", runtime.trust_roots()[0].clone())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -292,7 +293,8 @@ async fn typescript_upload_cancellation_and_live_renewal_reduction_against_rust(
             "--experimental-transform-types",
             "ts/packages/trellis/native/transfer_interop_caller.ts",
         ])
-        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+        .current_dir("../../..")
+        .env("NODE_EXTRA_CA_CERTS", runtime.trust_roots()[0].clone())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

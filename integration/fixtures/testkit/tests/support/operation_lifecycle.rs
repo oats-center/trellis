@@ -451,7 +451,8 @@ async fn cancelled_operation_recovers_cleanup_after_its_provider_process_is_kill
                 "--experimental-transform-types",
                 "ts/packages/trellis/native/operation_lifecycle_worker.ts",
             ])
-            .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+            .current_dir("../../..")
+            .env("NODE_EXTRA_CA_CERTS", runtime.trust_roots()[0].clone())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

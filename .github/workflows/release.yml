@@ -368,7 +368,7 @@ jobs:
             --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\""
           cargo build --manifest-path Cargo.toml -p trellis-runtime --example health_watch
 
-      - name: Build the testkit live test binary
+      - name: Build the testkit test binaries
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
@@ -379,14 +379,22 @@ jobs:
             --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\"" \
             --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
             --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
-            --test live \
-            --message-format=json > "$RUNNER_TEMP/testkit-live.json"
-          executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
-          if [ -z "${executable}" ] || [ "${executable}" = "null" ]; then
+            --tests \
+            --message-format=json > "$RUNNER_TEMP/testkit-tests.json"
+          mkdir -p target/debug/testkit-tests
+          jq -r 'select(.executable != null and .target.kind[0] == "test") | "\(.target.name) \(.executable)"' \
+            "$RUNNER_TEMP/testkit-tests.json" > "$RUNNER_TEMP/testkit-tests.txt"
+          while read -r name executable; do
+            if [ "$name" = live ]; then
+              cp "$executable" target/debug/trellis-testkit-live
+            else
+              cp "$executable" "target/debug/testkit-tests/$name"
+            fi
+          done < "$RUNNER_TEMP/testkit-tests.txt"
+          [ -x target/debug/trellis-testkit-live ] || {
             echo "failed to locate the testkit live test binary" >&2
             exit 1
-          fi
-          cp "${executable}" target/debug/trellis-testkit-live
+          }
 
       # Multithreaded zstd instead of the upload's single-threaded compression;
       # the tar preserves executable modes.
@@ -398,6 +406,7 @@ jobs:
           rm -rf "$staging"
           mkdir -p "$staging/fixtures" "$staging/examples"
           cp target/debug/trellis-testkit-live "$staging/"
+          cp -R target/debug/testkit-tests "$staging/"
           for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller live_application_versions empty_watch finite_rpc rpc_distribution operation_target operation_storage_upload operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation stream_transfer jobs; do
             cp "target/debug/${bin}" "$staging/fixtures/"
           done
@@ -747,6 +756,44 @@ jobs:
           TRELLIS_TEST_CONCURRENCY: "2"
         run: bash scripts/check.sh live-typescript
 
+  live-testkit:
+    name: Rust testkit integration
+    needs: [install, wasm, portal, build, build-fixtures]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
+
+      - name: Download runtime and fixture binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: check-*-binaries
+          merge-multiple: true
+          path: ${{ runner.temp }}/binaries
+
+      - name: Stage runtime and fixture binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C target/debug
+          tar --zstd -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar.zst" -C target/debug
+
+      # The suites start TypeScript providers and callers from this checkout.
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      - name: Run Rust testkit integration
+        run: bash scripts/check.sh live-testkit
+
   examples:
     name: Documented examples
     needs: [install, wasm, portal, build]
@@ -1051,6 +1098,7 @@ jobs:
       - browser
       - live-rust
       - live-typescript
+      - live-testkit
       - rust-testkit-consumer
       - typescript-testkit-package
       - verify-images

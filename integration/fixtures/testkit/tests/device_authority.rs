@@ -40,16 +40,13 @@ async fn oauth(
     if !optional.contains(&"trellis.auth.v1:account.linkDevice") {
         optional.push("trellis.auth.v1:account.linkDevice");
     }
-    let mut details = json!([{"type":"trellis_capabilities","required":[],"optional":optional}]);
-    if admin {
-        details
-            .as_array_mut()
-            .unwrap()
-            .push(json!({
-                "type":"trellis_platform_privileges",
-                "required": ["principals.manage","roles.manage"]
-            }));
-    }
+    let required: &[&str] = if admin {
+        &["trellis.auth.v1:users.manage", "trellis.auth.v1:roles.manage"]
+    } else {
+        &[]
+    };
+    let details =
+        json!([{"type":"trellis_capabilities","required":required,"optional":optional}]);
     let flow = native.start_device(&details).await.unwrap();
     runtime
         .approve_device_login("trellis.cli", flow.user_code())
@@ -72,7 +69,10 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
         trellis_test_fixture_provider::Participant as EchoProvider,
     };
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-    let denied = reqwest::Client::new()
+    let denied = runtime
+        .https_client_builder()
+        .build()
+        .unwrap()
         .post(format!("{}/auth/device/enroll", runtime.oauth_origin()))
         .json(&json!({"proof":"private-enrollment-sentinel"}))
         .send()
@@ -150,7 +150,8 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
             "--experimental-transform-types",
             "ts/packages/trellis/native/device_interop.ts",
         ])
-        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."))
+        .current_dir("../../..")
+        .env("NODE_EXTRA_CA_CERTS", runtime.trust_roots()[0].clone())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())

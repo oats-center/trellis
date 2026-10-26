@@ -60,7 +60,8 @@ async fn login(
     .await
     .unwrap();
     let device = oauth.start_device(&details).await.unwrap();
-    let http = reqwest::Client::builder()
+    let http = runtime
+        .https_client_builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -149,23 +150,24 @@ async fn login(
         ("decision", "approve"),
         ("confirm_device", device.user_code()),
     ];
-    for (field, key, target) in [
-        ("capabilities", "capabilityId", "approved"),
-        ("platformPrivileges", "privilege", "privilege"),
-    ] {
-        for item in view[field].as_array().unwrap() {
-            assert!(
-                !(item["required"] == true && item["available"] != true),
-                "required authority unavailable: {item}"
-            );
-            let identity = item[key].as_str().unwrap();
-            if item["available"] == true
-                && (field != "capabilities"
-                    || approved.is_none_or(|selected| selected.contains(&identity)))
-            {
-                form.push((target, identity));
-            }
+    let mut administrative = false;
+    for item in view["capabilities"].as_array().unwrap() {
+        assert!(
+            !(item["required"] == true && item["available"] != true),
+            "required authority unavailable: {item}"
+        );
+        let identity = item["capabilityId"].as_str().unwrap();
+        if item["available"] == true
+            && (item["required"] == true
+                || approved.is_none_or(|selected| selected.contains(&identity)))
+        {
+            administrative |= item["administrative"] == true;
+            form.push(("approved", identity));
         }
+    }
+    // Administration takes its own explicit confirmation.
+    if administrative {
+        form.push(("confirm_administration", "true"));
     }
     let response = http
         .post(format!("{origin}/portal/approve"))
@@ -188,17 +190,13 @@ async fn administrator(runtime: &TrellisTestRuntime) -> AuthClient {
     let options = login(runtime, "trellis.cli", json!([
         {
             "type":"trellis_capabilities",
-            "required": [],
-            "optional": CliRequest::OPTIONAL_CAPABILITIES
-        },
-        {
-            "type":"trellis_platform_privileges",
             "required": [
-                "principals.manage",
-                "roles.manage",
-                "apis.accept",
-                "clients.manage"
-                        ]
+                "trellis.auth.v1:users.manage",
+                "trellis.auth.v1:roles.manage",
+                "trellis.auth.v1:apis.accept",
+                "trellis.auth.v1:clients.manage"
+            ],
+            "optional": CliRequest::OPTIONAL_CAPABILITIES
         }
     ]), runtime.admin_username(), runtime.admin_password(), None).await;
     AuthClient::from_generated(GeneratedClient::connect_user(options).await.unwrap())
@@ -246,6 +244,7 @@ async fn kick_connection(runtime: &TrellisTestRuntime, before: &[u64]) {
         .credentials_file(runtime.workdir().join("config/nats/creds/system.creds"))
         .await
         .unwrap()
+        .add_root_certificates(runtime.trust_roots()[0].clone())
         .connect(runtime.nats_url())
         .await
         .unwrap();

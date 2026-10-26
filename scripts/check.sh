@@ -22,7 +22,7 @@ temp="${RUNNER_TEMP:-$root/target/check-tmp}"
 
 # The fast jobs `npm test` runs by default, and the slower packaging and
 # container-image jobs `--all` adds.
-fast_jobs=(lint clippy rust typescript live-rust live-typescript demos examples browser)
+fast_jobs=(lint clippy rust typescript live-rust live-typescript live-testkit demos examples browser)
 heavy_jobs=(rust-testkit typescript-testkit images)
 
 # Packages are built once per runner; staged local jobs share one build.
@@ -131,6 +131,10 @@ job_live_rust() {
 
 job_live_typescript() {
   bash scripts/run-ts-integration.sh "$@"
+}
+
+job_live_testkit() {
+  bash scripts/run-testkit-tests.sh "$@"
 }
 
 job_demos() {
@@ -310,6 +314,7 @@ echo "building executables and test binaries"
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-ts-integration.sh
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-sdk-tests.sh
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-browser-tests.sh
+  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-testkit-tests.sh
   cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration \
     --test integration --no-run
   [[ "$all" != "--all" ]] || pack_native
