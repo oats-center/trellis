@@ -1,6 +1,6 @@
 {
   "name": "@oatscenter/result",
-  "version": "0.100.0-rc.3",
+  "version": "0.100.0-rc.5",
   "license": "Apache-2.0",
   "type": "module",
   "exports": "./mod.ts",

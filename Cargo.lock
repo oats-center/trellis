@@ -2966,7 +2966,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.1",
  "chrono",
  "getrandom 0.2.17",
  "http",
@@ -5841,7 +5841,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-bootstrap"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -5866,7 +5866,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-builtin-contracts"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "miette",
  "trellis-idl",
@@ -5874,7 +5874,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-cli"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -5922,7 +5922,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-codegen-rust"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "prettyplease",
  "semver",
@@ -5938,7 +5938,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-codegen-ts"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "oxc_allocator",
  "oxc_codegen",
@@ -5955,7 +5955,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-events-runtime"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -5982,7 +5982,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-idl"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "base64 0.22.1",
  "logos",
@@ -5997,7 +5997,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-jobs-runtime"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "futures-util",
  "refinery",
@@ -6015,7 +6015,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-local-bootstrap"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "base64 0.22.1",
  "rand 0.10.1",
@@ -6024,7 +6024,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-local-nats"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "flate2",
  "getrandom 0.3.4",
@@ -6041,7 +6041,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -6050,7 +6050,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -6069,7 +6069,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol-wasm"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -6082,7 +6082,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -6127,7 +6127,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-runtime"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "argon2",
  "async-nats",
@@ -6185,7 +6185,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-runtime-apis"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "futures-util",
  "serde",
@@ -6197,7 +6197,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-server"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "clap",
  "libc",
@@ -6217,7 +6217,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-testkit"
-version = "0.100.0-rc.3"
+version = "0.100.0-rc.5"
 dependencies = [
  "base64 0.22.1",
  "flate2",

@@ -24,14 +24,14 @@ semver.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 tokio.workspace = true
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.3", optional = true, features = ["telemetry-otlp"] }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.5", optional = true, features = ["telemetry-otlp"] }
 trellis-runtime-apis = { path = "../runtime-apis", optional = true }
-trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.3" }
-trellis-codegen-ts = { path = "../codegen-ts", version = "0.100.0-rc.3" }
-trellis-idl = { path = "../idl", version = "0.100.0-rc.3" }
-trellis-protocol = { path = "../protocol", version = "0.100.0-rc.3" }
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.3", optional = true }
-trellis-runtime = { path = "../runtime", version = "0.100.0-rc.3", optional = true }
+trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.5" }
+trellis-codegen-ts = { path = "../codegen-ts", version = "0.100.0-rc.5" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.5" }
+trellis-protocol = { path = "../protocol", version = "0.100.0-rc.5" }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.5", optional = true }
+trellis-runtime = { path = "../runtime", version = "0.100.0-rc.5", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 miette.workspace = true
@@ -57,7 +57,7 @@ ulid.workspace = true
 [build-dependencies]
 serde_json.workspace = true
 trellis-builtin-contracts = { path = "../builtin-contracts" }
-trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.3" }
+trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.5" }
 
 [dev-dependencies]
 

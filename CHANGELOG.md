@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.5] - 2026-10-26
+
 ### Added
 
 - The IDL `json` type carries any JSON value unchecked, for opaque values such
