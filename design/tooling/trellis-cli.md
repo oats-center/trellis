@@ -26,7 +26,11 @@ trellis publish
 writing outputs. `add`, `rm`, and `update` resolve the source-package graph and write an exact
 `trellis.lock`. `install` recreates language outputs from that lock. `generate`
 compiles native Trellis IDL and stages all generated output before atomically
-replacing the last-good tree. `publish` pushes the source bundle and frozen
+replacing the last-good tree. After an edit to the project's own IDL or
+manifest, `generate` (and `--watch`) re-records only the project's own package
+entry in `trellis.lock` from local sources; dependencies stay exactly as locked
+and change only through `update`. `generate --check` reports a stale lock or
+stale output instead of writing either. `publish` pushes the source bundle and frozen
 resolution metadata to OCI with immutable version rules.
 
 Package references are declared in `trellis.toml`. Generated Rust and TypeScript

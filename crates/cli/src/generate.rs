@@ -36,6 +36,11 @@ pub(crate) fn generate_once(root: &Path, check: bool) -> Result<usize> {
     let root = root.canonicalize().into_diagnostic()?;
     let manifest = read_manifest(&root.join("trellis.toml"))?;
     output_paths(&root, &manifest)?;
+    // An IDL edit changes the project's own locked digest; `--check` reports
+    // that as stale instead of rewriting the lock.
+    if !check {
+        crate::package::relock_own_package(&root, &manifest)?;
+    }
     let compiled = crate::package::compile_project(&root, &manifest)?;
     generate_compiled(&root, &manifest, &compiled, check)
 }

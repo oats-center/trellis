@@ -442,6 +442,7 @@ fn resolve_package<'a>(
                     &child_root,
                     &child_manifest,
                     &lock,
+                    false,
                     &mut BTreeSet::new(),
                 )?;
                 validate_lock(&child_manifest, &lock, &graph)?;
@@ -566,6 +567,33 @@ async fn install_locked_packages(lock: &ProjectLock) -> Result<usize> {
     Ok(changed)
 }
 
+/// Re-record the project's own package in `trellis.lock` after its IDL or
+/// manifest changed, from local sources only. Dependencies are untouched and
+/// still need `trellis update`. Returns whether the lock changed.
+pub(crate) fn relock_own_package(root: &Path, manifest: &ProjectManifest) -> Result<bool> {
+    let path = root.join("trellis.lock");
+    let mut lock = read_lock(&path).wrap_err("trellis.lock is missing; run `trellis update`")?;
+    let graph = compile_locked(root, root, manifest, &lock, true, &mut BTreeSet::new())?;
+    let source = package_from_lock(root, manifest, graph.root_digest(), &lock)?;
+    let own = lock
+        .packages
+        .iter_mut()
+        .find(|package| package.name == manifest.package.name)
+        .ok_or_else(|| {
+            miette!(
+                "package '{}' is absent from trellis.lock",
+                manifest.package.name
+            )
+        })?;
+    if own.digest == graph.root_digest() && own.distribution_digest == source.distribution_digest {
+        return Ok(false);
+    }
+    own.digest = graph.root_digest().to_owned();
+    own.distribution_digest = source.distribution_digest;
+    crate::project::write_lock(&path, &lock)?;
+    Ok(true)
+}
+
 /// Compile the project from local paths and exact validated cache entries only.
 pub(crate) fn compile_project(
     root: &Path,
@@ -582,7 +610,7 @@ pub(crate) fn compile_project(
                 && matches!(&package.source, LockedSource::Path { path } if path == ".")),
         "root package must use the exact project path in trellis.lock"
     );
-    let graph = compile_locked(root, root, manifest, &lock, &mut BTreeSet::new())?;
+    let graph = compile_locked(root, root, manifest, &lock, false, &mut BTreeSet::new())?;
     validate_lock(manifest, &lock, &graph)?;
     Ok(graph)
 }
@@ -592,6 +620,7 @@ fn compile_locked(
     package_root: &Path,
     manifest: &ProjectManifest,
     lock: &ProjectLock,
+    refresh_root: bool,
     stack: &mut BTreeSet<String>,
 ) -> Result<trellis_idl::PackageGraph> {
     miette::ensure!(
@@ -684,7 +713,7 @@ fn compile_locked(
                 && child_manifest.package.version == child_lock.version,
             "locked identity for dependency '{alias}' differs from its source package"
         );
-        let graph = compile_locked(root, &child_root, &child_manifest, lock, stack)?;
+        let graph = compile_locked(root, &child_root, &child_manifest, lock, false, stack)?;
         exact_dependencies.push(LockedDependency {
             name: child_lock.name.clone(),
             version: child_lock.version.clone(),
@@ -700,15 +729,21 @@ fn compile_locked(
         locked.name
     );
     let graph = compile_graph(package_root, manifest, supplied)?;
+    // Generation may re-record the project's own edited sources; every
+    // dependency stays exactly as locked.
+    if refresh_root && package_root == root {
+        stack.remove(&manifest.package.name);
+        return Ok(graph);
+    }
     miette::ensure!(
         graph.root_digest() == locked.digest,
-        "package '{}' semantic digest differs from trellis.lock",
+        "package '{}' semantic digest differs from trellis.lock; run `trellis generate` or `trellis update`",
         locked.name
     );
     let source = package_from_lock(package_root, manifest, graph.root_digest(), lock)?;
     miette::ensure!(
         source.distribution_digest == locked.distribution_digest,
-        "package '{}' source differs from trellis.lock",
+        "package '{}' source differs from trellis.lock; run `trellis generate` or `trellis update`",
         locked.name
     );
     stack.remove(&manifest.package.name);

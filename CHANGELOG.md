@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- `trellis generate` (and `--watch`) re-records the project's own package in
+  `trellis.lock` after an edit to its IDL or manifest, so an IDL edit no longer
+  needs `trellis update`; dependencies still change only through
+  `trellis update`. `trellis generate --check` reports the stale lock instead
+  of writing it.
+
 ### Fixed
 
 - TypeScript providers passed inputs that violated declared constraints (for
