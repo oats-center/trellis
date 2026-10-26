@@ -29,6 +29,13 @@ and this project adheres to
 
 ### Added
 
+- `@oatscenter/trellis` exports the `Timestamp` and `Ulid` types that generated
+  packages use for the IDL `timestamp` and `ulid` types, with constructors:
+  `timestamp(date?)` (defaults to now), `newUlid()`, and `parseTimestamp(value)`
+  and `parseUlid(value)`, which return `Result<_, ValidationError>`. Timestamps
+  are normalized to canonical UTC RFC 3339. Application code can now build
+  these values for handlers, events and calls without reaching into
+  `@oatscenter/trellis/generated` codecs.
 - A TypeScript service whose `stop()` waits more than 10 seconds on one
   shutdown phase (health publishing, job workers, operation transfers, runtime
   or connection close) logs a warning naming that phase.

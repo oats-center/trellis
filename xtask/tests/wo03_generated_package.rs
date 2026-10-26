@@ -28,6 +28,8 @@ model Node {
   settings: json;
   note?: json;
   code?: Code;
+  at?: timestamp;
+  ref?: ulid;
 }
 model Current { root: Node; }
 
@@ -341,6 +343,7 @@ import { request as Caller } from "./typescript/apps/Caller/mod.js";
 import { participant as Worker } from "./typescript/participants/Worker/mod.js";
 import type * as WorkerModule from "./typescript/participants/Worker/mod.js";
 import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
+import { newUlid, parseTimestamp, parseUlid, timestamp } from "@oatscenter/trellis";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -415,6 +418,27 @@ test("generated TypeScript package exercises WO-03 B2-B4", () => {
     }
     assert(rejected, `encode rejects ${JSON.stringify(code)} outside its limits`);
   }
+  // Application code builds timestamps and ULIDs for generated models.
+  const stamped: typeof node = {
+    ...node,
+    at: timestamp(new Date(Date.UTC(2026, 9, 26, 2, 0, 0, 500))),
+    ref: newUlid(),
+  };
+  const stampedWire = fetch.input.encode(stamped) as Record<string, unknown>;
+  assert(stampedWire.at === "2026-10-26T02:00:00.5Z", "a Date encodes as canonical UTC");
+  assert(fetch.input.decode(stampedWire).ref === stamped.ref, "a new ULID round-trips");
+  const parsed = parseTimestamp("2026-10-26T04:00:00+02:00");
+  assert(parsed.isOk(), "an offset timestamp parses");
+  const fromString: typeof node = { ...node, at: parsed.orThrow() };
+  assert(
+    (fetch.input.encode(fromString) as Record<string, unknown>).at === "2026-10-26T02:00:00Z",
+    "a parsed timestamp is normalized to UTC",
+  );
+  const late = parseTimestamp("yesterday");
+  assert(late.isErr() && late.error.name === "ValidationError", "a malformed timestamp is a ValidationError");
+  const existing = parseUlid("01ARZ3NDEKTSV4RRFFQ69G5FAV");
+  assert(existing.isOk() && fetch.input.encode({ ...node, ref: existing.orThrow() }) !== undefined, "a parsed ULID fits the model");
+  assert(parseUlid("01arz3ndektsv4rrffq69g5fav").isErr(), "a non-canonical ULID is rejected");
   let rejectedNonFinite = false;
   try {
     fetch.input.encode({ ...node, ratio: Number.NaN });

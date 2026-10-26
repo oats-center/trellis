@@ -16,8 +16,10 @@ export type SerializableErrorData = {
 type CodecValue<C> = C extends { decode(value: unknown): infer T } ? T : never;
 type OpenEnum<T extends string> =
   T | (string & { readonly __openEnum?: never });
-type Timestamp = string & { readonly __timestamp: unique symbol };
-type Ulid = string & { readonly __ulid: unique symbol };
+/** An IDL `timestamp`: a canonical UTC RFC 3339 string. */
+export type Timestamp = string & { readonly __timestamp: unique symbol };
+/** An IDL `ulid`: a canonical ULID string. */
+export type Ulid = string & { readonly __ulid: unique symbol };
 type OptionalCodec<T> = Codec<T | undefined> & Readonly<{ optional: true }>;
 type ModelField = Codec<unknown> | OptionalCodec<unknown>;
 type ModelValue<F extends Readonly<Record<string, ModelField>>> = {

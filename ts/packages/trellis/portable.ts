@@ -74,6 +74,14 @@ export type {
   OwnAuthorizedAction,
 } from "./own_authority.ts";
 export type { AppRequestDescriptor } from "./generated_support.ts";
+export {
+  newUlid,
+  parseTimestamp,
+  parseUlid,
+  timestamp,
+  type Timestamp,
+  type Ulid,
+} from "./values.ts";
 export type { KvWatchItem, ResourceRevision, TypedKvEntry } from "./kv.ts";
 export type { TrellisErrorInstance } from "./errors/index.ts";
 export {

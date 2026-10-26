@@ -1065,6 +1065,18 @@ the IDL `json` type to `JsonValue` (exported from
 `@oatscenter/trellis/generated`); encoding a `json` value rejects anything JSON cannot
 represent, such as functions or non-finite numbers.
 
+`timestamp` and `ulid` are branded strings, `Timestamp` and `Ulid`, exported
+from `@oatscenter/trellis`. Build them with `timestamp(date?)` (defaults to now)
+and `newUlid()`, or parse untrusted strings with `parseTimestamp(value)` and
+`parseUlid(value)`, which return `Result<_, ValidationError>`. Timestamps are
+normalized to canonical UTC RFC 3339, for example `2026-10-26T02:00:00.5Z`:
+
+```ts
+import { newUlid, timestamp } from "@oatscenter/trellis";
+
+await service.publishInvoiceIssued({ id: newUlid(), issuedAt: timestamp() });
+```
+
 ### Connect
 
 Services import `TrellisService` from `@oatscenter/trellis/service`. Connect
