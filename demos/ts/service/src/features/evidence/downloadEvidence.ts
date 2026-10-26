@@ -138,12 +138,7 @@ export function createDownloadEvidenceHandler(deps: FieldOpsDeps): Handler {
         direction: "receive",
         store: EVIDENCE_STORE,
         key: input.key,
-        sessionKey: context.caller.sessionPublicKey,
-        connectionId: context.caller.runtimeId,
-        contextDigest: context.caller.authorityDigest,
-        permission: context.permission,
-        requiredCapabilities: context.requiredCapabilities,
-        inboxPrefix: context.inboxPrefix,
+        context,
         expiresInMs: TRANSFER_GRANT_TTL_MS,
       })
       .take();
@@ -163,12 +158,7 @@ export function createDownloadEvidenceHandler(deps: FieldOpsDeps): Handler {
               direction: "receive",
               store: EVIDENCE_STORE,
               key: input.key,
-              sessionKey: context.caller.sessionPublicKey,
-              connectionId: context.caller.runtimeId,
-              contextDigest: context.caller.authorityDigest,
-              permission: context.permission,
-              requiredCapabilities: context.requiredCapabilities,
-              inboxPrefix: context.inboxPrefix,
+              context,
               expiresInMs: TRANSFER_GRANT_TTL_MS,
             })
             .take();

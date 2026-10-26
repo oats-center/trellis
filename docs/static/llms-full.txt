@@ -1280,8 +1280,9 @@ For `stream;` Operations, callers use the same `.transfer(body).start()`. The
 handler starts immediately; `transfer.stream()` returns the caller's live bytes
 exactly once (a second call fails), and `transfer.completed()` resolves after
 verified delivery. Serve generated downloads with
-`service.createTransfer({ direction: "receive", stream, info, ...caller })`,
-where `info` declares the exact size and `SHA-256=` digest.
+`service.createTransfer({ direction: "receive", stream, info, context })`,
+where `context` is the RPC handler's context (the grant is bound to its verified
+caller and permission) and `info` declares the exact size and `SHA-256=` digest.
 
 For a download RPC's untrusted `transfer` field, call
 `decodeTransferGrant(response.transfer).orThrow()` from `@oatscenter/trellis`,

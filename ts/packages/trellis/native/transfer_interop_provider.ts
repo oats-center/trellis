@@ -29,12 +29,7 @@ try {
         direction: "receive",
         store: "files",
         key: "download",
-        sessionKey: context.caller.sessionPublicKey,
-        connectionId: context.caller.runtimeId,
-        contextDigest: context.caller.authorityDigest,
-        permission: context.permission,
-        requiredCapabilities: context.requiredCapabilities,
-        inboxPrefix: context.inboxPrefix,
+        context,
       })
       .orThrow();
     return Result.ok({ ...input, transfer });
@@ -86,12 +81,7 @@ try {
             .digest("base64url")}`,
           metadata: {},
         },
-        sessionKey: context.caller.sessionPublicKey,
-        connectionId: context.caller.runtimeId,
-        contextDigest: context.caller.authorityDigest,
-        permission: context.permission,
-        requiredCapabilities: context.requiredCapabilities,
-        inboxPrefix: context.inboxPrefix,
+        context,
       })
       .orThrow();
     return Result.ok({ ...input, transfer });

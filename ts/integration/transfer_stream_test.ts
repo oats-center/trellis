@@ -130,12 +130,7 @@ for (const language of ["rust", "node"] as const) {
                   contentType: "application/octet-stream",
                   metadata: {},
                 },
-                sessionKey: context.caller.sessionPublicKey,
-                connectionId: context.caller.runtimeId,
-                contextDigest: context.caller.authorityDigest,
-                permission: context.permission,
-                requiredCapabilities: context.requiredCapabilities,
-                inboxPrefix: context.inboxPrefix,
+                context,
               })
               .orThrow();
             return Result.ok({ ...input, transfer });
@@ -317,12 +312,7 @@ test("a download source whose cancellation never settles cannot block provider s
             contentType: "application/octet-stream",
             metadata: {},
           },
-          sessionKey: context.caller.sessionPublicKey,
-          connectionId: context.caller.runtimeId,
-          contextDigest: context.caller.authorityDigest,
-          permission: context.permission,
-          requiredCapabilities: context.requiredCapabilities,
-          inboxPrefix: context.inboxPrefix,
+          context,
         })
         .orThrow();
       return Result.ok({ ...input, transfer });

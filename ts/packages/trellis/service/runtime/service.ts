@@ -37,10 +37,7 @@ import {
   type TrellisTransportProvider,
 } from "../../transport/generations.ts";
 import type { InferSchemaType } from "../../participant.ts";
-import type {
-  PermissionAtom,
-  RuntimeApi,
-} from "../../participant_runtime/api.ts";
+import type { RuntimeApi } from "../../participant_runtime/api.ts";
 import type {
   ParticipantJobsMetadata,
   ParticipantKvMetadata,
@@ -111,7 +108,7 @@ import {
 import { serviceRuntimeLogger } from "./logger.ts";
 import {
   AuthError,
-  type TransferError,
+  TransferError,
   TransportError,
   UnexpectedError,
   ValidationError,
@@ -3701,35 +3698,42 @@ export class TrellisServiceSession<
   }
 
   /**
-   * Creates a short-lived receive transfer grant for a caller session.
+   * Creates a short-lived receive transfer grant for the caller of an RPC.
    *
-   * Bytes come from `store` and `key`, or from any `stream` whose `info`
-   * declares its size and SHA-256 digest up front. The grant binds that
-   * metadata; bytes that end differently fail the transfer.
+   * Pass the handler's `context`; the grant is bound to that verified caller's
+   * session, connection, authority and the request's permission. Bytes come
+   * from `store` and `key`, or from any `stream` whose `info` declares its size
+   * and SHA-256 digest up front. The grant binds that metadata; bytes that end
+   * differently fail the transfer.
    */
   createTransfer(
     args: {
       direction: "receive";
-      sessionKey: string;
-      connectionId: string;
-      contextDigest: string;
-      permission: PermissionAtom;
-      requiredCapabilities?: readonly string[];
-      inboxPrefix: string;
+      context: RpcHandlerContext;
       expiresInMs?: number;
     } & DownloadSource,
   ): AsyncResult<ReceiveTransferGrant, TransferError> {
+    const { caller, permission, requiredCapabilities, inboxPrefix } =
+      args.context;
+    if (caller.type !== "verified") {
+      return AsyncResult.err(
+        new TransferError({
+          operation: "initiateDownload",
+          cause: new Error("A receive transfer needs a verified caller"),
+        }),
+      );
+    }
     return AsyncResult.from(
       this.#operationTransfer.initiateDownload({
         ...(args.stream
           ? { stream: args.stream, info: args.info }
           : { store: args.store, key: args.key }),
-        sessionKey: args.sessionKey,
-        connectionId: args.connectionId,
-        contextDigest: args.contextDigest,
-        permission: args.permission,
-        requiredCapabilities: args.requiredCapabilities,
-        inboxPrefix: args.inboxPrefix,
+        sessionKey: caller.sessionPublicKey,
+        connectionId: caller.runtimeId,
+        contextDigest: caller.authorityDigest,
+        permission,
+        requiredCapabilities,
+        inboxPrefix,
         expiresInMs: args.expiresInMs ?? 60_000,
       }),
     );

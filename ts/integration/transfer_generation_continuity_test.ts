@@ -526,12 +526,7 @@ test("download endAck retires the last caller and provider generation leases", a
                   direction: "receive",
                   store: "files",
                   key: "download-ack",
-                  sessionKey: context.caller.sessionPublicKey,
-                  connectionId: context.caller.runtimeId,
-                  contextDigest: context.caller.authorityDigest,
-                  permission: context.permission,
-                  requiredCapabilities: context.requiredCapabilities,
-                  inboxPrefix: context.inboxPrefix,
+                  context,
                   expiresInMs: 60_000,
                 })
                 .orThrow();

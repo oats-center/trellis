@@ -52,12 +52,7 @@ for (const exchange of ["activation", "cancellation"] as const) {
                 direction: "receive",
                 store: "files",
                 key: "deadline-bytes",
-                sessionKey: context.caller.sessionPublicKey,
-                connectionId: context.caller.runtimeId,
-                contextDigest: context.caller.authorityDigest,
-                permission: context.permission,
-                requiredCapabilities: context.requiredCapabilities,
-                inboxPrefix: context.inboxPrefix,
+                context,
                 expiresInMs: 60_000,
               })
               .orThrow();

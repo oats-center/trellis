@@ -99,12 +99,7 @@ const transfer = await service
     direction: "receive",
     stream: reportChunks(),
     info: { key: "report.csv", size, digest, updatedAt, metadata: {} },
-    sessionKey: context.caller.sessionPublicKey,
-    connectionId: context.caller.runtimeId,
-    contextDigest: context.caller.authorityDigest,
-    permission: context.permission,
-    requiredCapabilities: context.requiredCapabilities,
-    inboxPrefix: context.inboxPrefix,
+    context,
   })
   .orThrow();
 ```

@@ -17,6 +17,11 @@ and this project adheres to
   `type` and trace capture are filled in. `error.payload` holds the declared
   fields, and `error.data` is still the serialized form. Regenerate TypeScript
   packages and drop hand-built `id`/`type`/`message` fields.
+- **Breaking:** `service.createTransfer(...)` takes the RPC handler's
+  `context` instead of six fields copied from it (`sessionKey`,
+  `connectionId`, `contextDigest`, `permission`, `requiredCapabilities` and
+  `inboxPrefix`). The grant is bound to that context's verified caller; an
+  unverified caller gets a `TransferError`.
 
 ## [0.100.0-rc.6] - 2026-10-26
 

@@ -135,12 +135,7 @@ if (options.role !== "client") {
         direction: "receive",
         store: "files",
         key: input.value,
-        sessionKey: context.caller.sessionPublicKey,
-        connectionId: context.caller.runtimeId,
-        contextDigest: context.caller.authorityDigest,
-        permission: context.permission,
-        requiredCapabilities: context.requiredCapabilities,
-        inboxPrefix: context.inboxPrefix,
+        context,
       })
       .orThrow();
     return ok({ ...input, transfer });
@@ -223,12 +218,7 @@ if (options.role !== "client") {
           digest,
           metadata: {},
         },
-        sessionKey: context.caller.sessionPublicKey,
-        connectionId: context.caller.runtimeId,
-        contextDigest: context.caller.authorityDigest,
-        permission: context.permission,
-        requiredCapabilities: context.requiredCapabilities,
-        inboxPrefix: context.inboxPrefix,
+        context,
       })
       .orThrow();
     return ok({ ...input, transfer });

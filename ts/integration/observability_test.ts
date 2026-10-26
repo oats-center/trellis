@@ -558,12 +558,7 @@ test("TS transfer telemetry labels each endpoint by direction and side", async (
             direction: "receive",
             store: "files",
             key: input.value,
-            sessionKey: context.caller.sessionPublicKey,
-            connectionId: context.caller.runtimeId,
-            contextDigest: context.caller.authorityDigest,
-            permission: context.permission,
-            requiredCapabilities: context.requiredCapabilities,
-            inboxPrefix: context.inboxPrefix,
+            context,
           })
           .orThrow();
         return Result.ok({ ...input, transfer });
