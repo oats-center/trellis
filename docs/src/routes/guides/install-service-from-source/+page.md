@@ -22,8 +22,10 @@ artifacts or rewrite imports as an installation step.
 
 ## Install and apply the participant
 
-Log in to the target runtime with `trellis login <url>`. Create the service
-deployment from verified source with
+Log in to the target runtime with `trellis login <url>`. Accept the APIs the
+service implements with
+`trellis apis accept --source <project-root> --participant <package>.<Service>`,
+then create the service deployment from verified source with
 `trellis svc <name> create --source <project-root> --participant <package>.<Service>`,
 then provision an instance with `trellis svc <deployment-id> provision`. Later
 releases use `trellis svc <deployment-id> apply --source <project-root>`.
@@ -40,7 +42,8 @@ Bootstrap resolves deployment/instance assignment, installed participant,
 grants, transports, and resource handles; application code must not
 inject NATS administrator credentials or binding payloads.
 
-For an update, rebuild from the new IDL and source, run direct apply, then
+For an update, rebuild from the new IDL and source, run `trellis apis accept`
+and then direct apply, then
 restart the service. Keep the same
 provisioned identity for the same instance. Do not reprovision merely because
 the generated SDK or application binary changed.

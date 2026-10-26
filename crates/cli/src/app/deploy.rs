@@ -104,6 +104,8 @@ pub struct CompiledParticipantInput {
     pub package_digest: String,
     /// Full exact package closure evidence.
     pub package_evidence: auth_types::AuthPackageEvidence,
+    /// APIs the participant implements, which must be accepted to deploy it.
+    pub implemented_apis: Vec<String>,
 }
 
 /// Compile a source project and select its unique participant of the requested kind.
@@ -152,6 +154,11 @@ pub fn compile_participant_input(
     let participant_path = participant.name().to_owned();
     let participant_id = participant.identity().as_str().to_owned();
     let participant_digest = trellis_idl::participant_digest(&compiled, participant.identity())?;
+    let implemented_apis = participant
+        .implements()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     let package_evidence = auth_types::AuthPackageEvidence {
         root_package: auth_types::AuthName(compiled.root().as_str().to_owned()),
         root_digest: auth_types::AuthDigest(compiled.root_digest().to_owned()),
@@ -185,6 +192,7 @@ pub fn compile_participant_input(
         participant_path,
         package_digest: compiled.root_digest().to_owned(),
         package_evidence,
+        implemented_apis,
     })
 }
 

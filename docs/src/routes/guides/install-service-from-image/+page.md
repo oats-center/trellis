@@ -26,6 +26,10 @@ the deployment's display name; `--participant` names the service's identity,
 `<package>.<ServiceName>` from its `trellis.toml` and IDL:
 
 ```sh
+trellis apis accept \
+  --source ./release/trellis-project \
+  --participant acme.MyService \
+  --format json
 trellis svc my-service create \
   --source ./release/trellis-project \
   --participant acme.MyService \
@@ -33,11 +37,12 @@ trellis svc my-service create \
 trellis svc "$DEPLOYMENT_ID" show --format json
 ```
 
-Set `DEPLOYMENT_ID` to the returned `deployment.deploymentId`. Create compiles
+`apis accept` adds the APIs the service implements to the installation's API
+catalog; a deployment cannot be created until they are accepted. Set
+`DEPLOYMENT_ID` to the returned `deployment.deploymentId`. Create compiles
 native IDL in memory, installs an immutable participant revision, sets up
 deployment resources, and writes the participant-scoped binding; later releases
-use `apply` (below). There
-is no proposal, authority-plan, acceptance, or reconcile step.
+use `apply` (below). There is no proposal, authority-plan, or reconcile step.
 
 ## 3. Provision an instance
 
@@ -81,12 +86,15 @@ Distribute the new image and matching Trellis project metadata. Apply that
 project before rolling out containers:
 
 ```sh
+trellis apis accept \
+  --source ./new-release/trellis-project \
+  --participant acme.MyService
 trellis svc "$DEPLOYMENT_ID" apply \
   --source ./new-release/trellis-project \
   --participant acme.MyService
 ```
 
-Apply validates the replacement, installs the new immutable participant
+`apis accept` leaves an API whose definition is unchanged as it is. Apply validates the replacement, installs the new immutable participant
 revision, updates resources, and advances the binding directly. Use a new
 participant `@vN` lineage for breaking API changes. Existing provisioned
 identity keys remain valid for the same instance unless intentionally rotated.

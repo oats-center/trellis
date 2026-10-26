@@ -132,17 +132,86 @@ pub(super) async fn apis(command: ApisCommand) -> miette::Result<()> {
             .await
             .into_diagnostic()?,
         ),
-        ApisCommand::Review { input } => {
-            let request: auth_types::AuthApiReviewRequest =
-                serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
-                    .into_diagnostic()?;
-            serde_json::to_value(auth.apis_review(&request).await.into_diagnostic()?)
+        ApisCommand::Review(args) => {
+            let participant = crate::app::deploy::compile_participant_input(
+                &args.source,
+                args.participant.as_deref(),
+                None,
+            )?;
+            let mut reviews = Vec::new();
+            for api_id in &participant.implemented_apis {
+                reviews.push(
+                    auth.apis_review(&auth_types::AuthApiReviewRequest {
+                        api_id: wire(api_id)?,
+                        package_evidence: participant.package_evidence.clone(),
+                        extra: Default::default(),
+                    })
+                    .await
+                    .into_diagnostic()?
+                    .review,
+                );
+            }
+            serde_json::to_value(json!({ "reviews": reviews }))
         }
-        ApisCommand::Accept { input } => {
-            let request: auth_types::AuthApiAcceptRequest =
-                serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
+        ApisCommand::Accept(args) => {
+            let participant = crate::app::deploy::compile_participant_input(
+                &args.source,
+                args.participant.as_deref(),
+                None,
+            )?;
+            let mut apis = Vec::new();
+            for api_id in &participant.implemented_apis {
+                let review = auth
+                    .apis_review(&auth_types::AuthApiReviewRequest {
+                        api_id: wire(api_id)?,
+                        package_evidence: participant.package_evidence.clone(),
+                        extra: Default::default(),
+                    })
+                    .await
+                    .into_diagnostic()?
+                    .review;
+                if review.current_generation.is_some() {
+                    let current = auth
+                        .apis_get(&auth_types::AuthApiGetRequest {
+                            api_id: wire(api_id)?,
+                            extra: Default::default(),
+                        })
+                        .await
+                        .into_diagnostic()?;
+                    if current.api.canonical_digest == review.canonical_digest {
+                        apis.push(current.api);
+                        continue;
+                    }
+                }
+                miette::ensure!(
+                    review.compatible,
+                    "API {api_id} changes incompatibly ({}); replace it with \
+                    `trellis apis force-replace` using review {}",
+                    review.breakage.join("; "),
+                    review.review_id
+                );
+                let accepted = auth
+                    .apis_accept(&auth_types::AuthApiAcceptRequest {
+                        review_id: review.review_id,
+                        canonical_digest: review.canonical_digest,
+                        expected_generation: review
+                            .current_generation
+                            .map_or(0, |value| value.0 .0)
+                            .into(),
+                        expected_accepted_revision: review
+                            .current_accepted_revision
+                            .map_or(0, |value| value.0 .0)
+                            .into(),
+                        role_edits: Vec::new(),
+                        mapping_edits: Vec::new(),
+                        idempotency_key: wire(cli_idempotency_key())?,
+                        extra: Default::default(),
+                    })
+                    .await
                     .into_diagnostic()?;
-            serde_json::to_value(auth.apis_accept(&request).await.into_diagnostic()?)
+                apis.push(accepted.api);
+            }
+            serde_json::to_value(json!({ "apis": apis }))
         }
         ApisCommand::ForceReplace { input } => {
             let request: auth_types::AuthApiForceReplaceRequest =

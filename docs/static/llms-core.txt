@@ -267,10 +267,15 @@ enables both + refresh. Adding or removing native callbacks updates the
 supported flows. Kind is immutable; use a new client ID to switch kind. Native
 HTTP loopback callbacks need no development flag; browser loopback does.
 
-`trellis apis list|get|review|accept|force-replace` uses generated Auth request
-JSON and reviewed package evidence. Force replacement requires
-`trellis.auth.v1:apis.forceReplace` and explicit breakage/consent
-acknowledgements. Console exposes OAuth clients and the API catalog.
+A deployment needs every API its participant implements accepted first:
+`trellis apis accept --source <project-root> [--participant <package>.<Name>]`
+reviews each from the compiled package evidence and accepts compatible ones
+(`apis review` with the same flags only reviews), then `trellis svc <name>
+create` installs the participant; create names any API not yet accepted. An
+incompatible change needs `trellis apis force-replace` with generated
+`AuthApiForceReplaceRequest` JSON, `trellis.auth.v1:apis.forceReplace`, and
+explicit breakage/consent acknowledgements. Console exposes OAuth clients and the
+API catalog.
 
 For `trellis identity grants set`, the input file contains only
 `installedRevision`, `grants`, and `expiresAt`; all three are required.

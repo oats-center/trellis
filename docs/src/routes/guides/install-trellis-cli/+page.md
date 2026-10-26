@@ -113,11 +113,13 @@ switching between native and browser binding semantics.
 
 ## Review an API catalog change
 
-`trellis apis review review.json` accepts an `AuthApiReviewRequest` containing
-`apiId` and compiler-produced `packageEvidence`. Inspect its digest, compatibility,
-affected roles/providers, generation and accepted revision before preparing an
-`AuthApiAcceptRequest` for `trellis apis accept acceptance.json`. Acceptance is
-revision-fenced and requires `apis.accept`.
+`trellis apis review --source <project-root> --participant <package>.<Name>`
+compiles the package and reviews each API the participant implements, reporting
+its digest, compatibility, affected roles and deployments, generation, and
+accepted revision. `trellis apis accept` with the same flags reviews again and
+accepts every compatible API that is not already accepted at that definition.
+Acceptance is revision-fenced and requires `apis.accept`. `--participant` may be
+omitted when the package has one participant.
 
 Incompatible replacements use `trellis apis force-replace replacement.json` with
 an `AuthApiForceReplaceRequest`. The operator needs `apis.forceReplace` and must

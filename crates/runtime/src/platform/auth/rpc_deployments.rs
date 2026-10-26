@@ -358,7 +358,11 @@ fn deployment_input(
                 |row| row.get(0),
             )
             .optional()?
-            .ok_or(AuthError::Denied)?;
+            .ok_or_else(|| {
+                AuthError::Invalid(format!(
+                    "API {api} is not accepted; review and accept it before deploying"
+                ))
+            })?;
         expected_api_generations.insert(api.to_string(), generation);
     }
     Ok(super::DeploymentProvisioning {

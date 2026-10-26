@@ -215,7 +215,8 @@ pub(super) fn mutation(
     })
 }
 
-/// Return fixed contract classifications, never internal failure text.
+/// Return fixed contract classifications, never internal failure text. Only a
+/// validation failure says what was wrong with the caller's own input.
 pub(super) fn rpc_error(error: AuthError) -> ServerError {
     let (error_type, code, message) = match &error {
         AuthError::NotFound => (errors::AuthError::TYPE, "not_found", "Not found"),
@@ -245,10 +246,10 @@ pub(super) fn rpc_error(error: AuthError) -> ServerError {
             "session_retired",
             "Authorization session retired",
         ),
-        AuthError::Invalid(_) => (
+        AuthError::Invalid(detail) => (
             errors::ValidationError::TYPE,
             "invalid_request",
-            "Invalid request",
+            detail.as_str(),
         ),
         AuthError::Unavailable | AuthError::Broker(_) => (
             errors::UnexpectedError::TYPE,

@@ -8,7 +8,22 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- `trellis apis review` and `trellis apis accept` take `--source <project-root>`
+  and an optional `--participant`, like `trellis svc create`, instead of request
+  JSON files whose package evidence a service author could not produce. They
+  review, and accept when compatible, every API the participant implements;
+  accepting an unchanged definition does nothing. Deploying a service is
+  `apis accept` followed by `svc create`.
+- Auth validation errors carry what was wrong with the request, such as why
+  package evidence does not compile, instead of a bare "Invalid request".
+
 ### Fixed
+
+- Creating or applying a deployment whose participant implements an API that is
+  not yet accepted fails with "API <id> is not accepted" instead of "Not
+  authorized".
 
 - A Rust task that calls `upload` or `upload_from` on a generated Operation can
   be spawned again; the compiler no longer rejects it with "implementation of

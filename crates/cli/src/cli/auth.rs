@@ -40,13 +40,25 @@ pub enum ApisCommand {
     },
     /// Inspect the accepted API and canonical IDL.
     Get { api_id: String },
-    /// Review an AuthApiReviewRequest JSON file containing exact package evidence.
-    Review { input: PathBuf },
-    /// Accept an AuthApiAcceptRequest JSON file from a compatible review.
-    Accept { input: PathBuf },
+    /// Review the APIs a source package's participant implements.
+    Review(ApisSourceArgs),
+    /// Accept the APIs a source package's participant implements, after a
+    /// compatible review. An incompatible change needs `force-replace`.
+    Accept(ApisSourceArgs),
     /// Force an incompatible review using AuthApiForceReplaceRequest JSON.
     /// Requires apis.forceReplace plus both explicit acknowledgement fields.
     ForceReplace { input: PathBuf },
+}
+
+/// A participant in a native source package.
+#[derive(Debug, Args)]
+pub struct ApisSourceArgs {
+    /// Directory containing the package's `trellis.toml`.
+    #[arg(long)]
+    pub source: PathBuf,
+    /// Participant identity; required when the package has several.
+    #[arg(long)]
+    pub participant: Option<String>,
 }
 
 #[derive(Debug, Args)]

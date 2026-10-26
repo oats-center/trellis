@@ -153,29 +153,41 @@ test(
         await assert.rejects(run("clients", "get", clientId));
         const provider = participants.Provider.participant;
         const apiId = provider.implements[0].identity;
-        const reviewPath = `${directory}/review.json`;
-        await writeFile(
-          reviewPath,
-          JSON.stringify({ apiId, packageEvidence: provider.packageEvidence }),
+        const source = [
+          "--source",
+          new URL("../../integration/fixtures/client-upgrade", import.meta.url)
+            .pathname,
+          "--participant",
+          provider.id,
+        ];
+        // A deployment needs its implemented API accepted, and says which.
+        await assert.rejects(
+          run("svc", "provider", "create", ...source),
+          (error: Error) =>
+            // The terminal report wraps the message in a box.
+            error.message
+              .replace(/[\s│]+/g, " ")
+              .includes(`API ${apiId} is not accepted`),
         );
-        const { review } = await run("apis", "review", reviewPath);
-        const acceptPath = `${directory}/accept.json`;
-        await writeFile(
-          acceptPath,
-          JSON.stringify({
-            reviewId: review.reviewId,
-            canonicalDigest: review.canonicalDigest,
-            expectedGeneration: review.currentGeneration ?? "0",
-            expectedAcceptedRevision: review.currentAcceptedRevision ?? "0",
-            roleEdits: [],
-            mappingEdits: [],
-            idempotencyKey: ulid(),
-          }),
+        const { reviews } = await run("apis", "review", ...source);
+        assert.deepEqual(
+          reviews.map((review: { apiId: string }) => review.apiId),
+          [apiId],
         );
-        await run("apis", "accept", acceptPath);
+        const { apis } = await run("apis", "accept", ...source);
+        assert.equal(apis[0].canonicalDigest, reviews[0].canonicalDigest);
         const accepted = await run("apis", "get", apiId);
-        assert.equal(accepted.api.apiId, apiId);
-        assert.equal(accepted.api.canonicalDigest, review.canonicalDigest);
+        assert.equal(accepted.api.canonicalDigest, reviews[0].canonicalDigest);
+        // Accepting the same definition again changes nothing.
+        const again = await run("apis", "accept", ...source);
+        assert.equal(again.apis[0].acceptedRevision, apis[0].acceptedRevision);
+        const { deployment } = await run(
+          "svc",
+          "provider",
+          "create",
+          ...source,
+        );
+        assert.equal(deployment.participantId, provider.id);
         await run("logout");
         await assert.rejects(run("clients", "list"));
       } finally {

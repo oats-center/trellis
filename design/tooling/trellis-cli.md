@@ -77,8 +77,11 @@ trellis issuers revoke <issuer-key-id> ...
 ```
 
 Client registration and catalog operations call the generated `Auth.OAuthClients`
-and `Auth.Apis` families. JSON request files use generated native-contract DTOs;
-the CLI does not author a second policy or contract schema. Mutations retain
+and `Auth.Apis` families. `apis review` and `apis accept` take `--source` and an
+optional `--participant`, compile the package's evidence the way `svc create`
+does, and review (and accept, when compatible) each API the participant
+implements. Other JSON request files use generated native-contract DTOs; the CLI
+does not author a second policy or contract schema. Mutations retain
 expected revisions and idempotency keys. Force replacement requires
 `trellis.auth.v1:apis.forceReplace` and explicit breakage/consent acknowledgements.
 Client configuration supports exact registered loopback browser callbacks.
