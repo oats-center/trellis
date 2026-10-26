@@ -8,6 +8,16 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Generated TypeScript declared errors are constructed from their
+  declared payload alone: `new OrderNotFound({ orderId })`, or `new Gone()` for
+  an error without a payload. An optional second argument sets `message`
+  (default: the error name), `context`, `cause`, `id` or `traceId`; `id`,
+  `type` and trace capture are filled in. `error.payload` holds the declared
+  fields, and `error.data` is still the serialized form. Regenerate TypeScript
+  packages and drop hand-built `id`/`type`/`message` fields.
+
 ## [0.100.0-rc.6] - 2026-10-26
 
 ### Changed

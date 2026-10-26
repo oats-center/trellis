@@ -37,7 +37,8 @@ api primary@v1 {
   title "Primary";
   description "Primary fixture API.";
   error Known(Node);
-  rpc Fetch { input Node; output Node; errors [Known]; }
+  error Gone;
+  rpc Fetch { input Node; output Node; errors [Known, Gone]; }
   operation Process {
     input Node;
     output Node;
@@ -338,7 +339,7 @@ fn codecs_errors_and_generated_surfaces_compile() {
         temp.path().join("fixture_test.ts"),
         r#"
 import { test } from "node:test";
-import { API as Primary, Known } from "./typescript/apis/primary/mod.js";
+import { API as Primary, Gone, Known } from "./typescript/apis/primary/mod.js";
 import { request as Caller } from "./typescript/apps/Caller/mod.js";
 import { participant as Worker } from "./typescript/participants/Worker/mod.js";
 import type * as WorkerModule from "./typescript/participants/Worker/mod.js";
@@ -456,6 +457,25 @@ test("generated TypeScript package exercises WO-03 B2-B4", () => {
     message: "known",
   });
   assert(known.data.count === 18_446_744_073_709_551_615n, "known error payload codec");
+  // A handler builds a declared error from its payload alone.
+  const raised = new Known(node, { message: "no such node" });
+  const sent = raised.toSerializable();
+  assert(
+    sent.type === Known.type && sent.message === "no such node" && sent.id === raised.id && sent.label === "root",
+    "a declared error carries its identity, message and payload",
+  );
+  const received = knownClass.fromSerializable({
+    ...(Known.payloadCodec.encode(raised.payload) as object),
+    id: sent.id,
+    type: sent.type,
+    message: sent.message,
+  });
+  assert(
+    received.id === raised.id && received.message === "no such node" && received.data.count === node.count,
+    "a received declared error keeps the sender's id, message and payload",
+  );
+  const gone = new Gone();
+  assert(gone.message === "Gone" && gone.toSerializable().type === Gone.type, "a payload-less declared error defaults its message");
 
   const process = Primary.actions["operation:Process"];
   assert(process.progress?.decode(wire).status === "future", "operation progress");

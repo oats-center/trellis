@@ -760,7 +760,7 @@ fn render_api(
     }];
     if !api.errors().is_empty() {
         lines.push(
-            "import type { SerializableErrorData } from \"@oatscenter/trellis/generated\";"
+            "import type { DeclaredErrorOptions, SerializableErrorData } from \"@oatscenter/trellis/generated\";"
                 .to_owned(),
         );
     }
@@ -799,25 +799,48 @@ fn render_api(
             "  override readonly name = {} as const;",
             js_string(name)
         ));
-        lines.push(format!("  readonly data: {data};"));
-        lines.push(format!("  constructor(data: {data}) {{"));
-        lines.push(
-            "    super(data.message, { id: data.id, ...(data.context !== undefined \
-            ? { context: data.context } : {}) });"
-                .into(),
-        );
-        lines.push("    this.data = data;".into());
+        // Callers pass only the declared payload; `id`, `type` and trace
+        // capture come from the error itself, and the message defaults to the
+        // error name.
+        let payload_ty = payload_type
+            .as_ref()
+            .map(|value| type_ref(value, package, modules));
+        let payload_value = if payload_ty.is_some() {
+            "...this.payload, "
+        } else {
+            ""
+        };
+        if let Some(payload_ty) = &payload_ty {
+            lines.push(format!("  readonly payload: {payload_ty};"));
+            lines.push(format!(
+                "  constructor(payload: {payload_ty}, options: DeclaredErrorOptions = {{}}) {{"
+            ));
+        } else {
+            lines.push("  constructor(options: DeclaredErrorOptions = {}) {".into());
+        }
+        lines.push(format!(
+            "    const {{ message, ...rest }} = options; super(message ?? {}, rest);",
+            js_string(name)
+        ));
+        if payload_ty.is_some() {
+            lines.push("    this.payload = payload;".into());
+        }
         lines.push("  }".into());
-        lines.push(if payload_type.is_some() {
+        lines.push(format!(
+            "  get data(): {data} {{ return {{ ...this.baseSerializable(), {payload_value}type: {name}.type }} as {data}; }}"
+        ));
+        let options = "{ id: error.id, message: error.message, \
+            ...(error.context !== undefined ? { context: error.context } : {}), \
+            ...(error.traceId !== undefined ? { traceId: error.traceId } : {}) }";
+        lines.push(if payload_ty.is_some() {
             format!(
                 "  static fromSerializable(data: unknown): {name} {{ const error = data \
-                as SerializableErrorData; return new {name}({{ ...error, \
-                ...{name}.payloadCodec.decode(data) }} as {data}); }}"
+                as SerializableErrorData; return new {name}({name}.payloadCodec.decode(data), {options}); }}"
             )
         } else {
             format!(
-                "  static fromSerializable(data: unknown): {name} {{ return new \
-                {name}(data as {data}); }}"
+                "  static fromSerializable(data: unknown): {name} {{ const error = data \
+                as SerializableErrorData; return new {name}({options}); }}"
             )
         });
         lines.push(format!(

@@ -159,8 +159,13 @@ stay on the connected service; there is no generic
 `client.rpc`/`client.operation`/`client.event` tree.
 
 Declare wire models and expected errors in IDL. The generator owns the runtime
-schemas and generated error types. Handlers can return declared errors through
-`Result.err(...)`; callers can distinguish them from runtime/transport failures.
+schemas and generated error types. Construct a declared error from its declared
+payload alone, `new OrderNotFound({ orderId })` (or `new Gone()` without one);
+an optional second argument sets `message` (default: the error name),
+`context`, or `cause`, while `id`, `type` and the trace ID are filled in.
+`error.payload` holds the declared fields. Handlers return declared errors
+through `Result.err(...)`; callers can distinguish them from runtime/transport
+failures.
 `.orThrow()` converts a failed result to an exception where that matches the
 application's control flow. Native cursor-paginated RPCs add lazy `.pages()` and
 `.items()` iterators.

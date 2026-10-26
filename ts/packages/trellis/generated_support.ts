@@ -4,6 +4,15 @@ export type Codec<T> = Readonly<{
   encode(value: T): unknown;
 }>;
 
+/** Optional fields when constructing a generated declared error. */
+export type DeclaredErrorOptions = ErrorOptions & {
+  /** Human-readable message; defaults to the declared error's name. */
+  message?: string;
+  context?: Record<string, unknown>;
+  id?: string;
+  traceId?: string;
+};
+
 /** Serializable fields shared by generated declared errors. */
 export type SerializableErrorData = {
   id: string;

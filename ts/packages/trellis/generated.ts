@@ -5,6 +5,7 @@ export {
   type AppRequestDescriptor,
   type Codec,
   codecs,
+  type DeclaredErrorOptions,
   type JsonValue,
   participantDescriptor,
   type SerializableErrorData,
