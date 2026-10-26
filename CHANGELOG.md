@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.6] - 2026-10-26
+
 ### Changed
 
 - `trellis generate` (and `--watch`) re-records the project's own package in
@@ -26,6 +28,9 @@ and this project adheres to
   the handler runs, and a caller gets `ValidationError` instead of sending it.
   A payload that does not match its codec is now `ValidationError` rather than
   `UnexpectedError`. Regenerate TypeScript packages.
+- A closed Rust runtime kept vouching for the authorities it had cached, so it
+  could still accept events signed by a session that was revoked after it
+  shut down. Closing the runtime now retires its revocation coverage.
 
 ### Added
 
@@ -39,6 +44,11 @@ and this project adheres to
 - A TypeScript service whose `stop()` waits more than 10 seconds on one
   shutdown phase (health publishing, job workers, operation transfers, runtime
   or connection close) logs a warning naming that phase.
+
+## [0.100.0-rc.5] - 2026-10-26
+
+### Added
+
 - The IDL `json` type carries any JSON value unchecked, for opaque values such
   as configuration, details or attributes. It maps to `JsonValue` in TypeScript
   and `serde_json::Value` in Rust, takes no constraints, and cannot be an event
