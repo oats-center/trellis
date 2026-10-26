@@ -91,7 +91,11 @@ is optional. Required wins when a capability is repeated; `use Api;` selects
 nothing. `required group support;` selects an API's developer-defined group,
 which stands for its current members. Generated callers expose the selected
 actions; check capability availability before using an optional capability,
-because selecting it does not mean it was approved. Users approve a capability's or
+because selecting it does not mean it was approved. Availability has a key for
+each optional capability and group, plus each member of an optional group that
+allows a selected action: a member is available when the caller holds it and
+its selected actions are allowed, and a group only when all of its selected
+actions are, so gate each feature on the member it needs. Users approve a capability's or
 group's `grants` text; changing that text makes them approve again, while
 editing `title`, `description`, `allows`, or group members does not. Keep
 `grants` honest, and put changes that break what users agreed to in a new API

@@ -78,6 +78,12 @@ Capability identity generations, consent revisions, API generations, and
 accepted revisions remain significant; generated names do not confer authority.
 Dispatch still performs the authorization owner's live signed-catalog check.
 
+Availability reports each selected optional capability and group, and each
+member of a selected optional group that allows a selected action. A member is
+available when the authority holds it and its selected actions are allowed; a
+group, which an authority carries only as its members, when all of its selected
+actions are. TypeScript keys and generated Rust fields follow the same rule.
+
 Authenticated native resource bindings retain their physical names and handle
 generations across transport suspension and readiness. Readiness changes only
 usability; an authenticated replacement that changes or removes a binding retires

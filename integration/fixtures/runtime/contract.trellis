@@ -301,6 +301,13 @@ api transport_growth@v1 {
       grants "The subject can invoke its second optional operation.";
       allows { rpc Extend2; }
     }
+    group extras {
+      title "Extras";
+      description "Both optional growth operations.";
+      grants "The subject can invoke both optional operations.";
+      capability growth.extend;
+      capability growth.extendAgain;
+    }
   }
 }
 
@@ -374,6 +381,12 @@ service TransportGrowthOperationProvider {
   }
 }
 
+agent GroupMemberCaller {
+  use transport_growth {
+    required capability growth.advance;
+    group extras;
+  }
+}
 agent TransportGrowthCaller {
   use transport_growth {
     required capability growth.advance;

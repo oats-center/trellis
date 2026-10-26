@@ -2396,7 +2396,22 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
             .values()
             .find_map(|package| package.apis().get(api))
         {
+            // A requested group also reports each member that allows a selected
+            // action, so an app can gate on one member held without the group.
+            let mut capabilities = BTreeSet::new();
             for capability in &selection.optional_capabilities {
+                capabilities.insert(capability);
+                if definition.groups().contains_key(capability) {
+                    for member in definition.members(capability).unwrap_or_default() {
+                        if selection.actions.iter().any(|selected| {
+                            definition.capabilities()[member].allows.contains(selected)
+                        }) {
+                            capabilities.insert(member);
+                        }
+                    }
+                }
+            }
+            for capability in capabilities {
                 let expression = definition
                     .selection_allows(capability)
                     .map(|allows| {

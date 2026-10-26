@@ -16,6 +16,21 @@ and this project adheres to
   serving it, and responses allow one hour of private caching. A verified user
   caller's `user` now includes `avatarUrl` when the user has a photo.
 
+### Added
+
+- Availability for an optional capability group now also reports each of its
+  members that allows a selected action, in TypeScript `availability()` keys and
+  generated Rust `Availability` fields. A member is available when the caller
+  holds it and its actions are allowed, so an app can gate a feature on one
+  member granted directly; the group stays available only when all of its
+  actions are.
+
+### Fixed
+
+- Managed local NATS port reservations no longer hold a listening socket, which
+  a concurrently spawned process could inherit and keep accepting on, making
+  `ephemeral_ports()` startup fail with `PortInUse`.
+
 ## [0.100.0-rc.7] - 2026-10-26
 
 ### Fixed

@@ -284,7 +284,8 @@ export type CallerRuntime<TContract extends GeneratedCaller> =
   };
 
 type OptionalCapability<TContract extends GeneratedCaller> =
-  TContract["uses"][number]["optionalCapabilities"][number];
+  | TContract["uses"][number]["optionalCapabilities"][number]
+  | TContract["uses"][number]["actions"][number]["optionalCapabilities"][number];
 type OptionalResource<TContract extends GeneratedCaller> = {
   [
     Name in keyof CallerResources<TContract>
@@ -311,7 +312,15 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
       (snapshot, installed) => {
         const capabilities: Record<string, boolean> = {};
         for (const selection of contract.uses) {
-          for (const capability of selection.optionalCapabilities) {
+          // A requested group also reports each member that allows a selected
+          // action, so an app can gate on one member held without the group.
+          const keys = new Set([
+            ...selection.optionalCapabilities,
+            ...selection.actions.flatMap(
+              (action) => action.optionalCapabilities,
+            ),
+          ]);
+          for (const capability of keys) {
             // An authority carries a group's members, not the group itself.
             capabilities[capability] =
               snapshot !== undefined &&
