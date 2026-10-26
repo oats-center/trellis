@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
 use futures_util::Stream;
 use futures_util::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -290,11 +291,14 @@ pub trait OperationTransport {
         body: Vec<u8>,
     ) -> impl Future<Output = Result<FileInfo, TrellisClientError>> + Send + 'a;
 
+    // Boxed: an opaque future generic over the reader cannot be proven `Send`
+    // for every borrow lifetime (rust-lang/rust#100013), so a caller could not
+    // spawn a task that uploads.
     fn put_upload_transfer_from<'a, R>(
         &'a self,
         grant: UploadTransferGrant,
         reader: &'a mut R,
-    ) -> impl Future<Output = Result<FileInfo, TrellisClientError>> + Send + 'a
+    ) -> BoxFuture<'a, Result<FileInfo, TrellisClientError>>
     where
         R: AsyncRead + Unpin + Send + ?Sized + 'a;
 
@@ -303,7 +307,7 @@ pub trait OperationTransport {
         grant: UploadTransferGrant,
         reader: &'a mut R,
         cancellation: &'a TransferCancellation,
-    ) -> impl Future<Output = Result<FileInfo, TrellisClientError>> + Send + 'a
+    ) -> BoxFuture<'a, Result<FileInfo, TrellisClientError>>
     where
         R: AsyncRead + Unpin + Send + ?Sized + 'a;
 }

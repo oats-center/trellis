@@ -2553,33 +2553,37 @@ impl OperationTransport for TrellisClient {
         put_upload_grant(self, &grant, body).await
     }
 
-    async fn put_upload_transfer_from<'a, R>(
+    fn put_upload_transfer_from<'a, R>(
         &'a self,
         grant: UploadTransferGrant,
         reader: &'a mut R,
-    ) -> Result<FileInfo, TrellisClientError>
+    ) -> futures_util::future::BoxFuture<'a, Result<FileInfo, TrellisClientError>>
     where
         R: tokio::io::AsyncRead + Unpin + Send + ?Sized + 'a,
     {
-        crate::client::transfer::put_upload_grant_from(self, &grant, reader).await
+        Box::pin(async move {
+            crate::client::transfer::put_upload_grant_from(self, &grant, reader).await
+        })
     }
 
-    async fn put_upload_transfer_from_with_cancel<'a, R>(
+    fn put_upload_transfer_from_with_cancel<'a, R>(
         &'a self,
         grant: UploadTransferGrant,
         reader: &'a mut R,
         cancellation: &'a crate::client::TransferCancellation,
-    ) -> Result<FileInfo, TrellisClientError>
+    ) -> futures_util::future::BoxFuture<'a, Result<FileInfo, TrellisClientError>>
     where
         R: tokio::io::AsyncRead + Unpin + Send + ?Sized + 'a,
     {
-        crate::client::transfer::put_upload_grant_from_with_cancel(
-            self,
-            &grant,
-            reader,
-            Some(cancellation),
-        )
-        .await
+        Box::pin(async move {
+            crate::client::transfer::put_upload_grant_from_with_cancel(
+                self,
+                &grant,
+                reader,
+                Some(cancellation),
+            )
+            .await
+        })
     }
 }
 

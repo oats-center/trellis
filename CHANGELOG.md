@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A Rust task that calls `upload` or `upload_from` on a generated Operation can
+  be spawned again; the compiler no longer rejects it with "implementation of
+  `Send` is not general enough".
+
 ## [0.100.0-rc.8] - 2026-10-26
 
 ### Changed

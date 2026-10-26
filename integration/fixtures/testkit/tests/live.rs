@@ -2077,6 +2077,120 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
     runtime.shutdown().await.expect("shutdown runtime");
 }
 
+/// A service's staging task spawns the whole upload: start plus `upload` or
+/// `upload_from` must stay `Send`, and the provider sees the committed bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spawned_tasks_start_and_upload_operations() {
+    use trellis_rs::client::{CallError, OperationState};
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("provider")
+        .await
+        .expect("register provider");
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect provider");
+    Provider::new(&mut service)
+        .trellis_test_fixture_echo_v1()
+        .register_echo(|_context, input| async move { Ok(input) });
+    Provider::new(&mut service)
+        .trellis_test_fixture_echo_v1()
+        .register_upload(|_context, input, operation| async move {
+            let upload = operation
+                .upload()
+                .await?
+                .ok_or_else(|| ServerError::Nats("upload missing".to_owned()))?;
+            operation
+                .complete(value(&format!("{}:{}", input.value, upload.size)))
+                .await?;
+            Ok(())
+        });
+    let task = tokio::spawn(async move { service.run().await });
+
+    let caller_identity = runtime
+        .register_client::<CallerRequest>("caller")
+        .await
+        .expect("register caller");
+    let api = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    )
+    .trellis_test_fixture_echo_v1();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut readiness = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            readiness.tick().await;
+            match api.echo(&value("provider-ready")).await {
+                Ok(_) => break,
+                Err(CallError::ServiceUnavailable(_)) => {}
+                Err(error) => panic!("provider readiness RPC failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("provider serves its generated RPC");
+
+    let bytes: Vec<u8> = (0..70_001).map(|index| (index % 251) as u8).collect();
+    let owned = tokio::spawn({
+        let api = api.clone();
+        let bytes = bytes.clone();
+        async move {
+            let operation = api
+                .upload()
+                .start(&value("owned"))
+                .await
+                .map_err(|error| format!("start: {error:?}"))?;
+            operation
+                .upload(&bytes)
+                .await
+                .map_err(|error| format!("upload: {error:?}"))?;
+            operation
+                .wait()
+                .await
+                .map_err(|error| format!("wait: {error:?}"))
+        }
+    });
+    let streamed = tokio::spawn({
+        let api = api.clone();
+        let bytes = bytes.clone();
+        async move {
+            let operation = api
+                .upload()
+                .start(&value("streamed"))
+                .await
+                .map_err(|error| format!("start: {error:?}"))?;
+            operation
+                .upload_from(&mut bytes.as_slice())
+                .await
+                .map_err(|error| format!("upload: {error:?}"))?;
+            operation
+                .wait()
+                .await
+                .map_err(|error| format!("wait: {error:?}"))
+        }
+    });
+    for (task, expected) in [(owned, "owned:70001"), (streamed, "streamed:70001")] {
+        let snapshot = tokio::time::timeout(Duration::from_secs(30), task)
+            .await
+            .expect("spawned upload finishes")
+            .expect("spawned upload task")
+            .expect("upload operation completes");
+        assert_eq!(snapshot.state, OperationState::Completed);
+        assert_eq!(
+            snapshot.output.map(|output| output.value).as_deref(),
+            Some(expected)
+        );
+    }
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
 /// T11: generated distinct `progress`/`update` schemas deliver a live preview
 /// while the durable snapshot keeps only the declared progress status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
