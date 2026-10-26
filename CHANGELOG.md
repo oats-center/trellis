@@ -23,6 +23,18 @@ and this project adheres to
   review, and accept when compatible, every API the participant implements;
   accepting an unchanged definition does nothing. Deploying a service is
   `apis accept` followed by `svc create`.
+- A service whose build differs from the one its instance runs submits its own
+  IDL when it connects. A build that asks for no new capability, resource, or
+  API installs at once; one that does waits for an administrator, and the service
+  logs the Console review link and prints it as a QR code while it waits.
+  Approve or reject it on the service's Console page or with
+  `trellis svc <deployment-id> updates|approve|reject`. A dropped resource keeps
+  its data, and an approved later build that declares it again gets it back. A
+  build that implements an API another service serves needs an explicit
+  acknowledgement that requests will be split between them. Restarting a
+  service after `trellis svc apply` now also moves its instance to the applied
+  revision.
+
 - Auth validation errors carry what was wrong with the request, such as why
   package evidence does not compile, instead of a bare "Invalid request".
 

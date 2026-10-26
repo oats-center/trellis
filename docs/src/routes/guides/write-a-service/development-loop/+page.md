@@ -10,7 +10,9 @@ description: "Know when to regenerate artifacts, review deployment authority, an
    re-records your package in `trellis.lock`; commit the updated lock.
 3. Run `trellis update` when dependency declarations change.
 4. Compile the generated language surface and application code.
-5. Review authority changes before deployment.
+5. Restart the service. A build that asks for new capabilities or resources
+   waits for an administrator to approve it at the link it prints; anything
+   else installs as it connects.
 
 Watch mode observes the project and direct local dependencies. Temporary source
 errors are reported without deleting the last successful artifacts. Renderer and

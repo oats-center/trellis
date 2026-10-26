@@ -1894,6 +1894,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-pinned-trellis"
+version = "0.100.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "trellis-builtin-contracts",
+ "trellis-codegen-rust",
+ "trellis-idl",
+ "trellis-models",
+ "trellis-protocol",
+ "trellis-rs",
+]
+
+[[package]]
 name = "runtime-trellis"
 version = "0.100.0"
 dependencies = [
@@ -2821,6 +2836,7 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "runtime-live-v2",
+ "runtime-pinned-trellis",
  "runtime-trellis",
  "serde_json",
  "sha2",

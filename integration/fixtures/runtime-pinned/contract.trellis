@@ -231,3 +231,22 @@ service TransportGrowthSubject {
 }
 
 service TransportGrowthTarget { implements transport_growth; }
+
+// Later builds of runtime fixture services, for service-update acceptance.
+service ResourceProvider {
+  implements runtime;
+  kv records { title "Records"; description "Console resource lifecycle acceptance values."; schema ResourceValue; version 1; history 4; ttl 0ms; }
+}
+
+api added@v1 {
+  title "Added API";
+  description "An API a later build starts to provide.";
+  rpc Ping { input Value; output Value; }
+  capabilities {
+    capability added.ping { title "Ping"; description "Ping the added API."; grants "The caller may ping the added API."; allows { rpc Ping; } }
+  }
+}
+service OrdinaryJobs {
+  implements added;
+  job work { title "Work"; description "Ordinary queue cancellation"; payload Value; result Value; }
+}

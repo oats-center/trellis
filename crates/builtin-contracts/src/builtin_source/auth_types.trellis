@@ -665,9 +665,11 @@ model AuthServiceUpdateChanges {
   addedCapabilities: list<AuthCapabilityId>;
   removedCapabilities: list<AuthCapabilityId>;
   addedResources: list<AuthServiceUpdateResource>;
+  reattachedResources: list<AuthServiceUpdateResource>;
   changedResources: list<AuthServiceUpdateResource>;
   removedResources: list<AuthServiceUpdateResource>;
   addedApis: list<AuthApiId>;
+  sharedApis: list<AuthApiId>;
   removedApis: list<AuthApiId>;
   acceptedApis: list<AuthApiId>;
 }
@@ -692,6 +694,7 @@ type AuthServiceUpdatesListResponse = CursorPage<AuthServiceUpdate>;
 model AuthServiceUpdateDecideRequest {
   updateId: ulid;
   decision: AuthDecision;
+  acknowledgeSharedApis?: bool;
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }

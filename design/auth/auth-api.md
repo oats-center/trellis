@@ -13,7 +13,7 @@ reference. The OAuth listener's routes are defined by the router in
 `crates/runtime/src/platform/auth/oauth/http.rs`; their HTTP-only DTOs remain
 Rust-owned at that transport boundary.
 
-There are no handwritten desired/materialized-authority, proposal,
+There are no handwritten desired/materialized-authority,
 reconciliation, identity-grant, trust-root, certificate, manifest, or legacy
 device-connect APIs, and no HTTP bootstrap or context-refresh endpoints.
 
@@ -100,8 +100,14 @@ stored after ordinary rotation; explicit issuer revocation remains separate.
 
 ### Deployments And Provisioning
 
-Deployment Apply is the direct mutation path. There is no proposal, plan,
-approve, reconcile, or materialized-authority RPC family.
+Deployment Apply is the administrator's direct mutation path. A running
+service can also submit its own build: `ServiceUpdates.Submit` and
+`ServiceUpdates.Status` are callable by every service instance through
+`trellis.auth.v1:serviceUpdates.submit`; `ServiceUpdates.List`, `Get`, and
+`Decide` require `trellis.auth.v1:users.manage`. An update that asks for no new
+capability or resource installs at once; one that does waits for `Decide`. See
+[service updates](service-updates.md). There is no materialized-authority or
+reconcile RPC family.
 
 ### Resource administration
 

@@ -279,6 +279,26 @@ incompatible change needs `trellis apis force-replace` with generated
 explicit breakage/consent acknowledgements. Console exposes OAuth clients and the
 API catalog.
 
+A running service updates itself. When its generated participant digest differs
+from the revision its instance runs, the service SDK submits its package evidence
+(`Auth.ServiceUpdates.Submit`, which every service instance may call) and
+connects again once Auth installs it. A build that asks for no capability,
+resource, or API the deployment does not already hold installs at once,
+accepting compatible new revisions of the APIs it already provides. A build that
+asks for more, including reattaching a resource an earlier build dropped or
+starting to provide an API, waits for an administrator: the SDK logs the Console review link
+(`/console/admin/services/<deploymentId>?update=<updateId>`) and prints it as a
+terminal QR code, and `trellis svc <deployment-id> updates|approve|reject` does
+the same from the CLI. Dropping a resource only detaches it; its data stays until
+`Resources.Remove`, and an approved reattachment brings it back. A build that
+implements an API another deployment already serves needs an explicit
+acknowledgement on approval (`acknowledgeSharedApis`, or
+`approve --acknowledge-shared-apis`): both deployments then share the API's queue
+group, so requests split at random between services with separate data. Scale or
+move a service with more instances of one deployment instead. A build whose
+implemented API changed incompatibly is refused until the API is force-replaced.
+`trellis svc <deployment-id> apply` still installs a build ahead of time.
+
 For `trellis identity grants set`, the input file contains only
 `installedRevision`, `grants`, and `expiresAt`; all three are required.
 `installedRevision` accepts a JSON integer or decimal string in
@@ -487,9 +507,10 @@ signed authority.
 Trellis HTTP endpoints serve bootstrap, browser/account flows, recovery, and
 browser assets; connected Trellis control uses generated APIs over NATS. Use the
 connected client's `logout()` for normal sign-out so local installation and
-connection state are updated together. Self-revocation can close the transport
-before the `Sessions.Logout` reply arrives; `logout()` confirms revocation
-through signed HTTP recovery when the reply is lost. Unrelated authorization
+connection state are updated together. Auth holds the caller's own revocation
+and disconnect for five seconds so the `Sessions.Logout` reply arrives first;
+Auth refuses the session from the cutoff. If a reply is still lost, `logout()`
+confirms revocation through signed HTTP recovery. Unrelated authorization
 failures do not count as successful logout.
 
 ## Authorization

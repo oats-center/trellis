@@ -97,6 +97,8 @@ trellis svc apply <deployment-id> <project> ...
 trellis svc get <deployment-id>
 trellis svc provision <deployment-id> ...
 trellis svc enable|disable|remove ...
+trellis svc <deployment-id> updates
+trellis svc <deployment-id> approve|reject [<update-id>] [--acknowledge-shared-apis]
 
 trellis dev create ...
 trellis dev apply <deployment-id> <project> ...
@@ -109,9 +111,13 @@ Apply compiles the project source in memory, validates its participant kind and
 selected participant, installs the participant revision when needed, then calls
 the direct deployment mutation. Inspection uses `Auth.Deployments.Get`.
 
-There are no authority show/plan/propose/approve/reject/reconcile commands.
-Deployment changes and participant grant changes are distinct explicit
-operations.
+`svc updates` lists the builds a service submitted for itself
+(`Auth.ServiceUpdates.List`) with what each asks for and gives up;
+`approve` and `reject` decide the pending one, or the named one
+(`Auth.ServiceUpdates.Decide`). Approving an update that would answer an API
+another deployment serves requires `--acknowledge-shared-apis`; without it the
+CLI explains that requests would be split between the services and stops. See `design/auth/service-updates.md`. There are
+no authority show/plan/reconcile commands.
 
 Provisioning returns one-use service/device material once. The CLI does not
 persist returned private identity material unless the caller explicitly directs
@@ -188,7 +194,7 @@ evidence, and unavailable issuer/runtime dependencies.
 ## Removed Surface
 
 - offline trust infrastructure and `infra` commands;
-- authority proposals/plans and reconciliation;
+- authority plans and reconciliation;
 - desired/materialized authority inspection;
 - identity-grant IDs or contract-digest-scoped grant commands; and
 - client-side artifact/digest assertions during bootstrap.

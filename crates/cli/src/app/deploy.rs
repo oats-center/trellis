@@ -62,7 +62,196 @@ async fn run_svc_resource(format: OutputFormat, command: SvcResourceCommand) -> 
         }
         SvcResourceAction::Instances(args) => service_instances(format, &command.id, &args).await,
         SvcResourceAction::Provision(args) => provision_service(format, &command.id, &args).await,
+        SvcResourceAction::Updates => service_updates(format, &command.id).await,
+        SvcResourceAction::Approve(args) => {
+            decide_service_update(format, &command.id, &args, true).await
+        }
+        SvcResourceAction::Reject(args) => {
+            decide_service_update(format, &command.id, &args, false).await
+        }
     }
+}
+
+async fn list_service_updates(
+    connected: &Client,
+    deployment_id: &str,
+) -> miette::Result<Vec<auth_types::AuthServiceUpdate>> {
+    AuthClient::from_generated(connected.clone())
+        .service_updates_list_items(auth_types::AuthServiceUpdatesListRequest {
+            deployment_id: Some(wire(deployment_id)?),
+            page: Some(trellis_runtime_apis::CursorQuery {
+                cursor: None,
+                limit: Some(100),
+            }),
+            extra: Default::default(),
+        })
+        .try_collect::<Vec<_>>()
+        .await
+        .into_diagnostic()
+}
+
+async fn service_updates(format: OutputFormat, id: &str) -> miette::Result<()> {
+    let deployment_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
+    let (_, connected) = connect_authenticated_cli_client().await?;
+    let updates = list_service_updates(&connected, &deployment_id).await?;
+    if output::is_json(format) {
+        return output::print_json(&json!({ "updates": updates }));
+    }
+    if updates.is_empty() {
+        println!("{id} has not submitted any updates.");
+    }
+    for update in &updates {
+        print_service_update(update);
+    }
+    Ok(())
+}
+
+/// Print what an update asks for and gives up, in the Console's words.
+fn print_service_update(update: &auth_types::AuthServiceUpdate) {
+    let changes = &update.changes;
+    let resource =
+        |item: &auth_types::AuthServiceUpdateResource| format!("{} {}", item.kind, item.name);
+    println!(
+        "{}  {}  {}",
+        update.update_id, update.state, update.requested_at
+    );
+    let section = |title: &str, lines: Vec<String>| {
+        if !lines.is_empty() {
+            println!("  {title}");
+            for line in lines {
+                println!("    {line}");
+            }
+        }
+    };
+    section(
+        "Asks for:",
+        changes
+            .added_capabilities
+            .iter()
+            .map(|capability| format!("capability {capability}"))
+            .chain(changes.added_resources.iter().map(resource))
+            .chain(
+                changes
+                    .reattached_resources
+                    .iter()
+                    .map(|item| format!("{} again, with its kept data", resource(item))),
+            )
+            .chain(changes.added_apis.iter().map(|api| {
+                if changes.shared_apis.contains(api) {
+                    format!("to provide {api}, which another service already serves")
+                } else {
+                    format!("to provide {api}")
+                }
+            }))
+            .chain(
+                changes
+                    .changed_resources
+                    .iter()
+                    .map(|item| format!("{} (changed)", resource(item))),
+            )
+            .collect(),
+    );
+    section(
+        "Gives up:",
+        changes
+            .removed_capabilities
+            .iter()
+            .map(|capability| format!("capability {capability}"))
+            .chain(
+                changes
+                    .removed_resources
+                    .iter()
+                    .map(|item| format!("{} (data kept)", resource(item))),
+            )
+            .collect(),
+    );
+    section(
+        "Provides:",
+        changes
+            .removed_apis
+            .iter()
+            .map(|api| format!("stops {api}"))
+            .chain(
+                changes
+                    .accepted_apis
+                    .iter()
+                    .map(|api| format!("updates {api}")),
+            )
+            .collect(),
+    );
+    if update.state == auth_types::AuthServiceUpdateState::Pending {
+        println!("  Review: {}", update.review_url);
+    }
+}
+
+async fn decide_service_update(
+    format: OutputFormat,
+    id: &str,
+    args: &SvcUpdateArgs,
+    approve: bool,
+) -> miette::Result<()> {
+    let deployment_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
+    let (_, connected) = connect_authenticated_cli_client().await?;
+    let updates = list_service_updates(&connected, &deployment_id).await?;
+    let selected = match &args.update {
+        Some(update) => updates
+            .iter()
+            .find(|candidate| candidate.update_id.to_string() == *update),
+        None => updates
+            .iter()
+            .find(|candidate| candidate.state == auth_types::AuthServiceUpdateState::Pending),
+    }
+    .ok_or_else(|| match &args.update {
+        Some(update) => miette::miette!("{id} has no update {update}"),
+        None => miette::miette!("{id} has no pending update"),
+    })?;
+    if approve && !selected.changes.shared_apis.is_empty() && !args.acknowledge_shared_apis {
+        return Err(miette::miette!(
+            help = "Re-run with --acknowledge-shared-apis only if splitting requests is intended.",
+            "This update makes {id} answer {} alongside the service that already does. \
+            Callers' requests would be split between the two services at random: each sees \
+            only some requests, they keep separate data, and callers cannot tell which one \
+            answered. This is not how replicas or upgrades work; add instances to one \
+            service for that.",
+            selected
+                .changes
+                .shared_apis
+                .iter()
+                .map(|api| api.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    let response = AuthClient::from_generated(connected)
+        .service_updates_decide(&auth_types::AuthServiceUpdateDecideRequest {
+            update_id: selected.update_id,
+            acknowledge_shared_apis: (approve && args.acknowledge_shared_apis).then_some(true),
+            decision: if approve {
+                auth_types::AuthDecision::Approved
+            } else {
+                auth_types::AuthDecision::Declined
+            },
+            expected_revision: selected.revision,
+            idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?;
+    if output::is_json(format) {
+        return output::print_json(&json!({ "update": response.update }));
+    }
+    match response.update.state {
+        auth_types::AuthServiceUpdateState::Applied => {
+            println!("Approved. {id} connects with its new build now.")
+        }
+        auth_types::AuthServiceUpdateState::Rejected => {
+            println!("Rejected. {id} keeps its installed build.")
+        }
+        _ => println!(
+            "{id} changed since it submitted this update; it will submit again when it reconnects."
+        ),
+    }
+    Ok(())
 }
 
 async fn run_dev_resource(format: OutputFormat, command: DevResourceCommand) -> miette::Result<()> {

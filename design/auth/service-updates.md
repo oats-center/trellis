@@ -15,16 +15,22 @@ stays. A service update is the same install, started by the service.
 - An instance runs exactly one installed participant revision. It moves to a
   newer revision only when that revision's participant digest equals the digest
   of the binary that connects.
-- What a service provides needs no approval. A participant may implement any API
-  whose accepted definition it stays compatible with, and Auth accepts a
-  compatible new revision of an API it implements while applying the update.
-- What a service consumes does. A capability the deployment did not already
-  select, or a resource it did not already declare or now declares differently,
-  waits for an administrator.
+- An API the deployment already provides may change compatibly without
+  approval: Auth accepts the new revision while applying the update.
+- Starting to provide an API waits for an administrator. Providing an API
+  another deployment already serves also needs the administrator to acknowledge
+  it explicitly: every deployment serving an API joins one queue group, so
+  callers' requests are split at random between the two services, which keep
+  separate data. Capacity, host moves, and rolling upgrades use more instances of
+  one deployment instead.
+- What a service consumes waits for approval too: a capability the deployment
+  did not already select, or a resource it does not declare now or declares
+  with more room or more events.
 - Dropping something only takes access away. An omitted resource is detached,
   and its data stays until an administrator removes it with `Resources.Remove`.
-  Declaring it again reattaches the same storage, so a bad update followed by a
-  fix loses nothing.
+  Declaring it again asks to reattach that same storage, which needs approval
+  like any other resource; approving it brings the kept data back, so a bad
+  update followed by a fix loses nothing.
 
 ## Flow
 
@@ -57,18 +63,26 @@ Moving an instance re-grants its direct capabilities to match the new revision's
 selection, removes capabilities the revision no longer selects, and enqueues
 deployment enforcement, so sessions of the old revision are re-evaluated.
 Resource materialization for the new revision runs after the commit through the
-same owner as instance provisioning.
+same owner as instance provisioning; approving an already applied update again
+retries it, which the Console offers as "Try again" when setup fails.
 
 ## Changes
 
 `AuthServiceUpdateChanges` is what the review screen shows:
 
-- `addedCapabilities` and `addedResources`, `changedResources`: what the update
-  asks for; any of them makes the update wait for approval.
-- `removedCapabilities`, `removedResources`: access the service gives up.
-  Removed resources keep their data.
-- `addedApis`, `removedApis`, `acceptedApis`: what the service starts or stops
-  providing, and which compatible API revisions applying it accepts.
+- `addedCapabilities`, `addedResources`, `reattachedResources`,
+  `changedResources`, `addedApis`: what the update asks for; any of them makes
+  the update wait for approval.
+- `sharedApis`: the added APIs another deployment already serves. Approving an
+  update with any requires `acknowledgeSharedApis`; the Console asks for it with
+  a warning, a checkbox, and a confirmation, and the CLI with
+  `--acknowledge-shared-apis`.
+- `removedCapabilities`, `removedResources`, `removedApis`: what the service
+  gives up. Removed resources keep their data.
+- `acceptedApis`: compatible API revisions applying the update accepts.
+
+Approval recomputes the changes, so an API another deployment started serving
+after the submission still needs the acknowledgement.
 
 ## Approval
 

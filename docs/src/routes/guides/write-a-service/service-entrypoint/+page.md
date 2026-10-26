@@ -108,8 +108,11 @@ contains a caller, so `--participant` selects the provider by its identity,
 `<package>.<ServiceName>`. `apis accept` adds the API the service implements to
 the installation's catalog, which create requires. Create installs the participant and its deployment
 resources. Set `TRELLIS_DEPLOYMENT` to the returned `deployment.deploymentId`,
-not the display name. After later IDL changes, run
-`trellis svc "$TRELLIS_DEPLOYMENT" apply --source . --participant orders.OrdersService`.
+not the display name. After later IDL changes, restart the service: it submits
+its new build, which installs at once unless it asks for new capabilities or
+resources, in which case it prints a review link for an administrator.
+`trellis svc "$TRELLIS_DEPLOYMENT" apply --source . --participant orders.OrdersService`
+installs a build ahead of time instead.
 Inspect the deployment and provision an instance:
 
 ```sh

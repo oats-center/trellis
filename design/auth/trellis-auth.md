@@ -966,6 +966,12 @@ empty projection is valid only for an installed participant with no
 declarations. Deploying a participant that selects administration requires
 `trellis.auth.v1:platform.manage`.
 
+An instance runs the participant revision it was provisioned with until its own
+build moves it: a service whose build differs submits it as a
+[service update](service-updates.md), which installs the revision (at once, or
+after approval when it asks for new access) and moves the instance onto it,
+reconciling the instance's capabilities with the new selection.
+
 Disabling a deployment retires its sessions and denies new admission without
 detaching allocations or clearing resource commitments. Enabling it reuses those
 retained bindings; it does not require contract reapplication or recreate

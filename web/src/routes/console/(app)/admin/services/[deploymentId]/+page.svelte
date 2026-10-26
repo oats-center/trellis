@@ -17,6 +17,7 @@
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
+  import ServiceUpdates from "$lib/components/ServiceUpdates.svelte";
 
   type Deployment = apis.auth.DeploymentsGetOutput["deployment"];
   type Instance = apis.auth.ServiceInstancesListOutput["items"][number];
@@ -210,6 +211,11 @@
   >
   {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
     >{/if}
+  {#if deployment && canPerform(authority.authority, "serviceUpdatesList")}<ServiceUpdates
+      deploymentId={deployment.deploymentId}
+      focus={page.url.searchParams.get("update") ?? undefined}
+      onapplied={() => void load(deploymentId)}
+    />{/if}
   {#if loading}<LoadingState label="Loading service" />{:else if deployment}
     <div class="trellis-section p-5">
       <div class="flex flex-wrap items-center gap-3">

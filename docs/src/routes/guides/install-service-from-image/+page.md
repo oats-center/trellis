@@ -42,7 +42,7 @@ catalog; a deployment cannot be created until they are accepted. Set
 `DEPLOYMENT_ID` to the returned `deployment.deploymentId`. Create compiles
 native IDL in memory, installs an immutable participant revision, sets up
 deployment resources, and writes the participant-scoped binding; later releases
-use `apply` (below). There is no proposal, authority-plan, or reconcile step.
+use `apply` or let the service submit its own build (below).
 
 ## 3. Provision an instance
 
@@ -82,8 +82,26 @@ deployment IDs, instance IDs, resource bindings, or authority files.
 
 ## 5. Upgrade
 
-Distribute the new image and matching Trellis project metadata. Apply that
-project before rolling out containers:
+Roll out the new image. When it connects, the service sees that its build
+differs from the one its instance runs and submits its own IDL:
+
+- If the build asks for nothing new (no new capability, resource, or API), Auth
+  installs it and the service connects under it at once.
+- If it asks for new access, the service waits. It logs a review link and prints
+  it as a QR code; open it, or run `trellis svc "$DEPLOYMENT_ID" updates` and
+  `trellis svc "$DEPLOYMENT_ID" approve`. The service connects as soon as the
+  update is approved.
+
+A build that drops a resource only gives up access to it; the data stays until
+you remove it under Resources. A later build that declares it again asks for it
+back, and approving that brings the kept data with it. A build that implements an
+API another service already serves can only be approved with an explicit
+acknowledgement, because requests would then be split at random between the two
+services. To add capacity or move a service, provision more instances of the same
+deployment instead. A build whose implemented API changed incompatibly is
+refused until you force-replace that API.
+
+To install a release before rolling it out instead, apply its project:
 
 ```sh
 trellis apis accept \

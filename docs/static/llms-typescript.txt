@@ -65,7 +65,12 @@ heartbeat interval. Deployment/instance assignment, installed
 package/participant evidence, capabilities, resources, signed session authority,
 and transport permissions are resolved server-side; no authorization-context
 store or client-supplied deployment/digest fields exist. The complete example is
-in `/guides/write-a-service/service-entrypoint`.
+in `/guides/write-a-service/service-entrypoint`. When the build differs from the
+revision its instance runs, `TrellisService.connect` submits the build and
+resolves once it installs; a build that asks for new access keeps `connect`
+pending until an administrator approves it, logging the review link and printing
+it as a QR code on stderr. An administrator's rejection fails `connect`;
+`signal` cancels the wait.
 
 When the installation serves a private CA, such as the Trellis-generated
 installation CA, start Node services, devices, and native apps with

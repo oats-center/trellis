@@ -144,8 +144,8 @@ pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
 }
 
 /// Create storage the newly installed revision declares, through the same owner
-/// as instance provisioning. A failure leaves the committed update applied; the
-/// service's next connection retries materialization through Submit.
+/// as instance provisioning. A failure leaves the committed update applied;
+/// approving it again retries the materialization.
 async fn materialize(
     store: &Arc<SqliteAuthorizationStore>,
     operational: &async_nats::Client,
@@ -414,14 +414,15 @@ fn changes(
         .map(|(name, resource)| ((resource_kind(resource).into(), name.to_string()), resource))
         .collect();
     let mut added_resources = Vec::new();
+    let mut reattached_resources = Vec::new();
     let mut changed_resources = Vec::new();
     for (key, resource) in &resources {
         match current.resources.get(key) {
             Some(old) if resource_grows(old, resource) => changed_resources.push(key),
             Some(_) => {}
             // A resource an earlier revision dropped is still this deployment's,
-            // data included: declaring it again reattaches it.
-            None if owned.contains(key) => {}
+            // data included: declaring it again asks to reattach that data.
+            None if owned.contains(key) => reattached_resources.push(key),
             None => added_resources.push(key),
         }
     }
@@ -436,8 +437,23 @@ fn changes(
         .map(ToString::to_string)
         .collect();
     let mut accepted_apis = Vec::new();
+    let mut shared_apis = Vec::new();
     for identity in definition.implements() {
         let api = &identity.to_string();
+        // Every deployment serving an API shares one queue group, so a second
+        // one splits callers' requests with the first. That needs approval with
+        // an explicit acknowledgement.
+        let served_elsewhere: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_deployment_bindings b \
+            JOIN auth_deployments d USING(deployment_id), json_each(b.provided_apis_json) p \
+            WHERE d.deployment_id!=?1 AND d.state!='revoked' \
+            AND json_extract(p.value,'$.api_id')=?2)",
+            params![deployment, api],
+            |row| row.get(0),
+        )?;
+        if served_elsewhere && !current.apis.contains(api) {
+            shared_apis.push(api.clone());
+        }
         let accepted: Option<(String, String)> = connection
             .query_row(
                 "SELECT definition_digest,definition_json FROM auth_accepted_apis WHERE api_id=?1",
@@ -473,9 +489,11 @@ fn changes(
         "addedCapabilities": capabilities.difference(&current.capabilities).collect::<Vec<_>>(),
         "removedCapabilities": current.capabilities.difference(&capabilities).collect::<Vec<_>>(),
         "addedResources": added_resources.iter().map(resource).collect::<Vec<_>>(),
+        "reattachedResources": reattached_resources.iter().map(resource).collect::<Vec<_>>(),
         "changedResources": changed_resources.iter().map(resource).collect::<Vec<_>>(),
         "removedResources": removed_resources.iter().map(resource).collect::<Vec<_>>(),
         "addedApis": apis.difference(&current.apis).collect::<Vec<_>>(),
+        "sharedApis": shared_apis,
         "removedApis": current.apis.difference(&apis).collect::<Vec<_>>(),
         "acceptedApis": accepted_apis,
     }))?)
@@ -484,7 +502,10 @@ fn changes(
 fn requests_access(changes: &AuthServiceUpdateChanges) -> bool {
     !changes.added_capabilities.is_empty()
         || !changes.added_resources.is_empty()
+        || !changes.reattached_resources.is_empty()
         || !changes.changed_resources.is_empty()
+        || !changes.added_apis.is_empty()
+        || !changes.shared_apis.is_empty()
 }
 
 fn submit(
@@ -535,7 +556,8 @@ fn submit(
             // An administrator already installed this exact build.
             serde_json::from_value(json!({
                 "addedCapabilities": [], "removedCapabilities": [], "addedResources": [],
-                "changedResources": [], "removedResources": [], "addedApis": [],
+                "changedResources": [], "reattachedResources": [], "removedResources": [], "addedApis": [],
+                "sharedApis": [],
                 "removedApis": [], "acceptedApis": []
             }))?
         } else {
@@ -765,7 +787,7 @@ fn decide(
                 Administration::ManagePrincipals,
             )?;
             let update = input.update_id.to_string();
-            let (deployment, participant, evidence, base, changes, state, revision): (
+            let (deployment, participant, evidence, base, _, state, revision): (
                 String,
                 String,
                 String,
@@ -792,6 +814,13 @@ fn decide(
                 )
                 .optional()?
                 .ok_or(AuthError::NotFound)?;
+            if state == "applied" && input.decision == AuthDecision::Approved {
+                // Approving an installed update again only retries its storage.
+                return Ok(AuthServiceUpdateResponse {
+                    update: read_update(connection, store, &update)?,
+                    extra: Default::default(),
+                });
+            }
             if state != "pending" || revision != input.expected_revision.0 .0 {
                 return Err(AuthError::Conflict);
             }
@@ -805,13 +834,28 @@ fn decide(
                     params![update, now, identity.actor],
                 )?;
             } else if input.decision == AuthDecision::Approved {
-                let changes: AuthServiceUpdateChanges = decode(&changes)?;
+                let candidate = Candidate::compile(decode(&evidence)?, &participant)?;
+                // Recomputed, so an API another service started serving since
+                // the submission is shown and acknowledged before approval.
+                let changes = self::changes(connection, &deployment, &current, &candidate)?;
+                if !changes.shared_apis.is_empty() && input.acknowledge_shared_apis != Some(true) {
+                    return Err(AuthError::Invalid(format!(
+                        "this update makes the service answer {} alongside the service that \
+                        already does; callers' requests would be split between them. Approve \
+                        it with acknowledgeSharedApis if that is intended",
+                        changes
+                            .shared_apis
+                            .iter()
+                            .map(|api| api.as_ref())
+                            .collect::<Vec<&str>>()
+                            .join(", ")
+                    )));
+                }
                 SqliteAuthorizationStore::require_platform_for(
                     connection,
                     &identity.actor,
                     changes.added_capabilities.iter().map(AsRef::as_ref),
                 )?;
-                let candidate = Candidate::compile(decode(&evidence)?, &participant)?;
                 apply(
                     connection, store, identity, &update, &candidate, &changes, &current, now,
                 )?;
@@ -862,7 +906,7 @@ fn read_update(
         changes: decode(&changes)?,
         review_url: format!(
             "{}/console/admin/services/{deployment}?update={update}",
-            store.settings.oauth_origin
+            store.settings.console_origin
         ),
         requested_at: timestamp(requested)?,
         decided_at: decided.map(timestamp).transpose()?,

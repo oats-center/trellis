@@ -323,6 +323,7 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
             instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             account: account_key().into(),
             oauth_origin: "https://auth.example".into(),
+            console_origin: "https://trellis.example".into(),
             authority_lifetime_seconds: 60,
             clock_skew_seconds: 5,
             oauth_admission_lifetime_seconds: 300,

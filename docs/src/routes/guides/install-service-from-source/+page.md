@@ -42,8 +42,11 @@ Bootstrap resolves deployment/instance assignment, installed participant,
 grants, transports, and resource handles; application code must not
 inject NATS administrator credentials or binding payloads.
 
-For an update, rebuild from the new IDL and source, run `trellis apis accept`
-and then direct apply, then
-restart the service. Keep the same
-provisioned identity for the same instance. Do not reprovision merely because
-the generated SDK or application binary changed.
+For an update, rebuild from the new IDL and source and restart the service.
+It submits its own build: a build that asks for nothing new installs at once,
+and one that asks for new capabilities or resources waits while it prints a
+review link and QR code for an administrator (`trellis svc <deployment-id>
+approve` does the same). You can still install first with `trellis apis accept`
+and `trellis svc <deployment-id> apply`. Keep the same provisioned identity for
+the same instance. Do not reprovision merely because the generated SDK or
+application binary changed.

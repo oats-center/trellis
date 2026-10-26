@@ -90,6 +90,11 @@ into the broker connection. Non-empty roots replace the platform trust store for
 that installation; an empty list uses the platform store. Never disable
 certificate verification.
 
+When the build differs from the revision its instance runs, `connect` submits
+the build and returns once it installs. A build that asks for new access waits
+for an administrator, logging the review link and printing it as a QR code on
+stderr; a rejection returns `ServiceRuntimeError::UpdateRejected`.
+
 Register generated providers before `service.run().await`. The service lifecycle
 supervises its request host and workers. `with_timeout_ms(...)` bounds
 bootstrap, connect, and request operations. No context-store parameter exists.

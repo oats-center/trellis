@@ -72,6 +72,23 @@ pub enum SvcResourceAction {
     Remove(RemoveArgs),
     Instances(SvcInstancesArgs),
     Provision(SvcProvisionArgs),
+    /// List updates the service submitted for itself, newest first.
+    Updates,
+    /// Approve the service's pending update.
+    Approve(SvcUpdateArgs),
+    /// Reject the service's pending update.
+    Reject(SvcUpdateArgs),
+}
+
+/// Select a service update; omitted selects the deployment's pending one.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct SvcUpdateArgs {
+    #[arg(value_name = "UPDATE_ID")]
+    pub update: Option<String>,
+    /// Confirm that the service may answer an API another service already
+    /// serves, splitting callers' requests between the two.
+    #[arg(long)]
+    pub acknowledge_shared_apis: bool,
 }
 
 /// Target-first device command.

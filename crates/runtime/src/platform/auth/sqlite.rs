@@ -100,6 +100,8 @@ pub(crate) struct AuthSettings {
     pub(crate) instance_id: String,
     pub(crate) account: String,
     pub(crate) oauth_origin: String,
+    /// Origin that serves the Console, for links administrators open.
+    pub(crate) console_origin: String,
     pub(crate) upstream_tls_roots_pem: Vec<String>,
     pub(crate) authority_lifetime_seconds: u32,
     pub(crate) clock_skew_seconds: u32,
@@ -419,6 +421,7 @@ impl SqliteAuthorizationStore {
             instance_id,
             account: account.into(),
             oauth_origin: oauth.origin.clone(),
+            console_origin: config.public_origin(),
             upstream_tls_roots_pem: Vec::new(),
             authority_lifetime_seconds: u32::try_from(authorization.context_lifetime_seconds)
                 .map_err(|_| {

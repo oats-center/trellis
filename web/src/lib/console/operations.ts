@@ -146,6 +146,9 @@ export const CONSOLE_OPERATIONS = {
   serviceInstancesDisable: authRpc("ServiceInstances.Disable"),
   serviceInstancesEnable: authRpc("ServiceInstances.Enable"),
   serviceInstancesRemove: authRpc("ServiceInstances.Remove"),
+  serviceUpdatesList: authRpc("ServiceUpdates.List"),
+  serviceUpdatesGet: authRpc("ServiceUpdates.Get"),
+  serviceUpdatesDecide: authRpc("ServiceUpdates.Decide"),
 
   // Auth: devices, authorities, reviews.
   devicesList: authRpc("Devices.List"),

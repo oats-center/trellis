@@ -42,6 +42,19 @@
   const selected = new SvelteSet<string>();
   // Runtime health is optional context; the list stands without it.
   let healthByDeployment = $state.raw<Map<string, Participant>>(new Map());
+  // Deployments whose service submitted an update that waits for approval.
+  let awaitingApproval = $state.raw<Set<string>>(new Set());
+
+  async function loadUpdates(): Promise<void> {
+    const response = await trellis
+      .serviceUpdatesList({ page: { limit: 200 } })
+      .orThrow();
+    awaitingApproval = new Set(
+      response.items
+        .filter((update) => update.state === "pending")
+        .map((update) => update.deploymentId),
+    );
+  }
 
   async function loadHealth(): Promise<void> {
     const response = await traverseAll(async (page) => {
@@ -124,6 +137,7 @@
     scope.setKey(`services:${selectedState}`);
     void load();
     void loadHealth().catch(() => {});
+    void loadUpdates().catch(() => {});
     return () => scope.invalidate();
   });
 
@@ -262,6 +276,12 @@
                     ? "Active"
                     : "Disabled"}</span
                 >
+                {#if awaitingApproval.has(deployment.deploymentId)}<a
+                    class="badge badge-sm badge-warning ml-1"
+                    href={resolve("/admin/services/[deploymentId]", {
+                      deploymentId: deployment.deploymentId,
+                    })}>Update waiting</a
+                  >{/if}
               </td>
               <td class="text-base-content/75"
                 >{health ? ago(health.lastSeenAt) : "—"}</td
