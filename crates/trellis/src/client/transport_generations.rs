@@ -1896,6 +1896,9 @@ impl TransportGenerationManager {
         if self.inner.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        // Fencing on a generation change keeps coverage while the carrier still
+        // reads Connected, which it can during shutdown; closing ends it outright.
+        self.inner.contexts.owner.retire_revocation_coverage();
         self.publish_terminal(LogicalTerminalCause::Closed);
         self.inner.request_work();
         self.inner.signal_state();

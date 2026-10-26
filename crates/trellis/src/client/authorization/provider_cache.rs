@@ -2701,6 +2701,22 @@ impl AuthorizationOwner {
         Ok(())
     }
 
+    /// A closed runtime no longer mirrors revocations, whatever its transport
+    /// still reports while closing; it must stop vouching for any authority.
+    pub(crate) fn retire_revocation_coverage(&self) {
+        if let Ok(mut state) = self.state.write() {
+            let changed = state.revocation_covered || state.revocation_epoch.is_some();
+            state.revocation_covered = false;
+            state.revocation_epoch = None;
+            state.revocation_predecessor_epoch = None;
+            state.revocation_pending_epoch = None;
+            drop(state);
+            if changed {
+                let _ = self.changes.send(());
+            }
+        }
+    }
+
     /// Invalidate pending snapshots without erasing signed retirements.
     /// A complete mirror on a still-connected carrier may cover retained work;
     /// a displaced snapshot cannot restore coverage after a transport change.
