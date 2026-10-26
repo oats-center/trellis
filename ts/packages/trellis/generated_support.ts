@@ -156,6 +156,44 @@ function timestamp(value: unknown): Timestamp {
 
 const ulidPattern = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
+/** Declared IDL constraints a generated codec enforces. */
+type Limits = Readonly<{
+  min?: number | bigint;
+  max?: number | bigint;
+  minCount?: number;
+  maxCount?: number;
+}>;
+
+/**
+ * Enforce declared bounds in both directions, so a provider never hands a
+ * handler an out-of-bounds input and a caller never sends one. String length
+ * counts Unicode code points, as JSON Schema does.
+ */
+function checkLimits(value: unknown, limits: Limits): void {
+  const count =
+    typeof value === "string"
+      ? [...value].length
+      : Array.isArray(value)
+        ? value.length
+        : undefined;
+  if (count !== undefined) {
+    if (limits.minCount !== undefined && count < limits.minCount)
+      fail(
+        `at least ${limits.minCount} ${typeof value === "string" ? "characters" : "items"}`,
+      );
+    if (limits.maxCount !== undefined && count > limits.maxCount)
+      fail(
+        `at most ${limits.maxCount} ${typeof value === "string" ? "characters" : "items"}`,
+      );
+  }
+  if (typeof value === "number" || typeof value === "bigint") {
+    if (limits.min !== undefined && value < limits.min)
+      fail(`a value of at least ${limits.min}`);
+    if (limits.max !== undefined && value > limits.max)
+      fail(`a value of at most ${limits.max}`);
+  }
+}
+
 /** A value the IDL `json` type carries unchecked. */
 export type JsonValue =
   null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -196,6 +234,19 @@ export const codecs = Object.freeze({
       : fail("canonical ULID"),
   ),
   json: codec<JsonValue>(jsonValue),
+  bounded<T>(inner: Codec<T>, limits: Limits): Codec<T> {
+    return codec(
+      (value) => {
+        const decoded = inner.decode(value);
+        checkLimits(decoded, limits);
+        return decoded;
+      },
+      (value) => {
+        checkLimits(value, limits);
+        return inner.encode(value);
+      },
+    );
+  },
   openEnum<const T extends string>(values: readonly T[]): Codec<OpenEnum<T>> {
     if (values.some((value) => typeof value !== "string")) {
       fail("generated string enum values");

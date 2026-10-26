@@ -11,6 +11,7 @@ type Count = uint64;
 type Signed = int64;
 type Blob = bytes;
 type Label = string;
+type Code = string(min_length=1, max_length=3);
 enum Status { ready; }
 model Empty {}
 model Historic { label: string; }
@@ -26,6 +27,7 @@ model Node {
   status: Status;
   settings: json;
   note?: json;
+  code?: Code;
 }
 model Current { root: Node; }
 
@@ -395,6 +397,24 @@ test("generated TypeScript package exercises WO-03 B2-B4", () => {
     rejectedFunction = true;
   }
   assert(rejectedFunction, "json rejects values JSON cannot represent");
+  // Declared limits hold in both directions, counting characters.
+  assert(fetch.input.decode({ ...wire, code: "ab\u{1F600}" }).code === "ab\u{1F600}", "within limits");
+  for (const code of ["", "abcd"]) {
+    let rejected = false;
+    try {
+      fetch.input.decode({ ...wire, code });
+    } catch {
+      rejected = true;
+    }
+    assert(rejected, `decode rejects ${JSON.stringify(code)} outside min_length=1, max_length=3`);
+    rejected = false;
+    try {
+      fetch.input.encode({ ...node, code } as never);
+    } catch {
+      rejected = true;
+    }
+    assert(rejected, `encode rejects ${JSON.stringify(code)} outside its limits`);
+  }
   let rejectedNonFinite = false;
   try {
     fetch.input.encode({ ...node, ratio: Number.NaN });

@@ -658,21 +658,25 @@ fn render_codec_expression(
     modules: &BTreeMap<String, String>,
 ) -> String {
     match value {
-        TypeExpression::Primitive(value, _) => format!(
-            "codecs.{}",
-            match value {
-                Primitive::String => "string",
-                Primitive::Bool => "bool",
-                Primitive::Int32 => "i32",
-                Primitive::Uint32 => "u32",
-                Primitive::Int64 => "i64",
-                Primitive::Uint64 => "u64",
-                Primitive::Number => "f64",
-                Primitive::Bytes => "bytes",
-                Primitive::Timestamp => "timestamp",
-                Primitive::Ulid => "ulid",
-                Primitive::Json => "json",
-            }
+        TypeExpression::Primitive(value, bounds) => bounded(
+            format!(
+                "codecs.{}",
+                match value {
+                    Primitive::String => "string",
+                    Primitive::Bool => "bool",
+                    Primitive::Int32 => "i32",
+                    Primitive::Uint32 => "u32",
+                    Primitive::Int64 => "i64",
+                    Primitive::Uint64 => "u64",
+                    Primitive::Number => "f64",
+                    Primitive::Bytes => "bytes",
+                    Primitive::Timestamp => "timestamp",
+                    Primitive::Ulid => "ulid",
+                    Primitive::Json => "json",
+                }
+            ),
+            bounds,
+            matches!(value, Primitive::Int64 | Primitive::Uint64),
         ),
         TypeExpression::Named(reference) => {
             let target = &modules[reference.package.as_str()];
@@ -686,9 +690,13 @@ fn render_codec_expression(
                 )
             }
         }
-        TypeExpression::List(value, _) => format!(
-            "codecs.list({})",
-            render_codec_expression(value, package, own_module, modules)
+        TypeExpression::List(value, bounds) => bounded(
+            format!(
+                "codecs.list({})",
+                render_codec_expression(value, package, own_module, modules)
+            ),
+            bounds,
+            false,
         ),
         TypeExpression::Map(value) => format!(
             "codecs.map({})",
@@ -708,6 +716,29 @@ fn render_codec_expression(
             nextCursor: codecs.optional(codecs.string) }}) }})",
             render_codec_expression(value, package, own_module, modules)
         ),
+    }
+}
+
+/// Wrap a codec with its declared constraints; 64-bit bounds are bigints.
+fn bounded(codec: String, bounds: &trellis_idl::Bounds, bigint: bool) -> String {
+    let number = |bound: trellis_idl::NumericBound| match bound {
+        trellis_idl::NumericBound::Integer(value) if bigint => format!("{value}n"),
+        trellis_idl::NumericBound::Integer(value) => value.to_string(),
+        trellis_idl::NumericBound::Number(value) => format!("{value:?}"),
+    };
+    let limits = [
+        bounds.min.map(|value| format!("min: {}", number(value))),
+        bounds.max.map(|value| format!("max: {}", number(value))),
+        bounds.min_count.map(|value| format!("minCount: {value}")),
+        bounds.max_count.map(|value| format!("maxCount: {value}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if limits.is_empty() {
+        codec
+    } else {
+        format!("codecs.bounded({codec}, {{ {} }})", limits.join(", "))
     }
 }
 

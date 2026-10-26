@@ -214,10 +214,12 @@ array, string, number, bool, or null) carried unchecked: its schema accepts
 anything, it takes no constraints, and it cannot be an event parameter or job
 key. An optional `json` field distinguishes absent from a present `null`. Constraints are `min_length`, `max_length`,
 `min`, `max`, `min_items`, and `max_items`. Constraints apply only through a
-package-level named type alias. Generated types carry the value shapes, not the
-constraints; providers in both SDKs check RPC and operation inputs against the
-contract's JSON Schema before a handler runs, and reject a violation with
-`ValidationError`, so handlers never see an out-of-bounds input. Durations in resource/retry config
+package-level named type alias. Both SDKs enforce them, so handlers never see an
+out-of-bounds input and a violation is `ValidationError`: generated TypeScript
+codecs check declared limits when decoding and encoding (a provider rejects the
+request before its handler runs, and a caller refuses to send it), and Rust
+providers check RPC and operation inputs against the contract's JSON Schema.
+String lengths count Unicode code points. Durations in resource/retry config
 use integer `ms`, `s`, `m`, `h`, or `d`; capacities use `B`, `KiB`, `MiB`, or
 `GiB`.
 

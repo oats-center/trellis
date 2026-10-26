@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- TypeScript providers passed inputs that violated declared constraints (for
+  example `""` for a `min_length=1` field) to the handler, because generated
+  TypeScript codecs dropped the limits. Generated codecs now enforce `min`,
+  `max`, `min_length`, `max_length`, `min_items` and `max_items` when decoding
+  and encoding: a provider rejects the request with `ValidationError` before
+  the handler runs, and a caller gets `ValidationError` instead of sending it.
+  A payload that does not match its codec is now `ValidationError` rather than
+  `UnexpectedError`. Regenerate TypeScript packages.
+
 ### Added
 
 - The IDL `json` type carries any JSON value unchecked, for opaque values such

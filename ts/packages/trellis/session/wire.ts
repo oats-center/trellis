@@ -245,7 +245,18 @@ export function encodeRuntimeSchema(
       }
       return ok(json);
     } catch (cause) {
-      return err(new UnexpectedError({ cause }));
+      // A value outside its contract, such as a declared limit, is the
+      // caller's error, reported before anything is sent.
+      return err(
+        new ValidationError({
+          errors: [
+            {
+              path: "",
+              message: cause instanceof Error ? cause.message : String(cause),
+            },
+          ],
+        }),
+      );
     }
   }
   return encodeSchema(schema as never, data);
@@ -263,7 +274,17 @@ export function parseRuntimeSchema(
     try {
       return ok((schema as Codec<unknown>).decode(data));
     } catch (cause) {
-      return err(new UnexpectedError({ cause }));
+      // A payload that does not match its contract is the sender's error.
+      return err(
+        new ValidationError({
+          errors: [
+            {
+              path: "",
+              message: cause instanceof Error ? cause.message : String(cause),
+            },
+          ],
+        }),
+      );
     }
   }
   return parseUnknownSchema(
