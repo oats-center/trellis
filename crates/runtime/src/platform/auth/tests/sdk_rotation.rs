@@ -40,16 +40,22 @@ async fn sdk_rotation(mode: &str) {
             now,
         )
         .unwrap();
-    let public = tokio::net::TcpListener::bind("127.0.0.2:0").await.unwrap();
-    let public_address = public.local_addr().unwrap();
-    let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let app_address = app.local_addr().unwrap();
-    let origin = format!("https://{public_address}");
-    let app_origin = format!("https://{app_address}");
-    drop(public);
-    drop(app);
-    let backend = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let backend_address = backend.local_addr().unwrap();
+    // The Node driver binds the public and app ports, and the backend is rebound
+    // after a restart. Ports read from `:0` and released come from the ephemeral
+    // range, where any outbound connection can take them first, so every port
+    // is reserved outside it for the whole test.
+    let mut public = trellis_local_nats::ReservedPort::reserve_on([127, 0, 0, 2].into()).unwrap();
+    let mut app = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let mut backend_port = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let origin = format!("https://127.0.0.2:{}", public.port());
+    let app_origin = format!("https://127.0.0.1:{}", app.port());
+    public.release_for_bind();
+    app.release_for_bind();
+    backend_port.release_for_bind();
+    let backend_address = std::net::SocketAddr::from(([127, 0, 0, 1], backend_port.port()));
+    let backend = tokio::net::TcpListener::bind(backend_address)
+        .await
+        .unwrap();
     let backend_origin = format!("http://{backend_address}");
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
     for (client_id, kind, redirect_uris) in [

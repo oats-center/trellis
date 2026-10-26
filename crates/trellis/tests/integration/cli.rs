@@ -300,12 +300,16 @@ async fn cli_server_managed_nats() {
     fs::create_dir_all(&cache_dir).expect("create managed-NATS cache dir");
     fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
         .expect("make managed-NATS cache dir private");
-    let reservations = [(); 5].map(|_| TcpListener::bind(("127.0.0.1", 0)).expect("reserve port"));
+    // Held outside the ephemeral range until the server is done; see ReservedPort.
+    let mut reservations =
+        [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().expect("reserve port"));
     let [runtime_port, nats_port, monitor_port, websocket_port, oauth_port] = reservations
         .each_ref()
-        .map(|socket| socket.local_addr().expect("port address").port());
+        .map(trellis_local_nats::ReservedPort::port);
     let managed_ports = [nats_port, monitor_port, websocket_port];
-    drop(reservations);
+    reservations
+        .iter_mut()
+        .for_each(trellis_local_nats::ReservedPort::release_for_bind);
     let ports_arg = format!("{nats_port},{monitor_port},{websocket_port}");
 
     // 1. `trellis init config` renders the bundle the managed server expects, with
@@ -979,11 +983,13 @@ fn server_rejects_reserved_oauth_origins_before_starting_listeners() {
 async fn server_serves_generated_installation_tls_and_reloads_renewed_certificates() {
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("tls");
-    let ports = [(); 5].map(|_| TcpListener::bind(("127.0.0.1", 0)).unwrap());
-    let [http, nats, monitor, websocket, oauth] = ports
-        .each_ref()
-        .map(|port| port.local_addr().unwrap().port());
-    drop(ports);
+    // Held outside the ephemeral range until the server is done; see ReservedPort.
+    let mut ports = [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
+    let [http, nats, monitor, websocket, oauth] =
+        ports.each_ref().map(trellis_local_nats::ReservedPort::port);
+    ports
+        .iter_mut()
+        .for_each(trellis_local_nats::ReservedPort::release_for_bind);
     // Ordinary initialization with no certificate options generates the
     // installation CA and every listener's certificate.
     let initialized = cli_command()

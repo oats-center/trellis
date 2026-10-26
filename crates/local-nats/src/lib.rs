@@ -64,13 +64,24 @@ pub struct ReservedPort {
 }
 
 impl ReservedPort {
-    /// Reserves a free loopback port outside the kernel's ephemeral range.
+    /// Reserves a free `127.0.0.1` port outside the kernel's ephemeral range.
     ///
     /// # Errors
     ///
     /// Returns an error when the ephemeral range cannot be read or no port is
     /// free after repeated random choices.
     pub fn reserve() -> io::Result<Self> {
+        Self::reserve_on(std::net::Ipv4Addr::LOCALHOST)
+    }
+
+    /// Reserves a free port on one loopback address, such as `127.0.0.2` for a
+    /// distinct test origin, outside the kernel's ephemeral range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ephemeral range cannot be read or no port is
+    /// free after repeated random choices.
+    pub fn reserve_on(address: std::net::Ipv4Addr) -> io::Result<Self> {
         const MIN_AUTOMATIC_PORT: u32 = 10_240;
         let range = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")?;
         let bounds = range
@@ -103,10 +114,10 @@ impl ReservedPort {
                 upper_start + offset - lower_count
             })
             .expect("selected port is below 65536");
-            let Ok(ownership) = std::net::UdpSocket::bind(("127.0.0.1", port)) else {
+            let Ok(ownership) = std::net::UdpSocket::bind((address, port)) else {
                 continue;
             };
-            let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) else {
+            let Ok(listener) = TcpListener::bind((address, port)) else {
                 continue;
             };
             return Ok(Self {
