@@ -58,9 +58,8 @@ impl Drop for Server {
 
 async fn start_nats() -> (Server, tempfile::TempDir, async_nats::Client) {
     // Held until the broker's listener is up; see ReservedPort.
-    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
     let port = reservation.port();
-    reservation.release_for_bind();
     let directory = tempfile::tempdir().expect("temporary NATS state");
     let server = Server(
         Command::new(nats_server())

@@ -44,14 +44,11 @@ async fn sdk_rotation(mode: &str) {
     // after a restart. Ports read from `:0` and released come from the ephemeral
     // range, where any outbound connection can take them first, so every port
     // is reserved outside it for the whole test.
-    let mut public = trellis_local_nats::ReservedPort::reserve_on([127, 0, 0, 2].into()).unwrap();
-    let mut app = trellis_local_nats::ReservedPort::reserve().unwrap();
-    let mut backend_port = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let public = trellis_local_nats::ReservedPort::reserve_on([127, 0, 0, 2].into()).unwrap();
+    let app = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let backend_port = trellis_local_nats::ReservedPort::reserve().unwrap();
     let origin = format!("https://127.0.0.2:{}", public.port());
     let app_origin = format!("https://127.0.0.1:{}", app.port());
-    public.release_for_bind();
-    app.release_for_bind();
-    backend_port.release_for_bind();
     let backend_address = std::net::SocketAddr::from(([127, 0, 0, 1], backend_port.port()));
     let backend = tokio::net::TcpListener::bind(backend_address)
         .await
@@ -324,9 +321,8 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     );
 
     // Held until the broker's listener is up; see ReservedPort.
-    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
     let port = reservation.port();
-    reservation.release_for_bind();
     let binary =
         std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into());
     let mut broker = tokio::process::Command::new(binary)

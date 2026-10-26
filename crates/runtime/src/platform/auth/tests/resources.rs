@@ -105,9 +105,8 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         .unwrap();
     let directory = tempfile::tempdir().unwrap();
     // Held until the broker's listener is up; see ReservedPort.
-    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
     let port = reservation.port();
-    reservation.release_for_bind();
     let binary =
         std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into());
     let mut server = tokio::process::Command::new(binary)

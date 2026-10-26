@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
-use std::net::TcpListener;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -53,13 +52,17 @@ static DOWNLOAD_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 /// kernel's ephemeral range, so a concurrent outbound connection or `:0` bind
 /// can take it before the intended listener binds. A reservation instead
 /// selects a port outside that range (and above Fetch's restricted ports) and
-/// also holds a UDP socket on it. [`ReservedPort::release_for_bind`] closes
-/// only the TCP listener, so other reservations still skip the port until
-/// this one is dropped after the real listener is up.
+/// holds a UDP socket on it, which other reservations skip.
+///
+/// The TCP side is a bound, never-listening `SO_REUSEADDR` socket: it proves
+/// the port free and lets the intended listener (which also sets
+/// `SO_REUSEADDR`) bind while the reservation is held. A listening reservation
+/// would not be safe: a process spawned concurrently inherits it until `exec`,
+/// so it could keep accepting connections after the reservation closed it.
 #[derive(Debug)]
 pub struct ReservedPort {
     port: u16,
-    listener: Option<TcpListener>,
+    _tcp: socket2::Socket,
     _ownership: std::net::UdpSocket,
 }
 
@@ -117,12 +120,18 @@ impl ReservedPort {
             let Ok(ownership) = std::net::UdpSocket::bind((address, port)) else {
                 continue;
             };
-            let Ok(listener) = TcpListener::bind((address, port)) else {
+            let tcp = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)?;
+            tcp.set_reuse_address(true)?;
+            // Fails while anything listens on the port, even with SO_REUSEADDR.
+            if tcp
+                .bind(&std::net::SocketAddrV4::new(address, port).into())
+                .is_err()
+            {
                 continue;
-            };
+            }
             return Ok(Self {
                 port,
-                listener: Some(listener),
+                _tcp: tcp,
                 _ownership: ownership,
             });
         }
@@ -136,12 +145,6 @@ impl ReservedPort {
     #[must_use]
     pub fn port(&self) -> u16 {
         self.port
-    }
-
-    /// Closes the TCP listener so the intended listener can bind the port,
-    /// keeping the reservation until this value is dropped.
-    pub fn release_for_bind(&mut self) {
-        self.listener = None;
     }
 }
 
@@ -836,10 +839,6 @@ impl LocalNatsBuilder {
         let log_path = match &output {
             NatsOutput::Log { path, .. } => path.clone(),
         };
-        let mut reservations = reservations;
-        for reservation in &mut reservations {
-            reservation.release_for_bind();
-        }
         let server = ManagedNatsServer::start(
             &binary,
             &config,

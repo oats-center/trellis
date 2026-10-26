@@ -13,7 +13,7 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
     );
     let directory = tempfile::tempdir().unwrap();
     // Held until the broker's listeners are up; see ReservedPort.
-    let mut reservations =
+    let reservations =
         std::array::from_fn::<_, 3, _>(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
     let [port, http, websocket] = reservations.each_ref().map(|reserved| reserved.port());
     let config = directory.path().join("nats.conf");
@@ -29,9 +29,6 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
         ),
     )
     .unwrap();
-    for reservation in &mut reservations {
-        reservation.release_for_bind();
-    }
     // CI supplies its producer-resolved executable. There is no rebuilt runtime,
     // fake broker, test-support feature, readiness bypass, or hidden skip.
     let binary =

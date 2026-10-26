@@ -301,15 +301,12 @@ async fn cli_server_managed_nats() {
     fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
         .expect("make managed-NATS cache dir private");
     // Held outside the ephemeral range until the server is done; see ReservedPort.
-    let mut reservations =
+    let reservations =
         [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().expect("reserve port"));
     let [runtime_port, nats_port, monitor_port, websocket_port, oauth_port] = reservations
         .each_ref()
         .map(trellis_local_nats::ReservedPort::port);
     let managed_ports = [nats_port, monitor_port, websocket_port];
-    reservations
-        .iter_mut()
-        .for_each(trellis_local_nats::ReservedPort::release_for_bind);
     let ports_arg = format!("{nats_port},{monitor_port},{websocket_port}");
 
     // 1. `trellis init config` renders the bundle the managed server expects, with
@@ -984,12 +981,9 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("tls");
     // Held outside the ephemeral range until the server is done; see ReservedPort.
-    let mut ports = [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
+    let ports = [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
     let [http, nats, monitor, websocket, oauth] =
         ports.each_ref().map(trellis_local_nats::ReservedPort::port);
-    ports
-        .iter_mut()
-        .for_each(trellis_local_nats::ReservedPort::release_for_bind);
     // Ordinary initialization with no certificate options generates the
     // installation CA and every listener's certificate.
     let initialized = cli_command()

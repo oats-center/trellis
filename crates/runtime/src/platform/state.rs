@@ -674,9 +674,8 @@ mod tests {
     #[tokio::test]
     async fn nats_component_covers_state_write_modes_conflicts_tombstones_and_read() {
         // Held until the broker's listener is up; see ReservedPort.
-        let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+        let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
         let port = reservation.port();
-        reservation.release_for_bind();
         let directory = tempfile::tempdir().unwrap();
         let cache = std::env::var_os("TRELLIS_CACHE_DIR")
             .map(std::path::PathBuf::from)

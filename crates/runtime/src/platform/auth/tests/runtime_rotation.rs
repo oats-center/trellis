@@ -49,7 +49,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join("target/release/trellis"));
     // Held until the listeners are up; see ReservedPort.
-    let mut reserved: Vec<_> = (0..5)
+    let reserved: Vec<_> = (0..5)
         .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
         .collect();
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
@@ -105,9 +105,6 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     crate::platform::seed_admin_credentials(&config, "admin", "a strong bootstrap password")
         .await
         .unwrap();
-    for reservation in &mut reserved {
-        reservation.release_for_bind();
-    }
     std::fs::create_dir_all(root.join("runtime")).unwrap();
     let nats_root = root.to_owned();
     let nats_config = config_dir.join("nats");

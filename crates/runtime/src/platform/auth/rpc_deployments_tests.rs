@@ -760,9 +760,8 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
     let f = fixture();
     let directory = tempfile::tempdir().unwrap();
     // Held until the broker's listener is up; see ReservedPort.
-    let mut reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
     let port = reservation.port();
-    reservation.release_for_bind();
     let mut server = tokio::process::Command::new(
         std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
     )
