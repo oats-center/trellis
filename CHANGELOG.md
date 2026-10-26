@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.8] - 2026-10-26
+
 ### Changed
 
 - Profile photo URLs (`avatarUrl` in directory results) are stable per profile

@@ -20,8 +20,8 @@ url.workspace = true
 ulid.workspace = true
 thiserror.workspace = true
 toml = "1.1.2"
-trellis-runtime = { path = "../runtime", version = "0.100.0-rc.7" }
-trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.100.0-rc.7" }
+trellis-runtime = { path = "../runtime", version = "0.100.0-rc.8" }
+trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.100.0-rc.8" }
 miette.workspace = true
 ipnet.workspace = true
 rcgen.workspace = true
