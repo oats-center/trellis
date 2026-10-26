@@ -37,6 +37,11 @@ import {
   AuthOAuthClientsListResponse,
   AuthOAuthClientPutRequest,
   AuthOAuthClientMutationRequest,
+  AuthPortalThemesListResponse,
+  AuthPortalThemeGetRequest,
+  AuthPortalThemeGetResponse,
+  AuthPortalThemePutRequest,
+  AuthPortalThemeDeleteRequest,
   AuthDelegationsListRequest,
   AuthDelegationsListResponse,
   AuthDelegationReviewRequest,
@@ -152,6 +157,12 @@ api auth@v1 {
   rpc OAuthClients.Put { input AuthOAuthClientPutRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OAuthClients.Disable { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OAuthClients.Delete { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // The installation theme needs platform.manage; an app's theme clients.manage.
+  rpc PortalThemes.List { input AuthPageRequest; output AuthPortalThemesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc PortalThemes.Get { input AuthPortalThemeGetRequest; output AuthPortalThemeGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc PortalThemes.Put { input AuthPortalThemePutRequest; output AuthPortalThemeGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc PortalThemes.Delete { input AuthPortalThemeDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // These handlers scope ordinary delegated access to the verified user.
   // Cross-user administration additionally requires trellis.managePrincipals.
@@ -340,7 +351,7 @@ api auth@v1 {
       title "Manage apps";
       description "Register apps and change their sign-in settings.";
       grants "Decides which apps can ask people for access.";
-      allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.Disable; rpc OAuthClients.Delete; }
+      allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.Disable; rpc OAuthClients.Delete; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
     }
     capability security.observe {
       title "Watch security activity";
@@ -353,7 +364,7 @@ api auth@v1 {
       title "Manage this Trellis";
       description "Decide who administers this Trellis and manage its signing keys.";
       grants "Full control of this Trellis installation.";
-      allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc Administration.Reviews.List; rpc Administration.Reviews.Decide; }
+      allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc Administration.Reviews.List; rpc Administration.Reviews.Decide; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
     }
     capability bindings.readJobs {
       title "Read job storage settings";

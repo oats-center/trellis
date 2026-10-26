@@ -471,32 +471,39 @@ served.
 ## 9. Brand the sign-in Portal
 
 The login and consent Portal can carry your branding, for the whole installation
-and per OAuth client. Theming changes how the Portal looks, never what it
-decides: it stays on the OAuth origin, consent is shown exactly as Auth
-presents it, and no token reaches application code.
+and per app. Theming changes how the Portal looks, never what it decides: it
+stays on the OAuth origin, consent is shown exactly as Auth presents it, and no
+token reaches application code.
 
-```toml
-[auth.portal.theme]
-name = "Acme Cloud"                 # replaces "Trellis" in the header and titles
-logo = "./branding/logo.svg"        # PNG, JPEG, WebP, or SVG, at most 256 KiB
-stylesheet = "./branding/portal.css" # loaded after the Portal's own, at most 64 KiB
-colors = { primary = "#0050b3", primary-hover = "#003f8f" }
-dark_colors = { primary = "#4d8fe0" }
-copy = { sign_in_title = "Sign in to Acme", footer = "Need help? support@acme.example" }
+Edit it in the Console under **Platform → Sign-in page**, or with the CLI:
 
-# Overrides for one client, layered over the installation theme.
-[auth.portal.clients."trellis.console".theme]
-name = "Acme Console"
-logo = "./branding/console.svg"
+```sh
+trellis theme set \
+  --name "Acme Cloud" \
+  --logo ./branding/logo.svg \
+  --stylesheet ./branding/portal.css \
+  --color primary=#0050b3 --color primary-hover=#003f8f \
+  --dark-color primary=#4d8fe0 \
+  --copy "sign_in_title=Sign in to Acme" \
+  --copy "footer=Need help? support@acme.example"
+
+# Overrides for one app, layered over the installation theme.
+trellis theme set --client trellis.console --name "Acme Console" \
+  --logo ./branding/console.svg
+
+trellis theme show --client trellis.console
+trellis theme remove --client trellis.console
 ```
 
-Colours name the Portal's palette (`page`, `surface`, `ink`, `muted`, `line`,
-`line-strong`, `primary`, `primary-hover`, `on-primary`, `soft`) and accept hex
-values only. Copy replaces `sign_in_title`, `sign_in_subtitle`, or `footer`.
-Only the installation theme may add a stylesheet, so no client can restyle what
-consent shows. The Portal picks a client's theme from its own record of the
-authorization in progress, never from the request, so a crafted link cannot
-dress one app as another. Theme files are read at startup (relative paths resolve
-against the config file), checked, and served sandboxed so even an SVG cannot
-run script; invalid settings stop the server with the reason. Restart to apply
-changes.
+`set` replaces the whole theme; anything not given is unset. Logos are PNG,
+JPEG, WebP, or SVG files of at most 256 KiB; the stylesheet loads after the
+Portal's own and is at most 64 KiB. Colours name the Portal's palette (`page`,
+`surface`, `ink`, `muted`, `line`, `line-strong`, `primary`, `primary-hover`,
+`on-primary`, `soft`) and accept hex values only. Copy replaces `sign_in_title`,
+`sign_in_subtitle`, or `footer`. Only the installation theme may add a
+stylesheet, so no app can restyle what consent shows. The Portal picks an app's
+theme from its own record of the authorization in progress, never from the
+request, so a crafted link cannot dress one app as another. Theme assets are
+served sandboxed so even an SVG cannot run script. Changing the installation
+theme needs permission to manage this Trellis; an app's theme, permission to
+manage apps. Changes apply at once.

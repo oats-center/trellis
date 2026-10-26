@@ -18,7 +18,7 @@ import {
 } from "./browser_test_support.ts";
 
 test(
-  "CLI explicitly consents to administration, resumes custody, and manages clients and catalog revisions",
+  "CLI explicitly consents to administration, resumes custody, and manages clients, catalog revisions, and Portal themes",
   { timeout: 90_000 },
   async () => {
     await withTrellisRuntime(async (runtime) => {
@@ -188,6 +188,43 @@ test(
           ...source,
         );
         assert.equal(deployment.participantId, provider.id);
+        const logo = `${directory}/logo.svg`;
+        await writeFile(logo, '<svg xmlns="http://www.w3.org/2000/svg"/>');
+        const themed = await run(
+          "theme",
+          "set",
+          "--client",
+          "trellis.console",
+          "--name",
+          "Acme Console",
+          "--logo",
+          logo,
+          "--color",
+          "primary-hover=#003a80",
+          "--copy",
+          "footer=Acme support",
+        );
+        assert.equal(themed.theme.colors.primaryHover, "#003a80");
+        const shown = await run("theme", "show", "--client", "trellis.console");
+        assert.equal(shown.theme.name, "Acme Console");
+        assert.equal(shown.theme.logo.format, "svg");
+        assert.equal(shown.theme.copy.footer, "Acme support");
+        // An app theme cannot restyle the Portal for everyone.
+        await assert.rejects(
+          run(
+            "theme",
+            "set",
+            "--client",
+            "trellis.console",
+            "--stylesheet",
+            logo,
+          ),
+        );
+        await run("theme", "remove", "--client", "trellis.console");
+        assert.equal(
+          (await run("theme", "show", "--client", "trellis.console")).theme,
+          undefined,
+        );
         await run("logout");
         await assert.rejects(run("clients", "list"));
       } finally {

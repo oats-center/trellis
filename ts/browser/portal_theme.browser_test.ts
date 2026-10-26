@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
+import { chromium } from "playwright";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import {
+  BROWSER_ADMIN,
   browserRuntimeOptions,
   completeConsoleEntry,
   launchProfile,
+  openConsole,
 } from "./browser_test_support.ts";
 
 // An SVG that would run script if the OAuth origin ever executed it.
@@ -16,34 +18,52 @@ const svg = (fill: string) =>
   `<script>document.title = "pwned"</script>` +
   `<rect width="10" height="10" fill="${fill}"/></svg>`;
 
-test("the Portal shows installation and client branding through a real sign-in", async () => {
+test("themes saved in the Console brand the Portal at once, per installation and client", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const branding = join(runtime.workdir, "branding");
-    await mkdir(branding);
-    await writeFile(join(branding, "logo.svg"), svg("#0050b3"));
-    await writeFile(join(branding, "console.svg"), svg("#b30050"));
-    await writeFile(
-      join(branding, "portal.css"),
-      ".brand span { letter-spacing: 3px; }\n",
-    );
-    await appendFile(
-      join(runtime.workdir, "config", "trellis", "config.toml"),
-      `
-[auth.portal.theme]
-name = "Acme Cloud"
-logo = ${JSON.stringify(join(branding, "logo.svg"))}
-stylesheet = ${JSON.stringify(join(branding, "portal.css"))}
-colors = { primary = "#0050b3" }
-copy = { sign_in_title = "Sign in to Acme", footer = "Acme support: help@acme.test" }
+    const admin = await launchProfile(runtime);
+    try {
+      const page = await admin.newPage();
+      await openConsole(page, runtime, BROWSER_ADMIN);
+      await page.goto(`${runtime.trellisUrl}/console/admin/branding`);
+      const form = page.locator("form");
+      await form.getByLabel("Name", { exact: true }).fill("Acme Cloud");
+      await form.locator("input[type=file]").setInputFiles({
+        name: "logo.svg",
+        mimeType: "image/svg+xml",
+        buffer: Buffer.from(svg("#0050b3")),
+      });
+      await form.getByAltText("Current logo").waitFor();
+      await form.getByLabel("Buttons and links").first().fill("#0050b3");
+      await form.getByLabel("Sign-in heading").fill("Sign in to Acme");
+      await form.getByLabel("Footer").fill("Acme support: help@acme.test");
+      await form.getByText("Custom stylesheet").click();
+      await form
+        .locator("textarea")
+        .fill(".brand span { letter-spacing: 3px; }\n");
+      await form.getByRole("button", { name: "Save", exact: true }).click();
+      await page.getByText(/^Saved\./).waitFor();
 
-[auth.portal.clients."trellis.console".theme]
-name = "Acme Console"
-logo = ${JSON.stringify(join(branding, "console.svg"))}
-`,
-    );
-    await runtime.restart();
+      // The Console's own client gets a name and logo of its own.
+      await page.getByLabel("Applies to").selectOption("trellis.console");
+      await form.getByLabel("Name", { exact: true }).fill("Acme Console");
+      await form.locator("input[type=file]").setInputFiles({
+        name: "console.svg",
+        mimeType: "image/svg+xml",
+        buffer: Buffer.from(svg("#b30050")),
+      });
+      await form.getByAltText("Current logo").waitFor();
+      await form.getByRole("button", { name: "Save", exact: true }).click();
+      await page.getByText(/^Saved\./).waitFor();
+    } finally {
+      await admin.close();
+    }
 
-    const context = await launchProfile(runtime);
+    // A first-time visitor, not the administrator's signed-in profile.
+    const browser = await chromium.launch({
+      headless: true,
+      env: browserTrustEnvironment(),
+    });
+    const context = await browser.newContext();
     try {
       const page = await context.newPage();
       await page.goto(`${runtime.trellisUrl}/login`, {
@@ -119,7 +139,7 @@ logo = ${JSON.stringify(join(branding, "console.svg"))}
         { timeout: 30_000 },
       );
     } finally {
-      await context.close();
+      await browser.close();
     }
   }, browserRuntimeOptions());
 });

@@ -78,6 +78,7 @@ the exact request, response, and error types.
 | Administration        | `Administration.Reviews.List/Decide`                                                                                                                                             |
 | Principals            | `Principals.EffectiveAccess`                                                                                                                                                     |
 | OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`                                                                                                                                       |
+| Portal themes         | `PortalThemes.List/Get/Put/Delete`                                                                                                                                               |
 | Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                          |
 | Issuers               | `Issuers.Rotate`, `Issuers.Revoke`                                                                                                                                               |
 | Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`                                                                                                                        |

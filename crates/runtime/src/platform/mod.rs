@@ -111,16 +111,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         &oauth.transport,
     ));
     engine.serve_operational(context.trellis_nats.clone());
-    engine.serve_portal_themes(
-        auth::PortalThemes::load(
-            context
-                .config
-                .auth
-                .as_ref()
-                .and_then(|auth| auth.portal.as_ref()),
-        )
-        .map_err(RuntimeError::Platform)?,
-    );
     let router = auth::oauth_router(
         engine.clone(),
         native.into_iter().chain(websocket).collect(),

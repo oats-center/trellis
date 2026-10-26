@@ -300,6 +300,71 @@ model AuthOAuthClientMutationRequest {
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
+enum AuthPortalLogoFormat { png; jpeg; webp; svg; }
+// At most 256 KiB once decoded.
+type AuthPortalLogoData = string(min_length=1, max_length=349528);
+type AuthPortalName = string(min_length=1, max_length=64);
+type AuthPortalStylesheet = string(max_length=65536);
+type AuthPortalTitle = string(max_length=120);
+type AuthPortalSubtitle = string(max_length=280);
+type AuthPortalFooter = string(max_length=500);
+model AuthPortalLogo { format: AuthPortalLogoFormat; base64: AuthPortalLogoData; }
+// Hex colours such as #0050b3 for the Portal's own palette.
+model AuthPortalPalette {
+  page?: string;
+  surface?: string;
+  ink?: string;
+  muted?: string;
+  line?: string;
+  lineStrong?: string;
+  primary?: string;
+  primaryHover?: string;
+  onPrimary?: string;
+  soft?: string;
+}
+model AuthPortalCopy {
+  signInTitle?: AuthPortalTitle;
+  signInSubtitle?: AuthPortalSubtitle;
+  footer?: AuthPortalFooter;
+}
+// Without clientId, the installation theme every client inherits.
+model AuthPortalTheme {
+  clientId?: AuthClientId;
+  name?: AuthPortalName;
+  logo?: AuthPortalLogo;
+  stylesheet?: AuthPortalStylesheet;
+  colors: AuthPortalPalette;
+  darkColors: AuthPortalPalette;
+  copy: AuthPortalCopy;
+  revision: AuthRevision;
+  updatedAt: timestamp;
+}
+model AuthPortalThemeSummary {
+  clientId?: AuthClientId;
+  name?: string;
+  revision: AuthRevision;
+  updatedAt: timestamp;
+}
+type AuthPortalThemesListResponse = CursorPage<AuthPortalThemeSummary>;
+model AuthPortalThemeGetRequest { clientId?: AuthClientId; }
+model AuthPortalThemeGetResponse { theme?: AuthPortalTheme; }
+// Replaces the whole theme; only the installation theme takes a stylesheet.
+model AuthPortalThemePutRequest {
+  clientId?: AuthClientId;
+  name?: AuthPortalName;
+  logo?: AuthPortalLogo;
+  stylesheet?: AuthPortalStylesheet;
+  colors: AuthPortalPalette;
+  darkColors: AuthPortalPalette;
+  copy: AuthPortalCopy;
+  expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthPortalThemeDeleteRequest {
+  clientId?: AuthClientId;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
 model AuthDelegationBinding {
   kind: AuthPublicClientKind;
   clientId: AuthClientId;

@@ -74,6 +74,9 @@ pub enum TopLevelCommand {
     /// Review and accept API catalog definitions.
     #[command(subcommand)]
     Apis(ApisCommand),
+    /// Brand the login Portal for the installation or one app.
+    #[command(subcommand)]
+    Theme(ThemeCommand),
     /// Manage service deployments.
     Svc(SvcCommand),
     /// Manage device deployments.
@@ -120,6 +123,7 @@ impl TopLevelCommand {
             Self::Users(_) => "users",
             Self::Clients(_) => "clients",
             Self::Apis(_) => "apis",
+            Self::Theme(_) => "theme",
             Self::Svc(_) => "svc",
             Self::Dev(_) => "dev",
             Self::Resources(_) => "resources",

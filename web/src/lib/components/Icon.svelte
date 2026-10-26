@@ -40,6 +40,7 @@
   import Braces from "lucide-svelte/icons/braces";
   import LogOut from "lucide-svelte/icons/log-out";
   import Lock from "lucide-svelte/icons/lock";
+  import Palette from "lucide-svelte/icons/palette";
 
   type IconName =
     | "activity"
@@ -126,6 +127,7 @@
     braces: Braces,
     logOut: LogOut,
     lock: Lock,
+    palette: Palette,
   } as const;
 
   type Props = {

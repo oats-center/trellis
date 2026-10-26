@@ -79,7 +79,6 @@ fn runtime_config() -> RuntimeConfig {
         }),
         auth: Some(crate::AuthConfig {
             avatar: None,
-            portal: None,
             administration: Default::default(),
             instance_id: None,
             oauth: None,

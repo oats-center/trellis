@@ -22,6 +22,58 @@ pub enum ClientsCommand {
     Delete(ClientMutationArgs),
 }
 
+/// Login Portal branding, for the installation or one app.
+#[derive(Debug, Subcommand)]
+pub enum ThemeCommand {
+    /// Show a theme, including its current revision.
+    Show(ThemeTargetArgs),
+    /// Replace a theme with exactly the given settings.
+    Set(ThemeSetArgs),
+    /// Remove a theme, so the app falls back to the installation's.
+    Remove(ThemeTargetArgs),
+}
+
+/// The installation theme, or with `--client` that app's.
+#[derive(Debug, Args)]
+pub struct ThemeTargetArgs {
+    /// OAuth client ID of the app; omitted for the installation theme.
+    #[arg(long)]
+    pub client: Option<String>,
+    /// Theme revision for `remove`; omitted reads the current revision once.
+    #[arg(long)]
+    pub expected_revision: Option<u64>,
+}
+
+/// A complete theme. Anything not given is left unset.
+#[derive(Debug, Args)]
+pub struct ThemeSetArgs {
+    /// OAuth client ID of the app; omitted for the installation theme.
+    #[arg(long)]
+    pub client: Option<String>,
+    /// Name shown in the Portal header and page titles instead of "Trellis".
+    #[arg(long)]
+    pub name: Option<String>,
+    /// PNG, JPEG, WebP, or SVG logo (at most 256 KiB).
+    #[arg(long)]
+    pub logo: Option<PathBuf>,
+    /// Stylesheet loaded after the Portal's own (installation theme only).
+    #[arg(long)]
+    pub stylesheet: Option<PathBuf>,
+    /// Light colour as NAME=#hex; NAME is one of page, surface, ink, muted,
+    /// line, line-strong, primary, primary-hover, on-primary, soft.
+    #[arg(long = "color", value_name = "NAME=#HEX")]
+    pub colors: Vec<String>,
+    /// Dark colour as NAME=#hex, with the same names as `--color`.
+    #[arg(long = "dark-color", value_name = "NAME=#HEX")]
+    pub dark_colors: Vec<String>,
+    /// Copy as NAME=TEXT; NAME is sign_in_title, sign_in_subtitle, or footer.
+    #[arg(long = "copy", value_name = "NAME=TEXT")]
+    pub copy: Vec<String>,
+    /// Theme revision; omitted reads the current revision once.
+    #[arg(long)]
+    pub expected_revision: Option<u64>,
+}
+
 /// Revision-fenced public client mutation.
 #[derive(Debug, Args)]
 pub struct ClientMutationArgs {

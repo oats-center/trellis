@@ -70,23 +70,18 @@ pub(super) fn page(engine: &super::OAuthEngine, callback: Option<&str>) -> Respo
         return super::http::error(oauth_as::error::ErrorCode::ServerError);
     };
     let mut response = asset("index.html");
-    let stylesheet = engine.portal_themes().has_stylesheet();
-    if let Some(file) =
-        PortalAssets::get("index.html").filter(|_| engine.generated_tls() || stylesheet)
-    {
+    if let Some(file) = PortalAssets::get("index.html") {
         let mut html = String::from_utf8_lossy(&file.data).into_owned();
         if engine.generated_tls() {
             // The Portal shows its not-for-production banner from this marker.
             html = html.replacen("<html", "<html data-generated-tls", 1);
         }
-        if stylesheet {
-            // After the Portal's own stylesheet, so the installation's wins.
-            html = html.replacen(
-                "</head>",
-                "<link rel=\"stylesheet\" href=\"/portal-theme/stylesheet.css\"></head>",
-                1,
-            );
-        }
+        // After the Portal's own stylesheet, so the installation's wins.
+        html = html.replacen(
+            "</head>",
+            "<link rel=\"stylesheet\" href=\"/portal-theme/stylesheet.css\"></head>",
+            1,
+        );
         *response.body_mut() = html.into();
     }
     response

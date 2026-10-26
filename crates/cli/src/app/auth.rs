@@ -224,6 +224,132 @@ pub(super) async fn apis(command: ApisCommand) -> miette::Result<()> {
     output::print_json(&result)
 }
 
+pub(super) async fn theme(command: ThemeCommand) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let client = match &command {
+        ThemeCommand::Show(args) | ThemeCommand::Remove(args) => args.client.clone(),
+        ThemeCommand::Set(args) => args.client.clone(),
+    };
+    let current = auth
+        .portal_themes_get(&auth_types::AuthPortalThemeGetRequest {
+            client_id: client.clone().map(Into::into),
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?;
+    let current_revision = current
+        .theme
+        .as_ref()
+        .map_or(0, |theme| theme.revision.0 .0);
+    let result = match command {
+        ThemeCommand::Show(_) => serde_json::to_value(current),
+        ThemeCommand::Remove(args) => serde_json::to_value(
+            auth.portal_themes_delete(&auth_types::AuthPortalThemeDeleteRequest {
+                client_id: client.map(Into::into),
+                expected_revision: wire(
+                    args.expected_revision
+                        .unwrap_or(current_revision)
+                        .to_string(),
+                )?,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        ),
+        ThemeCommand::Set(args) => {
+            // NAME=VALUE pairs onto the generated model's fields, refusing
+            // names the model does not have.
+            let fields = |pairs: &[String], names: &[(&str, &str)]| -> miette::Result<Value> {
+                let mut object = serde_json::Map::new();
+                for pair in pairs {
+                    let (name, value) = pair
+                        .split_once('=')
+                        .ok_or_else(|| miette::miette!("'{pair}' is not NAME=VALUE"))?;
+                    let field = names
+                        .iter()
+                        .find(|(portal, _)| *portal == name)
+                        .ok_or_else(|| {
+                            miette::miette!(
+                                "unknown name '{name}'; use one of {}",
+                                names
+                                    .iter()
+                                    .map(|(portal, _)| *portal)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        })?
+                        .1;
+                    object.insert(field.to_owned(), json!(value));
+                }
+                Ok(Value::Object(object))
+            };
+            const COLORS: [(&str, &str); 10] = [
+                ("page", "page"),
+                ("surface", "surface"),
+                ("ink", "ink"),
+                ("muted", "muted"),
+                ("line", "line"),
+                ("line-strong", "lineStrong"),
+                ("primary", "primary"),
+                ("primary-hover", "primaryHover"),
+                ("on-primary", "onPrimary"),
+                ("soft", "soft"),
+            ];
+            const COPY: [(&str, &str); 3] = [
+                ("sign_in_title", "signInTitle"),
+                ("sign_in_subtitle", "signInSubtitle"),
+                ("footer", "footer"),
+            ];
+            let logo = match &args.logo {
+                Some(path) => {
+                    let format = match path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref()
+                    {
+                        Some("png") => "png",
+                        Some("jpg" | "jpeg") => "jpeg",
+                        Some("webp") => "webp",
+                        Some("svg") => "svg",
+                        _ => miette::bail!("the logo must be a .png, .jpg, .webp, or .svg file"),
+                    };
+                    let bytes = std::fs::read(path).into_diagnostic()?;
+                    Some(json!({
+                        "format": format,
+                        "base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+                    }))
+                }
+                None => None,
+            };
+            let stylesheet = args
+                .stylesheet
+                .as_ref()
+                .map(std::fs::read_to_string)
+                .transpose()
+                .into_diagnostic()?;
+            let request: auth_types::AuthPortalThemePutRequest = serde_json::from_value(json!({
+                "clientId": client,
+                "name": args.name,
+                "logo": logo,
+                "stylesheet": stylesheet,
+                "colors": fields(&args.colors, &COLORS)?,
+                "darkColors": fields(&args.dark_colors, &COLORS)?,
+                "copy": fields(&args.copy, &COPY)?,
+                "expectedRevision": args.expected_revision.unwrap_or(current_revision).to_string(),
+                "idempotencyKey": cli_idempotency_key(),
+            }))
+            .into_diagnostic()?;
+            serde_json::to_value(auth.portal_themes_put(&request).await.into_diagnostic()?)
+        }
+    }
+    .into_diagnostic()?;
+    output::print_json(&result)
+}
+
 fn trimmed_optional(value: &Option<String>) -> Option<String> {
     value
         .as_deref()

@@ -10,6 +10,13 @@ and this project adheres to
 
 ### Changed
 
+- Portal themes live in the Auth database instead of server configuration:
+  `[auth.portal]` is gone. Edit them in the Console's new **Sign-in page**, with
+  `trellis theme show|set|remove [--client <id>]`, or through
+  `Auth.PortalThemes.List/Get/Put/Delete`. A saved theme shows at once, with no
+  restart. The installation theme needs `platform.manage`; an app's theme needs
+  `clients.manage`. A logo must be an image of the format it declares.
+
 - `trellis apis review` and `trellis apis accept` take `--source <project-root>`
   and an optional `--participant`, like `trellis svc create`, instead of request
   JSON files whose package evidence a service author could not produce. They

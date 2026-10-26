@@ -84,6 +84,7 @@ async fn dispatch(command: TopLevelCommand, format: OutputFormat) -> miette::Res
         TopLevelCommand::Users(command) => auth::users(format, command).await?,
         TopLevelCommand::Clients(command) => auth::clients(command).await?,
         TopLevelCommand::Apis(command) => auth::apis(command).await?,
+        TopLevelCommand::Theme(command) => auth::theme(command).await?,
         TopLevelCommand::Svc(command) => deploy::run_svc(format, command).await?,
         TopLevelCommand::Dev(command) => deploy::run_dev(format, command).await?,
         TopLevelCommand::Resources(command) => resources::run(format, command).await?,

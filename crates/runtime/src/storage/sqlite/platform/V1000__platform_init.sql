@@ -660,6 +660,19 @@ CREATE TABLE auth_oauth_clients (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+-- Login Portal branding: client_id '' is the installation theme, any other
+-- value overrides it for that client. Only the installation sets a stylesheet.
+CREATE TABLE auth_portal_themes (
+    client_id TEXT PRIMARY KEY,
+    theme_json TEXT NOT NULL CHECK (json_valid(theme_json)),
+    logo_format TEXT CHECK (logo_format IN ('png', 'jpeg', 'webp', 'svg')),
+    logo BLOB CHECK (length(logo) <= 262144),
+    stylesheet TEXT CHECK (length(stylesheet) <= 65536),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    updated_at INTEGER NOT NULL,
+    CHECK ((logo IS NULL) = (logo_format IS NULL)),
+    CHECK (stylesheet IS NULL OR client_id = '')
+);
 -- Retrieved public metadata is not client registration.
 CREATE TABLE auth_cimd_clients (
     client_id TEXT PRIMARY KEY,

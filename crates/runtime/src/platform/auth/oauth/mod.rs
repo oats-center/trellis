@@ -32,7 +32,6 @@ pub(crate) use engine::{TokenError, TrellisTokenResponse};
 pub(crate) use http::router;
 pub(super) use portal::ConsentPresentation;
 pub(crate) use storage::OAuthStorage;
-pub(crate) use theme::PortalThemes;
 pub(crate) use transport::OAuthListener;
 
 /// Run a handler's synchronous storage work on the blocking pool.
