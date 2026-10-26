@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- The IDL `json` type carries any JSON value unchecked, for opaque values such
+  as configuration, details or attributes. It maps to `JsonValue` in TypeScript
+  and `serde_json::Value` in Rust, takes no constraints, and cannot be an event
+  parameter or job key. An optional `json` field keeps a present `null`
+  distinct from an absent field in both languages.
+
 ### Fixed
 
 - A registry dependency failed to install with "root package must use the

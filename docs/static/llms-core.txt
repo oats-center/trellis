@@ -97,6 +97,10 @@ and incompatible constraints are compilation errors, not ignored options.
 Numeric bounds accept finite JSON literals such as `-1` and `2.5`; string
 lengths and list counts require unsigned integer literals. The IDL reference
 documents each surface's members and each constraint's applicable types.
+Use the `json` type for an opaque JSON value (for example free-form
+configuration or details); it is carried unchecked and cannot be an event
+parameter or job key. There are no string formats: a UUID or email is a
+`string`, and there are no tagged unions of models.
 
 ### Dependencies
 

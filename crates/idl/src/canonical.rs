@@ -1190,6 +1190,7 @@ fn primitive_name(value: Primitive) -> &'static str {
         Primitive::Bytes => "bytes",
         Primitive::Timestamp => "timestamp",
         Primitive::Ulid => "ulid",
+        Primitive::Json => "json",
     }
 }
 fn quote(value: &str) -> String {

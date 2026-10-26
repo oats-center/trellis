@@ -320,6 +320,9 @@ pub enum Primitive {
     Timestamp,
     /// Canonical uppercase ULID.
     Ulid,
+    /// Any JSON value, carried unchecked: object, array, string, number, bool,
+    /// or null.
+    Json,
 }
 
 /// Scalar or collection bounds.

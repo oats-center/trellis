@@ -5,6 +5,7 @@ export {
   type AppRequestDescriptor,
   type Codec,
   codecs,
+  type JsonValue,
   participantDescriptor,
   type SerializableErrorData,
 } from "./generated_support.ts";

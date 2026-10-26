@@ -208,7 +208,7 @@ impl<'a> Parser<'a> {
                 }
             }
             "string" | "bool" | "int32" | "uint32" | "int64" | "uint64" | "number" | "bytes"
-            | "timestamp" | "ulid" => Ok(TypeExpr::Primitive(name, self.constraints()?)),
+            | "timestamp" | "ulid" | "json" => Ok(TypeExpr::Primitive(name, self.constraints()?)),
             "null" => Err(self.error_previous("'null' is only legal as 'T | null'")),
             _ => {
                 if self.at(TokenKind::LParen) {

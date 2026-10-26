@@ -156,6 +156,29 @@ function timestamp(value: unknown): Timestamp {
 
 const ulidPattern = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
+/** A value the IDL `json` type carries unchecked. */
+export type JsonValue =
+  null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+/** Accept only values JSON can represent, so `json` round-trips exactly. */
+function jsonValue(value: unknown): JsonValue {
+  if (value === null || typeof value === "boolean" || typeof value === "string")
+    return value;
+  if (typeof value === "number")
+    return Number.isFinite(value) ? value : fail("finite JSON number");
+  if (Array.isArray(value)) return value.map(jsonValue);
+  const prototype =
+    typeof value === "object" ? Object.getPrototypeOf(value) : undefined;
+  if (prototype === Object.prototype || prototype === null) {
+    const result: { [key: string]: JsonValue } = {};
+    for (const [key, item] of Object.entries(value as object)) {
+      if (item !== undefined) result[key] = jsonValue(item);
+    }
+    return result;
+  }
+  return fail("JSON value");
+}
+
 /** Browser-safe codec vocabulary consumed by generated TypeScript packages. */
 export const codecs = Object.freeze({
   string: stringCodec,
@@ -172,6 +195,7 @@ export const codecs = Object.freeze({
       ? (value as Ulid)
       : fail("canonical ULID"),
   ),
+  json: codec<JsonValue>(jsonValue),
   openEnum<const T extends string>(values: readonly T[]): Codec<OpenEnum<T>> {
     if (values.some((value) => typeof value !== "string")) {
       fail("generated string enum values");

@@ -578,6 +578,7 @@ fn render_type_expression(
             Primitive::Bytes => "Uint8Array".into(),
             Primitive::Timestamp => "ReturnType<typeof codecs.timestamp.decode>".into(),
             Primitive::Ulid => "ReturnType<typeof codecs.ulid.decode>".into(),
+            Primitive::Json => "ReturnType<typeof codecs.json.decode>".into(),
         },
         TypeExpression::Named(reference) if reference.package.as_str() == package => {
             reference.id.as_str().into()
@@ -670,6 +671,7 @@ fn render_codec_expression(
                 Primitive::Bytes => "bytes",
                 Primitive::Timestamp => "timestamp",
                 Primitive::Ulid => "ulid",
+                Primitive::Json => "json",
             }
         ),
         TypeExpression::Named(reference) => {

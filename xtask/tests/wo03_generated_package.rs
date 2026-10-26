@@ -24,6 +24,8 @@ model Node {
   blob: Blob;
   nullable: Node | null;
   status: Status;
+  settings: json;
+  note?: json;
 }
 model Current { root: Node; }
 
@@ -173,7 +175,8 @@ fn wire() -> serde_json::Value {
             "ratio": 1.0,
             "blob": "AA==",
             "nullable": null,
-            "status": "ready"
+            "status": "ready",
+            "settings": null
         },
         "children": [],
         "count": "18446744073709551615",
@@ -182,6 +185,8 @@ fn wire() -> serde_json::Value {
         "blob": "AQID",
         "nullable": null,
         "status": "future",
+        "settings": {"a": [1, "x", null], "b": {"c": true}},
+        "note": null,
         "ignored": true
     })
 }
@@ -194,7 +199,18 @@ fn codecs_errors_and_generated_surfaces_compile() {
     assert_eq!(&**node.blob, &[1, 2, 3]);
     assert!(matches!(node.status, Status::Unknown(ref value) if value == "future"));
     assert_eq!(node.parent.as_deref().unwrap().label.as_ref(), "parent");
+    // `json` carries any value unchecked, including a required or present null.
+    assert_eq!(
+        node.settings,
+        serde_json::json!({"a": [1, "x", null], "b": {"c": true}})
+    );
+    assert_eq!(node.note, Some(serde_json::Value::Null));
+    assert_eq!(node.parent.as_deref().unwrap().settings, serde_json::Value::Null);
+    assert_eq!(node.parent.as_deref().unwrap().note, None);
     let encoded = node.encode().unwrap();
+    assert_eq!(encoded["settings"], wire()["settings"]);
+    assert_eq!(encoded.get("note"), Some(&serde_json::Value::Null));
+    assert!(encoded["parent"].get("note").is_none());
     assert_eq!(encoded["count"], "18446744073709551615");
     assert_eq!(encoded["signed"], "-9223372036854775808");
     assert_eq!(encoded["blob"], "AQID");
@@ -339,6 +355,7 @@ const wire = {
     blob: "AA==",
     nullable: null,
     status: "ready",
+    settings: null,
   },
   children: [],
   count: "18446744073709551615",
@@ -347,6 +364,8 @@ const wire = {
   blob: "AQID",
   nullable: null,
   status: "future",
+  settings: { a: [1, "x", null], b: { c: true } },
+  note: null,
   ignored: true,
 };
 
@@ -363,6 +382,19 @@ test("generated TypeScript package exercises WO-03 B2-B4", () => {
   assert(encoded.ignored === true, "unknown output fields round-trip");
   assert(encoded.count === wire.count && encoded.signed === wire.signed, "bigint encode");
   assert(encoded.blob === wire.blob, "bytes encode");
+  assert(
+    JSON.stringify(encoded.settings) === JSON.stringify(wire.settings) &&
+      encoded.note === null &&
+      !("note" in (encoded.parent as Record<string, unknown>)),
+    "json values round-trip exactly, including present nulls",
+  );
+  let rejectedFunction = false;
+  try {
+    fetch.input.encode({ ...node, settings: { f: () => 1 } } as never);
+  } catch {
+    rejectedFunction = true;
+  }
+  assert(rejectedFunction, "json rejects values JSON cannot represent");
   let rejectedNonFinite = false;
   try {
     fetch.input.encode({ ...node, ratio: Number.NaN });

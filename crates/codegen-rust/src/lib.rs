@@ -620,7 +620,13 @@ fn render_type_definition(
                         _ => break,
                     }
                 }
-                if value.optional && matches!(nullable, TypeExpression::Nullable(_)) {
+                // A present null in an optional `json` field is a value too.
+                if value.optional
+                    && matches!(
+                        nullable,
+                        TypeExpression::Nullable(_) | TypeExpression::Primitive(Primitive::Json, _)
+                    )
+                {
                     out.push_str(
                         "#[serde(default, deserialize_with = \
                         \"trellis_protocol::model::present_optional\", \
@@ -692,6 +698,7 @@ fn render_type_definition(
             let primitive = scalar_primitive(graph, expression).expect("named scalar primitive");
             let derives = match primitive {
                 Primitive::Number => "Clone, Copy, Debug, PartialEq, PartialOrd",
+                Primitive::Json => "Clone, Debug, PartialEq",
                 Primitive::Bytes => "Clone, Debug, PartialEq, Eq",
                 Primitive::Bool
                 | Primitive::Int32
@@ -775,6 +782,7 @@ fn render_expr(
             Primitive::Bytes => "crate::__types::Bytes".into(),
             Primitive::Timestamp => "trellis_protocol::model::Timestamp".into(),
             Primitive::Ulid => "trellis_protocol::model::Ulid".into(),
+            Primitive::Json => "serde_json::Value".into(),
         },
         TypeExpression::Named(reference) => {
             let path = type_path(reference);

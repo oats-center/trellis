@@ -204,12 +204,15 @@ deadline.
 Top-level declarations are models, enums, named scalar aliases, and API-scoped
 errors. Model fields use lower camel case and may be optional with `?`.
 Supported composition is named references, `list<T>`, `map<T>`, and `T | null`.
-There are no general unions/generics, defaults, raw `json`, duration payload
-type, patterns, or arbitrary string formats. `CursorQuery` and `CursorPage<T>`
+There are no general unions/generics, defaults, duration payload type, patterns,
+or arbitrary string formats; a UUID or email is a `string`. `CursorQuery` and `CursorPage<T>`
 are the only reserved finite generic forms.
 
 Scalars are `string`, `bool`, `int32`, `uint32`, `int64`, `uint64`, `number`,
-`bytes`, `timestamp`, and `ulid`. Constraints are `min_length`, `max_length`,
+`bytes`, `timestamp`, `ulid`, and `json`. `json` is any JSON value (object,
+array, string, number, bool, or null) carried unchecked: its schema accepts
+anything, it takes no constraints, and it cannot be an event parameter or job
+key. An optional `json` field distinguishes absent from a present `null`. Constraints are `min_length`, `max_length`,
 `min`, `max`, `min_items`, and `max_items`. Constraints apply only through a
 package-level named type alias. Generated types carry the value shapes, not the
 constraints; providers in both SDKs check RPC and operation inputs against the

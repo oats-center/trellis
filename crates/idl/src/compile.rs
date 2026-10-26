@@ -631,6 +631,7 @@ fn primitive(name: &str) -> miette::Result<Primitive> {
         "bytes" => Primitive::Bytes,
         "timestamp" => Primitive::Timestamp,
         "ulid" => Primitive::Ulid,
+        "json" => Primitive::Json,
         _ => return Err(miette!("unknown primitive '{name}'")),
     })
 }
@@ -2036,7 +2037,10 @@ fn scalar_leaf(
 ) -> miette::Result<()> {
     match ty {
         TypeExpression::Primitive(primitive, _)
-            if !matches!(primitive, Primitive::Bytes | Primitive::Number) =>
+            if !matches!(
+                primitive,
+                Primitive::Bytes | Primitive::Number | Primitive::Json
+            ) =>
         {
             Ok(())
         }

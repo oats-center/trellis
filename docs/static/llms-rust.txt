@@ -46,7 +46,9 @@ wrappers.
 
 Generated models keep wire distinctions: an optional field is `Option<T>`
 (`None` when omitted), `T | null` is `Nullable<T>`, so an optional nullable
-field decodes an explicit `null` as `Some(Nullable::Null)`. Every model has an
+field decodes an explicit `null` as `Some(Nullable::Null)`. The IDL `json` type
+is `serde_json::Value`; an optional `json` field decodes a present `null` as
+`Some(Value::Null)`. Every model has an
 `extra` map preserving unknown fields and every enum an `Unknown(String)`
 variant; authored field `extra` or enum value `unknown` is rejected.
 

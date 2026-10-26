@@ -103,6 +103,10 @@ and incompatible constraints are compilation errors, not ignored options.
 Numeric bounds accept finite JSON literals such as `-1` and `2.5`; string
 lengths and list counts require unsigned integer literals. The IDL reference
 documents each surface's members and each constraint's applicable types.
+Use the `json` type for an opaque JSON value (for example free-form
+configuration or details); it is carried unchecked and cannot be an event
+parameter or job key. There are no string formats: a UUID or email is a
+`string`, and there are no tagged unions of models.
 
 #### Dependencies
 
@@ -1051,6 +1055,11 @@ the lock, and commit output when ordinary clones should build without the
 Trellis CLI or source-package cache. There is no TypeScript contract-authoring
 execution step.
 
+Generated types map `int64`/`uint64` to `bigint`, `bytes` to `Uint8Array`, and
+the IDL `json` type to `JsonValue` (exported from
+`@oatscenter/trellis/generated`); encoding a `json` value rejects anything JSON cannot
+represent, such as functions or non-finite numbers.
+
 ### Connect
 
 Services import `TrellisService` from `@oatscenter/trellis/service`. Connect
@@ -1446,7 +1455,9 @@ wrappers.
 
 Generated models keep wire distinctions: an optional field is `Option<T>`
 (`None` when omitted), `T | null` is `Nullable<T>`, so an optional nullable
-field decodes an explicit `null` as `Some(Nullable::Null)`. Every model has an
+field decodes an explicit `null` as `Some(Nullable::Null)`. The IDL `json` type
+is `serde_json::Value`; an optional `json` field decodes a present `null` as
+`Some(Value::Null)`. Every model has an
 `extra` map preserving unknown fields and every enum an `Unknown(String)`
 variant; authored field `extra` or enum value `unknown` is rejected.
 

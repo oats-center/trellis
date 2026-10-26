@@ -179,6 +179,8 @@ fn primitive_schema(value: Primitive, bounds: &Bounds) -> Value {
             })
         }
         Primitive::Ulid => json!({"type":"string","pattern":"^[0-7][0-9A-HJKMNP-TV-Z]{25}$"}),
+        // Any JSON value; the contract does not constrain its shape.
+        Primitive::Json => json!({}),
     };
     if matches!(value, Primitive::String) {
         apply_count(&mut schema, bounds, "minLength", "maxLength");

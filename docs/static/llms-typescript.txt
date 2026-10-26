@@ -36,6 +36,11 @@ the lock, and commit output when ordinary clones should build without the
 Trellis CLI or source-package cache. There is no TypeScript contract-authoring
 execution step.
 
+Generated types map `int64`/`uint64` to `bigint`, `bytes` to `Uint8Array`, and
+the IDL `json` type to `JsonValue` (exported from
+`@oatscenter/trellis/generated`); encoding a `json` value rejects anything JSON cannot
+represent, such as functions or non-finite numbers.
+
 ## Connect
 
 Services import `TrellisService` from `@oatscenter/trellis/service`. Connect
