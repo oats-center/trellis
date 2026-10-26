@@ -213,6 +213,10 @@ pub(super) fn mutation(
         actor: caller(context, administration)?,
         request_id: idempotency_key.to_owned(),
         request_digest: digest(input)?,
+        session: context
+            .request()
+            .verified_request()
+            .map(|request| request.caller().authorization_session_id.clone()),
     })
 }
 

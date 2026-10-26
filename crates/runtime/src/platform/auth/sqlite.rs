@@ -145,6 +145,12 @@ pub(crate) struct Mutation {
     pub(crate) actor: String,
     pub(crate) request_id: String,
     pub(crate) request_digest: String,
+    /// The caller's authorization session when an authenticated RPC made this
+    /// mutation. A revocation covering it holds back only that session's own
+    /// connection kicks briefly, so the caller still receives and verifies the
+    /// reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session: Option<String>,
 }
 
 pub(super) fn json(value: &impl Serialize) -> Result<String, AuthError> {

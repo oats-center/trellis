@@ -562,6 +562,7 @@ pub(crate) fn complete_reset(
                 actor: action.payload.actor.clone(),
                 request_id: id(),
                 request_digest: digest(&root)?,
+                session: None,
             };
             storage
                 .authority
@@ -573,6 +574,7 @@ pub(crate) fn complete_reset(
             actor: action.payload.actor,
             request_id: action.id.clone(),
             request_digest: digest(&audit)?,
+            session: None,
         };
         connection.execute(
             "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,\
@@ -673,6 +675,7 @@ pub(super) fn complete_link(
             actor: login.principal_id,
             request_id: flow.request_id.clone(),
             request_digest: digest(&audit)?,
+            session: None,
         };
         connection.execute(
             "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,\

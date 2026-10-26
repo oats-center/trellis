@@ -36,6 +36,11 @@ and this project adheres to
   be spawned again; the compiler no longer rejects it with "implementation of
   `Send` is not general enough".
 
+- Logging out, or a device companion revoking its own grant, returns its reply
+  instead of failing with a broken connection or "verification material
+  unavailable". The caller's own revocation and disconnect follow five seconds
+  later; Auth refuses the session immediately.
+
 ## [0.100.0-rc.8] - 2026-10-26
 
 ### Changed

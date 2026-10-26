@@ -152,6 +152,7 @@ pub(super) fn mutation(actor: &str, input: &impl Serialize) -> Mutation {
         actor: actor.into(),
         request_id: id(),
         request_digest: digest(input).unwrap(),
+        session: None,
     }
 }
 

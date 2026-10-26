@@ -123,6 +123,12 @@ pub(super) fn enqueue_scope(
     Ok(work)
 }
 
+/// How long a caller that revoked its own session waits for the signed
+/// revocation and the kick that follows it, so it can receive and verify the
+/// reply. Auth refuses the session from the cutoff; other providers learn it
+/// when the revocation publishes.
+const SELF_REVOCATION_GRACE_SECONDS: i64 = 5;
+
 pub(super) fn enqueue_effect(
     connection: &Connection,
     kind: &str,
@@ -151,16 +157,16 @@ pub(super) fn retire_session(
     work: Option<&str>,
     now: i64,
 ) -> Result<bool, AuthError> {
-    let row: Option<(String, i64)> = connection
+    let row: Option<(String, i64, Option<i64>)> = connection
         .query_row(
-            "SELECT state,latest_context_expiry \
+            "SELECT state,latest_context_expiry,enforce_not_before \
             FROM auth_authorization_sessions \
             WHERE authorization_session_id=?1",
             [session],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some((state, latest)) = row else {
+    let Some((state, latest, enforce_not_before)) = row else {
         return Err(AuthError::NotFound);
     };
     if state != "active" {
@@ -213,6 +219,13 @@ pub(super) fn retire_session(
         }),
         None,
         now,
+    )?;
+    // Kicks follow the publication, so deferring it defers them too.
+    connection.execute(
+        "UPDATE auth_post_commit_actions \
+        SET next_attempt_at=max(next_attempt_at,?2) \
+        WHERE action_id=?1",
+        params![publication, enforce_not_before.unwrap_or(now)],
     )?;
     let mut attachments = connection.prepare(
         "SELECT attachment_id,server_id,broker_client_id \
@@ -773,6 +786,22 @@ impl SqliteAuthorizationStore {
             scope,
             now,
             |connection| {
+                // A caller revoking its own session gets the reply before its
+                // revocation reaches it: verifying that reply reads material
+                // over the same connection and rejects a reply to a session it
+                // already knows is revoked. Every other session in scope is
+                // enforced at once.
+                if let Some(session) = &identity.session {
+                    let (clause, key) = session_scope(scope);
+                    connection.execute(
+                        &format!(
+                            "UPDATE auth_authorization_sessions AS s \
+                            SET enforce_not_before=?2 \
+                            WHERE s.authorization_session_id=?3 AND {clause}"
+                        ),
+                        params![key, now + SELF_REVOCATION_GRACE_SECONDS, session],
+                    )?;
+                }
                 let owned = match scope {
                     EnforcementScope::Login(login) => connection.query_row(
                         "SELECT EXISTS(SELECT 1 \

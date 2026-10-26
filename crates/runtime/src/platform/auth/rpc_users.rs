@@ -537,6 +537,7 @@ pub(super) fn unlink_identity(
                     actor: identity.actor.clone(),
                     request_id: id(),
                     request_digest: digest(&scope)?,
+                    session: identity.session.clone(),
                 };
                 store.revoke_root_in_transaction(connection, &root, &scope, now)?;
             }
@@ -965,6 +966,7 @@ pub(super) fn change_password(
                     actor: identity.actor.clone(),
                     request_id: id(),
                     request_digest: digest(&scope)?,
+                    session: identity.session.clone(),
                 };
                 store.revoke_root_in_transaction(connection, &root, &scope, now)?;
             }

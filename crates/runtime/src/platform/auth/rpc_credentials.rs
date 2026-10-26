@@ -318,6 +318,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                     actor,
                     request_id: login.clone(),
                     request_digest: digest(login)?,
+                    session: Some(verified.authorization_session_id.clone()),
                 };
                 let now = crate::clock::unix_now();
                 store.mutate(&identity, "rpc.login.logout", login, now, |connection| {

@@ -412,6 +412,7 @@ impl super::super::SqliteAuthorizationStore {
             actor: principal.clone(),
             request_id: flow.request_id.clone(),
             request_digest: super::super::sqlite::digest(&input)?,
+            session: None,
         };
         let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
         let csrf_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes()));

@@ -207,6 +207,7 @@ impl SqliteAuthorizationStore {
             actor: principal.into(),
             request_id: input.idempotency_key.to_string(),
             request_digest: digest(&(&namespace, input))?,
+            session: None,
         };
         self.mutate(
             &identity,

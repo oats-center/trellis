@@ -142,7 +142,12 @@ path.
    Retirement records its cutoff, signed revocation, and exact attachment kicks
    atomically.
 5. The effect publisher sends signed revocations before the kicks that depend
-   on them, and kicks only the exact broker connection it recorded.
+   on them, and kicks only the exact broker connection it recorded. When a
+   request revokes the caller's own session (logout, or a companion revoking
+   its own grant), that session's revocation and kicks wait five seconds so
+   the caller can receive and verify the reply over the same connection. Auth
+   refuses the session from the cutoff; every other session in scope is
+   enforced at once.
 6. SDKs keep a verified mirror of revocations. Authority is usable only while
    that mirror's coverage is current; a lost or unverified mirror fences new
    work rather than permitting it.

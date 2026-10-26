@@ -1146,6 +1146,7 @@ pub(super) async fn portal_decide(
             actor: review.principal_id.clone(),
             request_id: input.idempotency_key.to_string(),
             request_digest,
+            session: None,
         },
         Err(_) => return back("unavailable"),
     };

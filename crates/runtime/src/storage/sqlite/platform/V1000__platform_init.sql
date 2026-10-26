@@ -810,6 +810,7 @@ CREATE TABLE auth_authorization_sessions (
     latest_context_expiry INTEGER NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('active', 'superseded', 'revoked')),
     retired_at INTEGER,
+    enforce_not_before INTEGER,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     CHECK ((credential_kind = 'oauthGrant' AND oauth_grant_id IS NOT NULL AND identity_key_id IS NULL
             AND original_refresh_family_id IS NOT NULL AND refresh_family_lookup_hash IS NOT NULL

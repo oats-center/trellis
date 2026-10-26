@@ -180,6 +180,7 @@ impl SqliteAuthorizationStore {
                 actor: principal.clone(),
                 request_id: self.settings.instance_id.clone(),
                 request_digest: digest(&input)?,
+                session: None,
             };
             let result: InitializationResult = self.mutate_in_transaction(
                 connection,
@@ -265,6 +266,7 @@ impl SqliteAuthorizationStore {
                                 actor: principal.clone(),
                                 request_id: id(),
                                 request_digest: digest(registration)?,
+                                session: None,
                             },
                             registration,
                             now,
@@ -386,6 +388,7 @@ impl super::OAuthStorage {
                 actor: principal.clone(),
                 request_id: super::sqlite::id(),
                 request_digest: super::sqlite::digest(&principal)?,
+                session: None,
             };
             let sealed = self.authority.mutate_in_transaction(
                 connection,
@@ -516,6 +519,7 @@ mod tests {
             actor: principal.clone(),
             request_id: id(),
             request_digest: digest(&health_grant).unwrap(),
+            session: None,
         };
         assert!(matches!(
             crate::platform::auth::tests::apply_policy(
@@ -567,6 +571,7 @@ mod tests {
                         actor: principal.clone(),
                         request_id: id(),
                         request_digest: digest(&cli_change).unwrap(),
+                        session: None,
                     },
                     &cli_change,
                     1002,
@@ -583,6 +588,7 @@ mod tests {
                         actor: principal.clone(),
                         request_id: id(),
                         request_digest: digest(&changed).unwrap(),
+                        session: None,
                     },
                     &changed,
                     1002,
@@ -647,6 +653,7 @@ mod tests {
                 actor: principal.clone(),
                 request_id: id(),
                 request_digest: digest(&disable).unwrap(),
+                session: None,
             },
             &disable,
             1004,
@@ -663,6 +670,7 @@ mod tests {
                 actor: principal.clone(),
                 request_id: id(),
                 request_digest: digest(&disable_cli).unwrap(),
+                session: None,
             },
             &disable_cli,
             1004,

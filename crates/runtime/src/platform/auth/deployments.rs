@@ -274,6 +274,7 @@ impl SqliteAuthorizationStore {
                         actor: admin.clone(),
                         request_id: review.review_id,
                         request_digest: digest(&acceptance)?,
+                        session: None,
                     };
                     let catalog = self.accept_api(&command, &acceptance, now)?;
                     expected_api_generations.insert((*api).into(), catalog.generation.get());
@@ -300,6 +301,7 @@ impl SqliteAuthorizationStore {
                 actor: admin,
                 request_id: ulid::Ulid::from_bytes(request_bytes).to_string(),
                 request_digest: digest(&input)?,
+                session: None,
             },
             &input,
             now,

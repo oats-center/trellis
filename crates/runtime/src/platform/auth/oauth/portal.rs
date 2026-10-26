@@ -334,6 +334,7 @@ impl SqliteAuthorizationStore {
             actor: principal.clone(),
             request_id: request_id.into(),
             request_digest: digest(&input)?,
+            session: None,
         };
         self.mutate(&mutation, "login.local", &input, now, |connection| {
             let valid: bool = connection.query_row(

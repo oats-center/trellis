@@ -1033,6 +1033,7 @@ async fn approve(
         actor: login.principal_id,
         request_id: presentation.id.clone(),
         request_digest: digest,
+        session: None,
     };
     match flow.request {
         super::portal::ConsentRequest::Authorization(pairs) => {
@@ -1254,6 +1255,7 @@ async fn portal_logout(
             request_id,
             request_digest: super::super::sqlite::digest(&login.login_session_id)
                 .map_err(|_| ErrorCode::ServerError)?,
+            session: None,
         };
         authority
             .portal_logout(&identity, &login, now)
