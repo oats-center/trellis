@@ -31,6 +31,7 @@ export {
   type OperationHandler,
   type OperationRegistration,
   type RpcHandler,
+  type RpcName,
   type ServiceEventHandler,
   type ServiceHandlerClient,
   type SqlOutbox,
@@ -114,3 +115,4 @@ export type {
   TerminalJob,
   WorkerInfo,
 } from "../jobs.ts";
+export type { RpcHandlerContext } from "../session.ts";

@@ -725,6 +725,19 @@ type ContractJobName<
 > = keyof ParticipantJobsOf<TContract> & string;
 
 /** Typed RPC handler function for an extracted Trellis service handler. */
+/**
+ * Names of the RPCs a generated service participant owns, for example
+ * `"Orders.Create"`; the `M` of {@link RpcHandler}.
+ */
+export type RpcName<
+  TContract extends GeneratedServiceParticipant<
+    RuntimeApi,
+    RuntimeApi | undefined,
+    ParticipantJobsMetadata,
+    ParticipantKvMetadata
+  >,
+> = RpcMethodName<ParticipantOwnedApi<TContract>>;
+
 export type RpcHandler<
   TContract extends GeneratedServiceParticipant<
     RuntimeApi,

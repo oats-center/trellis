@@ -1164,7 +1164,10 @@ or `service.handle.rpc.orders.create` tree. Dependency selections belong in IDL
 Inline handlers infer their types at registration. Extracted handlers can use
 `RpcHandler<typeof participant, "Orders.Create">` from
 `@oatscenter/trellis/service`. `OperationHandler`, `LiveHandler`, `JobHandler`,
-and `ServiceEventHandler` provide corresponding typed boundaries. Regenerate
+and `ServiceEventHandler` provide corresponding typed boundaries.
+`RpcName<typeof participant>` is the union of owned RPC names, so
+`{ [K in RpcName<P>]: RpcHandler<P, K> }` is an exhaustive handler map, and
+helpers that receive a handler's `context` take `RpcHandlerContext`. Regenerate
 after an IDL change.
 
 Handlers receive Trellis-owned arguments such as `input`, `context`, and the

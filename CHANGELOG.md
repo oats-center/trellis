@@ -23,6 +23,13 @@ and this project adheres to
   `inboxPrefix`). The grant is bound to that context's verified caller; an
   unverified caller gets a `TransferError`.
 
+### Added
+
+- `@oatscenter/trellis/service` exports `RpcName<typeof participant>`, the
+  union of a service's owned RPC names, and `RpcHandlerContext`, so extracted
+  handler maps and helpers that take a handler's `context` no longer derive
+  these from generated `API.actions`.
+
 ## [0.100.0-rc.6] - 2026-10-26
 
 ### Changed

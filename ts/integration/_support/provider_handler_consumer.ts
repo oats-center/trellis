@@ -15,6 +15,8 @@ import type {
   OperationHandler,
   OperationRegistration,
   RpcHandler,
+  RpcHandlerContext,
+  RpcName,
   ServiceEventHandler,
   ServiceHandlerClient,
 } from "@oatscenter/trellis/service";
@@ -27,6 +29,30 @@ export type ProviderContract = typeof participants.Provider.participant;
 /** Selected flat RPC handler for the Provider's owned Echo endpoint. */
 export const echoHandler: RpcHandler<ProviderContract, "Echo"> = ({ input }) =>
   ok({ value: `echo:${input.value}` });
+
+/** Extracted helper given the handler context: issues a download grant. */
+async function issueDownload(
+  provider: ConnectedTrellisService<ProviderContract>,
+  context: RpcHandlerContext,
+  key: string,
+) {
+  return await provider
+    .createTransfer({ direction: "receive", store: "files", key, context })
+    .orThrow();
+}
+
+/** One extracted handler for every RPC the Provider owns, keyed by name. */
+export function providerRpcHandlers(
+  provider: ConnectedTrellisService<ProviderContract>,
+): { [K in RpcName<ProviderContract>]: RpcHandler<ProviderContract, K> } {
+  const download: RpcHandler<ProviderContract, "Download"> = async (
+    { input, context },
+  ) => ok({
+    ...input,
+    transfer: await issueDownload(provider, context, input.value),
+  });
+  return { Echo: echoHandler, Download: download, Generate: download };
+}
 
 /** Owned operation handler that completes with a transformed value. */
 export const workHandler: OperationHandler<ProviderContract, "Work"> = async (
