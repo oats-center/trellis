@@ -261,6 +261,13 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     projector.stop().await;
     drop(store);
 
+    // The broker schedules forgetting a message ID when it stores the message,
+    // using the window then in force; shrink it first so a later replay of
+    // the retained publication is not a duplicate for minutes.
+    let mut config = stream.info().await.unwrap().config.clone();
+    config.duplicate_window = Duration::from_millis(100);
+    context.update_stream(config.clone()).await.unwrap();
+
     // Truncate real broker history while this projection is offline, leaving a
     // signed retained record beyond an unprojected publication.
     let discarded = prepare();
@@ -385,10 +392,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         !sessions.items.is_empty(),
         "publisher has an active session"
     );
-    let mut config = stream.info().await.unwrap().config.clone();
-    config.duplicate_window = Duration::from_millis(100);
     let replay_after = raw.time + config.duplicate_window;
-    context.update_stream(config).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
         // A second-boundary cutoff alone can leave this publication less than
@@ -426,17 +430,28 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     })
     .await
     .expect("retirement preserves genuine pre-cutoff backlog");
-    let replay_sequence = context
-        .publish_with_headers(
-            raw.subject.clone(),
-            raw.headers.clone(),
-            raw.payload.clone(),
-        )
-        .await
-        .unwrap()
-        .await
-        .unwrap()
-        .sequence;
+    // Until its purge runs, the broker acknowledges the replay as a duplicate
+    // of the retained message and stores nothing; wait for a real copy.
+    let replay_sequence = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let ack = context
+                .publish_with_headers(
+                    raw.subject.clone(),
+                    raw.headers.clone(),
+                    raw.payload.clone(),
+                )
+                .await
+                .unwrap()
+                .await
+                .unwrap();
+            if !ack.duplicate {
+                break ack.sequence;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the broker forgets the retained message ID");
     assert!(replay_sequence > retained_sequence);
     let late = stream.get_raw_message(replay_sequence).await.unwrap();
     assert!(matches!(
