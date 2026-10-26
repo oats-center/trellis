@@ -51,7 +51,9 @@ The workflow:
 2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
    run `trellis update` to resolve changes into `trellis.lock`.
 3. Run `trellis install` to reproduce locked dependencies and `trellis generate`
-   after IDL edits. `trellis generate --watch` supports the edit loop.
+   after IDL edits; it re-records your own package in `trellis.lock` (commit
+   it), and `trellis generate --check` fails on a stale lock or output in CI.
+   `trellis generate --watch` supports the edit loop.
 4. Depend on the one ordinary generated package for your language. Import its
    `apis`, `participants`, and `apps` namespaces, not separate API or participant
    packages.

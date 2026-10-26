@@ -66,13 +66,15 @@ An Operation declares a durable `progress` schema and, optionally, a distinct
 transient `update` schema:
 
 ```trellis
+model ReindexInput { scope: string; }
+model ReindexSummary { reindexed: uint64; }
 model Status { stage: string; }
 model Preview { text: string; }
 
 api orders@v1 {
   title "Orders";
   description "Reindex orders.";
-  operation Reindex { input Id; output Summary; progress Status; update Preview; }
+  operation Reindex { input ReindexInput; output ReindexSummary; progress Status; update Preview; }
   capabilities { public { allows { operation Reindex; } } }
 }
 ```

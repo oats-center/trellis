@@ -1,6 +1,6 @@
 ---
 title: "Retrieving an order with service errors"
-description: "Add Orders.Get schemas, a declared domain error, and a typed read handler."
+description: "Add a declared domain error to the Orders Get RPC and a typed read handler."
 ---
 
 # Declare service errors
@@ -9,13 +9,11 @@ Errors are named wire declarations in the API and are selected by surfaces that 
 
 ```trellis
 model OrderNotFoundData { orderId: string; }
-error OrderNotFound { schema OrderNotFoundData; }
 
-rpc "Orders.Get" {
-  version "v1";
-  input GetOrderRequest;
-  output GetOrderResponse;
-  errors [OrderNotFound];
+api orders@v1 {
+  // ...
+  error OrderNotFound(OrderNotFoundData);
+  rpc Get { input GetOrderRequest; output GetOrderResponse; errors [OrderNotFound]; }
 }
 ```
 

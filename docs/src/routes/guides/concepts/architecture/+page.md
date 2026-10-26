@@ -9,13 +9,13 @@ Trellis separates platform-owned runtime capabilities from domain-owned services
 
 Services usually fall into one primary category:
 
-| Category | Purpose | Examples |
-| --- | --- | --- |
-| Infrastructure | Platform capabilities for all services | Auth, Jobs |
-| Ingest | Pull external data and emit domain events | Zendesk, FoodLogiQ |
-| Repository | Persist and query domain data | Graph, Search |
-| Processing | Transform, enrich, or derive knowledge | Classification |
-| Egress | Push data to external systems | Laserfiche |
+| Category       | Purpose                                   | Examples           |
+| -------------- | ----------------------------------------- | ------------------ |
+| Infrastructure | Platform capabilities for all services    | Auth, Jobs         |
+| Ingest         | Pull external data and emit domain events | Zendesk, FoodLogiQ |
+| Repository     | Persist and query domain data             | Graph, Search      |
+| Processing     | Transform, enrich, or derive knowledge    | Classification     |
+| Egress         | Push data to external systems             | Laserfiche         |
 
 A category describes the service's main responsibility. Any service may still subscribe to events for cache invalidation, projections, or local state.
 

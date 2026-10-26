@@ -5,8 +5,8 @@ and runtime error types.
 
 The npm package contains ESM JavaScript and TypeScript declarations. Use
 `import`; CommonJS output and `require()` support have intentionally been
-removed. Node and Deno adapters remain available as ESM subpaths. JSR
-publication remains supported.
+removed. Node and Deno adapters remain available as ESM subpaths. The package is
+published to npm.
 
 For AI-agent context, start with the generated package `TRELLIS.md` files and
 the raw docs index:
@@ -16,24 +16,30 @@ the raw docs index:
 
 ```typescript
 import { TrellisClient } from "@oatscenter/trellis";
-import { participants } from "example-trellis";
+import { apps } from "example-trellis";
 
 const client = await TrellisClient.connect({
   trellisUrl: "https://trellis.example.com",
-  participant: participants.exampleApp.participant,
+  request: apps.ExampleApp.request,
+  auth: { clientId: "example-app", redirectTo: `${location.origin}/callback` },
 }).orThrow();
 ```
 
 The local package name comes from `trellis.toml`. Generation emits one ordinary
-ESM package with `apis` and `participants` namespaces, executable JavaScript and
-declarations, and the matching published runtime dependency. Commit that package
+ESM package with `apis`, `apps`, and `participants` namespaces, executable
+JavaScript and declarations, and the matching published runtime dependency. Apps
+connect with their generated `apps.<App>.request`; services connect with
+`TrellisService.connect({ participant: participants.<Service>.participant, ... })`. Commit that package
 when ordinary builds should not require the Trellis CLI or API cache.
 
-Connected API facades group actions by surface: `.rpc.<group>.<leaf>(input)`,
-`.event.<group>.<leaf>.listen(handler)` or `.publish(event)`,
-`.feed.<group>.<leaf>(input)`, and `.operation.<group>.<leaf>.start(input)`.
-Inspect generated declarations for the exact selected APIs and action names. Do
-not reconstruct transport subjects or use handwritten contract metadata.
+Generated clients expose flat methods named after each action: an RPC `Get` is
+`client.get(input)`, an operation `Reindex` is `client.reindex(input).start()`,
+and a live observation `Watch` is `client.watch(input, { signal })`. Services
+register RPC and operation handlers with `service.handleGet(...)` and
+`service.handleReindex(...)`, publish events with `service.publishShipped(...)`,
+and listen with `service.onShipped(...)`. Calls return `Result` values. Inspect
+the generated declarations for the exact names. Do not reconstruct transport
+subjects or use handwritten contract metadata.
 
 Prepared events support durable publish flows. `prepare(...)` returns a
 `PreparedTrellisEvent`; services can persist prepared events in SQL or NATS KV

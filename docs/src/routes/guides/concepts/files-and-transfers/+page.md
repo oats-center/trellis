@@ -78,10 +78,9 @@ Declare `stream;` instead of `upload;` when the handler should process bytes as
 they arrive, persist them somewhere other than staging, or not keep them at all:
 
 ```trellis
-operation Documents.Ingest {
-  input IngestRequest;
-  output IngestResult;
-  stream;
+api documents@v1 {
+  // ...
+  operation Ingest { input IngestRequest; output IngestResult; stream; }
 }
 ```
 

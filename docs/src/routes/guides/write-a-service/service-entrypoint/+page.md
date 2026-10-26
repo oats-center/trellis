@@ -24,9 +24,7 @@ import { ulid } from "ulid";
 export const createOrder: RpcHandler<
   typeof participants.OrdersService.participant,
   "Create"
-> = (
-  { input },
-) => Result.ok({ orderId: ulid(), customerId: input.customerId });
+> = ({ input }) => Result.ok({ orderId: ulid(), customerId: input.customerId });
 ```
 
 `RpcHandler` derives both request and response types from the generated
@@ -98,22 +96,19 @@ Log the CLI into your [running Trellis](/guides/starting-trellis) as an
 administrator. From the service project:
 
 ```sh
-trellis svc orders-service create --format json
-```
-
-The create command uses `orders-service` as a display name. Set
-`TRELLIS_DEPLOYMENT` to the returned `deployment.deploymentId`, not that display
-name. This project also contains a caller; choose the provider's artifact files
-explicitly:
-
-```sh
-trellis svc "$TRELLIS_DEPLOYMENT" apply \
+trellis svc orders-service create \
   --source . \
-  --participant acme.orders-service
+  --participant orders.OrdersService \
+  --format json
 ```
 
-The direct apply installs the participant and deployment resources. Inspect the
-deployment and provision an instance:
+The create command uses `orders-service` as a display name. This project also
+contains a caller, so `--participant` selects the provider by its identity,
+`<package>.<ServiceName>`. Create installs the participant and its deployment
+resources. Set `TRELLIS_DEPLOYMENT` to the returned `deployment.deploymentId`,
+not the display name. After later IDL changes, run
+`trellis svc "$TRELLIS_DEPLOYMENT" apply --source . --participant orders.OrdersService`.
+Inspect the deployment and provision an instance:
 
 ```sh
 trellis svc "$TRELLIS_DEPLOYMENT" show --format json

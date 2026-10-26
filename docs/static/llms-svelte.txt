@@ -23,14 +23,14 @@ import {
   createTrellisApp,
   type TrellisClientFor,
 } from "@oatscenter/trellis-svelte";
-import { participants } from "dashboard-trellis";
+import { apps } from "dashboard-trellis";
 
-const participant = participants.acmeDashboard.participant;
+const request = apps.AcmeDashboard.request;
 
-type AppClient = TrellisClientFor<typeof participant>;
+type AppClient = TrellisClientFor<typeof request>;
 
 export const trellisApp = createTrellisApp({
-  participant,
+  request,
   trellisUrl: "https://localhost:3000",
 });
 ```

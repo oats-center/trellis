@@ -20,7 +20,8 @@ and Node's standard test runner for native TypeScript tools and tests.
 ## Generate
 
 Author native IDL, run `trellis update` after dependency changes, and run
-`trellis generate` after IDL changes. Set `[package]`, `[sources]`, and
+`trellis generate` after IDL changes (it re-records your package in
+`trellis.lock`). Set `[package]`, `[sources]`, and
 `[generate.typescript].output` in `trellis.toml`. For a durable `consumer`,
 declare a direct `trellis` source package dependency containing
 `trellis.events@v1`; select and lock its version before generation.

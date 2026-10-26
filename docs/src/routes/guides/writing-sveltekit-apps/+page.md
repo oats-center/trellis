@@ -12,17 +12,19 @@ checking or building the app. For example, in `src/lib/trellis.ts`:
 
 ```ts
 import { createTrellisApp } from "@oatscenter/trellis-svelte";
-import { participants } from "orders-trellis";
+import { apps } from "orders-trellis";
 
 export const trellisApp = createTrellisApp({
-  participant: participants.ordersApp.participant,
+  request: apps.OrdersApp.request,
   trellisUrl: "https://trellis.example.com",
 });
 ```
 
 Here `orders-trellis` is the package name from `trellis.toml`, installed as an
 ordinary local package. Its JavaScript and declarations need no generation step
-during the app's normal build. Use the generated participant for browser connection and bind flows. Keep
+during the app's normal build. `apps.OrdersApp.request` is the generated request
+for the `app OrdersApp` declared in IDL; use it for browser connection and bind
+flows. Keep
 secrets and durable server credentials in server-only modules; browser trust
 state uses the Trellis browser storage adapter.
 
@@ -70,7 +72,8 @@ case, open the browser connection on the client, not during server rendering.
 
 ## Call the generated API
 
-Generated callers expose flat selected methods, for example `ordersGet(...)`,
+Generated callers expose flat methods named after the API's actions, for
+example `get(...)` for `rpc Get`,
 not a hand-constructed RPC namespace. Handle their `Result` values explicitly.
 Use operations for asynchronous workflows, generated event subscriptions for
 live delivery, and each API's abort signal or close method when leaving a view.

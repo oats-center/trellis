@@ -21,7 +21,7 @@ That includes:
 - automation agents
 
 Some participants provide APIs. Some only call APIs. Many do both. For example,
-an orders service may handle `Orders.Create`, publish `Orders.Shipped`, and call
+an orders service may handle an orders `Create` RPC, publish a `Shipped` event, and call
 an inventory service. A portal may call services and subscribe to live updates.
 A device may activate, connect, and publish or call only the surfaces it is
 allowed to use.

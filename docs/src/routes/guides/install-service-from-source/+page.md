@@ -23,9 +23,11 @@ artifacts or rewrite imports as an installation step.
 ## Install and apply the participant
 
 Log in to the target runtime with `trellis login <url>`. Create the service
-deployment, apply the selected participant directly from verified source, and
-provision an instance using `trellis svc <id> create`, `apply`, and `provision`.
-`apply --source <project-root>` compiles and installs the selected participant,
+deployment from verified source with
+`trellis svc <name> create --source <project-root> --participant <package>.<Service>`,
+then provision an instance with `trellis svc <deployment-id> provision`. Later
+releases use `trellis svc <deployment-id> apply --source <project-root>`.
+Create and apply compile and install the selected participant,
 updates deployment resources, and writes its participant-scoped grant. See
 [installing an image](/guides/install-service-from-image) for the matching
 provisioning sequence.

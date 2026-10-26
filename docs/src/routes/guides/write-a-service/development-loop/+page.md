@@ -6,8 +6,9 @@ description: "Know when to regenerate artifacts, review deployment authority, an
 # Development loop
 
 1. Edit a `.trellis` file explicitly listed by `[sources]`.
-2. Run `trellis update` only when dependency declarations change.
-3. Run `trellis generate`, or `trellis generate --watch` during development.
+2. Run `trellis generate`, or `trellis generate --watch` during development. It
+   re-records your package in `trellis.lock`; commit the updated lock.
+3. Run `trellis update` when dependency declarations change.
 4. Compile the generated language surface and application code.
 5. Review authority changes before deployment.
 

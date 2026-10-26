@@ -12,22 +12,25 @@ artifacts, grants, and deployment assignments do not belong in device config.
 ## 1. Declare the participant
 
 Define a native `device` participant with its exact owned/used APIs and optional
-resource/state selections, then run `trellis update` and `trellis generate`.
+resource/state selections, then run `trellis generate` (and `trellis update`
+first when you add or change API dependencies).
 Generated TypeScript or Rust facades carry the compile-time participant/API
 evidence.
 
 ## 2. Create and apply the deployment
 
 ```sh
-trellis dev field-device create --format json
-trellis dev "$DEPLOYMENT_ID" apply \
+trellis dev field-device create \
   --source . \
-  --participant acme.field-device
+  --participant acme.FieldDevice \
+  --format json
 trellis dev "$DEPLOYMENT_ID" show --format json
 ```
 
-Direct apply installs the participant revision, updates device deployment
-policy/resources, and writes the relevant binding. There is no authority
+Set `DEPLOYMENT_ID` to the returned `deployment.deploymentId`. Create installs
+the participant revision, sets up device deployment policy/resources, and writes
+the relevant binding; later releases use
+`trellis dev "$DEPLOYMENT_ID" apply --source . --participant acme.FieldDevice`. There is no authority
 proposal or reconcile step.
 
 ## 3. Provision the device

@@ -1,6 +1,6 @@
 ---
 title: "Writing our first RPC"
-description: "Add Orders.Create schemas, its native API declaration, capability gate, and handler."
+description: "Add an Orders Get RPC: its models, API declaration, capability, and handler."
 ---
 
 # Add an RPC
@@ -11,23 +11,31 @@ Declare request and response models, then reference them from the API surface:
 model GetOrderRequest { orderId: string; }
 model GetOrderResponse { orderId: string; status: string; }
 
-rpc "Orders.Get" {
-  version "v1";
-  input GetOrderRequest;
-  output GetOrderResponse;
+api orders@v1 {
+  // ...the existing Create RPC and capability
+  rpc Get { input GetOrderRequest; output GetOrderResponse; }
+  capabilities {
+    capability orders.read {
+      title "Read orders";
+      description "Read an order.";
+      grants "The caller may read customer orders.";
+      allows { rpc Get; }
+    }
+  }
 }
 ```
 
 After `trellis generate`, import the generated descriptor or participant facade. Runtime code does not execute the IDL source and does not construct API metadata.
 
-Place these declarations inside the Orders API block. Connect the generated
-service participant, then register `service.handleOrdersGet(...)` before
+Run `trellis generate` after the edit. Connect the
+generated service participant, then register `service.handleGet(...)` before
 `service.wait()`. The handler receives typed `input` and returns a `Result`
 containing the declared output. Keep database access in an application-owned
 closure instead of adding fields to the Trellis handler context.
 
-A caller selects `call rpc "Orders.Get";` in its participant's `use` block and
-regenerates. It can then call `client.ordersGet({ orderId })` without knowing
+A caller requires the capability that allows the RPC,
+`app OrdersCaller { use orders { required capability orders.read; } }`, and
+regenerates. It can then call `client.get({ orderId })` without knowing
 the NATS subject or wire envelope. A selected surface still requires granted
 authority; generated methods are not an authorization bypass.
 

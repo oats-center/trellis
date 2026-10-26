@@ -1,6 +1,6 @@
 ---
 title: "Publishing your own events"
-description: "Declare and publish an Orders.Shipped event for downstream services."
+description: "Declare and publish an Orders Shipped event for downstream services."
 ---
 
 # Publish events
@@ -9,15 +9,26 @@ Declare the payload model and event on the owned API:
 
 ```trellis
 model OrderShippedEvent { orderId: string; }
-event "Orders.Shipped" {
-  version "v1";
-  payload OrderShippedEvent;
+
+api orders@v1 {
+  // ...
+  event Shipped { payload OrderShippedEvent; }
+  capabilities {
+    // ...
+    capability orders.watchShipments {
+      title "Watch shipments";
+      description "Be told when orders ship.";
+      grants "The subscriber learns which orders shipped.";
+      allows { subscribe event Shipped; }
+    }
+  }
 }
 ```
 
 The generated service facade exposes the typed publisher. Subject derivation and permission requirements remain protocol-owned.
 
-After regeneration, publish with `service.publishOrdersShipped({ orderId })` and
+Subscribers require a capability that allows `subscribe event Shipped`. After
+regeneration, publish with `service.publishShipped({ orderId })` and
 handle its `Result`. This sends an event now; it does not promise that a remote
 handler has completed. Trellis adds signed event metadata at publish time, so
 the application supplies only its declared payload.

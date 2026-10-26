@@ -6,17 +6,19 @@ description: "Use Trellis from TypeScript apps, services, devices, portals, and 
 # TypeScript libraries
 
 Application code imports runtime classes from `@oatscenter/trellis` and the
-`apis` and `participants` namespaces from its ordinary generated package. With
+`apis`, `apps`, and `participants` namespaces from its ordinary generated
+package: browser and native apps connect with their generated `apps.<App>.request`,
+services with `participants.<Service>.participant`. With
 `[package]` and `[generate.typescript].output` in `trellis.toml`:
 
 ```ts
 import { TrellisClient } from "@oatscenter/trellis";
-import { participants } from "orders-trellis";
+import { apps } from "orders-trellis";
 
 const client = await TrellisClient.connect({
-  participant: participants.ordersApp.participant,
   trellisUrl: "https://trellis.example.com",
-  auth: "browser",
+  request: apps.OrdersApp.request,
+  auth: { clientId: "orders-app", redirectTo: `${location.origin}/callback` },
 }).orThrow();
 ```
 

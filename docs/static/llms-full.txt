@@ -57,7 +57,9 @@ The workflow:
 2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
    run `trellis update` to resolve changes into `trellis.lock`.
 3. Run `trellis install` to reproduce locked dependencies and `trellis generate`
-   after IDL edits. `trellis generate --watch` supports the edit loop.
+   after IDL edits; it re-records your own package in `trellis.lock` (commit
+   it), and `trellis generate --check` fails on a stale lock or output in CI.
+   `trellis generate --watch` supports the edit loop.
 4. Depend on the one ordinary generated package for your language. Import its
    `apis`, `participants`, and `apps` namespaces, not separate API or participant
    packages.
@@ -1041,7 +1043,8 @@ and Node's standard test runner for native TypeScript tools and tests.
 ### Generate
 
 Author native IDL, run `trellis update` after dependency changes, and run
-`trellis generate` after IDL changes. Set `[package]`, `[sources]`, and
+`trellis generate` after IDL changes (it re-records your package in
+`trellis.lock`). Set `[package]`, `[sources]`, and
 `[generate.typescript].output` in `trellis.toml`. For a durable `consumer`,
 declare a direct `trellis` source package dependency containing
 `trellis.events@v1`; select and lock its version before generation.
@@ -1731,14 +1734,14 @@ import {
   createTrellisApp,
   type TrellisClientFor,
 } from "@oatscenter/trellis-svelte";
-import { participants } from "dashboard-trellis";
+import { apps } from "dashboard-trellis";
 
-const participant = participants.acmeDashboard.participant;
+const request = apps.AcmeDashboard.request;
 
-type AppClient = TrellisClientFor<typeof participant>;
+type AppClient = TrellisClientFor<typeof request>;
 
 export const trellisApp = createTrellisApp({
-  participant,
+  request,
   trellisUrl: "https://localhost:3000",
 });
 ```

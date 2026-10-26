@@ -21,18 +21,22 @@ participant.
 
 ## 2. Create and apply
 
-Create the deployment and compile/apply the release's participant project:
+Create the deployment from the release's participant project. `my-service` is
+the deployment's display name; `--participant` names the service's identity,
+`<package>.<ServiceName>` from its `trellis.toml` and IDL:
 
 ```sh
-trellis svc my-service create --format json
-trellis svc "$DEPLOYMENT_ID" apply \
+trellis svc my-service create \
   --source ./release/trellis-project \
-  --participant acme.my-service
+  --participant acme.MyService \
+  --format json
 trellis svc "$DEPLOYMENT_ID" show --format json
 ```
 
-Apply compiles native IDL in memory, installs an immutable participant revision,
-updates deployment resources, and writes the participant-scoped binding. There
+Set `DEPLOYMENT_ID` to the returned `deployment.deploymentId`. Create compiles
+native IDL in memory, installs an immutable participant revision, sets up
+deployment resources, and writes the participant-scoped binding; later releases
+use `apply` (below). There
 is no proposal, authority-plan, acceptance, or reconcile step.
 
 ## 3. Provision an instance
@@ -79,7 +83,7 @@ project before rolling out containers:
 ```sh
 trellis svc "$DEPLOYMENT_ID" apply \
   --source ./new-release/trellis-project \
-  --participant acme.my-service
+  --participant acme.MyService
 ```
 
 Apply validates the replacement, installs the new immutable participant
