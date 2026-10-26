@@ -1584,6 +1584,7 @@ export function createConnectedService<
     connection,
     serviceTransport,
     acquireTimeoutMs,
+    resolvedLog,
     trellisServiceConstructorToken,
   ]) as TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>;
   resources.handlerResources = {
@@ -3288,6 +3289,7 @@ export class TrellisServiceSession<
   readonly #contractJobs: TJobs;
   readonly #jobsBinding?: ResourceBindingJobs;
   readonly #ownedOutboxDispatchers = new Set<OutboxDispatcher>();
+  readonly #log: LoggerLike;
   #waitPromise?: Promise<void>;
   #stopPromise?: Promise<void>;
 
@@ -3308,6 +3310,7 @@ export class TrellisServiceSession<
     connection: TrellisConnection,
     transport: TrellisTransportProvider,
     acquireTimeoutMs: number,
+    log: LoggerLike,
     token: typeof trellisServiceConstructorToken,
   ) {
     if (token !== trellisServiceConstructorToken) {
@@ -3317,6 +3320,7 @@ export class TrellisServiceSession<
     this.name = name;
     this.auth = auth;
     this.#nc = nc;
+    this.#log = log;
     this.#runtime = runtime;
     this.#handlerTrellis = handlerTrellis;
     Object.defineProperty(this, PROVIDER_CALLER, {
@@ -3828,19 +3832,43 @@ export class TrellisServiceSession<
       }
       this.#ownedOutboxDispatchers.clear();
 
+      // Name a shutdown phase that stalls, so a stuck stop is diagnosable.
+      let phase = "health publishing";
+      let phaseStarted = Date.now();
+      let warned = "";
+      const watchdog = setInterval(() => {
+        if (warned === phase || Date.now() - phaseStarted < 10_000) return;
+        warned = phase;
+        this.#log.warn(
+          { service: this.name, phase, elapsedMs: Date.now() - phaseStarted },
+          "Service stop is still waiting on a shutdown phase",
+        );
+      }, 1_000);
+      const enter = (next: string) => {
+        phase = next;
+        phaseStarted = Date.now();
+      };
       try {
         await this.#stopHealthPublishing();
       } finally {
         try {
+          enter("job workers");
           await this.#managedJobWorkers.stop().orThrow();
         } finally {
           try {
+            enter("operation transfers");
             await this.#operationTransfer.stop();
           } finally {
             try {
+              enter("runtime");
               await this.#runtime.stop();
             } finally {
-              await this.connection.close();
+              try {
+                enter("connection close");
+                await this.connection.close();
+              } finally {
+                clearInterval(watchdog);
+              }
             }
           }
         }
