@@ -7,7 +7,7 @@
 //! No lock files, PID-derived ports, or global mutex are used.
 
 use std::io::Read;
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::{Path, PathBuf};
 
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
@@ -59,17 +59,21 @@ pub(crate) struct PortSet {
     pub websocket: u16,
 }
 
-/// Five live TCP reservations with same-port UDP handoff ownership.
+/// Five TCP reservations with same-port UDP handoff ownership.
+///
+/// Each TCP side is a bound, never-listening `SO_REUSEADDR` socket. A listening
+/// reservation would be inherited by a process another thread spawns, until it
+/// execs, and could keep accepting after the lease closed it.
 pub(crate) struct PortLease {
-    http: (TcpListener, UdpSocket),
-    oauth: (TcpListener, UdpSocket),
-    nats: (TcpListener, UdpSocket),
-    monitor: (TcpListener, UdpSocket),
-    websocket: (TcpListener, UdpSocket),
+    http: (socket2::Socket, UdpSocket),
+    oauth: (socket2::Socket, UdpSocket),
+    nats: (socket2::Socket, UdpSocket),
+    monitor: (socket2::Socket, UdpSocket),
+    websocket: (socket2::Socket, UdpSocket),
 }
 
 impl PortLease {
-    /// Reserves distinct loopback ports, holding every listener open.
+    /// Reserves distinct loopback ports, holding each until spawn.
     pub(crate) fn reserve() -> Result<Self, TrellisTestError> {
         // HTTP/WSS clients reject Fetch's restricted low ports (through 10080).
         const MIN_AUTOMATIC_PORT: u32 = 10_240;
@@ -101,7 +105,7 @@ impl PortLease {
                 "no nonprivileged listener ports outside the kernel ephemeral range".into(),
             ));
         }
-        let bind = |role: &str| -> Result<(TcpListener, UdpSocket), TrellisTestError> {
+        let bind = |role: &str| -> Result<(socket2::Socket, UdpSocket), TrellisTestError> {
             for _ in 0..32 {
                 let mut bytes = [0; 4];
                 std::fs::File::open("/dev/urandom")
@@ -126,8 +130,18 @@ impl PortLease {
                         )))
                     }
                 };
-                match TcpListener::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), selected)) {
-                    Ok(listener) => return Ok((listener, ownership)),
+                let socket =
+                    socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                        .and_then(|socket| {
+                            socket.set_reuse_address(true)?;
+                            Ok(socket)
+                        })
+                        .map_err(|error| {
+                            failure(format!("creating the {role} reservation: {error}"))
+                        })?;
+                // Fails while anything listens on the port, even with SO_REUSEADDR.
+                match socket.bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, selected).into()) {
+                    Ok(()) => return Ok((socket, ownership)),
                     Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
                     Err(error) => {
                         return Err(failure(format!(
@@ -151,10 +165,14 @@ impl PortLease {
 
     /// The selected ports.
     pub(crate) fn ports(&self) -> Result<PortSet, TrellisTestError> {
-        let port_of = |listener: &TcpListener, role: &str| -> Result<u16, TrellisTestError> {
-            listener
+        let port_of = |socket: &socket2::Socket, role: &str| -> Result<u16, TrellisTestError> {
+            socket
                 .local_addr()
-                .map(|addr| addr.port())
+                .and_then(|addr| {
+                    addr.as_socket()
+                        .map(|addr| addr.port())
+                        .ok_or_else(|| std::io::Error::other("not an IP socket"))
+                })
                 .map_err(|error| {
                     TrellisTestError::new(
                         TrellisTestErrorKind::PortAllocation,
@@ -172,7 +190,7 @@ impl PortLease {
         })
     }
 
-    /// Closes the TCP listeners, retaining exclusive ownership through startup.
+    /// Closes the TCP reservations, retaining exclusive ownership through startup.
     pub(crate) fn release_for_spawn(self) -> [UdpSocket; 5] {
         drop(self.http.0);
         drop(self.oauth.0);
@@ -376,6 +394,7 @@ pub(crate) fn require_utf8_path(path: &Path, role: &str) -> Result<String, Trell
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn remove_retained_workdirs_only_removes_stale_owned_dirs() {
@@ -461,7 +480,8 @@ mod tests {
         let lease = PortLease::reserve().expect("reserve listeners");
         let set = lease.ports().expect("reserved ports");
         for port in [set.http, set.oauth, set.nats, set.monitor, set.websocket] {
-            assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+            // A readiness probe must never mistake the reservation for a server.
+            assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
             assert!(
                 !automatic.contains(&port),
                 "listener exposed to outbound reuse"

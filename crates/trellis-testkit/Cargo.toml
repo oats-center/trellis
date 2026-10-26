@@ -29,6 +29,7 @@ trellis-models = { path = "../models", version = "0.100.0-rc.8" }
 flate2 = "1.1.9"
 tar = "0.4.46"
 libc = "0.2.186"
+socket2 = "0.6.4"
 ulid.workspace = true
 url = { workspace = true }
 
