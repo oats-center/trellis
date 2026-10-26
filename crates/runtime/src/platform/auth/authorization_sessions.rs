@@ -937,6 +937,20 @@ impl SqliteAuthorizationStore {
                 }),
             );
         }
+        if current.principal_kind == PrincipalKind::User {
+            // Handlers see their own caller's profile without directory access.
+            let profile = super::profiles::read(connection, &current.principal_id)?;
+            extensions.insert(
+                trellis_protocol::USER_PROFILE_EXTENSION.into(),
+                serde_json::to_value(trellis_protocol::CallerUser {
+                    display_name: profile.display_name,
+                    given_name: profile.given_name,
+                    family_name: profile.family_name,
+                    email: profile.email,
+                    email_verified: profile.email_verified,
+                })?,
+            );
+        }
         let native = current.native;
         let not_after = current.not_after;
         let authority = sign_session_authority(

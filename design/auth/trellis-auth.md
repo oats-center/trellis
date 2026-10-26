@@ -434,6 +434,14 @@ verifier. Raw parsing applies the same allocation bound even when a caller's
 local policy allows more. Issuance fails before authority or attachment state is
 committed when the shared budget is exceeded.
 
+A user principal's authority carries the non-critical `trellis.user.v1`
+extension: the user's own display name, optional given/family names and email,
+and email verification, read from the stored profile at issuance. Verified
+request and event callers project it as `user`, so a provider can show who is
+calling without directory consent; it identifies, never authorizes, and profile
+edits reach providers when Auth next issues the session's authority. Service and
+device authorities never carry it.
+
 Provisioned service/device CONNECT proofs identify the installed credential and
 bind its identity-key signature to the fresh runtime/session NKey, target
 installation/account, and validity window. Clients do not assert deployment,

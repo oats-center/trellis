@@ -627,6 +627,12 @@ inspect Trellis's internal authorization registry.
   profile fields are untouched, and intentional profile changes also require
   `expectedProfileRevision`. A stale combined save rolls back both.
 
+A handler sees its own caller's profile without any directory capability: a
+verified user caller carries `user` with `displayName`, optional `givenName`,
+`familyName` and `email`, and `emailVerified`, as Auth signed them into the
+session's authority (later profile edits appear once Auth reissues it). Service
+and device callers carry no `user`. Use `usersRead` only to look up other users.
+
 Names and email are not unique identity keys. Key application-owned
 authorization by immutable `principalId`; a directory match does not grant
 access to application records.

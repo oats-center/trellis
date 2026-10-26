@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Handlers once again see who a user caller is. A verified user caller carries
+  `user` (`displayName`, optional `givenName`, `familyName` and `email`, and
+  `emailVerified`) in TypeScript and Rust, signed by Auth into the session's
+  authority. A provider no longer needs `trellis.auth.v1:users.read` to show
+  its own caller's name or email. Service and device callers carry no `user`.
+  The TypeScript testkit's `createUser` accepts an optional `email`.
+
 ### Changed
 
 - **Breaking:** Generated TypeScript declared errors are constructed from their

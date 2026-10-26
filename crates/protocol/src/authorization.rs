@@ -308,6 +308,32 @@ pub struct AuthorityProvider {
     pub provider_certificate_digest: String,
 }
 
+/// Authority extension carrying a user principal's own profile.
+pub const USER_PROFILE_EXTENSION: &str = "trellis.user.v1";
+
+/// Auth's profile of a user caller, as of the authority's issuance.
+///
+/// Identification only: the stable key is the caller's `principal_id`, and
+/// names and email are neither unique nor authorization.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CallerUser {
+    /// Name to show for the user.
+    pub display_name: String,
+    /// Given name, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub given_name: Option<String>,
+    /// Family name, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_name: Option<String>,
+    /// Email address, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Whether an identity provider verified `email`.
+    #[serde(default)]
+    pub email_verified: bool,
+}
+
 /// Authenticated request identity and captured whole-capability metadata.
 ///
 /// This projection proves caller identity, not permission to execute an action.
@@ -342,6 +368,9 @@ pub struct AuthenticatedCaller {
     pub capabilities: Vec<CapabilityAuthority>,
     /// Accepted API stamps captured by this authority.
     pub apis: Vec<AuthorityApi>,
+    /// The user's own profile, for user principals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<CallerUser>,
 }
 
 impl AuthenticatedCaller {
@@ -1098,6 +1127,10 @@ impl<'a> VerifiedSessionRequest<'a> {
             oauth_grant_id: authority.oauth_grant_id.clone(),
             capabilities: authority.capabilities.clone(),
             apis: authority.apis.clone(),
+            user: (authority.principal_kind == PrincipalKind::User)
+                .then(|| authority.extensions.get(USER_PROFILE_EXTENSION))
+                .flatten()
+                .and_then(|profile| serde_json::from_value(profile.clone()).ok()),
         }
     }
 

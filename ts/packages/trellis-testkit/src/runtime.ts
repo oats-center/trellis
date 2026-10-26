@@ -939,7 +939,10 @@ export class TrellisTestRuntime implements AsyncDisposable {
   }
 
   /** Create an ordinary account through Auth; its random password is retained only by this runtime. */
-  async createUser(args: { name: string }): Promise<TrellisTestUser> {
+  async createUser(args: {
+    name: string;
+    email?: string;
+  }): Promise<TrellisTestUser> {
     const label =
       args.name
         .toLowerCase()
@@ -953,6 +956,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     const { user: created } = await this.callAdminRpc("authUsersCreate", {
       username,
       displayName: args.name,
+      ...(args.email !== undefined ? { email: args.email } : {}),
       password,
       idempotencyKey: ulid(),
     });

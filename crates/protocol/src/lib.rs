@@ -39,7 +39,7 @@ pub use authorization::{
     parse_session_authority, session_event_signing_digest, session_request_signing_digest,
     sign_session_authority, sign_session_event, sign_session_request, verify_session_authority,
     verify_session_event, verify_session_request, AuthenticatedCaller, AuthorityApi,
-    AuthorityIssuerKey, AuthorityIssuerState, AuthorityProvider, CapabilityAuthority,
+    AuthorityIssuerKey, AuthorityIssuerState, AuthorityProvider, CallerUser, CapabilityAuthority,
     CredentialKind, OriginalEventPublication, PrincipalKind, SessionAuthorityPurpose,
     SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy, SessionBinding,
     SessionEvent, SessionEventProof, SessionEventVerificationInput, SessionRequest,
@@ -48,7 +48,7 @@ pub use authorization::{
     VerifiedSessionRequest, ADMISSION_GET_DOMAIN_V1, ISSUER_METADATA_DOMAIN_V1,
     LIVE_PROOF_DOMAIN_V1, MAX_SESSION_AUTHORITY_BYTES, MESSAGE_EVENT_DOMAIN_V1,
     MESSAGE_REQUEST_DOMAIN_V1, MESSAGE_RESPONSE_DOMAIN_V1, SESSION_AUTHORITY_FORMAT_V1,
-    TRANSFER_PROOF_DOMAIN_V1,
+    TRANSFER_PROOF_DOMAIN_V1, USER_PROFILE_EXTENSION,
 };
 pub use canonical::{canonicalize_json, digest_json, sha256_base64url};
 pub use catalog::{

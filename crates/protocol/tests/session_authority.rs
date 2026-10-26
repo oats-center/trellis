@@ -13,6 +13,7 @@ use trellis_protocol::{
     SessionAuthorityVerificationPolicy, SessionBinding, SessionEvent,
     SessionEventVerificationInput, SessionRequest, SessionRequestVerificationInput,
     SignedSessionAuthority, U64s, UnsignedSessionAuthority, SESSION_AUTHORITY_FORMAT_V1,
+    USER_PROFILE_EXTENSION,
 };
 
 fn issued() -> (
@@ -820,6 +821,81 @@ fn event_proof_binds_descriptor_subject_payload_and_api_stamp() {
     changed = event.clone();
     changed.accepted_revision = U64s::new(4);
     assert!(check(&changed, payload).is_err());
+}
+
+#[test]
+fn a_verified_user_request_carries_the_signed_profile_and_a_service_never_does() {
+    let (runtime, pinned, signed, policy) = issued();
+    let issuer = SigningKey::from_bytes(&[2; 32]);
+    let profile = json!({
+        "displayName": "Alice",
+        "email": "alice@example.test",
+        "emailVerified": true,
+        "pronouns": "a field this reader does not know"
+    });
+    let caller_of = |mut body: UnsignedSessionAuthority| {
+        body.extensions
+            .insert(USER_PROFILE_EXTENSION.into(), profile.clone());
+        let parsed = parse_session_authority(
+            &serde_json::to_vec(&sign_session_authority(body, &issuer).unwrap()).unwrap(),
+            policy.maximum_authority_bytes,
+        )
+        .unwrap();
+        let authority = verify_session_authority(SessionAuthorityVerificationInput {
+            issuer: &pinned,
+            trellis_instance_id: &parsed.unsigned.trellis_instance_id,
+            audience_nats_account: "application-account",
+            authority: &parsed,
+            policy: &policy,
+            purpose: SessionAuthorityPurpose::Live,
+            revocation_cutoff: None,
+        })
+        .unwrap();
+        let request = SessionRequest {
+            authority_digest: authority.digest().into(),
+            api_id: "documents@v1".into(),
+            api_generation: U64s::new(1),
+            accepted_revision: U64s::new(3),
+            action: "Documents.Get".into(),
+            subject: "rpc.documents.Get".into(),
+            reply_subject: Some("_INBOX.runtime.reply".into()),
+            request_id: "01JY0000000000000000000006".into(),
+            issued_at: 1_110,
+        };
+        let payload = br#"{"id":"document-1"}"#;
+        let proof = sign_session_request(&request, payload, &runtime).unwrap();
+        let caller = verify_session_request(SessionRequestVerificationInput {
+            authority: &authority,
+            request: &request,
+            payload_sha256: sha256(payload),
+            proof: &proof,
+            policy: &policy,
+            known_revoked: false,
+        })
+        .unwrap()
+        .caller();
+        // The projection survives the wire a TypeScript provider receives.
+        serde_json::from_value::<trellis_protocol::AuthenticatedCaller>(
+            serde_json::to_value(&caller).unwrap(),
+        )
+        .unwrap()
+    };
+
+    let user = caller_of(signed.unsigned.clone()).user.unwrap();
+    assert_eq!(user.display_name, "Alice");
+    assert_eq!(user.email.as_deref(), Some("alice@example.test"));
+    assert!(user.email_verified && user.given_name.is_none());
+
+    let mut service = signed.unsigned;
+    service.principal_kind = PrincipalKind::Service;
+    service.binding = SessionBinding::Service {
+        deployment_id: "01JY0000000000000000000009".into(),
+        instance_id: "01JY0000000000000000000010".into(),
+        participant_id: "documents.service".into(),
+    };
+    service.login_session_id = None;
+    service.oauth_grant_id = None;
+    assert_eq!(caller_of(service).user, None);
 }
 
 #[test]

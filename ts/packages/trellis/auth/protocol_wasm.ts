@@ -268,6 +268,22 @@ export type AuthenticatedCaller = {
   oauthGrantId?: string;
   capabilities: CapabilityAuthority[];
   apis: AuthorityApi[];
+  /** The user's own profile, for user principals. */
+  user?: CallerUser;
+};
+
+/**
+ * Auth's profile of a user caller, as of the authority's issuance.
+ *
+ * Identification only: the stable key is `principalId`, and names and email
+ * are neither unique nor authorization.
+ */
+export type CallerUser = {
+  displayName: string;
+  givenName?: string;
+  familyName?: string;
+  email?: string;
+  emailVerified: boolean;
 };
 
 /** Cryptographically authenticated request binding, before dispatch authorization. */

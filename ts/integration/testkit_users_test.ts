@@ -34,6 +34,8 @@ test(
         let owner: string | undefined;
         await service.handleEcho(async ({ input, context: { caller } }) => {
           assert(caller.type === "verified");
+          if (input.value === "profile")
+            return Result.ok({ value: JSON.stringify(caller.user ?? null) });
           if (input.value === "client") {
             assert(caller.binding.kind === "native");
             return Result.ok({ value: caller.binding.clientId });
@@ -51,7 +53,10 @@ test(
             });
           return Result.ok({ value: caller.principalId });
         });
-        const alice = await runtime.createUser({ name: "Alice" });
+        const alice = await runtime.createUser({
+          name: "Alice",
+          email: "alice@example.test",
+        });
         const bob = await runtime.createUser({ name: "Bob" });
         const capabilityIds = apps.Caller.request.requiredCapabilities;
         await runtime.grantUserCapabilities({ user: alice, capabilityIds });
@@ -101,6 +106,19 @@ test(
           bob.principalId,
         );
         assert.notEqual(bob.principalId, alice.principalId);
+        // A handler sees each caller's own profile, without directory access.
+        assert.deepEqual(
+          JSON.parse((await a1.echo({ value: "profile" }).orThrow()).value),
+          {
+            displayName: "Alice",
+            email: "alice@example.test",
+            emailVerified: false,
+          },
+        );
+        assert.deepEqual(
+          JSON.parse((await b1.echo({ value: "profile" }).orThrow()).value),
+          { displayName: "Bob", emailVerified: false },
+        );
         assert.equal(
           (await a1.echo({ value: "create" }).orThrow()).value,
           "created",

@@ -126,6 +126,30 @@ export class VerifiedAuthority {
   /** Verified logical caller identity usable by all SDK adapters. */
   get caller(): AuthenticatedCaller {
     const authority = this.#entry.authority;
+    // Auth signs the user's own profile into a user principal's authority.
+    const profile =
+      authority.principalKind === "user"
+        ? authority.extensions["trellis.user.v1"]
+        : undefined;
+    const text = (value: JsonValue | undefined) =>
+      typeof value === "string" ? value : undefined;
+    const user =
+      profile !== null &&
+      typeof profile === "object" &&
+      !Array.isArray(profile) &&
+      typeof profile.displayName === "string"
+        ? {
+            displayName: profile.displayName,
+            ...(text(profile.givenName) && {
+              givenName: text(profile.givenName),
+            }),
+            ...(text(profile.familyName) && {
+              familyName: text(profile.familyName),
+            }),
+            ...(text(profile.email) && { email: text(profile.email) }),
+            emailVerified: profile.emailVerified === true,
+          }
+        : undefined;
     return {
       authorityDigest: this.digest,
       principalId: authority.principalId,
@@ -139,6 +163,7 @@ export class VerifiedAuthority {
       oauthGrantId: authority.oauthGrantId,
       capabilities: authority.capabilities,
       apis: authority.apis,
+      ...(user && { user }),
     };
   }
   /** Time and observed retirement are checked again immediately before authorized work. */

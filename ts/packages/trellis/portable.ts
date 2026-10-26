@@ -59,6 +59,7 @@ export {
   paginationQueryDigest,
 } from "./auth/protocol_wasm.ts";
 export type { PaginationErrorData } from "./pagination.ts";
+export type { CallerUser } from "./auth/protocol_wasm.ts";
 export type {
   ClientAuthContinuation,
   ClientAuthOptions,
