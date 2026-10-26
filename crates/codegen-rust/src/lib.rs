@@ -3141,8 +3141,12 @@ fn main() {
         let archive = target
             .join("package")
             .join(format!("trellis-rs-{}.crate", env!("CARGO_PKG_VERSION")));
+        // `cargo package` stamps entries with a fixed 2006 mtime, and the
+        // extracted path sits at the same workspace-relative location every
+        // run. Kept mtimes would make cargo reuse a stale SDK build from the
+        // shared target directory, so extract with current mtimes.
         assert!(Command::new("tar")
-            .arg("-xzf")
+            .arg("-xzmf")
             .arg(archive)
             .arg("-C")
             .arg(output.path())
