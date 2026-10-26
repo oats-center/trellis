@@ -14,7 +14,7 @@ futures-util = "0.3"
 runtime-trellis = { path = "crates/runtime-trellis" }
 runtime-live-v2 = { path = "v2/crates/runtime-live-v2" }
 trellis-runtime-apis = { path = "../../../crates/runtime-apis" }
-trellis-rs = { version = "0.100.0-rc.6", features = ["telemetry-otlp"] }
+trellis-rs = { version = "0.100.0-rc.7", features = ["telemetry-otlp"] }
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal"] }
 time = { version = "0.3", features = ["formatting"] }
 ulid = "1"

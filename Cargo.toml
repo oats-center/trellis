@@ -60,7 +60,7 @@ panic = "abort"
 strip = "symbols"
 
 [workspace.package]
-version = "0.100.0-rc.6"
+version = "0.100.0-rc.7"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/oats-center/trellis"
@@ -125,5 +125,5 @@ rand = "0.10.0"
 tempfile = "3.27.0"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 ulid = "1.2.1"
-trellis-protocol = { path = "crates/protocol", version = "0.100.0-rc.6" }
-trellis-models = { path = "crates/models", version = "0.100.0-rc.6" }
+trellis-protocol = { path = "crates/protocol", version = "0.100.0-rc.7" }
+trellis-models = { path = "crates/models", version = "0.100.0-rc.7" }

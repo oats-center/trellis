@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.7] - 2026-10-26
+
 ### Fixed
 
 - Handlers once again see who a user caller is. A verified user caller carries
