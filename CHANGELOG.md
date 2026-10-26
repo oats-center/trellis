@@ -29,6 +29,9 @@ and this project adheres to
 
 ### Added
 
+- A TypeScript service whose `stop()` waits more than 10 seconds on one
+  shutdown phase (health publishing, job workers, operation transfers, runtime
+  or connection close) logs a warning naming that phase.
 - The IDL `json` type carries any JSON value unchecked, for opaque values such
   as configuration, details or attributes. It maps to `JsonValue` in TypeScript
   and `serde_json::Value` in Rust, takes no constraints, and cannot be an event
