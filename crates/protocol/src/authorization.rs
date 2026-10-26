@@ -332,6 +332,10 @@ pub struct CallerUser {
     /// Whether an identity provider verified `email`.
     #[serde(default)]
     pub email_verified: bool,
+    /// Stable Trellis-hosted photo URL for this profile revision, when the
+    /// user has a photo; a new photo or profile change gets a new URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
 }
 
 /// Authenticated request identity and captured whole-capability metadata.

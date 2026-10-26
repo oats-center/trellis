@@ -437,7 +437,8 @@ committed when the shared budget is exceeded.
 A user principal's authority carries the non-critical `trellis.user.v1`
 extension: the user's own display name, optional given/family names and email,
 and email verification, read from the stored profile at issuance. Verified
-request and event callers project it as `user`, so a provider can show who is
+request and event callers project it as `user` (including the stable photo URL
+when the user has one), so a provider can show who is
 calling without directory consent; it identifies, never authorizes, and profile
 edits reach providers when Auth next issues the session's authority. Service and
 device authorities never carry it.
@@ -878,13 +879,18 @@ issuer retains its configured TLS boundary; other discovered destinations must
 pass the same public-only HTTPS/DNS policy as CIMD. Enrichment failure does not
 fail otherwise valid authentication. Email equality never selects a principal.
 
-Authorized directory/self reads mint an image-only bearer at the dedicated OAuth
-origin's `/profile/avatars/{token}`. It contains only a version, principal ID,
-profile revision, expiry and MAC. A domain-separated key derived from retained
-OAuth storage custody binds it to the installation; its maximum lifetime is ten
-minutes. Issuer rotation does not change that key. Profile changes invalidate
-old URLs. Revoking directory access prevents new URLs, not the remaining lifetime
-of an already issued image bearer. URLs must not be logged or used as authority.
+Authorized directory/self reads and user caller profiles carry a stable,
+image-only URL at the dedicated OAuth origin's `/profile/avatars/{token}`, as
+OIDC providers' `picture` URLs are. The token contains only a version, principal
+ID, profile revision and MAC; it has no time expiry. A domain-separated key
+derived from retained OAuth storage custody binds it to the installation, and
+issuer rotation does not change that key. Every fetch checks the token's
+revision against the current profile and the account's active state, so a
+profile change retires old URLs and disabling the account stops serving them
+(re-enabling restores them). Responses allow one hour of private caching.
+Revoking directory access prevents new URLs but does not retire URLs already
+handed out; a photo is presentation, not authority. URLs must not be used as
+authority.
 
 Directory reads perform no outbound image work. Image GET tries owner override,
 linked OIDC picture, then opted-in verified-email Gravatar (trim/lowercase
@@ -905,10 +911,9 @@ seven days, absence for one day and transient failure for fifteen minutes.
 Source/profile changes discard earlier cache entries. Failures return no image,
 never a directory/login failure or a redirect to an upstream image host.
 
-Image responses use private caching bounded by bearer expiry, `nosniff` and
-cross-origin image embedding without credentialed CORS. Consumers use
-`referrerpolicy="no-referrer"`, local initials on image error and a new
-authorized directory read to renew an expired URL.
+Image responses use one hour of private caching, `nosniff` and cross-origin
+image embedding without credentialed CORS. Consumers use
+`referrerpolicy="no-referrer"` and local initials on image error.
 
 `trellis.auth.v1:users.read` authorizes `Users.List` and `Users.Get`. Its
 consent explicitly covers names, email and photos. Ordinary callers see active

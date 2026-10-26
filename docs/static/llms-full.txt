@@ -629,7 +629,7 @@ inspect Trellis's internal authorization registry.
 
 A handler sees its own caller's profile without any directory capability: a
 verified user caller carries `user` with `displayName`, optional `givenName`,
-`familyName` and `email`, and `emailVerified`, as Auth signed them into the
+`familyName`, `email` and `avatarUrl`, and `emailVerified`, as Auth signed them into the
 session's authority (later profile edits appear once Auth reissues it). Service
 and device callers carry no `user`. Use `usersRead` only to look up other users.
 
@@ -637,9 +637,10 @@ Names and email are not unique identity keys. Key application-owned
 authorization by immutable `principalId`; a directory match does not grant
 access to application records.
 
-Directory `avatarUrl` is a Trellis-hosted, image-only bearer valid for at most
-ten minutes. Do not log it. Render with `referrerpolicy="no-referrer"`, show
-local initials on error, and reread the authorized directory to renew it.
+`avatarUrl` (directory results and `caller.user`) is a stable Trellis-hosted
+image URL for the current profile revision, like an OIDC `picture`. A new photo
+or profile change gets a new URL, and a disabled account's URL stops serving.
+Render with `referrerpolicy="no-referrer"` and show local initials on error.
 Revoking `usersRead` stops new URLs, not already issued ones. Manual unverified
 email never triggers Gravatar; opted-in verified email sends its normalized
 SHA-256 hash, which remains personal information. Operators disable all

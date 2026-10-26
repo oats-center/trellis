@@ -1,4 +1,4 @@
-//! Image-only short-lived bearers and bounded presentation-image storage.
+//! Stable per-revision image bearers and bounded presentation-image storage.
 
 use crate::platform::auth::blocking;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -24,7 +24,6 @@ pub(super) struct AvatarSigner(hmac::Key);
 pub(super) struct ImageToken {
     principal: String,
     revision: u64,
-    expires: i64,
 }
 
 #[cfg(test)]
@@ -41,39 +40,56 @@ impl AvatarSigner {
         Self(hmac::Key::new(hmac::HMAC_SHA256, derived.as_ref()))
     }
 
-    pub(super) fn mint(&self, principal: &str, revision: u64, now: i64) -> Option<String> {
+    /// A stable image URL token for one profile revision. It has no expiry: a
+    /// profile change or an inactive account ends it, because serving checks
+    /// both against current state.
+    pub(super) fn mint(&self, principal: &str, revision: u64) -> Option<String> {
         let principal: ulid::Ulid = principal.parse().ok()?;
-        let mut bytes = Vec::with_capacity(65);
-        bytes.push(1);
+        let mut bytes = Vec::with_capacity(57);
+        bytes.push(2);
         bytes.extend_from_slice(&principal.to_bytes());
         bytes.extend_from_slice(&revision.to_be_bytes());
-        bytes.extend_from_slice(&now.checked_add(600)?.to_be_bytes());
         let mac = hmac::sign(&self.0, &bytes);
         bytes.extend_from_slice(mac.as_ref());
         Some(URL_SAFE_NO_PAD.encode(bytes))
     }
 
-    fn verify(&self, token: &str, now: i64) -> Option<ImageToken> {
-        if token.len() != 87 {
+    fn verify(&self, token: &str) -> Option<ImageToken> {
+        if token.len() != 76 {
             return None;
         }
         let bytes = URL_SAFE_NO_PAD.decode(token).ok()?;
-        if bytes.len() != 65
-            || bytes[0] != 1
-            || hmac::verify(&self.0, &bytes[..33], &bytes[33..]).is_err()
+        if bytes.len() != 57
+            || bytes[0] != 2
+            || hmac::verify(&self.0, &bytes[..25], &bytes[25..]).is_err()
         {
-            return None;
-        }
-        let expires = i64::from_be_bytes(bytes[25..33].try_into().ok()?);
-        if expires <= now || expires > now.checked_add(600)? {
             return None;
         }
         Some(ImageToken {
             principal: ulid::Ulid::from_bytes(bytes[1..17].try_into().ok()?).to_string(),
             revision: u64::from_be_bytes(bytes[17..25].try_into().ok()?),
-            expires,
         })
     }
+}
+
+/// The stable Trellis-hosted image URL for an active user's profile, when the
+/// installation serves remote-derived images and the profile has a source.
+pub(super) fn avatar_url(
+    store: &SqliteAuthorizationStore,
+    principal: &str,
+    profile: &Profile,
+) -> Option<String> {
+    if !store.settings.avatar_external_fetch_enabled || sources(profile).is_empty() {
+        return None;
+    }
+    let token = store
+        .avatar_signer
+        .get()?
+        .mint(principal, profile.revision)?;
+    Some(format!(
+        "{}/profile/avatars/{token}",
+        store.settings.oauth_origin
+    ))
 }
 
 #[derive(Clone)]
@@ -340,7 +356,7 @@ impl Avatars {
         Ok(Some((mime, bytes)))
     }
 
-    pub(super) async fn get(&self, encoded: &str, now: i64) -> Result<(Vec<u8>, i64), AuthError> {
+    pub(super) async fn get(&self, encoded: &str, now: i64) -> Result<Vec<u8>, AuthError> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         if !self.store.settings.avatar_external_fetch_enabled {
             return Err(AuthError::NotFound);
@@ -349,7 +365,7 @@ impl Avatars {
             .store
             .avatar_signer
             .get()
-            .and_then(|signer| signer.verify(encoded, now))
+            .and_then(|signer| signer.verify(encoded))
             .ok_or(AuthError::NotFound)?;
         let store = self.store.clone();
         let principal = token.principal.clone();
@@ -362,7 +378,7 @@ impl Avatars {
         }
         for source in sources(&profile) {
             match self.cached(&token, &source, now).await? {
-                Some(Some(bytes)) => return Ok((bytes, token.expires)),
+                Some(Some(bytes)) => return Ok(bytes),
                 Some(None) => continue,
                 None => {}
             }
@@ -388,7 +404,7 @@ impl Avatars {
                 .map_err(|_| AuthError::Unavailable)?;
             if let Some(cached) = self.cached(&token, &source, now).await? {
                 if let Some(bytes) = cached {
-                    return Ok((bytes, token.expires));
+                    return Ok(bytes);
                 }
                 continue;
             }
@@ -423,7 +439,7 @@ impl Avatars {
             }
             drop(permit);
             if let Some(Some(bytes)) = self.cached(&token, &source, now).await? {
-                return Ok((bytes, token.expires));
+                return Ok(bytes);
             }
         }
         Err(AuthError::NotFound)

@@ -307,18 +307,16 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
 async fn avatar(State(engine): State<Arc<OAuthEngine>>, Path(token): Path<String>) -> Response {
     let now = crate::clock::unix_now();
     let mut response = match engine.avatars.get(&token, now).await {
-        Ok((bytes, expires)) if expires > crate::clock::unix_now() => {
-            let max_age = expires - crate::clock::unix_now();
-            let cache = format!("private, max-age={}", max_age.max(0));
-            (
-                [
-                    (header::CONTENT_TYPE, "image/png"),
-                    (header::CACHE_CONTROL, cache.as_str()),
-                ],
-                bytes,
-            )
-                .into_response()
-        }
+        // A new photo gets a new URL; the hour bounds how long a browser keeps
+        // showing a disabled account's photo.
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "private, max-age=3600"),
+            ],
+            bytes,
+        )
+            .into_response(),
         _ => ([(header::CACHE_CONTROL, "no-store")], StatusCode::NOT_FOUND).into_response(),
     };
     response.headers_mut().insert(

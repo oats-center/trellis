@@ -612,17 +612,8 @@ pub(super) fn read_user(
         )
         .optional()?
         .ok_or(AuthError::NotFound)?;
-    let avatar_url = if state == "active"
-        && store.settings.avatar_external_fetch_enabled
-        && (profile.avatar_override.is_some()
-            || profile.picture.is_some()
-            || (profile.email_verified && profile.gravatar_enabled && profile.email.is_some()))
-    {
-        store
-            .avatar_signer
-            .get()
-            .and_then(|signer| signer.mint(principal, profile.revision, crate::clock::unix_now()))
-            .map(|token| format!("{}/profile/avatars/{token}", store.settings.oauth_origin))
+    let avatar_url = if state == "active" {
+        super::avatars::avatar_url(store, principal, &profile)
     } else {
         None
     };

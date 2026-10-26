@@ -284,6 +284,8 @@ export type CallerUser = {
   familyName?: string;
   email?: string;
   emailVerified: boolean;
+  /** Stable Trellis-hosted photo URL; a new photo gets a new URL. */
+  avatarUrl?: string;
 };
 
 /** Cryptographically authenticated request binding, before dispatch authorization. */

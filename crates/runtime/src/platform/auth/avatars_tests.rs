@@ -8,7 +8,9 @@ use crate::platform::auth::{
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 use std::future::IntoFuture as _;
-use trellis_runtime_apis::{AuthUserCreateRequest, AuthUserProfileUpdateRequest};
+use trellis_runtime_apis::{
+    AuthUserCreateRequest, AuthUserProfileUpdateRequest, AuthUserUpdateRequest,
+};
 
 #[test]
 fn bounded_image_decode_reencodes_static_pixels_and_rejects_unsafe_inputs() {
@@ -125,12 +127,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
     let url = user.avatar_url.unwrap();
     now = crate::clock::unix_now();
     let encoded = url.rsplit('/').next().unwrap();
-    let token = store
-        .avatar_signer
-        .get()
-        .unwrap()
-        .verify(encoded, now)
-        .unwrap();
+    let token = store.avatar_signer.get().unwrap().verify(encoded).unwrap();
     let source = sources(&profile).remove(0);
     let fallback = sources(&profile).remove(1);
     avatars.save(&token, &source, Err(()), now).await.unwrap();
@@ -188,13 +185,14 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["content-type"], "image/png");
     assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(response.headers()["cache-control"], "private, max-age=3600");
     let bytes = response.bytes().await.unwrap();
     let image = image::load_from_memory(&bytes).unwrap();
     assert_eq!((image.width(), image.height()), (128, 128));
     assert_eq!(
-        avatars.get(encoded, now + 1).await.unwrap().0,
+        avatars.get(encoded, now + 86_400).await.unwrap(),
         bytes,
-        "the retained sanitized success is reused"
+        "the same URL keeps serving the retained sanitized image a day later"
     );
     let reopened = Arc::new(open(&directory, SigningKey::from_bytes(&[37; 32])));
     let retained_custody = OAuthStorage::new(reopened.clone(), &[19; 32]).unwrap();
@@ -203,8 +201,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
             .unwrap()
             .get(encoded, now + 1)
             .await
-            .unwrap()
-            .0,
+            .unwrap(),
         bytes,
         "cached pixels and the bearer survive reopening with retained custody"
     );
@@ -231,17 +228,11 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         .is_none());
     drop(disabled_custody);
     drop(disabled);
-    assert!(store
-        .avatar_signer
-        .get()
-        .unwrap()
-        .verify(encoded, now + 600)
-        .is_none());
     assert!(AvatarSigner::new(&[20; 32], &store.settings.instance_id)
-        .verify(encoded, now)
+        .verify(encoded)
         .is_none());
     assert!(AvatarSigner::new(&[19; 32], "another-installation")
-        .verify(encoded, now)
+        .verify(encoded)
         .is_none());
     let mut tampered = encoded.as_bytes().to_vec();
     tampered[10] = if tampered[10] == b'A' { b'B' } else { b'A' };
@@ -291,6 +282,29 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    // Disabling the account ends the stable URL; re-enabling restores it.
+    let mut revision = user.account.as_ref().unwrap().principal.revision;
+    for enabled in [false, true] {
+        let update: AuthUserUpdateRequest = serde_json::from_value(json!({
+            "userId": owner,
+            "enabled": enabled,
+            "expectedRevision": revision,
+            "idempotencyKey": id()
+        }))
+        .unwrap();
+        revision = rpc_users::update_user(&store, &mutation(&principal, &update), &update, now)
+            .unwrap()
+            .user
+            .account
+            .unwrap()
+            .principal
+            .revision;
+        assert_eq!(
+            http.get(&url).send().await.unwrap().status(),
+            if enabled { 200 } else { 404 },
+            "an enabled={enabled} account's photo URL"
+        );
+    }
     let changed: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
         "avatarOverrideUrl":"https://images.example.com/new.png",
         "expectedRevision":user.account.unwrap().profile_revision,

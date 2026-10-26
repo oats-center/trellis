@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Profile photo URLs (`avatarUrl` in directory results) are stable per profile
+  revision instead of expiring after ten minutes, like OIDC `picture` URLs: a
+  new photo or profile change gets a new URL, disabling the account stops
+  serving it, and responses allow one hour of private caching. A verified user
+  caller's `user` now includes `avatarUrl` when the user has a photo.
+
 ## [0.100.0-rc.7] - 2026-10-26
 
 ### Fixed

@@ -831,6 +831,7 @@ fn a_verified_user_request_carries_the_signed_profile_and_a_service_never_does()
         "displayName": "Alice",
         "email": "alice@example.test",
         "emailVerified": true,
+        "avatarUrl": "https://auth.example/profile/avatars/token",
         "pronouns": "a field this reader does not know"
     });
     let caller_of = |mut body: UnsignedSessionAuthority| {
@@ -885,6 +886,10 @@ fn a_verified_user_request_carries_the_signed_profile_and_a_service_never_does()
     assert_eq!(user.display_name, "Alice");
     assert_eq!(user.email.as_deref(), Some("alice@example.test"));
     assert!(user.email_verified && user.given_name.is_none());
+    assert_eq!(
+        user.avatar_url.as_deref(),
+        Some("https://auth.example/profile/avatars/token")
+    );
 
     let mut service = signed.unsigned;
     service.principal_kind = PrincipalKind::Service;

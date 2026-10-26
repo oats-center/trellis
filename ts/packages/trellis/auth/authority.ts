@@ -148,6 +148,9 @@ export class VerifiedAuthority {
             }),
             ...(text(profile.email) && { email: text(profile.email) }),
             emailVerified: profile.emailVerified === true,
+            ...(text(profile.avatarUrl) && {
+              avatarUrl: text(profile.avatarUrl),
+            }),
           }
         : undefined;
     return {
