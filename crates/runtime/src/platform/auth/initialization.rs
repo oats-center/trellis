@@ -207,9 +207,9 @@ impl SqliteAuthorizationStore {
                                 |row| row.get(0),
                             )?;
                             if !accepted {
+                                Self::require_acceptance(connection, &principal, false)?;
                                 let review = self.review_api_in_transaction(
                                     connection,
-                                    &principal,
                                     evidence.clone(),
                                     api,
                                     now,

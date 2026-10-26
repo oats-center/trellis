@@ -233,14 +233,14 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<ApiReview, AuthError> {
         self.transaction(|connection| {
-            self.review_api_in_transaction(connection, actor, proposed, api_id, now)
+            Self::require_administration(connection, actor, Administration::AcceptApis)?;
+            self.review_api_in_transaction(connection, proposed, api_id, now)
         })
     }
 
     pub(super) fn review_api_in_transaction(
         &self,
         connection: &Connection,
-        actor: &str,
         proposed: PackageEvidence,
         api_id: &str,
         now: i64,
@@ -258,7 +258,6 @@ impl SqliteAuthorizationStore {
             )));
         }
         {
-            Self::require_administration(connection, actor, Administration::AcceptApis)?;
             let existing: Option<(u64, u64, String)> = connection
                 .query_row(
                     "SELECT generation,accepted_revision,definition_json \
@@ -397,8 +396,24 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<SignedCatalogSnapshot, AuthError> {
         self.mutate(identity, "api.accept", acceptance, now, |connection| {
+            Self::require_acceptance(connection, &identity.actor, acceptance.force)?;
             self.accept_api_in_transaction(connection, identity, acceptance, now)
         })
+    }
+
+    /// Accepting needs `apis.accept`; a force replacement also needs
+    /// `apis.forceReplace`. A service update accepts its own compatible APIs
+    /// under the update's authority instead.
+    pub(super) fn require_acceptance(
+        connection: &Connection,
+        actor: &str,
+        force: bool,
+    ) -> Result<(), AuthError> {
+        Self::require_administration(connection, actor, Administration::AcceptApis)?;
+        if force {
+            Self::require_administration(connection, actor, Administration::ForceReplaceApis)?;
+        }
+        Ok(())
     }
 
     pub(super) fn accept_api_in_transaction(
@@ -409,14 +424,6 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<SignedCatalogSnapshot, AuthError> {
         {
-            Self::require_administration(connection, &identity.actor, Administration::AcceptApis)?;
-            if acceptance.force {
-                Self::require_administration(
-                    connection,
-                    &identity.actor,
-                    Administration::ForceReplaceApis,
-                )?;
-            }
             self.current_signer(connection)?;
             let review: String = connection
                 .query_row(

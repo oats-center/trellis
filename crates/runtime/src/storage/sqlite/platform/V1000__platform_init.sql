@@ -356,6 +356,29 @@ CREATE TABLE auth_device_activation_reviews (
 CREATE INDEX auth_device_activation_reviews_state_expiry
     ON auth_device_activation_reviews(state, expires_at);
 
+-- A participant revision a running service instance submitted for itself.
+CREATE TABLE auth_service_updates (
+    update_id TEXT PRIMARY KEY CHECK (length(update_id) = 26),
+    deployment_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    participant_id TEXT NOT NULL,
+    participant_digest TEXT NOT NULL,
+    evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json)),
+    -- The deployment binding revision the changes were computed against.
+    base_binding_revision INTEGER NOT NULL CHECK (base_binding_revision >= 1),
+    changes_json TEXT NOT NULL CHECK (json_valid(changes_json)),
+    state TEXT NOT NULL CHECK (state IN ('pending', 'applied', 'rejected', 'superseded')),
+    requested_at INTEGER NOT NULL CHECK (requested_at BETWEEN 0 AND 9007199254740991),
+    decided_at INTEGER CHECK (decided_at BETWEEN 0 AND 9007199254740991),
+    decided_by TEXT,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    FOREIGN KEY (instance_id, deployment_id)
+        REFERENCES auth_instances(instance_id, deployment_id) ON DELETE CASCADE,
+    CHECK ((state = 'pending') = (decided_at IS NULL))
+);
+CREATE INDEX auth_service_updates_deployment
+    ON auth_service_updates(deployment_id, state, update_id);
+
 CREATE TABLE auth_idempotency_results (
     scope_key TEXT PRIMARY KEY CHECK (length(scope_key) = 43),
     purpose TEXT NOT NULL CHECK (length(purpose) > 0),

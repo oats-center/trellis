@@ -1480,7 +1480,8 @@ fn render_participant(
         pub const EVENT_SUBSCRIBE_NEEDS: &[&str] = &{needs};\n\npub struct \
         Participant;\nimpl trellis_rs::generated::ParticipantDescriptor for \
         Participant {{ const ID: &'static str = PARTICIPANT_ID; const PATH: \
-        &'static str = PARTICIPANT_PATH; const KIND: \
+        &'static str = PARTICIPANT_PATH; const DIGEST: &'static str = \
+        PARTICIPANT_DIGEST; const KIND: \
         trellis_rs::generated::ParticipantKind = \
         trellis_rs::generated::ParticipantKind::{kind}; const COMPANION: \
         Option<trellis_rs::generated::CompanionDescriptor> = {companion}; \

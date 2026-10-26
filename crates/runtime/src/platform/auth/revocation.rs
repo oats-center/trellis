@@ -129,6 +129,28 @@ pub(super) fn enqueue_scope(
 /// when the revocation publishes.
 const SELF_REVOCATION_GRACE_SECONDS: i64 = 5;
 
+/// A caller whose own request retires its session gets the reply before its
+/// revocation reaches it: verifying that reply reads material over the same
+/// connection and rejects a reply to a session it already knows is revoked.
+/// Only the caller's session waits, and only when the scope covers it.
+pub(super) fn defer_caller_enforcement(
+    connection: &Connection,
+    session: &str,
+    scope: &EnforcementScope,
+    now: i64,
+) -> Result<(), AuthError> {
+    let (clause, key) = session_scope(scope);
+    connection.execute(
+        &format!(
+            "UPDATE auth_authorization_sessions AS s \
+            SET enforce_not_before=?2 \
+            WHERE s.authorization_session_id=?3 AND {clause}"
+        ),
+        params![key, now + SELF_REVOCATION_GRACE_SECONDS, session],
+    )?;
+    Ok(())
+}
+
 pub(super) fn enqueue_effect(
     connection: &Connection,
     kind: &str,
@@ -786,21 +808,8 @@ impl SqliteAuthorizationStore {
             scope,
             now,
             |connection| {
-                // A caller revoking its own session gets the reply before its
-                // revocation reaches it: verifying that reply reads material
-                // over the same connection and rejects a reply to a session it
-                // already knows is revoked. Every other session in scope is
-                // enforced at once.
                 if let Some(session) = &identity.session {
-                    let (clause, key) = session_scope(scope);
-                    connection.execute(
-                        &format!(
-                            "UPDATE auth_authorization_sessions AS s \
-                            SET enforce_not_before=?2 \
-                            WHERE s.authorization_session_id=?3 AND {clause}"
-                        ),
-                        params![key, now + SELF_REVOCATION_GRACE_SECONDS, session],
-                    )?;
+                    defer_caller_enforcement(connection, session, scope, now)?;
                 }
                 let owned = match scope {
                     EnforcementScope::Login(login) => connection.query_row(

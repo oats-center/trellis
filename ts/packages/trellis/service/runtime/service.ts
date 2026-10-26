@@ -2,6 +2,7 @@
 // anything uses the protocol.
 import "../../auth/protocol_wasm_provider.ts";
 import { jetstream } from "@nats-io/jetstream";
+import { renderUnicodeCompact } from "uqr";
 import {
   headers as natsHeaders,
   type MsgHdrs,
@@ -3125,38 +3126,62 @@ export function connectTrellisServiceWithRuntimeDeps<
           timeout: args.timeout,
           signal: args.signal,
         };
-        connected = await connectProvisioned(
-          provisioned,
-          "service",
-          {
-            onPreActivate: async (generation, retainAuthority) => {
-              await ingress?.install({
-                id: generation.id,
-                nc: generation.nc,
-                contextDigest: generation.contextDigest,
-                retainAuthority,
-                lease: () => generation.lease(),
-                registerDisposal: (handle) =>
-                  generation.registerDisposal(handle),
-              });
+        const connect = () =>
+          connectProvisioned(
+            provisioned,
+            "service",
+            {
+              onPreActivate: async (generation, retainAuthority) => {
+                await ingress?.install({
+                  id: generation.id,
+                  nc: generation.nc,
+                  contextDigest: generation.contextDigest,
+                  retainAuthority,
+                  lease: () => generation.lease(),
+                  registerDisposal: (handle) =>
+                    generation.registerDisposal(handle),
+                });
+              },
+              onDrain: (generation) => ingress?.retireIntake(generation.id),
             },
-            onDrain: (generation) => ingress?.retireIntake(generation.id),
-          },
-          { connect: runtimeDeps.connect },
-        );
-        const own = connected.owner.own();
-        const binding = own.authority.binding;
+            { connect: runtimeDeps.connect },
+          );
+        connected = await connect();
+        let own = connected.owner.own();
+        let binding = own.authority.binding;
         own.release();
-        if (binding.kind !== "service")
-          throw new Error("ServiceBindingRequired");
-        const authorization = Value.Parse(
+        let authorization = Value.Parse(
           ServiceSignedAuthorizationSchema,
           connected.context.registry.authorization,
         );
+        // A build whose participant differs from the instance's installed
+        // revision submits itself, then connects again under the new revision.
+        while (
+          binding.kind === "service" &&
+          binding.participantId === args.participant.identity &&
+          authorization.participantDigest !== args.participant.digest
+        ) {
+          await awaitServiceUpdate(
+            connected,
+            args.participant,
+            resolveServiceLogger(args.runtime?.log),
+            args.signal,
+          );
+          await connected.manager.close();
+          connected = await connect();
+          own = connected.owner.own();
+          binding = own.authority.binding;
+          own.release();
+          authorization = Value.Parse(
+            ServiceSignedAuthorizationSchema,
+            connected.context.registry.authorization,
+          );
+        }
+        if (binding.kind !== "service")
+          throw new Error("ServiceBindingRequired");
         if (
           binding.participantId !== args.participant.identity ||
-          authorization.participantId !== binding.participantId ||
-          authorization.participantDigest !== args.participant.digest
+          authorization.participantId !== binding.participantId
         )
           throw new Error("ServiceImplementationMismatch");
         const contract = getParticipantRuntime(args.participant);
@@ -3238,6 +3263,84 @@ export function connectTrellisServiceWithRuntimeDeps<
       }
     })(),
   );
+}
+
+/**
+ * Submit this build's IDL to Auth and wait until it is installed for this
+ * instance. An update that asks for new access waits for an administrator;
+ * its review link is logged and printed as a terminal QR code.
+ */
+async function awaitServiceUpdate(
+  connected: Awaited<ReturnType<typeof connectProvisioned>>,
+  participant: { identity: string; packageEvidence: unknown },
+  log: LoggerLike,
+  signal?: AbortSignal,
+): Promise<void> {
+  const client = createTrellisInternal(
+    participant.identity,
+    connected.manager.currentNats(),
+    {
+      sessionKey: connected.auth.sessionKey,
+      sign: connected.auth.sign,
+      contextDigest: () => connected.owner.ownDigest ?? "",
+      authorityOwner: connected.auth.authorityOwner,
+    },
+    { inboxPrefix: connected.inboxPrefix, transport: connected.manager },
+  );
+  const submit = async () =>
+    (
+      await client.requestServiceUpdate("ServiceUpdates.Submit", {
+        packageEvidence: participant.packageEvidence,
+      })
+    ).update;
+  let update = await submit();
+  let shown: string | undefined;
+  let delay = 1_000;
+  for (;;) {
+    if (update.state === "applied") return;
+    if (update.state === "rejected")
+      throw new Error(
+        `An administrator rejected this build's update (${update.reviewUrl})`,
+      );
+    if (update.state === "superseded") {
+      update = await submit();
+      continue;
+    }
+    if (shown !== update.reviewUrl) {
+      shown = update.reviewUrl;
+      log.warn(
+        { participant: participant.identity, reviewUrl: shown },
+        "This build asks for new access; waiting for an administrator to approve it",
+      );
+      console.error(
+        `\n${participant.identity} needs an administrator to approve its update.\nOpen ${shown}\nor scan:\n${renderUnicodeCompact(shown)}`,
+      );
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, delay);
+      signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
+    delay = Math.min(delay * 2, 15_000);
+    try {
+      update = (
+        await client.requestServiceUpdate("ServiceUpdates.Status", {
+          updateId: update.updateId,
+        })
+      ).update;
+    } catch (cause) {
+      // Approval retires this session. Connecting again shows whether the
+      // update installed; if not, Submit returns the same update.
+      if (cause instanceof TransportError) return;
+      throw cause;
+    }
+  }
 }
 
 /**

@@ -1412,6 +1412,9 @@ pub trait ParticipantDescriptor {
     const PATH: &'static str;
     /// Participant kind.
     const KIND: ParticipantKind;
+    /// Participant digest of this generated build, which Auth compares with
+    /// the instance's installed revision when a service connects.
+    const DIGEST: &'static str;
 
     /// Lexical application request, when declared by this device.
     const COMPANION: Option<CompanionDescriptor> = None;

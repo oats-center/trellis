@@ -6100,6 +6100,7 @@ dependencies = [
  "opentelemetry_sdk",
  "p256",
  "postgres",
+ "qrcode",
  "rand 0.10.1",
  "reqwest 0.13.5",
  "rusqlite",

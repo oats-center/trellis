@@ -268,6 +268,13 @@ pub enum ServiceRuntimeError {
     #[error("service bootstrap response did not include a binding")]
     MissingBootstrapBinding,
 
+    /// An administrator rejected this build's participant update.
+    #[error("an administrator rejected this build's update ({review_url})")]
+    UpdateRejected {
+        /// Console page of the rejected update.
+        review_url: String,
+    },
+
     /// The service bootstrap binding could not be parsed as a core binding.
     #[error("invalid service bootstrap binding: {0}")]
     InvalidBootstrapBinding(#[source] serde_json::Error),
@@ -1515,20 +1522,34 @@ impl<C> ConnectedServiceRuntime<C> {
 
 impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
     /// Connect with generated participant evidence and parse the returned bootstrap binding.
+    ///
+    /// When this build's participant differs from the revision its instance
+    /// runs, the service submits its IDL to Auth and connects again once the
+    /// update is installed. An update that asks for new access waits for an
+    /// administrator; meanwhile the review link is logged and printed as a QR
+    /// code on standard error.
     pub async fn connect(options: ServiceConnectOptions<'_>) -> Result<Self, ServiceRuntimeError> {
-        let client = TrellisClient::connect_service_with_contract_with_health_interval(
-            ServiceConnectWithContractOptions {
-                nats_servers: options.nats_servers,
-                trust: options.trust,
-                participant_id: C::ID,
-                name: options.name,
-                provisioned_identity_seed_base64url: options.provisioned_identity_seed_base64url,
-                timeout_ms: options.timeout_ms,
-            },
-            options.health_heartbeat_interval_ms,
-        )
-        .await?;
-        let binding = parse_bootstrap_binding(&client)?;
+        let (client, binding) = loop {
+            let client = TrellisClient::connect_service_with_contract_with_health_interval(
+                ServiceConnectWithContractOptions {
+                    nats_servers: options.nats_servers.clone(),
+                    trust: options.trust.clone(),
+                    participant_id: C::ID,
+                    name: options.name,
+                    provisioned_identity_seed_base64url: options
+                        .provisioned_identity_seed_base64url,
+                    timeout_ms: options.timeout_ms,
+                },
+                options.health_heartbeat_interval_ms,
+            )
+            .await?;
+            let binding = parse_bootstrap_binding(&client)?;
+            if BootstrapBindingInfo::bootstrap_binding(&binding).digest == C::DIGEST {
+                break (client, binding);
+            }
+            await_service_update::<C>(&client).await?;
+            client.shutdown_native_runtime().await?;
+        };
         // Resource-only services have no default inbound API. Explicit generated
         // routes still supply their real API identity to the shared verifier.
         let api_id = C::IMPLEMENTED_API_IDS.first().copied().unwrap_or_default();
@@ -1579,6 +1600,83 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             runtime.store_handles.insert(name, handle);
         }
         Ok(runtime)
+    }
+}
+
+/// Submit this build's IDL and wait until Auth installs it for this instance.
+async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
+    client: &TrellisClient,
+) -> Result<(), ServiceRuntimeError> {
+    const API: &str = "trellis.auth@v1";
+    let action = |name: &str| trellis_protocol::CatalogActionIdentity {
+        kind: trellis_protocol::ApiSurfaceKind::Rpc,
+        name: name.into(),
+        direction: trellis_protocol::PermissionAction::Call,
+    };
+    let evidence = serde_json::to_value(C::package_evidence()).map_err(|error| {
+        ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
+    })?;
+    let body = serde_json::json!({ "packageEvidence": evidence });
+    let submit = || {
+        client.request_json_value(
+            API,
+            action("ServiceUpdates.Submit"),
+            "rpc.v1.auth.ServiceUpdates.Submit",
+            &body,
+        )
+    };
+    let mut update = submit().await?["update"].take();
+    let mut shown = None;
+    let mut delay = std::time::Duration::from_secs(1);
+    loop {
+        let review_url = update["reviewUrl"].as_str().unwrap_or_default().to_owned();
+        match update["state"].as_str() {
+            Some("applied") => return Ok(()),
+            Some("rejected") => return Err(ServiceRuntimeError::UpdateRejected { review_url }),
+            Some("superseded") => {
+                update = submit().await?["update"].take();
+                continue;
+            }
+            _ => {}
+        }
+        if shown.as_deref() != Some(review_url.as_str()) {
+            tracing::warn!(
+                participant = C::ID,
+                review_url,
+                "This build asks for new access; waiting for an administrator to approve it"
+            );
+            let qr = qrcode::QrCode::new(review_url.as_bytes())
+                .map(|code| {
+                    code.render::<qrcode::render::unicode::Dense1x2>()
+                        .quiet_zone(true)
+                        .build()
+                })
+                .unwrap_or_default();
+            eprintln!(
+                "\n{} needs an administrator to approve its update.\nOpen {review_url}\nor scan:\n{qr}",
+                C::ID
+            );
+            shown = Some(review_url);
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(std::time::Duration::from_secs(15));
+        update = match client
+            .request_json_value(
+                API,
+                action("ServiceUpdates.Status"),
+                "rpc.v1.auth.ServiceUpdates.Status",
+                &serde_json::json!({ "updateId": update["updateId"] }),
+            )
+            .await
+        {
+            Ok(mut response) => response["update"].take(),
+            // Approval retires this session. Connecting again shows whether
+            // the update installed; if not, Submit returns the same update.
+            Err(TrellisClientError::TransportUnavailable(_) | TrellisClientError::Timeout) => {
+                return Ok(())
+            }
+            Err(error) => return Err(error.into()),
+        };
     }
 }
 

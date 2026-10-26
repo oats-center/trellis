@@ -60,6 +60,7 @@ These headings are intentionally named for fast human and AI lookup.
 | `core/trellis-patterns.md`              | You need Trellis-wide architecture rules                             | Service categories, platform boundaries, communication patterns                     |
 | `auth/trellis-auth.md`                  | You are changing auth architecture                                   | The auth model: entities, lifecycles, issuance and enforcement pipelines, and rules |
 | `auth/device-activation.md`             | You are changing device preregistration or device activation         | Known-device activation flow, connect info, profiles, online activation             |
+| `auth/service-updates.md`               | You are changing how a running service updates its participant       | Service-submitted IDL, auto-applied and approved updates, review links              |
 | `contracts/trellis-api-participants.md` | You are changing manifests, codegen inputs, or permission derivation | Canonical contract format, `uses`, subject ownership, activation rules              |
 | `contracts/trellis-idl.md`              | You are changing declarative contract source or compilation          | IDL source layouts, syntax, types, and protocol lowering boundary                   |
 
@@ -102,6 +103,7 @@ ergonomics.
 | `auth/auth-api.md`                             | Auth public wire API        | Implementing OAuth listener routes, native admission, `Auth.*` RPCs, or auth events                      |
 | `auth/trellis-auth.md`                         | Auth system/runtime design  | Implementing principals, login sessions, capabilities, session authority issuance, or runtime auth       |
 | `auth/device-activation.md`                    | Device activation design    | Implementing known-device activation, connect info, or activation review flows                           |
+| `auth/service-updates.md`                      | Service update design       | Implementing service IDL submission, update approval, or instance revision moves                         |
 | `operations/trellis-operations.md`             | Operations design           | Implementing caller-visible async workflows in TypeScript or Rust                                        |
 | `jobs/trellis-jobs.md`                         | Jobs design                 | Implementing service-private background execution or jobs admin surfaces                                 |
 | `contracts/trellis-idl.md`                     | Trellis IDL                 | Implementing IDL authoring, compilation, or generated TypeScript runtime ergonomics                      |

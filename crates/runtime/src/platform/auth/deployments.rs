@@ -17,6 +17,8 @@ use super::policy::capability;
 use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
 
 pub(super) const SELF_HEALTH_CAPABILITY: &str = "trellis.health.v1:health.report";
+/// Every service instance may submit its own build as a participant update.
+pub(super) const SERVICE_UPDATE_CAPABILITY: &str = "trellis.auth.v1:serviceUpdates.submit";
 pub(super) const JOB_HISTORY_CAPABILITY: &str = "trellis.jobs.v1:history.read";
 pub(super) const CONSUMER_RUNTIME_CAPABILITY: &str = "trellis.events.v1:replays.process";
 
@@ -930,6 +932,7 @@ impl SqliteAuthorizationStore {
             .chain(&optional)
             .map(String::as_str)
             .chain(std::iter::once(SELF_HEALTH_CAPABILITY))
+            .chain((kind == "service").then_some(SERVICE_UPDATE_CAPABILITY))
             .collect();
         for requested in requested {
             let cap = capability(connection, requested)?;

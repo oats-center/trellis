@@ -56,6 +56,7 @@ await buildTypeScriptPackage(
         "typebox",
         "zod",
         "ulid",
+        "uqr",
       ]),
       [resultConfig.name]: `^${resultConfig.version}`,
     },

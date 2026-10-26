@@ -52,6 +52,14 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Devices.Reviews.Decide"],
     (client, input) => client.devicesReviewsDecide(input).orThrow(),
   ),
+  authServiceUpdatesList: adminMethod(
+    apis.auth.API.actions["rpc:ServiceUpdates.List"],
+    (client, input) => client.serviceUpdatesList(input).orThrow(),
+  ),
+  authServiceUpdatesDecide: adminMethod(
+    apis.auth.API.actions["rpc:ServiceUpdates.Decide"],
+    (client, input) => client.serviceUpdatesDecide(input).orThrow(),
+  ),
   authUsersResolve: adminMethod(
     apis.auth.API.actions["rpc:Users.Resolve"],
     (client, input) => client.usersResolve(input).orThrow(),

@@ -333,7 +333,7 @@ pub(super) fn create_deployment(
     )
 }
 
-fn deployment_input(
+pub(super) fn deployment_input(
     connection: &Connection,
     evidence: &AuthPackageEvidence,
     participant: &str,
@@ -732,8 +732,12 @@ pub(super) fn review_api(
 ) -> Result<AuthApiReviewResponse, AuthError> {
     let evidence = serde_json::from_value(serde_json::to_value(&input.package_evidence)?)?;
     store.transaction(|connection| {
-        let review =
-            store.review_api_in_transaction(connection, actor, evidence, &input.api_id, now)?;
+        SqliteAuthorizationStore::require_administration(
+            connection,
+            actor,
+            Administration::AcceptApis,
+        )?;
+        let review = store.review_api_in_transaction(connection, evidence, &input.api_id, now)?;
         let graph = trellis_idl::compile_evidence(review.proposed.clone())
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
         let candidate = super::catalog::resolve_api(&graph, &review.api_id)?;
@@ -875,6 +879,7 @@ pub(super) fn accept_api(
             &input.mapping_edits,
             now,
         )?;
+        SqliteAuthorizationStore::require_acceptance(connection, &identity.actor, false)?;
         let snapshot = store.accept_api_in_transaction(connection, identity, &acceptance, now)?;
         Ok(AuthApiAcceptResponse {
             api: accepted_api(connection, &snapshot.api_id)?,
@@ -913,6 +918,7 @@ pub(super) fn force_replace_api(
                 &input.mapping_edits,
                 now,
             )?;
+            SqliteAuthorizationStore::require_acceptance(connection, &identity.actor, true)?;
             let snapshot =
                 store.accept_api_in_transaction(connection, identity, &acceptance, now)?;
             Ok(AuthApiAcceptResponse {

@@ -111,7 +111,9 @@ import {
 import { TrellisTasks } from "./tasks.ts";
 import { TrellisConnection } from "./connection.ts";
 import { API as JOBS_HISTORY_API } from "./internal_sdk/generated/apis/jobs/mod.js";
+import { API as AUTH_API } from "./internal_sdk/generated/apis/auth/mod.js";
 import type {
+  AuthServiceUpdateResponse,
   JobsHistoryRequest,
   JobsHistoryResponse,
 } from "./internal_sdk/generated/types/index.js";
@@ -3468,6 +3470,31 @@ export class Trellis<
       declaredErrorTypes: action.errors.map((error) => error.type),
       runtimeErrors: action.errors,
     }).orThrow();
+  }
+
+  /**
+   * Submit this service's own build, or read the state of its submission,
+   * through the Auth capability every service instance holds.
+   */
+  async requestServiceUpdate(
+    method: "ServiceUpdates.Submit" | "ServiceUpdates.Status",
+    input: { packageEvidence: unknown } | { updateId: string },
+  ): Promise<AuthServiceUpdateResponse> {
+    const action = AUTH_API.actions[`rpc:${method}`];
+    return await this.#requestBuiltRpc<AuthServiceUpdateResponse>(
+      method,
+      input,
+      {
+        subject: action.subject,
+        permission: actionPermission(AUTH_API.identity, action, "call"),
+        input: action.input,
+        output: action.output,
+        callerCapabilities: [],
+        errors: action.errors.map((error) => error.type),
+        declaredErrorTypes: action.errors.map((error) => error.type),
+        runtimeErrors: action.errors,
+      },
+    ).orThrow();
   }
 
   #parseEventMessage(

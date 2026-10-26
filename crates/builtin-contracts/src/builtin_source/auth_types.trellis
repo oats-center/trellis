@@ -656,6 +656,45 @@ model AuthDeploymentMutationRequest {
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthDeploymentMutationResponse { deployment: AuthDeployment; enforcement?: AuthEnforcementProgress; }
+enum AuthServiceUpdateState { pending; applied; rejected; superseded; }
+model AuthServiceUpdateResource {
+  kind: AuthResourceKind;
+  name: string;
+}
+model AuthServiceUpdateChanges {
+  addedCapabilities: list<AuthCapabilityId>;
+  removedCapabilities: list<AuthCapabilityId>;
+  addedResources: list<AuthServiceUpdateResource>;
+  changedResources: list<AuthServiceUpdateResource>;
+  removedResources: list<AuthServiceUpdateResource>;
+  addedApis: list<AuthApiId>;
+  removedApis: list<AuthApiId>;
+  acceptedApis: list<AuthApiId>;
+}
+model AuthServiceUpdate {
+  updateId: ulid;
+  deploymentId: ulid;
+  instanceId: ulid;
+  participantId: string;
+  participantDigest: AuthDigest;
+  state: AuthServiceUpdateState;
+  changes: AuthServiceUpdateChanges;
+  reviewUrl: string;
+  requestedAt: timestamp;
+  decidedAt?: timestamp;
+  revision: AuthRevision;
+}
+model AuthServiceUpdateSubmitRequest { packageEvidence: AuthPackageEvidence; }
+model AuthServiceUpdateStatusRequest { updateId: ulid; }
+model AuthServiceUpdateResponse { update: AuthServiceUpdate; }
+model AuthServiceUpdatesListRequest { deploymentId?: ulid; page?: CursorQuery; }
+type AuthServiceUpdatesListResponse = CursorPage<AuthServiceUpdate>;
+model AuthServiceUpdateDecideRequest {
+  updateId: ulid;
+  decision: AuthDecision;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
 model AuthProvisionedInstance {
   instanceId: ulid;
   principal: AuthPrincipal;
