@@ -610,6 +610,14 @@ impl RuntimeConfig {
 
         if let Some(auth) = &mut self.auth {
             resolve_path(base_dir, &mut auth.oauth_storage_key_file);
+            if let Some(portal) = &mut auth.portal {
+                for theme in std::iter::once(&mut portal.theme)
+                    .chain(portal.clients.values_mut().map(|client| &mut client.theme))
+                {
+                    resolve_path(base_dir, &mut theme.logo);
+                    resolve_path(base_dir, &mut theme.stylesheet);
+                }
+            }
             if let Some(OAuthListenerConfig {
                 transport:
                     ListenerTransport::Tls {
@@ -1087,6 +1095,61 @@ pub struct AuthConfig {
     /// Safeguards on delegating administrative capabilities to apps.
     #[serde(default)]
     pub administration: AdministrationConfig,
+    /// Login and consent Portal theming, per installation and per client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portal: Option<PortalConfig>,
+}
+
+/// Portal theming. The Portal keeps its security rules whatever the theme:
+/// it stays on the OAuth origin, renders consent exactly as Auth decides, and
+/// never exposes tokens to application code.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortalConfig {
+    /// Installation theme, the default for every client.
+    #[serde(default)]
+    pub theme: PortalTheme,
+    /// Per-client overrides keyed by OAuth client ID. A client theme cannot set
+    /// a stylesheet, so no client can restyle what consent shows.
+    #[serde(default)]
+    pub clients: std::collections::BTreeMap<String, PortalClientConfig>,
+}
+
+/// One client's Portal overrides.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortalClientConfig {
+    /// Overrides layered over the installation theme.
+    #[serde(default)]
+    pub theme: PortalTheme,
+}
+
+/// Portal branding. Colours name the Portal's own palette (`page`, `surface`,
+/// `ink`, `muted`, `line`, `line-strong`, `primary`, `primary-hover`,
+/// `on-primary`, `soft`) and take hex values; copy replaces `sign_in_title`,
+/// `sign_in_subtitle`, or `footer`.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortalTheme {
+    /// Name shown in the Portal header and page titles instead of "Trellis".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// PNG, JPEG, WebP, or SVG logo shown in the Portal header (at most 256 KiB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<PathBuf>,
+    /// Extra stylesheet loaded after the Portal's own (at most 64 KiB);
+    /// installation theme only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stylesheet: Option<PathBuf>,
+    /// Light palette overrides.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub colors: std::collections::BTreeMap<String, String>,
+    /// Dark palette overrides.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub dark_colors: std::collections::BTreeMap<String, String>,
+    /// Copy overrides.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub copy: std::collections::BTreeMap<String, String>,
 }
 
 /// Safeguards on delegating `trellis.*` administrative capabilities to an app.

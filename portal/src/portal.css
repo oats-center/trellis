@@ -63,6 +63,19 @@ body {
   font-weight: 650;
   letter-spacing: -0.02em;
 }
+.brand-logo {
+  height: 1.75rem;
+  width: auto;
+  max-width: 10rem;
+}
+.portal-footer {
+  max-width: 28rem;
+  margin: 1.5rem auto 2rem;
+  padding: 0 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
 .card {
   background: var(--surface);
   border: 1px solid var(--line);

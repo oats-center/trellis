@@ -563,6 +563,25 @@ impl OAuthStorage {
         Ok(flow)
     }
 
+    /// The client of a pending, unexpired authorization, for Portal theming.
+    pub(super) fn authorization_client(
+        &self,
+        id: &str,
+        now: i64,
+    ) -> Result<Option<String>, StorageError> {
+        let connection = self.authority.writer().map_err(failure)?;
+        connection
+            .query_row(
+                "SELECT client_id FROM auth_oauth_artifacts \
+                WHERE kind='authorization' AND lookup_hash=?1 AND expires_at>?2",
+                params![hash(id), now],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(failure)
+    }
+
     /// Save the displayed meaning in the same transaction that reads its policy.
     /// Updating an existing artifact cannot resurrect an already consumed flow.
     pub(super) fn present_authorization(

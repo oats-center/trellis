@@ -39,6 +39,15 @@
     displayName: string;
   }
 
+  /** Installation or client branding; consent itself is never themed. */
+  interface Theme {
+    name: string | null;
+    logo: string | null;
+    colors: Record<string, string>;
+    darkColors: Record<string, string>;
+    copy: Record<string, string>;
+  }
+
   /** The sign-in methods the server accepts. */
   interface SignIn {
     localIdentity: boolean;
@@ -166,6 +175,50 @@
   // The server marks pages it serves with Trellis-generated certificates.
   const generatedTls =
     document.documentElement.hasAttribute("data-generated-tls");
+  let theme = $state.raw<Theme>({
+    name: null,
+    logo: null,
+    colors: {},
+    darkColors: {},
+    copy: {},
+  });
+  const brand = $derived(theme.name ?? "Trellis");
+
+  // The server picks the theme from its own record of this transaction.
+  onMount(() => {
+    const controller = new AbortController();
+    const dark = window.matchMedia("(prefers-color-scheme: dark)");
+    const paint = () => {
+      const root = document.documentElement.style;
+      const palette = dark.matches
+        ? { ...theme.colors, ...theme.darkColors }
+        : theme.colors;
+      for (const name of new Set([
+        ...Object.keys(theme.colors),
+        ...Object.keys(theme.darkColors),
+      ])) {
+        const value = palette[name];
+        if (value) root.setProperty(`--${name}`, value);
+        else root.removeProperty(`--${name}`);
+      }
+    };
+    void fetch(
+      `/portal/theme${transaction ? `?transaction=${encodeURIComponent(transaction)}` : ""}`,
+      { credentials: "same-origin", signal: controller.signal },
+    )
+      .then((response) => (response.ok ? response.json() : null))
+      .then((loaded: Theme | null) => {
+        if (!loaded) return;
+        theme = loaded;
+        paint();
+      })
+      .catch(() => {});
+    dark.addEventListener("change", paint);
+    return () => {
+      controller.abort();
+      dark.removeEventListener("change", paint);
+    };
+  });
 
   // "trellis.auth.v1:users.edit" → "users": capabilities are named area.action,
   // so people choose by area. A capability group is its own row.
@@ -379,7 +432,7 @@
       ? "Connect a device"
       : login
         ? "Sign in"
-        : "Allow access"} · Trellis</title
+        : "Allow access"} · {brand}</title
   ></svelte:head
 >
 
@@ -390,7 +443,11 @@
   </p>
 {/if}
 
-<header class="brand"><Mark size={22} /><span>Trellis</span></header>
+<header class="brand">
+  {#if theme.logo}<img class="brand-logo" src={theme.logo} alt="" />{:else}<Mark
+      size={22}
+    />{/if}<span>{brand}</span>
+</header>
 
 {#if error}
   <main class="card narrow center">
@@ -594,8 +651,10 @@
   </main>
 {:else if login}
   <main class="card narrow">
-    <h1>Sign in</h1>
-    <p class="muted">Use your Trellis account to continue.</p>
+    <h1>{theme.copy.sign_in_title ?? "Sign in"}</h1>
+    <p class="muted">
+      {theme.copy.sign_in_subtitle ?? `Use your ${brand} account to continue.`}
+    </p>
     {#if query.get("error") === "login_failed"}
       <p class="alert error" role="alert">
         That username and password didn't match. Try again.
@@ -898,3 +957,7 @@
     <p class="muted" role="status">Loading…</p>
   </main>
 {/if}
+
+{#if theme.copy.footer}<footer class="portal-footer">
+    {theme.copy.footer}
+  </footer>{/if}

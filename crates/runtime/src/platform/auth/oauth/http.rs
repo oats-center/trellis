@@ -149,6 +149,12 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             "/portal-assets/{*path}",
             get(|Path(path): Path<String>| async move { super::assets::asset(&path) }),
         )
+        .route("/portal/theme", get(super::theme::view))
+        .route("/portal-theme/logo", get(super::theme::logo))
+        .route(
+            "/portal-theme/stylesheet.css",
+            get(super::theme::stylesheet),
+        )
         .route("/portal/approve", post(approve))
         .route("/portal/authorization/{transaction}", get(consent))
         .route("/portal/session", post(portal_session))

@@ -15,6 +15,11 @@ and this project adheres to
   and `serde_json::Value` in Rust, takes no constraints, and cannot be an event
   parameter or job key. An optional `json` field keeps a present `null`
   distinct from an absent field in both languages.
+- The login and consent Portal can be branded per installation and per OAuth
+  client under `[auth.portal]`: name, logo, palette, sign-in heading, subtitle
+  and footer, plus an installation-only stylesheet. Consent still renders
+  exactly as Auth presents it, a client's theme is chosen from the server's
+  record of the authorization, and theme files are served sandboxed.
 
 ### Fixed
 

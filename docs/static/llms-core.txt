@@ -211,7 +211,9 @@ OAuth login and consent belong to a separate, required portal on its own origin,
 not a Console route. Origins must differ; a different hostname is recommended,
 not mandatory, and a shared hostname emits a prominent security warning because
 cookies are not port-scoped. Dex is an upstream OIDC integration-test dependency
-only, never a required Trellis deployment component.
+only, never a required Trellis deployment component. Operators brand the portal
+per installation or per client under `[auth.portal]` (name, logo, palette, a few
+headings and a footer); apps cannot replace it or change what consent shows.
 
 Installation identity and the independently provisioned OAuth storage key
 survive restarts and issuer rotation. `Issuers.Rotate` requires

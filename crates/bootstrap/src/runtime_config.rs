@@ -129,6 +129,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         }),
         auth: Some(AuthConfig {
             avatar: None,
+            portal: None,
             administration: Default::default(),
             instance_id: Some(options.runtime.instance_id.clone()),
             oauth: Some(oauth),

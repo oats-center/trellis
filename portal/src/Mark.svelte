@@ -2,7 +2,7 @@
   let { size = 28 }: { size?: number } = $props();
 </script>
 
-<!-- Same artwork as art/trellis-mark.svg; inlined because the portal CSP allows no images. -->
+<!-- Same artwork as art/trellis-mark.svg, inlined so the default brand needs no request. -->
 <svg
   width={size}
   height={size * (420 / 330)}

@@ -310,6 +310,15 @@ strict CSRF check. Accepting `Origin: null` is not a fallback. Own-context
 introspection binds its reply to the ephemeral key's derived inbox namespace;
 the responder checks that routing before publishing either success or errors.
 
+Operators may theme the Portal per installation and per OAuth client from
+`[auth.portal]`: a name, a logo, the Portal's own palette (hex values only),
+copy for the sign-in heading, subtitle, and footer, and an installation-only
+stylesheet. Theming never changes what the Portal decides: consent renders from
+Auth's presentation, a client theme cannot add CSS, the client theme is resolved
+from the server's record of the transaction rather than the request, and theme
+files are served same-origin with a sandboxing CSP. The Portal CSP allows
+same-origin images for the logo.
+
 Console and OAuth portal are separate required frontend apps. Their build tools
 use Node 24 LTS, npm workspaces, and Vite; embedded builds compile into staging
 before replacing only owner-marked output. Production builds require real

@@ -48,7 +48,7 @@ use catalog::ApiAcceptance;
 pub(crate) use deployments::{DeploymentProvisioning, ProvisionedDeployment};
 pub(crate) use lifecycle::{ClientRegistration, GrantApproval, VerifiedLogin};
 pub(crate) use oauth::router as oauth_router;
-pub(crate) use oauth::{OAuthEngine, OAuthListener, OAuthStorage};
+pub(crate) use oauth::{OAuthEngine, OAuthListener, OAuthStorage, PortalThemes};
 pub(crate) use policy::{CapabilitySelection, PolicyMutation};
 pub(crate) use revocation::EnforcementScope;
 #[cfg(test)]

@@ -45,6 +45,8 @@ pub(crate) struct OAuthEngine {
     nonces: Mutex<super::nonce::DpopNonces>,
     /// Installation TLS this listener serves, for the always-on user notice.
     generated_tls: std::sync::OnceLock<bool>,
+    /// Portal branding from the runtime configuration.
+    portal_themes: std::sync::OnceLock<super::theme::PortalThemes>,
     /// Runtime connection used when a Portal approval provisions device storage.
     operational: std::sync::OnceLock<async_nats::Client>,
 }
@@ -374,6 +376,19 @@ impl OAuthEngine {
         self.generated_tls.get().copied().unwrap_or(false)
     }
 
+    /// Installs the validated Portal themes this listener serves.
+    pub(crate) fn serve_portal_themes(&self, themes: super::theme::PortalThemes) {
+        let _ = self.portal_themes.set(themes);
+    }
+
+    pub(crate) fn portal_themes(&self) -> &super::theme::PortalThemes {
+        static DEFAULT: std::sync::OnceLock<super::theme::PortalThemes> =
+            std::sync::OnceLock::new();
+        self.portal_themes
+            .get()
+            .unwrap_or_else(|| DEFAULT.get_or_init(Default::default))
+    }
+
     /// Provides the runtime connection Portal device approvals provision with.
     pub(crate) fn serve_operational(&self, client: async_nats::Client) {
         let _ = self.operational.set(client);
@@ -445,6 +460,7 @@ impl OAuthEngine {
             upstream_http,
             device_entries: FixedWindowRateLimiter::new(),
             generated_tls: std::sync::OnceLock::new(),
+            portal_themes: std::sync::OnceLock::new(),
             operational: std::sync::OnceLock::new(),
             nonces: Mutex::new(
                 super::nonce::DpopNonces::new(Instant::now())
