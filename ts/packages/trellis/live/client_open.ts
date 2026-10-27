@@ -899,7 +899,10 @@ async function runPump<T>(
         if (await authorityFence()) return;
         if (localGuard.contextDigest !== controlContextDigest) {
           controlContextDigest = localGuard.contextDigest;
-          if (!pendingCredit) {
+          // Credit is sent only once active. Taking a control sequence while
+          // activating would leave a gap the activation pulse cannot cross;
+          // that pulse is already signed under the new context.
+          if (!pendingCredit && core.phase === "active") {
             pendingCredit = {
               seq: nextSeq(session).toString(),
               received: core.receivedSeq().toString(),

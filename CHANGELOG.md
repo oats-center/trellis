@@ -80,6 +80,10 @@ and this project adheres to
   shows, or lets you remove, the first provider's group roles.
 - A Node native refresh that succeeds while a rate limit refuses the follow-up
   issuer check reports that Trellis is busy, not that a new login is required.
+- A TypeScript live subscription opened while the caller's authority changes
+  now starts. It used to fail after 15 seconds with "live activation did not
+  complete within the reservation", because the change used up a control
+  sequence number before activation.
 
 ## [0.100.0-rc.11] - 2026-10-27
 
