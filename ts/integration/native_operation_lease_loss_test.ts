@@ -248,9 +248,17 @@ for (const mode of [
             writer.releaseLock();
           }
           if (errors.length) {
+            // Name every failure: the test reporter prints an AggregateError's
+            // members only as "[Error]".
             throw new AggregateError(
               errors,
-              "lease loss lifecycle or teardown failed",
+              `lease loss lifecycle or teardown failed:\n${errors
+                .map((error) =>
+                  error instanceof Error
+                    ? (error.stack ?? error.message)
+                    : String(error),
+                )
+                .join("\n")}`,
             );
           }
         },
