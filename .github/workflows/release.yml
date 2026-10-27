@@ -587,6 +587,12 @@ jobs:
       - name: Install Node workspace dependencies
         run: npm ci
 
+      # The hosts' shared browser directory is read-only to the runners; keep
+      # each runner's browsers in its own persistent tool cache instead.
+      - name: Keep Playwright browsers in the runner's tool cache
+        if: runner.environment == 'self-hosted'
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright" >> "$GITHUB_ENV"
+
       - name: Install Chromium for Rust-owned browser acceptance
         run: npx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
 
@@ -883,6 +889,12 @@ jobs:
 
       - name: Install Node workspace dependencies
         run: npm ci
+
+      # The hosts' shared browser directory is read-only to the runners; keep
+      # each runner's browsers in its own persistent tool cache instead.
+      - name: Keep Playwright browsers in the runner's tool cache
+        if: runner.environment == 'self-hosted'
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright" >> "$GITHUB_ENV"
 
       - name: Install pinned Chromium and browser dependencies
         working-directory: ts
