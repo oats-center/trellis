@@ -149,6 +149,22 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
           () => (heartbeats().length > initialHeartbeats ? true : undefined),
           { timeoutMs: 8_000, intervalMs: 50 },
         );
+        // A pull consumer whose connection has closed holds no waiting request
+        // and expires after its inactivity threshold. Capping capacity while one
+        // remains would free a slot mid-test for the suspended mirror to take.
+        await runtime.waitFor(
+          async () => {
+            for await (const info of js.consumers.list(stream))
+              if (
+                !info.config.durable_name &&
+                !info.config.deliver_subject &&
+                info.num_waiting === 0
+              )
+                return undefined;
+            return true;
+          },
+          { timeoutMs: 15_000, intervalMs: 100 },
+        );
         // Exhaust real ephemeral-consumer capacity without changing retained data.
         const constrained = {
           ...settings,
