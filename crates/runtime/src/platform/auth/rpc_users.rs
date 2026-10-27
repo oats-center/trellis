@@ -1164,6 +1164,8 @@ fn set_provider_state(
             {
                 return Err(AuthError::Conflict);
             }
+            // The last active provider cannot go while it is the only way in.
+            super::sign_in::require_a_way_in(connection)?;
             let mut statement = connection.prepare(
                 "SELECT DISTINCT principal_id \
                 FROM auth_provider_identities \

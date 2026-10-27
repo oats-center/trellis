@@ -681,8 +681,7 @@ CREATE TABLE auth_sign_in_settings (
     providers INTEGER NOT NULL CHECK (providers IN (0, 1)),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     updated_at INTEGER NOT NULL,
-    CHECK (local_users = 1 OR local_sign_up = 0),
-    CHECK (local_users = 1 OR providers = 1)
+    CHECK (local_users = 1 OR local_sign_up = 0)
 );
 INSERT INTO auth_sign_in_settings VALUES (1, 1, 0, 1, 1, 0);
 

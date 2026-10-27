@@ -33,21 +33,37 @@ pub(super) fn read(connection: &Connection) -> Result<AuthSignInSettings, AuthEr
     )?)
 }
 
+/// Refuses a change that would leave no way to sign in fresh: with local users
+/// off, company sign-in must be on with at least one active provider. Run it in
+/// the transaction making the change, after the change, so concurrent edits to
+/// settings and providers cannot each pass alone and together lock everyone out.
+pub(super) fn require_a_way_in(connection: &Connection) -> Result<(), AuthError> {
+    let settings = read(connection)?;
+    if settings.local_users {
+        return Ok(());
+    }
+    let providers: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_oidc_providers WHERE state='active')",
+        [],
+        |row| row.get(0),
+    )?;
+    if settings.providers && providers {
+        return Ok(());
+    }
+    Err(AuthError::Invalid(
+        "nobody could sign in: keep username and password on, or add an active company sign-in provider first".into(),
+    ))
+}
+
 pub(super) fn update(
     store: &SqliteAuthorizationStore,
     identity: &Mutation,
     input: &AuthSignInSettingsUpdateRequest,
     now: i64,
 ) -> Result<AuthSignInSettingsGetResponse, AuthError> {
-    // Sign-up creates local users, and turning both methods off would leave
-    // nobody, administrators included, able to sign in.
+    // Sign-up creates local users.
     if input.local_sign_up && !input.local_users {
         return Err(AuthError::Invalid("local sign-up needs local users".into()));
-    }
-    if !input.local_users && !input.providers {
-        return Err(AuthError::Invalid(
-            "keep local users or company sign-in on".into(),
-        ));
     }
     store.mutate(
         identity,
@@ -76,6 +92,7 @@ pub(super) fn update(
             {
                 return Err(AuthError::Conflict);
             }
+            require_a_way_in(connection)?;
             Ok(AuthSignInSettingsGetResponse {
                 settings: read(connection)?,
                 extra: Default::default(),

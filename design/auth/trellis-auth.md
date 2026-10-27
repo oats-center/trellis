@@ -889,9 +889,12 @@ Which sign-in methods an installation offers is Auth state, edited live with
 `Auth.SignInSettings.Update` (`trellis.auth.v1:platform.manage`) from the
 Console's Sign-in methods page or `trellis sign-in set`; no restart and no
 configuration key. Local users (username and password) and company sign-in
-(active OIDC providers) each switch on and off; at least one stays on, so an
-update can never lock every administrator out. Turning a method off refuses the
-next sign-in by it; the Portal stops offering it.
+(active OIDC providers) each switch on and off. A fresh sign-in must stay
+possible: with local users off, company sign-in must be on with an active
+provider. That is checked in the same transaction as the settings update and as
+disabling or deleting a provider, after the change, so neither alone nor two
+concurrent changes can lock every administrator out. Turning a method off
+refuses the next sign-in by it; the Portal stops offering it.
 
 Self sign-up needs both the installation and the app being signed in to. The
 installation's `localSignUp` (which needs local users) allows password

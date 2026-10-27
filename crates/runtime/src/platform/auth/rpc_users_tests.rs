@@ -1149,7 +1149,7 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
         store.portal_local_login(
             &cookie.cookie,
             &cookie.csrf,
-            &"e".repeat(43),
+            &format!("{}{}", id(), "e".repeat(17)),
             ("long", "twenty characters ok"),
             &id(),
             NOW,
@@ -1157,26 +1157,65 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
     };
     sign_in(&store).unwrap();
 
-    // Turning local users off applies to the next sign-in, with no restart.
-    let off = AuthSignInSettingsUpdateRequest {
-        local_users: false,
-        local_sign_up: false,
-        providers: true,
-        expected_revision: AuthRevision(1u64.into()),
+    // Local users stay on while nothing else lets anyone sign in: company
+    // sign-in is on by default, but no provider is configured yet.
+    let store = Arc::new(store);
+    let settings = |revision: u64, local_users: bool, providers: bool| {
+        let input = AuthSignInSettingsUpdateRequest {
+            local_users,
+            local_sign_up: false,
+            providers,
+            expected_revision: AuthRevision(revision.into()),
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+        crate::platform::auth::sign_in::update(&store, &mutation(&admin, &input), &input, NOW)
+    };
+    assert!(matches!(
+        settings(1, false, true),
+        Err(AuthError::Invalid(_))
+    ));
+    sign_in(&store).unwrap();
+
+    let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[21; 32]).unwrap();
+    let company = AuthOIDCProviderPutRequest {
+        provider_id: None,
+        issuer: "https://identity.example".into(),
+        client_id: "trellis".into(),
+        title: "Company".to_string().into(),
+        scopes: vec!["openid".into()],
+        role_claim: "/groups".into(),
+        claim_freshness_seconds: 300.into(),
+        client_secret: Some("upstream confidential credential".into()),
+        expected_revision: 0.into(),
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    crate::platform::auth::sign_in::update(&store, &mutation(&admin, &off), &off, NOW).unwrap();
+    let company = put_provider(&storage, &mutation(&admin, &company), &company, NOW)
+        .unwrap()
+        .provider;
+    // With a provider to sign in through, turning local users off applies to the
+    // next sign-in, with no restart.
+    settings(1, false, true).unwrap();
     assert!(matches!(sign_in(&store), Err(AuthError::Denied)));
-    // Nobody, administrators included, could sign in with both methods off.
-    let neither = AuthSignInSettingsUpdateRequest {
-        providers: false,
-        expected_revision: AuthRevision(2u64.into()),
+    // Company sign-in cannot go off too, and neither can its last provider.
+    let both_off = settings(2, false, false);
+    assert!(
+        matches!(both_off, Err(AuthError::Invalid(_))),
+        "{both_off:?}"
+    );
+    let disable = AuthOIDCProviderMutationRequest {
+        provider_id: company.provider_id,
+        expected_revision: company.revision,
         idempotency_key: id().into(),
-        ..off
+        extra: Default::default(),
     };
     assert!(matches!(
-        crate::platform::auth::sign_in::update(&store, &mutation(&admin, &neither), &neither, NOW),
+        disable_provider(&store, &mutation(&admin, &disable), &disable, NOW),
         Err(AuthError::Invalid(_))
     ));
+    // Once local users are back, the provider can go.
+    settings(2, true, true).unwrap();
+    sign_in(&store).unwrap();
+    disable_provider(&store, &mutation(&admin, &disable), &disable, NOW).unwrap();
 }
