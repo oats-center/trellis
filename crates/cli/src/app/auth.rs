@@ -58,6 +58,8 @@ pub(super) async fn roles(format: OutputFormat, command: RolesCommand) -> miette
         RolesSubcommand::Create(args) => roles_create_command(format, &args).await,
         RolesSubcommand::Edit(args) => roles_edit_command(format, &args).await,
         RolesSubcommand::Delete(args) => roles_delete_command(format, &args).await,
+        RolesSubcommand::Assign(args) => roles_assign_command(format, &args).await,
+        RolesSubcommand::Revoke(args) => roles_revoke_command(format, &args).await,
     }
 }
 
@@ -734,6 +736,66 @@ async fn roles_delete_command(format: OutputFormat, args: &RoleRefArgs) -> miett
     } else {
         output::print_success("deleted role");
         output::print_info(&format!("roleId={}", current.role_id));
+    }
+    Ok(())
+}
+
+async fn roles_assign_command(format: OutputFormat, args: &RoleMemberArgs) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let assignment = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
+        .role_assignments_assign(&auth_types::AuthRoleAssignRequest {
+            principal_id: wire(&args.user_id)?,
+            role_id: wire(&args.role_id)?,
+            expected_revision: 0u64.into(),
+            idempotency_key: wire(cli_idempotency_key())?,
+            expires_at: None,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .assignment;
+    if output::is_json(format) {
+        output::print_json(&json!({ "assignment": assignment }))?;
+    } else {
+        output::print_success("assigned role");
+        output::print_info(&format!("assignmentId={}", assignment.assignment_id));
+    }
+    Ok(())
+}
+
+async fn roles_revoke_command(format: OutputFormat, args: &RoleMemberArgs) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let assignment = auth
+        .role_assignments_list(&auth_types::AuthRoleAssignmentsListRequest {
+            principal_id: Some(wire(&args.user_id)?),
+            role_id: Some(wire(&args.role_id)?),
+            page: None,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .items
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            miette::miette!("user {} does not have role {}", args.user_id, args.role_id)
+        })?;
+    auth.role_assignments_revoke(&auth_types::AuthRoleRevokeRequest {
+        assignment_id: assignment.assignment_id,
+        expected_revision: assignment.revision,
+        idempotency_key: wire(cli_idempotency_key())?,
+        extra: Default::default(),
+    })
+    .await
+    .into_diagnostic()?;
+    if output::is_json(format) {
+        output::print_json(&json!({ "assignmentId": assignment.assignment_id }))?;
+    } else {
+        output::print_success("revoked role");
+        output::print_info(&format!("assignmentId={}", assignment.assignment_id));
     }
     Ok(())
 }

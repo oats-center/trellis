@@ -197,6 +197,20 @@ pub enum RolesSubcommand {
     Edit(RoleEditArgs),
     /// Delete one role and remove it from everyone who has it.
     Delete(RoleRefArgs),
+    /// Give one role to one user.
+    Assign(RoleMemberArgs),
+    /// Take one role away from one user.
+    Revoke(RoleMemberArgs),
+}
+
+#[derive(Debug, Args)]
+/// Reference one role and one user.
+pub struct RoleMemberArgs {
+    #[arg(value_name = "ROLE_ID")]
+    pub role_id: String,
+
+    #[arg(value_name = "USER_ID")]
+    pub user_id: String,
 }
 
 #[derive(Debug, Args)]

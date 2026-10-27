@@ -254,11 +254,18 @@ test(
           ),
           ["trellis.auth.v1:users.read"],
         );
-        await createUser();
+        const after = await createUser();
         const readers = await run("roles", "show", role.roleId);
         assert.equal(readers.role.title, "Directory readers");
         assert.equal(readers.role.assignToNewUsers, false);
         assert.deepEqual(readers.members, [before]);
+        // An administrator can still give the role to anyone, or take it away.
+        await run("roles", "assign", role.roleId, after);
+        await run("roles", "revoke", role.roleId, before);
+        assert.deepEqual((await run("roles", "show", role.roleId)).members, [
+          after,
+        ]);
+        await assert.rejects(run("roles", "revoke", role.roleId, before));
         await run("roles", "delete", role.roleId);
         await assert.rejects(run("roles", "show", role.roleId));
         await run("logout");
