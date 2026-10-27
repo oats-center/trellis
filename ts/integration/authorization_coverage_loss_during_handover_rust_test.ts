@@ -107,7 +107,8 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
             name: "coverage-subject",
             contract: participants.TransportGrowthSubject.participant,
           });
-          const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
+          const capabilityId =
+            "runtime-trellis.transport_growth.v1:growth.extend";
           const grants = await runtime.callAdminRpc(
             "authCapabilityGrantsList",
             {

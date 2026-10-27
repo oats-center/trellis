@@ -272,10 +272,10 @@ verified delivery. Serve generated downloads with
 where `context` is the RPC handler's context (the grant is bound to its verified
 caller and permission) and `info` declares the exact size and `SHA-256=` digest.
 
-For a download RPC's untrusted `transfer` field, call
-`decodeTransferGrant(response.transfer).orThrow()` from `@oatscenter/trellis`,
-check `grant.direction === "receive"`, and pass the decoded grant to
-`client.transfer(grant)`. Receive grants use the helper's `stream()` for large
+A download RPC's response is typed with an optional
+`transfer: ReceiveTransferGrant`, decoded and checked when the reply arrives (an
+invalid or send-direction grant fails the call). Pass it straight to
+`client.transfer(response.transfer)`. Receive grants use the helper's `stream()` for large
 bodies or `bytes()` for a collected buffer.
 
 ## Jobs

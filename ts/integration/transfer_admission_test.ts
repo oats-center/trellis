@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { decodeTransferGrant, Result } from "@oatscenter/trellis";
+import { Result } from "@oatscenter/trellis";
 import { inspect } from "node:util";
 import { transferConstants } from "../packages/trellis/auth/protocol_wasm.ts";
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -58,8 +58,8 @@ test(
       });
       const open = async (value: string) => {
         const response = await client.generate({ value }).orThrow();
-        const grant = decodeTransferGrant(response.transfer).orThrow();
-        assert(grant.direction === "receive");
+        const grant = response.transfer;
+        assert(grant);
         return await client.transfer(grant).stream();
       };
       const readers: ReadableStreamDefaultReader<Uint8Array>[] = [];

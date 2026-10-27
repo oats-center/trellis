@@ -1,4 +1,4 @@
-import { decodeTransferGrant, Result } from "@oatscenter/trellis";
+import { Result } from "@oatscenter/trellis";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { ensureTelemetryRuntime } from "@oatscenter/trellis/telemetry";
 import { metrics } from "@opentelemetry/api";
@@ -600,8 +600,8 @@ test("TS transfer telemetry labels each endpoint by direction and side", async (
           .orThrow();
         await uploaded.wait().orThrow();
         const download = await client.download({ value: "observed" }).orThrow();
-        const grant = decodeTransferGrant(download.transfer).orThrow();
-        assert(grant.direction === "receive");
+        const grant = download.transfer;
+        assert(grant);
         assert.deepEqual(await client.transfer(grant).bytes().orThrow(), bytes);
 
         // Each endpoint counts the object's DATA once under its own side,

@@ -11,7 +11,7 @@ import { connectNativeClient } from "@oatscenter/trellis/native";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { Result, decodeTransferGrant } from "@oatscenter/trellis";
+import { Result } from "@oatscenter/trellis";
 import type { OperationRefData } from "@oatscenter/trellis";
 import { isErr } from "@oatscenter/result";
 import { ulid } from "ulid";
@@ -540,8 +540,8 @@ test("download endAck retires the last caller and provider generation leases", a
             const download = await caller
               .download({ value: "download-ack" })
               .orThrow();
-            const grant = decodeTransferGrant(download.transfer).orThrow();
-            assert(grant.direction === "receive");
+            const grant = download.transfer;
+            assert(grant);
             const callerAttachments = async () => {
               const page = await runtime.callAdminRpc("authConnectionsList", {
                 state: "admitted",

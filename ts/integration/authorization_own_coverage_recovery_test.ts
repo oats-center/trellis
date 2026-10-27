@@ -579,7 +579,8 @@ test("a granted optional RPC waits for coverage rather than being classified as 
         assert.deepEqual(await deadline(pending, 12_000), {});
         assert.equal(calls, 2, "coverage recovery must not retransmit the RPC");
         assert.equal(gate.connection(socket.id)?.closed, false);
-        const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
+        const capabilityId =
+          "runtime-trellis.transport_growth.v1:growth.extend";
         const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
           capabilityId,
         });

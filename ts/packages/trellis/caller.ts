@@ -2,12 +2,14 @@ import {
   AsyncResult,
   type BaseError,
   err,
+  isErr,
   ok,
   type Result,
 } from "@oatscenter/result";
 import type { LiveSubscription } from "./live/subscription.ts";
 import type { TrellisConnection } from "./connection.ts";
-import type { TransportError } from "./errors/index.ts";
+import { TransferError, type TransportError } from "./errors/index.ts";
+import { decodeTransferGrant, type ReceiveTransferGrant } from "./transfer.ts";
 import type { TypedKV } from "./kv.ts";
 import type { OperationInvoker } from "./operations.ts";
 import type { TypedStore } from "./store.ts";
@@ -45,7 +47,15 @@ type SelectedActionShape = {
   output?: unknown;
   event?: unknown;
   payload?: unknown;
+  download?: boolean;
 };
+
+/** A `download;` RPC's response may carry a receive grant, decoded on receipt. */
+type RpcOutput<TAction extends SelectedActionShape> = TAction extends {
+  download: true;
+}
+  ? CodecValue<TAction["output"]> & { transfer?: ReceiveTransferGrant }
+  : CodecValue<TAction["output"]>;
 
 type OperationDescriptorFor<TAction> = {
   subject: string;
@@ -108,13 +118,11 @@ type ActionMethod<TAction extends SelectedActionShape> =
             ? ((
                 input: CodecValue<TAction["input"]>,
                 opts?: RequestOpts,
-              ) => AsyncResult<CodecValue<TAction["output"]>, BaseError>) & {
+              ) => AsyncResult<RpcOutput<TAction>, BaseError>) & {
                 pages(
                   input?: Omit<CodecValue<TAction["input"]>, "page">,
                   opts?: RequestOpts,
-                ): AsyncIterable<
-                  Result<CodecValue<TAction["output"]>, BaseError>
-                >;
+                ): AsyncIterable<Result<RpcOutput<TAction>, BaseError>>;
                 items(
                   input?: Omit<CodecValue<TAction["input"]>, "page">,
                   opts?: RequestOpts,
@@ -124,7 +132,7 @@ type ActionMethod<TAction extends SelectedActionShape> =
           : (
               input: CodecValue<TAction["input"]>,
               opts?: RequestOpts,
-            ) => AsyncResult<CodecValue<TAction["output"]>, BaseError>
+            ) => AsyncResult<RpcOutput<TAction>, BaseError>
         : never
       : never
     : TAction["kind"] extends "operation"
@@ -389,9 +397,11 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
             ) => AsyncIterable<unknown>;
           } = (input: unknown, opts?: RequestOpts) => {
             const error = unavailable();
-            return error
-              ? AsyncResult.from(Promise.resolve(err(error)))
-              : runtime.request(action.name, input, opts);
+            if (error) return AsyncResult.from(Promise.resolve(err(error)));
+            const response = runtime.request(action.name, input, opts);
+            return action.descriptor.download
+              ? AsyncResult.from(response.then(withReceiveGrant))
+              : response;
           };
           if (action.descriptor.pagination === "cursor") {
             request.pages = (input?: unknown, opts?: RequestOpts) =>
@@ -459,4 +469,32 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
   }
 
   return caller as CallerRuntime<TContract>;
+}
+
+/**
+ * Decodes a download RPC response's untrusted `transfer` field into a receive
+ * grant, so callers pass it straight to `transfer(...)`.
+ */
+function withReceiveGrant(
+  response: Result<unknown, BaseError>,
+): Result<unknown, BaseError> {
+  const value = response.take();
+  if (isErr(value)) return err(value.error);
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("transfer" in value) ||
+    value.transfer === undefined
+  )
+    return ok(value);
+  const grant = decodeTransferGrant(value.transfer).take();
+  if (isErr(grant)) return err(grant.error);
+  if (grant.direction !== "receive")
+    return err(
+      new TransferError({
+        operation: "decodeGrant",
+        context: { reason: "a download response carried a send grant" },
+      }),
+    );
+  return ok({ ...value, transfer: grant });
 }

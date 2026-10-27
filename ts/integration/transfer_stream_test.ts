@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { Objm } from "@nats-io/obj";
-import { decodeTransferGrant, Result } from "@oatscenter/trellis";
+import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
   apps,
@@ -146,8 +146,8 @@ for (const language of ["rust", "node"] as const) {
         });
         const generate = async (value: string) => {
           const response = await client.generate({ value }).orThrow();
-          const grant = decodeTransferGrant(response.transfer).orThrow();
-          assert(grant.direction === "receive");
+          const grant = response.transfer;
+          assert(grant);
           return await client.transfer(grant).bytes();
         };
         try {
@@ -326,8 +326,8 @@ test("a download source whose cancellation never settles cannot block provider s
       (await client.generate({ value: "ready" })).isOk(),
     );
     const response = await client.generate({ value: "stalled" }).orThrow();
-    const grant = decodeTransferGrant(response.transfer).orThrow();
-    assert(grant.direction === "receive");
+    const grant = response.transfer;
+    assert(grant);
     const download = client.transfer(grant).bytes();
     await stalled.promise;
 

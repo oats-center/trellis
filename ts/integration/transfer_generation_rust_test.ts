@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
-import { decodeTransferGrant, Result } from "@oatscenter/trellis";
+import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
 import {
@@ -199,8 +199,8 @@ test("Rust downloads survive growth and open after the original attachment close
           assert(uploadProgress[index] >= uploadProgress[index - 1]);
         }
         const before = await caller.download({ value: "before" }).orThrow();
-        const beforeGrant = decodeTransferGrant(before.transfer).orThrow();
-        assert(beforeGrant.direction === "receive");
+        const beforeGrant = before.transfer;
+        assert(beforeGrant);
         const unauthorized = await runtime.connectClient({
           name: "unrelated-transfer-caller",
           contract: apps.Caller.request,
@@ -239,8 +239,8 @@ test("Rust downloads survive growth and open after the original attachment close
 
         // Stop public stream consumption after actual DATA, before growth.
         const ongoing = await caller.download({ value: "ongoing" }).orThrow();
-        const ongoingGrant = decodeTransferGrant(ongoing.transfer).orThrow();
-        assert(ongoingGrant.direction === "receive");
+        const ongoingGrant = ongoing.transfer;
+        assert(ongoingGrant);
         held = (
           await caller.transfer(ongoingGrant).stream().orThrow()
         ).getReader();
@@ -249,10 +249,8 @@ test("Rust downloads survive growth and open after the original attachment close
         const cancelled = await caller
           .download({ value: "cancelled" })
           .orThrow();
-        const cancelledGrant = decodeTransferGrant(
-          cancelled.transfer,
-        ).orThrow();
-        assert(cancelledGrant.direction === "receive");
+        const cancelledGrant = cancelled.transfer;
+        assert(cancelledGrant);
         const chunks: Uint8Array[] = [first.value];
         await runtime.callAdminRpc("authCapabilityGrantsGrant", {
           principalId: grant.principalId,
@@ -323,8 +321,8 @@ test("Rust downloads survive growth and open after the original attachment close
           { timeoutMs: 120_000 },
         );
         const after = await caller.download({ value: "after" }).orThrow();
-        const afterGrant = decodeTransferGrant(after.transfer).orThrow();
-        assert(afterGrant.direction === "receive");
+        const afterGrant = after.transfer;
+        assert(afterGrant);
         assert.deepEqual(
           await caller.transfer(afterGrant).bytes().orThrow(),
           bytes,
@@ -336,8 +334,8 @@ test("Rust downloads survive growth and open after the original attachment close
         const idleDownload = await caller
           .download({ value: "idle-disconnect" })
           .orThrow();
-        const idleGrant = decodeTransferGrant(idleDownload.transfer).orThrow();
-        assert(idleGrant.direction === "receive");
+        const idleGrant = idleDownload.transfer;
+        assert(idleGrant);
         idle = (
           await caller.transfer(idleGrant).stream().orThrow()
         ).getReader();

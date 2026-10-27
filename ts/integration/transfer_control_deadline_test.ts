@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isErr, Result } from "@oatscenter/result";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { decodeTransferGrant } from "@oatscenter/trellis";
 import {
   apps,
   participants,
@@ -83,8 +82,8 @@ for (const exchange of ["activation", "cancellation"] as const) {
             const response = await caller
               .download({ value: "deadline" })
               .orThrow();
-            const grant = decodeTransferGrant(response.transfer).orThrow();
-            assert(grant.direction === "receive");
+            const grant = response.transfer;
+            assert(grant);
             reader = (
               await caller.transfer(grant).stream().orThrow()
             ).getReader();

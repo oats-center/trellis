@@ -35,6 +35,12 @@ and this project adheres to
   Sign out now uses it, and returns to the profile page instead of a missing
   one.
 
+- TypeScript callers of a `download;` RPC get a typed
+  `transfer?: ReceiveTransferGrant` on the response, matching the Rust client.
+  The SDK decodes and checks the grant when the reply arrives, so the response's
+  `transfer` goes straight to `client.transfer(...)` without
+  `decodeTransferGrant`.
+
 ### Fixed
 
 - `trellis-server` no longer exits with "runtime HTTP server did not drain
