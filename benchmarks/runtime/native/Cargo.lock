@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0-rc.10"
+version = "0.100.0-rc.11"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -3201,4 +3201,4 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[patch.unused]]
 name = "trellis-testkit"
-version = "0.100.0-rc.10"
+version = "0.100.0-rc.11"

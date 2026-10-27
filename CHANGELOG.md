@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.11] - 2026-10-27
+
+### Fixed
+
+- The release pipeline publishes the Rust crates again. In 0.100.0-rc.10 their
+  publication stopped at a retained crate version it wrongly read as
+  unpublished, so 0.100.0-rc.10 has npm packages, images and APIs but no Rust
+  crates; use 0.100.0-rc.11.
+
 ## [0.100.0-rc.10] - 2026-10-27
 
 ### Changed

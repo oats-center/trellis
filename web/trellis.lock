@@ -14,9 +14,9 @@ path = "../crates/builtin-contracts"
 
 [[packages]]
 name = "trellis-web-generated"
-version = "0.100.0-rc.10"
+version = "0.100.0-rc.11"
 digest = "9IWlyIcH1sZ-hpbx4Vz-p_58rGjrLRANVYv4PqdbLEc"
-distribution-digest = "sha256:da94019d9e4d9595230396452687eb333762c8bc67a545f1f59121fca97ddfae"
+distribution-digest = "sha256:0dd1d64faf02bd2e223fb563912243458f8b8738ae2f8f7d1d0877bc0b2cbd67"
 
 [[packages.dependencies]]
 name = "trellis"
