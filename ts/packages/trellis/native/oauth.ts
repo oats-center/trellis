@@ -506,6 +506,8 @@ export class NativeDeviceAuthorization {
             { signal: options.signal },
           );
         first = false;
+        // An already cancelled flow reports cancellation, not a failed poll.
+        options.signal?.throwIfAborted();
         const remaining = this.#deadline - performance.now();
         if (remaining <= 0) break;
         const result = await this.#client.pollDevice(
