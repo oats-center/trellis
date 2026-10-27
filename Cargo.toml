@@ -48,6 +48,12 @@ trellis-models = { path = "crates/models" }
 # size-optimized. Hashing-heavy work runs in native host crypto instead.
 # Dependencies (crypto, SQLite, serde) dominate test and live-suite runtime;
 # light optimization keeps workspace crates fast to rebuild while they run faster.
+# File-and-line backtraces without full DWARF: about 40% less target/ and a
+# third the binary size, with no cost to build time. For a debugger session,
+# set CARGO_PROFILE_DEV_DEBUG=true. The test profile inherits this.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 1
 
