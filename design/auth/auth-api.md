@@ -33,6 +33,7 @@ Console and application routers are never mounted there.
 | `POST` | `/auth/device/enroll`                     | Create or resume a proof-bound device review                                                    |
 | `GET`  | `/login`, `/consent`, `/device`           | Portal pages for sign-in, capability consent, and Device Code entry                             |
 | `GET`  | `/device/complete`                        | Portal page shown after a Device Code decision                                                  |
+| `GET`  | `/logout`                                 | `end_session_endpoint`: ends the portal login, then returns to `post_logout_redirect_uri`       |
 | `GET`  | `/portal-assets/{path}`                   | Embedded portal assets                                                                          |
 | `POST` | `/portal/session`                         | Create a portal session cookie and CSRF token                                                   |
 | `POST` | `/portal/login`                           | Local username/password sign-in                                                                 |

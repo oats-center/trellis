@@ -22,6 +22,7 @@ const metadataSchema = z.object({
   authorization_endpoint: z.string().url(),
   token_endpoint: z.string().url(),
   revocation_endpoint: z.string().url(),
+  end_session_endpoint: z.string().url(),
   code_challenge_methods_supported: z.array(z.string()),
   trellis: z.object({
     trellisInstanceId: z.string().min(1),
@@ -150,6 +151,7 @@ export class BrowserOAuthClient {
           metadata.authorization_endpoint,
           metadata.token_endpoint,
           metadata.revocation_endpoint,
+          metadata.end_session_endpoint,
         ].some((endpoint) => new URL(endpoint).origin !== issuer.origin)
       )
         return err(new AuthError({ reason: "InvalidIssuer" }));

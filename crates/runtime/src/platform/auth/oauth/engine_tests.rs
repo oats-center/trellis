@@ -623,6 +623,73 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
 }
 
 #[tokio::test]
+async fn portal_sign_out_returns_only_to_an_origin_the_client_registered() {
+    let mut f = fixture();
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", socket.local_addr().unwrap());
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    let engine =
+        Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
+    let listener = super::super::oauth::OAuthListener::load(
+        socket,
+        &origin,
+        &super::super::oauth::OAuthTransport::LoopbackDevelopment,
+    )
+    .await
+    .unwrap();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let stopped = stop.clone();
+    let host = tokio::spawn(async move {
+        listener
+            .run(super::super::oauth::router(engine, vec![]), stopped)
+            .await
+            .unwrap();
+    });
+    let http = reqwest::Client::new();
+    let metadata: serde_json::Value = http
+        .get(format!("{origin}/.well-known/oauth-authorization-server"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sign_out = metadata["end_session_endpoint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The registered callback is http://127.0.0.1:9123/callback: any page on
+    // that origin may be returned to, and nothing else.
+    for (client, target, allowed) in [
+        (
+            "native-client",
+            "http://127.0.0.1:9123/after-sign-out",
+            true,
+        ),
+        ("native-client", "https://attacker.example/", false),
+        (
+            "native-client",
+            "http://127.0.0.1:9124/after-sign-out",
+            false,
+        ),
+        (
+            "unknown-client",
+            "http://127.0.0.1:9123/after-sign-out",
+            false,
+        ),
+    ] {
+        let mut url = url::Url::parse(&sign_out).unwrap();
+        url.query_pairs_mut()
+            .append_pair("client_id", client)
+            .append_pair("post_logout_redirect_uri", target);
+        let response = http.get(url).send().await.unwrap();
+        assert_eq!(response.status().is_success(), allowed, "{client} {target}");
+    }
+    stop.cancel();
+    host.await.unwrap();
+}
+
+#[tokio::test]
 async fn trusted_proxy_clients_without_origin_have_independent_budgets() {
     let mut f = fixture();
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

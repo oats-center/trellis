@@ -27,6 +27,14 @@ and this project adheres to
   builds, such as a checkout return URL, so the caller resumes the operation
   from any browser without having stored the reference.
 
+- A browser app can end the Portal login with
+  `logout({ endPortalLogin: true })`: the browser goes through the Portal's new
+  sign-out page (`end_session_endpoint`, `/logout`) and back, and the next
+  sign-in asks for credentials, so people can switch accounts. The Portal
+  returns only to an origin the app registered a redirect URI on. The Console's
+  Sign out now uses it, and returns to the profile page instead of a missing
+  one.
+
 ### Fixed
 
 - `trellis-server` no longer exits with "runtime HTTP server did not drain

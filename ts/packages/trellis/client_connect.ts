@@ -65,12 +65,30 @@ export type TrellisClientConnectArgs<
     context: ClientAuthRequiredContext,
   ): Promise<ClientAuthContinuation> | ClientAuthContinuation;
 };
+/** Options for ending a browser app's session. */
+export type ClientLogoutOptions = {
+  /**
+   * Also end the Portal login on this browser, then navigate back to
+   * `returnTo`. The next sign-in asks for credentials, so a person can switch
+   * accounts, and nobody stays signed in to Trellis on a shared computer.
+   */
+  endPortalLogin?: boolean;
+  /**
+   * Where the Portal returns after ending its login; defaults to the current
+   * page. Its origin must be one the app registered a redirect URI on.
+   */
+  returnTo?: string;
+};
 /** Connected ordinary OAuth app. Durable credentials remain in the app's IndexedDB realm. */
 export type ConnectedTrellisClient<T extends AppRequestDescriptor> =
   CallerRuntime<T> & {
     readonly ownAuthority: OwnAuthorityView;
-    /** Revoke this application's OAuth family and close its connection, retaining the Portal login. */
-    logout(): Promise<void>;
+    /**
+     * Revoke this application's OAuth family and close its connection. The
+     * Portal login stays unless `endPortalLogin` is set, in which case the
+     * browser navigates through the Portal's sign-out and back.
+     */
+    logout(options?: ClientLogoutOptions): Promise<void>;
   };
 
 /** Connect through PKCE/DPoP OAuth followed by signed ephemeral admission. */
@@ -274,10 +292,18 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           return Result.ok(
             Object.assign(createCallerRuntime(trellis, args.request), {
               ownAuthority,
-              async logout() {
+              async logout(options?: ClientLogoutOptions) {
                 const revoked = await oauth.revoke();
                 if (revoked.isErr()) throw revoked.error;
                 await activeConnection.manager.close();
+                if (!options?.endPortalLogin) return;
+                const signOut = new URL(oauth.metadata.end_session_endpoint);
+                signOut.searchParams.set("client_id", args.auth.clientId);
+                signOut.searchParams.set(
+                  "post_logout_redirect_uri",
+                  options.returnTo ?? location.href,
+                );
+                location.assign(signOut);
               },
             }),
           );

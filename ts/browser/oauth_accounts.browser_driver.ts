@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
-import { ulid } from "ulid";
 
 test("Console reload, simultaneous tabs, Chromium restart and account switching preserve account ownership", async () => {
   const application = process.env.TRELLIS_TEST_CONSOLE_URL;
@@ -71,32 +70,13 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
       .first()
       .waitFor();
 
-    // First withdraw the app's delegation through its normal sign-out. The
-    // independent portal session survives, then is explicitly logged out.
+    // Signing out of the Console ends the Portal login too, so the next
+    // sign-in asks for credentials instead of returning to the same account.
     await page.getByLabel("Open user menu", { exact: true }).click();
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
-    await page
-      .getByRole("heading", { name: /wants to use your account/ })
-      .waitFor();
+    await page.getByLabel("Username", { exact: true }).waitFor();
     strictEqual(new URL(page.url()).origin, portal);
-    const logout = await page.evaluate(async (requestId) => {
-      const csrf = document.cookie
-        .split("; ")
-        .find((value) => value.startsWith("__Host-trellis-portal-csrf="))
-        ?.split("=")[1];
-      if (!csrf) throw new Error("portal CSRF cookie missing");
-      return (
-        await fetch("/portal/logout", {
-          method: "POST",
-          body: new URLSearchParams({
-            csrf: decodeURIComponent(csrf),
-            request_id: requestId,
-          }),
-        })
-      ).status;
-    }, ulid());
-    strictEqual(logout, 200);
-    await page.goto(new URL("/console/profile", application).href);
+    strictEqual(new URL(page.url()).pathname, "/login");
     await page
       .getByLabel("Username", { exact: true })
       .fill("browser-second-user");

@@ -737,7 +737,13 @@ Browser IndexedDB and cross-tab Web Lock custody are unchanged.
 
 Browser app sign-out revokes the latest refresh family under the cross-tab
 custody lock and clears both its refresh token and principal/grant binding. The
-independent Portal login survives until explicitly logged out. A later
+independent Portal login survives until explicitly logged out. An app ends it
+by sending the browser to the `end_session_endpoint` (`/logout`, OpenID
+RP-initiated logout with `client_id` and `post_logout_redirect_uri`). The server
+serves that page only for a return address on an origin the client registered a
+redirect URI on, so it is no open redirector; the page then posts the Portal's
+CSRF-protected logout and returns. It asks for no confirmation: a forged
+navigation can only sign someone out, never in or into another account. A later
 authorization may bind the cleared app handle to another account; an uncleared
 handle still rejects a different principal, and stale tabs cannot restore it.
 

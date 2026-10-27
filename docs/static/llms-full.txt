@@ -1428,7 +1428,11 @@ stale tabs from overwriting newer state.
 `onAuthRequired` receives `loginUrl` and `mode: "browser"`; caller-owned
 navigation may return `{ status: "handled" }`. Use the connected client's
 `logout()` to revoke its OAuth family and close its connection while retaining
-the Portal login. Never fabricate OAuth or authority metadata in application
+the Portal login. `logout({ endPortalLogin: true, returnTo })` also ends the
+Portal login on that browser: the browser goes through the Portal's sign-out and
+returns to `returnTo` (default: the current page), which must be on an origin the
+app registered a redirect URI on. Use it for "sign out" on shared computers and
+for "switch account", since the next sign-in asks for credentials. Never fabricate OAuth or authority metadata in application
 callbacks. Coverage loss suspends application use without invalidating retained
 identity; a cancelled renewal settles before its replacement starts, and logical
 close cancels maintenance and renewal.

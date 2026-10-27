@@ -93,6 +93,10 @@
   const enrollmentComplete =
     window.location.pathname === "/device-enrollment/complete";
   const reviewId = query.get("reviewId") ?? "";
+  // The server validated this return address before serving the page.
+  const signingOut = window.location.pathname === "/logout";
+  const returnTo = query.get("post_logout_redirect_uri") ?? "";
+  let signOutFailed = $state(false);
 
   interface EnrollmentReview {
     reviewId: string;
@@ -348,7 +352,34 @@
     };
   }
 
+  /** Ends the Portal login on this browser, then returns to the app. */
+  async function endPortalLogin(): Promise<void> {
+    signOutFailed = false;
+    try {
+      if (csrf) {
+        const response = await fetch("/portal/logout", {
+          method: "POST",
+          credentials: "same-origin",
+          body: new URLSearchParams({ csrf, request_id: decisionKey }),
+        });
+        // access_denied: no Portal login is left to end.
+        if (
+          !response.ok &&
+          (await response.json().catch(() => null))?.error !== "access_denied"
+        )
+          throw new Error("logout_failed");
+      }
+      window.location.replace(returnTo);
+    } catch {
+      signOutFailed = true;
+    }
+  }
+
   onMount(() => {
+    if (signingOut) {
+      void endPortalLogin();
+      return;
+    }
     if (enrollmentComplete) {
       sessionStorage.removeItem(codeKey);
       return;
@@ -430,9 +461,11 @@
   ><title
     >{device || deviceComplete || enrollment || enrollmentComplete
       ? "Connect a device"
-      : login
-        ? "Sign in"
-        : "Allow access"} · {brand}</title
+      : signingOut
+        ? "Sign out"
+        : login
+          ? "Sign in"
+          : "Allow access"} · {brand}</title
   ></svelte:head
 >
 
@@ -449,7 +482,19 @@
     />{/if}<span>{brand}</span>
 </header>
 
-{#if error}
+{#if signingOut}
+  <main class="card narrow center">
+    {#if signOutFailed}
+      <h1>We couldn't sign you out</h1>
+      <p class="muted" role="alert">Check your connection and try again.</p>
+      <button class="button block" type="button" onclick={endPortalLogin}
+        >Try again</button
+      >
+    {:else}
+      <h1>Signing you out…</h1>
+    {/if}
+  </main>
+{:else if error}
   <main class="card narrow center">
     <h1>This sign-in link has expired</h1>
     <p class="muted" role="alert">Go back to the app and sign in again.</p>

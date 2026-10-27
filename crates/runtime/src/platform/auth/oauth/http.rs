@@ -63,6 +63,16 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                             .as_object_mut()
                             .ok_or(super::super::AuthError::Unavailable)?;
                         document.remove("introspection_endpoint");
+                        // OpenID RP-initiated logout: an app sends the browser here
+                        // to end the Portal login, not just its own grant.
+                        document.insert(
+                            "end_session_endpoint".into(),
+                            format!(
+                                "{}/logout",
+                                engine.server.store().authority.settings.oauth_origin
+                            )
+                            .into(),
+                        );
                         document.insert(
                             "trellis".into(),
                             serde_json::json!({
@@ -144,6 +154,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             post(super::enrollment::portal_login),
         )
         .route("/login", get(login_page))
+        .route("/logout", get(logout_page))
         .route("/consent", get(consent_page))
         .route(
             "/portal-assets/{*path}",
@@ -565,6 +576,43 @@ async fn login_page(
         Ok(()) => super::assets::page(&engine, None),
         Err(code) => error(code),
     }
+}
+
+/// Serves the Portal's sign-out page for an app that wants the Portal login
+/// ended too. The page returns only to an origin the app registered a redirect
+/// on, so it never becomes an open redirector.
+async fn logout_page(
+    State(engine): State<Arc<OAuthEngine>>,
+    Query(pairs): Query<Vec<(String, String)>>,
+) -> Response {
+    let form = match fields(pairs) {
+        Ok(form) => form,
+        Err(response) => return error(response.error),
+    };
+    let (Some(client), Some(target)) =
+        (form.get("client_id"), form.get("post_logout_redirect_uri"))
+    else {
+        return error(ErrorCode::InvalidRequest);
+    };
+    let Ok(target) = url::Url::parse(target) else {
+        return error(ErrorCode::InvalidRequest);
+    };
+    let client = ClientId::new(client);
+    if let Err(response) = engine.prepare_client(&client).await {
+        return error(response.error);
+    }
+    let Ok(Some(client)) = engine.server.store().get_client(&client).await else {
+        return error(ErrorCode::InvalidClient);
+    };
+    let origin = target.origin();
+    if !origin.is_tuple()
+        || !client.redirect_uris.iter().any(|redirect| {
+            url::Url::parse(redirect).is_ok_and(|redirect| redirect.origin() == origin)
+        })
+    {
+        return error(ErrorCode::InvalidRequest);
+    }
+    super::assets::page(&engine, None)
 }
 
 async fn consent_page(

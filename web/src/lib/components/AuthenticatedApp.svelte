@@ -70,9 +70,17 @@
     redirectToLogin();
   });
 
+  // Signing out ends the Portal login too, so the next sign-in asks who is
+  // signing in: the Console is often used on shared computers.
   async function signOut(): Promise<void> {
     try {
-      await trellis.logout();
+      await trellis.logout({
+        endPortalLogin: true,
+        returnTo: new URL(
+          buildConsoleLoginUrl({ redirectTo: "/console/profile" }),
+          window.location.href,
+        ).href,
+      });
     } catch (error) {
       notifications.error(
         error instanceof Error
@@ -83,7 +91,6 @@
       return;
     }
     authority.clear();
-    window.location.href = buildConsoleLoginUrl({ redirectTo: "/profile" });
   }
 
   function finishAuthorityLoad(
