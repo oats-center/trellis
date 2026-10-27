@@ -37,7 +37,6 @@ const { values: args } = parseArgs({
   options: {
     output: { type: "string" },
     server: { type: "string" },
-    cli: { type: "string" },
     samples: { type: "string", default: "21" },
     calls: { type: "string", default: "1000" },
     sizes: { type: "string", default: "65536,1048576,8388608" },
@@ -96,7 +95,6 @@ const server = resolve(
     process.env.TRELLIS_TEST_SERVER_BIN ??
     `${root}/target/release/trellis-server`,
 );
-const cli = resolve(args.cli ?? `${root}/target/release/trellis`);
 const output = resolve(
   args.output ??
     `${root}/benchmarks/runtime/results/${new Date()
@@ -192,7 +190,6 @@ try {
       : await readFile(`${root}/.benchmark-overlay.diff`),
   );
   const hash = await exec("sha256sum", [server]);
-  const cliHash = await exec("sha256sum", [cli]);
   const cpuInfo = await readFile("/proc/cpuinfo", "utf8");
   const cgroupPath = (await readFile("/proc/self/cgroup", "utf8"))
     .split("\n")
@@ -218,7 +215,6 @@ try {
         sourceSnapshot: snapshotRevision !== undefined,
         trackedDiff: "source.diff",
         serverSha256: hash.stdout.split(" ")[0],
-        cliSha256: cliHash.stdout.split(" ")[0],
         startedAt: new Date().toISOString(),
         node: process.versions,
         host: hostname(),
@@ -357,7 +353,7 @@ try {
   runtime = await TrellisTestRuntime.start({
     keepWorkdir: Boolean(args["keep-workdir"]),
     trellis: {
-      source: { kind: "path", cli, server },
+      source: { kind: "path", server },
       mode: "all",
     },
     adminPassword: "benchmark-isolated-password",

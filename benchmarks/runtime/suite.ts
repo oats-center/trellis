@@ -201,8 +201,6 @@ if (!args["report-only"]) {
         [
           "--server",
           binaries.server,
-          "--cli",
-          binaries.cli,
           "--output",
           dir,
           "--samples",
