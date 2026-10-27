@@ -161,7 +161,7 @@ test("generated Rust finite success and declared error survive opening expiry wi
     },
     {
       authorization: {
-        contextLifetimeSeconds: 55,
+        contextLifetimeSeconds: 27,
         allowedClockSkewSeconds: 2,
       },
     },

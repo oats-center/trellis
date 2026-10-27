@@ -54,7 +54,7 @@ const TARGET_DEPLOYMENT = "tg-target";
 /** Short lifetimes so the case crosses real ordinary renewals quickly. */
 const runtimeOptions = {
   authorization: {
-    contextLifetimeSeconds: 55,
+    contextLifetimeSeconds: 27,
     allowedClockSkewSeconds: 2,
   },
 };

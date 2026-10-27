@@ -583,7 +583,7 @@ for (const closeWhileHeld of [false, true]) {
         },
         {
           authorization: {
-            contextLifetimeSeconds: 55,
+            contextLifetimeSeconds: 27,
             allowedClockSkewSeconds: 2,
           },
           interruptibleNativeProxy: true,

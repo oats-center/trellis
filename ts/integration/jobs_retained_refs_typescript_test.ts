@@ -152,7 +152,7 @@ test("retained Jobs refs get, wait and cancel after broker-confirmed original so
     },
     {
       authorization: {
-        contextLifetimeSeconds: 110,
+        contextLifetimeSeconds: 55,
       },
     },
   );

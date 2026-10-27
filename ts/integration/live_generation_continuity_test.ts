@@ -166,7 +166,7 @@ test("accepted Live survives growth while fresh intake uses the new attachment",
     {
       interruptibleNativeProxy: true,
       authorization: {
-        contextLifetimeSeconds: 60,
+        contextLifetimeSeconds: 30,
         allowedClockSkewSeconds: 2,
       },
     },

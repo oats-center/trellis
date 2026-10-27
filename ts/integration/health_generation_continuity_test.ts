@@ -197,7 +197,7 @@ test("service health survives generation reaping and stop fences sampling", asyn
     },
     {
       authorization: {
-        contextLifetimeSeconds: 60,
+        contextLifetimeSeconds: 30,
         allowedClockSkewSeconds: 2,
       },
     },

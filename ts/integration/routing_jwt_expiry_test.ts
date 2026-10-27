@@ -87,7 +87,7 @@ test("expired OAuth admission cannot open a fresh NATS attachment", async () => 
     },
     {
       authorization: {
-        contextLifetimeSeconds: 90,
+        contextLifetimeSeconds: 45,
         oauthAdmissionLifetimeSeconds: 18,
       },
     },

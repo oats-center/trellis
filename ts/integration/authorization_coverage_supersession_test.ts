@@ -118,7 +118,7 @@ test("a superseding capability publication does not wait for a stale mirror repl
     {
       interruptibleNativeProxy: true,
       authorization: {
-        contextLifetimeSeconds: 60,
+        contextLifetimeSeconds: 30,
         allowedClockSkewSeconds: 2,
       },
     },

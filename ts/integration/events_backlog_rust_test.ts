@@ -47,7 +47,7 @@ test("generated Rust durable Events retain publication-time authority after norm
     },
     {
       authorization: {
-        contextLifetimeSeconds: 55,
+        contextLifetimeSeconds: 27,
         allowedClockSkewSeconds: 2,
       },
     },

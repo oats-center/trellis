@@ -45,7 +45,7 @@ const TARGET_DEPLOYMENT = "receipt-takeover-target";
 const runtimeOptions = {
   interruptibleNativeProxy: true,
   authorization: {
-    contextLifetimeSeconds: 80,
+    contextLifetimeSeconds: 40,
   },
   trellis: { source: repoTrellisSource() },
 };

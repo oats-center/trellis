@@ -113,7 +113,7 @@ test("accepted and fresh Operations retain control and observation across capabi
     {
       authorization: {
         // Keep a positive scheduling window before the genuine native renewal.
-        contextLifetimeSeconds: 60,
+        contextLifetimeSeconds: 30,
         allowedClockSkewSeconds: 2,
       },
     },

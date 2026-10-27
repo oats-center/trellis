@@ -198,7 +198,7 @@ for (const grow of [false, true]) {
         {
           interruptibleNativeProxy: true,
           authorization: {
-            contextLifetimeSeconds: 60,
+            contextLifetimeSeconds: 30,
             allowedClockSkewSeconds: 2,
           },
         },

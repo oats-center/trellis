@@ -66,7 +66,7 @@ const TARGET_DEPLOYMENT = "cs-target";
 /** Short lifetimes so a reduction is picked up by a real refresh promptly. */
 const runtimeOptions = {
   authorization: {
-    contextLifetimeSeconds: 55,
+    contextLifetimeSeconds: 27,
     allowedClockSkewSeconds: 2,
   },
   // The private provisional stage is only observable through the native proxy's

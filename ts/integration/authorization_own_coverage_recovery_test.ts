@@ -619,7 +619,7 @@ test("a granted optional RPC waits for coverage rather than being classified as 
     {
       interruptibleNativeProxy: true,
       authorization: {
-        contextLifetimeSeconds: 60,
+        contextLifetimeSeconds: 30,
         allowedClockSkewSeconds: 2,
       },
     },

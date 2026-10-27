@@ -431,7 +431,7 @@ test("an in-flight upload transfer finishes with exact bytes across automatic gr
     },
     {
       authorization: {
-        contextLifetimeSeconds: 80,
+        contextLifetimeSeconds: 40,
       },
     },
   );
@@ -672,7 +672,7 @@ test("download endAck retires the last caller and provider generation leases", a
     },
     {
       authorization: {
-        contextLifetimeSeconds: 80,
+        contextLifetimeSeconds: 40,
       },
     },
   );

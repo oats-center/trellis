@@ -185,7 +185,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
     {
       interruptibleNativeProxy: true,
       authorization: {
-        contextLifetimeSeconds: 60,
+        contextLifetimeSeconds: 30,
         allowedClockSkewSeconds: 2,
       },
     },

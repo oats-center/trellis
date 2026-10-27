@@ -60,7 +60,7 @@ for (const expireAdmission of [false, true]) {
       expireAdmission
         ? {
             authorization: {
-              contextLifetimeSeconds: 55,
+              contextLifetimeSeconds: 27,
               allowedClockSkewSeconds: 2,
             },
           }

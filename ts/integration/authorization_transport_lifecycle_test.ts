@@ -93,7 +93,7 @@ test("a non-renewing native attachment cannot outlive its required capability gr
     },
     {
       authorization: {
-        contextLifetimeSeconds: 60,
+        contextLifetimeSeconds: 30,
         allowedClockSkewSeconds: 2,
       },
     },

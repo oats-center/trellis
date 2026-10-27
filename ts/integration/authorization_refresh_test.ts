@@ -37,7 +37,7 @@ import {
  * provider case also observes a changed context on its authenticated replies.
  */
 const shortAuthorizationLifetimes = {
-  contextLifetimeSeconds: 76,
+  contextLifetimeSeconds: 38,
 };
 
 const runtimeOptions = {
@@ -113,7 +113,7 @@ test("verified short-lived authority remains usable after delayed admission", as
       interruptibleNativeProxy: true,
       authorization: {
         ...shortAuthorizationLifetimes,
-        contextLifetimeSeconds: 61,
+        contextLifetimeSeconds: 30,
       },
     },
   );
