@@ -32,6 +32,11 @@ export type OperationRuntimeHandle<
   TUpdate = unknown,
 > = {
   id: string;
+  /**
+   * The complete reference a caller resumes this operation with, for example
+   * in a return URL the handler builds. Serialize it with `JSON.stringify`.
+   */
+  ref: OperationRefData;
   started(): AsyncResult<RuntimeOperationSnapshot, BaseError>;
   progress(value: TProgress): AsyncResult<RuntimeOperationSnapshot, BaseError>;
   /** Emits a transient update without changing the persisted snapshot. */

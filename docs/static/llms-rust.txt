@@ -188,6 +188,9 @@ ULID, and frozen input before sending, then use
 or `start_cancelled_on_deployment_with_invocation_id(deployment_id,
 invocation_id, &input)`.
 
+In a handler, `control.operation_ref()` is the operation's complete serialized
+reference; a caller restores it with the generated operation's `control(ref)`.
+
 Operation handlers can clone `control.cancellation()` and observe `Requested`,
 `OwnershipLost`, or `ServiceStopping` with `is_cancelled()`, `reason()`, or
 `cancelled().await`. They must stop and join owned child work, including

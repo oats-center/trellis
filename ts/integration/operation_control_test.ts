@@ -180,6 +180,58 @@ test("serialized references keep controls on their deployment when a canonical s
   });
 });
 
+test("a handler's own reference resumes its operation", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "self-reference-owner",
+      deployment: "self-reference-owner",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+      name: "self-reference-owner",
+    }).orThrow();
+    const client = await runtime.connectClient({
+      name: "self-reference-caller",
+      contract: apps.Caller.request,
+    });
+    try {
+      // Like a checkout return URL the handler builds mid-operation.
+      const { promise: returnUrl, resolve: publishReturnUrl } =
+        Promise.withResolvers<string>();
+      const { promise: checkout, resolve: finishCheckout } =
+        Promise.withResolvers<void>();
+      await service.handleWork(async ({ op }) => {
+        publishReturnUrl(
+          `https://app.example/return?ref=${encodeURIComponent(JSON.stringify(op.ref))}`,
+        );
+        await checkout;
+        return await op.complete({ value: "checked-out" }).orThrow();
+      });
+      // The caller keeps no reference of its own, only the URL.
+      const { id } = await client
+        .work({ value: "subscribe" })
+        .start()
+        .orThrow();
+      const ref = new URL(await returnUrl).searchParams.get("ref");
+      assert(ref);
+      const resumed = client.work.resume(JSON.parse(ref));
+      assert.equal(resumed.id, id);
+      finishCheckout();
+      assert.equal(
+        (await resumed.wait().orThrow()).output?.value,
+        "checked-out",
+      );
+    } finally {
+      await client.connection.close();
+      await service.stop();
+      await service.wait();
+    }
+  });
+});
+
 test("restarted provider recovers nonterminal work among retained terminal history", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({

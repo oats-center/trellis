@@ -108,6 +108,21 @@ for (const sharedDeployment of [false, true]) {
               (await nativeResult.wait().orThrow()).output?.value,
               "rust:node-to-rust",
             );
+            // A Rust handler's own reference resumes its operation.
+            const selfRef = await client
+              .work({ value: "self-ref" })
+              .start(undefined, {
+                invocationId: ulid(),
+                targetDeploymentId: nativeIdentity.deploymentId,
+              })
+              .orThrow();
+            const handlerRef = (await selfRef.wait().orThrow()).output?.value;
+            assert(handlerRef);
+            assert.equal(
+              (await client.work.resume(JSON.parse(handlerRef)).get().orThrow())
+                .output?.value,
+              handlerRef,
+            );
             await service.handleWork(async ({ input, signal, op }) => {
               if (signal.aborted) return;
               await op

@@ -798,7 +798,10 @@ Complete serialized references require `deploymentId`, checked against certified
 signed acceptance. SDKs route get/watch/wait/cancel/signals to that deployment,
 not an instance, and restore only complete references, never IDs alone. Replicas
 in that deployment retain executor leases and CAS fencing. References are
-routing metadata, not authority. Invocation deduplication is deployment-scoped:
+routing metadata, not authority. A handler can read its own complete reference,
+for example to put in a return URL it builds mid-operation; the caller resumes
+with it, and only a caller allowed to observe the operation can. Invocation
+deduplication is deployment-scoped:
 never automatically retry an uncertain canonical start into another deployment;
 no cross-deployment idempotency is promised.
 
@@ -1287,6 +1290,9 @@ before reading the current snapshot. Transfer-capable invocations return a
 transfer-aware result; consult its generated type rather than assuming the
 ordinary operation result shape.
 
+In a handler, `op.ref` is the operation's complete serialized reference; a
+caller restores it with `client.reportsGenerate.resume(ref)`.
+
 The generated `service.handleReportsGenerate.control(id)` returns a typed
 owner-fenced local handle; non-owners cannot borrow the fence. Use
 `service.handleReportsGenerate.reconcile(id)` from another replica to ask the
@@ -1667,6 +1673,9 @@ ULID, and frozen input before sending, then use
 `start_on_deployment_with_invocation_id(deployment_id, invocation_id, &input)`
 or `start_cancelled_on_deployment_with_invocation_id(deployment_id,
 invocation_id, &input)`.
+
+In a handler, `control.operation_ref()` is the operation's complete serialized
+reference; a caller restores it with the generated operation's `control(ref)`.
 
 Operation handlers can clone `control.cancellation()` and observe `Requested`,
 `OwnershipLost`, or `ServiceStopping` with `is_cancelled()`, `reason()`, or

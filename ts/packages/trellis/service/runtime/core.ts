@@ -22,6 +22,7 @@ import {
 import { ulid } from "ulid";
 import {
   controlSubject as operationControlSubject,
+  type OperationRefData,
   operationStartSubject,
 } from "../../operations.ts";
 import { base64urlEncode, utf8 } from "../../auth/utils.ts";
@@ -1953,6 +1954,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   ): OperationRuntimeHandle<unknown, unknown, BaseError> {
     return {
       id: runtime.id,
+      ref: operationRef(runtime),
       started: () =>
         this.#applyControlledOperationUpdate(runtime, fence, ctx, "running", {
           event: { type: "started" },
@@ -3350,6 +3352,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         ) => {
           return {
             id: runtime.id,
+            ref: operationRef(runtime),
             started: () =>
               this.#applyControlledOperationUpdate(
                 runtime,
@@ -4798,4 +4801,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
 
     await this.#stopPromise;
   }
+}
+
+/** The resumable reference of a running operation, as callers receive it. */
+function operationRef(runtime: RuntimeOperationRecord): OperationRefData {
+  return {
+    id: runtime.id,
+    service: runtime.service,
+    operation: runtime.operation,
+    deploymentId: runtime.deploymentId,
+  };
 }

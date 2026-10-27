@@ -20,6 +20,13 @@ and this project adheres to
 - Native OAuth device-code login polls once right away, so a code approved
   before polling starts completes without waiting a full polling interval.
 
+### Added
+
+- Operation handlers can read their own complete resume reference: `op.ref` in
+  TypeScript and `operation_ref()` in Rust. A handler can put it in a URL it
+  builds, such as a checkout return URL, so the caller resumes the operation
+  from any browser without having stored the reference.
+
 ### Fixed
 
 - `trellis-server` no longer exits with "runtime HTTP server did not drain

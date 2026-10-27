@@ -69,6 +69,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if operation.cancellation().is_cancelled() {
                 return Ok(());
             }
+            if input.value == "self-ref" {
+                operation
+                    .complete(Value {
+                        value: serde_json::to_string(operation.operation_ref())?,
+                        extra: Default::default(),
+                    })
+                    .await?;
+                return Ok(());
+            }
             if input.value.starts_with("handoff-") {
                 if input.value == "handoff-rust" {
                     operation

@@ -2951,6 +2951,12 @@ where
     D::Progress: Serialize + DeserializeOwned + Send + 'static,
     D::Output: Serialize + DeserializeOwned + Send + 'static,
 {
+    /// The complete reference a caller resumes this operation with, for example
+    /// in a return URL the handler builds.
+    pub fn operation_ref(&self) -> &OperationRefData {
+        &self.operation_ref
+    }
+
     /// Return a read-only observer that child work can clone and join before the handler returns.
     pub fn cancellation(&self) -> OperationCancellation {
         self.cancellation.clone()

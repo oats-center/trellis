@@ -792,7 +792,10 @@ Complete serialized references require `deploymentId`, checked against certified
 signed acceptance. SDKs route get/watch/wait/cancel/signals to that deployment,
 not an instance, and restore only complete references, never IDs alone. Replicas
 in that deployment retain executor leases and CAS fencing. References are
-routing metadata, not authority. Invocation deduplication is deployment-scoped:
+routing metadata, not authority. A handler can read its own complete reference,
+for example to put in a return URL it builds mid-operation; the caller resumes
+with it, and only a caller allowed to observe the operation can. Invocation
+deduplication is deployment-scoped:
 never automatically retry an uncertain canonical start into another deployment;
 no cross-deployment idempotency is promised.
 

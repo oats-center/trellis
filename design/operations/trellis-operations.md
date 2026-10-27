@@ -119,7 +119,8 @@ serialized Operation reference requires `id`, `service`, `operation`, and
 `deploymentId`. The accepting provider supplies the durable record's deployment;
 the SDK verifies it against the signed acceptance and certified provider identity.
 Get, watch, wait, cancel, and signals route internally to that reference's
-deployment. Restoration requires the complete reference, never just an ID.
+deployment. Restoration requires the complete reference, never just an ID. A handler reads
+its own complete reference, for example to embed in a return URL.
 This routing metadata is not authority: receivers still validate caller identity,
 capability, and durable operation ownership. Instance IDs do not identify durable
 owners; replicas within the owning deployment use the existing leases and CAS
