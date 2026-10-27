@@ -163,7 +163,9 @@ if [[ -n "${TRELLIS_TEST_SHARD:-}" ]]; then
   shard_args=("--test-shard=${TRELLIS_TEST_SHARD}")
   echo "Running TypeScript integration shard ${TRELLIS_TEST_SHARD} from $# test files"
 fi
+concurrency="${TRELLIS_TEST_CONCURRENCY:-$(( $(nproc) / 2 > 4 ? $(nproc) / 2 : 4 ))}"
+echo "Running up to $concurrency test files at once on $(nproc) cores"
 exec node --experimental-transform-types --test \
   --test-timeout=600000 \
-  --test-concurrency="${TRELLIS_TEST_CONCURRENCY:-$(( $(nproc) / 2 > 4 ? $(nproc) / 2 : 4 ))}" \
+  --test-concurrency="$concurrency" \
   "${shard_args[@]}" "$@"

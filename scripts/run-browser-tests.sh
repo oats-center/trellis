@@ -38,6 +38,8 @@ if [[ -n "${TRELLIS_TEST_SHARD:-}" ]]; then
   echo "Running browser shard ${TRELLIS_TEST_SHARD} from $# test files"
 fi
 cores="$(nproc)"
+concurrency="${TRELLIS_BROWSER_CONCURRENCY:-$(( cores / 4 > 4 ? cores / 4 : 4 ))}"
+echo "Running up to $concurrency browser test files at once on $cores cores"
 exec node --experimental-transform-types --test \
-  --test-concurrency="${TRELLIS_BROWSER_CONCURRENCY:-$(( cores / 4 > 4 ? cores / 4 : 4 ))}" \
+  --test-concurrency="$concurrency" \
   "${shard_args[@]}" "$@"

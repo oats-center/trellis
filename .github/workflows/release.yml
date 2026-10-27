@@ -87,7 +87,7 @@ jobs:
               - '!*.md'
 
   install:
-    name: Install generated artifacts and protocol WASM
+    name: Generate artifacts, protocol WASM and browser apps
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
@@ -186,27 +186,11 @@ jobs:
           path: ts/packages/trellis/auth/protocol_wasm
           retention-days: 1
 
-  portal:
-    name: Embedded browser apps
-    needs: [install]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Restore pipeline inputs
-        uses: ./.github/actions/check-inputs
-        with:
-          generated: true
-          protocol-wasm: true
-          node: true
-
       - name: Install Node workspace dependencies
         run: npm ci
 
-      # Consume the already-generated API artifacts and protocol WASM; do not
-      # re-run the developer wrapper that recompiles xtask and the WASM.
+      # The runtime binaries embed the Console and Portal, built from the
+      # artifacts generated above without recompiling xtask or the WASM.
       - name: Build embedded browser apps
         run: npm run browser:embedded
 
@@ -219,7 +203,7 @@ jobs:
 
   clippy:
     name: Rust lint
-    needs: [install, portal]
+    needs: [install]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 30
     steps:
@@ -274,7 +258,7 @@ jobs:
 
   build-fixtures:
     name: Build integration fixture binaries
-    needs: [install, portal]
+    needs: [install]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 30
     steps:
@@ -391,7 +375,7 @@ jobs:
 
   build:
     name: Build runtime binaries
-    needs: [install, portal]
+    needs: [install]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     steps:
@@ -471,7 +455,7 @@ jobs:
 
   rust:
     name: Rust tests
-    needs: [install, portal, build, build-fixtures]
+    needs: [install, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     env:
@@ -492,16 +476,14 @@ jobs:
       # Keep the build output, never stale generated files or downloads. A
       # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
       # target/ with the other runners on its host.
-      # The fixture build has just finished in this target/, so the tests reuse
-      # its dependencies rather than compiling them again.
       - name: Remove untracked files except target/
         if: runner.environment == 'self-hosted'
         run: |
           git clean -ffdx --exclude=/target/
           if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/build-fixtures"
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
             [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/build-fixtures" target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
           fi
 
       - name: Restore pipeline inputs
@@ -610,7 +592,7 @@ jobs:
 
   demos:
     name: Demo consumers
-    needs: [install, portal, build]
+    needs: [install, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
@@ -665,7 +647,7 @@ jobs:
 
   typescript-tests:
     name: TypeScript tests (${{ matrix.shard }}/8)
-    needs: [install, portal, build, build-fixtures]
+    needs: [install, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     # Run independent test files on separate hosted runners; every shard must pass.
@@ -716,7 +698,7 @@ jobs:
 
   testkit-tests:
     name: Rust testkit tests
-    needs: [install, portal, build, build-fixtures]
+    needs: [install, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     steps:
@@ -754,7 +736,7 @@ jobs:
 
   examples:
     name: Documented examples
-    needs: [install, portal, build]
+    needs: [install, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     steps:
@@ -789,7 +771,7 @@ jobs:
 
   browser:
     name: Browser tests (${{ matrix.shard }}/8)
-    needs: [install, portal, build]
+    needs: [install, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     # Every browser test file, split across hosted runners; every shard must
@@ -949,7 +931,7 @@ jobs:
 
   verify-images:
     name: Build verified ${{ matrix.image }} image
-    needs: [install, portal, build]
+    needs: [install, build]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
