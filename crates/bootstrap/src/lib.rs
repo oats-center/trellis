@@ -1,6 +1,6 @@
 //! Trellis bootstrap generation for NATS and runtime configuration.
 //!
-//! This crate produces bootstrap material for `trellis init config`: NATS server config,
+//! This crate produces bootstrap material for `trellis-server init`: NATS server config,
 //! generated NATS credentials, and Trellis runtime TOML config.
 mod constants;
 mod error;

@@ -400,8 +400,7 @@ from `@oatscenter/trellis-testkit` downloads the latest Trellis CLI/server
 release (newest stable, else newest prerelease; `TRELLIS_TEST_VERSION` selects
 another), verified against its published checksum, currently for Linux x86-64
 only; no installed Trellis executables or nsc are required. Use
-`trellis: { source: { kind: "path", cli, server } }`, or set both
-`TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, for a prebuilt pair, with
+`trellis: { source: { kind: "path", server } }`, or set `TRELLIS_TEST_SERVER_BIN`, for a prebuilt server, with
 no fallback. `restart()` retains data and identity and
 restarts the full host and broker. Stop first requests graceful host shutdown;
 on timeout or host exit, isolated process-group cleanup reclaims remaining owned

@@ -58,9 +58,9 @@ docker volume create "${bundle_volume}" >/dev/null
 docker volume create "${state_volume}" >/dev/null
 docker run --rm --user root --entrypoint chown -v "${state_volume}":/var/lib/trellis \
   "${image}" -R 10001:10001 /var/lib/trellis
-docker run --rm --user 10001:10001 --entrypoint trellis \
+docker run --rm --user 10001:10001 --entrypoint trellis-server \
   -v "${state_volume}":/var/lib/trellis "${image}" \
-  init config --out /var/lib/trellis/bundle
+  init --out /var/lib/trellis/bundle
 docker run --rm --user root --entrypoint cp \
   -v "${state_volume}":/from:ro -v "${bundle_volume}":/to "${image}" \
   -a /from/bundle/. /to/

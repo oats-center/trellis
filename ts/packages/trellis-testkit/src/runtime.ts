@@ -766,7 +766,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
         "--format",
         "json",
         "init",
-        "config",
         "--out",
         join(workdir, "config", "trellis"),
         "--trellis-port",
@@ -812,7 +811,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       ] as const)
         if (value !== undefined) initArgs.push(`--${flag}`, String(value));
       const output = await runBootstrapCommand(
-        native.cli,
+        native.server,
         initArgs,
         environment,
         timeouts.startupMs,
@@ -835,7 +834,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       const seeded = (options.firstAdmin ?? "seeded") === "seeded";
       if (seeded) {
         await runBootstrapCommand(
-          native.cli,
+          native.server,
           [
             "--format",
             "json",

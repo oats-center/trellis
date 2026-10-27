@@ -59,31 +59,6 @@ fn repo_root() -> &'static Path {
         .expect("trellis-rs crate should live under crates/trellis")
 }
 
-fn cli_command() -> Command {
-    let mut command = if let Some(binary) = std::env::var_os("TRELLIS_TEST_CLI_BIN") {
-        Command::new(binary)
-    } else {
-        let mut command = Command::new("cargo");
-        command.args([
-            "run",
-            "--quiet",
-            "--manifest-path",
-            repo_root()
-                .join("Cargo.toml")
-                .to_str()
-                .expect("UTF-8 Cargo path"),
-            "-p",
-            "trellis-cli",
-            "--bin",
-            "trellis",
-            "--",
-        ]);
-        command
-    };
-    command.current_dir(repo_root()).stdin(Stdio::null());
-    command
-}
-
 fn server_command(workdir: &Path) -> Command {
     let mut command = if let Some(binary) = std::env::var_os("TRELLIS_TEST_SERVER_BIN") {
         Command::new(binary)
@@ -312,14 +287,13 @@ async fn cli_server_managed_nats() {
     let managed_ports = [nats_port, monitor_port, websocket_port];
     let ports_arg = format!("{nats_port},{monitor_port},{websocket_port}");
 
-    // 1. `trellis init config` renders the bundle the managed server expects, with
+    // 1. `trellis-server init` renders the bundle the managed server expects, with
     //    deliberately bogus NATS URLs so the managed endpoint override is observable.
-    let init_output = cli_command()
+    let init_output = server_command(&workdir.0)
         .args([
             "--format",
             "json",
             "init",
-            "config",
             "--out",
             bundle.to_str().expect("UTF-8 bundle path"),
             "--trellis-port",
@@ -340,10 +314,10 @@ async fn cli_server_managed_nats() {
             &oauth_port.to_string(),
         ])
         .output()
-        .expect("run trellis init config");
+        .expect("run trellis-server init");
     assert!(
         init_output.status.success(),
-        "trellis init config failed: {}",
+        "trellis-server init failed: {}",
         String::from_utf8_lossy(&init_output.stderr)
     );
     let config_path = bundle.join("config.toml");
@@ -360,7 +334,8 @@ async fn cli_server_managed_nats() {
     fs::write(&config_path, &config_toml).expect("write configured path roots");
     let seeded = server_command(&workdir.0)
         .args([
-            "bootstrap-admin",
+            "init",
+            "admin",
             "--config",
             config_path.to_str().expect("UTF-8 config path"),
             "--username",
@@ -605,10 +580,9 @@ async fn cli_server_managed_nats() {
     // 3c. A managed bundle without an explicit nats.conf listener set is a
     //     configuration error, never a silent fallback to default ports.
     let broken_bundle = workdir.0.join("broken-bundle");
-    let broken_init = cli_command()
+    let broken_init = server_command(&workdir.0)
         .args([
             "init",
-            "config",
             "--out",
             broken_bundle.to_str().expect("UTF-8 broken bundle path"),
             "--trellis-port",
@@ -621,10 +595,10 @@ async fn cli_server_managed_nats() {
             &websocket_port.to_string(),
         ])
         .output()
-        .expect("run trellis init config for broken bundle");
+        .expect("run trellis-server init for broken bundle");
     assert!(
         broken_init.status.success(),
-        "trellis init config failed: {}",
+        "trellis-server init failed: {}",
         String::from_utf8_lossy(&broken_init.stderr)
     );
     fs::remove_file(broken_bundle.join("nats/nats.conf")).expect("remove authored nats.conf");
@@ -936,8 +910,8 @@ async fn cli_server_managed_nats() {
 fn server_rejects_reserved_oauth_origins_before_starting_listeners() {
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("reserved-origin");
-    let initialized = cli_command()
-        .args(["init", "config", "--out"])
+    let initialized = server_command(&workdir.0)
+        .args(["init", "--out"])
         .arg(&bundle)
         .output()
         .expect("initialize ordinary server bundle");
@@ -989,8 +963,8 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         ports.each_ref().map(trellis_local_nats::ReservedPort::port);
     // Ordinary initialization with no certificate options generates the
     // installation CA and every listener's certificate.
-    let initialized = cli_command()
-        .args(["--format", "json", "init", "config", "--out"])
+    let initialized = server_command(&workdir.0)
+        .args(["--format", "json", "init", "--out"])
         .arg(&bundle)
         .args([
             "--trellis-port",
@@ -1042,7 +1016,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     }
     fs::write(&config, configured).unwrap();
     let bootstrap = server_command(&workdir.0)
-        .args(["bootstrap-admin", "--config"])
+        .args(["init", "admin", "--config"])
         .arg(&config)
         .args([
             "--username",
@@ -1197,7 +1171,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
             .unwrap()
     };
     let before = served(client.clone()).await;
-    let renewed = cli_command()
+    let renewed = server_command(&workdir.0)
         .args(["tls", "renew", "--bundle"])
         .arg(&bundle)
         .output()

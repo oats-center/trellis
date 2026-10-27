@@ -8,12 +8,11 @@ test(
   "password-setup link admits a Node administrator and credentials survive restart",
   { timeout: 90_000 },
   async () => {
-    const cli = process.env.TRELLIS_TEST_CLI_BIN;
     const server = process.env.TRELLIS_TEST_SERVER_BIN;
-    assert(cli && server);
+    assert(server);
     const runtime = await TrellisTestRuntime.start({
       firstAdmin: "browser-flow",
-      trellis: { source: { kind: "path", cli, server } },
+      trellis: { source: { kind: "path", server } },
     });
     try {
       const before = await runtime.callAdminRpc("authUsersResolve", {});
@@ -30,14 +29,10 @@ test(
   "Node native administration survives a real runtime restart and cleans up its sandbox",
   { timeout: 90_000 },
   async () => {
-    const cli = process.env.TRELLIS_TEST_CLI_BIN;
     const server = process.env.TRELLIS_TEST_SERVER_BIN;
-    assert.ok(
-      cli && server,
-      "provide the matching producer-built CLI and server binaries",
-    );
+    assert.ok(server, "provide the producer-built server binary");
     const runtime = await TrellisTestRuntime.start({
-      trellis: { source: { kind: "path", cli, server } },
+      trellis: { source: { kind: "path", server } },
     });
     try {
       const username = `node-harness-${ulid()}`;

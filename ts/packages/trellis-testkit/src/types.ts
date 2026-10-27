@@ -37,7 +37,6 @@ export type TrellisNativeSource =
   | { kind: "release" }
   | {
       kind: "path";
-      cli: string;
       server: string;
     };
 

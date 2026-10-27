@@ -13,13 +13,11 @@ use std::{
     time::Duration,
 };
 
-/// Source of the production CLI and server.
+/// Source of the production server, which also sets up the installation.
 #[derive(Clone, Debug)]
 pub enum NativeSource {
-    /// Explicit executables, also usable offline. Invalid paths never trigger downloads.
+    /// An explicit executable, also usable offline. An invalid path never triggers a download.
     Path {
-        /// Production CLI executable.
-        cli: PathBuf,
         /// Production server executable.
         server: PathBuf,
     },
@@ -31,7 +29,6 @@ pub enum NativeSource {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Distribution {
-    pub cli: PathBuf,
     pub server: PathBuf,
     pub nats: PathBuf,
 }
@@ -148,26 +145,16 @@ pub(crate) async fn resolve(
 ) -> Result<Distribution, TrellisTestError> {
     let source = match source {
         Some(source) => source,
-        None => match (
-            std::env::var_os("TRELLIS_TEST_CLI_BIN"),
-            std::env::var_os("TRELLIS_TEST_SERVER_BIN"),
-        ) {
-            (Some(cli), Some(server)) => NativeSource::Path {
-                cli: cli.into(),
+        None => match std::env::var_os("TRELLIS_TEST_SERVER_BIN") {
+            Some(server) => NativeSource::Path {
                 server: server.into(),
             },
-            (None, None) => NativeSource::Release,
-            _ => {
-                return Err(error(
-                    TrellisTestErrorKind::MissingBinary,
-                    "set both TRELLIS_TEST_CLI_BIN and TRELLIS_TEST_SERVER_BIN",
-                ))
-            }
+            None => NativeSource::Release,
         },
     };
     let mut expected = None;
-    let (cli, server) = match source {
-        NativeSource::Path { cli, server } => (executable(&cli)?, executable(&server)?),
+    let server = match source {
+        NativeSource::Path { server } => executable(&server)?,
         NativeSource::Release => {
             let _ = target()?;
             let cache = cache_dir()?;
@@ -179,10 +166,10 @@ pub(crate) async fn resolve(
                 "apple-darwin"
             };
             let target = format!("{}-{platform}", std::env::consts::ARCH);
-            // Each binary is its own release asset with a published checksum.
+            // The binary is its own release asset with a published checksum.
             // Release assets are immutable, so a fetched checksum is kept.
-            let mut files = Vec::new();
-            for binary in ["trellis", "trellis-server"] {
+            let binary = "trellis-server";
+            let installed = {
                 let recorded = cache.join(format!("{binary}-{version}-{target}.sha256"));
                 let checksum = match std::fs::read_to_string(&recorded) {
                     Ok(checksum) => checksum,
@@ -199,23 +186,21 @@ pub(crate) async fn resolve(
                         published
                     }
                 };
-                let mut installed = install(
+                install(
                     &format!("{RELEASES}/v{version}/{binary}-{version}-{target}.tar.gz"),
                     checksum.trim(),
                     &[binary],
                     &cache,
                 )
-                .await?;
-                files.push(installed.remove(0));
-            }
+                .await?
+                .remove(0)
+            };
             expected = Some(version);
-            (files[0].clone(), files[1].clone())
+            installed
         }
     };
-    for (path, args, cli_output) in [
-        (&cli, vec!["--format", "json", "version"], true),
-        (&server, vec!["--version"], false),
-    ] {
+    {
+        let path = &server;
         let output = tokio::time::timeout(
             Duration::from_secs(10),
             tokio::process::Command::new(path)
@@ -223,7 +208,7 @@ pub(crate) async fn resolve(
                     "TOKIO_WORKER_THREADS",
                     std::env::var_os("TOKIO_WORKER_THREADS").unwrap_or_else(|| "2".into()),
                 )
-                .args(args)
+                .arg("--version")
                 .kill_on_drop(true)
                 .output(),
         )
@@ -235,17 +220,11 @@ pub(crate) async fn resolve(
             )
         })??;
         let text = String::from_utf8_lossy(&output.stdout);
-        let actual = if cli_output {
-            serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
-                .and_then(|value| value["version"].as_str().map(str::to_owned))
-                .unwrap_or_default()
-        } else {
-            text.trim()
-                .strip_prefix("trellis-server ")
-                .unwrap_or_default()
-                .to_owned()
-        };
+        let actual = text
+            .trim()
+            .strip_prefix("trellis-server ")
+            .unwrap_or_default()
+            .to_owned();
         let actual = actual.split('+').next().unwrap_or_default().to_owned();
         if !output.status.success() || actual.is_empty() {
             return Err(error(
@@ -262,12 +241,10 @@ pub(crate) async fn resolve(
                 ),
             ));
         }
-        if !cli_output {
-            static ANNOUNCED: std::sync::Once = std::sync::Once::new();
-            ANNOUNCED.call_once(|| {
-                eprintln!("trellis-testkit: testing against trellis-server {actual}");
-            });
-        }
+        static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+        ANNOUNCED.call_once(|| {
+            eprintln!("trellis-testkit: testing against trellis-server {actual}");
+        });
     }
     let nats = match nats {
         NatsSource::Path(path) => executable(path)?,
@@ -308,7 +285,7 @@ pub(crate) async fn resolve(
                 &[&format!("nats-server-v{}-{target}/nats-server", pin.version)], &cache_dir()?).await?.remove(0)
         }
     };
-    Ok(Distribution { cli, server, nats })
+    Ok(Distribution { server, nats })
 }
 
 fn target() -> Result<String, TrellisTestError> {

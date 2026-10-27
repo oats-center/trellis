@@ -12,9 +12,11 @@ workspace = true
 
 [dependencies]
 clap.workspace = true
+ipnet.workspace = true
 miette.workspace = true
 libc = "0.2.186"
 serde_json.workspace = true
+time.workspace = true
 url.workspace = true
 tokio.workspace = true
 tracing.workspace = true

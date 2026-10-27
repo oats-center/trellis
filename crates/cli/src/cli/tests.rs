@@ -149,62 +149,7 @@ fn parses_resources_and_events_pagination_commands() {
 }
 
 #[test]
-#[cfg(feature = "runtime")]
-fn parses_init_config_keys_upgrade_version_and_completion() {
-    let cli = Cli::parse_from([
-        "trellis",
-        "init",
-        "config",
-        "--out",
-        "./trellis",
-        "--name",
-        "Acme Trellis",
-        "--operator-name",
-        "LOCAL",
-        "--system-account",
-        "SYSTEM",
-        "--server-name",
-        "nats-local",
-    ]);
-    match cli.command {
-        TopLevelCommand::Init(command) => match command.command {
-            InitSubcommand::Config(args) => {
-                assert_eq!(args.out, std::path::PathBuf::from("./trellis"));
-                assert_eq!(args.name, "Acme Trellis");
-                assert_eq!(args.operator_name, "LOCAL");
-                assert_eq!(args.system_account, "SYSTEM");
-                assert_eq!(args.server_name.as_deref(), Some("nats-local"));
-            }
-            other => panic!("unexpected init command: {other:?}"),
-        },
-        other => panic!("unexpected top-level command: {other:?}"),
-    }
-
-    let cli = Cli::parse_from([
-        "trellis",
-        "init",
-        "config",
-        "--out",
-        "./trellis",
-        "--nats-port",
-        "4322",
-        "--nats-monitor-port",
-        "8322",
-        "--nats-ws-port",
-        "8180",
-    ]);
-    match cli.command {
-        TopLevelCommand::Init(command) => match command.command {
-            InitSubcommand::Config(args) => {
-                assert_eq!(args.nats_port, 4322);
-                assert_eq!(args.nats_monitor_port, 8322);
-                assert_eq!(args.nats_ws_port, 8180);
-            }
-            other => panic!("unexpected init command: {other:?}"),
-        },
-        other => panic!("unexpected top-level command: {other:?}"),
-    }
-
+fn parses_keys_upgrade_version_and_completion() {
     let cli = Cli::parse_from(["trellis", "keys", "new", "--seed", "abc"]);
     match cli.command {
         TopLevelCommand::Keys(command) => match command.command {

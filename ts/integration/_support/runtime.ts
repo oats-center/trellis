@@ -30,19 +30,15 @@ export function trellisRepoRuntimeOptions(
   };
 }
 
-/** Resolve the producer-built CLI/server pair without compiling or downloading in execution jobs. */
+/** Resolve the producer-built server without compiling or downloading in execution jobs. */
 export function repoTrellisSource(): {
   kind: "path";
-  cli: string;
   server: string;
 } {
-  const { TRELLIS_TEST_SERVER_BIN: server, TRELLIS_TEST_CLI_BIN: cli } = z
-    .object({
-      TRELLIS_TEST_SERVER_BIN: z.string().min(1),
-      TRELLIS_TEST_CLI_BIN: z.string().min(1),
-    })
+  const { TRELLIS_TEST_SERVER_BIN: server } = z
+    .object({ TRELLIS_TEST_SERVER_BIN: z.string().min(1) })
     .parse(process.env);
-  return { kind: "path", cli, server };
+  return { kind: "path", server };
 }
 
 /**

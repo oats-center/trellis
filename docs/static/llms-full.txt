@@ -193,14 +193,14 @@ are not consumer dependencies.
 
 #### TLS
 
-Trellis listeners use TLS by default. `trellis init config` generates a
+Trellis listeners use TLS by default. `trellis-server init` generates a
 name-constrained installation CA and short-lived certificates unless
 certificates are supplied (`--tls supplied`); plaintext exists only in explicit
 loopback development (`--tls loopback-development`). Clients trust a generated
 or other private CA only explicitly, after verifying its SHA-256 fingerprint
-(`trellis tls status`) out of band: never disable certificate verification and
+(`trellis-server tls status`) out of band: never disable certificate verification and
 never accept a CA from broker or metadata responses. Generated leaves expire
-after 90 days; `trellis tls renew --bundle <dir>` replaces them without changing
+after 90 days; `trellis-server tls renew --bundle <dir>` replaces them without changing
 client trust. Console and OAuth may run behind an HTTPS-terminating proxy with
 `--trusted-proxy`; native NATS always terminates its own TLS. Console and the
 isolated OAuth listener require HTTPS outside explicit loopback development; the
@@ -213,7 +213,7 @@ shows an untrusted CA's fingerprint and pins it once accepted (prompt, or
 `--ca-fingerprint <sha256>`); `--ca-certificate <ca path>` trusts a CA file
 directly. A pinned CA that changes is a hard error. Browsers trust the CA
 through the operating system or browser trust store. With generated TLS,
-`trellis init config` has the runtime relay NATS WebSockets at
+`trellis-server init` has the runtime relay NATS WebSockets at
 `wss://<console host>/nats` by default (`--nats-websocket direct` opts out), so
 one host and certificate cover both.
 
@@ -249,7 +249,7 @@ password, startup emits `adminAccountUrl`, a one-time password-setup link on the
 isolated OAuth origin that expires after five minutes; no default password
 exists. Startup flags `--admin-username`, `--admin-password`, and
 `--admin-password-stdin` configure fresh credentials. Explicit initialization
-uses `trellis init admin --config <path>` with `--username` (default `admin`),
+uses `trellis-server init admin --config <path>` with `--username` (default `admin`),
 optional `--password`, or `--password-stdin`. Until password setup, each startup
 prints a fresh link and invalidates prior links. After setup, restarts preserve
 credentials and print no link. Explicit `--reset-admin` issues a replacement
@@ -1062,7 +1062,7 @@ its published checksum, report the server version they test against, serve
 generated installation TLS, and trust each runtime's CA explicitly; never
 disable verification. `TRELLIS_TEST_CACHE_DIR` shares verified artifacts only;
 credentials, broker state, databases, PID files, and logs stay sandbox-local.
-Set both `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN` (or the
+Set `TRELLIS_TEST_SERVER_BIN` (or the
 language's path source) for explicit binaries with no download fallback.
 Distinct-user tests use ordinary accounts and explicit grants: one app
 registration supports independent real OAuth logins for multiple users, user
@@ -1480,8 +1480,7 @@ from `@oatscenter/trellis-testkit` downloads the latest Trellis CLI/server
 release (newest stable, else newest prerelease; `TRELLIS_TEST_VERSION` selects
 another), verified against its published checksum, currently for Linux x86-64
 only; no installed Trellis executables or nsc are required. Use
-`trellis: { source: { kind: "path", cli, server } }`, or set both
-`TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, for a prebuilt pair, with
+`trellis: { source: { kind: "path", server } }`, or set `TRELLIS_TEST_SERVER_BIN`, for a prebuilt server, with
 no fallback. `restart()` retains data and identity and
 restarts the full host and broker. Stop first requests graceful host shutdown;
 on timeout or host exit, isolated process-group cleanup reclaims remaining owned
@@ -1793,8 +1792,7 @@ builder downloads the latest Trellis CLI/server release (or
 NATS archive (network on first use); the verified cache
 (`TRELLIS_TEST_CACHE_DIR`, otherwise the platform cache) lets later runtimes
 boot offline. Set `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
-`NatsSource::PathLookup` for a prebuilt broker. Set both `TRELLIS_TEST_CLI_BIN`
-and `TRELLIS_TEST_SERVER_BIN`, or use `NativeSource::Path { cli, server }`, for
+`NatsSource::PathLookup` for a prebuilt broker. Set `TRELLIS_TEST_SERVER_BIN`, or use `NativeSource::Path { server }`, for
 explicit binaries with no fallback downloads. `trust_roots()` and
 `https_client_builder()` trust the runtime's generated CA. `restart()` restarts
 only the server, retaining its broker and durable installation;

@@ -23,9 +23,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
   `TRELLIS_TEST_VERSION`, and checks it against the checksum published with that
   release (currently Linux x86-64). Each run reports the `trellis-server`
   version it tests against. Network is needed on first use; the latest release
-  is rechecked hourly and cached archives work offline. Set both
-  `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, or use
-  `.native(NativeSource::Path { cli, server })`, for explicit binaries; invalid
+  is rechecked hourly and cached archives work offline. Set `TRELLIS_TEST_SERVER_BIN`, or use
+  `.native(NativeSource::Path { server })`, for explicit binaries; invalid
   explicit paths never trigger a download.
 - A real NATS executable. By default the bare builder uses the verified pinned
   download (network required on first use). To use a prebuilt broker, set
@@ -34,8 +33,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 `TRELLIS_TEST_CACHE_DIR` selects the owned private executable/archive cache;
 otherwise the platform cache is used. Only verified artifacts are shared, never
-credentials, broker state, databases, or logs. `trellis init config` and
-`trellis init admin --password-stdin` perform normal installation/bootstrap;
+credentials, broker state, databases, or logs. `trellis-server init` and
+`trellis-server init admin --password-stdin` perform normal installation/bootstrap;
 the administrator password is not passed in process arguments.
 Hosts default to two Tokio worker threads, matching the Node testkit;
 an explicit `TOKIO_WORKER_THREADS` setting is retained.

@@ -143,7 +143,7 @@ impl GeneratedTlsNotice {
             "Trellis is serving certificates from its generated installation CA. \
             Browsers and native clients must trust that CA explicitly; verify the \
             fingerprint out of band before trusting it, and renew leaf \
-            certificates before they expire with `trellis tls renew`."
+            certificates before they expire with `trellis-server tls renew`."
         );
     }
 }

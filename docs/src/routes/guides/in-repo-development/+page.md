@@ -19,7 +19,7 @@ This guide covers day-to-day development from a Trellis source checkout. It uses
 Generate local NATS, Trellis config, credentials, keys, and data directories:
 
 ```sh
-trellis init config --out ~/trellis
+trellis-server init --out ~/trellis
 ```
 
 `trellis-server` derives its managed NATS config from that bundle, so no

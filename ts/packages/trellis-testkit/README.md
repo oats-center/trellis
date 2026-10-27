@@ -89,11 +89,11 @@ Omitting `user` retains the seeded-admin convenience; service seeds are unchange
 The package downloads the latest production CLI and server release (the newest
 stable release, or the newest prerelease before the first stable one), verified
 against the checksum published with it; `TRELLIS_TEST_VERSION` selects another
-release, and both `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN` select
+release, and `TRELLIS_TEST_SERVER_BIN` selects
 local binaries. It reports the `trellis-server` version it tests against.
 Automatic acquisition currently supports
 Linux x86-64 only; other native targets are not staged for release. Production
-`trellis init config` generates configuration and accounts;
+`trellis-server init` generates configuration and accounts;
 `trellis-server --local-nats` owns the real broker. There is no `nsc` dependency
 or TypeScript configuration renderer. `TRELLIS_TEST_CACHE_DIR` shares only
 verified native binaries; each runtime has private configuration, credentials,
@@ -101,7 +101,7 @@ SQLite data, broker state, process files, and logs.
 
 `start()` seeds an administrator by default. Use `firstAdmin: "browser-flow"`
 only when exercising first-admin browser setup. To use producer-built binaries
-without downloading, pass `trellis: { source: { kind: "path", cli, server } }`;
+without downloading, pass `trellis: { source: { kind: "path", server } }`;
 both files must match the package version. There is no fallback for invalid
 paths.
 
@@ -134,7 +134,7 @@ plane.
 ## Repository Live Suite
 
 See [integration setup](../../../integration/README.md) for generation, binary
-builds, and `TRELLIS_TEST_SERVER_BIN` / `TRELLIS_TEST_CLI_BIN` environment
+builds, and `TRELLIS_TEST_SERVER_BIN` environment
 variables. Run all or a native filter:
 
 ```sh

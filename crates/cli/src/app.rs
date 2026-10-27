@@ -20,7 +20,6 @@ use trellis_rs::telemetry::{
 };
 
 mod auth;
-mod bootstrap;
 pub mod deploy;
 mod events;
 mod native_auth;
@@ -91,8 +90,6 @@ async fn dispatch(command: TopLevelCommand, format: OutputFormat) -> miette::Res
         TopLevelCommand::Dev(command) => deploy::run_dev(format, command).await?,
         TopLevelCommand::Resources(command) => resources::run(format, command).await?,
         TopLevelCommand::Events(command) => events::run(command).await?,
-        TopLevelCommand::Init(command) => bootstrap::init(format, command).await?,
-        TopLevelCommand::Tls(command) => bootstrap::tls(format, command)?,
         TopLevelCommand::Keys(command) => match command.command {
             KeysSubcommand::New(args) => runtime::keygen_command(format, &args)?,
         },

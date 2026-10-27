@@ -263,7 +263,7 @@ hosts (plus loopback names for the co-located broker), and issues short-lived
 serverAuth leaves for the runtime and broker. Leaves carry their names only in
 SANs. The CA private key is written beside the bundle (`<out>-tls-ca/` by
 default), never inside it, so no runtime or broker role that mounts the bundle
-can mint certificates. `trellis tls renew` reissues leaves with the same names
+can mint certificates. `trellis-server tls renew` reissues leaves with the same names
 and fresh keys from that CA; clients that trust the CA need no change. The
 runtime reloads its leaf automatically; the broker reloads on its ordinary
 reload signal.

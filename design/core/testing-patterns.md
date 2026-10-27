@@ -79,7 +79,7 @@ native-IDL fixture; they do not construct substitute API descriptors. Prebuilt
 server and CLI paths are passed through the explicit native path source by the
 repository integration helper. The released TypeScript testkit defaults to the
 latest published CLI/server release, verified against its published checksum;
-production `init config`
+production `trellis-server init`
 owns bootstrap and `trellis-server --local-nats` owns the broker. The private
 sandbox retains config, data, state, and identity across full-host restart; only
 verified immutable binaries are shared. Seeded admin is the default, with an

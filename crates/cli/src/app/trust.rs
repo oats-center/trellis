@@ -29,13 +29,13 @@ pub(super) async fn discover(
 ) -> miette::Result<(authlib::NativeOAuthServer, Vec<PathBuf>)> {
     if let Some(path) = ca_certificate {
         let path = path.canonicalize().into_diagnostic()?;
-        let ca = trellis_runtime::tls::inspect_certificate(&path).into_diagnostic()?;
+        let ca = pem_fingerprint(&path)?;
         if !output::is_json(format) {
             output::print_warning(&format!(
                 "trusting only the CA {} for this deployment; confirm its SHA-256 \
                 fingerprint matches the one its operator published:\n  {}",
                 path.display(),
-                ca.sha256_fingerprint
+                ca
             ));
         }
         let roots = vec![path];
@@ -75,9 +75,7 @@ pub(super) async fn discover(
         return match authlib::discover_native_oauth(trellis_url, &roots).await {
             Ok(server) => Ok((server, roots)),
             Err(error) => {
-                let pinned = trellis_runtime::tls::inspect_certificate(&pin)
-                    .into_diagnostic()?
-                    .sha256_fingerprint;
+                let pinned = pem_fingerprint(&pin)?;
                 match offered_ca(&host, port)
                     .await
                     .map(|offered| fingerprint(&offered))
@@ -191,6 +189,14 @@ pub(super) async fn discover(
 }
 
 /// SHA-256 fingerprint in the colon-separated form operators are shown.
+/// The SHA-256 fingerprint of the first certificate in a PEM file.
+fn pem_fingerprint(path: &Path) -> miette::Result<String> {
+    use rustls::pki_types::pem::PemObject as _;
+    let certificate = CertificateDer::from_pem_file(path)
+        .map_err(|error| miette!("{} is not a PEM certificate: {error}", path.display()))?;
+    Ok(fingerprint(&certificate))
+}
+
 fn fingerprint(certificate: &CertificateDer<'_>) -> String {
     Sha256::digest(certificate.as_ref())
         .iter()

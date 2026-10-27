@@ -12,6 +12,7 @@ use trellis_runtime::{
     NatsEndpointOverride, RuntimeConfig, RuntimeMode, RuntimeOptions, RuntimePathDefaults,
 };
 
+mod setup;
 mod telemetry;
 
 #[derive(Debug, Parser)]
@@ -27,14 +28,36 @@ struct Args {
     /// Runtime mode to run: all, platform, jobs, health, or events.
     #[arg(default_value = "all")]
     mode: RuntimeMode,
+    /// How `init` and `tls` report their result.
+    #[arg(long, value_enum, default_value_t, global = true)]
+    format: setup::OutputFormat,
 }
 
 #[derive(Debug, Subcommand)]
 enum OperationArgs {
     /// Validate configuration and runtime dependencies, then exit.
     Check(CheckArgs),
-    /// Seed the first local administrator, then exit.
-    BootstrapAdmin(BootstrapAdminArgs),
+    /// Set up this host: generate its configuration bundle, or with `admin`
+    /// seed the first administrator.
+    Init(Box<InitArgs>),
+    /// Manage Trellis-generated TLS certificates.
+    #[command(subcommand)]
+    Tls(setup::TlsSubcommand),
+}
+
+#[derive(Debug, clap::Args)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+struct InitArgs {
+    #[command(subcommand)]
+    admin: Option<InitSubcommand>,
+    #[command(flatten)]
+    config: setup::InitConfigArgs,
+}
+
+#[derive(Debug, Subcommand)]
+enum InitSubcommand {
+    /// Seed the first local administrator in the configured storage, then exit.
+    Admin(BootstrapAdminArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -103,10 +126,12 @@ struct ServerArgs {
     /// WebSocket NATS endpoint advertised to clients only; repeatable.
     #[arg(long, global = true)]
     advertise_nats_websocket: Vec<String>,
-    /// User-profile local development preset: PATH NATS and verbose attached logs.
+    /// Local development: the user profile, with this server managing NATS from
+    /// PATH. Logging is unchanged; add --verbose for detail.
     #[arg(short, long, global = true)]
     dev: bool,
-    /// Enable detailed server logs and mirror managed NATS output to the terminal.
+    /// Show Trellis debug logs and copy managed NATS output to the terminal.
+    /// Libraries stay at info unless RUST_LOG says otherwise.
     #[arg(short, long, global = true)]
     verbose: bool,
 }
@@ -140,6 +165,7 @@ struct StartupPolicy {
     verbose: bool,
     reset_admin: bool,
     bootstrap_admin: Option<BootstrapAdminArgs>,
+    format: setup::OutputFormat,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -182,9 +208,12 @@ impl StartupPolicy {
                 }
                 (Operation::Check, args.server, check.mode, false, None)
             }
-            Some(OperationArgs::BootstrapAdmin(bootstrap)) => {
+            Some(OperationArgs::Init(init)) => {
+                let Some(InitSubcommand::Admin(bootstrap)) = init.admin else {
+                    return Err(miette!("trellis-server init runs without a server policy"));
+                };
                 if args.reset_admin {
-                    return Err(miette!("--reset-admin is not valid with bootstrap-admin"));
+                    return Err(miette!("--reset-admin is not valid with init admin"));
                 }
                 (
                     Operation::BootstrapAdmin,
@@ -193,6 +222,9 @@ impl StartupPolicy {
                     false,
                     Some(bootstrap),
                 )
+            }
+            Some(OperationArgs::Tls(_)) => {
+                return Err(miette!("trellis-server tls runs without a server policy"));
             }
             None => (
                 Operation::Run,
@@ -208,7 +240,7 @@ impl StartupPolicy {
             return Err(miette!(
                 "--admin-username, --admin-password, and --admin-password-stdin are \
                 startup options; use --username and --password options with \
-                bootstrap-admin"
+                init admin"
             ));
         }
         let paths = if server.system {
@@ -294,9 +326,10 @@ impl StartupPolicy {
                 .then_some(server.advertise_nats_server),
             advertised_websocket: (!server.advertise_nats_websocket.is_empty())
                 .then_some(server.advertise_nats_websocket),
-            verbose: server.verbose || server.dev,
+            verbose: server.verbose,
             reset_admin,
             bootstrap_admin,
+            format: args.format,
         })
     }
 }
@@ -495,9 +528,16 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         )
         .await
         .into_diagnostic()?;
-        println!("seeded local administrator '{principal}'");
-        if let Some(url) = account_url {
-            println!("{}", serde_json::json!({"adminAccountUrl":url}));
+        if policy.format == setup::OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({"principalId":principal,"adminAccountUrl":account_url})
+            );
+        } else {
+            println!("initialized administrator '{principal}'");
+            if let Some(url) = account_url {
+                println!("adminAccountUrl={url}");
+            }
         }
         return Ok(());
     }
@@ -679,6 +719,21 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
 #[tokio::main]
 async fn main() -> miette::Result<()> {
     let args = Args::parse();
+    // Generating a bundle and renewing certificates need no server policy.
+    match args.operation {
+        Some(OperationArgs::Init(ref init)) if init.admin.is_none() => {
+            return setup::init_config(args.format, &init.config);
+        }
+        Some(OperationArgs::Tls(command)) => {
+            let config = match args.server.config {
+                Some(config) => Some(config),
+                None if args.server.system => Some(ServerPaths::system(None)?.config),
+                None => Some(ServerPaths::user(None, |name| env::var_os(name))?.config),
+            };
+            return setup::tls(args.format, command, config);
+        }
+        _ => {}
+    }
     if args.server.isolated_process_group {
         #[cfg(unix)]
         {
@@ -776,13 +831,14 @@ mod tests {
         );
         let dev = policy(&["trellis-server", "--dev"]);
         assert_eq!(dev.nats, NatsPolicy::Local(NatsBinarySource::PathLookup));
-        assert!(dev.verbose);
+        // Development mode is about how the server runs, not how much it logs.
+        assert!(!dev.verbose);
         let dev_download = policy(&["trellis-server", "--dev", "--nats-download"]);
         assert_eq!(
             dev_download.nats,
             NatsPolicy::Local(NatsBinarySource::DownloadPinned)
         );
-        assert!(dev_download.verbose);
+        assert!(!dev_download.verbose);
     }
 
     #[test]
@@ -964,7 +1020,7 @@ kind = "sqlite"
         );
         let dev = policy(&["trellis-server", "check", "--dev"]);
         assert_eq!(dev.nats, NatsPolicy::Local(NatsBinarySource::PathLookup));
-        assert!(dev.verbose);
+        assert!(!dev.verbose);
     }
 
     #[cfg(unix)]

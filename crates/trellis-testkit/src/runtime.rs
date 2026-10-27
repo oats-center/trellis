@@ -303,9 +303,9 @@ async fn start_once(
             .config_dir();
         let config_path = config_dir.join("config.toml");
         std::fs::create_dir_all(workdir.join("logs"))?;
-        let mut command = Command::new(&distribution.cli);
+        let mut command = Command::new(&distribution.server);
         command
-            .args(["init", "config", "--out"])
+            .args(["init", "--out"])
             .arg(&config_dir)
             .args([
                 "--trellis-port",
@@ -381,7 +381,7 @@ async fn start_once(
             })?,
         )?;
         crate::process::run(
-            Command::new(&distribution.cli)
+            Command::new(&distribution.server)
                 .args(["init", "admin", "--config"])
                 .arg(&config_path)
                 .args(["--username", username, "--password-stdin"]),

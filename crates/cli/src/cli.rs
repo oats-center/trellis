@@ -4,7 +4,6 @@ use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 mod auth;
-mod bootstrap;
 mod deploy;
 mod events;
 mod resources;
@@ -12,7 +11,6 @@ mod self_cmd;
 
 pub use auth::*;
 #[cfg(feature = "runtime")]
-pub use bootstrap::*;
 pub use deploy::*;
 pub use events::*;
 pub use resources::*;
@@ -92,12 +90,6 @@ pub enum TopLevelCommand {
     /// Query and administer Events.
     #[command(subcommand)]
     Events(EventsCommand),
-    /// Run one-time initialization workflows.
-    #[cfg(feature = "runtime")]
-    Init(InitCommand),
-    /// Manage Trellis-generated TLS certificates.
-    #[cfg(feature = "runtime")]
-    Tls(TlsCommand),
     /// Generate or derive Trellis keys.
     Keys(KeysCommand),
     /// Check for or install CLI updates.
@@ -135,10 +127,6 @@ impl TopLevelCommand {
             Self::Dev(_) => "dev",
             Self::Resources(_) => "resources",
             Self::Events(_) => "events",
-            #[cfg(feature = "runtime")]
-            Self::Init(_) => "init",
-            #[cfg(feature = "runtime")]
-            Self::Tls(_) => "tls",
             Self::Keys(_) => "keys",
             Self::Upgrade(_) => "upgrade",
             Self::Version | Self::Completion { .. } => return None,

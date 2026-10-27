@@ -8,6 +8,22 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Host setup moved from `trellis` to `trellis-server`: `trellis-server init`
+  generates the configuration bundle (was `trellis init config`),
+  `trellis-server init admin` seeds the first administrator (was `trellis init
+admin` and `trellis-server bootstrap-admin`), and `trellis-server tls
+renew|status` manage generated certificates. They accept `--format json`.
+  `trellis` no longer carries the server runtime.
+- `trellis-server --dev` no longer changes logging. `--verbose` shows Trellis's
+  own debug logs and copies managed NATS output to the terminal; other
+  libraries stay at info unless `RUST_LOG` says otherwise. Previously `--dev`
+  printed thousands of NATS client debug lines a minute.
+- The testkits need only the server: set `TRELLIS_TEST_SERVER_BIN` or pass
+  `{ kind: "path", server }` / `NativeSource::Path { server }`; they no longer
+  download or check the CLI.
+
 ### Fixed
 
 - Local users can no longer be turned off while no active company sign-in

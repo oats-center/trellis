@@ -25,9 +25,6 @@ test(
     // The bundle lives inside the temporary directory, so its generated CA
     // directory (a sibling of the bundle) is removed with it.
     const bundle = join(directory, "bundle");
-    const cli = resolve(
-      process.env.TRELLIS_TEST_CLI_BIN ?? "target/release/trellis",
-    );
     const serverBinary = resolve(
       process.env.TRELLIS_TEST_SERVER_BIN ?? "target/release/trellis-server",
     );
@@ -67,9 +64,8 @@ test(
       await exited;
     };
     try {
-      await exec(cli, [
+      await exec(serverBinary, [
         "init",
-        "config",
         "--out",
         bundle,
         "--trellis-port",
@@ -107,7 +103,8 @@ test(
       const username = "enforcement-admin";
       const password = "enforcement-fixture-password";
       await exec(serverBinary, [
-        "bootstrap-admin",
+        "init",
+        "admin",
         "--config",
         configPath,
         "--username",

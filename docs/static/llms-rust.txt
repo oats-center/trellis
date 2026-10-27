@@ -286,8 +286,7 @@ builder downloads the latest Trellis CLI/server release (or
 NATS archive (network on first use); the verified cache
 (`TRELLIS_TEST_CACHE_DIR`, otherwise the platform cache) lets later runtimes
 boot offline. Set `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
-`NatsSource::PathLookup` for a prebuilt broker. Set both `TRELLIS_TEST_CLI_BIN`
-and `TRELLIS_TEST_SERVER_BIN`, or use `NativeSource::Path { cli, server }`, for
+`NatsSource::PathLookup` for a prebuilt broker. Set `TRELLIS_TEST_SERVER_BIN`, or use `NativeSource::Path { server }`, for
 explicit binaries with no fallback downloads. `trust_roots()` and
 `https_client_builder()` trust the runtime's generated CA. `restart()` restarts
 only the server, retaining its broker and durable installation;

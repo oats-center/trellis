@@ -35,10 +35,8 @@ try {
     `
 import assert from "node:assert/strict";
 import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
-const cli = process.env.TRELLIS_TEST_CLI_BIN;
 const server = process.env.TRELLIS_TEST_SERVER_BIN;
-assert.equal(Boolean(cli), Boolean(server));
-await using runtime = await TrellisTestRuntime.start(cli && server ? { trellis: { source: { kind: "path", cli, server } } } : {});
+await using runtime = await TrellisTestRuntime.start(server ? { trellis: { source: { kind: "path", server } } } : {});
 const username = ${JSON.stringify(`package-consumer-${ulid().toLowerCase()}`)};
 const created = await runtime.callAdminRpc("authUsersCreate", { username, displayName: username, idempotencyKey: ${JSON.stringify(ulid())} });
 const reset = await runtime.callAdminRpc("authUsersPasswordResetCreate", { userId: created.user.principalId, idempotencyKey: ${JSON.stringify(ulid())} });

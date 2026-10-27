@@ -9,11 +9,10 @@ publish = false
 
 [features]
 default = ["runtime"]
-runtime = ["dep:trellis-bootstrap", "dep:trellis-runtime", "dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:rusqlite", "dep:self_update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
+runtime = ["dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:rusqlite", "dep:self_update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
 
 [dependencies]
 clap.workspace = true
-ipnet.workspace = true
 clap_complete.workspace = true
 comfy-table.workspace = true
 owo-colors.workspace = true
@@ -30,8 +29,6 @@ trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.12" }
 trellis-codegen-ts = { path = "../codegen-ts", version = "0.100.0-rc.12" }
 trellis-idl = { path = "../idl", version = "0.100.0-rc.12" }
 trellis-protocol = { path = "../protocol", version = "0.100.0-rc.9" }
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.12", optional = true }
-trellis-runtime = { path = "../runtime", version = "0.100.0-rc.12", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 miette.workspace = true

@@ -45,9 +45,9 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let cli = std::env::var_os("TRELLIS_TEST_CLI_BIN")
+    let server = std::env::var_os("TRELLIS_TEST_SERVER_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| workspace.join("target/release/trellis"));
+        .unwrap_or_else(|| workspace.join("target/release/trellis-server"));
     // Held until the listeners are up; see ReservedPort.
     let reserved: Vec<_> = (0..5)
         .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
@@ -56,8 +56,8 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     let origin = format!("http://127.0.0.1:{}", ports[0]);
     let oauth_origin = format!("http://127.0.0.1:{}", ports[1]);
     let config_dir = root.join("config");
-    let generated = tokio::process::Command::new(cli)
-        .args(["init", "config", "--out"])
+    let generated = tokio::process::Command::new(&server)
+        .args(["init", "--out"])
         .arg(&config_dir)
         .args([
             "--trellis-port",

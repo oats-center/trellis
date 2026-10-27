@@ -132,8 +132,7 @@ the newest prerelease before the first stable one), verified against the
 checksum published with it; set `TRELLIS_TEST_VERSION` to test another release.
 It reports the `trellis-server` version it tests against. Production commands generate configuration and own managed NATS;
 each test has private state and a seeded administrator. For prebuilt local artifacts,
-pass `trellis: { source: { kind: "path", cli, server } }`, or set both
-`TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`. `restart()` retains data and identity while restarting the full host
+pass `trellis: { source: { kind: "path", server } }`, or set `TRELLIS_TEST_SERVER_BIN`. `restart()` retains data and identity while restarting the full host
 and broker; `firstAdmin: "browser-flow"` opts into the first-admin browser flow.
 
 Each test runtime serves Trellis-generated TLS, as a default installation does.
@@ -188,7 +187,7 @@ the latest released `trellis` and `trellis-server` (or `TRELLIS_TEST_VERSION`),
 verified against the release's published checksum, and runs
 production processes, choosing loopback ports automatically. It does not link
 the server or compiler into downstream tests. Source CI supplies both executables
-through `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`; no private Cargo
+through `TRELLIS_TEST_SERVER_BIN`; no private Cargo
 patches are required by published consumers. Service registration reviews
 implemented and consumed APIs before deployment creation, including optional
 consumption, so consumers can be registered before their providers.

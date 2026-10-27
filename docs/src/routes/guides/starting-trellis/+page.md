@@ -31,7 +31,7 @@ authority is persisted in runtime state rather than startup trust files.
 ## 1. Generate the local bundle
 
 ```sh
-trellis init config --out ~/trellis
+trellis-server init --out ~/trellis
 ```
 
 This creates a movable init bundle under `~/trellis`:
@@ -103,11 +103,11 @@ reaches it over loopback.
 - **TypeScript services and devices:** start Node with
   `NODE_EXTRA_CA_CERTS=/path/to/ca.crt`.
 
-`trellis tls status --config ~/trellis/config.toml` shows the fingerprint and
+`trellis-server tls status --config ~/trellis/config.toml` shows the fingerprint and
 expiry. Leaf certificates last 90 days; renew them well before expiry:
 
 ```sh
-trellis tls renew --bundle ~/trellis
+trellis-server tls renew --bundle ~/trellis
 ```
 
 Renewal keeps the CA, so nothing has to be trusted again. The runtime picks up
@@ -160,7 +160,9 @@ Keep this terminal running. To explicitly download the pinned release instead,
 run `trellis-server --dev --nats-download --config "$HOME/trellis/config.toml"`.
 The server renders an effective NATS config from `nats/nats.conf` and
 `nats/jwt.conf`, keeps mutable state under the XDG state root, writes NATS output
-to the XDG state log directory, and stops NATS when `trellis-server` exits. NATS
+to the XDG state log directory, and stops NATS when `trellis-server` exits. The
+terminal shows Trellis's own logs at info level; add `--verbose` for Trellis
+debug logs and NATS output there too. NATS
 listens on the ports written to `nats/nats.conf`, which the `--nats-port`,
 `--nats-monitor-port`, and `--nats-ws-port` flags choose (defaults below):
 
@@ -170,7 +172,7 @@ listens on the ports written to `nats/nats.conf`, which the `--nats-port`,
 | `8080` | Browser websocket clients  |
 | `8222` | NATS monitoring and health |
 
-`trellis init config` rejects port `0`, duplicate listener ports, and a NATS
+`trellis-server init` rejects port `0`, duplicate listener ports, and a NATS
 listener that collides with `--trellis-port`. Managed startup reads those three
 listeners from `nats/nats.conf` and fails when they are missing, duplicated, or
 supplied as unsupported expressions; it never substitutes defaults.
@@ -226,12 +228,12 @@ they cannot overwrite an existing administrator's credentials. You can also
 initialize explicitly before starting the server:
 
 ```sh
-trellis init admin --config /path/to/config.toml --username operator
+trellis-server init admin --config /path/to/config.toml --username operator
 # Or read the initial password from stdin:
-trellis init admin --config /path/to/config.toml --password-stdin
+trellis-server init admin --config /path/to/config.toml --password-stdin
 ```
 
-For a server using `--system`, pass `--system` to `trellis init admin` too.
+For a server using `--system`, pass `--system` to `trellis-server init admin` too.
 Offline initialization and server startup share host-profile path resolution;
 explicit `[paths]` overrides remain authoritative.
 
@@ -261,7 +263,7 @@ not a shared installation identity or a substitute for initialization:
 
 ```sh
 install -d -m 0700 "$HOME/trellis" "$HOME/trellis/data"
-trellis init config --out "$HOME/trellis/config" \
+trellis-server init --out "$HOME/trellis/config" \
   --public-origin https://console.example.com \
   --nats-server-url tls://nats.example.com:4222 \
   --nats-websocket-url wss://nats.example.com

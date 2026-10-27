@@ -23,8 +23,8 @@ const githubReleases = z.array(
 );
 const latestRecord = z.object({ version: z.string(), checkedMs: z.number() });
 
-/** Native production commands resolved by the testkit. */
-export type TrellisNativeDistribution = { cli: string; server: string };
+/** The production server the testkit runs, which also sets up its installation. */
+export type TrellisNativeDistribution = { server: string };
 
 /** Maps supported host platforms to targets published by the native Check jobs. */
 export function nativeTarget(os: string, arch: string): string {
@@ -124,40 +124,31 @@ async function verifyDistribution(
   paths: TrellisNativeDistribution,
   expected?: string,
 ): Promise<TrellisNativeDistribution> {
-  const canonical = { cli: "", server: "" };
-  for (const name of ["cli", "server"] as const) {
-    const info = await fs.lstat(paths[name]);
-    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o111) === 0)
-      throw new Error(`Trellis ${name} must be a regular executable file`);
-    canonical[name] = await fs.realpath(paths[name]);
-    const output = await execFileAsync(
-      canonical[name],
-      name === "cli" ? ["--format", "json", "version"] : ["--version"],
-      { encoding: "utf8" },
-    ).catch(() => {
-      throw new Error(`Cannot verify Trellis ${name} version`);
-    });
-    const text = output.stdout.trim();
-    // Build provenance is not part of SemVer identity; checkout builds add
-    // +local.<commit>.dirty.
-    const version = (
-      name === "cli"
-        ? z.object({ version: z.string() }).parse(JSON.parse(text)).version
-        : text.replace(/^trellis-server /, "")
-    ).split("+", 1)[0];
-    if (expected && version !== expected) {
-      throw new Error(
-        `Trellis ${name} reports ${version}, not release ${expected}`,
-      );
-    }
-    if (name === "server" && !announced) {
-      announced = true;
-      console.error(
-        `trellis-testkit: testing against trellis-server ${version}`,
-      );
-    }
+  const info = await fs.lstat(paths.server);
+  if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o111) === 0)
+    throw new Error("Trellis server must be a regular executable file");
+  const server = await fs.realpath(paths.server);
+  const output = await execFileAsync(server, ["--version"], {
+    encoding: "utf8",
+  }).catch(() => {
+    throw new Error("Cannot verify Trellis server version");
+  });
+  // Build provenance is not part of SemVer identity; checkout builds add
+  // +local.<commit>.dirty.
+  const version = output.stdout
+    .trim()
+    .replace(/^trellis-server /, "")
+    .split("+", 1)[0];
+  if (expected && version !== expected) {
+    throw new Error(
+      `Trellis server reports ${version}, not release ${expected}`,
+    );
   }
-  return canonical;
+  if (!announced) {
+    announced = true;
+    console.error(`trellis-testkit: testing against trellis-server ${version}`);
+  }
+  return { server };
 }
 
 /**
@@ -209,23 +200,16 @@ async function releaseVersion(cache: string): Promise<string> {
 }
 
 /**
- * Resolve production binaries: the requested source, else both
- * `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, else a release download.
- * Explicit paths never fall back to downloads.
+ * Resolve the production server: the requested source, else
+ * `TRELLIS_TEST_SERVER_BIN`, else a release download. Explicit paths never
+ * fall back to downloads.
  */
 export async function resolveNativeDistribution(
   requested?: TrellisNativeSource,
 ): Promise<TrellisNativeDistribution> {
-  const cli = process.env.TRELLIS_TEST_CLI_BIN;
   const server = process.env.TRELLIS_TEST_SERVER_BIN;
-  if (!requested && Boolean(cli) !== Boolean(server)) {
-    throw new Error(
-      "Set both TRELLIS_TEST_CLI_BIN and TRELLIS_TEST_SERVER_BIN",
-    );
-  }
   const source: TrellisNativeSource =
-    requested ??
-    (cli && server ? { kind: "path", cli, server } : { kind: "release" });
+    requested ?? (server ? { kind: "path", server } : { kind: "release" });
   if (source.kind === "path") return await verifyDistribution(source);
   const target = nativeTarget(process.platform, process.arch);
   const cache = trellisTestCacheDir();
@@ -235,7 +219,6 @@ export async function resolveNativeDistribution(
   await fs.mkdir(parent, { recursive: true, mode: 0o700 });
   return await verifyDistribution(
     {
-      cli: await installExecutable(parent, version, target, "trellis"),
       server: await installExecutable(
         parent,
         version,
