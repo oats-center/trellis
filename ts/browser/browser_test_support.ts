@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdir } from "node:fs/promises";
+import { createInterface } from "node:readline";
+import { promisify } from "node:util";
 import { ulid } from "ulid";
 import { type BrowserContext, chromium, type Page } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
@@ -88,9 +93,7 @@ export async function confirmAdministrationIfAsked(
     exact: true,
   });
   if (await visibleWithin(allow, timeoutMs)) {
-    await page
-      .getByRole("checkbox", { name: /I understand this app/ })
-      .check();
+    await page.getByRole("checkbox", { name: /I understand this app/ }).check();
     await allow.click();
   }
 }
@@ -298,4 +301,78 @@ export async function createOrdinaryUserWithPassword(
     });
   }
   return principalId;
+}
+
+/**
+ * Signs the producer-built CLI in as the runtime administrator through the
+ * device flow, allowing everything it asks for, and returns its configuration
+ * directory (inside the runtime workdir) and a runner for its JSON commands.
+ */
+export async function loginCliAsAdministrator(
+  runtime: TrellisTestRuntime,
+  page: Page,
+): Promise<{
+  directory: string;
+  run: (...args: string[]) => Promise<any>;
+}> {
+  const binary = process.env.TRELLIS_TEST_CLI_BIN;
+  assert.ok(binary, "supply a producer-built CLI");
+  const directory = join(runtime.workdir, `cli-${ulid()}`);
+  await mkdir(directory);
+  const env = { ...process.env, XDG_CONFIG_HOME: directory };
+  const login = spawn(
+    binary,
+    [
+      "--format",
+      "json",
+      "login",
+      runtime.oauthIssuer,
+      "--ca-certificate",
+      runtime.caCertificate,
+    ],
+    { env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const exited = once(login, "exit");
+  const progress = createInterface({ input: login.stderr });
+  try {
+    let challenge: { loginUrl: string; userCode: string } | undefined;
+    for await (const line of progress) {
+      if (line.startsWith("{")) {
+        challenge = JSON.parse(line);
+        break;
+      }
+    }
+    assert.ok(challenge);
+    await page.goto(challenge.loginUrl);
+    await page.getByLabel("Code", { exact: true }).fill(challenge.userCode);
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await page
+      .getByLabel("Username", { exact: true })
+      .fill(runtime.adminUsername);
+    await page
+      .getByLabel("Password", { exact: true })
+      .fill(runtime.adminPassword);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page
+      .getByRole("heading", { name: /wants to use your account/ })
+      .waitFor();
+    for (const checkbox of await page.getByRole("checkbox").all())
+      if (await checkbox.isEnabled()) await checkbox.check();
+    await page.getByRole("button", { name: "Allow", exact: true }).click();
+    await confirmAdministrationIfAsked(page);
+    assert.equal((await exited)[0], 0);
+  } finally {
+    login.kill("SIGTERM");
+    progress.close();
+  }
+  const run = async (...args: string[]) =>
+    JSON.parse(
+      (
+        await promisify(execFile)(binary, ["--format", "json", ...args], {
+          env,
+          timeout: 15_000,
+        })
+      ).stdout,
+    );
+  return { directory, run };
 }

@@ -20,6 +20,7 @@ async fn dex_login(
     mut next: url::Url,
     issuer: &url::Url,
     callback: &url::Url,
+    login: &str,
 ) -> url::Url {
     for _ in 0..16 {
         assert_eq!(next.origin(), issuer.origin());
@@ -50,7 +51,7 @@ async fn dex_login(
                         continue;
                     }
                     let value = match name {
-                        "login" => "admin@example.com",
+                        "login" => login,
                         "password" => "password",
                         _ => input.value().attr("value").unwrap_or(""),
                     };
@@ -116,6 +117,7 @@ async fn upstream_oidc_verifies_nonce_and_maps_real_signed_group_claims_into_tre
     let config = certificate.directory.path().join("dex.yaml");
     let database = certificate.directory.path().join("dex.sqlite");
     let user_id = id();
+    let newcomer_id = id();
     let secret = "upstream-integration-client-secret";
     std::fs::write(
         &config,
@@ -143,6 +145,10 @@ staticPasswords:
   userID: {user_id}
   hash: '$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W'
   groups: [team-a]
+- email: newcomer@example.com
+  username: newcomer
+  userID: {newcomer_id}
+  hash: '$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W'
 "#,
             database.display(),
             certificate.certificate.display(),
@@ -295,7 +301,14 @@ staticPasswords:
         )
         .set_pkce_challenge(challenge)
         .url();
-    let result = dex_login(&http, authorization, &issuer, &callback).await;
+    let result = dex_login(
+        &http,
+        authorization,
+        &issuer,
+        &callback,
+        "admin@example.com",
+    )
+    .await;
     let code = result
         .query_pairs()
         .find(|(name, _)| name == "code")
@@ -611,7 +624,14 @@ staticPasswords:
         assert!(authorization
             .query_pairs()
             .any(|(name, value)| name == "prompt" && value == "login"));
-        let callback_url = dex_login(&http, authorization, &issuer, &callback).await;
+        let callback_url = dex_login(
+            &http,
+            authorization,
+            &issuer,
+            &callback,
+            "admin@example.com",
+        )
+        .await;
         let completed = http.get(callback_url.clone()).send().await.unwrap();
         if success {
             assert!(completed.status().is_success());
@@ -907,7 +927,7 @@ staticPasswords:
         .collect::<Vec<_>>();
     wrong_nonce.set_query(None);
     wrong_nonce.query_pairs_mut().extend_pairs(pairs);
-    let rejected = dex_login(&http, wrong_nonce, &issuer, &callback).await;
+    let rejected = dex_login(&http, wrong_nonce, &issuer, &callback, "admin@example.com").await;
     let rejected = http.get(rejected).send().await.unwrap();
     assert_eq!(
         rejected.json::<serde_json::Value>().await.unwrap()["error"],
@@ -917,7 +937,14 @@ staticPasswords:
     let upstream_authorize =
         url::Url::parse(retry.headers()["location"].to_str().unwrap()).unwrap();
     userinfo_mode.store(2, std::sync::atomic::Ordering::SeqCst);
-    let verified = dex_login(&http, upstream_authorize, &issuer, &callback).await;
+    let verified = dex_login(
+        &http,
+        upstream_authorize,
+        &issuer,
+        &callback,
+        "admin@example.com",
+    )
+    .await;
     let logged_in = http.get(verified).send().await.unwrap();
     assert_eq!(logged_in.status(), reqwest::StatusCode::SEE_OTHER);
     let profile = authority
@@ -1001,7 +1028,14 @@ staticPasswords:
         .unwrap();
     assert_eq!(started.status(), reqwest::StatusCode::SEE_OTHER);
     let upstream_review = url::Url::parse(started.headers()["location"].to_str().unwrap()).unwrap();
-    let returned = dex_login(&review_http, upstream_review, &issuer, &callback).await;
+    let returned = dex_login(
+        &review_http,
+        upstream_review,
+        &issuer,
+        &callback,
+        "admin@example.com",
+    )
+    .await;
     let finished = review_http.get(returned).send().await.unwrap();
     assert_eq!(finished.status(), reqwest::StatusCode::SEE_OTHER);
     assert_eq!(
@@ -1165,6 +1199,160 @@ staticPasswords:
         .unwrap(),
         deleted
     );
+    // A first company sign-in from someone nobody linked creates their account
+    // only once the app they are signing in to allows it.
+    // Each attempt is a fresh browser, so none reuses an earlier Portal login.
+    let company_sign_in = || async {
+        let newcomer_http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .cookie_provider(Arc::new(reqwest::cookie::Jar::default()))
+            .add_root_certificate(
+                reqwest::Certificate::from_pem(certificate.pem.as_bytes()).unwrap(),
+            )
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let key = EcdsaP256Key::generate("newcomer");
+        let mut authorize = url::Url::parse(&format!("{origin}/authorize")).unwrap();
+        authorize.query_pairs_mut().extend_pairs([
+            ("client_id", "native-client".to_owned()),
+            ("redirect_uri", "http://127.0.0.1:9123/callback".into()),
+            ("response_type", "code".into()),
+            ("state", id()),
+            (
+                "code_challenge",
+                URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+            ),
+            ("code_challenge_method", "S256".into()),
+            ("dpop_jkt", key.public_jwk().thumbprint()),
+            (
+                "trellis_dpop_jwk",
+                serde_json::to_string(&key.public_jwk()).unwrap(),
+            ),
+            (
+                "authorization_details",
+                serde_json::json!([{"type":"trellis_capabilities","required":[f.write],"optional":[]}])
+                    .to_string(),
+            ),
+        ]);
+        let initial = newcomer_http.get(authorize).send().await.unwrap();
+        let transaction = url::Url::parse(&origin)
+            .unwrap()
+            .join(initial.headers()["location"].to_str().unwrap())
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "transaction")
+            .unwrap()
+            .1
+            .into_owned();
+        let begin = newcomer_http
+            .get(format!(
+                "{origin}/portal/oidc/{provider}/begin?transaction={transaction}"
+            ))
+            .send()
+            .await
+            .unwrap();
+        let upstream = url::Url::parse(begin.headers()["location"].to_str().unwrap()).unwrap();
+        let returned = dex_login(
+            &newcomer_http,
+            upstream,
+            &issuer,
+            &callback,
+            "newcomer@example.com",
+        )
+        .await;
+        (
+            transaction,
+            newcomer_http.get(returned).send().await.unwrap(),
+        )
+    };
+    let newcomer = || {
+        authority
+            .read(|connection| {
+                use rusqlite::OptionalExtension as _;
+                Ok(connection
+                    .query_row(
+                        "SELECT principal_id FROM auth_provider_identities \
+                        WHERE provider=?1 AND principal_id!=?2",
+                        rusqlite::params![provider, f.principal],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?)
+            })
+            .unwrap()
+    };
+    let (_, refused) = company_sign_in().await;
+    assert_eq!(
+        refused.json::<serde_json::Value>().await.unwrap()["error"],
+        "access_denied"
+    );
+    assert_eq!(newcomer(), None);
+    let revision = authority
+        .transaction(|connection| {
+            super::super::rpc_credentials::read_client(connection, "native-client")
+        })
+        .unwrap()
+        .revision;
+    let allow = trellis_runtime_apis::__types::trellis::AuthOAuthClientSignUpUpdateRequest {
+        client_id: "native-client".to_string().into(),
+        sign_up: trellis_runtime_apis::__types::trellis::AuthOAuthClientSignUp {
+            password: false,
+            providers: true,
+            extra: Default::default(),
+        },
+        expected_revision: revision,
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    super::super::rpc_credentials::update_client_sign_up(
+        &authority,
+        &mutation(&f.admin, &allow),
+        &allow,
+        now,
+    )
+    .unwrap();
+    let (transaction, signed_up) = company_sign_in().await;
+    assert_eq!(
+        signed_up.headers()["location"].to_str().unwrap(),
+        format!("/consent?transaction={transaction}")
+    );
+    let created = newcomer().expect("the company sign-in created a linked account");
+    let profile = authority
+        .transaction(|connection| {
+            super::super::rpc_users::read_user(&authority, connection, &created, true)
+        })
+        .unwrap();
+    assert_eq!(profile.email.as_deref(), Some("newcomer@example.com"));
+    // Signing in again finds the same account rather than creating another.
+    let (_, again) = company_sign_in().await;
+    assert!(again.status().is_redirection());
+    assert_eq!(newcomer(), Some(created));
+    // With company sign-in turned off for the installation, even a linked
+    // identity no longer signs in, and the Portal offers no provider.
+    let off = trellis_runtime_apis::__types::trellis::AuthSignInSettingsUpdateRequest {
+        local_users: true,
+        local_sign_up: false,
+        providers: false,
+        expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1u64.into()),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    super::super::sign_in::update(&authority, &mutation(&f.admin, &off), &off, now).unwrap();
+    let (_, refused) = company_sign_in().await;
+    assert_eq!(
+        refused.json::<serde_json::Value>().await.unwrap()["error"],
+        "access_denied"
+    );
+    let offered: serde_json::Value = http
+        .get(format!("{origin}/portal/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(offered["providers"], serde_json::json!([]));
     shutdown.cancel();
     server.await.unwrap().unwrap();
     proxy_handle.graceful_shutdown(Some(Duration::from_secs(3)));

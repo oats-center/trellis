@@ -650,6 +650,90 @@ pub(super) fn read_user(
     })
 }
 
+/// Insert an active user and give it the roles an administrator marked for new
+/// users. Marking them was the policy decision, so this needs no role rights.
+pub(super) fn insert_user(
+    connection: &Connection,
+    principal: &str,
+    now: i64,
+) -> Result<(), AuthError> {
+    connection.execute(
+        "INSERT INTO auth_principals(principal_id,kind,state,created_at,\
+        updated_at,version) \
+        VALUES(?1,'user','active',?2,?2,1)",
+        params![principal, now],
+    )?;
+    let defaults = connection
+        .prepare(
+            "SELECT role_id,identity_generation FROM auth_roles \
+            WHERE state='active' AND assign_to_new_users=1",
+        )?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (role, generation) in defaults {
+        connection.execute(
+            "INSERT INTO auth_role_assignments(assignment_id,principal_id,role_id,\
+            role_generation,revision,expires_at,created_at) \
+            VALUES(?1,?2,?3,?4,1,NULL,?5)",
+            params![id(), principal, role, generation, now],
+        )?;
+    }
+    Ok(())
+}
+
+/// Reserve a new user's normalized username, store its password hash when it
+/// has one, and write its profile. A taken username is a conflict.
+pub(super) fn insert_local_account(
+    connection: &Connection,
+    principal: &str,
+    username: &str,
+    hash: Option<&str>,
+    profile: &AuthUserProfileUpdateRequest,
+    now: i64,
+) -> Result<(), AuthError> {
+    let taken: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 \
+        FROM auth_local_credentials \
+        WHERE normalized_username=?1 \
+        UNION ALL SELECT 1 FROM auth_provider_identities \
+        WHERE provider='local' \
+        AND provider_subject=?1)",
+        [username],
+        |row| row.get(0),
+    )?;
+    if taken {
+        return Err(AuthError::Conflict);
+    }
+    let profile = AuthUserProfileUpdateRequest {
+        expected_revision: AuthRevision(
+            super::profiles::read(connection, principal)?
+                .revision
+                .into(),
+        ),
+        ..profile.clone()
+    };
+    super::profiles::write(connection, principal, Some(&profile), now)?;
+    // The local identity reserves the normalized username even before an
+    // account establishes a password. It is not itself a sign-in credential.
+    connection.execute(
+        "INSERT INTO auth_provider_identities(identity_id,provider,provider_subject,\
+        principal_id,linked_at,last_seen_at) \
+        VALUES(?1,'local',?2,?3,?4,?4)",
+        params![id(), username, principal, now],
+    )?;
+    if let Some(hash) = hash {
+        connection.execute(
+            "INSERT INTO auth_local_credentials(principal_id,normalized_username,\
+            password_hash,hash_profile,password_changed_at,updated_at,version) \
+            VALUES(?1,?2,?3,1,?4,?4,1)",
+            params![principal, username, hash, now],
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn create_user(
     store: &SqliteAuthorizationStore,
     identity: &Mutation,
@@ -690,79 +774,28 @@ pub(super) fn create_user(
                 &identity.actor,
                 Administration::ManagePrincipals,
             )?;
-            let taken: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 \
-                FROM auth_local_credentials \
-                WHERE normalized_username=?1 \
-                UNION ALL SELECT 1 FROM auth_provider_identities \
-                WHERE provider='local' \
-                AND provider_subject=?1)",
-                [&username],
-                |row| row.get(0),
-            )?;
-            if taken {
-                return Err(AuthError::Conflict);
-            }
             let principal = id();
-            connection.execute(
-                "INSERT INTO auth_principals(principal_id,kind,state,created_at,\
-                updated_at,version) \
-                VALUES(?1,'user','active',?2,?2,1)",
-                params![principal, now],
+            insert_user(connection, &principal, now)?;
+            insert_local_account(
+                connection,
+                &principal,
+                &username,
+                hash.as_deref(),
+                &AuthUserProfileUpdateRequest {
+                    display_name: Some(input.display_name.clone()),
+                    given_name: input.given_name.clone(),
+                    family_name: input.family_name.clone(),
+                    email: input.email.clone(),
+                    avatar_override_url: None,
+                    clear_email: None,
+                    clear_avatar_override: None,
+                    gravatar_enabled: None,
+                    expected_revision: AuthRevision(1u64.into()),
+                    idempotency_key: input.idempotency_key.clone(),
+                    extra: Default::default(),
+                },
+                now,
             )?;
-            let patch = AuthUserProfileUpdateRequest {
-                display_name: Some(input.display_name.clone()),
-                given_name: input.given_name.clone(),
-                family_name: input.family_name.clone(),
-                email: input.email.clone(),
-                avatar_override_url: None,
-                clear_email: None,
-                clear_avatar_override: None,
-                gravatar_enabled: None,
-                expected_revision: AuthRevision(
-                    super::profiles::read(connection, &principal)?
-                        .revision
-                        .into(),
-                ),
-                idempotency_key: input.idempotency_key.clone(),
-                extra: Default::default(),
-            };
-            super::profiles::write(connection, &principal, Some(&patch), now)?;
-            // The local identity reserves the normalized username even before an
-            // account establishes a password. It is not itself a sign-in credential.
-            connection.execute(
-                "INSERT INTO auth_provider_identities(identity_id,provider,provider_subject,\
-                principal_id,linked_at,last_seen_at) \
-                VALUES(?1,'local',?2,?3,?4,?4)",
-                params![id(), username, principal, now],
-            )?;
-            if let Some(hash) = &hash {
-                connection.execute(
-                    "INSERT INTO auth_local_credentials(principal_id,normalized_username,\
-                    password_hash,hash_profile,password_changed_at,updated_at,version) \
-                    VALUES(?1,?2,?3,1,?4,?4,1)",
-                    params![principal, username, hash, now],
-                )?;
-            }
-            // The roles an administrator marked for new users. Marking them was
-            // the policy decision, so creating the user needs no role rights.
-            let defaults = connection
-                .prepare(
-                    "SELECT role_id,identity_generation FROM auth_roles \
-                    WHERE state='active' AND assign_to_new_users=1",
-                )?
-                .query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (role, generation) in defaults {
-                connection.execute(
-                    "INSERT INTO auth_role_assignments(assignment_id,principal_id,role_id,\
-                    role_generation,revision,expires_at,created_at) \
-                    VALUES(?1,?2,?3,?4,1,NULL,?5)",
-                    params![id(), principal, role, generation, now],
-                )?;
-            }
             Ok(AuthUserGetResponse {
                 user: read_user(store, connection, &principal, true)?,
                 extra: Default::default(),

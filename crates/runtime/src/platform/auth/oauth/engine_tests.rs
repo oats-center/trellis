@@ -15,7 +15,12 @@ use oauth_as::{
     jwt::{EcdsaP256Key, JwsSigner},
     server::TokenRequest,
 };
+use rusqlite::OptionalExtension;
 use sha2::{Digest as _, Sha256};
+use trellis_runtime_apis::__types::trellis::{
+    AuthOAuthClientSignUp, AuthOAuthClientSignUpUpdateRequest, AuthRevision, AuthRolePutRequest,
+    AuthSignInSettingsUpdateRequest,
+};
 
 #[tokio::test]
 async fn managed_client_updates_select_flows_and_redeem_native_and_browser_codes() {
@@ -2390,4 +2395,237 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
     .is_err());
     stop.send(()).unwrap();
     host.await.unwrap();
+}
+
+#[tokio::test]
+async fn people_create_their_own_account_only_where_the_installation_and_the_app_allow_it() {
+    for installation in [false, true] {
+        let mut f = fixture();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let members = AuthRolePutRequest {
+            role_id: None,
+            expected_revision: 0.into(),
+            title: "Members".to_string().into(),
+            description: String::new().into(),
+            capability_ids: vec![f.read.clone().into()],
+            idempotency_key: id().into(),
+            assign_to_new_users: true,
+            extra: Default::default(),
+        };
+        super::super::rpc_policy::put_role(&f.store, &mutation(&f.admin, &members), &members, now)
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+        if installation {
+            let open = AuthSignInSettingsUpdateRequest {
+                local_users: true,
+                local_sign_up: true,
+                providers: true,
+                expected_revision: AuthRevision(1u64.into()),
+                idempotency_key: id().into(),
+                extra: Default::default(),
+            };
+            super::super::sign_in::update(&f.store, &mutation(&f.admin, &open), &open, now)
+                .unwrap();
+        }
+        let authority = f.store;
+        let engine = Arc::new(
+            OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
+        );
+        let router = super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]);
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let host = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        // Each attempt signs in to the registered app from a fresh Portal session.
+        let begin = || async {
+            let key = EcdsaP256Key::generate("sign-up");
+            let mut authorize = url::Url::parse(&format!("{origin}/authorize")).unwrap();
+            authorize.query_pairs_mut().extend_pairs([
+                ("client_id", "native-client".to_owned()),
+                ("redirect_uri", "http://127.0.0.1:9123/callback".into()),
+                ("response_type", "code".into()),
+                (
+                    "code_challenge",
+                    URL_SAFE_NO_PAD.encode(Sha256::digest(b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG")),
+                ),
+                ("code_challenge_method", "S256".into()),
+                ("state", id()),
+                ("dpop_jkt", key.public_jwk().thumbprint()),
+                (
+                    "trellis_dpop_jwk",
+                    serde_json::to_string(&key.public_jwk()).unwrap(),
+                ),
+                (
+                    "authorization_details",
+                    serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[]}])
+                        .to_string(),
+                ),
+            ]);
+            let response = http.get(authorize.as_str()).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+            let transaction = url::Url::parse(&format!(
+                "{origin}{}",
+                response.headers()["location"].to_str().unwrap()
+            ))
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "transaction")
+            .unwrap()
+            .1
+            .into_owned();
+            let cookies = response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .map(|header| {
+                    let (name, value) = header
+                        .to_str()
+                        .unwrap()
+                        .split(';')
+                        .next()
+                        .unwrap()
+                        .split_once('=')
+                        .unwrap();
+                    (name.to_owned(), value.to_owned())
+                })
+                .collect::<BTreeMap<_, _>>();
+            (
+                transaction,
+                cookies["__Host-trellis-portal"].clone(),
+                cookies["__Host-trellis-portal-csrf"].clone(),
+            )
+        };
+        let sign_up = |transaction: String, cookie: String, csrf: String| {
+            http.post(format!("{origin}/portal/sign-up"))
+                .header("Origin", &origin)
+                .header("Cookie", format!("__Host-trellis-portal={cookie}"))
+                .form(&[
+                    ("csrf", csrf),
+                    ("request_id", transaction),
+                    ("name", "New Person".into()),
+                    ("email", "new@example.com".into()),
+                    ("username", "Newcomer".into()),
+                    ("password", "a long enough password".into()),
+                ])
+                .send()
+        };
+        let created = || {
+            authority
+                .read(|connection| {
+                    Ok(connection
+                        .query_row(
+                            "SELECT principal_id FROM auth_local_credentials \
+                            WHERE normalized_username='newcomer'",
+                            [],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?)
+                })
+                .unwrap()
+        };
+        let refused = |location: &str| location.contains("error=sign_up_failed");
+
+        // The app has not allowed sign-up, whatever the installation says.
+        let (transaction, cookie, csrf) = begin().await;
+        let response = sign_up(transaction, cookie, csrf).await.unwrap();
+        assert!(refused(response.headers()["location"].to_str().unwrap()));
+        assert_eq!(created(), None);
+
+        let allow = AuthOAuthClientSignUpUpdateRequest {
+            client_id: "native-client".to_string().into(),
+            sign_up: AuthOAuthClientSignUp {
+                password: true,
+                providers: false,
+                extra: Default::default(),
+            },
+            expected_revision: AuthRevision(1u64.into()),
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+        let allowed = super::super::rpc_credentials::update_client_sign_up(
+            &authority,
+            &mutation(&f.admin, &allow),
+            &allow,
+            now,
+        )
+        .unwrap();
+        assert!(allowed.client.sign_up.password);
+
+        let (transaction, cookie, csrf) = begin().await;
+        let offered: serde_json::Value = http
+            .get(format!(
+                "{origin}/portal/providers?transaction={transaction}"
+            ))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(offered["signUp"]["password"], installation);
+        let response = sign_up(transaction.clone(), cookie, csrf.clone())
+            .await
+            .unwrap();
+        let location = response.headers()["location"].to_str().unwrap().to_owned();
+        if !installation {
+            assert!(refused(&location));
+            assert_eq!(created(), None);
+        } else {
+            // The new account is signed in to the consent it was creating, and
+            // holds the roles marked for new users.
+            assert_eq!(location, format!("/consent?transaction={transaction}"));
+            let cookie = response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .map(|header| header.to_str().unwrap().split(';').next().unwrap())
+                .find(|cookie| cookie.starts_with("__Host-trellis-portal="))
+                .unwrap()
+                .to_owned();
+            let view: serde_json::Value = http
+                .get(format!("{origin}/portal/authorization/{transaction}"))
+                .header(
+                    "Cookie",
+                    format!("{cookie}; __Host-trellis-portal-csrf={csrf}"),
+                )
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(view["username"], "newcomer");
+            assert_eq!(view["capabilities"][0]["available"], true);
+            let principal = created().unwrap();
+            let profile = authority
+                .transaction(|connection| {
+                    super::super::rpc_users::read_user(&authority, connection, &principal, true)
+                })
+                .unwrap();
+            assert_eq!(profile.display_name, "New Person");
+            // The username is taken now.
+            let (transaction, cookie, csrf) = begin().await;
+            let again = sign_up(transaction, cookie, csrf).await.unwrap();
+            assert!(again.headers()["location"]
+                .to_str()
+                .unwrap()
+                .contains("error=sign_up_taken"));
+        }
+        let _ = stop.send(());
+        host.await.unwrap();
+    }
 }

@@ -283,7 +283,16 @@ model AuthOAuthClient {
   development: bool;
   enabled: bool;
   impliedConsent: list<AuthCapabilityId>;
+  signUp: AuthOAuthClientSignUp;
   revision: AuthRevision;
+}
+// Ways someone signing in to the app may create their own account. Each new
+// account gets the roles marked for new users.
+model AuthOAuthClientSignUp {
+  // A username and password chosen on the Portal.
+  password: bool;
+  // A first sign-in with an active identity provider.
+  providers: bool;
 }
 model AuthOAuthClientGetRequest { clientId: AuthClientId; }
 model AuthOAuthClientGetResponse { client: AuthOAuthClient; }
@@ -297,6 +306,32 @@ model AuthOAuthClientPutRequest {
   development: bool;
   impliedConsent: list<AuthCapabilityId>;
   expectedRevision: uint64;
+  idempotencyKey: AuthIdempotencyKey;
+}
+// How people may sign in to this installation. Takes effect immediately.
+model AuthSignInSettings {
+  // Sign in with a username and password.
+  localUsers: bool;
+  // Create your own username-and-password account, through apps that also
+  // allow it. Needs localUsers.
+  localSignUp: bool;
+  // Sign in with an active identity provider (company sign-in). At least one
+  // of localUsers and providers stays on.
+  providers: bool;
+  revision: AuthRevision;
+}
+model AuthSignInSettingsGetResponse { settings: AuthSignInSettings; }
+model AuthSignInSettingsUpdateRequest {
+  localUsers: bool;
+  localSignUp: bool;
+  providers: bool;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthOAuthClientSignUpUpdateRequest {
+  clientId: AuthClientId;
+  signUp: AuthOAuthClientSignUp;
+  expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthOAuthClientMutationRequest {

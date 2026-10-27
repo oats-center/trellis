@@ -39,6 +39,8 @@
   let development = $state(false);
   let redirects = $state("");
   let implied = $state<string[]>([]);
+  let passwordSignUp = $state(false);
+  let providerSignUp = $state(false);
   let catalog = $state.raw<apis.auth.CapabilitiesListOutput["items"]>([]);
 
   async function loadCatalog(): Promise<void> {
@@ -75,6 +77,8 @@
     development = client?.development ?? false;
     redirects = client?.redirectUris.join("\n") ?? "";
     implied = [...(client?.impliedConsent ?? [])];
+    passwordSignUp = client?.signUp.password ?? false;
+    providerSignUp = client?.signUp.providers ?? false;
     editing = true;
     error = null;
     notice = null;
@@ -107,9 +111,22 @@
           redirectUris: redirects.split(/\s+/).filter(Boolean),
           impliedConsent: implied,
         });
-        const response = await trellis.oAuthClientsPut(input).orThrow();
+        let { client } = await trellis.oAuthClientsPut(input).orThrow();
+        // Sign-up has its own setting, so re-registering never changes it.
+        if (
+          client.signUp.password !== passwordSignUp ||
+          client.signUp.providers !== providerSignUp
+        )
+          ({ client } = await trellis
+            .oAuthClientsSignUpUpdate({
+              clientId,
+              signUp: { password: passwordSignUp, providers: providerSignUp },
+              expectedRevision: client.revision,
+              idempotencyKey: ulid(),
+            })
+            .orThrow());
         if (!scope.isCurrent(token)) return;
-        selected = response.client;
+        selected = client;
       } else {
         if (
           !selected ||
@@ -342,6 +359,36 @@
             </div>
             <PermissionGroups capabilities={catalog} bind:selected={implied} />
           </div>
+          {#if canPerform(authority.authority, "oAuthClientsSignUpUpdate")}
+            <div class="space-y-2">
+              <div>
+                <span class="trellis-field-label">Creating accounts</span>
+                <p class="trellis-field-help">
+                  Let people create their own account while signing in to this
+                  app. New accounts get the roles marked for new users.
+                </p>
+              </div>
+              <label class="flex items-center gap-3"
+                ><input
+                  class="checkbox checkbox-sm"
+                  type="checkbox"
+                  bind:checked={passwordSignUp}
+                /><span
+                  >With a username and password <span
+                    class="text-sm text-base-content/60"
+                    >· only if this Trellis allows local sign-up</span
+                  ></span
+                ></label
+              >
+              <label class="flex items-center gap-3"
+                ><input
+                  class="checkbox checkbox-sm"
+                  type="checkbox"
+                  bind:checked={providerSignUp}
+                /><span>With a company sign-in</span></label
+              >
+            </div>
+          {/if}
         </fieldset>
         <div
           class="flex flex-wrap justify-between gap-2 border-t border-base-300 pt-4"

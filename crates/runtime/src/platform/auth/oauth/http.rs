@@ -170,6 +170,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         .route("/portal/authorization/{transaction}", get(consent))
         .route("/portal/session", post(portal_session))
         .route("/portal/login", post(portal_login))
+        .route("/portal/sign-up", post(portal_sign_up))
         .route("/account/{kind}", get(super::account::page))
         .route("/portal/account/{kind}", post(super::account::submit))
         .route("/portal/providers", get(super::upstream_http::providers))
@@ -1271,6 +1272,97 @@ async fn portal_login(
         Err(super::super::AuthError::Denied) => error(ErrorCode::AccessDenied),
         _ => error(ErrorCode::ServerError),
     }
+}
+
+/// Creates someone's own local account and signs them in, when the app they are
+/// signing in to and the installation both allow it. The app comes from the
+/// server's record of the transaction, never from the form.
+async fn portal_sign_up(
+    State(engine): State<Arc<OAuthEngine>>,
+    headers: HeaderMap,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    if !portal_origin(&engine, &headers) {
+        return error(ErrorCode::InvalidRequest);
+    }
+    let Some(cookie) = portal_cookie(&headers, "__Host-trellis-portal") else {
+        return error(ErrorCode::AccessDenied);
+    };
+    let form = match fields(pairs) {
+        Ok(form) => form,
+        Err(response) => return error(response.error),
+    };
+    let (Some(csrf), Some(transaction), Some(username), Some(password), Some(name)) = (
+        form.get("csrf").cloned(),
+        form.get("request_id").cloned(),
+        form.get("username").cloned(),
+        form.get("password").cloned(),
+        form.get("name").cloned(),
+    ) else {
+        return error(ErrorCode::InvalidRequest);
+    };
+    if ulid::Ulid::from_string(&transaction).is_err() {
+        return error(ErrorCode::InvalidRequest);
+    }
+    let account = super::portal::LocalSignUp {
+        username,
+        password,
+        name,
+        email: form.get("email").cloned().unwrap_or_default(),
+    };
+    let mut replacement = [0u8; 32];
+    if getrandom::fill(&mut replacement).is_err() {
+        return error(ErrorCode::ServerError);
+    }
+    let replacement = URL_SAFE_NO_PAD.encode(replacement);
+    let new_cookie = replacement.clone();
+    let lifetime = engine
+        .server
+        .store()
+        .authority
+        .settings
+        .login_lifetime_seconds;
+    let (login_csrf, login_transaction) = (csrf.clone(), transaction.clone());
+    let result = super::with_store(&engine, move |store| {
+        let now = crate::clock::unix_now();
+        if !store
+            .authorization_sign_up(&login_transaction, now)?
+            .password
+        {
+            return Err(super::super::AuthError::Denied);
+        }
+        store
+            .authority
+            .portal_local_sign_up(&cookie, &login_csrf, &account, now)?;
+        store.authority.portal_local_login(
+            &cookie,
+            &login_csrf,
+            &new_cookie,
+            (&account.username, &account.password),
+            &login_transaction,
+            now,
+        )
+    })
+    .await;
+    let problem = match result {
+        Ok(_) => {
+            let response = Redirect::to(&format!("/consent?transaction={transaction}"));
+            return cookie_response(
+                &replacement,
+                Some(&csrf),
+                lifetime,
+                response.into_response(),
+            );
+        }
+        Err(super::super::AuthError::Conflict) => "sign_up_taken",
+        Err(super::super::AuthError::Invalid(_)) => "sign_up_invalid",
+        Err(super::super::AuthError::Denied) => "sign_up_failed",
+        Err(_) => return error(ErrorCode::ServerError),
+    };
+    Redirect::to(&format!(
+        "/login?transaction={transaction}&sign_up=1&error={problem}"
+    ))
+    .into_response()
 }
 
 async fn portal_logout(

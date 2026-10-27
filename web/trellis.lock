@@ -4,8 +4,8 @@ root = "trellis-web-generated"
 [[packages]]
 name = "trellis"
 version = "0.100.0-rc.10"
-digest = "GYfzxIPBOlq9WvZJCI8Ir5LnbGpw-39rOMnHNdNyH3I"
-distribution-digest = "sha256:f1de55673582de2f2bdd82307f63ee6154d2e01576c4a7600418d39e2fe8cd92"
+digest = "ztmqajaIFZw5r0E4Zf3dxOFGwrmfNescho8ctADfrXk"
+distribution-digest = "sha256:0634ddea8f10b34c8dfc53d962e4169c44d6951e37b4391d64c63c40c878034a"
 dependencies = []
 
 [packages.source]
@@ -15,13 +15,13 @@ path = "../crates/builtin-contracts"
 [[packages]]
 name = "trellis-web-generated"
 version = "0.100.0-rc.11"
-digest = "9IWlyIcH1sZ-hpbx4Vz-p_58rGjrLRANVYv4PqdbLEc"
-distribution-digest = "sha256:0dd1d64faf02bd2e223fb563912243458f8b8738ae2f8f7d1d0877bc0b2cbd67"
+digest = "0JK21UZAMdG0HkScw1LrPvSn4mmjtye9D4Lx6hdj9SY"
+distribution-digest = "sha256:f4b700c46368fc60fec1dc3bb1d325ffe87c2ae5662195e05a3e6baff97f72e1"
 
 [[packages.dependencies]]
 name = "trellis"
 version = "0.100.0-rc.10"
-digest = "GYfzxIPBOlq9WvZJCI8Ir5LnbGpw-39rOMnHNdNyH3I"
+digest = "ztmqajaIFZw5r0E4Zf3dxOFGwrmfNescho8ctADfrXk"
 
 [packages.source]
 kind = "path"

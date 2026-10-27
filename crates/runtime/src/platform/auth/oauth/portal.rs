@@ -9,6 +9,14 @@ use sha2::{Digest as _, Sha256};
 use super::super::revocation::{enqueue_scope, EnforcementScope};
 use super::super::sqlite::{digest, id, AuthError, Mutation, SqliteAuthorizationStore};
 
+/// What someone enters to create their own local account.
+pub(crate) struct LocalSignUp {
+    pub(crate) username: String,
+    pub(crate) password: String,
+    pub(crate) name: String,
+    pub(crate) email: String,
+}
+
 pub(crate) struct PortalCookie {
     pub(crate) session_id: String,
     pub(crate) cookie: String,
@@ -269,7 +277,7 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<PortalLogin, AuthError> {
         let (username, password) = credentials;
-        if !self.settings.local_identity_enabled {
+        if !super::super::sign_in::read(&*self.reader()?)?.local_users {
             return Err(AuthError::Denied);
         }
         if username.len() > 256 || password.len() > 4096 || replacement_cookie.len() != 43 {
@@ -384,6 +392,81 @@ impl SqliteAuthorizationStore {
                 login_session_id,
                 expires_at,
             })
+        })
+    }
+
+    /// Creates the local account someone chose on the Portal, while their portal
+    /// session is still signing in. The caller has already checked that the
+    /// app and installation allow it; the person then signs in as usual.
+    pub(crate) fn portal_local_sign_up(
+        &self,
+        cookie: &str,
+        csrf: &str,
+        account: &LocalSignUp,
+        now: i64,
+    ) -> Result<(), AuthError> {
+        let username = account.username.to_lowercase();
+        let name = account.name.trim();
+        let email = account.email.trim();
+        if username.is_empty()
+            || username.len() > 256
+            || account.username.trim() != account.username
+            || name.is_empty()
+            || name.len() > 256
+        {
+            return Err(AuthError::Invalid("invalid account".into()));
+        }
+        let hash = super::super::rpc_users::hash_password(
+            &account.password,
+            self.settings.password_min_length,
+        )?;
+        let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
+        let csrf_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes()));
+        let principal = id();
+        // Keep the password and its hash out of the audited input.
+        let input = (&username, name, email);
+        let mutation = Mutation {
+            actor: principal.clone(),
+            request_id: id(),
+            request_digest: digest(&input)?,
+            session: None,
+        };
+        self.mutate(&mutation, "portal.signUp", &input, now, |connection| {
+            let signing_in: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_portal_sessions \
+                WHERE cookie_hash=?1 AND csrf_hash=?2 AND expires_at>?3 \
+                AND login_session_id IS NULL)",
+                params![cookie_hash, csrf_hash, now],
+                |row| row.get(0),
+            )?;
+            if !signing_in {
+                return Err(AuthError::Denied);
+            }
+            super::super::rpc_users::insert_user(connection, &principal, now)?;
+            super::super::rpc_users::insert_local_account(
+                connection,
+                &principal,
+                &username,
+                Some(&hash),
+                &trellis_runtime_apis::__types::trellis::AuthUserProfileUpdateRequest {
+                    display_name: Some(trellis_runtime_apis::__types::trellis::AuthName(
+                        name.to_owned(),
+                    )),
+                    given_name: None,
+                    family_name: None,
+                    email: (!email.is_empty()).then(|| email.to_owned()),
+                    avatar_override_url: None,
+                    clear_email: None,
+                    clear_avatar_override: None,
+                    gravatar_enabled: None,
+                    expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(
+                        1u64.into(),
+                    ),
+                    idempotency_key: mutation.request_id.clone().into(),
+                    extra: Default::default(),
+                },
+                now,
+            )
         })
     }
 

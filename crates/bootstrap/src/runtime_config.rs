@@ -134,7 +134,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             oauth: Some(oauth),
             oauth_storage_key_file: Some(PathBuf::from("./auth/oauth-storage.key")),
             local_identity: Some(LocalIdentityConfig {
-                enabled: Some(true),
                 password_min_length: Some(8),
             }),
             authorization: Some(AuthorizationConfig {

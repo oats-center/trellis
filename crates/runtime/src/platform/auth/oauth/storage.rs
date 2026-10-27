@@ -582,6 +582,46 @@ impl OAuthStorage {
             .map_err(failure)
     }
 
+    /// How someone signing in to a pending authorization may create an account:
+    /// what its active registered client allows, with password sign-up also
+    /// needing the installation to allow local users and local sign-up, and
+    /// provider sign-up needing it to allow company sign-in.
+    pub(super) fn authorization_sign_up(
+        &self,
+        id: &str,
+        now: i64,
+    ) -> Result<
+        trellis_runtime_apis::__types::trellis::AuthOAuthClientSignUp,
+        super::super::AuthError,
+    > {
+        let client = self
+            .authorization_client(id, now)
+            .map_err(|_| super::super::AuthError::Unavailable)?;
+        let metadata: Option<String> = match &client {
+            Some(client) => self
+                .authority
+                .reader()?
+                .query_row(
+                    "SELECT metadata_json FROM auth_oauth_clients \
+                    WHERE client_id=?1 AND state='active'",
+                    [client],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            None => None,
+        };
+        let mut sign_up = super::super::rpc_credentials::client_sign_up(
+            &metadata
+                .map(|metadata| serde_json::from_str(&metadata))
+                .transpose()?
+                .unwrap_or_default(),
+        )?;
+        let settings = super::super::sign_in::read(&*self.authority.reader()?)?;
+        sign_up.password &= settings.local_users && settings.local_sign_up;
+        sign_up.providers &= settings.providers;
+        Ok(sign_up)
+    }
+
     /// Save the displayed meaning in the same transaction that reads its policy.
     /// Updating an existing artifact cannot resurrect an already consumed flow.
     pub(super) fn present_authorization(
@@ -1513,7 +1553,6 @@ mod tests {
                 ed25519_dalek::SigningKey::from_bytes(&[21; 32]),
                 super::super::super::sqlite::AuthSettings {
                     avatar_external_fetch_enabled: true,
-                    local_identity_enabled: true,
                     password_min_length: 12,
                     administration: Default::default(),
                     instance_id: ulid::Ulid::new().to_string(),

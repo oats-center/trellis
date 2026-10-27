@@ -78,7 +78,8 @@ the exact request, response, and error types.
 | Roles                 | `Roles.*`, `RoleAssignments.*`                                                                                                                                                   |
 | Administration        | `Administration.Reviews.List/Decide`                                                                                                                                             |
 | Principals            | `Principals.EffectiveAccess`                                                                                                                                                     |
-| OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`                                                                                                                                       |
+| OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`, `OAuthClients.SignUp.Update`                                                                                                         |
+| Sign-in methods       | `SignInSettings.Get/Update`                                                                                                                                                      |
 | Portal themes         | `PortalThemes.List/Get/Put/Delete`                                                                                                                                               |
 | Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                          |
 | Issuers               | `Issuers.Rotate`, `Issuers.Revoke`                                                                                                                                               |

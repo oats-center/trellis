@@ -36,6 +36,7 @@ mod rpc_resource_bindings;
 mod rpc_resources;
 mod rpc_users;
 mod service_updates;
+mod sign_in;
 pub(crate) use resources::materialize_native_kv;
 pub(crate) use rpc::register_rpc;
 mod sqlite;

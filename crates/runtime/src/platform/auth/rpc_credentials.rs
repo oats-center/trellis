@@ -145,6 +145,15 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          now| put_client(store, identity, input, now)
     );
     mutate!(
+        register_o_auth_clients_sign_up_update,
+        Some(Administration::ManageClients),
+        |store: &SqliteAuthorizationStore,
+         identity: &Mutation,
+         _: &AuthenticatedCaller,
+         input: &AuthOAuthClientSignUpUpdateRequest,
+         now| update_client_sign_up(store, identity, input, now)
+    );
+    mutate!(
         register_o_auth_clients_disable,
         Some(Administration::ManageClients),
         |store: &SqliteAuthorizationStore,
@@ -637,8 +646,64 @@ pub(super) fn read_client(connection: &Connection, id: &str) -> Result<AuthOAuth
         kind: kind.into(),
         redirect_uris: decode(&redirects)?,
         revision: AuthRevision(revision.into()),
+        sign_up: client_sign_up(&metadata)?,
         title,
         extra: Default::default(),
+    })
+}
+
+/// The sign-up switches kept in a client's registration metadata; off when unset.
+pub(super) fn client_sign_up(
+    metadata: &serde_json::Value,
+) -> Result<AuthOAuthClientSignUp, AuthError> {
+    match metadata.get("sign_up") {
+        Some(sign_up) => Ok(serde_json::from_value(sign_up.clone())?),
+        None => Ok(AuthOAuthClientSignUp {
+            password: false,
+            providers: false,
+            extra: Default::default(),
+        }),
+    }
+}
+
+/// Sign-up lives beside the registration Put replaces, so re-registering an
+/// app never changes who may create an account through it.
+pub(super) fn update_client_sign_up(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthOAuthClientSignUpUpdateRequest,
+    now: i64,
+) -> Result<AuthOAuthClientGetResponse, AuthError> {
+    store.mutate(identity, "rpc.client.signUp", input, now, |connection| {
+        SqliteAuthorizationStore::require_administration(
+            connection,
+            &identity.actor,
+            Administration::ManageClients,
+        )?;
+        let sign_up = json!({
+            "password": input.sign_up.password,
+            "providers": input.sign_up.providers,
+        });
+        let changed = connection.execute(
+            "UPDATE auth_oauth_clients \
+            SET metadata_json=json_set(metadata_json,'$.sign_up',json(?1)),\
+            revision=revision+1,updated_at=?2 \
+            WHERE client_id=?3 AND revision=?4 AND state!='deleted'",
+            params![
+                sign_up.to_string(),
+                now,
+                input.client_id.as_ref(),
+                input.expected_revision.0 .0
+            ],
+        )?;
+        if changed != 1 {
+            read_client(connection, &input.client_id)?;
+            return Err(AuthError::Conflict);
+        }
+        Ok(AuthOAuthClientGetResponse {
+            client: read_client(connection, &input.client_id)?,
+            extra: Default::default(),
+        })
     })
 }
 

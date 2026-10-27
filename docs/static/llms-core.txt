@@ -580,9 +580,18 @@ second linked identity cannot add or remove another identity's mapped roles.
 Direct grants remain independent of upstream role loss and claim freshness.
 
 Mark a role "give to new users" (`assignToNewUsers` on `Auth.Roles.Put`, the
-Console role form, or `trellis roles create|edit --new-users`) to give every user created afterwards a base set of
-permissions. Each gets an ordinary role assignment an administrator can revoke;
-existing users are unchanged.
+Console role form, or `trellis roles create|edit --new-users`) to give every
+user created afterwards a base set of permissions. Each gets an ordinary role
+assignment an administrator can revoke; existing users are unchanged.
+
+Sign-in methods are Auth state changed live, never configuration: the Console's
+Sign-in methods page, `trellis sign-in set`, or `Auth.SignInSettings.Update`
+turn username-and-password sign-in, local self sign-up and company sign-in
+(OIDC providers, also managed on that page) on or off. People can create their
+own account only where the installation allows it and the app they are signing
+in to does too (`trellis clients sign-up <app> --password|--providers`, the
+Console app form, or `Auth.OAuthClients.SignUp.Update`). New accounts get the
+roles marked for new users.
 
 ### Administrative capabilities
 

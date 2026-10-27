@@ -878,6 +878,29 @@ to the verified provider. The continuation and redirect suppress referrers;
 `form-action 'self'` remains enforced. Wrong-session, cross-user, expired,
 replayed or unreviewed handoffs cannot begin upstream linking.
 
+### Sign-in methods and self sign-up (`sign_in.rs`, `oauth/portal.rs`, `oauth/oidc.rs`)
+
+Which sign-in methods an installation offers is Auth state, edited live with
+`Auth.SignInSettings.Update` (`trellis.auth.v1:platform.manage`) from the
+Console's Sign-in methods page or `trellis sign-in set`; no restart and no
+configuration key. Local users (username and password) and company sign-in
+(active OIDC providers) each switch on and off; at least one stays on, so an
+update can never lock every administrator out. Turning a method off refuses the
+next sign-in by it; the Portal stops offering it.
+
+Self sign-up needs both the installation and the app being signed in to. The
+installation's `localSignUp` (which needs local users) allows password
+sign-up at all; an app's `OAuthClients.SignUp.Update` switches (`password`,
+`providers`, both off by default, `clients.manage`) choose where it is offered.
+The app comes from the server's record of the pending authorization, never the
+form, and only active registered clients can allow it. `Put` leaves those
+switches alone, so re-registering an app never changes who may join through it.
+A password sign-up creates the account and signs it in through the ordinary
+local login. A first sign-in by an unlinked provider subject creates an account
+linked to that subject, in the same transaction as the login; without sign-up
+it is refused as before, and an email match still never selects another user.
+Every new account, however created, gets the roles marked for new users.
+
 ### Profiles, images, and the directory (`profiles.rs`, `avatars.rs`, `rpc_users.rs`)
 
 Profiles are local presentation data, never account-linking or authorization

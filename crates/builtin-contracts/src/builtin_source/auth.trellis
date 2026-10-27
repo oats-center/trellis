@@ -37,6 +37,9 @@ import {
   AuthOAuthClientsListResponse,
   AuthOAuthClientPutRequest,
   AuthOAuthClientMutationRequest,
+  AuthOAuthClientSignUpUpdateRequest,
+  AuthSignInSettingsGetResponse,
+  AuthSignInSettingsUpdateRequest,
   AuthPortalThemesListResponse,
   AuthPortalThemeGetRequest,
   AuthPortalThemeGetResponse,
@@ -161,10 +164,15 @@ api auth@v1 {
   rpc OAuthClients.List { input AuthPageRequest; output AuthOAuthClientsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc OAuthClients.Get { input AuthOAuthClientGetRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OAuthClients.Put { input AuthOAuthClientPutRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  // Whether people signing in to this app may create their own account.
+  rpc OAuthClients.SignUp.Update { input AuthOAuthClientSignUpUpdateRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OAuthClients.Disable { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OAuthClients.Delete { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // The installation theme needs platform.manage; an app's theme clients.manage.
+  // How people may sign in to this installation; platform.manage.
+  rpc SignInSettings.Get { input AuthEmpty; output AuthSignInSettingsGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc SignInSettings.Update { input AuthSignInSettingsUpdateRequest; output AuthSignInSettingsGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc PortalThemes.List { input AuthPageRequest; output AuthPortalThemesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc PortalThemes.Get { input AuthPortalThemeGetRequest; output AuthPortalThemeGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc PortalThemes.Put { input AuthPortalThemePutRequest; output AuthPortalThemeGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -362,7 +370,7 @@ api auth@v1 {
       title "Manage apps";
       description "Register apps and change their sign-in settings.";
       grants "Decides which apps can ask people for access.";
-      allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.Disable; rpc OAuthClients.Delete; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
+      allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.SignUp.Update; rpc OAuthClients.Disable; rpc OAuthClients.Delete; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
     }
     capability security.observe {
       title "Watch security activity";
@@ -375,7 +383,7 @@ api auth@v1 {
       title "Manage this Trellis";
       description "Decide who administers this Trellis and manage its signing keys.";
       grants "Full control of this Trellis installation.";
-      allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc Administration.Reviews.List; rpc Administration.Reviews.Decide; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
+      allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc Administration.Reviews.List; rpc Administration.Reviews.Decide; rpc SignInSettings.Get; rpc SignInSettings.Update; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
     }
     capability serviceUpdates.submit {
       title "Submit its own updates";

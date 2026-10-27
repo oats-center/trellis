@@ -92,8 +92,6 @@ pub(crate) enum AuthError {
 #[derive(Clone, Debug)]
 pub(crate) struct AuthSettings {
     pub(crate) avatar_external_fetch_enabled: bool,
-    /// Local username/password sign-in is accepted.
-    pub(crate) local_identity_enabled: bool,
     /// Shortest accepted local password, in bytes.
     pub(crate) password_min_length: u16,
     pub(crate) administration: crate::config::AdministrationConfig,
@@ -407,9 +405,6 @@ impl SqliteAuthorizationStore {
                 .as_ref()
                 .and_then(|auth| auth.avatar.as_ref())
                 .is_none_or(|avatar| avatar.external_fetch_enabled),
-            local_identity_enabled: local_identity
-                .and_then(|local| local.enabled)
-                .unwrap_or(true),
             password_min_length: local_identity
                 .and_then(|local| local.password_min_length)
                 .unwrap_or(12),

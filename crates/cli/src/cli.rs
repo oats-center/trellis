@@ -79,6 +79,9 @@ pub enum TopLevelCommand {
     /// Brand the login Portal for the installation or one app.
     #[command(subcommand)]
     Theme(ThemeCommand),
+    /// Choose how people sign in to this Trellis.
+    #[command(subcommand)]
+    SignIn(SignInCommand),
     /// Manage service deployments.
     Svc(SvcCommand),
     /// Manage device deployments.
@@ -127,6 +130,7 @@ impl TopLevelCommand {
             Self::Clients(_) => "clients",
             Self::Apis(_) => "apis",
             Self::Theme(_) => "theme",
+            Self::SignIn(_) => "sign-in",
             Self::Svc(_) => "svc",
             Self::Dev(_) => "dev",
             Self::Resources(_) => "resources",

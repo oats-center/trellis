@@ -94,6 +94,42 @@ pub(super) async fn clients(command: ClientsCommand) -> miette::Result<()> {
                     .into_diagnostic()?;
             serde_json::to_value(auth.o_auth_clients_put(&request).await.into_diagnostic()?)
         }
+        ClientsCommand::SignUp(args) => {
+            let client = auth
+                .o_auth_clients_get(&auth_types::AuthOAuthClientGetRequest {
+                    client_id: wire(&args.client_id)?,
+                    extra: Default::default(),
+                })
+                .await
+                .into_diagnostic()?
+                .client;
+            let choose = |on: bool, off: bool, current: bool| on || (current && !off);
+            serde_json::to_value(
+                auth.o_auth_clients_sign_up_update(
+                    &auth_types::AuthOAuthClientSignUpUpdateRequest {
+                        client_id: client.client_id,
+                        sign_up: auth_types::AuthOAuthClientSignUp {
+                            password: choose(
+                                args.password,
+                                args.no_password,
+                                client.sign_up.password,
+                            ),
+                            providers: choose(
+                                args.providers,
+                                args.no_providers,
+                                client.sign_up.providers,
+                            ),
+                            extra: Default::default(),
+                        },
+                        expected_revision: client.revision,
+                        idempotency_key: wire(cli_idempotency_key())?,
+                        extra: Default::default(),
+                    },
+                )
+                .await
+                .into_diagnostic()?,
+            )
+        }
         ClientsCommand::Disable(args) => serde_json::to_value(
             auth.o_auth_clients_disable(&auth_types::AuthOAuthClientMutationRequest {
                 client_id: wire(args.client_id)?,
@@ -234,6 +270,40 @@ pub(super) async fn apis(command: ApisCommand) -> miette::Result<()> {
     }
     .into_diagnostic()?;
     output::print_json(&result)
+}
+
+pub(super) async fn sign_in(command: SignInCommand) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let current = auth
+        .sign_in_settings_get(&auth_types::AuthEmpty {
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?;
+    let result = match command {
+        SignInCommand::Show => current,
+        SignInCommand::Set(args) => {
+            let current = current.settings;
+            let choose = |on: bool, off: bool, value: bool| on || (value && !off);
+            auth.sign_in_settings_update(&auth_types::AuthSignInSettingsUpdateRequest {
+                local_users: choose(args.local_users, args.no_local_users, current.local_users),
+                local_sign_up: choose(
+                    args.local_sign_up,
+                    args.no_local_sign_up,
+                    current.local_sign_up,
+                ),
+                providers: choose(args.providers, args.no_providers, current.providers),
+                expected_revision: current.revision,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?
+        }
+    };
+    output::print_json(&serde_json::to_value(result).into_diagnostic()?)
 }
 
 pub(super) async fn theme(command: ThemeCommand) -> miette::Result<()> {

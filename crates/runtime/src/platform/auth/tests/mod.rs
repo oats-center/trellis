@@ -316,7 +316,6 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
         key,
         AuthSettings {
             avatar_external_fetch_enabled: true,
-            local_identity_enabled: true,
             password_min_length: 12,
             administration: Default::default(),
             upstream_tls_roots_pem: Vec::new(),

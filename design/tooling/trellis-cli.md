@@ -142,13 +142,17 @@ consumers and dead letters through the Events API.
 ```text
 trellis users ...
 trellis roles list|show|create|edit|delete|assign|revoke ...
+trellis sign-in show|set [--[no-]local-users] [--[no-]local-sign-up] [--[no-]providers]
+trellis clients sign-up <client> [--[no-]password] [--[no-]providers]
 ```
 
 User commands use generated Auth account operations. Role commands use
 `Auth.Roles.*`; `--capability` names each capability a role gives, and
 `--new-users`/`--no-new-users` sets whether users created afterwards get the
 role. `roles show` lists who has the role; `roles assign|revoke <role> <user>`
-gives or takes it from one user. The separately originated
+gives or takes it from one user. `sign-in` turns the installation's sign-in
+methods on or off at once (`Auth.SignInSettings`), and `clients sign-up` chooses
+whether people may create their own account while signing in to one app. The separately originated
 OAuth portal owns interactive login, device-code confirmation and consent;
 authenticated administration remains on NATS.
 

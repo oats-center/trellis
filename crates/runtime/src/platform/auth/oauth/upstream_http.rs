@@ -21,9 +21,23 @@ use openidconnect::{
 use serde_json::json;
 use std::sync::Arc;
 
-pub(super) async fn providers(State(engine): State<Arc<OAuthEngine>>) -> Response {
-    let result = with_store(&engine, |store| {
+/// Ways to sign in, and to create an account for the pending authorization's
+/// app when `transaction` names one.
+pub(super) async fn providers(
+    State(engine): State<Arc<OAuthEngine>>,
+    Query(pairs): Query<Vec<(String, String)>>,
+) -> Response {
+    let transaction = pairs
+        .into_iter()
+        .find_map(|(key, value)| (key == "transaction").then_some(value));
+    let result = with_store(&engine, move |store| {
+        let now = crate::clock::unix_now();
+        let sign_up = match &transaction {
+            Some(transaction) => Some(store.authorization_sign_up(transaction, now)?),
+            None => None,
+        };
         store.authority.read(|connection| {
+            let settings = super::super::sign_in::read(connection)?;
             let mut statement = connection.prepare(
                 "SELECT provider_id,display_name \
                 FROM auth_oidc_providers \
@@ -38,9 +52,20 @@ pub(super) async fn providers(State(engine): State<Arc<OAuthEngine>>) -> Respons
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
+            // With company sign-in off, the Portal offers no provider at all.
+            let providers = if settings.providers {
+                providers
+            } else {
+                Vec::new()
+            };
             Ok(json!({
-                "localIdentity": store.authority.settings.local_identity_enabled,
+                "localIdentity": settings.local_users,
                 "providers": providers,
+                "signUp": {
+                    "password": sign_up.as_ref().is_some_and(|sign_up| sign_up.password),
+                    "providers": sign_up.as_ref().is_some_and(|sign_up| sign_up.providers)
+                        && !providers.is_empty(),
+                },
             }))
         })
     })
@@ -414,12 +439,18 @@ pub(super) async fn callback(
     let provider_id = flow.provider.provider_id.clone();
     let (login_csrf, login_cookie) = (csrf.clone(), replacement.clone());
     match with_store(&engine, move |store| {
+        // Device enrollment has no app whose sign-up settings could apply.
+        let sign_up = flow.device_review.is_none()
+            && store
+                .authorization_sign_up(&flow.authorization_transaction, now)?
+                .providers;
         store.authority.portal_upstream_login(
             &flow,
             &identity,
             &cookie,
             &login_csrf,
             &login_cookie,
+            sign_up,
             now,
         )
     })

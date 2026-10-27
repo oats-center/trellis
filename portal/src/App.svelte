@@ -52,6 +52,8 @@
   interface SignIn {
     localIdentity: boolean;
     providers: Provider[];
+    /** Whether this sign-in's app lets people create their own account. */
+    signUp: { password: boolean; providers: boolean };
   }
 
   /** One consent row. */
@@ -175,6 +177,11 @@
   let error = $state(false);
   let providers = $state.raw<Provider[]>([]);
   let localIdentity = $state(true);
+  let signUp = $state.raw<SignIn["signUp"]>({
+    password: false,
+    providers: false,
+  });
+  let creating = $state(query.get("sign_up") === "1");
   let providerError = $state(false);
   // The server marks pages it serves with Trellis-generated certificates.
   const generatedTls =
@@ -415,17 +422,21 @@
     }
     const controller = new AbortController();
     if (login) {
-      void fetch("/portal/providers", {
-        signal: controller.signal,
-        credentials: "same-origin",
-        cache: "no-store",
-      })
+      void fetch(
+        `/portal/providers?transaction=${encodeURIComponent(transaction)}`,
+        {
+          signal: controller.signal,
+          credentials: "same-origin",
+          cache: "no-store",
+        },
+      )
         .then(async (response) => {
           if (!response.ok) throw new Error("providers_unavailable");
           const result: SignIn = await response.json();
           if (controller.signal.aborted) return;
           providers = result.providers;
           localIdentity = result.localIdentity;
+          signUp = result.signUp;
         })
         .catch(() => {
           if (!controller.signal.aborted) providerError = true;
@@ -694,6 +705,59 @@
     </form>
     <p class="hint">Only enter a code from a device you are setting up.</p>
   </main>
+{:else if login && creating && signUp.password}
+  <main class="card narrow">
+    <h1>Create your account</h1>
+    <p class="muted">You'll use it to sign in to {brand}.</p>
+    {#if query.get("error") === "sign_up_taken"}
+      <p class="alert error" role="alert">
+        That username is taken. Choose another.
+      </p>
+    {:else if query.get("error") === "sign_up_invalid"}
+      <p class="alert error" role="alert">
+        Check your name and username, and use a longer password.
+      </p>
+    {:else if query.get("error") === "sign_up_failed"}
+      <p class="alert error" role="alert">
+        Your account wasn't created. Try again.
+      </p>
+    {/if}
+    <form method="post" action="/portal/sign-up">
+      <input type="hidden" name="csrf" value={csrf} />
+      <input type="hidden" name="request_id" value={transaction} />
+      <label class="field" for="name">Name</label>
+      <input id="name" name="name" type="text" autocomplete="name" required />
+      <label class="field" for="email">Email (optional)</label>
+      <input id="email" name="email" type="email" autocomplete="email" />
+      <label class="field" for="username">Username</label>
+      <input
+        id="username"
+        name="username"
+        type="text"
+        autocomplete="username"
+        autocapitalize="none"
+        spellcheck="false"
+        required
+      />
+      <label class="field" for="password">Password</label>
+      <input
+        id="password"
+        name="password"
+        type="password"
+        autocomplete="new-password"
+        required
+      />
+      <button class="primary block" type="submit" disabled={!csrf}
+        >Create account</button
+      >
+    </form>
+    <p class="hint">
+      Already have an account?
+      <button class="link" type="button" onclick={() => (creating = false)}
+        >Sign in</button
+      >
+    </p>
+  </main>
 {:else if login}
   <main class="card narrow">
     <h1>{theme.copy.sign_in_title ?? "Sign in"}</h1>
@@ -753,6 +817,18 @@
           disabled={!csrf || !transaction}>Sign in</button
         >
       </form>{/if}
+    {#if signUp.password}
+      <p class="hint">
+        New here?
+        <button class="link" type="button" onclick={() => (creating = true)}
+          >Create an account</button
+        >
+      </p>
+    {:else if signUp.providers}
+      <p class="hint">
+        New here? Continue with your company account to create one.
+      </p>
+    {/if}
   </main>
 {:else if view}
   <main class="card consent">

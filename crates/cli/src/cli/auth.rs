@@ -16,10 +16,68 @@ pub enum ClientsCommand {
     /// Create or replace a registration using an AuthOAuthClientPutRequest JSON file.
     /// Use kind=browser, development=true and exact redirectUris for localhost apps.
     Put { input: PathBuf },
+    /// Choose how people may create their own account while signing in to
+    /// this app; options you leave out keep their current value.
+    SignUp(ClientSignUpArgs),
     /// Disable a client at the explicit expected revision.
     Disable(ClientMutationArgs),
     /// Delete a client at the explicit expected revision.
     Delete(ClientMutationArgs),
+}
+
+/// How people may create their own account while signing in to one app.
+#[derive(Debug, Args)]
+#[command(
+    group(clap::ArgGroup::new("password_state").args(["password", "no_password"])),
+    group(clap::ArgGroup::new("providers_state").args(["providers", "no_providers"]))
+)]
+pub struct ClientSignUpArgs {
+    pub client_id: String,
+    /// Allow a username and password chosen on the Portal. The installation
+    /// must also allow local sign-up (`trellis sign-in set --local-sign-up`).
+    #[arg(long)]
+    pub password: bool,
+    #[arg(long)]
+    pub no_password: bool,
+    /// Let a first sign-in with an identity provider create the account.
+    #[arg(long)]
+    pub providers: bool,
+    #[arg(long)]
+    pub no_providers: bool,
+}
+
+/// How people sign in to this Trellis. Changes apply at once.
+#[derive(Debug, Subcommand)]
+pub enum SignInCommand {
+    /// Show which sign-in methods are on.
+    Show,
+    /// Turn sign-in methods on or off; options you leave out keep their value.
+    Set(SignInSetArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(
+    group(clap::ArgGroup::new("local_users_state").args(["local_users", "no_local_users"])),
+    group(clap::ArgGroup::new("local_sign_up_state").args(["local_sign_up", "no_local_sign_up"])),
+    group(clap::ArgGroup::new("providers_state").args(["providers", "no_providers"]))
+)]
+pub struct SignInSetArgs {
+    /// Sign in with a username and password.
+    #[arg(long)]
+    pub local_users: bool,
+    #[arg(long)]
+    pub no_local_users: bool,
+    /// Let people create their own username-and-password account, in apps
+    /// that also allow it (`trellis clients sign-up`).
+    #[arg(long)]
+    pub local_sign_up: bool,
+    #[arg(long)]
+    pub no_local_sign_up: bool,
+    /// Sign in with a company identity provider.
+    #[arg(long)]
+    pub providers: bool,
+    #[arg(long)]
+    pub no_providers: bool,
 }
 
 /// Login Portal branding, for the installation or one app.

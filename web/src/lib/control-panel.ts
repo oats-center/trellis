@@ -56,6 +56,7 @@ export const routeTitles = {
   "/admin/roles/new": "New Role",
   "/admin/clients": "Apps",
   "/admin/apis": "APIs",
+  "/admin/sign-in": "Sign-in methods",
   "/admin/branding": "Sign-in page",
   "/admin/administration": "Admin approvals",
 } as const;
@@ -229,6 +230,21 @@ const navSections: NavSection[] = [
               api: apis.auth.API.identity,
               surface: "rpc",
               name: "Apis.List",
+              action: "call",
+            },
+          },
+        ],
+      },
+      {
+        href: "/admin/sign-in",
+        label: "Sign-in methods",
+        icon: "key",
+        requires: [
+          {
+            permission: {
+              api: apis.auth.API.identity,
+              surface: "rpc",
+              name: "SignInSettings.Get",
               action: "call",
             },
           },

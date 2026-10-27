@@ -376,8 +376,10 @@ impl super::super::SqliteAuthorizationStore {
         })
     }
 
-    /// The verified upstream subject resolves only through an administrator's
-    /// existing identity link; matching an email never selects another user.
+    /// The verified upstream subject resolves only through an existing identity
+    /// link; matching an email never selects another user. With `sign_up`, an
+    /// unlinked subject gets a new account linked to it instead of a refusal.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn portal_upstream_login(
         &self,
         flow: &UpstreamFlow,
@@ -385,9 +387,10 @@ impl super::super::SqliteAuthorizationStore {
         cookie: &str,
         csrf: &str,
         replacement: &str,
+        sign_up: bool,
         now: i64,
     ) -> Result<super::portal::PortalLogin, AuthError> {
-        let principal = {
+        let linked = {
             let connection = self.reader()?;
             connection
                 .query_row(
@@ -398,7 +401,12 @@ impl super::super::SqliteAuthorizationStore {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?
-                .ok_or(AuthError::Denied)?
+        };
+        let created = linked.is_none();
+        let principal = match linked {
+            Some(principal) => principal,
+            None if sign_up => super::super::sqlite::id(),
+            None => return Err(AuthError::Denied),
         };
         let input = (
             &flow.session_id,
@@ -432,8 +440,24 @@ impl super::super::SqliteAuthorizationStore {
                 ],
                 |row| row.get(0),
             )?;
-            if !current {
+            if !current || !super::super::sign_in::read(connection)?.providers {
                 return Err(AuthError::Denied);
+            }
+            if created {
+                super::super::rpc_users::insert_user(connection, &principal, now)?;
+                // The primary key refuses a subject another sign-up linked first.
+                connection.execute(
+                    "INSERT INTO auth_provider_identities(identity_id,provider,\
+                    provider_subject,principal_id,linked_at,last_seen_at) \
+                    VALUES(?1,?2,?3,?4,?5,?5)",
+                    params![
+                        super::super::sqlite::id(),
+                        flow.provider.provider_id,
+                        identity.subject,
+                        principal,
+                        now
+                    ],
+                )?;
             }
             let expires_at = identity
                 .expires_at

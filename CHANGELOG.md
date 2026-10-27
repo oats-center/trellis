@@ -10,9 +10,25 @@ and this project adheres to
 
 ### Added
 
+- People can create their own account again. An administrator allows it per
+  app, for a username and password chosen on the Portal or a first company
+  sign-in, and the installation must allow local sign-up for the first. New
+  accounts get the roles marked for new users.
+- Sign-in methods are set live from the Console's new Sign-in methods page,
+  `trellis sign-in set`, or `Auth.SignInSettings.Update`: username and password,
+  local self sign-up, and company sign-in. The same page manages company sign-in
+  providers.
+- `trellis clients sign-up` and the Console app form choose an app's sign-up.
 - `trellis roles list|show|create|edit|delete|assign|revoke` manages roles and
   who has them from the CLI, including `--new-users` to give a role to every
   user created afterwards.
+
+### Changed
+
+- `[auth.local_identity] enabled` is removed; turn username-and-password
+  sign-in off in the Console or with `trellis sign-in set --no-local-users`. A
+  config that still sets it fails to start rather than silently turning local
+  sign-in back on.
 
 ## [0.100.0-rc.11] - 2026-10-27
 

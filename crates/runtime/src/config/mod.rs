@@ -1301,12 +1301,12 @@ impl AuthorizationConfig {
     }
 }
 
-/// Local identity provider configuration.
+/// Local identity provider configuration. Whether local users and sign-up are
+/// allowed is Auth state set from the Console or CLI; an old `enabled` key is
+/// refused rather than ignored, so it cannot silently turn local sign-in back on.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalIdentityConfig {
-    /// Enables local identity authentication.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
     /// Minimum local password length.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_min_length: Option<u16>,

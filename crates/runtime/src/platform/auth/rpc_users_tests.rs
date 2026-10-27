@@ -1157,6 +1157,26 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
     };
     sign_in(&store).unwrap();
 
-    store.settings.local_identity_enabled = false;
+    // Turning local users off applies to the next sign-in, with no restart.
+    let off = AuthSignInSettingsUpdateRequest {
+        local_users: false,
+        local_sign_up: false,
+        providers: true,
+        expected_revision: AuthRevision(1u64.into()),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    crate::platform::auth::sign_in::update(&store, &mutation(&admin, &off), &off, NOW).unwrap();
     assert!(matches!(sign_in(&store), Err(AuthError::Denied)));
+    // Nobody, administrators included, could sign in with both methods off.
+    let neither = AuthSignInSettingsUpdateRequest {
+        providers: false,
+        expected_revision: AuthRevision(2u64.into()),
+        idempotency_key: id().into(),
+        ..off
+    };
+    assert!(matches!(
+        crate::platform::auth::sign_in::update(&store, &mutation(&admin, &neither), &neither, NOW),
+        Err(AuthError::Invalid(_))
+    ));
 }

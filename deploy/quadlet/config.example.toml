@@ -84,7 +84,6 @@ ttl_ms = 30000
 renew_ms = 5000
 
 [auth.local_identity]
-enabled = true
 password_min_length = 12
 
 [platform.storage]
