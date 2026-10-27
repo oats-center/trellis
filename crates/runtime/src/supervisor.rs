@@ -13,6 +13,8 @@ use thiserror::Error;
 use tokio_util::task::AbortOnDropHandle;
 use ulid::Ulid;
 
+// Twice the listener's drain bound, so a connection it closes at that bound
+// still lets the server finish within this one.
 const HTTP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const SUBSYSTEM_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const OWNERSHIP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);

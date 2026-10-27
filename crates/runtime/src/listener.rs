@@ -19,6 +19,11 @@ use axum_server::tls_rustls::RustlsConfig;
 
 use crate::config::ListenerTransport;
 
+/// How long open connections may finish before the listener closes them. It
+/// stays below the supervisor's HTTP shutdown bound, so a client that keeps a
+/// connection open delays shutdown but never fails it.
+pub(crate) const DRAIN_BOUND: Duration = Duration::from_secs(5);
+
 /// How often TLS certificate files are checked for replacement.
 const TLS_RELOAD_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -99,7 +104,8 @@ impl LoadedListener {
         self
     }
 
-    /// Serves `router` until `shutdown` resolves, then drains for up to ten seconds.
+    /// Serves `router` until `shutdown` resolves, then drains for up to
+    /// [`DRAIN_BOUND`].
     pub(crate) async fn serve(
         self,
         router: Router,
@@ -109,7 +115,7 @@ impl LoadedListener {
         let drain = handle.clone();
         let drain = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
             shutdown.await;
-            drain.graceful_shutdown(Some(Duration::from_secs(10)));
+            drain.graceful_shutdown(Some(DRAIN_BOUND));
         }));
         let router = if self.forwarded_by.is_empty() {
             router

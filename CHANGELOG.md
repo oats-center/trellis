@@ -20,6 +20,13 @@ and this project adheres to
 - Native OAuth device-code login polls once right away, so a code approved
   before polling starts completes without waiting a full polling interval.
 
+### Fixed
+
+- `trellis-server` no longer exits with "runtime HTTP server did not drain
+  within the shutdown bound" when a client keeps a connection open at shutdown:
+  the listener closes lingering connections after 5 seconds, inside the
+  supervisor's 10-second bound.
+
 ## [0.100.0-rc.9] - 2026-10-27
 
 ### Changed
