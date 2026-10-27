@@ -1609,6 +1609,7 @@ export class Trellis<
     // the provider or disturbing accepted sessions/receipts.
     const openIntake = (): {
       drain: () => Promise<void>;
+      unsubscribe: () => void;
       done: Promise<void>;
     } => {
       const openSub = nc.subscribe(subject, {
@@ -1643,10 +1644,11 @@ export class Trellis<
       );
       return {
         drain: () => openSub.drain().catch(() => undefined),
+        unsubscribe: () => openSub.unsubscribe(),
         done: openDone.promise,
       };
     };
-    let open: { drain: () => Promise<void>; done: Promise<void> } | undefined;
+    let open: ReturnType<typeof openIntake> | undefined;
     try {
       controlSub = nc.subscribe(provider.wildcardSubject(subject));
       // Registered once this generation can actually receive control on the
@@ -1671,9 +1673,16 @@ export class Trellis<
         operation: live,
         phase: "listen",
       });
-      // Clean up the partial install: no subscription exists, so no session
-      // can be served; unregister the provider and release its retained own
-      // authority rather than leaking the guard for the process lifetime.
+      // Clean up the partial install. A subscription created before the
+      // failure would otherwise be replayed after a reconnect and take
+      // openings for a provider whose control loop never started. Remove both,
+      // let the opening loop finish, then unregister the provider and release
+      // its retained own authority rather than leaking the guard.
+      controlSub?.unsubscribe();
+      if (open) {
+        open.unsubscribe();
+        await open.done;
+      }
       await provider.dispose().catch(() => undefined);
       ownGuard.release();
       throw error;
