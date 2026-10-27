@@ -10,7 +10,6 @@ mod resources;
 mod self_cmd;
 
 pub use auth::*;
-#[cfg(feature = "runtime")]
 pub use deploy::*;
 pub use events::*;
 pub use resources::*;
