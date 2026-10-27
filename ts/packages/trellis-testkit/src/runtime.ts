@@ -803,9 +803,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
           "auth-oauth-admission-lifetime-seconds",
           options.authorization?.oauthAdmissionLifetimeSeconds,
         ],
+        // Every process of a test runtime shares one clock, so tolerating
+        // installation-wide skew only delays what expiry-driven tests observe.
         [
           "auth-allowed-clock-skew-seconds",
-          options.authorization?.allowedClockSkewSeconds,
+          options.authorization?.allowedClockSkewSeconds ?? 2,
         ],
       ] as const)
         if (value !== undefined) initArgs.push(`--${flag}`, String(value));

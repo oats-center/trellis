@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- The TypeScript testkit's runtimes allow 2 seconds of clock skew by default
+  instead of 30, so tests that wait for authority to expire finish sooner. Pass
+  `authorization.allowedClockSkewSeconds` to choose another value.
+
+- Native OAuth device-code login polls once right away, so a code approved
+  before polling starts completes without waiting a full polling interval.
+
 ## [0.100.0-rc.9] - 2026-10-27
 
 ### Changed

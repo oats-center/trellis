@@ -6,7 +6,10 @@ export type TrellisControlPlaneAuthorization = {
   contextLifetimeSeconds: number;
   /** Signed OAuth admission lifetime for real NATS CONNECT. */
   oauthAdmissionLifetimeSeconds: number;
-  /** Allowed skew for real signed authorization contexts. */
+  /**
+   * Allowed skew for real signed authorization contexts. Defaults to 2 seconds:
+   * every process of a test runtime shares one clock.
+   */
   allowedClockSkewSeconds: number;
 };
 
