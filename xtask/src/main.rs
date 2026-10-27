@@ -212,9 +212,14 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
         for entry in std::fs::read_dir(&models_target).into_diagnostic()? {
             let entry = entry.into_diagnostic()?;
             let bytes = std::fs::read(entry.path()).into_diagnostic()?;
+            // Earlier installers also wrote this model snapshot; it is
+            // generated output the replacement retires, not an authored input.
+            let retired_snapshot = entry.file_name() == "models.json"
+                && serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .is_ok_and(|snapshot| snapshot["format"] == "trellis.rust-models.v1");
             miette::ensure!(
                 entry.file_type().into_diagnostic()?.is_file()
-                    && bytes.starts_with(HEADER.as_bytes()),
+                    && (bytes.starts_with(HEADER.as_bytes()) || retired_snapshot),
                 "refusing to replace non-generated model input {}",
                 entry.path().display()
             );
