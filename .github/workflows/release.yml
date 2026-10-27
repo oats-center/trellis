@@ -1325,7 +1325,10 @@ jobs:
           # Each dependency reaches the index before its consumer publishes.
           for crate in trellis-protocol trellis-models trellis-rs trellis-testkit; do
             version="$(jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version' <<<"$crate_versions")"
-            if curl --silent --fail "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
+            # crates.io refuses API requests without a User-Agent (403), which
+            # would read as unpublished and republish a retained version.
+            if curl --silent --fail --user-agent "trellis-release (https://github.com/oats-center/trellis)" \
+              "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
               echo "Skipping $crate@$version (already published)"
             else
               bash scripts/prepare-rust-publication.sh dist/rust-packages target "$crate"
