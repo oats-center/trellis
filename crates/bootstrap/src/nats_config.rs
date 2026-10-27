@@ -65,7 +65,9 @@ listen: {bind}:{nats_port}
 http: {bind}:{monitor_port}
 
 {native_tls}authorization {{
-  timeout: "30s"
+  # Also bounds an auth callout. Right after a restart, a client can reach the
+  # broker before the runtime answers callouts; it fails within this and retries.
+  timeout: "5s"
 }}
 
 websocket {{
@@ -462,7 +464,9 @@ listen: {native_bind}:{nats_port}
 http: 127.0.0.1:{monitor_port}
 
 {native_tls}authorization {{
-  timeout: "30s"
+  # Also bounds an auth callout. Right after a restart, a client can reach the
+  # broker before the runtime answers callouts; it fails within this and retries.
+  timeout: "5s"
 }}
 
 websocket {{

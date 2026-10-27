@@ -48,6 +48,11 @@ and this project adheres to
 
 ### Fixed
 
+- Clients recover within seconds when they reconnect to a restarted Trellis
+  before its runtime answers NATS auth callouts. The broker held such a CONNECT
+  for its 30-second authorization timeout; the generated configuration now uses
+  5 seconds, after which the client retries.
+
 - `trellis-server` no longer exits with "runtime HTTP server did not drain
   within the shutdown bound" when a client keeps a connection open at shutdown:
   the listener closes lingering connections after 5 seconds, inside the
