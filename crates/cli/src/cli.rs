@@ -68,6 +68,8 @@ pub enum TopLevelCommand {
     Issuers(IssuersCommand),
     /// Manage Trellis users.
     Users(UsersCommand),
+    /// Manage roles, including the roles new users get.
+    Roles(RolesCommand),
     /// Register public OAuth clients, including loopback development clients.
     #[command(subcommand)]
     Clients(ClientsCommand),
@@ -121,6 +123,7 @@ impl TopLevelCommand {
             Self::Whoami => "whoami",
             Self::Issuers(_) => "issuers",
             Self::Users(_) => "users",
+            Self::Roles(_) => "roles",
             Self::Clients(_) => "clients",
             Self::Apis(_) => "apis",
             Self::Theme(_) => "theme",

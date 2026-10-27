@@ -141,9 +141,13 @@ consumers and dead letters through the Events API.
 
 ```text
 trellis users ...
+trellis roles list|show|create|edit|delete ...
 ```
 
-User commands use generated Auth account operations. The separately originated
+User commands use generated Auth account operations. Role commands use
+`Auth.Roles.*`; `--capability` names each capability a role gives, and
+`--new-users`/`--no-new-users` sets whether users created afterwards get the
+role. `roles show` lists who has the role. The separately originated
 OAuth portal owns interactive login, device-code confirmation and consent;
 authenticated administration remains on NATS.
 

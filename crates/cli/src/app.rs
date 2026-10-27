@@ -82,6 +82,7 @@ async fn dispatch(command: TopLevelCommand, format: OutputFormat) -> miette::Res
         TopLevelCommand::Whoami => auth::whoami(format).await?,
         TopLevelCommand::Issuers(command) => auth::issuers(format, command).await?,
         TopLevelCommand::Users(command) => auth::users(format, command).await?,
+        TopLevelCommand::Roles(command) => auth::roles(format, command).await?,
         TopLevelCommand::Clients(command) => auth::clients(command).await?,
         TopLevelCommand::Apis(command) => auth::apis(command).await?,
         TopLevelCommand::Theme(command) => auth::theme(command).await?,

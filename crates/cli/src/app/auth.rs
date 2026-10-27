@@ -51,6 +51,16 @@ pub(super) async fn users(format: OutputFormat, command: UsersCommand) -> miette
     }
 }
 
+pub(super) async fn roles(format: OutputFormat, command: RolesCommand) -> miette::Result<()> {
+    match command.command {
+        RolesSubcommand::List => roles_list_command(format).await,
+        RolesSubcommand::Show(args) => roles_show_command(format, &args).await,
+        RolesSubcommand::Create(args) => roles_create_command(format, &args).await,
+        RolesSubcommand::Edit(args) => roles_edit_command(format, &args).await,
+        RolesSubcommand::Delete(args) => roles_delete_command(format, &args).await,
+    }
+}
+
 pub(super) async fn clients(command: ClientsCommand) -> miette::Result<()> {
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
@@ -527,6 +537,203 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
     } else {
         output::print_success("updated user");
         output::print_info(&format!("userId={}", args.user_id));
+    }
+    Ok(())
+}
+
+fn print_role(role: &auth_types::AuthRole) {
+    output::print_info(&format!("roleId={}", role.role_id));
+    output::print_info(&format!("title={}", role.title));
+    output::print_info(&format!("newUsers={}", role.assign_to_new_users));
+    for capability in &role.capabilities {
+        output::print_info(&format!("capability={}", capability.capability_id));
+    }
+}
+
+async fn roles_list_command(format: OutputFormat) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let roles = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
+        .roles_list(&auth_types::AuthPageRequest {
+            search: None,
+            page: Some(trellis_runtime_apis::CursorQuery {
+                cursor: None,
+                limit: Some(100),
+            }),
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?;
+    if output::is_json(format) {
+        output::print_json(&serde_json::to_value(roles).into_diagnostic()?)?;
+    } else {
+        let rows = roles
+            .items
+            .iter()
+            .map(|role| {
+                vec![
+                    role.role_id.to_string(),
+                    role.title.clone(),
+                    role.capabilities.len().to_string(),
+                    role.assign_to_new_users.to_string(),
+                    role.revision.to_string(),
+                ]
+            })
+            .collect();
+        println!(
+            "{}",
+            output::table(
+                &["roleId", "title", "capabilities", "newUsers", "revision"],
+                rows
+            )
+        );
+    }
+    Ok(())
+}
+
+async fn roles_show_command(format: OutputFormat, args: &RoleRefArgs) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let role_id = wire(&args.role_id)?;
+    let role = auth
+        .roles_get(&auth_types::AuthRoleGetRequest {
+            role_id,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .role;
+    let mut members = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = auth
+            .role_assignments_list(&auth_types::AuthRoleAssignmentsListRequest {
+                principal_id: None,
+                role_id: Some(role.role_id),
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?;
+        members.extend(page.items.into_iter().map(|item| item.principal_id));
+        match page.page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    if output::is_json(format) {
+        output::print_json(&json!({ "role": role, "members": members }))?;
+    } else {
+        print_role(&role);
+        for member in members {
+            output::print_info(&format!("member={member}"));
+        }
+    }
+    Ok(())
+}
+
+fn print_saved_role(format: OutputFormat, role: auth_types::AuthRole) -> miette::Result<()> {
+    if output::is_json(format) {
+        output::print_json(&json!({ "role": role }))?;
+    } else {
+        output::print_success("saved role");
+        print_role(&role);
+    }
+    Ok(())
+}
+
+async fn roles_create_command(format: OutputFormat, args: &RoleCreateArgs) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let role = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
+        .roles_put(&auth_types::AuthRolePutRequest {
+            role_id: None,
+            expected_revision: 0u64.into(),
+            idempotency_key: wire(cli_idempotency_key())?,
+            title: wire(args.title.trim())?,
+            description: wire(&args.description)?,
+            capability_ids: wire(&args.capabilities)?,
+            assign_to_new_users: args.new_users,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .role;
+    print_saved_role(format, role)
+}
+
+async fn roles_edit_command(format: OutputFormat, args: &RoleEditArgs) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let current = auth
+        .roles_get(&auth_types::AuthRoleGetRequest {
+            role_id: wire(&args.role_id)?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .role;
+    let capability_ids = match &args.capabilities {
+        Some(capabilities) => wire(capabilities)?,
+        None => current
+            .capabilities
+            .iter()
+            .map(|capability| capability.capability_id.clone())
+            .collect(),
+    };
+    let role = auth
+        .roles_put(&auth_types::AuthRolePutRequest {
+            role_id: Some(current.role_id),
+            expected_revision: current.revision.0 .0.into(),
+            idempotency_key: wire(cli_idempotency_key())?,
+            title: wire(args.title.as_deref().unwrap_or(&current.title).trim())?,
+            description: wire(args.description.as_deref().unwrap_or(&current.description))?,
+            capability_ids,
+            assign_to_new_users: if args.new_users {
+                true
+            } else if args.no_new_users {
+                false
+            } else {
+                current.assign_to_new_users
+            },
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .role;
+    print_saved_role(format, role)
+}
+
+async fn roles_delete_command(format: OutputFormat, args: &RoleRefArgs) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let current = auth
+        .roles_get(&auth_types::AuthRoleGetRequest {
+            role_id: wire(&args.role_id)?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .role;
+    auth.roles_delete(&auth_types::AuthRoleDeleteRequest {
+        role_id: current.role_id,
+        expected_revision: current.revision,
+        idempotency_key: wire(cli_idempotency_key())?,
+        extra: Default::default(),
+    })
+    .await
+    .into_diagnostic()?;
+    if output::is_json(format) {
+        output::print_json(&json!({ "roleId": current.role_id }))?;
+    } else {
+        output::print_success("deleted role");
+        output::print_info(&format!("roleId={}", current.role_id));
     }
     Ok(())
 }

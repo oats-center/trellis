@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis roles list|show|create|edit|delete` manages roles from the CLI,
+  including `--new-users` to give a role to every user created afterwards.
+
 ## [0.100.0-rc.11] - 2026-10-27
 
 ### Fixed

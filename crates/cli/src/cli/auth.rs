@@ -178,6 +178,84 @@ pub enum UsersSubcommand {
 }
 
 #[derive(Debug, Args)]
+/// Manage roles: named sets of capabilities given to users.
+pub struct RolesCommand {
+    #[command(subcommand)]
+    pub command: RolesSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+/// Role administration operations.
+pub enum RolesSubcommand {
+    /// List roles.
+    List,
+    /// Show one role and the users who have it.
+    Show(RoleRefArgs),
+    /// Create one role.
+    Create(RoleCreateArgs),
+    /// Edit one role; options you leave out keep their current value.
+    Edit(RoleEditArgs),
+    /// Delete one role and remove it from everyone who has it.
+    Delete(RoleRefArgs),
+}
+
+#[derive(Debug, Args)]
+/// Reference one role by role ID.
+pub struct RoleRefArgs {
+    #[arg(value_name = "ROLE_ID")]
+    pub role_id: String,
+}
+
+#[derive(Debug, Args)]
+/// Create one role.
+pub struct RoleCreateArgs {
+    #[arg(long)]
+    pub title: String,
+
+    #[arg(long, default_value = "")]
+    pub description: String,
+
+    /// Capability the role gives, such as `trellis.auth.v1:users.manage`.
+    /// Repeat for each capability.
+    #[arg(long = "capability", value_name = "CAPABILITY_ID")]
+    pub capabilities: Vec<String>,
+
+    /// Give this role to every user created from now on.
+    #[arg(long)]
+    pub new_users: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("new_users_state")
+        .args(["new_users", "no_new_users"])
+        .multiple(false)
+))]
+/// Edit one role.
+pub struct RoleEditArgs {
+    #[arg(value_name = "ROLE_ID")]
+    pub role_id: String,
+
+    #[arg(long)]
+    pub title: Option<String>,
+
+    #[arg(long)]
+    pub description: Option<String>,
+
+    /// Replace the role's capabilities. Repeat for each capability.
+    #[arg(long = "capability", value_name = "CAPABILITY_ID")]
+    pub capabilities: Option<Vec<String>>,
+
+    /// Give this role to every user created from now on.
+    #[arg(long)]
+    pub new_users: bool,
+
+    /// Stop giving this role to new users; users who have it keep it.
+    #[arg(long)]
+    pub no_new_users: bool,
+}
+
+#[derive(Debug, Args)]
 /// Reference one user by Trellis user ID.
 pub struct UserRefArgs {
     #[arg(value_name = "USER_ID")]

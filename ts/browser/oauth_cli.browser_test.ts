@@ -18,7 +18,7 @@ import {
 } from "./browser_test_support.ts";
 
 test(
-  "CLI explicitly consents to administration, resumes custody, and manages clients, catalog revisions, and Portal themes",
+  "CLI explicitly consents to administration, resumes custody, and manages clients, catalog revisions, Portal themes, and roles for new users",
   { timeout: 90_000 },
   async () => {
     await withTrellisRuntime(async (runtime) => {
@@ -225,6 +225,42 @@ test(
           (await run("theme", "show", "--client", "trellis.console")).theme,
           undefined,
         );
+        // A role marked for new users is given to each user created while the
+        // mark stands, and to nobody created after it is cleared.
+        const { role } = await run(
+          "roles",
+          "create",
+          "--title",
+          "Readers",
+          "--capability",
+          "trellis.auth.v1:users.read",
+          "--new-users",
+        );
+        const createUser = async () =>
+          (await run("users", "create", "--username", `cli-${ulid()}`)).user
+            .principalId;
+        const before = await createUser();
+        const renamed = await run(
+          "roles",
+          "edit",
+          role.roleId,
+          "--title",
+          "Directory readers",
+          "--no-new-users",
+        );
+        assert.deepEqual(
+          renamed.role.capabilities.map(
+            (capability: { capabilityId: string }) => capability.capabilityId,
+          ),
+          ["trellis.auth.v1:users.read"],
+        );
+        await createUser();
+        const readers = await run("roles", "show", role.roleId);
+        assert.equal(readers.role.title, "Directory readers");
+        assert.equal(readers.role.assignToNewUsers, false);
+        assert.deepEqual(readers.members, [before]);
+        await run("roles", "delete", role.roleId);
+        await assert.rejects(run("roles", "show", role.roleId));
         await run("logout");
         await assert.rejects(run("clients", "list"));
       } finally {
