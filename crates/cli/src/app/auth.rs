@@ -453,23 +453,32 @@ fn cli_idempotency_key() -> String {
 
 async fn users_list_command(format: OutputFormat) -> miette::Result<()> {
     let (_selection, connected) = connect_authenticated_cli_client().await?;
-    let users = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
-        .trellis_auth_v1()
-        .users_list(&auth_types::AuthPageRequest {
-            search: None,
-            page: Some(trellis_runtime_apis::CursorQuery {
-                cursor: None,
-                limit: Some(100),
-            }),
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let mut users = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = auth
+            .users_list(&auth_types::AuthPageRequest {
+                search: None,
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?;
+        users.extend(page.items);
+        match page.page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
     if output::is_json(format) {
-        output::print_json(&serde_json::to_value(users).into_diagnostic()?)?;
+        output::print_json(&json!({ "items": users }))?;
     } else {
         let rows = users
-            .items
             .iter()
             .map(|user| {
                 vec![
@@ -624,23 +633,32 @@ fn print_role(role: &auth_types::AuthRole) {
 
 async fn roles_list_command(format: OutputFormat) -> miette::Result<()> {
     let (_selection, connected) = connect_authenticated_cli_client().await?;
-    let roles = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
-        .trellis_auth_v1()
-        .roles_list(&auth_types::AuthPageRequest {
-            search: None,
-            page: Some(trellis_runtime_apis::CursorQuery {
-                cursor: None,
-                limit: Some(100),
-            }),
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let mut roles = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = auth
+            .roles_list(&auth_types::AuthPageRequest {
+                search: None,
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?;
+        roles.extend(page.items);
+        match page.page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
     if output::is_json(format) {
-        output::print_json(&serde_json::to_value(roles).into_diagnostic()?)?;
+        output::print_json(&json!({ "items": roles }))?;
     } else {
         let rows = roles
-            .items
             .iter()
             .map(|role| {
                 vec![
@@ -676,27 +694,11 @@ async fn roles_show_command(format: OutputFormat, args: &RoleRefArgs) -> miette:
         .await
         .into_diagnostic()?
         .role;
-    let mut members = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = auth
-            .role_assignments_list(&auth_types::AuthRoleAssignmentsListRequest {
-                principal_id: None,
-                role_id: Some(role.role_id),
-                page: Some(trellis_runtime_apis::CursorQuery {
-                    cursor,
-                    limit: Some(100),
-                }),
-                extra: Default::default(),
-            })
-            .await
-            .into_diagnostic()?;
-        members.extend(page.items.into_iter().map(|item| item.principal_id));
-        match page.page.next_cursor {
-            Some(next) => cursor = Some(next),
-            None => break,
-        }
-    }
+    let members = current_assignments(&auth, &role, None)
+        .await?
+        .into_iter()
+        .map(|assignment| assignment.principal_id)
+        .collect::<Vec<_>>();
     if output::is_json(format) {
         output::print_json(&json!({ "role": role, "members": members }))?;
     } else {
@@ -706,6 +708,41 @@ async fn roles_show_command(format: OutputFormat, args: &RoleRefArgs) -> miette:
         }
     }
     Ok(())
+}
+
+/// The role's assignments, on every page, that belong to its current identity.
+/// Deleting and recreating a role keeps the earlier assignments, which no
+/// longer give the role and cannot be revoked.
+async fn current_assignments(
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+    role: &auth_types::AuthRole,
+    principal_id: Option<trellis_protocol::model::Ulid>,
+) -> miette::Result<Vec<auth_types::AuthRoleAssignment>> {
+    let mut assignments = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = auth
+            .role_assignments_list(&auth_types::AuthRoleAssignmentsListRequest {
+                principal_id,
+                role_id: Some(role.role_id),
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?;
+        assignments.extend(
+            page.items
+                .into_iter()
+                .filter(|item| item.role_identity_generation == role.identity_generation),
+        );
+        match page.page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => return Ok(assignments),
+        }
+    }
 }
 
 fn print_saved_role(format: OutputFormat, role: auth_types::AuthRole) -> miette::Result<()> {
@@ -838,16 +875,16 @@ async fn roles_revoke_command(format: OutputFormat, args: &RoleMemberArgs) -> mi
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
-    let assignment = auth
-        .role_assignments_list(&auth_types::AuthRoleAssignmentsListRequest {
-            principal_id: Some(wire(&args.user_id)?),
-            role_id: Some(wire(&args.role_id)?),
-            page: None,
+    let role = auth
+        .roles_get(&auth_types::AuthRoleGetRequest {
+            role_id: wire(&args.role_id)?,
             extra: Default::default(),
         })
         .await
         .into_diagnostic()?
-        .items
+        .role;
+    let assignment = current_assignments(&auth, &role, Some(wire(&args.user_id)?))
+        .await?
         .into_iter()
         .next()
         .ok_or_else(|| {

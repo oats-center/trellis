@@ -128,6 +128,18 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:OAuthClients.Put"],
     (client, input) => client.oAuthClientsPut(input).orThrow(),
   ),
+  authRolesPut: adminMethod(
+    apis.auth.API.actions["rpc:Roles.Put"],
+    (client, input) => client.rolesPut(input).orThrow(),
+  ),
+  authRolesDelete: adminMethod(
+    apis.auth.API.actions["rpc:Roles.Delete"],
+    (client, input) => client.rolesDelete(input).orThrow(),
+  ),
+  authRoleAssignmentsAssign: adminMethod(
+    apis.auth.API.actions["rpc:RoleAssignments.Assign"],
+    (client, input) => client.roleAssignmentsAssign(input).orThrow(),
+  ),
   authCapabilityGrantsGrant: adminMethod(
     apis.auth.API.actions["rpc:CapabilityGrants.Grant"],
     (client, input) => client.capabilityGrantsGrant(input).orThrow(),

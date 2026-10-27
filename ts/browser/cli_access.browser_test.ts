@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import { ulid } from "ulid";
+import { apis } from "../packages/trellis-testkit/trellis/index.js";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -65,6 +66,52 @@ test(
         await assert.rejects(run("roles", "revoke", role.roleId, before));
         await run("roles", "delete", role.roleId);
         await assert.rejects(run("roles", "show", role.roleId));
+        // Recreated under the same ID, the role keeps the earlier assignment,
+        // which no longer gives it. Show and revoke act on the current one.
+        const put = (input: Record<string, unknown>) =>
+          runtime.callAdminRpc(
+            "authRolesPut",
+            apis.auth.API.actions["rpc:Roles.Put"].input.decode({
+              expectedRevision: "0",
+              description: "",
+              capabilityIds: [],
+              assignToNewUsers: false,
+              idempotencyKey: ulid(),
+              ...input,
+            }),
+          );
+        await put({
+          roleId: role.roleId,
+          title: "Directory readers",
+          capabilityIds: ["trellis.auth.v1:users.read"],
+        });
+        await runtime.callAdminRpc(
+          "authRoleAssignmentsAssign",
+          apis.auth.API.actions["rpc:RoleAssignments.Assign"].input.decode({
+            principalId: after,
+            roleId: role.roleId,
+            expectedRevision: "0",
+            idempotencyKey: ulid(),
+          }),
+        );
+        assert.deepEqual((await run("roles", "show", role.roleId)).members, [
+          after,
+        ]);
+        await run("roles", "revoke", role.roleId, after);
+        assert.deepEqual((await run("roles", "show", role.roleId)).members, []);
+        // Listing follows every page rather than stopping at the first 100.
+        const extra = Array.from(
+          { length: 101 },
+          (_, index) => `Bulk ${index}`,
+        );
+        for (let start = 0; start < extra.length; start += 20)
+          await Promise.all(
+            extra.slice(start, start + 20).map((title) => put({ title })),
+          );
+        const listed = (await run("roles", "list")).items.map(
+          (item: { title: string }) => item.title,
+        );
+        for (const title of extra) assert.ok(listed.includes(title), title);
         // Sign-in methods change live, and an app chooses its own sign-up.
         assert.equal(
           (await run("sign-in", "show")).settings.localSignUp,
