@@ -505,7 +505,7 @@ jobs:
   rust:
     name: Rust
     needs: [install, wasm, portal, build, build-fixtures]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     env:
       NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
@@ -518,6 +518,22 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
@@ -559,6 +575,7 @@ jobs:
         run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
 
       - name: Cache Rust build artifacts
+        if: runner.environment == 'github-hosted'
         uses: actions/cache@v4
         with:
           path: target
@@ -571,10 +588,10 @@ jobs:
         run: npm ci
 
       - name: Install Chromium for Rust-owned browser acceptance
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
 
       - name: Provide NSS certutil for generated-CA browser trust
-        run: sudo apt-get install --yes --no-install-recommends libnss3-tools
+        run: command -v certutil >/dev/null || sudo apt-get install --yes --no-install-recommends libnss3-tools
 
       # Nextest runs every test binary in parallel instead of one binary at a
       # time; it does not run documentation examples, so those run separately.
@@ -584,7 +601,7 @@ jobs:
   typescript:
     name: TypeScript
     needs: [install, wasm, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -619,7 +636,7 @@ jobs:
   demos:
     name: Demo consumers
     needs: [install, wasm, portal, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -674,7 +691,7 @@ jobs:
   live-rust:
     name: Rust live integration
     needs: [install, wasm, portal, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -711,7 +728,7 @@ jobs:
   live-typescript:
     name: TypeScript live integration (${{ matrix.shard }}/8)
     needs: [install, wasm, portal, build, build-fixtures]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     # Run independent test files on separate hosted runners; every shard must pass.
     # Failures in one shard must not cancel another shard's functional evidence.
@@ -759,7 +776,7 @@ jobs:
   live-testkit:
     name: Rust testkit integration
     needs: [install, wasm, portal, build, build-fixtures]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -797,7 +814,7 @@ jobs:
   examples:
     name: Documented examples
     needs: [install, wasm, portal, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -832,7 +849,7 @@ jobs:
   browser:
     name: Browser (${{ matrix.shard }}/8)
     needs: [install, wasm, portal, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     # Every browser test file, split across hosted runners; every shard must
     # pass, and one shard's failure must not cancel another's evidence.
@@ -869,10 +886,10 @@ jobs:
 
       - name: Install pinned Chromium and browser dependencies
         working-directory: ts
-        run: npm exec --yes --package=playwright@1.59.1 -- playwright install --with-deps chromium
+        run: npm exec --yes --package=playwright@1.59.1 -- playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
 
       - name: Provide NSS certutil for generated-CA browser trust
-        run: sudo apt-get install --yes --no-install-recommends libnss3-tools
+        run: command -v certutil >/dev/null || sudo apt-get install --yes --no-install-recommends libnss3-tools
 
       - name: Run browser tests
         env:
@@ -895,11 +912,27 @@ jobs:
   rust-testkit-package:
     name: Rust testkit bundle
     needs: [install, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
 
       - name: Download generated artifacts
         uses: actions/download-artifact@v4
@@ -942,9 +975,14 @@ jobs:
   rust-testkit-consumer:
     name: Rust testkit artifact-only consumer
     needs: [rust-testkit-package]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     steps:
+      # A self-hosted runner reuses its workspace; this job has no checkout to clean it.
+      - name: Start from an empty workspace
+        if: runner.environment == 'self-hosted'
+        run: find . -mindepth 1 -delete
+
       - name: Download the verification bundle
         uses: actions/download-artifact@v4
         with:
@@ -1054,7 +1092,7 @@ jobs:
   typescript-testkit-package:
     name: TypeScript testkit package
     needs: [install, wasm, demos, build]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
