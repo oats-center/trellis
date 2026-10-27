@@ -11,8 +11,8 @@
 # builds debug executables, generated artifacts, embedded UIs and npm packages
 # once, then runs the jobs in staged mode (TRELLIS_TEST_STAGED=1) so none of
 # them rebuilds what another is using. Each job logs to target/test-logs/.
-# Locally, sharded or split CI jobs run whole, with concurrency sized from the
-# host's cores; TRELLIS_TEST_CONCURRENCY and TRELLIS_BROWSER_CONCURRENCY
+# Test files run concurrently, sized from the host's cores;
+# TRELLIS_TEST_CONCURRENCY and TRELLIS_BROWSER_CONCURRENCY
 # override it. TRELLIS_TEST_SKIP_PREPARE=1 skips contract and UI regeneration.
 set -euo pipefail
 
@@ -113,13 +113,10 @@ job_typescript_checks() {
     "npm run check --workspace @trellis/oauth-portal"
 }
 
-# Integration files, plus the packages' own suites. A CI shard runs only its
-# share of the integration files; the first shard also runs the package suites.
+# Integration files, plus the packages' own suites.
 job_typescript_tests() {
-  if [[ "${TRELLIS_TEST_SHARD:-1/1}" == 1/* ]]; then
-    build_packages
-    bash scripts/run-sdk-tests.sh
-  fi
+  build_packages
+  bash scripts/run-sdk-tests.sh
   bash scripts/run-ts-integration.sh "$@"
 }
 

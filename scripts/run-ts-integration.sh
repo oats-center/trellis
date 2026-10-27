@@ -7,9 +7,8 @@
 #   npm run test:integration [-- <node test flags and test paths>]
 #
 # No environment variable has to be preset and the tests never compile Rust while
-# they run. For CI parallelism TRELLIS_TEST_SHARD=<index>/<total> (for example
-# 1/8) selects a Node-native file shard from exactly the same complete test-file
-# list.
+# they run. Test files run concurrently, one per core by default;
+# TRELLIS_TEST_CONCURRENCY overrides that.
 # Locally the runner builds every Rust executable the tests launch under
 # `target/debug`; in CI the producer job has already staged them there, so the
 # runner only checks that they exist. NATS is resolved by the pinned
@@ -156,16 +155,10 @@ if [[ $# -eq 0 ]]; then
   set -- ts/integration/*_test.ts ts/integration/*.test.ts ts/packages/trellis/native/*.live_test.ts
 fi
 
-# Every shard receives the full test-file list; Node divides it into disjoint
-# file partitions. Ordinary non-sharded local execution is unchanged.
-shard_args=()
-if [[ -n "${TRELLIS_TEST_SHARD:-}" ]]; then
-  shard_args=("--test-shard=${TRELLIS_TEST_SHARD}")
-  echo "Running TypeScript integration shard ${TRELLIS_TEST_SHARD} from $# test files"
-fi
-concurrency="${TRELLIS_TEST_CONCURRENCY:-$(( $(nproc) / 2 > 4 ? $(nproc) / 2 : 4 ))}"
+# Each file mostly waits on its own server and broker, so one file per core.
+concurrency="${TRELLIS_TEST_CONCURRENCY:-$(( $(nproc) > 4 ? $(nproc) : 4 ))}"
 echo "Running up to $concurrency test files at once on $(nproc) cores"
 exec node --experimental-transform-types --test \
   --test-timeout=600000 \
   --test-concurrency="$concurrency" \
-  "${shard_args[@]}" "$@"
+  "$@"

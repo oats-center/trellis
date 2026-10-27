@@ -646,16 +646,11 @@ jobs:
           retention-days: 3
 
   typescript-tests:
-    name: TypeScript tests (${{ matrix.shard }}/8)
+    name: TypeScript tests
     needs: [install, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
-    # Run independent test files on separate hosted runners; every shard must pass.
-    # Failures in one shard must not cancel another shard's functional evidence.
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    # One runner runs every test file, as many at once as it has cores.
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -687,13 +682,8 @@ jobs:
 
       - name: Run TypeScript tests
         env:
-          TRELLIS_TEST_SHARD: ${{ matrix.shard }}/8
-          # The first shard also runs the packages' own suites.
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-          # Node runs test files in parallel processes: two on a hosted VM, and
-          # on a self-hosted runner the script's default, half the host's cores.
-          TRELLIS_TEST_CONCURRENCY: ${{ runner.environment == 'github-hosted' && '2' || '' }}
         run: bash scripts/check.sh typescript-tests
 
   testkit-tests:
@@ -770,16 +760,11 @@ jobs:
           bash scripts/check.sh examples
 
   browser:
-    name: Browser tests (${{ matrix.shard }}/8)
+    name: Browser tests
     needs: [install, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
-    timeout-minutes: 30
-    # Every browser test file, split across hosted runners; every shard must
-    # pass, and one shard's failure must not cancel another's evidence.
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    timeout-minutes: 45
+    # One runner runs every browser test file, several at once.
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -824,15 +809,13 @@ jobs:
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          TRELLIS_TEST_SHARD: ${{ matrix.shard }}/8
-          TRELLIS_BROWSER_CONCURRENCY: ${{ runner.environment == 'github-hosted' && '2' || '' }}
         run: bash scripts/check.sh browser
 
       - name: Upload sanitized failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-failure-${{ matrix.shard }}
+          name: browser-failure
           path: |
             ts/browser/test-results/**
           if-no-files-found: ignore

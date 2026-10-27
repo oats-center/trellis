@@ -52,8 +52,9 @@ and every executable the jobs launch), then runs formatting, Rust lint
 TypeScript checks (`typescript-checks`), TypeScript tests (`typescript-tests`:
 the packages' own suites and the integration files), Rust testkit tests
 (`testkit-tests`), the demo and documented-example consumers, and the browser
-tests concurrently, logging each to `target/test-logs/`. Jobs the pipeline splits across
-runners run whole locally, with concurrency sized from the host's cores
+tests concurrently, logging each to `target/test-logs/`. Each test job runs on
+one runner, not split into shards; its test files run concurrently, one per core
+for TypeScript and one per two cores for browser tests
 (`TRELLIS_TEST_CONCURRENCY` and `TRELLIS_BROWSER_CONCURRENCY` override it). Local
 runs use debug builds; the pipeline tests its release build.
 

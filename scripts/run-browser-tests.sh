@@ -7,9 +7,8 @@
 # No environment variable has to be preset. Locally the runner builds the CLI
 # and server the tests launch; the testkit acquires NATS itself. With
 # TRELLIS_TEST_STAGED=1 (as set by `scripts/check.sh`) or in CI it only checks
-# that they exist. TRELLIS_TEST_SHARD=<index>/<total> selects a Node-native
-# file shard of the complete list, and TRELLIS_BROWSER_CONCURRENCY overrides
-# the number of concurrent test files.
+# that they exist. TRELLIS_BROWSER_CONCURRENCY overrides the number of
+# concurrent test files.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,14 +31,10 @@ export TRELLIS_CACHE_DIR="${TRELLIS_CACHE_DIR:-$root/target/trellis-nats-cache}"
 if [[ $# -eq 0 ]]; then
   set -- ts/browser/*.browser_test.ts
 fi
-shard_args=()
-if [[ -n "${TRELLIS_TEST_SHARD:-}" ]]; then
-  shard_args=("--test-shard=${TRELLIS_TEST_SHARD}")
-  echo "Running browser shard ${TRELLIS_TEST_SHARD} from $# test files"
-fi
 cores="$(nproc)"
-concurrency="${TRELLIS_BROWSER_CONCURRENCY:-$(( cores / 4 > 4 ? cores / 4 : 4 ))}"
+# Each file drives Chromium as well as a server, so one file per two cores.
+concurrency="${TRELLIS_BROWSER_CONCURRENCY:-$(( cores / 2 > 4 ? cores / 2 : 4 ))}"
 echo "Running up to $concurrency browser test files at once on $cores cores"
 exec node --experimental-transform-types --test \
   --test-concurrency="$concurrency" \
-  "${shard_args[@]}" "$@"
+  "$@"
