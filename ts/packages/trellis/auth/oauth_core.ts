@@ -101,7 +101,8 @@ export type TokenResponse = Readonly<{
   nonce?: string;
 }>;
 
-function usableNonce(value: string | null): string | undefined {
+/** One bounded `DPoP-Nonce` value, or undefined. @internal */
+export function usableNonce(value: string | null): string | undefined {
   return value && value.length <= 1024 && !value.includes(",")
     ? value
     : undefined;
@@ -138,6 +139,10 @@ export async function postWithDpop(options: {
       redirect: "error",
       signal: options.signal,
     });
+    // A rate limiter, often a proxy, refuses before reading the request and
+    // need not send a JSON body.
+    if (response.status === 429)
+      return { status: 429, ok: false, data: undefined };
     const data = await boundedJson(response);
     const challenge = usableNonce(response.headers.get("DPoP-Nonce"));
     const asksForNonce =

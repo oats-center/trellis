@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type { apis } from "trellis-web-generated";
   import { ulid } from "ulid";
   import { getTrellis } from "$lib/trellis";
@@ -15,6 +15,7 @@
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
+  import GroupRoles from "./GroupRoles.svelte";
 
   type Settings = apis.auth.SignInSettingsGetOutput["settings"];
   type Provider = apis.auth.OIDCProvidersListOutput["items"][number];
@@ -28,6 +29,7 @@
   let companySignIn = $state(true);
   let providers = $state.raw<Provider[]>([]);
   let loading = $state(true);
+  let loaded = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
@@ -43,6 +45,9 @@
 
   const editableSettings = $derived(
     canPerform(authority.authority, "signInSettingsUpdate"),
+  );
+  const readSettings = $derived(
+    canPerform(authority.authority, "signInSettingsGet"),
   );
   const manageProviders = $derived(
     canPerform(authority.authority, "oidcProvidersList"),
@@ -66,7 +71,9 @@
     loading = true;
     try {
       const [current, listed] = await Promise.all([
-        trellis.signInSettingsGet({}).orThrow(),
+        readSettings
+          ? trellis.signInSettingsGet({}).orThrow()
+          : Promise.resolve(null),
         manageProviders
           ? traverseAll(async (page) => {
               const response = await trellis
@@ -80,8 +87,9 @@
           : Promise.resolve({ items: [] }),
       ]);
       if (!scope.isCurrent(token)) return;
-      show(current.settings);
+      if (current) show(current.settings);
       providers = [...listed.items];
+      loaded = true;
     } catch (cause) {
       if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
     } finally {
@@ -129,7 +137,8 @@
     clientId = provider?.clientId ?? "";
     clientSecret = "";
     scopes = (provider?.scopes ?? ["openid", "profile", "email"]).join(" ");
-    groupsClaim = provider?.roleClaim ?? "";
+    // Most providers list a person's groups in a `groups` claim.
+    groupsClaim = provider ? provider.roleClaim : "/groups";
     editing = true;
     error = null;
     notice = null;
@@ -184,10 +193,15 @@
     });
   }
 
-  onMount(() => {
-    void load();
-    return () => scope.dispose();
+  // What to load depends on the signed-in person's permissions, which the
+  // shell may still be verifying when this page mounts.
+  let started = false;
+  $effect(() => {
+    if (started || authority.authority === null) return;
+    started = true;
+    untrack(() => void load());
   });
+  onMount(() => () => scope.dispose());
 </script>
 
 <section class="space-y-6">
@@ -198,60 +212,60 @@
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if notice}<Notice variant="success">{notice}</Notice>{/if}
 
-  {#if loading && !settings}
+  {#if loading && !loaded}
     <LoadingState />
-  {:else if settings}
-    <form
-      class="trellis-panel max-w-2xl space-y-4 p-5"
-      onsubmit={(event) => {
-        event.preventDefault();
-        void saveSettings();
-      }}
-    >
-      <fieldset class="space-y-3" disabled={saving || !editableSettings}>
-        <label class="flex items-center gap-3"
-          ><input
-            class="toggle toggle-sm toggle-primary"
-            type="checkbox"
-            bind:checked={localUsers}
-          /><span>Username and password</span></label
-        >
-        <label class="flex items-center gap-3 pl-8"
-          ><input
-            class="checkbox checkbox-sm"
-            type="checkbox"
-            bind:checked={localSignUp}
-            disabled={!localUsers}
-          /><span
-            >People can create their own account <span
-              class="text-sm text-base-content/60"
-              >· in apps that also allow it</span
-            ></span
-          ></label
-        >
-        <label class="flex items-center gap-3"
-          ><input
-            class="toggle toggle-sm toggle-primary"
-            type="checkbox"
-            bind:checked={companySignIn}
-          /><span>Company sign-in</span></label
-        >
-        {#if !localUsers && !companySignIn}
-          <p class="text-sm text-error" role="alert">
-            Keep at least one way to sign in, or nobody can.
-          </p>
-        {/if}
-      </fieldset>
-      {#if editableSettings}
-        <div class="flex justify-end border-t border-base-300 pt-4">
-          <button
-            class="btn btn-primary"
-            disabled={saving || !changed || (!localUsers && !companySignIn)}
-            >Save</button
+  {:else}
+    {#if settings}<form
+        class="trellis-panel max-w-2xl space-y-4 p-5"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void saveSettings();
+        }}
+      >
+        <fieldset class="space-y-3" disabled={saving || !editableSettings}>
+          <label class="flex items-center gap-3"
+            ><input
+              class="toggle toggle-sm toggle-primary"
+              type="checkbox"
+              bind:checked={localUsers}
+            /><span>Username and password</span></label
           >
-        </div>
-      {/if}
-    </form>
+          <label class="flex items-center gap-3 pl-8"
+            ><input
+              class="checkbox checkbox-sm"
+              type="checkbox"
+              bind:checked={localSignUp}
+              disabled={!localUsers}
+            /><span
+              >People can create their own account <span
+                class="text-sm text-base-content/60"
+                >· in apps that also allow it</span
+              ></span
+            ></label
+          >
+          <label class="flex items-center gap-3"
+            ><input
+              class="toggle toggle-sm toggle-primary"
+              type="checkbox"
+              bind:checked={companySignIn}
+            /><span>Company sign-in</span></label
+          >
+          {#if !localUsers && !companySignIn}
+            <p class="text-sm text-error" role="alert">
+              Keep at least one way to sign in, or nobody can.
+            </p>
+          {/if}
+        </fieldset>
+        {#if editableSettings}
+          <div class="flex justify-end border-t border-base-300 pt-4">
+            <button
+              class="btn btn-primary"
+              disabled={saving || !changed || (!localUsers && !companySignIn)}
+              >Save</button
+            >
+          </div>
+        {/if}
+      </form>{/if}
 
     {#if manageProviders}
       <div class="space-y-3">
@@ -371,6 +385,12 @@
               >
             </div>
           </details>
+          {#if selected && canPerform(authority.authority, "oidcRoleMappingsList")}
+            <GroupRoles
+              providerId={selected.providerId}
+              claim={selected.roleClaim}
+            />
+          {/if}
         </fieldset>
         <div
           class="flex flex-wrap justify-between gap-2 border-t border-base-300 pt-4"

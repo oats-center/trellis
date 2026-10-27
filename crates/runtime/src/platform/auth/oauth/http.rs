@@ -50,6 +50,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             "/.well-known/oauth-authorization-server",
             get(move || {
                 let engine = metadata_engine.clone();
+                let metadata_engine_nonce = engine.clone();
                 let endpoints = nats_endpoints.clone();
                 async move {
                     let metadata = blocking(move || {
@@ -92,7 +93,18 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                     })
                     .await;
                     match metadata {
-                        Ok(metadata) => Json(metadata).into_response(),
+                        Ok(metadata) => {
+                            let mut response = Json(metadata).into_response();
+                            if let Some(nonce) = metadata_engine_nonce
+                                .current_dpop_nonce()
+                                .and_then(|nonce| HeaderValue::from_str(&nonce).ok())
+                            {
+                                response
+                                    .headers_mut()
+                                    .insert(HeaderName::from_static("dpop-nonce"), nonce);
+                            }
+                            response
+                        }
                         _ => error(ErrorCode::ServerError),
                     }
                 }

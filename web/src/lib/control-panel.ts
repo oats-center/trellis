@@ -23,6 +23,8 @@ export type ExactPermission = {
 type Requirement = {
   administrative?: boolean;
   permission?: ExactPermission;
+  /** Met by holding at least one of these, for pages with independent parts. */
+  anyPermission?: readonly ExactPermission[];
 };
 
 type DisplayProfile = {
@@ -239,14 +241,23 @@ const navSections: NavSection[] = [
         href: "/admin/sign-in",
         label: "Sign-in methods",
         icon: "key",
+        // Methods need "Manage this Trellis"; providers need "Manage users".
         requires: [
           {
-            permission: {
-              api: apis.auth.API.identity,
-              surface: "rpc",
-              name: "SignInSettings.Get",
-              action: "call",
-            },
+            anyPermission: [
+              {
+                api: apis.auth.API.identity,
+                surface: "rpc",
+                name: "SignInSettings.Get",
+                action: "call",
+              },
+              {
+                api: apis.auth.API.identity,
+                surface: "rpc",
+                name: "OIDCProviders.List",
+                action: "call",
+              },
+            ],
           },
         ],
       },
@@ -337,7 +348,12 @@ function meetsRequirements(
       (!requirement.administrative || hasPlatformAdmin(authority)) &&
       (requirement.permission === undefined ||
         (authority !== null &&
-          hasExactPermission(authority, requirement.permission))),
+          hasExactPermission(authority, requirement.permission))) &&
+      (requirement.anyPermission === undefined ||
+        (authority !== null &&
+          requirement.anyPermission.some((permission) =>
+            hasExactPermission(authority, permission),
+          ))),
   );
 }
 

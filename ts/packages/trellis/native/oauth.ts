@@ -54,6 +54,8 @@ export class NativeOAuthClient {
   #connected = false;
   #owner?: SessionAuthorityOwner;
   #anchor: RuntimeAuthorizationTrust;
+  /** Token-endpoint nonce learned from discovery, used for the first proof. */
+  #dpopNonce?: string;
 
   private constructor(lease: NativeOAuthCustodyLease, auth: TrellisAuth) {
     this.#lease = lease;
@@ -211,6 +213,11 @@ export class NativeOAuthClient {
           true,
         );
       } catch (cause) {
+        // Refused before it was read, so the token is unspent and stays usable.
+        if (cause instanceof AuthError && cause.reason === "OAuthBusy") {
+          await this.#lease.abandonRotation();
+          throw cause;
+        }
         if (
           cause instanceof AuthError &&
           cause.reason === "OAuthTrustUnavailable"
@@ -246,6 +253,11 @@ export class NativeOAuthClient {
           true,
         );
       } catch (cause) {
+        // Refused before it was read, so the token is unspent and stays usable.
+        if (cause instanceof AuthError && cause.reason === "OAuthBusy") {
+          await this.#lease.abandonRotation();
+          throw cause;
+        }
         if (
           cause instanceof AuthError &&
           cause.reason === "OAuthTrustUnavailable"
@@ -346,6 +358,7 @@ export class NativeOAuthClient {
     const response = await postWithDpop({
       endpoint: `${this.scope.issuer}${endpoint}`,
       form,
+      nonce: this.#dpopNonce,
       key: {
         publicJwk: lease.publicJwk,
         sign: async (bytes) => await lease.sign(bytes),
@@ -358,6 +371,7 @@ export class NativeOAuthClient {
       ]),
     });
     if (response.ok) return response.data;
+    if (response.status === 429) throw new AuthError({ reason: "OAuthBusy" });
     const failure = z.object({ error: z.string() }).parse(response.data);
     throw new AuthError({
       reason:
@@ -385,7 +399,10 @@ export class NativeOAuthClient {
   async #prepareTrust(signal?: AbortSignal): Promise<void> {
     const discovered = await discoverNativeOAuth(this.scope.issuer, { signal });
     if (discovered.isErr())
-      throw new AuthError({ reason: "OAuthTrustUnavailable" });
+      throw discovered.error.reason === "OAuthBusy"
+        ? discovered.error
+        : new AuthError({ reason: "OAuthTrustUnavailable" });
+    this.#dpopNonce = discovered.orThrow().dpopNonce;
     const owner = await authenticateIssuerChain(
       this.scope.issuer,
       this.trust,
@@ -518,7 +535,12 @@ export class NativeDeviceAuthorization {
           ]),
         );
         if (result.isOk()) return result;
-        if (result.error.reason === "slow_down") this.#interval += 5;
+        // A device code waits for a person anyway; a busy issuer just slows polling.
+        if (
+          result.error.reason === "slow_down" ||
+          result.error.reason === "OAuthBusy"
+        )
+          this.#interval += 5;
         else if (result.error.reason !== "authorization_pending") return result;
       }
       return err(new AuthError({ reason: "OAuthDeviceExpired" }));

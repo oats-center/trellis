@@ -81,15 +81,13 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
           .getByRole("button", { name: "Select all", exact: true })
           .click();
         // Bulk selection never includes administration.
-        const administrativeLabel = await administration.getAttribute(
-          "aria-label",
-        );
+        const administrativeLabel =
+          await administration.getAttribute("aria-label");
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
             strictEqual(
               await choice.isChecked(),
-              (await choice.getAttribute("aria-label")) !==
-                administrativeLabel,
+              (await choice.getAttribute("aria-label")) !== administrativeLabel,
             );
         }
         await page
@@ -163,6 +161,30 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
             .getByRole("cell", { name: username, exact: true })
             .first()
             .waitFor();
+          // Managing users covers company sign-in providers, but not the
+          // installation's sign-in methods.
+          await page
+            .getByRole("link", { name: "Sign-in methods", exact: true })
+            .click();
+          await page
+            .getByRole("heading", {
+              name: "Company sign-in providers",
+              exact: true,
+            })
+            .waitFor();
+          strictEqual(
+            await page
+              .getByText("Username and password", { exact: true })
+              .count(),
+            0,
+          );
+        } else {
+          strictEqual(
+            await page
+              .getByRole("link", { name: "Sign-in methods", exact: true })
+              .count(),
+            0,
+          );
         }
         strictEqual(new URL(page.url()).origin, origin);
       } catch (error) {

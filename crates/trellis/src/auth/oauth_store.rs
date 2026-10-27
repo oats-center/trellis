@@ -385,6 +385,23 @@ impl NativeCredentialLease {
         Ok(token)
     }
 
+    /// Clear the spent marker after the issuer refused a rotation before reading
+    /// it, so the same token, never submitted, remains the credential.
+    pub(crate) fn abandon_rotation(&mut self) -> io::Result<()> {
+        if !self.record.recovery_required || self.record.grant.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no OAuth rotation to abandon",
+            ));
+        }
+        self.record.recovery_required = false;
+        if let Err(error) = self.commit() {
+            self.record.recovery_required = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Retain a known, unsubmitted successor secret without trusting response identity.
     /// The exclusive lease and existing grant identity remain unchanged while an
     /// admission awaits issuer-chain verification. An ambiguous exchange cannot

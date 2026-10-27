@@ -434,7 +434,7 @@ export class BrowserOAuthClient {
         return err(
           new AuthError({
             reason:
-              response.status >= 500
+              response.status >= 500 || response.status === 429
                 ? "OAuthUnavailable"
                 : "OAuthRecoveryRequired",
           }),

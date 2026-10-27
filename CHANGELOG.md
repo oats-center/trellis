@@ -19,12 +19,30 @@ and this project adheres to
   local self sign-up, and company sign-in. The same page manages company sign-in
   providers.
 - `trellis clients sign-up` and the Console app form choose an app's sign-up.
+- The Console gives roles to people from their company sign-in groups: edit a
+  provider on the Sign-in methods page to map each group to roles.
 - `trellis roles list|show|create|edit|delete|assign|revoke` manages roles and
   who has them from the CLI, including `--new-users` to give a role to every
   user created afterwards.
 
+### Fixed
+
+- A sign-in request refused by a rate limit no longer locks a CLI or native
+  Node login until the next `trellis login`; it reports that Trellis is busy and
+  the login keeps working. The CLI no longer calls this "OAuth issuer trust
+  unavailable", and browsers treat it as temporary.
+- Each CLI command and native refresh makes one fewer sign-in request, because
+  discovery now offers the DPoP nonce, so scripts reach the per-address limit
+  later.
+- The Console's Sign-in methods page shows company sign-in providers to anyone
+  who may manage users, not only to administrators who manage the whole
+  installation.
+
 ### Changed
 
+- App-owned `NativeOAuthCustody` leases must implement `abandonRotation()`.
+  Rust `NativeOAuthError` gains `Busy`, and `NativeOAuthServer` gains
+  `dpop_nonce`.
 - `[auth.local_identity] enabled` is removed; turn username-and-password
   sign-in off in the Console or with `trellis sign-in set --no-local-users`. A
   config that still sets it fails to start rather than silently turning local

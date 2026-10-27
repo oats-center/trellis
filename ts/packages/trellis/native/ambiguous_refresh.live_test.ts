@@ -11,11 +11,12 @@ import { createInterface } from "node:readline";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 
 test(
-  "a real consumed refresh whose HTTP response is lost cannot be retried and old session references cannot release custody",
+  "a refused refresh keeps its token, while a real consumed refresh whose HTTP response is lost cannot be retried and old session references cannot release custody",
   { timeout: 45000 },
   async (context) => {
     await withTrellisRuntime(async (runtime) => {
       let drop = false;
+      let refuse = false;
       let tokens = 0;
       const targets = new WeakMap<object, string>();
       const forwarding = createServer((incoming, outgoing) => {
@@ -24,6 +25,13 @@ test(
           `https://${targets.get(incoming.socket)}`,
         );
         if (target.pathname === "/token") tokens++;
+        if (refuse && target.pathname === "/token") {
+          // Answer as a rate-limiting reverse proxy would, before Trellis reads it.
+          refuse = false;
+          outgoing.writeHead(429, { "retry-after": "60" });
+          outgoing.end();
+          return;
+        }
         const upstream = request(
           target,
           { method: incoming.method, headers: incoming.headers },
@@ -93,6 +101,9 @@ test(
     const contender = await NativeOAuthClient.open({custody,scope:session.scope,trust:session.trust});
     assert.equal(contender.isErr(),true);
     const successful = (await session.refresh()).orThrow(); assert.equal(successful.auth,session.auth); assert.equal(successful.runtimeId,session.runtimeId); assert.equal(successful.principalId,session.principalId);
+    console.log("busy"); await once(process.stdin,"data");
+    const refused = await session.refresh(); assert.equal(refused.isErr(),true); assert.equal(refused.error.reason,"OAuthBusy");
+    (await session.refresh()).orThrow();
     console.log("ready"); await once(process.stdin,"data");
     const refresh = await session.refresh(); assert.equal(refresh.isErr(),true); assert.equal(refresh.error.reason,"OAuthRecoveryRequired");
     console.log("spent"); await once(process.stdin,"data");
@@ -142,7 +153,14 @@ test(
         return result.value;
       };
       try {
+        // A refused refresh leaves the token unspent; the next one succeeds with a
+        // single token POST because discovery already supplied the DPoP nonce.
+        assert.equal(await nextLine(), "busy");
+        refuse = true;
+        const beforeBusy = tokens;
+        child.stdin.write("busy\n");
         assert.equal(await nextLine(), "ready");
+        assert.equal(tokens, beforeBusy + 2);
         drop = true;
         child.stdin.write("refresh\n");
         assert.equal(await nextLine(), "spent");

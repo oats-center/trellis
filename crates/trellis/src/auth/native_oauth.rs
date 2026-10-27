@@ -29,6 +29,9 @@ pub struct NativeOAuthServer {
     /// Initial installation trust; for existing credentials this is only a
     /// successor hint that must be authenticated from their retained issuer pin.
     pub trust: RuntimeAuthorizationTrust,
+    /// The token endpoint's current DPoP nonce, when the issuer offers it with
+    /// discovery, so the first token request needs no nonce challenge.
+    pub dpop_nonce: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -86,6 +89,9 @@ pub async fn discover_native_oauth(
         .send()
         .await
         .map_err(|_| NativeOAuthError::Unavailable)?;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Err(NativeOAuthError::Busy);
+    }
     if !response.status().is_success() {
         return Err(NativeOAuthError::InvalidResponse);
     }
@@ -100,6 +106,7 @@ pub async fn discover_native_oauth(
         }
         bytes.extend_from_slice(&chunk);
     }
+    let dpop_nonce = single_nonce(response.headers());
     let document: DiscoveryDocument =
         serde_json::from_slice(&bytes).map_err(|_| NativeOAuthError::InvalidResponse)?;
     let metadata = document.trellis;
@@ -171,7 +178,22 @@ pub async fn discover_native_oauth(
             rotation_sequence: metadata.rotation_sequence.get(),
             root_certificates: root_certificates.to_vec(),
         },
+        dpop_nonce,
     })
+}
+
+/// One bounded `DPoP-Nonce` header; several or an oversized one count as none.
+fn single_nonce(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let mut values = headers.get_all("DPoP-Nonce").iter();
+    let value = values.next()?;
+    if values.next().is_some() {
+        return None;
+    }
+    value
+        .to_str()
+        .ok()
+        .filter(|value| !value.is_empty() && value.len() <= 1024)
+        .map(str::to_owned)
 }
 
 /// Builds the non-redirecting OAuth HTTP client, trusting only `root_certificates` when given.
@@ -221,6 +243,10 @@ pub enum NativeOAuthError {
     /// Retry after trust recovery; no unsubmitted refresh credential is consumed.
     #[error("OAuth issuer trust unavailable")]
     TrustUnavailable,
+    /// The issuer is limiting requests from this address. Nothing was spent;
+    /// retry in about a minute.
+    #[error("Trellis is limiting sign-in requests from this address; try again in a minute")]
+    Busy,
 }
 
 /// Verified in-memory inputs for the ordinary one-step native NATS connection.
@@ -299,6 +325,8 @@ pub struct NativeOAuthClient {
     auth: SessionAuth,
     runtime_id: String,
     issuer_rotations: Vec<SignedIssuerRotation>,
+    /// Token-endpoint nonce learned from discovery, used for the first proof.
+    dpop_nonce: Option<String>,
 }
 
 /// An outstanding RFC 8628 flow. Only the user-facing code and verification URI
@@ -377,6 +405,7 @@ impl NativeOAuthClient {
             auth,
             runtime_id: URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()),
             issuer_rotations: Vec::new(),
+            dpop_nonce: None,
         })
     }
 
@@ -462,10 +491,14 @@ impl NativeOAuthClient {
             .map_err(|_| NativeOAuthError::RecoveryRequired)?
             .scope()
             .clone();
-        let target = discover_native_oauth(&scope.issuer, &self.trust.root_certificates)
+        let discovered = discover_native_oauth(&scope.issuer, &self.trust.root_certificates)
             .await
-            .map_err(|_| NativeOAuthError::TrustUnavailable)?
-            .trust;
+            .map_err(|error| match error {
+                NativeOAuthError::Busy => NativeOAuthError::Busy,
+                _ => NativeOAuthError::TrustUnavailable,
+            })?;
+        self.dpop_nonce = discovered.dpop_nonce;
+        let target = discovered.trust;
         if target.instance_id != scope.instance_id
             || target.account != scope.account
             || target.rotation_sequence < self.trust.rotation_sequence
@@ -578,9 +611,27 @@ impl NativeOAuthClient {
                     ("refresh_token", token),
                 ],
             )
-            .await
+            .await;
+        let bytes = match bytes {
+            Ok(bytes) => bytes,
+            // The issuer refused the request before reading it, so the token is
+            // unspent and stays usable.
+            Err(ExchangeError::Busy) => {
+                let lease = Arc::clone(&self.lease);
+                tokio::task::spawn_blocking(move || {
+                    lease
+                        .lock()
+                        .map_err(|_| std::io::Error::other("OAuth custody poisoned"))?
+                        .abandon_rotation()
+                })
+                .await
+                .map_err(|_| NativeOAuthError::RecoveryRequired)?
+                .map_err(NativeOAuthError::Custody)?;
+                return Err(NativeOAuthError::Busy);
+            }
             // Ambiguous/lost responses leave the original spent marker in place.
-            .map_err(|_| NativeOAuthError::RecoveryRequired)?;
+            Err(_) => return Err(NativeOAuthError::RecoveryRequired),
+        };
         let response: TokenResponse =
             serde_json::from_slice(&bytes).map_err(|_| NativeOAuthError::InvalidResponse)?;
         if !response.token_type.eq_ignore_ascii_case("DPoP") {
@@ -664,7 +715,7 @@ impl NativeOAuthClient {
         fields.extend_from_slice(extra);
         // Nonces are request-local. A standard challenge is explicitly known to
         // precede credential consumption, and is the only automatic token retry.
-        let mut nonce = None;
+        let mut nonce = self.dpop_nonce.clone();
         for attempt in 0..2 {
             let proof = self
                 .proof(&uri, nonce.as_deref())
@@ -678,16 +729,10 @@ impl NativeOAuthClient {
                 .await
                 .map_err(|_| ExchangeError::Failed)?;
             let status = response.status();
-            let challenge = if response.headers().get_all("DPoP-Nonce").iter().count() == 1 {
-                response
-                    .headers()
-                    .get("DPoP-Nonce")
-                    .and_then(|value| value.to_str().ok())
-                    .filter(|value| !value.is_empty() && value.len() <= 1024)
-                    .map(str::to_owned)
-            } else {
-                None
-            };
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(ExchangeError::Busy);
+            }
+            let challenge = single_nonce(response.headers());
             let mut bytes = Vec::new();
             while let Some(chunk) = response.chunk().await.map_err(|_| ExchangeError::Failed)? {
                 if bytes.len() + chunk.len() > 64 * 1024 {
@@ -803,6 +848,8 @@ impl NativeOAuthClient {
 
 enum ExchangeError {
     OAuth(String),
+    /// Refused by the issuer's request limit before the request was read.
+    Busy,
     Failed,
 }
 
@@ -811,6 +858,7 @@ fn exchange_error(error: ExchangeError) -> NativeOAuthError {
         ExchangeError::OAuth(code) if code == "access_denied" => NativeOAuthError::Denied,
         ExchangeError::OAuth(code) if code == "expired_token" => NativeOAuthError::Expired,
         ExchangeError::OAuth(code) if code == "invalid_grant" => NativeOAuthError::RecoveryRequired,
+        ExchangeError::Busy => NativeOAuthError::Busy,
         _ => NativeOAuthError::Unavailable,
     }
 }
@@ -868,6 +916,8 @@ impl NativeDeviceAuthorization {
                 Err(ExchangeError::OAuth(code)) if code == "slow_down" => {
                     self.interval += Duration::from_secs(5)
                 }
+                // A device code waits for a person anyway; keep polling more slowly.
+                Err(ExchangeError::Busy) => self.interval += Duration::from_secs(5),
                 Err(error) => return Err(exchange_error(error)),
             }
         }

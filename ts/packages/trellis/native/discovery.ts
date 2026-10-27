@@ -6,7 +6,7 @@ import type { RuntimeAuthorizationTrust } from "../auth/authority.ts";
 import { base64urlDecode, base64urlEncode, sha256 } from "../auth/utils.ts";
 import { codecs } from "../generated_support.ts";
 import { AuthError } from "../errors/AuthError.ts";
-import { boundedJson } from "../auth/oauth_core.ts";
+import { boundedJson, usableNonce } from "../auth/oauth_core.ts";
 
 const metadataSchema = z.object({
   issuer: z.string(),
@@ -37,6 +37,8 @@ export type NativeOAuthServer = Readonly<{
   issuer: string;
   natsServers: readonly string[];
   trust: RuntimeAuthorizationTrust;
+  /** The token endpoint's current DPoP nonce, when the issuer offers it, so the first token request needs no challenge. */
+  dpopNonce?: string;
 }>;
 
 /** Decode a bounded OAuth response before interpreting its protocol fields. @internal */
@@ -72,7 +74,9 @@ export async function discoverNativeOAuth(
         ]),
       },
     );
+    if (response.status === 429) throw new AuthError({ reason: "OAuthBusy" });
     if (!response.ok) throw new AuthError({ reason: "OAuthUnavailable" });
+    const dpopNonce = usableNonce(response.headers.get("DPoP-Nonce"));
     const metadata = metadataSchema.parse(await boundedJson(response));
     if (metadata.issuer !== url.origin)
       throw new AuthError({ reason: "InvalidIssuer" });
@@ -132,6 +136,7 @@ export async function discoverNativeOAuth(
         issuer: active[0],
         rotationSequence: metadata.trellis.rotationSequence,
       },
+      ...(dpopNonce ? { dpopNonce } : {}),
     });
   } catch (cause) {
     return err(

@@ -364,6 +364,17 @@ fn rejected() -> ErrorResponse {
     ErrorResponse::new(ErrorCode::InvalidGrant)
 }
 impl OAuthEngine {
+    /// The token endpoint's current DPoP nonce, offered with discovery so a
+    /// client's first token request needs no challenge round trip.
+    pub(super) fn current_dpop_nonce(&self) -> Option<String> {
+        self.nonces
+            .lock()
+            .ok()?
+            .check(None, Instant::now())
+            .ok()
+            .flatten()
+    }
+
     /// Records whether this OAuth listener serves Trellis-generated certificates,
     /// so every Portal page can show the not-for-production banner.
     pub(crate) fn serve_generated_tls(&self, generated: bool) {

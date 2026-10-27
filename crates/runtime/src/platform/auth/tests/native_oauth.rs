@@ -26,6 +26,8 @@ struct ProxyControl {
     pause_refresh: Option<tokio::sync::oneshot::Sender<tokio::sync::oneshot::Sender<()>>>,
     hide_chain_after_success: bool,
     lose_success_response: bool,
+    /// Answer the next refresh as a rate-limiting reverse proxy would.
+    refuse_next_refresh: bool,
 }
 
 struct NativeOAuthProxy {
@@ -53,6 +55,13 @@ async fn proxy_request(
         let pause = {
             let mut control = proxy.control.lock().unwrap();
             control.refresh_posts += 1;
+            if std::mem::take(&mut control.refuse_next_refresh) {
+                return axum::http::Response::builder()
+                    .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+                    .header(header::RETRY_AFTER, "60")
+                    .body(Body::empty())
+                    .unwrap();
+            }
             control.pause_refresh.take()
         };
         if let Some(arrived) = pause {
@@ -620,6 +629,38 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
     assert_eq!(session.trust.issuer, authority.issuer().unwrap());
     assert_ne!(session.runtime_id, previous_runtime);
     assert_ne!(session.auth.session_nkey().unwrap(), previous_nkey);
+    // A rate-limited refresh is refused before anything reads it, so its token is
+    // never spent: the client reports that it is busy and the next attempt uses
+    // the same token. Discovery hands out the current DPoP nonce, so that next
+    // refresh is a single token POST with no nonce challenge.
+    let (posts_before_busy, unspent) = {
+        let mut control = proxy.control.lock().unwrap();
+        control.refuse_next_refresh = true;
+        (
+            control.refresh_posts,
+            control.successes.last().unwrap().1.clone(),
+        )
+    };
+    drop(session);
+    assert!(matches!(
+        NativeOAuthClient::open(custody.clone(), scope.clone(), trust.clone())
+            .await
+            .unwrap()
+            .resume()
+            .await,
+        Err(NativeOAuthError::Busy)
+    ));
+    session = NativeOAuthClient::open(custody.clone(), scope.clone(), trust.clone())
+        .await
+        .unwrap()
+        .resume()
+        .await
+        .unwrap();
+    {
+        let control = proxy.control.lock().unwrap();
+        assert_eq!(control.refresh_posts, posts_before_busy + 2);
+        assert_eq!(control.successes.last().unwrap().0, unspent);
+    }
     // Consume a real token at the backend, then reset the response stream before
     // the SDK can learn its replacement. Restoring the transport must not cause
     // either this session or a reopened public client to retry that predecessor.

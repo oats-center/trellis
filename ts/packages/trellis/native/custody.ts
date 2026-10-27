@@ -50,6 +50,8 @@ export interface NativeOAuthCustodyLease {
   sign(input: Uint8Array<ArrayBuffer>): Promise<ArrayBuffer>;
   /** Mark the current token spent before returning it to the HTTP exchange. */
   beginRotation(): string | Promise<string>;
+  /** Clear the spent marker after the issuer refused the rotation before reading it, keeping the same unsubmitted token. */
+  abandonRotation(): void | Promise<void>;
   /** Retain a returned, unsubmitted successor without promoting admission. */
   retainRotatedToken(refreshToken: string): void | Promise<void>;
   /** Atomically install a verified response without changing its owning principal. */
@@ -241,6 +243,13 @@ class MemoryNativeOAuthLease implements NativeOAuthCustodyLease {
       throw new AuthError({ reason: "OAuthRecoveryRequired" });
     this.#record.spent = true;
     return this.#record.grant.refreshToken;
+  }
+  /** Restore the token a refused rotation never submitted. */
+  abandonRotation(): void {
+    this.#assertOpen();
+    if (!this.#record.grant || !this.#record.spent)
+      throw new AuthError({ reason: "OAuthRecoveryRequired" });
+    this.#record.spent = false;
   }
   /** Retain an unsubmitted successor even when admission verification has not completed. */
   retainRotatedToken(refreshToken: string): void {

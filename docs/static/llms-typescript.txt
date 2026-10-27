@@ -106,8 +106,11 @@ memory, with no credential files or SQLite requirement. Retain an explicit
 within one process. For remembered login across process restarts, supply an
 application-owned `NativeOAuthCustody` provider; Trellis ships no persistent
 Node backend. Providers must exclusively acquire the exact family, durably mark
-a token spent before returning it for submission, atomically commit successors,
-and retain authenticated trust; the SDK awaits those commits.
+a token spent before returning it for submission, clear that mark in
+`abandonRotation()` (called only when the issuer refused the request unread),
+atomically commit successors, and retain authenticated trust; the SDK awaits
+those commits. A refresh refused by a rate limit fails with reason `OAuthBusy`
+and leaves the login usable; retry after about a minute.
 
 A successful connection owns the credential family until it closes; an earlier
 session reference cannot release that ownership. Await `connection.close()`
