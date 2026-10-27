@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.10] - 2026-10-27
+
 ### Changed
 
 - The TypeScript testkit's runtimes allow 2 seconds of clock skew by default
