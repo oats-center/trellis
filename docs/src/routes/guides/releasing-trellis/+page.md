@@ -47,10 +47,12 @@ npm test
 The pipeline and `npm test` share one script, `scripts/check.sh`: every pipeline
 job runs `scripts/check.sh <job>`, and `npm test` runs every job on this host. It
 builds once (contract artifacts, the embedded Console and Portal, npm packages,
-and every executable the jobs launch), then runs formatting, Clippy, the Rust
-workspace, TypeScript checks and package tests, Rust and TypeScript live
-integration, the demo and documented-example consumers, and the browser suite
-concurrently, logging each to `target/test-logs/`. Jobs the pipeline splits across
+and every executable the jobs launch), then runs formatting, Rust lint
+(`clippy`), Rust tests (`rust`: every workspace test, live ones included),
+TypeScript checks (`typescript-checks`), TypeScript tests (`typescript-tests`:
+the packages' own suites and the integration files), Rust testkit tests
+(`testkit-tests`), the demo and documented-example consumers, and the browser
+tests concurrently, logging each to `target/test-logs/`. Jobs the pipeline splits across
 runners run whole locally, with concurrency sized from the host's cores
 (`TRELLIS_TEST_CONCURRENCY` and `TRELLIS_BROWSER_CONCURRENCY` override it). Local
 runs use debug builds; the pipeline tests its release build.
@@ -63,7 +65,7 @@ test (Docker or Podman). To run one job, use `scripts/check.sh <job>`.
 While iterating, run the focused checks that match the files touched. Build the server/CLI and set their paths as described in `integration/README.md`. Each live test owns its real runtime lifecycle:
 
 ```sh
-cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
+cargo test --manifest-path Cargo.toml -p trellis-rs --test integration -- --test-threads=1
 npm run test:integration
 ```
 
@@ -92,14 +94,14 @@ Executable Rust and Node tests are the integration catalog.
 For focused local debugging, run the smallest matching Rust test or Node test file directly:
 
 ```sh
-cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration
+cargo test --manifest-path Cargo.toml -p trellis-rs --test integration
 npm run test:integration -- --test-name-pattern='generated runtime workflows' ts/integration/runtime_test.ts
 ```
 
 Run both suites before accepting changes to transport or runtime behavior:
 
 ```sh
-cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --test-threads=1
+cargo test --manifest-path Cargo.toml -p trellis-rs --test integration -- --test-threads=1
 npm run test:integration
 ```
 

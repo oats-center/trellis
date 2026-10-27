@@ -503,7 +503,7 @@ jobs:
           retention-days: 3
 
   rust:
-    name: Rust
+    name: Rust tests
     needs: [install, wasm, portal, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
@@ -604,8 +604,8 @@ jobs:
       - name: Test Rust workspace
         run: bash scripts/check.sh rust
 
-  typescript:
-    name: TypeScript
+  typescript-checks:
+    name: TypeScript checks
     needs: [install, wasm, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
@@ -637,7 +637,7 @@ jobs:
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
-        run: bash scripts/check.sh typescript
+        run: bash scripts/check.sh typescript-checks
 
   demos:
     name: Demo consumers
@@ -694,45 +694,8 @@ jobs:
             ts/packages/trellis-svelte/npm
           retention-days: 3
 
-  live-rust:
-    name: Rust live integration
-    needs: [install, wasm, portal, build]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
-    timeout-minutes: 45
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Restore pipeline inputs
-        uses: ./.github/actions/check-inputs
-        with:
-          generated: true
-          protocol-wasm: true
-          portal: true
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Download runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: check-runtime-binaries
-          path: ${{ runner.temp }}/runtime-binaries
-
-      - name: Stage runtime binaries
-        run: |
-          set -euo pipefail
-          mkdir -p target/debug
-          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
-
-      - name: Run Rust live integration
-        env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-        run: bash scripts/check.sh live-rust
-
-  live-typescript:
-    name: TypeScript live integration (${{ matrix.shard }}/8)
+  typescript-tests:
+    name: TypeScript tests (${{ matrix.shard }}/8)
     needs: [install, wasm, portal, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
@@ -771,16 +734,19 @@ jobs:
       - name: Install Node workspace dependencies
         run: npm ci
 
-      - name: Run TypeScript live integration
+      - name: Run TypeScript tests
         env:
           TRELLIS_TEST_SHARD: ${{ matrix.shard }}/8
-          # Two active file workers per hosted runner. The suite mostly waits on
-          # real authorization expiry, so more hosts shorten the slowest shard.
-          TRELLIS_TEST_CONCURRENCY: "2"
-        run: bash scripts/check.sh live-typescript
+          # The first shard also runs the packages' own suites.
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          # Node runs test files in parallel processes: two on a hosted VM, and
+          # on a self-hosted runner the script's default, half the host's cores.
+          TRELLIS_TEST_CONCURRENCY: ${{ runner.environment == 'github-hosted' && '2' || '' }}
+        run: bash scripts/check.sh typescript-tests
 
-  live-testkit:
-    name: Rust testkit integration
+  testkit-tests:
+    name: Rust testkit tests
     needs: [install, wasm, portal, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
@@ -814,8 +780,8 @@ jobs:
       - name: Install Node workspace dependencies
         run: npm ci
 
-      - name: Run Rust testkit integration
-        run: bash scripts/check.sh live-testkit
+      - name: Run Rust testkit tests
+        run: bash scripts/check.sh testkit-tests
 
   examples:
     name: Documented examples
@@ -853,7 +819,7 @@ jobs:
           bash scripts/check.sh examples
 
   browser:
-    name: Browser (${{ matrix.shard }}/8)
+    name: Browser tests (${{ matrix.shard }}/8)
     needs: [install, wasm, portal, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
@@ -908,7 +874,7 @@ jobs:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           TRELLIS_TEST_SHARD: ${{ matrix.shard }}/8
-          TRELLIS_BROWSER_CONCURRENCY: "2"
+          TRELLIS_BROWSER_CONCURRENCY: ${{ runner.environment == 'github-hosted' && '2' || '' }}
         run: bash scripts/check.sh browser
 
       - name: Upload sanitized failure artifacts
@@ -1142,13 +1108,12 @@ jobs:
       - lint
       - clippy
       - rust
-      - typescript
+      - typescript-checks
       - demos
       - examples
       - browser
-      - live-rust
-      - live-typescript
-      - live-testkit
+      - typescript-tests
+      - testkit-tests
       - rust-testkit-consumer
       - typescript-testkit-package
       - verify-images

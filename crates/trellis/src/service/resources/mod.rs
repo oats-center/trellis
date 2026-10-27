@@ -1635,7 +1635,6 @@ mod tests {
         assert_eq!(info.size, 7);
     }
 
-    #[cfg(feature = "live-integration")]
     #[tokio::test]
     async fn live_kv_binding_validation_uses_physical_bucket_status() {
         let source = tempfile::tempdir().unwrap();

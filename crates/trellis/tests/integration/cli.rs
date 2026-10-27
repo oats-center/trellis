@@ -292,6 +292,9 @@ where
 
 #[tokio::test]
 async fn cli_server_managed_nats() {
+    // The workspace build compiles both rustls backends, so choose the one the
+    // runtime and CLI install.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("bundle");
     let effective_root = workdir.0.join("effective");

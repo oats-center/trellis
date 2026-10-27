@@ -94,7 +94,7 @@ Run these peer suites when you need that coverage:
 
 ```sh
 npm run test:integration
-cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
+cargo test --manifest-path Cargo.toml -p trellis-rs --test integration -- --nocapture
 ```
 
 Both suites use ordinary Rust and Deno discovery. Build the server and CLI once

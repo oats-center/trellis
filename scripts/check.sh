@@ -22,7 +22,7 @@ temp="${RUNNER_TEMP:-$root/target/check-tmp}"
 
 # The fast jobs `npm test` runs by default, and the slower packaging and
 # container-image jobs `--all` adds.
-fast_jobs=(lint clippy rust typescript live-rust live-typescript live-testkit demos examples browser)
+fast_jobs=(lint clippy rust typescript-checks typescript-tests testkit-tests demos examples browser)
 heavy_jobs=(rust-testkit typescript-testkit images)
 
 # Packages are built once per runner; staged local jobs share one build.
@@ -102,7 +102,7 @@ job_rust() {
   bash scripts/run-rust-tests.sh "$@"
 }
 
-job_typescript() {
+job_typescript_checks() {
   build_packages
   each \
     "npm run check --workspace @oatscenter/trellis" \
@@ -110,30 +110,20 @@ job_typescript() {
     "npm run check:benchmarks" \
     "npm run check:integration" \
     "npm run check --workspace @trellis/console" \
-    "npm run check --workspace @trellis/oauth-portal" \
-    "bash scripts/run-sdk-tests.sh"
+    "npm run check --workspace @trellis/oauth-portal"
 }
 
-job_live_rust() {
-  # Use the staged broker (CI extracts one beside the binaries), else the
-  # pinned one, rather than whatever nats-server is on PATH.
-  local nats="${TRELLIS_TEST_NATS_BIN:-$root/target/debug/nats/nats-server}" version
-  if [[ ! -x "$nats" ]]; then
-    version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
-    nats="$root/target/test-nats/$version/nats-server"
-    [[ -x "$nats" ]] || bash scripts/acquire-test-nats.sh --dest "$(dirname "$nats")"
+# Integration files, plus the packages' own suites. A CI shard runs only its
+# share of the integration files; the first shard also runs the package suites.
+job_typescript_tests() {
+  if [[ "${TRELLIS_TEST_SHARD:-1/1}" == 1/* ]]; then
+    build_packages
+    bash scripts/run-sdk-tests.sh
   fi
-  TRELLIS_TEST_NATS_BIN="$nats" TRELLIS_TEST_SERVER_BIN="${TRELLIS_TEST_SERVER_BIN:-$root/target/debug/trellis-server}" \
-    TRELLIS_TEST_CLI_BIN="${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}" \
-    cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration \
-    --test integration -- --nocapture
-}
-
-job_live_typescript() {
   bash scripts/run-ts-integration.sh "$@"
 }
 
-job_live_testkit() {
+job_testkit_tests() {
   bash scripts/run-testkit-tests.sh "$@"
 }
 
@@ -315,8 +305,6 @@ echo "building executables and test binaries"
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-sdk-tests.sh
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-browser-tests.sh
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-testkit-tests.sh
-  cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration \
-    --test integration --no-run
   [[ "$all" != "--all" ]] || pack_native
 } > "$logs/build.log" 2>&1 || { echo "build failed; see $logs/build.log" >&2; exit 1; }
 echo "built in $(( SECONDS - started ))s; running ${jobs[*]} concurrently"

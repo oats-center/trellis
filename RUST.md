@@ -84,7 +84,7 @@ runs installation first. Rust client-library integration coverage lives in the
 public `trellis` facade crate and runs with:
 
 ```sh
-cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
+cargo test --manifest-path Cargo.toml -p trellis-rs --test integration -- --nocapture
 ```
 
 That Rust suite is a peer of the TypeScript/Deno suite

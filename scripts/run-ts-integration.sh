@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Runs the TypeScript live integration suite from one self-contained setup.
+# Runs the TypeScript integration suite from one self-contained setup.
 #
 # This is the single entrypoint for the suite locally and in CI:
 #

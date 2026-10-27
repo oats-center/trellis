@@ -19,16 +19,11 @@ native-oauth = ["http", "dep:p256"]
 device = ["native-oauth", "dep:hkdf", "dep:hmac"]
 event-store-sqlite = ["dep:rusqlite"]
 event-store-postgres = ["dep:postgres"]
-live-integration = []
 telemetry-otlp = [
   "http",
   "dep:opentelemetry-otlp",
   "reqwest/blocking",
 ]
-
-[[test]]
-name = "integration"
-required-features = ["live-integration"]
 
 [dependencies]
 trellis-models.workspace = true

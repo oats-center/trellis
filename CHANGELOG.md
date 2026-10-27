@@ -14,6 +14,9 @@ and this project adheres to
   instead of 30, so tests that wait for authority to expire finish sooner. Pass
   `authorization.allowedClockSkewSeconds` to choose another value.
 
+- `trellis-rs` no longer has a `live-integration` feature; its integration
+  tests run with the rest of its tests.
+
 - Native OAuth device-code login polls once right away, so a code approved
   before polling starts completes without waiting a full polling interval.
 
