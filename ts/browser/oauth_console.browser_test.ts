@@ -134,11 +134,9 @@ test("registered Console delegates administrative authority through consent and 
         })(),
       ]);
       strictEqual(response.status(), 200);
-      // App revocation must preserve the separate Portal login: authorization
-      // returns straight to consent, without asking the operator to sign in again.
-      await page
-        .getByRole("heading", { name: /wants to use your account/ })
-        .waitFor();
+      // Signing out of the Console ends the Portal login too, so authorization
+      // asks who is signing in instead of returning to the same account.
+      await page.getByLabel("Username", { exact: true }).waitFor();
     } catch (error) {
       await page.screenshot({
         path: "/tmp/opencode/console-signout-failure.png",

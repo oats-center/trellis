@@ -63,6 +63,7 @@ test(
             description:
               "Role membership is not consent to delegate administration",
             capabilityIds: [...approved, declined],
+            assignToNewUsers: false,
             expectedRevision: 0n,
             idempotencyKey: ulid(),
           })
@@ -116,6 +117,7 @@ test(
           title: "Unauthorized overwrite",
           description: "",
           capabilityIds: [],
+          assignToNewUsers: false,
           expectedRevision: role.revision,
           idempotencyKey: ulid(),
         });
@@ -150,6 +152,7 @@ test(
               title: "Unapproved overwrite",
               description: "",
               capabilityIds: [],
+              assignToNewUsers: false,
               expectedRevision: role.revision,
               idempotencyKey: ulid(),
             })
