@@ -836,8 +836,14 @@ impl NativeDeviceAuthorization {
     /// Poll according to RFC 8628, respecting pending/slow-down and the original
     /// expiry. Dropping this future cancels polling without deleting credentials.
     pub async fn complete(mut self) -> Result<NativeOAuthSession, NativeOAuthError> {
+        // Poll once at once: a code approved before polling starts needs no
+        // wait. The interval separates later polls.
+        let mut first = true;
         loop {
-            tokio::time::sleep_until((Instant::now() + self.interval).min(self.deadline)).await;
+            if !first {
+                tokio::time::sleep_until((Instant::now() + self.interval).min(self.deadline)).await;
+            }
+            first = false;
             if Instant::now() >= self.deadline {
                 return Err(NativeOAuthError::Expired);
             }

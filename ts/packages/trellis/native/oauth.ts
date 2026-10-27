@@ -495,12 +495,17 @@ export class NativeDeviceAuthorization {
       return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
     this.#completed = true;
     try {
+      // Poll once at once: a code approved before polling starts needs no
+      // wait. The interval separates later polls.
+      let first = true;
       while (performance.now() < this.#deadline) {
-        await setTimeout(
-          Math.min(this.#interval * 1000, this.#deadline - performance.now()),
-          undefined,
-          { signal: options.signal },
-        );
+        if (!first)
+          await setTimeout(
+            Math.min(this.#interval * 1000, this.#deadline - performance.now()),
+            undefined,
+            { signal: options.signal },
+          );
+        first = false;
         const remaining = this.#deadline - performance.now();
         if (remaining <= 0) break;
         const result = await this.#client.pollDevice(
