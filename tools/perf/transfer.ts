@@ -11,7 +11,6 @@ const { values: args } = parseArgs({
   options: {
     output: { type: "string" },
     server: { type: "string" },
-    cli: { type: "string" },
     samples: { type: "string", default: "21" },
     calls: { type: "string", default: "100" },
     warmups: { type: "string", default: "3" },
@@ -58,7 +57,6 @@ const run = await spawnTracked(
     `--calls=${args.calls}`,
     `--warmups=${args.warmups}`,
     ...(args.server ? [`--server=${resolve(args.server)}`] : []),
-    ...(args.cli ? [`--cli=${resolve(args.cli)}`] : []),
   ],
   { cwd: sourceRoot, env: { ...process.env, ...env }, stdio: "inherit" },
 ).exited;
