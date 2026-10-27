@@ -263,9 +263,14 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
 
     // The broker schedules forgetting a message ID when it stores the message,
     // using the window then in force; shrink it first so a later replay of
-    // the retained publication is not a duplicate for minutes.
+    // the retained publication is not a duplicate for minutes. Changing the
+    // window re-fires the broker's purge timer before the new window is
+    // installed, so that purge can reschedule itself by the old two-minute
+    // window. A second change re-fires it while either value is short.
     let mut config = stream.info().await.unwrap().config.clone();
     config.duplicate_window = Duration::from_millis(100);
+    context.update_stream(config.clone()).await.unwrap();
+    config.duplicate_window = Duration::from_millis(101);
     context.update_stream(config.clone()).await.unwrap();
 
     // Truncate real broker history while this projection is offline, leaving a
