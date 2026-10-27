@@ -1,6 +1,6 @@
 [package]
 name = "trellis-models"
-version = "0.100.0-rc.10"
+version = "0.100.0-rc.12"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true

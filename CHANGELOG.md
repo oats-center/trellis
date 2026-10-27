@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.12] - 2026-10-27
+
 ### Added
 
 - People can create their own account again. An administrator allows it per
