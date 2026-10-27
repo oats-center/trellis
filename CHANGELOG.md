@@ -46,6 +46,20 @@ and this project adheres to
 
 ### Fixed
 
+- A service update that installs without approval no longer restores a
+  capability an administrator revoked from the instance, and an update that
+  adds a service's first job queue grants the job history access its next
+  connection needs.
+
+- The Console's Sign-in page no longer lets Save or Remove act on an app whose
+  theme failed to load with another app's settings.
+
+- The IDL `json` type keeps a `__proto__` key as an ordinary key instead of
+  dropping it.
+
+- `cargo xtask install` replaces the `models.json` snapshot earlier versions
+  generated instead of refusing to install.
+
 - Creating or applying a deployment whose participant implements an API that is
   not yet accepted fails with "API <id> is not accepted" instead of "Not
   authorized".
