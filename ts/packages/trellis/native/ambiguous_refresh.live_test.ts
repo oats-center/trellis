@@ -8,23 +8,40 @@ import { join } from "node:path";
 import { TLSSocket } from "node:tls";
 import { test } from "node:test";
 import { createInterface } from "node:readline";
+import { ulid } from "ulid";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 
 test(
-  "a refused refresh keeps its token, while a real consumed refresh whose HTTP response is lost cannot be retried and old session references cannot release custody",
+  "a refused refresh or trust check keeps the login, while a real consumed refresh whose HTTP response is lost cannot be retried and old session references cannot release custody",
   { timeout: 45000 },
   async (context) => {
     await withTrellisRuntime(async (runtime) => {
       let drop = false;
       let refuse = false;
+      let refuseDiscovery = false;
+      let holdToken: Promise<void> | undefined;
       let tokens = 0;
       const targets = new WeakMap<object, string>();
-      const forwarding = createServer((incoming, outgoing) => {
+      const forwarding = createServer(async (incoming, outgoing) => {
         const target = new URL(
           incoming.url ?? "/",
           `https://${targets.get(incoming.socket)}`,
         );
         if (target.pathname === "/token") tokens++;
+        if (
+          refuseDiscovery &&
+          target.pathname === "/.well-known/oauth-authorization-server"
+        ) {
+          refuseDiscovery = false;
+          outgoing.writeHead(429, { "retry-after": "60" });
+          outgoing.end();
+          return;
+        }
+        if (holdToken && target.pathname === "/token") {
+          const held = holdToken;
+          holdToken = undefined;
+          await held;
+        }
         if (refuse && target.pathname === "/token") {
           // Answer as a rate-limiting reverse proxy would, before Trellis reads it.
           refuse = false;
@@ -104,6 +121,9 @@ test(
     console.log("busy"); await once(process.stdin,"data");
     const refused = await session.refresh(); assert.equal(refused.isErr(),true); assert.equal(refused.error.reason,"OAuthBusy");
     (await session.refresh()).orThrow();
+    console.log("rotate " + session.trust.issuer.keyId); await once(process.stdin,"data");
+    const rotated = await session.refresh(); assert.equal(rotated.isErr(),true); assert.equal(rotated.error.reason,"OAuthBusy");
+    (await session.refresh()).orThrow();
     console.log("ready"); await once(process.stdin,"data");
     const refresh = await session.refresh(); assert.equal(refresh.isErr(),true); assert.equal(refresh.error.reason,"OAuthRecoveryRequired");
     console.log("spent"); await once(process.stdin,"data");
@@ -159,8 +179,25 @@ test(
         refuse = true;
         const beforeBusy = tokens;
         child.stdin.write("busy\n");
-        assert.equal(await nextLine(), "ready");
+        const rotate = await nextLine();
+        assert.match(rotate, /^rotate /);
         assert.equal(tokens, beforeBusy + 2);
+        // The issuer rotates while a token request is in flight, so installing
+        // its successor must re-check trust, and that check is rate limited.
+        // The successor is kept: the client reports busy, then refreshes.
+        let release!: () => void;
+        holdToken = new Promise((resolve) => (release = resolve));
+        const beforeRotation = tokens;
+        child.stdin.write("rotate\n");
+        while (tokens === beforeRotation)
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        await runtime.callAdminRpc("authIssuersRotate", {
+          expectedCurrentKeyId: rotate.slice("rotate ".length),
+          idempotencyKey: ulid(),
+        });
+        refuseDiscovery = true;
+        release();
+        assert.equal(await nextLine(), "ready");
         drop = true;
         child.stdin.write("refresh\n");
         assert.equal(await nextLine(), "spent");

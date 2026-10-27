@@ -201,30 +201,7 @@ export class NativeOAuthClient {
       if (!this.#lease.refreshAvailable)
         throw new AuthError({ reason: "OAuthRecoveryRequired" });
       await this.#prepareTrust(options.signal);
-      const token = await this.#lease.beginRotation();
-      try {
-        return await this.#install(
-          await this.#exchange(
-            "/token",
-            { grant_type: "refresh_token", refresh_token: token },
-            options.signal,
-          ),
-          options.signal,
-          true,
-        );
-      } catch (cause) {
-        // Refused before it was read, so the token is unspent and stays usable.
-        if (cause instanceof AuthError && cause.reason === "OAuthBusy") {
-          await this.#lease.abandonRotation();
-          throw cause;
-        }
-        if (
-          cause instanceof AuthError &&
-          cause.reason === "OAuthTrustUnavailable"
-        )
-          throw cause;
-        throw new AuthError({ reason: "OAuthRecoveryRequired" });
-      }
+      return await this.#rotate(options.signal);
     });
   }
 
@@ -241,31 +218,43 @@ export class NativeOAuthClient {
       // An unavailable origin leaves custody intact; an ambiguous token POST
       // still retains the strict spent marker and requires explicit recovery.
       await this.#prepareTrust(options.signal);
-      const token = await this.#lease.beginRotation();
-      try {
-        return await this.#install(
-          await this.#exchange(
-            "/token",
-            { grant_type: "refresh_token", refresh_token: token },
-            options.signal,
-          ),
-          options.signal,
-          true,
-        );
-      } catch (cause) {
-        // Refused before it was read, so the token is unspent and stays usable.
-        if (cause instanceof AuthError && cause.reason === "OAuthBusy") {
-          await this.#lease.abandonRotation();
-          throw cause;
-        }
-        if (
-          cause instanceof AuthError &&
-          cause.reason === "OAuthTrustUnavailable"
-        )
-          throw cause;
-        throw new AuthError({ reason: "OAuthRecoveryRequired" });
-      }
+      return await this.#rotate(options.signal);
     });
+  }
+
+  /**
+   * Spend the refresh token once. Only a 429 from the token request itself was
+   * refused unread, so only it restores the token. Once a successor arrives it
+   * is retained, and a busy or unavailable trust refresh while installing it
+   * stays retryable rather than requiring a new login.
+   */
+  async #rotate(signal?: AbortSignal): Promise<NativeOAuthSession> {
+    const token = await this.#lease.beginRotation();
+    let response: unknown;
+    try {
+      response = await this.#exchange(
+        "/token",
+        { grant_type: "refresh_token", refresh_token: token },
+        signal,
+      );
+    } catch (cause) {
+      if (cause instanceof AuthError && cause.reason === "OAuthBusy") {
+        await this.#lease.abandonRotation();
+        throw cause;
+      }
+      throw new AuthError({ reason: "OAuthRecoveryRequired" });
+    }
+    try {
+      return await this.#install(response, signal, true);
+    } catch (cause) {
+      if (
+        cause instanceof AuthError &&
+        (cause.reason === "OAuthTrustUnavailable" ||
+          cause.reason === "OAuthBusy")
+      )
+        throw cause;
+      throw new AuthError({ reason: "OAuthRecoveryRequired" });
+    }
   }
 
   /** Poll one standard Device Code exchange; only pending/slow_down permit subsequent polls. @internal */
