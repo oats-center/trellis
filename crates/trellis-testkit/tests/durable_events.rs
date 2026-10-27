@@ -717,6 +717,9 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                             "kind":"service",
                             "participantId":P::ID,
                             "packageEvidence":omitted_evidence,
+                            // Another deployment of this participant already
+                            // serves the API in this runtime.
+                            "acknowledgeSharedApis":true,
                             "idempotencyKey":ulid::Ulid::new().to_string()
                         }))
                         .unwrap(),
@@ -739,16 +742,43 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
                     .await
                     .unwrap();
-                let service = P::connect(trellis_rs::service::ServiceConnectOptions::new(
-                    server.nats_servers,
-                    server.trust,
-                    &seed,
-                ))
-                .await
-                .unwrap();
-                let scoped = trellis_runtime_apis::apis::trellis_events_v1::Client::from_generated(
-                    service.generated_client(),
-                );
+                // This instance runs the revision without the Consumer. Its
+                // authority is observed through a plain connection: connecting
+                // the current build as a service would submit that build as an
+                // update instead.
+                let pinned = |seed: String, server: trellis_rs::auth::NativeOAuthServer| async move {
+                    trellis_rs::client::TrellisClient::connect_service_with_contract(
+                        trellis_rs::client::ServiceConnectWithContractOptions {
+                            nats_servers: server.nats_servers,
+                            trust: server.trust,
+                            participant_id: P::ID,
+                            provisioned_identity_seed_base64url: &seed,
+                            name: None,
+                            timeout_ms: 10_000,
+                        },
+                    )
+                    .await
+                    .map(std::sync::Arc::new)
+                    .unwrap()
+                };
+                let inspect = |client: std::sync::Arc<trellis_rs::client::TrellisClient>,
+                               probe: serde_json::Value| {
+                    async move {
+                        client
+                            .request_json_value(
+                                trellis_runtime_apis::apis::trellis_events_v1::API_ID,
+                                trellis_protocol::CatalogActionIdentity {
+                                    kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                                    name: "DeadLetters.Inspect".into(),
+                                    direction: trellis_protocol::PermissionAction::Call,
+                                },
+                                trellis_runtime_apis::apis::trellis_events_v1::rpc::DeadLettersInspect::SUBJECT,
+                                &probe,
+                            )
+                            .await
+                    }
+                };
+                let service = pinned(seed.clone(), server).await;
                 let added = auth
                     .deployments_apply(
                         &serde_json::from_value(serde_json::json!({
@@ -794,12 +824,12 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 })
                 .await
                 .expect("Apply must materialize Consumer");
-                let probe = serde_json::from_value(serde_json::json!({
+                let probe_json = serde_json::json!({
                     "resourceId":added_consumer.resource_id,
                     "deadLetterId":"absent-event"
-                }))
-                .unwrap();
-                let denied = scoped.dead_letters_inspect(&probe).await.unwrap_err();
+                });
+                let probe = serde_json::from_value(probe_json.clone()).unwrap();
+                let denied = inspect(service.clone(), probe_json.clone()).await.unwrap_err();
                 assert!(
                     !denied.to_string().contains("not found"),
                     "old pre-Apply authority must not gain access: {denied}"
@@ -854,21 +884,8 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
                     .await
                     .unwrap();
-                let omitted = P::connect(trellis_rs::service::ServiceConnectOptions::new(
-                    server.nats_servers,
-                    server.trust,
-                    &omitted_seed,
-                ))
-                .await
-                .unwrap();
-                let omitted_events =
-                    trellis_runtime_apis::apis::trellis_events_v1::Client::from_generated(
-                        omitted.generated_client(),
-                    );
-                let denied = omitted_events
-                    .dead_letters_inspect(&probe)
-                    .await
-                    .unwrap_err();
+                let omitted = pinned(omitted_seed.clone(), server).await;
+                let denied = inspect(omitted.clone(), probe_json.clone()).await.unwrap_err();
                 assert!(
                     !denied.to_string().contains("not found"),
                     "fresh omitted implementation must not regain old Consumer access: \
