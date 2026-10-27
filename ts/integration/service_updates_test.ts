@@ -253,3 +253,86 @@ test("providing a new API waits for approval; sharing one another service serves
     await service.stop();
   });
 });
+
+test("an update keeps an administrator's revocation and grants what new resources imply", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const keeper = participants.GrantKeeper.participant;
+    await runtime.deployments.create({ id: "grant-keeper", contract: keeper });
+    await runtime.contracts.apply({
+      deployment: "grant-keeper",
+      contract: keeper,
+    });
+    const instance = await runtime.services.createInstance({
+      name: "grant-keeper",
+      deployment: "grant-keeper",
+      contract: keeper,
+    });
+    const principalId = (
+      await runtime.callAdminRpc("authServiceInstancesList", {})
+    ).items.find((item) => String(item.instanceId) === instance.instanceId)
+      ?.principal.principalId;
+    assert(principalId);
+    const grantsOf = async () =>
+      (await runtime.callAdminRpc("authCapabilityGrantsList", { principalId }))
+        .items;
+    const read = (await grantsOf()).find(
+      (grant) => grant.capability.capabilityId === "trellis.auth.v1:users.read",
+    );
+    assert(read);
+    await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
+      grantId: read.grantId,
+      expectedRevision: read.revision,
+      idempotencyKey: ulid(),
+    });
+
+    // A narrower build keeps users.read and drops bindings.readJobs: it asks
+    // for nothing new, so it installs, and the revocation stays in force.
+    const narrower = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: extendedParticipants.GrantKeeper.participant,
+      seed: instance.seed,
+    }).orThrow();
+    await narrower.stop();
+    const held = (await grantsOf()).map(
+      (grant) => grant.capability.capabilityId,
+    );
+    assert(!held.includes("trellis.auth.v1:users.read"), held.join(", "));
+    assert(
+      !held.includes("trellis.auth.v1:bindings.readJobs"),
+      held.join(", "),
+    );
+
+    // A build that adds the service's first job queue gets the job history
+    // right that queue implies, so it can connect under the new revision.
+    const echo = participants.EchoProvider.participant;
+    await runtime.deployments.create({ id: "first-job", contract: echo });
+    await runtime.contracts.apply({ deployment: "first-job", contract: echo });
+    const jobs = await runtime.services.createInstance({
+      name: "first-job",
+      deployment: "first-job",
+      contract: echo,
+    });
+    const connecting = TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: extendedParticipants.EchoProvider.participant,
+      seed: jobs.seed,
+    }).orThrow();
+    const pending = await runtime.waitFor(async () => {
+      const { items } = await runtime.callAdminRpc(
+        "authServiceUpdatesList",
+        {},
+      );
+      return items.find((update) => update.state === "pending");
+    });
+    assert.deepEqual(pending.changes.addedResources, [
+      { kind: "job", name: "work" },
+    ]);
+    await runtime.callAdminRpc("authServiceUpdatesDecide", {
+      updateId: pending.updateId,
+      decision: "approved",
+      expectedRevision: pending.revision,
+      idempotencyKey: ulid(),
+    });
+    await (await connecting).stop();
+  });
+});

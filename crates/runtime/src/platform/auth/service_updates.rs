@@ -18,7 +18,7 @@ use trellis_runtime_apis::{
 };
 
 use super::catalog::{resolve_api, ApiAcceptance};
-use super::deployments::{SELF_HEALTH_CAPABILITY, SERVICE_UPDATE_CAPABILITY};
+use super::deployments::{CONSUMER_RUNTIME_CAPABILITY, JOB_HISTORY_CAPABILITY};
 use super::rpc::{caller, mutation, rpc_error};
 use super::sqlite::{decode, digest, id, json, timestamp, Connection};
 use super::{
@@ -715,10 +715,12 @@ fn apply(
     )?;
     if revision != installed.revision {
         // The instance gives up what its old revision selected and the new one
-        // does not, and gains what the new one adds. Grants an administrator
-        // made directly are not part of either selection and stay.
+        // does not, and is granted only what the new one adds. A grant the old
+        // revision also selected keeps its current state: one an administrator
+        // revoked stays revoked. Grants made outside either selection stay.
         let previous = selected_capabilities(connection, &deployment, revision)?;
-        for removed in previous.difference(&installed.capabilities) {
+        let next = selected_capabilities(connection, &deployment, installed.revision)?;
+        for removed in previous.difference(&next) {
             connection.execute(
                 "DELETE FROM auth_direct_capabilities WHERE principal_id=?1 AND capability_id=?2",
                 params![principal, removed],
@@ -729,13 +731,7 @@ fn apply(
             [&deployment],
             |row| row.get(0),
         )?;
-        for added in installed.capabilities.iter().chain(
-            [
-                SELF_HEALTH_CAPABILITY.to_owned(),
-                SERVICE_UPDATE_CAPABILITY.to_owned(),
-            ]
-            .iter(),
-        ) {
+        for added in next.difference(&previous) {
             let capability = super::policy::capability(connection, added)?;
             connection.execute(
                 "INSERT OR IGNORE INTO auth_direct_capabilities(grant_id,principal_id,\
@@ -770,7 +766,8 @@ fn apply(
     Ok(())
 }
 
-/// The capabilities an installed revision of this deployment selected.
+/// The capabilities an installed revision of this deployment selects for its
+/// instances, including those its declared resources imply.
 fn selected_capabilities(
     connection: &Connection,
     deployment: &str,
@@ -794,12 +791,26 @@ fn selected_capabilities(
     let needs = graph
         .participant_needs(definition.identity())
         .ok_or(AuthError::Unavailable)?;
-    Ok(needs
+    let mut selected: BTreeSet<String> = needs
         .required_capabilities()
         .iter()
         .chain(needs.optional_capabilities())
         .map(ToString::to_string)
-        .collect())
+        .collect();
+    // The rights a service holds because of what it declares, granted the same
+    // way at provisioning.
+    for resource in definition.resources().values() {
+        match resource {
+            trellis_idl::ResourceDefinition::Job { .. } => {
+                selected.insert(JOB_HISTORY_CAPABILITY.into());
+            }
+            trellis_idl::ResourceDefinition::Consumer { .. } => {
+                selected.insert(CONSUMER_RUNTIME_CAPABILITY.into());
+            }
+            _ => {}
+        }
+    }
+    Ok(selected)
 }
 
 fn decide(

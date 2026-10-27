@@ -108,6 +108,7 @@ service Provider {
   consumer changes { title "Changes"; description "Runtime fixture durable changes."; events [runtime.Changed]; concurrency 1; replay new; }
 }
 service EchoProvider { implements runtime; }
+service GrantKeeper { use auth { capability users.read; capability bindings.readJobs; } }
 service TransferGrowthProvider {
   implements runtime;
   use transport_growth { capability growth.extend; }

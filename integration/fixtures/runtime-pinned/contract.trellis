@@ -250,3 +250,8 @@ service OrdinaryJobs {
   implements added;
   job work { title "Work"; description "Ordinary queue cancellation"; payload Value; result Value; }
 }
+service EchoProvider {
+  implements runtime;
+  job work { title "Work"; description "The service's first job queue."; payload Value; result Value; }
+}
+service GrantKeeper { use auth { capability users.read; } }
