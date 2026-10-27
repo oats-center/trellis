@@ -87,7 +87,7 @@ jobs:
               - '!*.md'
 
   install:
-    name: Install generated artifacts
+    name: Install generated artifacts and protocol WASM
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
@@ -118,6 +118,8 @@ jobs:
       - name: Set up Rust
         id: rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -135,8 +137,10 @@ jobs:
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-
 
-      - name: Install generated artifacts
-        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install --skip-protocol-wasm
+      # One job and one target/ build xtask once for the generated artifacts and
+      # the protocol WASM.
+      - name: Install generated artifacts and the protocol WASM
+        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install
 
       - name: Report installation cache input size
         if: always()
@@ -175,43 +179,6 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
-  wasm:
-    name: Protocol WASM
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
-    timeout-minutes: 20
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
-          clean: ${{ runner.environment == 'github-hosted' }}
-
-      # Keep the build output, never stale generated files or downloads. A
-      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
-      # target/ with the other runners on its host.
-      - name: Remove untracked files except target/
-        if: runner.environment == 'self-hosted'
-        run: |
-          git clean -ffdx --exclude=/target/
-          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
-            [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
-          fi
-
-      - name: Expose installed Cargo binaries
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Build protocol WASM
-        run: cargo run --manifest-path xtask/Cargo.toml -- protocol-wasm
-
       - name: Upload protocol WASM
         uses: actions/upload-artifact@v4
         with:
@@ -221,7 +188,7 @@ jobs:
 
   portal:
     name: Embedded browser apps
-    needs: [install, wasm]
+    needs: [install]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -424,7 +391,7 @@ jobs:
 
   build:
     name: Build runtime binaries
-    needs: [install, wasm, portal]
+    needs: [install, portal]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     steps:
@@ -504,7 +471,7 @@ jobs:
 
   rust:
     name: Rust tests
-    needs: [install, wasm, portal, build, build-fixtures]
+    needs: [install, portal, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     env:
@@ -525,14 +492,16 @@ jobs:
       # Keep the build output, never stale generated files or downloads. A
       # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
       # target/ with the other runners on its host.
+      # The fixture build has just finished in this target/, so the tests reuse
+      # its dependencies rather than compiling them again.
       - name: Remove untracked files except target/
         if: runner.environment == 'self-hosted'
         run: |
           git clean -ffdx --exclude=/target/
           if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/build-fixtures"
             [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/build-fixtures" target
           fi
 
       - name: Restore pipeline inputs
@@ -606,7 +575,7 @@ jobs:
 
   typescript-checks:
     name: TypeScript checks
-    needs: [install, wasm, build]
+    needs: [install, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
@@ -641,7 +610,7 @@ jobs:
 
   demos:
     name: Demo consumers
-    needs: [install, wasm, portal, build]
+    needs: [install, portal, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
@@ -696,7 +665,7 @@ jobs:
 
   typescript-tests:
     name: TypeScript tests (${{ matrix.shard }}/8)
-    needs: [install, wasm, portal, build, build-fixtures]
+    needs: [install, portal, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     # Run independent test files on separate hosted runners; every shard must pass.
@@ -747,7 +716,7 @@ jobs:
 
   testkit-tests:
     name: Rust testkit tests
-    needs: [install, wasm, portal, build, build-fixtures]
+    needs: [install, portal, build, build-fixtures]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     steps:
@@ -785,7 +754,7 @@ jobs:
 
   examples:
     name: Documented examples
-    needs: [install, wasm, portal, build]
+    needs: [install, portal, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     steps:
@@ -820,7 +789,7 @@ jobs:
 
   browser:
     name: Browser tests (${{ matrix.shard }}/8)
-    needs: [install, wasm, portal, build]
+    needs: [install, portal, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     # Every browser test file, split across hosted runners; every shard must
@@ -980,7 +949,7 @@ jobs:
 
   verify-images:
     name: Build verified ${{ matrix.image }} image
-    needs: [install, wasm, portal, build]
+    needs: [install, portal, build]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -1069,7 +1038,7 @@ jobs:
 
   typescript-testkit-package:
     name: TypeScript testkit package
-    needs: [install, wasm, demos, build]
+    needs: [install, demos, build]
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
