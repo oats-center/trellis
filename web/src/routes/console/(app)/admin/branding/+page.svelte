@@ -63,6 +63,9 @@
   let revision = $state(0n);
   let exists = $state(false);
   let loading = $state(true);
+  // The form holds the selected target's theme only after it loaded; until
+  // then nothing may be saved or removed against that target.
+  let loaded = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
@@ -111,13 +114,19 @@
   async function load(): Promise<void> {
     const token = scope.begin();
     loading = true;
+    loaded = false;
     error = null;
+    // Never leave another target's fields and revision in the form.
+    show(undefined);
     const result = await trellis
       .portalThemesGet(target ? { clientId: target } : {})
       .take();
     if (!scope.isCurrent(token)) return;
     if (isErr(result)) error = projectConsoleError(result).message;
-    else show(result.theme);
+    else {
+      show(result.theme);
+      loaded = true;
+    }
     loading = false;
   }
 
@@ -159,7 +168,7 @@
 
   async function save(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (saving || !editable) return;
+    if (saving || !editable || !loaded) return;
     saving = true;
     error = null;
     notice = null;
@@ -190,7 +199,7 @@
   }
 
   async function remove(): Promise<void> {
-    if (saving || !exists) return;
+    if (saving || !exists || !loaded) return;
     saving = true;
     error = null;
     notice = null;
@@ -269,7 +278,12 @@
   >
   {#if notice}<Notice variant="success">{notice}</Notice>{/if}
   {#if error}<Notice variant="warning">{error}</Notice>{/if}
-  {#if loading}<LoadingState label="Loading the sign-in page" />{:else}
+  {#if loading}<LoadingState
+      label="Loading the sign-in page"
+    />{:else if !loaded}<button
+      class="btn btn-ghost"
+      onclick={() => void load()}>Try again</button
+    >{:else}
     <form class="trellis-section max-w-2xl space-y-6 p-5" onsubmit={save}>
       <fieldset class="space-y-4" disabled={saving || !editable}>
         <label class="trellis-field"
