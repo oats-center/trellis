@@ -7,18 +7,8 @@ import { apps, participants } from "./trellis/index.js";
 import { createOrder } from "./service.ts";
 
 test("orders caller invokes the real service", async () => {
-  const cli = process.env.TRELLIS_TEST_CLI_BIN;
-  const server = process.env.TRELLIS_TEST_SERVER_BIN;
-  if ((cli === undefined) !== (server === undefined)) {
-    throw new Error(
-      "Set both TRELLIS_TEST_CLI_BIN and TRELLIS_TEST_SERVER_BIN or neither",
-    );
-  }
-  const runtime = await TrellisTestRuntime.start(
-    cli && server
-      ? { trellis: { source: { kind: "path", cli, server } } }
-      : undefined,
-  );
+  // Uses TRELLIS_TEST_SERVER_BIN when set, else the latest release.
+  const runtime = await TrellisTestRuntime.start();
   try {
     const identity = await runtime.registerService({
       name: "orders",
