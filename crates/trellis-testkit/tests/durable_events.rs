@@ -746,9 +746,12 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 // authority is observed through a plain connection: connecting
                 // the current build as a service would submit that build as an
                 // update instead.
-                let pinned = |seed: String, server: trellis_rs::auth::NativeOAuthServer| async move {
-                    trellis_rs::client::TrellisClient::connect_service_with_contract(
-                        trellis_rs::client::ServiceConnectWithContractOptions {
+                use trellis_rs::auth::NativeOAuthServer;
+                use trellis_rs::client::{ServiceConnectWithContractOptions, TrellisClient};
+                use trellis_runtime_apis::apis::trellis_events_v1 as events_api;
+                let pinned = |seed: String, server: NativeOAuthServer| async move {
+                    TrellisClient::connect_service_with_contract(
+                        ServiceConnectWithContractOptions {
                             nats_servers: server.nats_servers,
                             trust: server.trust,
                             participant_id: P::ID,
@@ -761,18 +764,18 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                     .map(std::sync::Arc::new)
                     .unwrap()
                 };
-                let inspect = |client: std::sync::Arc<trellis_rs::client::TrellisClient>,
+                let inspect = |client: std::sync::Arc<TrellisClient>,
                                probe: serde_json::Value| {
                     async move {
                         client
                             .request_json_value(
-                                trellis_runtime_apis::apis::trellis_events_v1::API_ID,
+                                events_api::API_ID,
                                 trellis_protocol::CatalogActionIdentity {
                                     kind: trellis_protocol::ApiSurfaceKind::Rpc,
                                     name: "DeadLetters.Inspect".into(),
                                     direction: trellis_protocol::PermissionAction::Call,
                                 },
-                                trellis_runtime_apis::apis::trellis_events_v1::rpc::DeadLettersInspect::SUBJECT,
+                                events_api::rpc::DeadLettersInspect::SUBJECT,
                                 &probe,
                             )
                             .await
