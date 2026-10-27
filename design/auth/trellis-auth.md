@@ -89,7 +89,11 @@ transaction:
 1. **Holdings.** The union of the principal's direct grants, role assignments,
    and, for an OIDC login, roles mapped from that login's fresh verified claims.
    A held group counts as its current members. The initialized administrator
-   additionally holds every administrative capability inherently.
+   additionally holds every administrative capability inherently. A role marked
+   `assignToNewUsers` is assigned, as an ordinary revocable assignment, to each
+   user `Users.Create` makes afterwards; marking it is the policy decision, so
+   creating the user needs no role-management rights. Existing users are not
+   changed.
 2. **Selection.** What the credential asks for: an app's requested
    capabilities and groups, or a deployment's installed participant selection.
 3. **Consent.** For an OAuth grant, only what the user approved at the approved

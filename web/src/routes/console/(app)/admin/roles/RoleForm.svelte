@@ -29,6 +29,7 @@
   let capabilities = $state.raw<apis.auth.CapabilitiesListOutput["items"]>([]);
   let title = $state("");
   let description = $state("");
+  let forNewUsers = $state(false);
   let selected = $state<string[]>([]);
   let loading = $state(true);
   let saving = $state(false);
@@ -50,6 +51,7 @@
     role = null;
     title = "";
     description = "";
+    forNewUsers = false;
     selected = [];
     try {
       if (roleId) {
@@ -61,6 +63,7 @@
         role = response.role;
         title = role.title;
         description = role.description;
+        forNewUsers = role.assignToNewUsers;
         selected = role.capabilities.map(
           (capability) => capability.capabilityId,
         );
@@ -107,6 +110,7 @@
       title: title.trim(),
       description: description.trim(),
       capabilityIds: [...selected],
+      assignToNewUsers: forNewUsers,
       idempotencyKey: key,
     };
     const intent = captureIntent({
@@ -217,6 +221,20 @@
           placeholder="What people with this role do"
           disabled={saving}
         /></label
+      >
+      <label class="flex items-start gap-3"
+        ><input
+          class="checkbox checkbox-sm mt-0.5"
+          type="checkbox"
+          bind:checked={forNewUsers}
+          disabled={saving}
+        /><span
+          ><span class="font-medium">Give to new users</span><span
+            class="block text-sm text-base-content/65"
+            >Everyone added from now on starts with this role. People who
+            already have accounts keep the roles they have.</span
+          ></span
+        ></label
       >
     </div>
     <div class="trellis-section space-y-3 p-5">

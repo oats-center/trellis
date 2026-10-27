@@ -744,6 +744,25 @@ pub(super) fn create_user(
                     params![principal, username, hash, now],
                 )?;
             }
+            // The roles an administrator marked for new users. Marking them was
+            // the policy decision, so creating the user needs no role rights.
+            let defaults = connection
+                .prepare(
+                    "SELECT role_id,identity_generation FROM auth_roles \
+                    WHERE state='active' AND assign_to_new_users=1",
+                )?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (role, generation) in defaults {
+                connection.execute(
+                    "INSERT INTO auth_role_assignments(assignment_id,principal_id,role_id,\
+                    role_generation,revision,expires_at,created_at) \
+                    VALUES(?1,?2,?3,?4,1,NULL,?5)",
+                    params![id(), principal, role, generation, now],
+                )?;
+            }
             Ok(AuthUserGetResponse {
                 user: read_user(store, connection, &principal, true)?,
                 extra: Default::default(),

@@ -78,7 +78,9 @@
                   href={resolve(
                     `/admin/roles/edit?roleId=${encodeURIComponent(role.roleId)}`,
                   )}>{role.title}</a
-                >
+                >{#if role.assignToNewUsers}<span
+                    class="badge badge-soft badge-sm ml-2">New users</span
+                  >{/if}
                 {#if role.description}<div class="text-sm text-base-content/65">
                     {role.description}
                   </div>{/if}

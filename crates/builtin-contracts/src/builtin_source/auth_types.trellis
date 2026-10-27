@@ -104,6 +104,8 @@ model AuthRole {
   title: string;
   description: string;
   capabilities: list<AuthCapabilityIdentity>;
+  // Auth assigns this role to every user it creates.
+  assignToNewUsers: bool;
 }
 model AuthRoleGetRequest { roleId: ulid; }
 model AuthRoleGetResponse { role: AuthRole; }
@@ -115,6 +117,8 @@ model AuthRolePutRequest {
   title: AuthName;
   description: AuthDescription;
   capabilityIds: list<AuthCapabilityId>;
+  // Assign to every user created from now on; existing users keep their roles.
+  assignToNewUsers: bool;
 }
 model AuthRolePutResponse { role: AuthRole; enforcement?: AuthEnforcementProgress; }
 model AuthRoleDeleteRequest {

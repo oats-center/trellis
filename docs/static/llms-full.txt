@@ -585,6 +585,11 @@ OIDC claim refresh is scoped to the selected provider and upstream subject; a
 second linked identity cannot add or remove another identity's mapped roles.
 Direct grants remain independent of upstream role loss and claim freshness.
 
+Mark a role "give to new users" (`assignToNewUsers` on `Auth.Roles.Put`, or the
+Console role form) to give every user created afterwards a base set of
+permissions. Each gets an ordinary role assignment an administrator can revoke;
+existing users are unchanged.
+
 #### Administrative capabilities
 
 Administrative Auth RPCs are allowed by the administrative capability that names

@@ -197,6 +197,10 @@ pub(super) fn put_role(
                 .collect(),
         };
         super::policy::apply_policy_in_transaction(connection, identity, &command, now)?;
+        connection.execute(
+            "UPDATE auth_roles SET assign_to_new_users=?1 WHERE role_id=?2 AND state='active'",
+            params![input.assign_to_new_users, role_id],
+        )?;
         Ok(AuthRolePutResponse {
             role: read_role(connection, &role_id)?,
             enforcement: None,
@@ -582,9 +586,9 @@ pub(super) fn read_roles(
 }
 
 pub(super) fn read_role(connection: &Connection, role_id: &str) -> Result<AuthRole, AuthError> {
-    let (generation, revision, title, description) = connection
+    let (generation, revision, title, description, assign_to_new_users) = connection
         .query_row(
-            "SELECT identity_generation,revision,title,description \
+            "SELECT identity_generation,revision,title,description,assign_to_new_users \
             FROM auth_roles WHERE role_id=?1 \
             AND state='active'",
             [role_id],
@@ -594,6 +598,7 @@ pub(super) fn read_role(connection: &Connection, role_id: &str) -> Result<AuthRo
                     row.get::<_, u64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, bool>(4)?,
                 ))
             },
         )
@@ -625,6 +630,7 @@ pub(super) fn read_role(connection: &Connection, role_id: &str) -> Result<AuthRo
         title,
         description,
         capabilities,
+        assign_to_new_users,
         extra: Default::default(),
     })
 }

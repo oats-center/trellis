@@ -18,6 +18,7 @@ fn omitted_role_id_is_generated_once_and_replay_does_not_overwrite_an_update() {
         capability_ids: vec![f.read.clone().into()],
         idempotency_key: id().into(),
         extra: Default::default(),
+        assign_to_new_users: false,
     };
     let identity = mutation(&f.admin, &input);
     let created = put_role(&f.store, &identity, &input, NOW).unwrap();
@@ -30,6 +31,7 @@ fn omitted_role_id_is_generated_once_and_replay_does_not_overwrite_an_update() {
         capability_ids: vec![f.write.clone().into()],
         idempotency_key: id().into(),
         extra: Default::default(),
+        assign_to_new_users: false,
     };
     put_role(&f.store, &mutation(&f.admin, &update), &update, NOW + 1).unwrap();
     assert_eq!(
@@ -90,6 +92,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
         capability_ids: vec![f.read.clone().into()],
         idempotency_key: id().into(),
         extra: Default::default(),
+        assign_to_new_users: false,
     };
     let role_id = put_role(&f.store, &mutation(&f.admin, &role), &role, NOW)
         .unwrap()
@@ -264,6 +267,7 @@ fn policy_lists_apply_filters_and_resume_without_duplicating_items() {
             capability_ids: vec![capability.clone().into()],
             idempotency_key: id().into(),
             extra: Default::default(),
+            assign_to_new_users: false,
         };
         let role_id = put_role(&f.store, &mutation(&f.admin, &role), &role, NOW)
             .unwrap()
@@ -659,4 +663,65 @@ fn catalog_and_effective_access_project_accepted_actions_and_expiring_paths() {
         .capabilities
         .iter()
         .any(|cap| cap.definition.identity.capability_id.as_ref() == f.write));
+}
+
+#[test]
+fn roles_marked_for_new_users_are_given_to_users_created_afterwards() {
+    let f = fixture();
+    let role = |title: &str, capability: &str, assign_to_new_users: bool| AuthRolePutRequest {
+        role_id: None,
+        expected_revision: 0.into(),
+        title: title.to_string().into(),
+        description: String::new().into(),
+        capability_ids: vec![capability.to_string().into()],
+        idempotency_key: id().into(),
+        extra: Default::default(),
+        assign_to_new_users,
+    };
+    let base = role("Members", &f.read, true);
+    let base = put_role(&f.store, &mutation(&f.admin, &base), &base, NOW).unwrap();
+    assert!(base.role.assign_to_new_users);
+    let other = role("Editors", &f.write, false);
+    put_role(&f.store, &mutation(&f.admin, &other), &other, NOW).unwrap();
+    let create = |username: &str, now| {
+        let input = AuthUserCreateRequest {
+            given_name: None,
+            family_name: None,
+            email: None,
+            username: username.to_string().into(),
+            display_name: username.to_string().into(),
+            password: None,
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+        let user = crate::platform::auth::rpc_users::create_user(
+            &f.store,
+            &mutation(&f.admin, &input),
+            &input,
+            now,
+        )
+        .unwrap()
+        .user
+        .principal_id
+        .to_string();
+        let access = f
+            .store
+            .transaction(|connection| read_effective_access(connection, &user, now))
+            .unwrap();
+        access
+            .capabilities
+            .iter()
+            .map(|capability| capability.definition.identity.capability_id.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(create("first", NOW + 1), vec![f.read.clone()]);
+    // Unmarking the role stops it reaching later users.
+    let unmarked = AuthRolePutRequest {
+        role_id: Some(base.role.role_id),
+        expected_revision: 1.into(),
+        idempotency_key: id().into(),
+        ..role("Members", &f.read, false)
+    };
+    put_role(&f.store, &mutation(&f.admin, &unmarked), &unmarked, NOW + 2).unwrap();
+    assert!(create("second", NOW + 3).is_empty());
 }

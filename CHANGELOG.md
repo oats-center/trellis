@@ -41,6 +41,11 @@ and this project adheres to
   `transfer` goes straight to `client.transfer(...)` without
   `decodeTransferGrant`.
 
+- Roles can be marked to give to new users. Every user created afterwards gets
+  that role as an ordinary assignment, so new accounts start with a base set of
+  permissions. Set it in the Console role form or with `assignToNewUsers` on
+  `Auth.Roles.Put`, which now requires the field.
+
 ### Fixed
 
 - `trellis-server` no longer exits with "runtime HTTP server did not drain

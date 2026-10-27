@@ -578,7 +578,9 @@ pub(super) fn apply_policy(
                         |row| row.get(0),
                     )?;
                     connection.execute(
-                        "INSERT INTO auth_roles VALUES(?1,?2,1,?3,?4,'active',?5,?5)",
+                        "INSERT INTO auth_roles(role_id,identity_generation,revision,title,\
+                        description,state,created_at,updated_at) \
+                        VALUES(?1,?2,1,?3,?4,'active',?5,?5)",
                         params![role_id, generation, title, description, now],
                     )?;
                     generation

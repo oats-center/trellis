@@ -469,6 +469,8 @@ CREATE TABLE auth_roles (
     state TEXT NOT NULL CHECK (state IN ('active', 'deleted')),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
+    -- Auth assigns this role to every user it creates from now on.
+    assign_to_new_users INTEGER NOT NULL DEFAULT 0 CHECK (assign_to_new_users IN (0, 1)),
     PRIMARY KEY (role_id, identity_generation)
 );
 CREATE UNIQUE INDEX auth_roles_active_identity ON auth_roles(role_id) WHERE state = 'active';
