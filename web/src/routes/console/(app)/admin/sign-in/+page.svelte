@@ -52,6 +52,12 @@
   const manageProviders = $derived(
     canPerform(authority.authority, "oidcProvidersList"),
   );
+  // The server refuses this too; only providers this person can see count.
+  const lockedOut = $derived(
+    !localUsers &&
+      (!companySignIn ||
+        (manageProviders && !providers.some((provider) => provider.enabled))),
+  );
   const changed = $derived(
     settings !== null &&
       (settings.localUsers !== localUsers ||
@@ -250,9 +256,11 @@
               bind:checked={companySignIn}
             /><span>Company sign-in</span></label
           >
-          {#if !localUsers && !companySignIn}
+          {#if lockedOut}
             <p class="text-sm text-error" role="alert">
-              Keep at least one way to sign in, or nobody can.
+              {companySignIn
+                ? "Add an active company sign-in provider first, or nobody can sign in."
+                : "Keep at least one way to sign in, or nobody can."}
             </p>
           {/if}
         </fieldset>
@@ -260,8 +268,7 @@
           <div class="flex justify-end border-t border-base-300 pt-4">
             <button
               class="btn btn-primary"
-              disabled={saving || !changed || (!localUsers && !companySignIn)}
-              >Save</button
+              disabled={saving || !changed || lockedOut}>Save</button
             >
           </div>
         {/if}
@@ -386,10 +393,13 @@
             </div>
           </details>
           {#if selected && canPerform(authority.authority, "oidcRoleMappingsList")}
-            <GroupRoles
-              providerId={selected.providerId}
-              claim={selected.roleClaim}
-            />
+            <!-- A new provider gets a fresh editor, never another's mappings. -->
+            {#key selected.providerId}
+              <GroupRoles
+                providerId={selected.providerId}
+                claim={selected.roleClaim}
+              />
+            {/key}
           {/if}
         </fieldset>
         <div

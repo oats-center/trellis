@@ -64,36 +64,44 @@ test("an administrator sets sign-in methods, providers and their group roles in 
         .waitFor();
       // The same page keeps company sign-in providers and the roles their
       // groups give.
-      await admin
-        .getByRole("button", { name: "Add provider", exact: true })
-        .click();
-      await admin.getByLabel(/^Name/).fill("Acme login");
-      await admin
-        .getByLabel("Address", { exact: true })
-        .fill("https://login.acme.example");
-      await admin.getByLabel("Client ID", { exact: true }).fill("trellis");
-      await admin.getByLabel("Client secret", { exact: true }).fill("secret");
-      await admin
-        .getByRole("button", { name: "Save provider", exact: true })
-        .click();
-      await admin.getByText("Provider saved.", { exact: true }).waitFor();
-      await admin
-        .getByRole("row")
-        .filter({ hasText: "Acme login" })
-        .getByRole("button", { name: "Edit", exact: true })
-        .click();
+      const edit = async (name: string) => {
+        await admin
+          .getByRole("row")
+          .filter({ hasText: name })
+          .getByRole("button", { name: "Edit", exact: true })
+          .click();
+        await admin.getByRole("heading", { name, exact: true }).waitFor();
+      };
+      for (const name of ["Acme login", "Beta login"]) {
+        await admin
+          .getByRole("button", { name: "Add provider", exact: true })
+          .click();
+        await admin.getByLabel(/^Name/).fill(name);
+        await admin
+          .getByLabel("Address", { exact: true })
+          .fill(`https://${name.split(" ")[0].toLowerCase()}.example`);
+        await admin.getByLabel("Client ID", { exact: true }).fill("trellis");
+        await admin.getByLabel("Client secret", { exact: true }).fill("secret");
+        await admin
+          .getByRole("button", { name: "Save provider", exact: true })
+          .click();
+        await admin.getByText("Provider saved.", { exact: true }).waitFor();
+      }
+      await edit("Acme login");
       await admin.getByLabel("Group", { exact: true }).fill("engineering");
       await admin.getByRole("checkbox", { name: role, exact: true }).check();
       await admin
         .getByRole("button", { name: "Add group", exact: true })
         .click();
       await admin.getByText(`→ ${role}`).waitFor();
+      // Switching to another provider never shows, or removes, Acme's groups.
+      await edit("Beta login");
+      await admin.getByLabel("Group", { exact: true }).waitFor();
+      assert.equal(await admin.getByText(`→ ${role}`).count(), 0);
+      await edit("Acme login");
+      await admin.getByText(`→ ${role}`).waitFor();
       await admin.reload();
-      await admin
-        .getByRole("row")
-        .filter({ hasText: "Acme login" })
-        .getByRole("button", { name: "Edit", exact: true })
-        .click();
+      await edit("Acme login");
       await admin.getByText(`→ ${role}`).waitFor();
       await admin
         .getByRole("button", { name: "Remove engineering", exact: true })

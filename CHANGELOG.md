@@ -8,6 +8,21 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Local users can no longer be turned off while no active company sign-in
+  provider exists, and the last active provider cannot be disabled or deleted
+  while it is the only way in; either would have left nobody able to sign in.
+- `trellis roles revoke` and `trellis roles show` act on a role's current
+  assignments after it is deleted and recreated under the same ID, instead of
+  an earlier assignment that no longer gives the role.
+- `trellis roles list` and `trellis users list` show every role and user, not
+  only the first 100.
+- In the Console, switching to another provider while editing one no longer
+  shows, or lets you remove, the first provider's group roles.
+- A Node native refresh that succeeds while a rate limit refuses the follow-up
+  issuer check reports that Trellis is busy, not that a new login is required.
+
 ## [0.100.0-rc.12] - 2026-10-27
 
 ### Added
