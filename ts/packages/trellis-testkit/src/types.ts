@@ -58,7 +58,7 @@ export type TrellisTestRuntimeStartOptions = {
   /** Existing or desired local test-admin password. */
   adminPassword?: string;
   trellis?: TrellisTestRuntimeTrellisOptions;
-  /** Seed via production bootstrap-admin by default; browser-flow exercises first-admin UI. */
+  /** Seed via production `trellis-server init admin` by default; browser-flow exercises first-admin UI. */
   firstAdmin?: "seeded" | "browser-flow";
   /** Additional exact browser origins allowed by the test runtime. */
   webOrigins?: readonly string[];
@@ -66,7 +66,7 @@ export type TrellisTestRuntimeStartOptions = {
   rotatableWebsocketProxy?: boolean;
   /**
    * Serve browser NATS WebSockets on the application origin at `/nats`,
-   * relayed by the runtime, as `init config` does by default with generated TLS.
+   * relayed by the runtime, as `trellis-server init` does by default with generated TLS.
    */
   sameOriginWebsocket?: boolean;
   /**

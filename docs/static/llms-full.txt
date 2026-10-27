@@ -191,6 +191,15 @@ are not consumer dependencies.
 
 ### Running Trellis
 
+#### Installation bundle
+
+`trellis-server init --out <dir>` writes a bundle whose `config.toml` sets
+`[paths]` so data, state, cache, runtime files, and logs live in folders inside
+that bundle; start the server with `trellis-server --config <dir>/config.toml`.
+Each bundle is a separate installation, so several servers can share a host.
+`trellis-server --system init` omits `[paths]` for a read-only bundle served
+with `--system`, which uses FHS locations.
+
 #### TLS
 
 Trellis listeners use TLS by default. `trellis-server init` generates a

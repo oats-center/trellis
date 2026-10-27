@@ -19,8 +19,8 @@ By the end, you will have:
 - [Node](https://nodejs.org) 24 and npm 11+
 - the `trellis` CLI installed (see [Install the Trellis CLI](/guides/install-trellis-cli))
 - network access when using `--nats-download`: the server downloads a pinned,
-  checksum-verified nats-server binary under the XDG cache root (default
-  `~/.cache/trellis/nats` on Linux); every run cryptographically
+  checksum-verified nats-server binary under its cache root (`cache/nats` in
+  the bundle); every run cryptographically
   revalidates the cached archive and binary against the pin, reinstalling
   corrupted or replaced cache entries
 
@@ -159,8 +159,8 @@ trellis-server --dev --config "$HOME/trellis/config.toml"
 Keep this terminal running. To explicitly download the pinned release instead,
 run `trellis-server --dev --nats-download --config "$HOME/trellis/config.toml"`.
 The server renders an effective NATS config from `nats/nats.conf` and
-`nats/jwt.conf`, keeps mutable state under the XDG state root, writes NATS output
-to the XDG state log directory, and stops NATS when `trellis-server` exits. The
+`nats/jwt.conf`, keeps mutable state in the bundle's `state` folder, writes NATS
+output to its `logs` folder, and stops NATS when `trellis-server` exits. The
 terminal shows Trellis's own logs at info level; add `--verbose` for Trellis
 debug logs and NATS output there too. NATS
 listens on the ports written to `nats/nats.conf`, which the `--nats-port`,
@@ -191,13 +191,14 @@ database points to a different or empty JetStream store, the platform refuses
 startup. Restore the matching NATS store, or start a genuinely fresh environment
 with a new platform database **and** JetStream store and provision the
 deployments again. Recreating consumers or buckets alone does not restore lost
-job keys or objects. Give each local environment its own ports, data directory,
-and XDG state rather than pointing an existing database at another NATS store.
+job keys or objects. Give each local environment its own bundle and ports
+rather than pointing an existing database at another NATS store.
 
-Runtime-owned paths use the selected profile as defaults. User mode follows XDG;
-`--system` uses `/var/lib/trellis`, `/var/cache/trellis`, `/run/trellis`, and
-`/var/log/trellis`. Override any root in `config.toml` when the deployment needs
-different locations:
+`trellis-server init` writes a `[paths]` section that keeps everything the
+server writes inside the bundle: `data`, `state`, `cache`, `runtime`, and
+`logs` folders beside `config.toml`. Each bundle is a self-contained
+installation, so several servers can share a host. Edit `[paths]` when the
+deployment needs different locations:
 
 ```toml
 [paths]
@@ -208,8 +209,11 @@ runtime = "/run/my-trellis"
 logs = "/srv/trellis/log"
 ```
 
-Fields are optional. Relative root overrides resolve from the selected config
-file's directory. Omitted SQLite `storage.path` values use stable filenames
+Fields are optional; an omitted root uses the selected profile. User mode follows
+XDG; `--system` uses `/var/lib/trellis`, `/var/cache/trellis`, `/run/trellis`,
+and `/var/log/trellis`. `trellis-server --system init` writes no `[paths]`, for
+a read-only bundle whose server runs with `--system`. Relative roots resolve from
+the selected config file's directory. Omitted SQLite `storage.path` values use stable filenames
 under the effective data root; an explicit absolute database path is exact, and
 an explicit relative database path remains config-relative. `--config` changes
 the config file and config-relative resource base, not the selected user/system
@@ -345,9 +349,9 @@ the bundle read-only, and keep the mutable state on a writable volume:
 docker volume create trellis-bundle
 docker volume create trellis-state
 # Generate the bundle into the state volume once (as the image's non-root user):
-docker run --rm --user 10001:10001 --entrypoint trellis \
+docker run --rm --user 10001:10001 --entrypoint trellis-server \
   --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis-server:latest \
-  init config --out /var/lib/trellis/bundle
+  --system init --out /var/lib/trellis/bundle
 # Prepare the writable system data/state volume for the image's uid:
 docker run --rm --user root --entrypoint sh \
   --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis-server:latest \

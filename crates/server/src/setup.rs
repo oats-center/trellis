@@ -208,7 +208,11 @@ pub(crate) struct TlsRenewArgs {
     pub(crate) ca_dir: Option<PathBuf>,
 }
 
-pub(crate) fn init_config(format: OutputFormat, args: &InitConfigArgs) -> miette::Result<()> {
+pub(crate) fn init_config(
+    format: OutputFormat,
+    args: &InitConfigArgs,
+    system: bool,
+) -> miette::Result<()> {
     let out = args
         .out
         .clone()
@@ -290,6 +294,8 @@ pub(crate) fn init_config(format: OutputFormat, args: &InitConfigArgs) -> miette
         }),
         InitTlsMode::LoopbackDevelopment => BootstrapTls::LoopbackDevelopment,
     };
+    // A `--system` server keeps its mutable files in FHS locations.
+    options.runtime.bundle_paths = !system;
     options.runtime.trusted_proxies = args.trusted_proxy.clone();
     options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
     options.runtime.nats_websocket_via_runtime = relay;
@@ -636,7 +642,7 @@ mod tests {
         ] {
             let out = temp.path().join(name);
             let args = init_config_args(&out, &flags);
-            init_config(OutputFormat::Json, &args)
+            init_config(OutputFormat::Json, &args, false)
                 .expect_err("invalid listener ports must be rejected");
             assert!(
                 !out.exists(),
@@ -668,7 +674,7 @@ mod tests {
         trellis_bootstrap::NatsListeners,
     ) {
         let args = init_config_args(out, flags);
-        init_config(OutputFormat::Json, &args).expect("generate bundle");
+        init_config(OutputFormat::Json, &args, false).expect("generate bundle");
         (
             trellis_runtime::RuntimeConfig::load_from_path(out.join("config.toml"))
                 .expect("load production runtime config"),

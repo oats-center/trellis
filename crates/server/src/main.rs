@@ -722,7 +722,7 @@ async fn main() -> miette::Result<()> {
     // Generating a bundle and renewing certificates need no server policy.
     match args.operation {
         Some(OperationArgs::Init(ref init)) if init.admin.is_none() => {
-            return setup::init_config(args.format, &init.config);
+            return setup::init_config(args.format, &init.config, args.server.system);
         }
         Some(OperationArgs::Tls(command)) => {
             let config = match args.server.config {

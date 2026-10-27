@@ -187,7 +187,7 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
     assert!(matches!(
         parsed.platform_storage_backend().expect("platform storage"),
         StorageBackend::Sqlite(storage)
-            if storage.path == temp.path().join("platform.sqlite")
+            if storage.path == temp.path().join("data/platform.sqlite")
     ));
 }
 

@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use trellis_runtime::{
     AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig, ListenerTransport,
     LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, OAuthListenerConfig, RuntimeConfig, StorageConfig, SubsystemConfig,
-    TlsConfig,
+    NatsRuntimeConfig, OAuthListenerConfig, RuntimeConfig, RuntimePathsConfig, StorageConfig,
+    SubsystemConfig, TlsConfig,
 };
 
 use crate::tls::{BUNDLE_CA_CERTIFICATE, RUNTIME_CERTIFICATE, RUNTIME_PRIVATE_KEY};
@@ -73,7 +73,13 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             jobs: Some(PathBuf::from("./live-providers/jobs.seed")),
             events: Some(PathBuf::from("./live-providers/events.seed")),
         }),
-        paths: None,
+        paths: options.runtime.bundle_paths.then(|| RuntimePathsConfig {
+            data: Some(bundle_path("data")),
+            state: Some(bundle_path("state")),
+            cache: Some(bundle_path("cache")),
+            runtime: Some(bundle_path("runtime")),
+            logs: Some(bundle_path("logs")),
+        }),
         tls: matches!(options.runtime.tls, BootstrapTls::Generated { .. }).then(|| TlsConfig {
             generated_ca_certificate: Some(bundle_path(BUNDLE_CA_CERTIFICATE)),
         }),

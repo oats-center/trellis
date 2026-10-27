@@ -191,6 +191,13 @@ with the CA fingerprint when it generated one. `trellis-server tls renew` reissu
 bundle's leaves from that CA with unchanged names; `trellis-server tls status` reports
 the CA fingerprint and expiry and repeats the warning.
 
+A bundle is the installation. `trellis-server init` writes `[paths]` that put
+data, state, cache, runtime files, and logs in folders inside the bundle, so
+servers started from different bundles on one host never share state. The
+server itself has no bundle-relative default: an omitted root falls back to the
+user (XDG) or `--system` (FHS) profile. `trellis-server --system init` omits
+`[paths]` for a read-only bundle served with `--system`.
+
 ## Utility Commands
 
 ```text

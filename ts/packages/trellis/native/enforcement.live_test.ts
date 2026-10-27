@@ -86,9 +86,7 @@ test(
       // The installation serves its generated TLS; this test trusts its CA.
       trustInstallationCa(`${bundle}/tls/ca.crt`);
       const configPath = `${bundle}/config.toml`;
-      const config =
-        (await readFile(configPath, "utf8")) +
-        `\n[paths]\n${["data", "state", "cache", "runtime", "logs"].map((name) => `${name} = ${JSON.stringify(`${directory}/${name}`)}`).join("\n")}\n`;
+      const config = await readFile(configPath, "utf8");
       // The broker accepts this operational credential, but it has no access to
       // the system-account connection-management responders. This is an ordinary
       // broker permission failure, not a substituted broker or runtime hook.

@@ -9,6 +9,7 @@ import { ulid } from "ulid";
 import {
   processIsGone,
   processMatchesIdentity,
+  type ProcessIdentity,
   recordProcessIdentity,
 } from "../packages/trellis-testkit/src/cleanup.ts";
 import { startTrellisRuntime } from "./_support/runtime.ts";
@@ -124,32 +125,43 @@ for (const failure of ["stalled", "crashed"] as const) {
       timeouts: { shutdownMs: 1_000 },
     });
     let survivor: Awaited<ReturnType<typeof startTrellisRuntime>> | undefined;
-    const brokerPid = Number(
-      (
-        await readFile(
-          join(runtime.workdir, "runtime", "trellis", "nats-server.pid"),
-          "utf8",
-        )
-      ).trim(),
-    );
-    assert(Number.isSafeInteger(brokerPid) && brokerPid > 0);
-    const broker = await recordProcessIdentity(
-      brokerPid,
-      await readlink(`/proc/${brokerPid}/exe`),
-    );
-    assert(broker);
-    const parent = Number(
-      (await readFile(`/proc/${brokerPid}/status`, "utf8")).match(
-        /^PPid:\s+(\d+)$/m,
-      )?.[1],
-    );
-    assert(Number.isSafeInteger(parent) && parent > 0);
-    const host = await recordProcessIdentity(
-      parent,
-      await readlink(`/proc/${parent}/exe`),
-    );
-    assert(host);
+    // Recorded as soon as known, so a failed setup still restores them.
+    let ownedBroker: ProcessIdentity | undefined;
+    let ownedHost: ProcessIdentity | undefined;
     try {
+      const brokerPid = Number(
+        (
+          await readFile(
+            join(
+              runtime.workdir,
+              "config",
+              "trellis",
+              "runtime",
+              "nats-server.pid",
+            ),
+            "utf8",
+          )
+        ).trim(),
+      );
+      assert(Number.isSafeInteger(brokerPid) && brokerPid > 0);
+      const broker = await recordProcessIdentity(
+        brokerPid,
+        await readlink(`/proc/${brokerPid}/exe`),
+      );
+      assert(broker);
+      ownedBroker = broker;
+      const parent = Number(
+        (await readFile(`/proc/${brokerPid}/status`, "utf8")).match(
+          /^PPid:\s+(\d+)$/m,
+        )?.[1],
+      );
+      assert(Number.isSafeInteger(parent) && parent > 0);
+      const host = await recordProcessIdentity(
+        parent,
+        await readlink(`/proc/${parent}/exe`),
+      );
+      assert(host);
+      ownedHost = host;
       survivor = await startTrellisRuntime();
       process.kill(host.pid, failure === "stalled" ? "SIGSTOP" : "SIGKILL");
       if (failure === "crashed") {
@@ -191,11 +203,13 @@ for (const failure of ["stalled", "crashed"] as const) {
       );
       assert(reset.token);
     } finally {
-      if (await processMatchesIdentity(host)) process.kill(host.pid, "SIGCONT");
+      if (ownedHost && (await processMatchesIdentity(ownedHost))) {
+        process.kill(ownedHost.pid, "SIGCONT");
+      }
       await runtime.stop();
       await survivor?.stop();
-      if (await processMatchesIdentity(broker)) {
-        process.kill(broker.pid, "SIGKILL");
+      if (ownedBroker && (await processMatchesIdentity(ownedBroker))) {
+        process.kill(ownedBroker.pid, "SIGKILL");
       }
     }
   });

@@ -131,6 +131,10 @@ pub struct TrellisRuntimeBootstrapConfig {
     pub bind_address: Option<IpAddr>,
     /// Authorization timing without access to generated signing material.
     pub authorization: BootstrapAuthorizationPolicy,
+    /// Write `[paths]` that keep data, state, cache, runtime files and logs in
+    /// folders inside the bundle. Off leaves them to the server's host profile,
+    /// as for a read-only bundle served with `--system`.
+    pub bundle_paths: bool,
 }
 
 impl Default for TrellisRuntimeBootstrapConfig {
@@ -151,6 +155,7 @@ impl Default for TrellisRuntimeBootstrapConfig {
             extra_origins: Vec::new(),
             bind_address: None,
             authorization: BootstrapAuthorizationPolicy::default(),
+            bundle_paths: true,
         }
     }
 }

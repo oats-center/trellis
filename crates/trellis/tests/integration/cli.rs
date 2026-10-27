@@ -272,12 +272,6 @@ async fn cli_server_managed_nats() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("bundle");
-    let effective_root = workdir.0.join("effective");
-    // Empty private XDG roots: explicit download acquires pinned NATS on first run.
-    let cache_dir = effective_root.join("cache/nats");
-    fs::create_dir_all(&cache_dir).expect("create managed-NATS cache dir");
-    fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
-        .expect("make managed-NATS cache dir private");
     // Held outside the ephemeral range until the server is done; see ReservedPort.
     let reservations =
         [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().expect("reserve port"));
@@ -320,18 +314,14 @@ async fn cli_server_managed_nats() {
         "trellis-server init failed: {}",
         String::from_utf8_lossy(&init_output.stderr)
     );
+    // The generated config keeps every mutable root inside the bundle.
     let config_path = bundle.join("config.toml");
-    let mut config_toml = fs::read_to_string(&config_path).expect("read bundle config");
-    config_toml.push_str(&format!(
-        "\n[paths]\ndata = {data:?}\nstate = {state:?}\ncache = \
-        {cache:?}\nruntime = {runtime:?}\nlogs = {logs:?}\n",
-        data = effective_root.join("data").display().to_string(),
-        state = effective_root.join("state").display().to_string(),
-        cache = effective_root.join("cache").display().to_string(),
-        runtime = effective_root.join("runtime").display().to_string(),
-        logs = effective_root.join("logs").display().to_string(),
-    ));
-    fs::write(&config_path, &config_toml).expect("write configured path roots");
+    let effective_root = bundle.clone();
+    // An empty private cache: explicit download acquires pinned NATS on first run.
+    let cache_dir = effective_root.join("cache/nats");
+    fs::create_dir_all(&cache_dir).expect("create managed-NATS cache dir");
+    fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
+        .expect("make managed-NATS cache dir private");
     let seeded = server_command(&workdir.0)
         .args([
             "init",
@@ -670,7 +660,8 @@ async fn cli_server_managed_nats() {
         .await
         .expect("connect to external NATS");
     let jetstream = jetstream::new(nats);
-    let external_config = config_toml
+    let external_config = fs::read_to_string(&config_path)
+        .expect("read bundle config")
         .replace(BOGUS_NATS_URL, &format!("tls://127.0.0.1:{nats_port}"))
         .replace(BOGUS_WS_URL, &format!("wss://localhost:{websocket_port}"));
     fs::write(&config_path, external_config).expect("write external NATS config");
@@ -1006,15 +997,6 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         "the CA private key must live outside the role-mounted bundle"
     );
     let config = bundle.join("config.toml");
-    let mut configured = fs::read_to_string(&config).unwrap();
-    configured.push_str("\n[paths]\n");
-    for name in ["data", "state", "cache", "runtime", "logs"] {
-        configured.push_str(&format!(
-            "{name} = {:?}\n",
-            bundle.join(name).display().to_string()
-        ));
-    }
-    fs::write(&config, configured).unwrap();
     let bootstrap = server_command(&workdir.0)
         .args(["init", "admin", "--config"])
         .arg(&config)
