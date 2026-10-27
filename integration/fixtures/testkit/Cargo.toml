@@ -1,6 +1,6 @@
 [package]
 name = "trellis-test-fixture-live"
-version = "0.100.0-rc.8"
+version = "0.100.0-rc.9"
 edition = "2021"
 publish = false
 
@@ -8,20 +8,20 @@ publish = false
 
 [dependencies]
 futures-util = "0.3"
-trellis-rs = "0.100.0-rc.8"
+trellis-rs = "0.100.0-rc.9"
 trellis-test-fixture = { path = "crates/trellis-test-fixture" }
 
 [dev-dependencies]
-trellis-rs = { version = "0.100.0-rc.8" }
+trellis-rs = { version = "0.100.0-rc.9" }
 async-nats = "0.50"
 runtime-trellis = { path = "../runtime/crates/runtime-trellis" }
 trellis-runtime-apis = { path = "../../../crates/runtime-apis" }
 trellis-idl = { path = "../../../crates/idl" }
-trellis-protocol = "0.100.0-rc.8"
+trellis-protocol = "0.100.0-rc.9"
 serde = "1"
 ulid = "1"
 serde_json = "1"
 toml = "1.1.2"
-trellis-testkit = "0.100.0-rc.8"
+trellis-testkit = "0.100.0-rc.9"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json", "form"] }
 tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }

@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.9] - 2026-10-27
+
 ### Changed
 
 - Portal themes live in the Auth database instead of server configuration:

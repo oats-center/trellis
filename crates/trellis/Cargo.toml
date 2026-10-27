@@ -60,7 +60,7 @@ jsonschema.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "sync"] }
-trellis-protocol = { path = "../protocol", version = "0.100.0-rc.8" }
+trellis-protocol = { path = "../protocol", version = "0.100.0-rc.9" }
 tracing.workspace = true
 tokio-util.workspace = true
 ulid = { workspace = true, features = ["serde"] }
