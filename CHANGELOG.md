@@ -8,37 +8,6 @@ and this project adheres to
 
 ## [Unreleased]
 
-### Changed
-
-- Host setup moved from `trellis` to `trellis-server`: `trellis-server init`
-  generates the configuration bundle (was `trellis init config`),
-  `trellis-server init admin` seeds the first administrator (was `trellis init
-admin` and `trellis-server bootstrap-admin`), and `trellis-server tls
-renew|status` manage generated certificates. They accept `--format json`.
-  `trellis` no longer carries the server runtime.
-- `trellis-server --dev` no longer changes logging. `--verbose` shows Trellis's
-  own debug logs and copies managed NATS output to the terminal; other
-  libraries stay at info unless `RUST_LOG` says otherwise. Previously `--dev`
-  printed thousands of NATS client debug lines a minute.
-- The testkits need only the server: set `TRELLIS_TEST_SERVER_BIN` or pass
-  `{ kind: "path", server }` / `NativeSource::Path { server }`; they no longer
-  download or check the CLI.
-
-### Fixed
-
-- Local users can no longer be turned off while no active company sign-in
-  provider exists, and the last active provider cannot be disabled or deleted
-  while it is the only way in; either would have left nobody able to sign in.
-- `trellis roles revoke` and `trellis roles show` act on a role's current
-  assignments after it is deleted and recreated under the same ID, instead of
-  an earlier assignment that no longer gives the role.
-- `trellis roles list` and `trellis users list` show every role and user, not
-  only the first 100.
-- In the Console, switching to another provider while editing one no longer
-  shows, or lets you remove, the first provider's group roles.
-- A Node native refresh that succeeds while a rate limit refuses the follow-up
-  issuer check reports that Trellis is busy, not that a new login is required.
-
 ## [0.100.0-rc.12] - 2026-10-27
 
 ### Added
@@ -58,6 +27,35 @@ renew|status` manage generated certificates. They accept `--format json`.
   who has them from the CLI, including `--new-users` to give a role to every
   user created afterwards.
 
+### Changed
+
+- App-owned `NativeOAuthCustody` leases must implement `abandonRotation()`.
+  Rust `NativeOAuthError` gains `Busy`, and `NativeOAuthServer` gains
+  `dpop_nonce`.
+- `[auth.local_identity] enabled` is removed; turn username-and-password
+  sign-in off in the Console or with `trellis sign-in set --no-local-users`. A
+  config that still sets it fails to start rather than silently turning local
+  sign-in back on.
+- Host setup moved from `trellis` to `trellis-server`. `trellis-server init`
+  generates the configuration bundle (was `trellis init config`).
+  `trellis-server init admin` seeds the first administrator (was
+  `trellis init admin` and `trellis-server bootstrap-admin`).
+  `trellis-server tls renew` and `trellis-server tls status` manage generated
+  certificates. They accept `--format json`. `trellis` no longer carries the
+  server runtime.
+- `trellis-server --dev` no longer changes logging. `--verbose` shows Trellis's
+  own debug logs and copies managed NATS output to the terminal; other
+  libraries stay at info unless `RUST_LOG` says otherwise. Previously `--dev`
+  printed thousands of NATS client debug lines a minute.
+- `trellis-server init` writes `[paths]` so a bundle holds its own data,
+  state, cache, runtime files and logs; several servers on one host no longer
+  share `~/.local/state/trellis` and the other per-user folders.
+  `trellis-server --system init` leaves `[paths]` out for a read-only bundle
+  served with `--system`.
+- The testkits need only the server: set `TRELLIS_TEST_SERVER_BIN` or pass
+  `{ kind: "path", server }` / `NativeSource::Path { server }`; they no longer
+  download or check the CLI.
+
 ### Fixed
 
 - A sign-in request refused by a rate limit no longer locks a CLI or native
@@ -70,16 +68,18 @@ renew|status` manage generated certificates. They accept `--format json`.
 - The Console's Sign-in methods page shows company sign-in providers to anyone
   who may manage users, not only to administrators who manage the whole
   installation.
-
-### Changed
-
-- App-owned `NativeOAuthCustody` leases must implement `abandonRotation()`.
-  Rust `NativeOAuthError` gains `Busy`, and `NativeOAuthServer` gains
-  `dpop_nonce`.
-- `[auth.local_identity] enabled` is removed; turn username-and-password
-  sign-in off in the Console or with `trellis sign-in set --no-local-users`. A
-  config that still sets it fails to start rather than silently turning local
-  sign-in back on.
+- Local users can no longer be turned off while no active company sign-in
+  provider exists, and the last active provider cannot be disabled or deleted
+  while it is the only way in; either would have left nobody able to sign in.
+- `trellis roles revoke` and `trellis roles show` act on a role's current
+  assignments after it is deleted and recreated under the same ID, instead of
+  an earlier assignment that no longer gives the role.
+- `trellis roles list` and `trellis users list` show every role and user, not
+  only the first 100.
+- In the Console, switching to another provider while editing one no longer
+  shows, or lets you remove, the first provider's group roles.
+- A Node native refresh that succeeds while a rate limit refuses the follow-up
+  issuer check reports that Trellis is busy, not that a new login is required.
 
 ## [0.100.0-rc.11] - 2026-10-27
 
