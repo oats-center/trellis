@@ -221,7 +221,15 @@ function jsonValue(value: unknown): JsonValue {
   if (prototype === Object.prototype || prototype === null) {
     const result: { [key: string]: JsonValue } = {};
     for (const [key, item] of Object.entries(value as object)) {
-      if (item !== undefined) result[key] = jsonValue(item);
+      // Define rather than assign: assigning `__proto__` would invoke the
+      // inherited setter instead of keeping it as an ordinary JSON key.
+      if (item !== undefined)
+        Object.defineProperty(result, key, {
+          value: jsonValue(item),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
     }
     return result;
   }

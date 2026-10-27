@@ -109,3 +109,13 @@ test("generated codecs preserve wire representations and composition", () => {
     Error,
   );
 });
+
+test("the json codec keeps __proto__ as an ordinary key", () => {
+  const wire = JSON.parse('{"__proto__":{"admin":true},"kept":1}');
+  const decoded = generated.codecs.json.decode(wire);
+  assert.equal(
+    JSON.stringify(generated.codecs.json.encode(decoded)),
+    JSON.stringify(wire),
+  );
+  assert.equal(Object.getPrototypeOf(decoded), Object.prototype);
+});
