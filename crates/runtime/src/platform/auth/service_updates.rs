@@ -186,6 +186,48 @@ fn submitting_instance(
         .ok_or(AuthError::Denied)
 }
 
+/// The APIs among `apis` that a deployment other than `deployment` serves.
+/// Every deployment serving an API joins one queue group, so another one would
+/// split callers' requests with it at random.
+pub(super) fn shared_apis_of(
+    connection: &Connection,
+    deployment: &str,
+    apis: impl IntoIterator<Item = String>,
+) -> Result<Vec<String>, AuthError> {
+    let mut shared = Vec::new();
+    for api in apis {
+        let served: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_deployment_bindings b \
+            JOIN auth_deployments d USING(deployment_id), json_each(b.provided_apis_json) p \
+            WHERE d.deployment_id!=?1 AND d.state!='revoked' \
+            AND json_extract(p.value,'$.api_id')=?2)",
+            params![deployment, api],
+            |row| row.get(0),
+        )?;
+        if served {
+            shared.push(api);
+        }
+    }
+    Ok(shared)
+}
+
+/// Sharing an API with another deployment is never implied: whoever installs
+/// it, through any client, must say they intend it.
+pub(super) fn require_sharing_acknowledged(
+    shared: Vec<String>,
+    acknowledged: Option<bool>,
+) -> Result<(), AuthError> {
+    if shared.is_empty() || acknowledged == Some(true) {
+        return Ok(());
+    }
+    Err(AuthError::Invalid(format!(
+        "this makes the service answer {} alongside the service that already does; \
+        callers' requests would be split between them at random, and each keeps its own \
+        data. Confirm with acknowledgeSharedApis only if that is intended",
+        shared.join(", ")
+    )))
+}
+
 /// A compiled candidate participant and the evidence it came from.
 struct Candidate {
     evidence: trellis_idl::PackageEvidence,
@@ -440,18 +482,9 @@ fn changes(
     let mut shared_apis = Vec::new();
     for identity in definition.implements() {
         let api = &identity.to_string();
-        // Every deployment serving an API shares one queue group, so a second
-        // one splits callers' requests with the first. That needs approval with
-        // an explicit acknowledgement.
-        let served_elsewhere: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM auth_deployment_bindings b \
-            JOIN auth_deployments d USING(deployment_id), json_each(b.provided_apis_json) p \
-            WHERE d.deployment_id!=?1 AND d.state!='revoked' \
-            AND json_extract(p.value,'$.api_id')=?2)",
-            params![deployment, api],
-            |row| row.get(0),
-        )?;
-        if served_elsewhere && !current.apis.contains(api) {
+        if !current.apis.contains(api)
+            && !shared_apis_of(connection, deployment, [api.clone()])?.is_empty()
+        {
             shared_apis.push(api.clone());
         }
         let accepted: Option<(String, String)> = connection
@@ -838,19 +871,14 @@ fn decide(
                 // Recomputed, so an API another service started serving since
                 // the submission is shown and acknowledged before approval.
                 let changes = self::changes(connection, &deployment, &current, &candidate)?;
-                if !changes.shared_apis.is_empty() && input.acknowledge_shared_apis != Some(true) {
-                    return Err(AuthError::Invalid(format!(
-                        "this update makes the service answer {} alongside the service that \
-                        already does; callers' requests would be split between them. Approve \
-                        it with acknowledgeSharedApis if that is intended",
-                        changes
-                            .shared_apis
-                            .iter()
-                            .map(|api| api.as_ref())
-                            .collect::<Vec<&str>>()
-                            .join(", ")
-                    )));
-                }
+                require_sharing_acknowledged(
+                    changes
+                        .shared_apis
+                        .iter()
+                        .map(|api| api.to_string())
+                        .collect(),
+                    input.acknowledge_shared_apis,
+                )?;
                 SqliteAuthorizationStore::require_platform_for(
                     connection,
                     &identity.actor,

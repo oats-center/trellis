@@ -10,9 +10,19 @@ test("services registered without a deployment each connect, and a second instan
       name: "provider",
       contract: participants.Provider.participant,
     });
+    // Echo serves the same API as Provider: Auth refuses that second
+    // deployment until the administrator acknowledges the shared API.
+    await assert.rejects(
+      runtime.registerService({
+        name: "echo",
+        contract: participants.EchoProvider.participant,
+      }),
+      /requests would be split/,
+    );
     const echo = await runtime.registerService({
       name: "echo",
       contract: participants.EchoProvider.participant,
+      acknowledgeSharedApis: true,
     });
     assert.notEqual(echo.deploymentId, provider.deploymentId);
     const replica = await runtime.registerService({

@@ -543,8 +543,9 @@ async fn t06_two_providers_have_distinct_deployments() {
         .register_service::<ProviderParticipant>("provider-a")
         .await
         .expect("register first provider");
+    // A second deployment of the same API has to be acknowledged.
     let second = runtime
-        .register_service::<ProviderParticipant>("provider-b")
+        .register_service_sharing_apis::<ProviderParticipant>("provider-b")
         .await
         .expect("register second provider");
 

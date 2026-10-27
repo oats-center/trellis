@@ -105,7 +105,9 @@ service can also submit its own build: `ServiceUpdates.Submit` and
 `ServiceUpdates.Status` are callable by every service instance through
 `trellis.auth.v1:serviceUpdates.submit`; `ServiceUpdates.List`, `Get`, and
 `Decide` require `trellis.auth.v1:users.manage`. An update that asks for no new
-capability or resource installs at once; one that does waits for `Decide`. See
+capability or resource installs at once; one that does waits for `Decide`.
+Create, Apply, and Decide all refuse to make a deployment serve an API another
+deployment serves unless the request sets `acknowledgeSharedApis`. See
 [service updates](service-updates.md). There is no materialized-authority or
 reconcile RPC family.
 

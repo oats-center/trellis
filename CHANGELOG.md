@@ -31,7 +31,11 @@ and this project adheres to
   `trellis svc <deployment-id> updates|approve|reject`. A dropped resource keeps
   its data, and an approved later build that declares it again gets it back. A
   build that implements an API another service serves needs an explicit
-  acknowledgement that requests will be split between them. Restarting a
+  acknowledgement that requests will be split between them; Auth requires the
+  same acknowledgement for `Deployments.Create` and `Deployments.Apply`
+  (`--acknowledge-shared-apis` in the CLI, a checkbox in the Console). The Rust
+  testkit adds `register_service_sharing_apis` and the TypeScript testkit an
+  `acknowledgeSharedApis` option for tests that need two such deployments. Restarting a
   service after `trellis svc apply` now also moves its instance to the applied
   revision.
 

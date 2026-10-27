@@ -230,6 +230,7 @@ export class TrellisTestAdminAutomation {
   async createDeployment(args: {
     deployment?: string;
     contract: TrellisTestParticipantLike;
+    acknowledgeSharedApis?: boolean;
   }): Promise<void> {
     return await adminDeployment.createDeployment(this.#deployment, args);
   }
@@ -273,6 +274,7 @@ export class TrellisTestAdminAutomation {
   async applyParticipant(args: {
     deployment?: string;
     contract: TrellisTestParticipantLike;
+    acknowledgeSharedApis?: boolean;
   }): Promise<TrellisTestParticipantApproval> {
     return await adminDeployment.applyParticipant(this.#deployment, args);
   }
@@ -287,6 +289,7 @@ export class TrellisTestAdminAutomation {
   async provisionServiceInstance(args: {
     deployment?: string;
     contract: TrellisTestParticipantLike;
+    acknowledgeSharedApis?: boolean;
   }): Promise<TrellisTestServiceKey> {
     return await adminDeployment.provisionServiceInstance(
       this.#deployment,
@@ -298,6 +301,7 @@ export class TrellisTestAdminAutomation {
   async registerService(args: {
     deployment?: string;
     contract: TrellisTestParticipantLike;
+    acknowledgeSharedApis?: boolean;
   }): Promise<TrellisTestServiceKey> {
     return await adminDeployment.registerService(this.#deployment, args);
   }

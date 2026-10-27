@@ -639,6 +639,7 @@ model AuthDeploymentCreateRequest {
   kind: AuthDeploymentKind;
   participantId: string;
   packageEvidence: AuthPackageEvidence;
+  acknowledgeSharedApis?: bool;
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthDeploymentGetRequest { deploymentId: ulid; }
@@ -647,6 +648,7 @@ type AuthDeploymentsListResponse = CursorPage<AuthDeployment>;
 model AuthDeploymentApplyRequest {
   deploymentId: ulid;
   packageEvidence: AuthPackageEvidence;
+  acknowledgeSharedApis?: bool;
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }

@@ -40,7 +40,12 @@ export type AdminDeploymentContext = {
  */
 function deploymentKey(
   context: AdminDeploymentContext,
-  args: { deployment?: string; contract: TrellisTestParticipantLike },
+  args: {
+    deployment?: string;
+    contract: TrellisTestParticipantLike;
+    /** Confirms this deployment may answer an API another one serves. */
+    acknowledgeSharedApis?: boolean;
+  },
 ): string {
   if (args.deployment) return args.deployment;
   const running = context.deploymentParticipants.get(context.defaultDeployment);
@@ -89,7 +94,12 @@ export async function installParticipant(
 /** Creates a deployment bound to an actual generated service or device descriptor. */
 export async function createDeployment(
   context: AdminDeploymentContext,
-  args: { deployment?: string; contract: TrellisTestParticipantLike },
+  args: {
+    deployment?: string;
+    contract: TrellisTestParticipantLike;
+    /** Confirms this deployment may answer an API another one serves. */
+    acknowledgeSharedApis?: boolean;
+  },
 ): Promise<void> {
   const deployment = deploymentKey(context, args);
   if (context.deploymentIds.has(deployment)) return;
@@ -101,6 +111,7 @@ export async function createDeployment(
     packageEvidence: types.AuthPackageEvidenceCodec.decode(
       args.contract.packageEvidence,
     ),
+    ...(args.acknowledgeSharedApis ? { acknowledgeSharedApis: true } : {}),
     idempotencyKey: ulid(),
   });
   context.deploymentIds.set(deployment, created.deploymentId);
@@ -116,7 +127,12 @@ export async function createDeployment(
 /** Applies current generated source evidence with the last observed deployment revision. */
 export async function applyParticipant(
   context: AdminDeploymentContext,
-  args: { deployment?: string; contract: TrellisTestParticipantLike },
+  args: {
+    deployment?: string;
+    contract: TrellisTestParticipantLike;
+    /** Confirms this deployment may answer an API another one serves. */
+    acknowledgeSharedApis?: boolean;
+  },
 ): Promise<TrellisTestParticipantApproval> {
   const deployment = deploymentKey(context, args);
   const existing = context.deploymentIds.get(deployment);
@@ -135,6 +151,7 @@ export async function applyParticipant(
       packageEvidence: types.AuthPackageEvidenceCodec.decode(
         args.contract.packageEvidence,
       ),
+      ...(args.acknowledgeSharedApis ? { acknowledgeSharedApis: true } : {}),
       idempotencyKey: ulid(),
     });
     context.deploymentRevisions.set(deploymentId, applied.revision);
@@ -154,7 +171,12 @@ export async function applyParticipant(
 /** Provisions an independently keyed service instance through generated Auth. */
 export async function provisionServiceInstance(
   context: AdminDeploymentContext,
-  args: { deployment?: string; contract: TrellisTestParticipantLike },
+  args: {
+    deployment?: string;
+    contract: TrellisTestParticipantLike;
+    /** Confirms this deployment may answer an API another one serves. */
+    acknowledgeSharedApis?: boolean;
+  },
 ): Promise<TrellisTestServiceKey> {
   const deployment = deploymentKey(context, args);
   const deploymentId = context.deploymentIds.get(deployment);

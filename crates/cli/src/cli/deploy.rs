@@ -118,6 +118,10 @@ pub struct SvcCreateArgs {
     pub source: PathBuf,
     #[arg(long)]
     pub participant: Option<String>,
+    /// Confirm that this service may answer an API another service already
+    /// serves, splitting callers' requests between the two.
+    #[arg(long)]
+    pub acknowledge_shared_apis: bool,
 }
 
 /// Create a device deployment from its native source package.
@@ -127,6 +131,10 @@ pub struct DevCreateArgs {
     pub source: PathBuf,
     #[arg(long)]
     pub participant: Option<String>,
+    /// Confirm that this service may answer an API another service already
+    /// serves, splitting callers' requests between the two.
+    #[arg(long)]
+    pub acknowledge_shared_apis: bool,
 }
 
 /// Apply an implementation package to an existing deployment.
@@ -139,6 +147,10 @@ pub struct ApplyArgs {
     /// Deployment revision; omitted reads the current revision once.
     #[arg(long)]
     pub expected_revision: Option<u64>,
+    /// Confirm that this service may answer an API another service already
+    /// serves, splitting callers' requests between the two.
+    #[arg(long)]
+    pub acknowledge_shared_apis: bool,
 }
 
 /// Remove a deployment; enforcement is performed by the native Auth runtime.

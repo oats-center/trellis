@@ -21,6 +21,10 @@
   let uncertain = $state(false);
   let disposed = false;
   let error = $state<string | null>(null);
+  // Auth refused because another service already answers an API this package
+  // implements; creating it anyway needs the administrator's explicit consent.
+  let sharing = $state<string | null>(null);
+  let sharingUnderstood = $state(false);
   let created = $state<apis.auth.DeploymentsCreateOutput | null>(null);
   const back = $derived(
     kind === "service" ? "/admin/services" : "/admin/devices",
@@ -43,6 +47,9 @@
         kind,
         participantId: participantId.trim(),
         packageEvidence: JSON.parse(evidence),
+        ...(sharing && sharingUnderstood
+          ? { acknowledgeSharedApis: true }
+          : {}),
         idempotencyKey: ulid(),
       });
       const response = await trellis.deploymentsCreate(input).orThrow();
@@ -50,9 +57,16 @@
     } catch (cause) {
       if (disposed) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
+      const message = projectConsoleError(cause).message;
+      if (!uncertain && message.includes("acknowledgeSharedApis")) {
+        sharing = message;
+        sharingUnderstood = false;
+        error = null;
+        return;
+      }
       error = uncertain
         ? "Creation outcome unknown. Inspect the deployment catalog before creating again."
-        : projectConsoleError(cause).message;
+        : message;
     } finally {
       if (!disposed) busy = false;
     }
@@ -142,12 +156,39 @@
           >The package JSON with its sources and dependencies.</span
         >
       </div>
+      {#if sharing}
+        <div class="alert alert-warning block space-y-2" role="alert">
+          <p class="font-semibold">
+            Another service already answers an API this package provides.
+          </p>
+          <p class="text-sm">
+            Adding it makes both services answer the same requests. Each request
+            goes to one of them at random, so each sees only some requests, they
+            keep separate data, and callers can't tell which one answered. To
+            add capacity or move a service, add instances to the existing
+            service instead.
+          </p>
+          <details class="text-xs">
+            <summary class="cursor-pointer">Details</summary>
+            <p class="mt-1">{sharing}</p>
+          </details>
+          <label class="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              class="checkbox checkbox-sm"
+              bind:checked={sharingUnderstood}
+            />
+            I understand requests will be split between the two services
+          </label>
+        </div>
+      {/if}
       <div class="trellis-action-row">
         <button
           type="submit"
           class="btn btn-primary"
           disabled={busy ||
             uncertain ||
+            (sharing !== null && !sharingUnderstood) ||
             !title.trim() ||
             !participantId.trim() ||
             !evidence.trim()}

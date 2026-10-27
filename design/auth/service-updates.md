@@ -84,6 +84,12 @@ retries it, which the Console offers as "Try again" when setup fails.
 Approval recomputes the changes, so an API another deployment started serving
 after the submission still needs the acknowledgement.
 
+Auth enforces the acknowledgement on every path that makes a deployment serve
+an API: `Deployments.Create` and `Deployments.Apply` take the same
+`acknowledgeSharedApis` and refuse without it (`trellis svc create|apply
+--acknowledge-shared-apis`; the Console's add-service form shows the warning and
+checkbox). No client can install a shared API without it.
+
 ## Approval
 
 The review URL is

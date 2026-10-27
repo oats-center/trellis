@@ -841,6 +841,29 @@ impl TrellisTestRuntime {
         &mut self,
         name: &str,
     ) -> Result<TestServiceIdentity, TrellisTestError> {
+        self.register::<P>(name, false).await
+    }
+
+    /// Registers `P` like [`Self::register_service`] when another deployment
+    /// already serves an API `P` implements. Every deployment serving an API
+    /// shares its requests at random, so Auth requires this explicit
+    /// acknowledgement; use it only to test that situation. Replicas of one
+    /// service are instances of one deployment instead.
+    ///
+    /// # Errors
+    /// Returns an error when `P` is not a service or provisioning fails.
+    pub async fn register_service_sharing_apis<P: ParticipantDescriptor>(
+        &mut self,
+        name: &str,
+    ) -> Result<TestServiceIdentity, TrellisTestError> {
+        self.register::<P>(name, true).await
+    }
+
+    async fn register<P: ParticipantDescriptor>(
+        &mut self,
+        name: &str,
+        acknowledge_shared_apis: bool,
+    ) -> Result<TestServiceIdentity, TrellisTestError> {
         self.ensure_running()?;
         if P::KIND != trellis_rs::generated::ParticipantKind::Service {
             return Err(TrellisTestError::new(
@@ -852,7 +875,7 @@ impl TrellisTestRuntime {
         self.reserve_name(name)?;
         let result = match tokio::time::timeout(
             self.timeouts.request,
-            self.register_service_inner::<P>(name),
+            self.register_service_inner::<P>(name, acknowledge_shared_apis),
         )
         .await
         {
@@ -870,10 +893,13 @@ impl TrellisTestRuntime {
     async fn register_service_inner<P: ParticipantDescriptor>(
         &mut self,
         name: &str,
+        acknowledge_shared_apis: bool,
     ) -> Result<TestServiceIdentity, TrellisTestError> {
         let admin = self.admin()?;
         admin.accept_apis::<P>().await?;
-        let deployment_id = admin.create_deployment::<P>(name).await?;
+        let deployment_id = admin
+            .create_deployment::<P>(name, acknowledge_shared_apis)
+            .await?;
         let (instance_id, seed) = admin.provision_service_instance(&deployment_id).await?;
         Ok(TestServiceIdentity {
             name: name.to_owned(),

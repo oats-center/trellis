@@ -486,12 +486,16 @@ export class TrellisTestRuntime implements AsyncDisposable {
     create(args: {
       id?: string;
       contract: TrellisTestParticipantLike;
+      /** Confirms this deployment may answer an API another one serves. */
+      acknowledgeSharedApis?: boolean;
     }): Promise<void>;
   };
   readonly contracts: {
     apply(args: {
       deployment?: string;
       contract: TrellisTestParticipantLike;
+      /** Confirms this deployment may answer an API another one serves. */
+      acknowledgeSharedApis?: boolean;
     }): Promise<TrellisTestParticipantApproval>;
     install(args: {
       contract: TrellisTestParticipantLike;
@@ -624,17 +628,19 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.#nativeGate = args.nativeGate;
     this.#admin = args.admin;
     this.deployments = {
-      create: ({ id, contract }) =>
+      create: ({ id, contract, acknowledgeSharedApis }) =>
         this.#admin.createDeployment({
           deployment: id ?? this.#deployment,
           contract,
+          acknowledgeSharedApis,
         }),
     };
     this.contracts = {
-      apply: ({ deployment, contract }) =>
+      apply: ({ deployment, contract, acknowledgeSharedApis }) =>
         this.#admin.applyParticipant({
           deployment: deployment ?? this.#deployment,
           contract,
+          acknowledgeSharedApis,
         }),
       install: ({ contract }) => this.#admin.installParticipant({ contract }),
     };
@@ -931,10 +937,13 @@ export class TrellisTestRuntime implements AsyncDisposable {
     name: string;
     contract: TrellisTestParticipantLike;
     deployment?: string;
+    /** Confirms this service may answer an API another one serves. */
+    acknowledgeSharedApis?: boolean;
   }): Promise<TrellisTestServiceKey> {
     return await this.#admin.registerService({
       deployment: args.deployment,
       contract: args.contract,
+      acknowledgeSharedApis: args.acknowledgeSharedApis,
     });
   }
 

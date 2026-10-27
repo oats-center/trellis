@@ -316,6 +316,14 @@ pub(super) fn create_deployment(
             if kind != input.kind.as_str() {
                 return Err(AuthError::Invalid("participant kind mismatch".into()));
             }
+            super::service_updates::require_sharing_acknowledged(
+                super::service_updates::shared_apis_of(
+                    connection,
+                    "",
+                    provisioning.expected_api_generations.keys().cloned(),
+                )?,
+                input.acknowledge_shared_apis,
+            )?;
             let deployment = SqliteAuthorizationStore::install_deployment_in_transaction(
                 connection,
                 &identity.actor,
@@ -411,6 +419,28 @@ pub(super) fn apply_deployment(
                 &input.package_evidence,
                 &current.participant_id,
                 serde_json::from_str(&resources)?,
+            )?;
+            let provided: String = connection.query_row(
+                "SELECT provided_apis_json FROM auth_deployment_bindings WHERE deployment_id=?1",
+                [&deployment],
+                |row| row.get(0),
+            )?;
+            let provided: Vec<serde_json::Value> = serde_json::from_str(&provided)?;
+            super::service_updates::require_sharing_acknowledged(
+                super::service_updates::shared_apis_of(
+                    connection,
+                    &deployment,
+                    provisioning
+                        .expected_api_generations
+                        .keys()
+                        .filter(|api| {
+                            !provided
+                                .iter()
+                                .any(|entry| entry["api_id"].as_str() == Some(api.as_str()))
+                        })
+                        .cloned(),
+                )?,
+                input.acknowledge_shared_apis,
             )?;
             SqliteAuthorizationStore::install_deployment_in_transaction(
                 connection,

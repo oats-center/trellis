@@ -476,12 +476,27 @@ async fn create_service(
             title: wire(id)?,
             participant_id: participant.participant_id,
             package_evidence: participant.package_evidence,
+            acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
         .await
-        .into_diagnostic()?;
+        .map_err(shared_api_hint)?;
     print_deployment_result(format, "service deployment created", &response.deployment)
+}
+
+/// Auth refuses to let a deployment answer an API another one serves unless the
+/// caller confirms it; say how to confirm from the CLI.
+fn shared_api_hint(error: impl std::fmt::Display) -> miette::Report {
+    let message = error.to_string();
+    if message.contains("acknowledgeSharedApis") {
+        miette::miette!(
+            help = "Re-run with --acknowledge-shared-apis only if splitting requests is intended.",
+            "{message}"
+        )
+    } else {
+        miette::miette!("{message}")
+    }
 }
 
 async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> miette::Result<()> {
@@ -497,11 +512,12 @@ async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> 
             title: wire(id)?,
             participant_id: participant.participant_id,
             package_evidence: participant.package_evidence,
+            acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
         .await
-        .into_diagnostic()?;
+        .map_err(shared_api_hint)?;
     print_deployment_result(format, "device deployment created", &response.deployment)
 }
 
@@ -542,10 +558,11 @@ async fn apply_contract(
             )?,
             idempotency_key: wire(cli_idempotency_key())?,
             package_evidence: participant.package_evidence,
+            acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
             extra: Default::default(),
         })
         .await
-        .into_diagnostic()?;
+        .map_err(shared_api_hint)?;
     print_deployment_result(format, "deployment package applied", &response.deployment)
 }
 

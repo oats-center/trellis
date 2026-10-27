@@ -489,6 +489,7 @@ impl AdminSession {
     pub(crate) async fn create_deployment<P: ParticipantDescriptor>(
         &self,
         display_name: &str,
+        acknowledge_shared_apis: bool,
     ) -> Result<String, TrellisTestError> {
         let response = self
             .auth
@@ -497,6 +498,7 @@ impl AdminSession {
                 kind: AuthDeploymentKind::Service,
                 participant_id: P::ID.to_owned(),
                 package_evidence: wire(P::package_evidence())?,
+                acknowledge_shared_apis: acknowledge_shared_apis.then_some(true),
                 idempotency_key: ulid::Ulid::new().to_string().into(),
                 extra: Default::default(),
             })

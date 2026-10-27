@@ -65,6 +65,9 @@ export async function seedServiceWithoutResources(
     packageEvidence: types.AuthPackageEvidenceCodec.decode(
       participants.EchoProvider.participant.packageEvidence,
     ),
+    // Console tests seed this beside the resource Provider, which serves the
+    // same API.
+    acknowledgeSharedApis: true,
     idempotencyKey: ulid(),
   });
   return { deploymentId: created.deployment.deploymentId, displayName };
@@ -84,6 +87,7 @@ export async function seedServiceWithoutResources(
     name: displayName,
     contract: participants.Provider.participant,
     deployment: displayName,
+    acknowledgeSharedApis: true,
   });
   const service = await TrellisService.connect({
     trellisUrl: runtime.oauthIssuer,

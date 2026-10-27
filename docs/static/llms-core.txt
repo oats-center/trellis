@@ -293,7 +293,8 @@ the same from the CLI. Dropping a resource only detaches it; its data stays unti
 `Resources.Remove`, and an approved reattachment brings it back. A build that
 implements an API another deployment already serves needs an explicit
 acknowledgement on approval (`acknowledgeSharedApis`, or
-`approve --acknowledge-shared-apis`): both deployments then share the API's queue
+`approve --acknowledge-shared-apis`), and so do `Deployments.Create`/`Apply`
+(`svc create|apply --acknowledge-shared-apis`): both deployments then share the API's queue
 group, so requests split at random between services with separate data. Scale or
 move a service with more instances of one deployment instead. A build whose
 implemented API changed incompatibly is refused until the API is force-replaced.
