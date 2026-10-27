@@ -1654,6 +1654,9 @@ export class Trellis<
       // session; `dispose()` unregisters it transactionally on failure.
       provider.registerRoute(subject);
       open = openIntake();
+      // Registration is usable only once the broker has acknowledged SUB, as
+      // for RPC handlers: an opening sent right after it must find the route.
+      await nc.flush();
     } catch (cause) {
       const error = createTransportError({
         code: "trellis.live.listen_failed",
