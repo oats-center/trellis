@@ -2441,7 +2441,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.100.0-rc.9"
+version = "0.100.0-rc.10"
 dependencies = [
  "serde",
  "serde_json",
