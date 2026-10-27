@@ -40,6 +40,8 @@ for (const sharedDeployment of [false, true]) {
               ? "mixed-deployment"
               : "node-destination",
             contract: participants.OperationProvider.participant,
+            // A second deployment of the same API, which this case targets.
+            acknowledgeSharedApis: true,
           });
           if (sharedDeployment)
             assert.equal(

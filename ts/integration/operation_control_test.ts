@@ -104,10 +104,12 @@ test("serialized references keep controls on their deployment when a canonical s
       deployment: "reference-owner-a",
       contract: participants.Provider.participant,
     });
+    // A second deployment of the same API, which this case targets.
     const secondIdentity = await runtime.registerService({
       name: "reference-owner-b",
       deployment: "reference-owner-b",
       contract: participants.Provider.participant,
+      acknowledgeSharedApis: true,
     });
     const connect = (seed: typeof firstIdentity.seed, name: string) =>
       TrellisService.connect({

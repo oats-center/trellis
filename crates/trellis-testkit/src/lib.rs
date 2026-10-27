@@ -322,7 +322,9 @@ mod tests {
         use trellis_runtime_apis::{apis::trellis_health_v1, types::*};
         let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
         let identity = runtime
-            .register_service::<trellis_health_runtime::Participant>("health acceptance provider")
+            .register_service_sharing_apis::<trellis_health_runtime::Participant>(
+                "health acceptance provider",
+            )
             .await
             .unwrap();
         let publication_started_at = time::OffsetDateTime::now_utc();

@@ -21,10 +21,12 @@ test(
           deployment: "target-a",
           contract: participants.Provider.participant,
         });
+        // A second deployment of the same API, which this case targets.
         const identityB = await runtime.registerService({
           name: "target-b",
           deployment: "target-b",
           contract: participants.Provider.participant,
+          acknowledgeSharedApis: true,
         });
         const a = await TrellisService.connect({
           trellisUrl: runtime.oauthIssuer,

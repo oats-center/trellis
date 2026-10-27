@@ -60,6 +60,8 @@ test("generated deployment mutations preserve replay and reject stale revisions"
       packageEvidence: types.AuthPackageEvidenceCodec.decode(
         contract.packageEvidence,
       ),
+      // "catalog-source" already serves this API.
+      acknowledgeSharedApis: true,
       idempotencyKey: ulid(),
     };
     const { deployment: created } = await runtime.callAdminRpc(

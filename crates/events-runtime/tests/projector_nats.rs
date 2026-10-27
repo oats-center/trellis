@@ -20,11 +20,11 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         .await
         .unwrap();
     let publisher_identity = runtime
-        .register_service::<trellis_health_runtime::Participant>("projector publisher")
+        .register_service_sharing_apis::<trellis_health_runtime::Participant>("projector publisher")
         .await
         .unwrap();
     let receiver_identity = runtime
-        .register_service::<events_participant::Participant>("projector receiver")
+        .register_service_sharing_apis::<events_participant::Participant>("projector receiver")
         .await
         .unwrap();
     let server =

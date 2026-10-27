@@ -28,7 +28,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
         .await
         .unwrap();
     let identity = runtime
-        .register_service::<Participant>("finite-reply-provider")
+        .register_service_sharing_apis::<Participant>("finite-reply-provider")
         .await
         .unwrap();
     let server =
