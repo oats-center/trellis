@@ -607,12 +607,14 @@ mod tests {
         let runs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let first = std::sync::Arc::clone(&runs);
         let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (started, running) = std::sync::mpsc::channel::<()>();
         let state = {
             let mut owner = slot.lock().unwrap();
             let state = start_operation(
                 &slot,
                 Box::new(move || {
                     first.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let _ = started.send(());
                     let _ = blocked.recv();
                 }),
             )
@@ -620,6 +622,11 @@ mod tests {
             owner.active = Some(std::sync::Arc::clone(&state));
             state
         };
+        // The worker thread may start late on a busy host; the waits below
+        // concern an operation that is already running.
+        running
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker started");
         let deadline = tokio::time::Instant::now() + Duration::from_millis(10);
         wait_operation(&state, deadline, "flush").await;
         assert!(
