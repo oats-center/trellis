@@ -320,7 +320,10 @@ pub(super) async fn theme(command: ThemeCommand) -> miette::Result<()> {
                     let bytes = std::fs::read(path).into_diagnostic()?;
                     Some(json!({
                         "format": format,
-                        "base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+                        "base64": base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            bytes,
+                        ),
                     }))
                 }
                 None => None,
