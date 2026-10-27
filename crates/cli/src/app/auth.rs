@@ -315,7 +315,11 @@ pub(super) async fn theme(command: ThemeCommand) -> miette::Result<()> {
                         Some("jpg" | "jpeg") => "jpeg",
                         Some("webp") => "webp",
                         Some("svg") => "svg",
-                        _ => miette::bail!("the logo must be a .png, .jpg, .webp, or .svg file"),
+                        _ => {
+                            return Err(miette::miette!(
+                                "the logo must be a .png, .jpg, .webp, or .svg file"
+                            ))
+                        }
                     };
                     let bytes = std::fs::read(path).into_diagnostic()?;
                     Some(json!({

@@ -283,7 +283,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             // A second deployment of the same participant has the runtime capability
             // but cannot inspect or report this Consumer's delivery.
             let other_identity = runtime
-                .register_service::<runtime_trellis_event_service::Participant>(
+                .register_service_sharing_apis::<runtime_trellis_event_service::Participant>(
                     "other Consumer owner",
                 )
                 .await

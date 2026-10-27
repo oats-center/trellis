@@ -38,6 +38,8 @@ async function seedProvider(runtime: TrellisTestRuntime, label: string) {
     name: displayName,
     contract: participants.Provider.participant,
     deployment: displayName,
+    // Tests seed several of these side by side, one deployment each.
+    acknowledgeSharedApis: true,
   });
   const service = await TrellisService.connect({
     trellisUrl: runtime.oauthIssuer,
@@ -955,6 +957,8 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
       name: displayName,
       contract: participants.EventService.participant,
       deployment: displayName,
+      // Tests seed several of these side by side, one deployment each.
+      acknowledgeSharedApis: true,
     });
     const service = await TrellisService.connect({
       trellisUrl: runtime.oauthIssuer,
