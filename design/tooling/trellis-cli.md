@@ -92,7 +92,8 @@ manifest, trust-floor, offline-signing, or compatibility command exists.
 ## Deployment Commands
 
 ```text
-trellis svc create ... [--acknowledge-shared-apis]
+trellis svc <name> create --source <project> ... [--acknowledge-shared-apis]
+trellis svc <name> create
 trellis svc apply <deployment-id> <project> ... [--acknowledge-shared-apis]
 trellis svc get <deployment-id>
 trellis svc provision <deployment-id> ...
@@ -110,6 +111,11 @@ trellis dev enable|disable|remove ...
 Apply compiles the project source in memory, validates its participant kind and
 selected participant, installs the participant revision when needed, then calls
 the direct deployment mutation. Inspection uses `Auth.Deployments.Get`.
+
+`svc <name> create` without `--source` creates a service claim
+(`Auth.ServiceClaims.Create`) with a locally generated identity and prints its
+seed; see `design/auth/service-updates.md`. `updates`, `approve`, and `reject`
+accept a waiting claim's ID or name as well as a deployment's.
 
 `svc updates` lists the builds a service submitted for itself
 (`Auth.ServiceUpdates.List`) with what each asks for and gives up;

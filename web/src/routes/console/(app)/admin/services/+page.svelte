@@ -26,6 +26,7 @@
 
   type Deployment = apis.auth.DeploymentsListOutput["items"][number];
   type Participant = apis.health.QueryOutput["items"][number];
+  type Claim = apis.auth.ServiceClaimsListOutput["items"][number];
 
   const trellis = getTrellis();
   const RPC_TIMEOUT_MS = 10_000;
@@ -54,6 +55,16 @@
         .filter((update) => update.state === "pending")
         .map((update) => update.deploymentId),
     );
+  }
+
+  // Services added without their IDL, waiting for the service to connect.
+  let claims = $state.raw<Claim[]>([]);
+  async function loadClaims(): Promise<void> {
+    const response = await traverseAll(async (page) => {
+      const result = await trellis.serviceClaimsList({ page }).orThrow();
+      return { items: result.items, cursor: result.page.nextCursor };
+    });
+    claims = response.items.filter((claim) => claim.state === "waiting");
   }
 
   async function loadHealth(): Promise<void> {
@@ -138,6 +149,7 @@
     void load();
     void loadHealth().catch(() => {});
     void loadUpdates().catch(() => {});
+    void loadClaims().catch(() => {});
     return () => scope.invalidate();
   });
 
@@ -174,6 +186,29 @@
   </PageToolbar>
 
   {#if error}<Notice variant="error">{error}</Notice>{/if}
+
+  {#if claims.length > 0}
+    <div class="trellis-section p-4">
+      <h2 class="font-medium">Waiting for their service</h2>
+      <ul class="mt-3 space-y-2">
+        {#each claims as claim (claim.claimId)}
+          <li class="flex flex-wrap items-center gap-3">
+            <a
+              class="font-medium hover:underline"
+              href={resolve("/admin/services/[deploymentId]", {
+                deploymentId: claim.claimId,
+              })}>{humanizeName(claim.title)}</a
+            >
+            {#if awaitingApproval.has(claim.claimId)}<span
+                class="badge badge-sm badge-warning">Asks for approval</span
+              >{:else}<span class="badge badge-sm badge-neutral"
+                >Not connected yet</span
+              >{/if}
+          </li>
+        {/each}
+      </ul>
+    </div>
+  {/if}
 
   <div class="trellis-section">
     <div class="flex flex-wrap items-center gap-3 p-4">

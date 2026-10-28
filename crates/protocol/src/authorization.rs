@@ -674,6 +674,19 @@ fn validate_authority(body: &UnsignedSessionAuthority) -> Result<(), ProtocolErr
             validate_text(client_id, &["binding", "clientId"])?;
             decode_base64url::<32>(durable_dpop_jkt)?;
         }
+        // A waiting service claim has nothing installed: its binding names no
+        // participant, and it may only submit the build that connects.
+        (
+            SessionBinding::Service {
+                deployment_id,
+                instance_id,
+                participant_id,
+            },
+            PrincipalKind::Service,
+        ) if participant_id.is_empty() => {
+            validate_id(deployment_id, "deploymentId")?;
+            validate_id(instance_id, "instanceId")?;
+        }
         (
             SessionBinding::Service {
                 deployment_id,

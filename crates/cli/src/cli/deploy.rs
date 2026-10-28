@@ -111,12 +111,14 @@ pub enum DevResourceAction {
     Provision(DevProvisionArgs),
 }
 
-/// Create a service deployment from its native source package.
+/// Create a service deployment from its native source package. Without
+/// `--source`, create a claim instead: the first service to connect with the
+/// printed seed submits its own IDL, and approving it creates the deployment.
 #[derive(Debug, Clone, Eq, PartialEq, Args)]
 pub struct SvcCreateArgs {
     #[arg(long)]
-    pub source: PathBuf,
-    #[arg(long)]
+    pub source: Option<PathBuf>,
+    #[arg(long, requires = "source")]
     pub participant: Option<String>,
     /// Confirm that this service may answer an API another service already
     /// serves, splitting callers' requests between the two.

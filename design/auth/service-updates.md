@@ -105,6 +105,35 @@ capability. Approval rechecks inside its transaction that the update is still
 pending and that the deployment's binding has not changed since submission; a
 changed binding supersedes the update and the service submits again.
 
+## Service claims
+
+A claim is a service deployment for a service the administrator does not know
+beforehand, such as a third party's. `Auth.ServiceClaims.Create` takes a name
+and the service's identity public key; the service's owner keeps the private
+seed. The claim holds no IDL, so it takes whatever service first connects with
+that identity.
+
+- Admission accepts a waiting claim's identity and binds its session to the
+  claim with no participant (`SessionBinding::Service` with an empty
+  `participantId`). Its only capability is `serviceUpdates.submit`, and its
+  bootstrap carries no participant digest and no resources.
+- The connecting SDK sees a digest no build has, so it submits itself, naming
+  its participant in `Submit`. Nothing is installed, so the update always waits
+  for an administrator and lists everything the service asks for.
+- Approving it installs a deployment from the submitted build (accepting the
+  APIs it provides, like `Deployments.Create`), provisions an instance holding
+  the claim's identity, moves the update to that deployment, and retires the
+  waiting session. The service connects again as that instance. The claim
+  records the deployment it became.
+- Rejecting the update leaves the claim waiting for another submission.
+  `Auth.ServiceClaims.Remove` turns the identity away and rejects anything
+  pending.
+
+`trellis svc <name> create` without `--source` creates a claim and prints a
+generated seed; the Console's Add service form takes the public key instead.
+While waiting, the review URL names the claim:
+`<origin>/console/admin/services/<claimId>?update=<updateId>`.
+
 ## Non-goals
 
 - Updating device participants this way: devices use activation review.

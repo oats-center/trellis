@@ -1616,7 +1616,7 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
     let evidence = serde_json::to_value(C::package_evidence()).map_err(|error| {
         ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
     })?;
-    let body = serde_json::json!({ "packageEvidence": evidence });
+    let body = serde_json::json!({ "participantId": C::ID, "packageEvidence": evidence });
     let submit = || {
         client.request_json_value(
             API,
@@ -1672,9 +1672,14 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
             Ok(mut response) => response["update"].take(),
             // Approval retires this session. Connecting again shows whether
             // the update installed; if not, Submit returns the same update.
-            Err(TrellisClientError::TransportUnavailable(_) | TrellisClientError::Timeout) => {
-                return Ok(())
-            }
+            Err(
+                TrellisClientError::TransportUnavailable(_)
+                | TrellisClientError::Timeout
+                | TrellisClientError::Protocol(trellis_protocol::ProtocolError::Authorization {
+                    code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
+                    ..
+                }),
+            ) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
     }

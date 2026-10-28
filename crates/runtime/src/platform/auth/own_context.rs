@@ -387,6 +387,16 @@ impl SqliteAuthorizationStore {
         if Some(super::sqlite::digest(resources)?) != authority.resource_bindings_digest {
             return Err(AuthError::Denied);
         }
+        if participant.is_empty() {
+            // A waiting service claim: nothing is installed, so the service
+            // sees a digest no build has and submits itself.
+            return Ok(Some(json!({
+                "participantId":"",
+                "participantDigest":"",
+                "resourceRuntime":resources,
+                "companion":null
+            })));
+        }
         let graph = projection.graph()?;
         let installed = graph
             .packages()

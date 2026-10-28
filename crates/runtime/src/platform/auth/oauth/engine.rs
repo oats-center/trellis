@@ -205,10 +205,14 @@ impl SqliteAuthorizationStore {
                 .map_err(|_| AuthError::Denied)?;
         let public_key: String = connection
             .query_row(
+                // A waiting service claim's identity signs in the same way;
+                // its session may only submit the service's own build.
                 "SELECT identity_public_key \
                 FROM auth_provisioned_identities \
                 WHERE identity_key_id=?1 \
-                AND state='active'",
+                AND state='active' \
+                UNION ALL SELECT identity_public_key FROM auth_service_claims \
+                WHERE identity_key_id=?1 AND state='waiting' LIMIT 1",
                 [&unsigned.credential.credential_id],
                 |row| row.get(0),
             )

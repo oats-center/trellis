@@ -45,10 +45,18 @@ pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
                 .ok_or_else(|| rpc_error(AuthError::Denied))?;
             let now = crate::clock::unix_now();
             let saved = Arc::clone(&store);
-            let update =
-                blocking(move || submit(&saved, &actor, &session, &input.package_evidence, now))
-                    .await
-                    .map_err(rpc_error)?;
+            let update = blocking(move || {
+                submit(
+                    &saved,
+                    &actor,
+                    &session,
+                    &input.participant_id,
+                    &input.package_evidence,
+                    now,
+                )
+            })
+            .await
+            .map_err(rpc_error)?;
             materialize(&store, &operational, &update, now).await?;
             Ok(AuthServiceUpdateResponse {
                 update,
@@ -63,9 +71,15 @@ pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
             let actor = caller(&context, None).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    let (_, deployment, _) = submitting_instance(connection, &actor)?;
+                    // A claim's update moves to the deployment its approval
+                    // creates; the waiting service still asks as the claim.
+                    let deployments = match claim_of(connection, &actor)? {
+                        Some((claim, deployment)) => [Some(claim), deployment],
+                        None => [Some(submitting_instance(connection, &actor)?.1), None],
+                    };
                     let update = read_update(connection, &store, &input.update_id.to_string())?;
-                    if update.deployment_id.to_string() != deployment {
+                    let owner = update.deployment_id.to_string();
+                    if !deployments.contains(&Some(owner)) {
                         return Err(AuthError::NotFound);
                     }
                     Ok(AuthServiceUpdateResponse {
@@ -119,6 +133,58 @@ pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
             })
             .await
             .map_err(rpc_error)
+        }
+    });
+    let claims_store = Arc::clone(&store);
+    provider.register_service_claims_create(move |context, input| {
+        let store = Arc::clone(&claims_store);
+        async move {
+            let identity = mutation(
+                &context,
+                &input.idempotency_key,
+                Some(Administration::ManagePrincipals),
+                &input,
+            )
+            .map_err(rpc_error)?;
+            blocking(move || create_claim(&store, &identity, &input, crate::clock::unix_now()))
+                .await
+                .map_err(rpc_error)
+        }
+    });
+    let claims_store = Arc::clone(&store);
+    provider.register_service_claims_list(move |context, input| {
+        let store = Arc::clone(&claims_store);
+        async move {
+            let actor =
+                caller(&context, Some(Administration::ManagePrincipals)).map_err(rpc_error)?;
+            blocking(move || {
+                store.transaction(|connection| {
+                    SqliteAuthorizationStore::require_administration(
+                        connection,
+                        &actor,
+                        Administration::ManagePrincipals,
+                    )?;
+                    read_claims(connection, &input)
+                })
+            })
+            .await
+            .map_err(rpc_error)
+        }
+    });
+    let claims_store = Arc::clone(&store);
+    provider.register_service_claims_remove(move |context, input| {
+        let store = Arc::clone(&claims_store);
+        async move {
+            let identity = mutation(
+                &context,
+                &input.idempotency_key,
+                Some(Administration::ManagePrincipals),
+                &input,
+            )
+            .map_err(rpc_error)?;
+            blocking(move || remove_claim(&store, &identity, &input, crate::clock::unix_now()))
+                .await
+                .map_err(rpc_error)
         }
     });
     provider.register_service_updates_decide(move |context, input| {
@@ -284,6 +350,22 @@ struct Installed {
     resources: BTreeMap<(String, String), trellis_idl::ResourceDefinition>,
     apis: BTreeSet<String>,
     resource_commitments: Value,
+}
+
+impl Installed {
+    /// A claim has nothing installed yet; its first update asks for everything.
+    fn empty() -> Self {
+        Self {
+            revision: 0,
+            binding_revision: 0,
+            digest: String::new(),
+            title: String::new(),
+            capabilities: BTreeSet::new(),
+            resources: BTreeMap::new(),
+            apis: BTreeSet::new(),
+            resource_commitments: json!({}),
+        }
+    }
 }
 
 fn installed(connection: &Connection, deployment: &str) -> Result<Installed, AuthError> {
@@ -611,18 +693,27 @@ fn submit(
     store: &SqliteAuthorizationStore,
     principal: &str,
     session: &str,
+    submitted: &str,
     evidence: &AuthPackageEvidence,
     now: i64,
 ) -> Result<AuthServiceUpdate, AuthError> {
     let evidence: trellis_idl::PackageEvidence =
         serde_json::from_value(serde_json::to_value(evidence)?)?;
     store.transaction(|connection| {
+        if let Some((claim, None)) = claim_of(connection, principal)? {
+            return submit_to_claim(connection, store, &claim, submitted, evidence, now);
+        }
         let (instance, deployment, pinned) = submitting_instance(connection, principal)?;
         let participant: String = connection.query_row(
             "SELECT participant_id FROM auth_deployments WHERE deployment_id=?1",
             [&deployment],
             |row| row.get(0),
         )?;
+        if submitted != participant {
+            return Err(AuthError::Invalid(format!(
+                "this identity belongs to a deployment of {participant}, not {submitted}"
+            )));
+        }
         let candidate = Candidate::compile(evidence, &participant)?;
         let running: String = connection.query_row(
             "SELECT participant_digest FROM auth_installed_participants \
@@ -920,8 +1011,29 @@ fn decide(
             if state != "pending" || revision != input.expected_revision.0 .0 {
                 return Err(AuthError::Conflict);
             }
-            let current = installed(connection, &deployment)?;
-            if current.binding_revision != base {
+            if input.decision == AuthDecision::Approved && claim_waiting(connection, &deployment)? {
+                let candidate = Candidate::compile(decode(&evidence)?, &participant)?;
+                approve_claim(
+                    connection,
+                    store,
+                    identity,
+                    input,
+                    &deployment,
+                    &update,
+                    &candidate,
+                    now,
+                )?;
+                return Ok(AuthServiceUpdateResponse {
+                    update: read_update(connection, store, &update)?,
+                    extra: Default::default(),
+                });
+            }
+            let current = if claim_waiting(connection, &deployment)? {
+                Installed::empty()
+            } else {
+                installed(connection, &deployment)?
+            };
+            if current.binding_revision != base && current.revision != 0 {
                 // Someone changed the deployment since the service submitted; its
                 // changes no longer describe what approval would do.
                 connection.execute(
@@ -1047,6 +1159,367 @@ fn read_updates(
         items: ids
             .iter()
             .map(|update| read_update(connection, store, update))
+            .collect::<Result<_, _>>()?,
+        page: CursorPageInfo { next_cursor },
+    })
+}
+
+/// The claim `principal` connects as, and the deployment approving it created.
+fn claim_of(
+    connection: &Connection,
+    principal: &str,
+) -> Result<Option<(String, Option<String>)>, AuthError> {
+    Ok(connection
+        .query_row(
+            "SELECT claim_id,deployment_id FROM auth_service_claims \
+            WHERE principal_id=?1 AND state!='removed'",
+            [principal],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+fn claim_waiting(connection: &Connection, claim: &str) -> Result<bool, AuthError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_service_claims WHERE claim_id=?1 AND state='waiting')",
+        [claim],
+        |row| row.get(0),
+    )?)
+}
+
+/// Record whatever service connected to a claim as its pending first update.
+/// Nothing is installed yet, so it always waits for an administrator.
+fn submit_to_claim(
+    connection: &Connection,
+    store: &SqliteAuthorizationStore,
+    claim: &str,
+    participant: &str,
+    evidence: trellis_idl::PackageEvidence,
+    now: i64,
+) -> Result<AuthServiceUpdate, AuthError> {
+    let candidate = Candidate::compile(evidence, participant)?;
+    let pending: Option<String> = connection
+        .query_row(
+            "SELECT update_id FROM auth_service_updates \
+            WHERE deployment_id=?1 AND participant_digest=?2 AND state='pending'",
+            params![claim, candidate.digest],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(pending) = pending {
+        return read_update(connection, store, &pending);
+    }
+    let changes = changes(connection, claim, &Installed::empty(), &candidate)?;
+    connection.execute(
+        "UPDATE auth_service_updates SET state='superseded',decided_at=?2,revision=revision+1 \
+        WHERE deployment_id=?1 AND state='pending'",
+        params![claim, now],
+    )?;
+    let update = id();
+    connection.execute(
+        "INSERT INTO auth_service_updates(update_id,deployment_id,instance_id,participant_id,\
+        participant_digest,evidence_json,base_binding_revision,changes_json,state,\
+        requested_at,revision) VALUES(?1,?2,?2,?3,?4,?5,1,?6,'pending',?7,1)",
+        params![
+            update,
+            claim,
+            participant,
+            candidate.digest,
+            json(&candidate.evidence)?,
+            json(&changes)?,
+            now
+        ],
+    )?;
+    read_update(connection, store, &update)
+}
+
+/// Approving a claim's update creates its deployment from the submitted build,
+/// accepting the APIs it provides, and provisions an instance holding the
+/// claim's identity. The waiting session is retired; the service connects
+/// again as that instance.
+#[allow(clippy::too_many_arguments)]
+fn approve_claim(
+    connection: &Connection,
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthServiceUpdateDecideRequest,
+    claim: &str,
+    update: &str,
+    candidate: &Candidate,
+    now: i64,
+) -> Result<(), AuthError> {
+    let changes = changes(connection, claim, &Installed::empty(), candidate)?;
+    require_sharing_acknowledged(
+        changes
+            .shared_apis
+            .iter()
+            .map(|api| api.to_string())
+            .collect(),
+        input.acknowledge_shared_apis,
+    )?;
+    let (principal, public_key, title, instance_title): (String, String, String, String) =
+        connection.query_row(
+            "SELECT principal_id,identity_public_key,title,instance_title \
+            FROM auth_service_claims WHERE claim_id=?1",
+            [claim],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    accept_apis(
+        connection,
+        store,
+        identity,
+        &candidate.evidence,
+        &changes.accepted_apis,
+        now,
+    )?;
+    let provisioning = super::rpc_deployments::deployment_input(
+        connection,
+        &serde_json::from_value(serde_json::to_value(&candidate.evidence)?)?,
+        &candidate.participant,
+        json!({}),
+    )?;
+    let deployment = SqliteAuthorizationStore::install_deployment_in_transaction(
+        connection,
+        &identity.actor,
+        &provisioning,
+        None,
+        &title,
+        now,
+    )?;
+    let instance = SqliteAuthorizationStore::provision_instance_in_transaction(
+        connection,
+        &deployment,
+        Some(&public_key),
+        &instance_title,
+        now,
+    )?
+    .instance_id;
+    connection.execute(
+        "UPDATE auth_service_claims SET state='claimed',deployment_id=?2,revision=revision+1 \
+        WHERE claim_id=?1",
+        params![claim, deployment],
+    )?;
+    connection.execute(
+        "UPDATE auth_service_updates SET deployment_id=?2,instance_id=?3,state='applied',\
+        decided_at=?4,decided_by=?5,revision=revision+1 WHERE update_id=?1",
+        params![update, deployment, instance, now, identity.actor],
+    )?;
+    SqliteAuthorizationStore::policy_changed(
+        connection,
+        &EnforcementScope::Principal(principal),
+        now,
+    )
+    .map(drop)
+}
+
+pub(super) fn create_claim(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthServiceClaimCreateRequest,
+    now: i64,
+) -> Result<AuthServiceClaimResponse, AuthError> {
+    store.mutate(
+        identity,
+        "rpc.serviceClaims.create",
+        input,
+        now,
+        |connection| {
+            SqliteAuthorizationStore::require_administration(
+                connection,
+                &identity.actor,
+                Administration::ManagePrincipals,
+            )?;
+            let public_key = input.identity_public_key.to_string();
+            let key = super::deployments::identity_key_id(&public_key)?;
+            let known: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_provisioned_identities WHERE identity_key_id=?1) \
+            OR EXISTS(SELECT 1 FROM auth_service_claims WHERE identity_key_id=?1)",
+            [&key],
+            |row| row.get(0),
+        )?;
+            if known {
+                return Err(AuthError::Conflict);
+            }
+            let (claim, principal) = (id(), id());
+            connection.execute(
+            "INSERT INTO auth_principals(principal_id,kind,state,created_at,updated_at,version) \
+            VALUES(?1,'service','active',?2,?2,1)",
+            params![principal, now],
+        )?;
+            // The waiting service may only submit itself and ask how that went.
+            let capability = super::policy::capability(
+                connection,
+                super::deployments::SERVICE_UPDATE_CAPABILITY,
+            )?;
+            connection.execute(
+                "INSERT INTO auth_direct_capabilities(grant_id,principal_id,capability_id,\
+            capability_generation,revision,created_at) VALUES(?1,?2,?3,?4,1,?5)",
+                params![
+                    id(),
+                    principal,
+                    super::deployments::SERVICE_UPDATE_CAPABILITY,
+                    capability.identity_generation.get(),
+                    now
+                ],
+            )?;
+            connection.execute(
+                "INSERT INTO auth_service_claims(claim_id,principal_id,identity_key_id,\
+            identity_public_key,title,instance_title,state,created_at,created_by,revision) \
+            VALUES(?1,?2,?3,?4,?5,?6,'waiting',?7,?8,1)",
+                params![
+                    claim,
+                    principal,
+                    key,
+                    public_key,
+                    input.title.as_ref(),
+                    input.instance_title.as_ref(),
+                    now,
+                    identity.actor
+                ],
+            )?;
+            Ok(AuthServiceClaimResponse {
+                claim: read_claim(connection, &claim)?,
+                extra: Default::default(),
+            })
+        },
+    )
+}
+
+/// Removing a waiting claim turns its identity away and rejects whatever it
+/// submitted. A claimed one is a deployment now; remove that instead.
+pub(super) fn remove_claim(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthServiceClaimRemoveRequest,
+    now: i64,
+) -> Result<AuthServiceClaimResponse, AuthError> {
+    store.mutate(
+        identity,
+        "rpc.serviceClaims.remove",
+        input,
+        now,
+        |connection| {
+            SqliteAuthorizationStore::require_administration(
+                connection,
+                &identity.actor,
+                Administration::ManagePrincipals,
+            )?;
+            let claim = input.claim_id.to_string();
+            let (principal, state, revision): (String, String, u64) = connection
+                .query_row(
+                    "SELECT principal_id,state,revision FROM auth_service_claims WHERE claim_id=?1",
+                    [&claim],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?
+                .ok_or(AuthError::NotFound)?;
+            if state != "waiting" || revision != input.expected_revision.0 .0 {
+                return Err(AuthError::Conflict);
+            }
+            connection.execute(
+            "UPDATE auth_service_claims SET state='removed',revision=revision+1 WHERE claim_id=?1",
+            [&claim],
+        )?;
+            connection.execute(
+                "UPDATE auth_principals SET state='revoked',revoked_at=?2,updated_at=?2,\
+            version=version+1 WHERE principal_id=?1",
+                params![principal, now],
+            )?;
+            connection.execute(
+                "UPDATE auth_service_updates SET state='rejected',decided_at=?2,decided_by=?3,\
+            revision=revision+1 WHERE deployment_id=?1 AND state='pending'",
+                params![claim, now, identity.actor],
+            )?;
+            SqliteAuthorizationStore::policy_changed(
+                connection,
+                &EnforcementScope::Principal(principal),
+                now,
+            )?;
+            Ok(AuthServiceClaimResponse {
+                claim: read_claim(connection, &claim)?,
+                extra: Default::default(),
+            })
+        },
+    )
+}
+
+fn read_claim(connection: &Connection, claim: &str) -> Result<AuthServiceClaim, AuthError> {
+    let (title, instance_title, state, deployment, created, revision): (
+        String,
+        String,
+        String,
+        Option<String>,
+        i64,
+        u64,
+    ) = connection
+        .query_row(
+            "SELECT title,instance_title,state,deployment_id,created_at,revision \
+            FROM auth_service_claims WHERE claim_id=?1",
+            [claim],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
+    let ulid = |value: &str| value.parse().map_err(|_| AuthError::Unavailable);
+    Ok(AuthServiceClaim {
+        claim_id: ulid(claim)?,
+        title: serde_json::from_value(title.into())?,
+        instance_title: serde_json::from_value(instance_title.into())?,
+        state: serde_json::from_value(state.into())?,
+        deployment_id: deployment.as_deref().map(ulid).transpose()?,
+        created_at: timestamp(created)?,
+        revision: AuthRevision(revision.into()),
+        extra: Default::default(),
+    })
+}
+
+fn read_claims(
+    connection: &Connection,
+    input: &AuthPageRequest,
+) -> Result<AuthServiceClaimsListResponse, AuthError> {
+    let limit = input
+        .page
+        .as_ref()
+        .and_then(|page| page.limit)
+        .unwrap_or(50);
+    if !(1..=200).contains(&limit) {
+        return Err(AuthError::Invalid("invalid page limit".into()));
+    }
+    let limit = limit as usize;
+    let cursor = input
+        .page
+        .as_ref()
+        .and_then(|page| page.cursor.clone())
+        .unwrap_or_default();
+    let mut statement = connection.prepare(
+        "SELECT claim_id FROM auth_service_claims WHERE claim_id>?1 \
+        AND (?2 IS NULL OR instr(lower(title),lower(?2))>0) ORDER BY claim_id LIMIT ?3",
+    )?;
+    let mut ids = statement
+        .query_map(
+            params![
+                cursor,
+                input.search.as_ref().map(|value| value.as_ref()),
+                limit + 1
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let next_cursor = (ids.len() > limit).then(|| ids[limit - 1].clone());
+    ids.truncate(limit);
+    Ok(CursorPage {
+        items: ids
+            .iter()
+            .map(|claim| read_claim(connection, claim))
             .collect::<Result<_, _>>()?,
         page: CursorPageInfo { next_cursor },
     })

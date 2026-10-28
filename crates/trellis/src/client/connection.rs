@@ -1308,7 +1308,11 @@ impl TrellisClient {
         .await?;
         let authorization: ServiceBootstrapAuthorization =
             serde_json::from_value(contexts.service_bootstrap_authorization()?)?;
-        if authorization.participant_id != participant_id {
+        // A service claim has nothing installed yet: its binding names no
+        // participant, and whatever service connects submits itself.
+        let claim = kind == trellis_protocol::PrincipalKind::Service
+            && authorization.participant_id.is_empty();
+        if authorization.participant_id != participant_id && !claim {
             return Err(TrellisClientError::Bootstrap(
                 "native resource evidence has the wrong participant".into(),
             ));
@@ -1318,7 +1322,8 @@ impl TrellisClient {
             trellis_protocol::SessionBinding::Service {
                 participant_id: bound,
                 ..
-            } if kind == trellis_protocol::PrincipalKind::Service && bound == participant_id => (),
+            } if kind == trellis_protocol::PrincipalKind::Service
+                && (bound == participant_id || (claim && bound.is_empty())) => {}
             trellis_protocol::SessionBinding::Device {
                 participant_id: bound,
                 ..
@@ -1392,13 +1397,16 @@ impl TrellisClient {
                 "required device companion is unavailable".into(),
             ));
         }
-        connected.health_heartbeat_task = Some(spawn_health_heartbeat_task(
-            connected.generations.clone(),
-            connected.auth.clone(),
-            connected.authorization_owner().clone(),
-            timeout_ms,
-            heartbeat,
-        ));
+        // A claim has no instance to report health for until it is approved.
+        if !claim {
+            connected.health_heartbeat_task = Some(spawn_health_heartbeat_task(
+                connected.generations.clone(),
+                connected.auth.clone(),
+                connected.authorization_owner().clone(),
+                timeout_ms,
+                heartbeat,
+            ));
+        }
         Ok(connected)
     }
 

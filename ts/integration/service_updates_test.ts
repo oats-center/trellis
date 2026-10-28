@@ -6,12 +6,16 @@
  * access up installs at once; declaring a dropped resource again waits too and
  * reattaches its retained data; starting to provide an API waits for approval;
  * and answering an API another service serves also needs the administrator to
- * acknowledge that requests will be split between them.
+ * acknowledge that requests will be split between them. A service claim takes
+ * whatever service first connects with its identity; approving that service
+ * creates its deployment and accepts the APIs it provides.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import nacl from "tweetnacl";
 import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
@@ -334,5 +338,147 @@ test("an update keeps an administrator's revocation and grants what new resource
       idempotencyKey: ulid(),
     });
     await (await connecting).stop();
+  });
+});
+
+test("a service claim takes whatever service connects first, once an administrator approves it", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = () => {
+      const seed = randomBytes(32);
+      return {
+        seed: seed.toString("base64url"),
+        identityPublicKey: Buffer.from(
+          nacl.sign.keyPair.fromSeed(seed).publicKey,
+        ).toString("base64url"),
+      };
+    };
+    const claimed = identity();
+    const { claim } = await runtime.callAdminRpc("authServiceClaimsCreate", {
+      title: "third-party",
+      instanceTitle: "third-party",
+      identityPublicKey: claimed.identityPublicKey,
+      idempotencyKey: ulid(),
+    });
+    assert.equal(claim.state, "waiting");
+
+    // Nothing about the service is known beforehand: it introduces itself.
+    const participant = participants.Provider.participant;
+    const apiId = participant.implements[0].identity;
+    const connecting = TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant,
+      seed: claimed.seed,
+    }).orThrow();
+    const pending = await runtime.waitFor(async () => {
+      const { items } = await runtime.callAdminRpc(
+        "authServiceUpdatesList",
+        {},
+      );
+      return items.find(
+        (update) =>
+          update.deploymentId === claim.claimId && update.state === "pending",
+      );
+    });
+    assert.equal(pending.participantId, participant.identity);
+    assert.deepEqual(pending.changes.addedApis, [apiId]);
+
+    const { update: approved } = await runtime.callAdminRpc(
+      "authServiceUpdatesDecide",
+      {
+        updateId: pending.updateId,
+        decision: "approved",
+        expectedRevision: pending.revision,
+        idempotencyKey: ulid(),
+      },
+    );
+    assert.equal(approved.state, "applied");
+    assert.notEqual(approved.deploymentId, claim.claimId);
+    // The service connects as an instance of the new deployment, serving the
+    // API its approval accepted, with the storage its IDL declares.
+    const service = await connecting;
+    await service.kv.records.put("record", { value: "claimed" }).orThrow();
+    assert.deepEqual(await service.kv.records.get("record").orThrow(), {
+      value: "claimed",
+    });
+    await service.stop();
+    const { items: claims } = await runtime.callAdminRpc(
+      "authServiceClaimsList",
+      {},
+    );
+    const finished = claims.find((item) => item.claimId === claim.claimId);
+    assert.equal(finished?.state, "claimed");
+    assert.equal(finished?.deploymentId, approved.deploymentId);
+
+    // A removed claim turns its identity away.
+    const unwanted = identity();
+    const { claim: removable } = await runtime.callAdminRpc(
+      "authServiceClaimsCreate",
+      {
+        title: "unwanted",
+        instanceTitle: "unwanted",
+        identityPublicKey: unwanted.identityPublicKey,
+        idempotencyKey: ulid(),
+      },
+    );
+    await runtime.callAdminRpc("authServiceClaimsRemove", {
+      claimId: removable.claimId,
+      expectedRevision: removable.revision,
+      idempotencyKey: ulid(),
+    });
+    await assert.rejects(
+      TrellisService.connect({
+        trellisUrl: runtime.oauthIssuer,
+        participant,
+        seed: unwanted.seed,
+      }).orThrow(),
+    );
+  });
+});
+
+test("a Rust service connecting to a claim waits for approval, then runs as the new deployment", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const seed = randomBytes(32);
+    const { claim } = await runtime.callAdminRpc("authServiceClaimsCreate", {
+      title: "rust-third-party",
+      instanceTitle: "rust-third-party",
+      identityPublicKey: Buffer.from(
+        nacl.sign.keyPair.fromSeed(seed).publicKey,
+      ).toString("base64url"),
+      idempotencyKey: ulid(),
+    });
+    const argv = rustFixtureArgv("service_update");
+    const child = spawnTracked(argv[0], argv.slice(1), {
+      env: {
+        ...process.env,
+        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        TRELLIS_IDENTITY_SEED: seed.toString("base64url"),
+      },
+    });
+    let output = "";
+    let errors = "";
+    child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr.on("data", (chunk: Buffer) => (errors += chunk.toString()));
+    const pending = await runtime.waitFor(async () => {
+      const { items } = await runtime.callAdminRpc(
+        "authServiceUpdatesList",
+        {},
+      );
+      return items.find(
+        (update) =>
+          update.deploymentId === claim.claimId && update.state === "pending",
+      );
+    });
+    await runtime.waitFor(() => errors.includes(pending.reviewUrl));
+    assert(!output.includes("service update connected"), output);
+    await runtime.callAdminRpc("authServiceUpdatesDecide", {
+      updateId: pending.updateId,
+      decision: "approved",
+      expectedRevision: pending.revision,
+      idempotencyKey: ulid(),
+    });
+    const exit = await child.exited;
+    assert.equal(exit.code, 0, errors);
+    assert.match(output, /service update stored approved/);
   });
 });

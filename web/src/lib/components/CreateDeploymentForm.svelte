@@ -2,6 +2,7 @@
   import { apis } from "trellis-web-generated";
   import { ulid } from "ulid";
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
@@ -15,6 +16,10 @@
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   let title = $state("");
+  // A service can also be added without its package: whatever first connects
+  // with the given identity asks for what it needs, and approving it adds it.
+  let mode = $state<"package" | "claim">("package");
+  let identityPublicKey = $state("");
   let participantId = $state("");
   let evidence = $state("");
   let busy = $state(false);
@@ -71,6 +76,31 @@
       if (!disposed) busy = false;
     }
   }
+  async function createClaim(): Promise<void> {
+    if (busy || !canPerform(authority.authority, "serviceClaimsCreate")) return;
+    busy = true;
+    error = null;
+    try {
+      const response = await trellis
+        .serviceClaimsCreate({
+          title: title.trim(),
+          instanceTitle: title.trim(),
+          identityPublicKey: identityPublicKey.trim(),
+          idempotencyKey: ulid(),
+        })
+        .orThrow();
+      if (!disposed)
+        await goto(
+          resolve("/admin/services/[deploymentId]", {
+            deploymentId: response.claim.claimId,
+          }),
+        );
+    } catch (cause) {
+      if (!disposed) error = projectConsoleError(cause).message;
+    } finally {
+      if (!disposed) busy = false;
+    }
+  }
   onMount(() => () => {
     disposed = true;
   });
@@ -112,93 +142,152 @@
       >
     </div>
   {:else}
-    <form
-      class="trellis-section trellis-form p-5"
-      onsubmit={(event) => {
-        event.preventDefault();
-        void create();
-      }}
-    >
-      <label class="trellis-field"
-        ><span class="trellis-field-label">Name</span><input
-          class="input w-full"
-          bind:value={title}
-          required
-          disabled={busy || uncertain}
-        /></label
-      >
-      <div class="trellis-field">
-        <label class="trellis-field-label" for="deployment-participant"
-          >Participant name</label
-        ><input
-          id="deployment-participant"
-          class="input w-full font-mono"
-          bind:value={participantId}
-          placeholder="acme.orders"
-          aria-describedby="deployment-participant-help"
-          required
-          disabled={busy || uncertain}
-        /><span id="deployment-participant-help" class="trellis-field-help"
-          >The {kind} name declared in the package.</span
-        >
-      </div>
-      <div class="trellis-field">
-        <label class="trellis-field-label" for="deployment-package"
-          >Package</label
-        ><textarea
-          id="deployment-package"
-          class="textarea min-h-48 w-full font-mono text-xs"
-          bind:value={evidence}
-          required
-          disabled={busy || uncertain}
-          aria-describedby="package-evidence-help"
-        ></textarea><span id="package-evidence-help" class="trellis-field-help"
-          >The package JSON with its sources and dependencies.</span
-        >
-      </div>
-      {#if sharing}
-        <div class="alert alert-warning block space-y-2" role="alert">
-          <p class="font-semibold">
-            Another service already answers an API this package provides.
-          </p>
-          <p class="text-sm">
-            Adding it makes both services answer the same requests. Each request
-            goes to one of them at random, so each sees only some requests, they
-            keep separate data, and callers can't tell which one answered. To
-            add capacity or move a service, add instances to the existing
-            service instead.
-          </p>
-          <details class="text-xs">
-            <summary class="cursor-pointer">Details</summary>
-            <p class="mt-1">{sharing}</p>
-          </details>
-          <label class="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              class="checkbox checkbox-sm"
-              bind:checked={sharingUnderstood}
-            />
-            I understand requests will be split between the two services
-          </label>
-        </div>
-      {/if}
-      <div class="trellis-action-row">
+    {#if kind === "service"}
+      <div class="trellis-segment" role="group" aria-label="How to add it">
         <button
-          type="submit"
-          class="btn btn-primary"
-          disabled={busy ||
-            uncertain ||
-            (sharing !== null && !sharingUnderstood) ||
-            !title.trim() ||
-            !participantId.trim() ||
-            !evidence.trim()}
-          >{busy
-            ? "Adding…"
-            : kind === "service"
-              ? "Add service"
-              : "Add device type"}</button
+          type="button"
+          class={{ active: mode === "package" }}
+          aria-pressed={mode === "package"}
+          onclick={() => (mode = "package")}>I have its package</button
+        >
+        <button
+          type="button"
+          class={{ active: mode === "claim" }}
+          aria-pressed={mode === "claim"}
+          onclick={() => (mode = "claim")}>It will introduce itself</button
         >
       </div>
-    </form>
+    {/if}
+    {#if mode === "claim"}
+      <form
+        class="trellis-section trellis-form p-5"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void createClaim();
+        }}
+      >
+        <label class="trellis-field"
+          ><span class="trellis-field-label">Name</span><input
+            class="input w-full"
+            bind:value={title}
+            required
+            disabled={busy}
+          /></label
+        >
+        <div class="trellis-field">
+          <label class="trellis-field-label" for="claim-public-key"
+            >Service's public key</label
+          ><input
+            id="claim-public-key"
+            class="input w-full font-mono"
+            bind:value={identityPublicKey}
+            aria-describedby="claim-public-key-help"
+            required
+            disabled={busy}
+          /><span id="claim-public-key-help" class="trellis-field-help"
+            >Its owner keeps the matching private seed.</span
+          >
+        </div>
+        <div class="trellis-action-row">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            disabled={busy || !title.trim() || !identityPublicKey.trim()}
+            >{busy ? "Adding…" : "Add service"}</button
+          >
+        </div>
+      </form>
+    {:else}
+      <form
+        class="trellis-section trellis-form p-5"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void create();
+        }}
+      >
+        <label class="trellis-field"
+          ><span class="trellis-field-label">Name</span><input
+            class="input w-full"
+            bind:value={title}
+            required
+            disabled={busy || uncertain}
+          /></label
+        >
+        <div class="trellis-field">
+          <label class="trellis-field-label" for="deployment-participant"
+            >Participant name</label
+          ><input
+            id="deployment-participant"
+            class="input w-full font-mono"
+            bind:value={participantId}
+            placeholder="acme.orders"
+            aria-describedby="deployment-participant-help"
+            required
+            disabled={busy || uncertain}
+          /><span id="deployment-participant-help" class="trellis-field-help"
+            >The {kind} name declared in the package.</span
+          >
+        </div>
+        <div class="trellis-field">
+          <label class="trellis-field-label" for="deployment-package"
+            >Package</label
+          ><textarea
+            id="deployment-package"
+            class="textarea min-h-48 w-full font-mono text-xs"
+            bind:value={evidence}
+            required
+            disabled={busy || uncertain}
+            aria-describedby="package-evidence-help"
+          ></textarea><span
+            id="package-evidence-help"
+            class="trellis-field-help"
+            >The package JSON with its sources and dependencies.</span
+          >
+        </div>
+        {#if sharing}
+          <div class="alert alert-warning block space-y-2" role="alert">
+            <p class="font-semibold">
+              Another service already answers an API this package provides.
+            </p>
+            <p class="text-sm">
+              Adding it makes both services answer the same requests. Each
+              request goes to one of them at random, so each sees only some
+              requests, they keep separate data, and callers can't tell which
+              one answered. To add capacity or move a service, add instances to
+              the existing service instead.
+            </p>
+            <details class="text-xs">
+              <summary class="cursor-pointer">Details</summary>
+              <p class="mt-1">{sharing}</p>
+            </details>
+            <label class="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                bind:checked={sharingUnderstood}
+              />
+              I understand requests will be split between the two services
+            </label>
+          </div>
+        {/if}
+        <div class="trellis-action-row">
+          <button
+            type="submit"
+            class="btn btn-primary"
+            disabled={busy ||
+              uncertain ||
+              (sharing !== null && !sharingUnderstood) ||
+              !title.trim() ||
+              !participantId.trim() ||
+              !evidence.trim()}
+            >{busy
+              ? "Adding…"
+              : kind === "service"
+                ? "Add service"
+                : "Add device type"}</button
+          >
+        </div>
+      </form>
+    {/if}
   {/if}
 </section>

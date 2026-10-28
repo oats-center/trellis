@@ -11,7 +11,7 @@ runtime never accepts artifacts uploaded by the service process itself.
 ## 1. Log in
 
 ```sh
-trellis login http://localhost:3000
+trellis login https://localhost:3001
 trellis whoami
 ```
 
@@ -40,6 +40,24 @@ publishes. `trellis apis review` with the same flags shows them first. Set
 native IDL in memory, installs an immutable participant revision, sets up
 deployment resources, and writes the participant-scoped binding; later releases
 use `apply` or let the service submit its own build (below).
+
+### Without the release's project
+
+When you don't have the service's project, for instance a third party's service
+that should talk to your Trellis, create the service without `--source`:
+
+```sh
+trellis svc partner-orders create
+```
+
+That prints a claim ID and a generated `instanceSeed`. Give the seed to the
+service (or, in the Console's **Add service** form, choose "It will introduce
+itself" and paste the public key its owner sends you, so the private seed never
+leaves them). The first service to connect with it submits its own IDL and
+waits; `trellis svc <claim-id> updates` shows what it asks for, and
+`trellis svc <claim-id> approve` adds it, accepting the APIs it provides. The
+service then connects as an instance of the new deployment, so skip the
+provisioning step below.
 
 ## 3. Provision an instance
 

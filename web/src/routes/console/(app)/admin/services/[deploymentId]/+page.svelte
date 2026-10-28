@@ -1,5 +1,6 @@
 <script lang="ts">
   import { formatDate, humanizeName } from "$lib/format";
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { apis } from "trellis-web-generated";
   import { onMount } from "svelte";
@@ -21,11 +22,14 @@
 
   type Deployment = apis.auth.DeploymentsGetOutput["deployment"];
   type Instance = apis.auth.ServiceInstancesListOutput["items"][number];
+  type Claim = apis.auth.ServiceClaimsListOutput["items"][number];
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("service-deployment");
   const deploymentId = $derived(page.params.deploymentId ?? "");
   let deployment = $state.raw<Deployment | null>(null);
+  // A service added without its IDL, until the service connects and is approved.
+  let claim = $state.raw<Claim | null>(null);
   let instances = $state.raw<Instance[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -43,6 +47,7 @@
     const id = deploymentId;
     if (scope.setKey(id)) {
       deployment = null;
+      claim = null;
       receipt = null;
       uncertain = false;
     }
@@ -73,9 +78,71 @@
         ? null
         : projectConsoleError(listed.error).message;
     } catch (cause) {
-      if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
+      if (!scope.isCurrent(token)) return;
+      let found: Claim | undefined;
+      try {
+        found = await findClaim(id);
+      } catch (lookup) {
+        if (scope.isCurrent(token)) error = projectConsoleError(lookup).message;
+        return;
+      }
+      if (!scope.isCurrent(token)) return;
+      if (found?.state === "claimed" && found.deploymentId) {
+        await goto(
+          resolve("/admin/services/[deploymentId]", {
+            deploymentId: found.deploymentId,
+          }),
+          { replaceState: true },
+        );
+        return;
+      }
+      if (found?.state === "waiting") claim = found;
+      else error = projectConsoleError(cause).message;
     } finally {
       if (scope.settle(token)) loading = false;
+    }
+  }
+  async function findClaim(id: string): Promise<Claim | undefined> {
+    const listed = await traverseAll(async (page) => {
+      const response = await trellis.serviceClaimsList({ page }).orThrow();
+      return { items: response.items, cursor: response.page.nextCursor };
+    });
+    const found = listed.items.find((item) => item.claimId === id);
+    if (!found && !listed.complete) throw listed.error;
+    return found;
+  }
+  async function removeClaim(): Promise<void> {
+    if (
+      !claim ||
+      busy ||
+      !canPerform(authority.authority, "serviceClaimsRemove")
+    )
+      return;
+    const target = claim;
+    const confirmed = await confirmationModal?.confirm({
+      title: "Remove this service?",
+      message:
+        "Its identity stops working, and anything it asked for is turned down.",
+      confirmLabel: "Remove",
+      targetLabel: "Service",
+      targetName: humanizeName(target.title),
+    });
+    if (!confirmed || scope.disposed || claim?.claimId !== target.claimId)
+      return;
+    busy = true;
+    try {
+      await trellis
+        .serviceClaimsRemove({
+          claimId: target.claimId,
+          expectedRevision: target.revision,
+          idempotencyKey: ulid(),
+        })
+        .orThrow();
+      await goto(resolve("/admin/services"));
+    } catch (cause) {
+      if (!scope.disposed) error = projectConsoleError(cause).message;
+    } finally {
+      busy = false;
     }
   }
   async function provision(): Promise<void> {
@@ -190,7 +257,11 @@
 <section class="max-w-5xl space-y-5">
   <PageToolbar
     eyebrow="Services"
-    title={deployment ? humanizeName(deployment.title) : "Service"}
+    title={deployment
+      ? humanizeName(deployment.title)
+      : claim
+        ? humanizeName(claim.title)
+        : "Service"}
     description={deployment
       ? humanizeName(deployment.participantId)
       : undefined}
@@ -211,6 +282,24 @@
   >
   {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
     >{/if}
+  {#if claim}
+    <div class="trellis-section flex flex-wrap items-center gap-3 p-5">
+      <span class="badge badge-neutral">Waiting for its service</span>
+      <span class="text-sm text-base-content/65"
+        >When it connects, approve what it asks for to add it.</span
+      >
+      {#if canPerform(authority.authority, "serviceClaimsRemove")}<button
+          class="btn btn-outline btn-error btn-sm ml-auto"
+          disabled={busy}
+          onclick={() => void removeClaim()}>Remove</button
+        >{/if}
+    </div>
+    {#if canPerform(authority.authority, "serviceUpdatesList")}<ServiceUpdates
+        deploymentId={claim.claimId}
+        focus={page.url.searchParams.get("update") ?? undefined}
+        onapplied={() => void load(deploymentId)}
+      />{/if}
+  {/if}
   {#if deployment && canPerform(authority.authority, "serviceUpdatesList")}<ServiceUpdates
       deploymentId={deployment.deploymentId}
       focus={page.url.searchParams.get("update") ?? undefined}

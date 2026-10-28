@@ -3490,7 +3490,9 @@ export class Trellis<
    */
   async requestServiceUpdate(
     method: "ServiceUpdates.Submit" | "ServiceUpdates.Status",
-    input: { packageEvidence: unknown } | { updateId: string },
+    input:
+      | { participantId: string; packageEvidence: unknown }
+      | { updateId: string },
   ): Promise<AuthServiceUpdateResponse> {
     const action = AUTH_API.actions[`rpc:${method}`];
     return await this.#requestBuiltRpc<AuthServiceUpdateResponse>(

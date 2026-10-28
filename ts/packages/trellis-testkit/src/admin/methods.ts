@@ -64,6 +64,18 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:ServiceUpdates.Decide"],
     (client, input) => client.serviceUpdatesDecide(input).orThrow(),
   ),
+  authServiceClaimsCreate: adminMethod(
+    apis.auth.API.actions["rpc:ServiceClaims.Create"],
+    (client, input) => client.serviceClaimsCreate(input).orThrow(),
+  ),
+  authServiceClaimsList: adminMethod(
+    apis.auth.API.actions["rpc:ServiceClaims.List"],
+    (client, input) => client.serviceClaimsList(input).orThrow(),
+  ),
+  authServiceClaimsRemove: adminMethod(
+    apis.auth.API.actions["rpc:ServiceClaims.Remove"],
+    (client, input) => client.serviceClaimsRemove(input).orThrow(),
+  ),
   authUsersResolve: adminMethod(
     apis.auth.API.actions["rpc:Users.Resolve"],
     (client, input) => client.usersResolve(input).orThrow(),

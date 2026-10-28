@@ -33,6 +33,9 @@ updates deployment resources, and writes its participant-scoped grant. See
 [installing an image](/guides/install-service-from-image) for the matching
 provisioning sequence.
 
+A service whose project you don't have can introduce itself instead: see
+[Without the release's project](/guides/install-service-from-image#without-the-releases-project).
+
 ## Run and update
 
 Store the returned private identity seed securely and configure the service's

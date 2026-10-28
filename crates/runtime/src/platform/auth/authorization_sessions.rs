@@ -292,8 +292,9 @@ pub(super) fn credential_snapshot(
                     },
                 )
                 .optional()?;
-            let (principal, deployment, instance, participant, kind, deadline) =
-                row.ok_or(AuthError::Denied)?;
+            let Some((principal, deployment, instance, participant, kind, deadline)) = row else {
+                return claim_snapshot(connection, identity);
+            };
             let projection = Arc::new(super::native_projection::project_instance(
                 connection, &instance, now,
             )?);
@@ -413,6 +414,58 @@ pub(super) fn credential_snapshot(
             })
         }
     }
+}
+
+/// A waiting service claim's identity connects with nothing installed: it may
+/// only submit its own build and ask how that went.
+fn claim_snapshot(
+    connection: &Connection,
+    identity: &str,
+) -> Result<CredentialSnapshot, AuthError> {
+    let (claim, principal): (String, String) = connection
+        .query_row(
+            "SELECT c.claim_id,c.principal_id FROM auth_service_claims c \
+            JOIN auth_principals p USING(principal_id) \
+            WHERE c.identity_key_id=?1 AND c.state='waiting' AND p.state='active'",
+            [identity],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or(AuthError::Denied)?;
+    let required = vec![super::deployments::SERVICE_UPDATE_CAPABILITY.to_owned()];
+    let resources = serde_json::to_value(trellis_rs::service::ServiceResourceBindings::default())?;
+    let projection = Arc::new(NativeInstanceProjection {
+        deployment_id: claim.clone(),
+        participant_id: String::new(),
+        participant_digest: String::new(),
+        principal_id: principal.clone(),
+        graph: None,
+        evidence: String::new(),
+        resources: resources.clone(),
+        required: required.clone(),
+        optional: vec![],
+        provided: vec![],
+    });
+    Ok(CredentialSnapshot {
+        principal_id: principal,
+        principal_kind: PrincipalKind::Service,
+        binding: SessionBinding::Service {
+            deployment_id: claim.clone(),
+            instance_id: claim,
+            participant_id: String::new(),
+        },
+        login_session_id: None,
+        selection: CapabilitySelection {
+            required,
+            optional: vec![],
+        },
+        approved: None,
+        consent_deadlines: BTreeMap::new(),
+        providers: vec![],
+        resource_bindings_digest: Some(digest(&resources)?),
+        not_after: i64::MAX,
+        native: Some(projection),
+    })
 }
 
 /// Stored signed artifacts are canonical JSON text.
@@ -908,41 +961,47 @@ impl SqliteAuthorizationStore {
             }
         }
         let mut extensions = serde_json::Map::new();
-        if let SessionBinding::Service {
-            deployment_id,
-            instance_id,
-            participant_id,
-        }
-        | SessionBinding::Device {
-            deployment_id,
-            instance_id,
-            participant_id,
-        } = &current.binding
-        {
-            let (revision, participant_digest): (u64, String) = connection.query_row(
-                "SELECT i.installed_revision,p.participant_digest \
+        'native: {
+            if let SessionBinding::Service {
+                deployment_id,
+                instance_id,
+                participant_id,
+            }
+            | SessionBinding::Device {
+                deployment_id,
+                instance_id,
+                participant_id,
+            } = &current.binding
+            {
+                // A waiting service claim has nothing installed to describe.
+                if participant_id.is_empty() {
+                    break 'native;
+                }
+                let (revision, participant_digest): (u64, String) = connection.query_row(
+                    "SELECT i.installed_revision,p.participant_digest \
                 FROM auth_instances i \
                 JOIN auth_installed_participants p ON p.participant_id=?3 \
                 AND p.revision=i.installed_revision \
                 WHERE i.instance_id=?1 \
                 AND i.deployment_id=?2 \
                 AND i.principal_id=?4",
-                params![
-                    instance_id,
-                    deployment_id,
-                    participant_id,
-                    current.principal_id
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            extensions.insert(
-                "trellis.nativeParticipant.v1".into(),
-                serde_json::json!({
-                    "participantId":participant_id,
-                    "installedRevision":revision.to_string(),
-                    "participantDigest":participant_digest
-                }),
-            );
+                    params![
+                        instance_id,
+                        deployment_id,
+                        participant_id,
+                        current.principal_id
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                extensions.insert(
+                    "trellis.nativeParticipant.v1".into(),
+                    serde_json::json!({
+                        "participantId":participant_id,
+                        "installedRevision":revision.to_string(),
+                        "participantDigest":participant_digest
+                    }),
+                );
+            }
         }
         if current.principal_kind == PrincipalKind::User {
             // Handlers see their own caller's profile without directory access.

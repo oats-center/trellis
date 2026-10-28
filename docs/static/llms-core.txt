@@ -328,6 +328,14 @@ move a service with more instances of one deployment instead. A build whose
 implemented API changed incompatibly is refused until the API is force-replaced.
 `trellis svc <deployment-id> apply` still installs a build ahead of time.
 
+A service whose IDL the administrator does not have, such as a third party's,
+starts from a claim: `trellis svc <name> create` without `--source` (or
+`Auth.ServiceClaims.Create` with the service's public key) creates one, and the
+first service to connect with that identity submits itself as the claim's
+update. Approving it (`trellis svc <claim-id> approve`, or the Console review
+link) creates the deployment, accepts the APIs it provides, and provisions an
+instance holding that identity; the service then connects as that instance.
+
 For `trellis identity grants set`, the input file contains only
 `installedRevision`, `grants`, and `expiresAt`; all three are required.
 `installedRevision` accepts a JSON integer or decimal string in

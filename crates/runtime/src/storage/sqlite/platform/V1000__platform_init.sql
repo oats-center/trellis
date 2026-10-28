@@ -372,12 +372,30 @@ CREATE TABLE auth_service_updates (
     decided_at INTEGER CHECK (decided_at BETWEEN 0 AND 9007199254740991),
     decided_by TEXT,
     revision INTEGER NOT NULL CHECK (revision >= 1),
-    FOREIGN KEY (instance_id, deployment_id)
-        REFERENCES auth_instances(instance_id, deployment_id) ON DELETE CASCADE,
+    -- While a claim's update waits, it names the claim as both deployment and
+    -- instance; approving it moves the update to the deployment it creates.
     CHECK ((state = 'pending') = (decided_at IS NULL))
 );
 CREATE INDEX auth_service_updates_deployment
     ON auth_service_updates(deployment_id, state, update_id);
+
+-- A service deployment that takes whatever service first connects with its
+-- identity. Approving the connecting service's update creates the deployment
+-- and an instance holding this identity, and marks the claim claimed.
+CREATE TABLE auth_service_claims (
+    claim_id TEXT PRIMARY KEY CHECK (length(claim_id) = 26),
+    -- The principal the waiting service connects as; retired once claimed.
+    principal_id TEXT NOT NULL UNIQUE REFERENCES auth_principals(principal_id),
+    identity_key_id TEXT NOT NULL UNIQUE CHECK (length(identity_key_id) = 43),
+    identity_public_key TEXT NOT NULL UNIQUE CHECK (length(identity_public_key) = 43),
+    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
+    instance_title TEXT NOT NULL CHECK (length(trim(instance_title)) > 0),
+    state TEXT NOT NULL CHECK (state IN ('waiting', 'claimed', 'removed')),
+    deployment_id TEXT REFERENCES auth_deployments(deployment_id),
+    created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
+    created_by TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 1)
+);
 
 CREATE TABLE auth_idempotency_results (
     scope_key TEXT PRIMARY KEY CHECK (length(scope_key) = 43),
@@ -840,7 +858,9 @@ CREATE TABLE auth_authorization_sessions (
     oauth_grant_id TEXT REFERENCES auth_oauth_grants(oauth_grant_id),
     original_refresh_family_id TEXT,
     refresh_family_lookup_hash TEXT,
-    identity_key_id TEXT REFERENCES auth_provisioned_identities(identity_key_id),
+    -- A provisioned identity's key, or a waiting service claim's: admission
+    -- resolves it to exactly one of them and takes the principal from it.
+    identity_key_id TEXT,
     selected_capabilities_json TEXT NOT NULL CHECK (json_valid(selected_capabilities_json)),
     approved_capabilities_json TEXT NOT NULL CHECK (json_valid(approved_capabilities_json)),
     issued_at INTEGER NOT NULL,
@@ -860,9 +880,7 @@ CREATE TABLE auth_authorization_sessions (
     FOREIGN KEY (oauth_grant_id, principal_id)
         REFERENCES auth_oauth_grants(oauth_grant_id, principal_id),
     FOREIGN KEY (refresh_family_lookup_hash, oauth_grant_id)
-        REFERENCES auth_oauth_families(family_lookup_hash, oauth_grant_id),
-    FOREIGN KEY (identity_key_id, principal_id)
-        REFERENCES auth_provisioned_identities(identity_key_id, principal_id)
+        REFERENCES auth_oauth_families(family_lookup_hash, oauth_grant_id)
 );
 -- Each session's approved capabilities, kept in step with
 -- `approved_capabilities_json`, so capability-scoped enforcement is indexed.

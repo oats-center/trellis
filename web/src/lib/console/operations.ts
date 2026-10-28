@@ -149,6 +149,9 @@ export const CONSOLE_OPERATIONS = {
   serviceUpdatesList: authRpc("ServiceUpdates.List"),
   serviceUpdatesGet: authRpc("ServiceUpdates.Get"),
   serviceUpdatesDecide: authRpc("ServiceUpdates.Decide"),
+  serviceClaimsCreate: authRpc("ServiceClaims.Create"),
+  serviceClaimsList: authRpc("ServiceClaims.List"),
+  serviceClaimsRemove: authRpc("ServiceClaims.Remove"),
 
   // Auth: devices, authorities, reviews.
   devicesList: authRpc("Devices.List"),

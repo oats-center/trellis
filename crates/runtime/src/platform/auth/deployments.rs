@@ -62,6 +62,22 @@ pub(crate) struct DeploymentProvisioning {
     pub(crate) expires_at: Option<i64>,
 }
 
+/// The key ID of a canonical, strong Ed25519 identity public key.
+pub(super) fn identity_key_id(public_key: &str) -> Result<String, AuthError> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(public_key)
+        .map_err(|_| AuthError::Denied)?;
+    let raw: [u8; 32] = bytes.try_into().map_err(|_| AuthError::Denied)?;
+    if VerifyingKey::from_bytes(&raw)
+        .map_err(|_| AuthError::Denied)?
+        .is_weak()
+        || URL_SAFE_NO_PAD.encode(raw) != public_key
+    {
+        return Err(AuthError::Denied);
+    }
+    Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(raw)))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ProvisionedDeployment {
     pub(crate) participant_id: String,
@@ -754,22 +770,7 @@ impl SqliteAuthorizationStore {
         if title.trim().is_empty() {
             return Err(AuthError::Invalid("instance title is required".into()));
         }
-        let identity_key_id = public_key
-            .map(|public_key| {
-                let bytes = URL_SAFE_NO_PAD
-                    .decode(public_key)
-                    .map_err(|_| AuthError::Denied)?;
-                let raw: [u8; 32] = bytes.try_into().map_err(|_| AuthError::Denied)?;
-                if VerifyingKey::from_bytes(&raw)
-                    .map_err(|_| AuthError::Denied)?
-                    .is_weak()
-                    || URL_SAFE_NO_PAD.encode(raw) != public_key
-                {
-                    return Err(AuthError::Denied);
-                }
-                Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(raw)))
-            })
-            .transpose()?;
+        let identity_key_id = public_key.map(identity_key_id).transpose()?;
         let (participant, kind, revision, required, optional, expiry): (
             String,
             String,

@@ -91,7 +91,7 @@ async fn list_service_updates(
 }
 
 async fn service_updates(format: OutputFormat, id: &str) -> miette::Result<()> {
-    let deployment_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
+    let deployment_id = resolve_update_owner(id).await?;
     let (_, connected) = connect_authenticated_cli_client().await?;
     let updates = list_service_updates(&connected, &deployment_id).await?;
     if output::is_json(format) {
@@ -190,7 +190,7 @@ async fn decide_service_update(
     args: &SvcUpdateArgs,
     approve: bool,
 ) -> miette::Result<()> {
-    let deployment_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
+    let deployment_id = resolve_update_owner(id).await?;
     let (_, connected) = connect_authenticated_cli_client().await?;
     let updates = list_service_updates(&connected, &deployment_id).await?;
     let selected = match &args.update {
@@ -464,8 +464,11 @@ async fn create_service(
     id: &str,
     args: &SvcCreateArgs,
 ) -> miette::Result<()> {
+    let Some(source) = &args.source else {
+        return create_service_claim(format, id).await;
+    };
     let participant = compile_participant_input(
-        &args.source,
+        source,
         args.participant.as_deref(),
         Some(trellis_idl::ParticipantKind::Service),
     )?;
@@ -483,6 +486,35 @@ async fn create_service(
         .await
         .map_err(shared_api_hint)?;
     print_deployment_result(format, "service deployment created", &response.deployment)
+}
+
+/// Create a claim the first service to connect with the generated seed fills
+/// in, for a service whose IDL the administrator does not have beforehand.
+async fn create_service_claim(format: OutputFormat, id: &str) -> miette::Result<()> {
+    let (seed, key) = generate_session_keypair();
+    let (_, connected) = connect_authenticated_cli_client().await?;
+    let response = AuthClient::from_generated(connected)
+        .service_claims_create(&auth_types::AuthServiceClaimCreateRequest {
+            title: wire(id)?,
+            instance_title: wire(id)?,
+            identity_public_key: wire(key)?,
+            idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?;
+    if output::is_json(format) {
+        return output::print_json(&json!({ "claim": response.claim, "instanceSeed": seed }));
+    }
+    output::print_success("service claim created");
+    let claim = response.claim.claim_id.to_string();
+    println!("claimId={claim}");
+    output::print_info(&format!("instanceSeed={seed}"));
+    output::print_info(&format!(
+        "Give the seed to the service. When it connects it asks for what it needs; \
+        review and approve that with `trellis svc {claim} approve`."
+    ));
+    Ok(())
 }
 
 /// Auth refuses to let a deployment answer an API another one serves unless the
@@ -1009,6 +1041,37 @@ fn cli_idempotency_key() -> String {
 /// Resolve a CLI deployment identifier to a concrete deployment ID. The identifier may be a
 /// deployment ID or an exact display name. The lookup runs on its own connection so callers keep
 /// one client per connection.
+/// The service deployment, or the waiting service claim, `id` names by ID or
+/// title: a claim's first update belongs to the claim until it is approved.
+async fn resolve_update_owner(id: &str) -> miette::Result<String> {
+    if let Ok(deployment) = resolve_deployment_id(DeploymentKind::Service, id).await {
+        return Ok(deployment);
+    }
+    let (_state, connected) = connect_authenticated_cli_client().await?;
+    let claims = AuthClient::from_generated(connected)
+        .service_claims_list_items(auth_types::AuthPageRequest {
+            search: None,
+            page: Some(trellis_runtime_apis::CursorQuery {
+                cursor: None,
+                limit: Some(100),
+            }),
+            extra: Default::default(),
+        })
+        .try_filter(|claim| {
+            std::future::ready(claim.state == auth_types::AuthServiceClaimState::Waiting)
+        })
+        .try_collect::<Vec<_>>()
+        .await
+        .into_diagnostic()?
+        .into_iter()
+        .map(|claim| json!({ "deploymentId": claim.claim_id.to_string(), "title": claim.title }));
+    find_deployment_entry(claims, id)?
+        .get("deploymentId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| miette::miette!("service claim has no id"))
+}
+
 async fn resolve_deployment_id(kind: DeploymentKind, id: &str) -> miette::Result<String> {
     let (_state, connected) = connect_authenticated_cli_client().await?;
     find_deployment(&connected, id, kind)

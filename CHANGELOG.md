@@ -15,6 +15,14 @@ and this project adheres to
   no `nats-server` on `PATH` offers to download the pinned release;
   `--nats-download` downloads without asking. Without a terminal, both stop
   with a message naming the flag.
+- Service claims: a service deployment for a service you don't know
+  beforehand, such as a third party's. `trellis svc <name> create` without
+  `--source`, the Console's "It will introduce itself" option, or
+  `Auth.ServiceClaims.Create` with the service's public key creates one. The
+  first service to connect with that identity submits its own IDL; approving it
+  creates the deployment, accepts the APIs it provides, and provisions an
+  instance for that identity. `ServiceUpdates.Submit` now names the submitting
+  participant.
 - One-line installers:
   `curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis`
   (or `trellis-server`) installs the newest release after checking its

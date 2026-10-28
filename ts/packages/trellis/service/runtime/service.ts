@@ -3156,9 +3156,12 @@ export function connectTrellisServiceWithRuntimeDeps<
         );
         // A build whose participant differs from the instance's installed
         // revision submits itself, then connects again under the new revision.
+        // A service claim has nothing installed yet, so whatever connects
+        // first submits itself the same way.
         while (
           binding.kind === "service" &&
-          binding.participantId === args.participant.identity &&
+          (binding.participantId === "" ||
+            binding.participantId === args.participant.identity) &&
           authorization.participantDigest !== args.participant.digest
         ) {
           await awaitServiceUpdate(
@@ -3290,6 +3293,7 @@ async function awaitServiceUpdate(
   const submit = async () =>
     (
       await client.requestServiceUpdate("ServiceUpdates.Submit", {
+        participantId: participant.identity,
         packageEvidence: participant.packageEvidence,
       })
     ).update;

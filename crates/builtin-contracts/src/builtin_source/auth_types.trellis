@@ -727,7 +727,33 @@ model AuthServiceUpdate {
   decidedAt?: timestamp;
   revision: AuthRevision;
 }
-model AuthServiceUpdateSubmitRequest { packageEvidence: AuthPackageEvidence; }
+model AuthServiceUpdateSubmitRequest { participantId: string; packageEvidence: AuthPackageEvidence; }
+enum AuthServiceClaimState { waiting; claimed; removed; }
+// A service deployment that takes whatever service first connects with its
+// identity. The connecting service submits its IDL as an update to the claim;
+// approving it creates the deployment (`deploymentId`) and its instance.
+model AuthServiceClaim {
+  claimId: ulid;
+  title: AuthName;
+  instanceTitle: AuthName;
+  state: AuthServiceClaimState;
+  deploymentId?: ulid;
+  createdAt: timestamp;
+  revision: AuthRevision;
+}
+model AuthServiceClaimCreateRequest {
+  title: AuthName;
+  instanceTitle: AuthName;
+  identityPublicKey: AuthPublicKey;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthServiceClaimRemoveRequest {
+  claimId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthServiceClaimResponse { claim: AuthServiceClaim; }
+type AuthServiceClaimsListResponse = CursorPage<AuthServiceClaim>;
 model AuthServiceUpdateStatusRequest { updateId: ulid; }
 model AuthServiceUpdateResponse { update: AuthServiceUpdate; }
 model AuthServiceUpdatesListRequest { deploymentId?: ulid; page?: CursorQuery; }

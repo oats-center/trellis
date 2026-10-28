@@ -111,6 +111,10 @@ import {
   AuthServiceUpdatesListRequest,
   AuthServiceUpdatesListResponse,
   AuthServiceUpdateDecideRequest,
+  AuthServiceClaimCreateRequest,
+  AuthServiceClaimRemoveRequest,
+  AuthServiceClaimResponse,
+  AuthServiceClaimsListResponse,
   AuthDeviceReviewGetRequest,
   AuthDeviceReviewResponse,
   AuthDeviceReviewsListResponse,
@@ -248,6 +252,9 @@ api auth@v1 {
   rpc ServiceUpdates.List { input AuthServiceUpdatesListRequest; output AuthServiceUpdatesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc ServiceUpdates.Get { input AuthServiceUpdateStatusRequest; output AuthServiceUpdateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc ServiceUpdates.Decide { input AuthServiceUpdateDecideRequest; output AuthServiceUpdateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceClaims.Create { input AuthServiceClaimCreateRequest; output AuthServiceClaimResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceClaims.List { input AuthPageRequest; output AuthServiceClaimsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc ServiceClaims.Remove { input AuthServiceClaimRemoveRequest; output AuthServiceClaimResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc ServiceInstances.List { input AuthInstancesListRequest; output AuthInstancesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc ServiceInstances.Provision { input AuthInstanceProvisionRequest; output AuthInstanceProvisionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc ServiceInstances.Enable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -342,7 +349,7 @@ api auth@v1 {
       title "Manage users and services";
       description "Add and change users, sign-in providers, services, devices, storage, sessions, and connections.";
       grants "Can create and change any account or service in this Trellis and sign anyone out.";
-      allows { rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.PasswordReset.Create; rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
+      allows { rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.PasswordReset.Create; rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
     }
     capability roles.manage {
       administrative;
