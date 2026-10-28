@@ -61,7 +61,9 @@ jobs:
         run: bash scripts/check.sh lint
 
   # A pull request that touches only prose skips the build and test graph; the
-  # acceptance gate still reports. Pushes and manual runs always verify fully.
+  # acceptance gate still reports. A main push of a commit a `release/v*` branch
+  # already holds skips it too, because that branch's run verifies the same
+  # commit before publishing. Other pushes and manual runs always verify fully.
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
@@ -70,8 +72,20 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+      code: ${{ steps.release.outputs.branch == '' && (github.event_name != 'pull_request' || steps.filter.outputs.code == 'true') }}
+      release: ${{ steps.release.outputs.branch }}
     steps:
+      - name: Find a release branch verifying this commit
+        id: release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          branch="$(git ls-remote "https://github.com/$REPOSITORY" 'refs/heads/release/v*' |
+            awk -v sha="$SHA" '$1 == sha { sub("refs/heads/", "", $2); print $2; exit }')"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
       - name: Classify changed paths
         id: filter
         if: github.event_name == 'pull_request'
@@ -1059,10 +1073,12 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          RELEASE_BRANCH: ${{ needs.changes.outputs.release }}
         shell: bash
         run: |
           set -euo pipefail
-          # A prose-only pull request skips verification; nothing may fail.
+          # A prose-only pull request, or a main push its release branch
+          # verifies, skips verification; nothing may fail.
           failed="$(jq -c --arg code "$CODE_CHANGED" '
             (if $code == "true" or .changes.result != "success"
               then ["success"] else ["success", "skipped"] end) as $allowed
@@ -1072,7 +1088,9 @@ jobs:
             echo "verification did not all succeed: $failed" >&2
             exit 1
           fi
-          if [[ "$CODE_CHANGED" != "true" ]]; then
+          if [[ -n "$RELEASE_BRANCH" ]]; then
+            echo "the $RELEASE_BRANCH run verifies this commit; verification skipped here"
+          elif [[ "$CODE_CHANGED" != "true" ]]; then
             echo "only documentation changed; build and test verification skipped"
           else
             echo "all $(jq length <<<"$NEEDS") verification jobs succeeded"

@@ -524,6 +524,15 @@ git push origin HEAD:refs/heads/release/$RELEASE_TAG
 
 For example, `RELEASE_TAG=v0.100.0-rc.1` pushes `release/v0.100.0-rc.1`.
 
+Push the release branch before you push the same commit to `main`. The `main`
+run then finds the release branch at that commit and skips its own build and
+tests, so the commit is verified once, by the run that publishes it:
+
+```sh
+git push origin HEAD:refs/heads/release/$RELEASE_TAG
+git push origin HEAD:main
+```
+
 The pipeline's `release-metadata` job fails early if the final release tag already exists. If verification fails, fix the release commit and push the release branch again; the version is not consumed because no tag has been created.
 
 After the acceptance gate passes, the same run publishes in gated stages:
