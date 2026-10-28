@@ -13,8 +13,7 @@ import design from "./design-sidebar.json" with { type: "json" };
 const githubRepository = process.env.GITHUB_REPOSITORY;
 const base = (process.env.SITE_BASE_PATH ??
   (githubRepository ? `/${githubRepository.split("/")[1]}` : "")) as
-    | ""
-    | `/${string}`;
+  "" | `/${string}`;
 
 export default defineConfig({
   plugins: [
