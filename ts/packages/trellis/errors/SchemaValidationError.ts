@@ -10,11 +10,13 @@ export const SchemaValidationIssueSchema = Type.Object({
   label: Type.Optional(Type.String()),
   note: Type.Optional(Type.String()),
   i18nKey: Type.Optional(Type.String()),
-  severity: Type.Optional(Type.Union([
-    Type.Literal("error"),
-    Type.Literal("warning"),
-    Type.Literal("info"),
-  ])),
+  severity: Type.Optional(
+    Type.Union([
+      Type.Literal("error"),
+      Type.Literal("warning"),
+      Type.Literal("info"),
+    ]),
+  ),
   params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 });
 export type SchemaValidationIssue = Static<typeof SchemaValidationIssueSchema>;
@@ -31,23 +33,18 @@ export type SchemaValidationErrorData = Static<
   typeof SchemaValidationErrorDataSchema
 >;
 
-export class SchemaValidationError
-  extends TrellisError<SchemaValidationErrorData> {
+export class SchemaValidationError extends TrellisError<SchemaValidationErrorData> {
   override readonly name = "SchemaValidationError" as const;
   readonly #issues: SchemaValidationIssue[];
 
-  constructor(
-    options: {
-      issues: SchemaValidationIssue[];
-      context?: Record<string, unknown>;
-      cause?: unknown;
-      id?: string;
-    },
-  ) {
+  constructor(options: {
+    issues: SchemaValidationIssue[];
+    context?: Record<string, unknown>;
+    cause?: unknown;
+    id?: string;
+  }) {
     const { issues: rawIssues, ...baseOptions } = options;
-    const msg = rawIssues
-      .map((issue) => issue.message)
-      .join("\n");
+    const msg = rawIssues.map((issue) => issue.message).join("\n");
     super(msg.length ? msg : "Schema validation failed.", baseOptions);
     this.#issues = rawIssues;
   }

@@ -5,7 +5,7 @@ database, DI, code organization, logging, or general development policy.
 
 ## Documentation
 
-Use `docs/static/llms.txt` and `llms-rust.txt` from the Trellis revision
+Use `docs/static/llms-core.txt` and `llms-rust.txt` from the Trellis revision
 matching this project's CLI and libraries. With a local checkout, read those
 files there. Use the docs site's `/api` for current Rustdoc and generated crate
 source for the exact participant-specific methods.
@@ -33,7 +33,7 @@ source for the exact participant-specific methods.
   supported connection lifecycle.
 - Direct publication is not atomic with application SQL state; use the outbox
   transaction integration when that atomicity is needed.
-- `TrellisTestRuntime` is a Deno test helper that can launch Rust processes, not
+- `TrellisTestRuntime` is a Node test helper that can launch Rust processes, not
   an exported Rust runtime harness.
 
 ## Project Details

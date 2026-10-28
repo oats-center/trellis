@@ -20,6 +20,24 @@ framework or organization for downstream services. Consumer repositories choose
 their own test tooling. The live runtime helper is available when their tests
 need to exercise the actual Trellis boundary.
 
+Distinct-user tests use ordinary accounts, explicit capability grants, and real
+native OAuth consent. The Node testkit exposes `createUser`,
+`grantUserCapabilities`, and `registerClient`/`connectClient` with `user`; the
+Rust testkit exposes `create_user`, `grant_user_capabilities`,
+`register_native_application`, and `login_native_application_as`. User handles
+belong to one runtime, expose no password, and never borrow seeded administrator
+authority. One registered application can have independent logins for multiple
+users. Explicit-user login never adds or restores grants.
+
+Both live runtime helpers serve the default generated installation TLS, and
+every client trusts that runtime's CA explicitly: the Rust kit through
+`trust_roots` and `https_client_builder`, the Node kit by adding the CA to the
+test process's Node trust, spawned Node processes through
+`NODE_EXTRA_CA_CERTS`, the CLI through `--ca-certificate`, and Playwright
+browsers through `browserTrustEnvironment()`, a private NSS trust store that
+reproduces a user importing the CA (NSS `certutil` is a test prerequisite).
+Never use `ignoreHTTPSErrors` or disabled verification to reach a TLS runtime.
+
 Trellis behavior is distributed runtime behavior. Tests that prove Trellis
 runtime behavior must use a live Trellis control plane and real TypeScript and
 Rust client/service paths.
@@ -47,7 +65,7 @@ or add synthetic fault hooks solely for tests.
 
 ### Test Ownership
 
-Executable Rust and Deno tests are the catalog. Cross-language behavior is
+Executable Rust and Node tests are the catalog. Cross-language behavior is
 proved by the smallest live test that crosses the real transport boundary;
 Rust-only runtime behavior remains in ordinary Rust integration tests.
 
@@ -59,13 +77,18 @@ owns the linked production runtime task. Built-in Jobs and Events run in the
 ordinary production runtime. Tests use generated participants from a small
 native-IDL fixture; they do not construct substitute API descriptors. Prebuilt
 server and CLI paths are passed through the explicit native path source by the
-repository integration helper. The released TypeScript testkit defaults to
-exact-version SHA-256-pinned CLI/server acquisition; production `init config`
+repository integration helper. The released TypeScript testkit defaults to the
+latest published CLI/server release, verified against its published checksum;
+production `trellis-server init`
 owns bootstrap and `trellis-server --local-nats` owns the broker. The private
 sandbox retains config, data, state, and identity across full-host restart; only
 verified immutable binaries are shared. Seeded admin is the default, with an
 explicit browser-flow option for first-admin tests. Real broker adapters use an
 isolated observer connection rather than a second TypeScript-owned NATS process.
+Automatic TCP listeners stay outside the kernel's outbound ephemeral range.
+Rust and Node reservations also hold the same loopback UDP port across the
+release-to-bind handoff, preventing another testkit from claiming a listener
+while its production child starts; the child binds TCP normally.
 The TypeScript host runs in a dedicated Unix process group: shutdown first asks
 the host to stop gracefully, then force-closes remaining owned descendants after
 the deadline or host exit. Process-failure tests may deliberately kill or
@@ -74,20 +97,28 @@ original host releases broker-backed ownership and reap it before normal managed
 restart. There is no shared-runner registry, tenant allocator, artifact
 manifest, or host-wide scheduler.
 
-Rust and TypeScript live tests use ordinary Rust and Deno discovery. The normal
-Check runs both discovered suites against real Trellis infrastructure. Focused
-local runs select tests through the native Rust and Deno test runners rather
+Rust and TypeScript live tests use ordinary Rust and Node discovery. The
+pipeline runs both discovered suites against real Trellis infrastructure. Focused
+local runs select tests through the native Rust and Node test runners rather
 than a second registry or scheduler.
 
-The external `trellis-testkit` Rust harness links the real production runtime
-for service repositories, manages a real NATS process, chooses its loopback
+The external `trellis-testkit` Rust harness owns production Trellis and NATS
+processes for service repositories, chooses its loopback
 ports automatically, and drives real bootstrap, login, consent, and provisioning
-boundaries. The harness owns the runtime task and broker; the test owns the
-generated clients and service tasks it connects. Runtime task ownership is
-cancellation-safe, including nested startup tasks and native provider clients.
-Implementation crates are registry-distributed only to resolve the testkit's
-Cargo dependency closure; a service repository uses the supported `trellis-rs`
-and `trellis-testkit` APIs, not implementation crates directly.
+boundaries. The harness owns its administrator connection and server/broker
+children; the test owns generated clients and service tasks. Cancellation/drop
+reaps owned children before sandbox cleanup. Server-only restart retains the
+same running broker and durable installation. Readiness matches the production
+`/readyz` process ID to the owned child. Binaries can be explicit or acquired
+from the latest (or `TRELLIS_TEST_VERSION`) release, with offline cache reuse.
+Unexpected child failures remain shutdown errors even when the child has already
+exited, preserving `OnFailure` diagnostics. Source CI stages the CLI and server
+alongside its prebuilt testkit executable; it does not depend on unpublished
+release assets. Service registration reviews implemented and consumed APIs before
+creating the deployment, so consumer-first setup does not depend on provider order.
+Only `trellis-rs`, `trellis-protocol`, `trellis-models`, and `trellis-testkit`
+are registry-distributed; server, compiler, and bootstrap implementations remain
+private and are not consumer Cargo dependencies.
 
 ### Live Observation Timing Proof
 
@@ -158,11 +189,11 @@ Verification has three explicit tiers:
 - **Tier 2, phase gate:** run preparation when generated artifacts may change,
   workspace formatting, lint and documentation checks, affected package suites,
   and the matching TypeScript and Rust live tests.
-- **Tier 3, integrated gate:** the normal `Check` workflow owns formatting,
+- **Tier 3, integrated gate:** the `Pipeline` workflow owns formatting,
   lint/type checks, generated freshness, package tests, and the complete
-  unfiltered live suites with no hidden skips. The release workflow does not
-  repeat those checks; it verifies release metadata and the exact packages,
-  archives, images, and publication inputs assembled from a green `rs` base.
+  unfiltered live suites with no hidden skips. On a release branch its publish
+  jobs follow the acceptance gate and publish that run's verified packages,
+  archives and images without repeating the checks.
   Trellis supports current stable Rust only; no older compiler compatibility is
   promised.
 

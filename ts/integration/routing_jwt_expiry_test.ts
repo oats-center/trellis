@@ -1,127 +1,95 @@
-import { wsconnect } from "@nats-io/nats-core";
-import { assertRejects } from "@std/assert";
-import { fromFileUrl } from "@std/path";
-import { createAuth } from "@oatscenter/trellis/auth";
-import { TrellisService } from "@oatscenter/trellis/service";
+import { connect } from "@nats-io/transport-node";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { connectNativeSession } from "@oatscenter/trellis/native";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { verifyOAuthAdmissionWasm } from "../packages/trellis/auth/protocol_wasm.ts";
+import { withTrellisRuntime } from "./_support/runtime.ts";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { AuthorizationContextCache } from "../packages/trellis/auth/authorization/client_context.ts";
-import { logger } from "../packages/trellis/globals.ts";
-import { participantEvidence } from "../packages/trellis/participant_runtime/participant.ts";
-import { fetchServiceBootstrapInfo } from "../packages/trellis/service/runtime/bootstrap.ts";
-import { base64urlEncode } from "../packages/trellis/auth/utils.ts";
-import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
-
-Deno.test("an expired routing credential cannot admit a fresh NATS attachment", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const participant = participants.Provider.participant;
-    const identity = await runtime.registerService({
-      name: `expired-routing-${crypto.randomUUID()}`,
-      contract: participant,
-    });
-    const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant,
-      seed: identity.seed,
-    }).orThrow();
-    try {
-      const sessionAuth = await createAuth({
-        sessionKeySeed: base64urlEncode(
-          crypto.getRandomValues(new Uint8Array(32)),
-        ),
+test("expired OAuth admission cannot open a fresh NATS attachment", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      await runtime.registerService({
+        name: "admission-provider",
+        contract: participants.Provider.participant,
       });
-      const bootstrapRequest = {
-        trellisUrl: runtime.trellisUrl,
-        serviceName: "expired-routing",
-        contractId: participant.identity,
-        contractDigest: participantEvidence(participant).packageDigest,
-        contract: participant,
-        identityAuth: await createAuth({ sessionKeySeed: identity.seed }),
-        sessionAuth,
-        log: logger,
-      };
-      const bootstrap = await fetchServiceBootstrapInfo(bootstrapRequest);
-      const contexts = new AuthorizationContextCache(runtime.trellisUrl);
-      contexts.setServerClockOffsetMs(bootstrap.serverClockOffsetMs);
-      const verified = await contexts.install(
-        bootstrap.connectInfo.authorizationContext,
+      const login = await runtime.registerClient({
+        name: "admission-expiry",
+        contract: apps.EchoCaller.request,
+      });
+      const connected = await connectNativeSession(login).orThrow();
+      const { session, servers } = login;
+      const admission = session.admission;
+      const verified = await verifyOAuthAdmissionWasm(
+        new TextEncoder().encode(admission),
         {
-          bootstrapJwt: bootstrap.connectInfo.jwt,
-          bootstrapJwtExpiresAt: bootstrap.connectInfo.jwtExpiresAt,
+          issuer: session.trust.issuer,
+          trellisInstanceId: session.trust.instanceId,
+          audienceNatsAccount: session.trust.account,
+          ephemeralNkey: session.auth.sessionNkey,
+          nowUnixSeconds: session.auth.currentIat(),
+          maximumLifetimeSeconds: 300,
         },
       );
-      const options = await sessionAuth.natsConnectOptions({
-        inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
-        contextDigest: verified.contextDigest,
-        jwt: bootstrap.connectInfo.jwt,
-      });
-      const servers = [runtime.natsWebsocketUrl];
-
-      const admitted = await wsconnect({
-        servers,
-        authenticator: options.authenticator,
-        maxReconnectAttempts: 0,
-        timeout: 5_000,
-      });
-      await admitted.drain();
-
-      // Exercise the exact original signed credential after its server-issued
-      // admission deadline, without replacing it with a refreshed credential.
-      await new Promise((resolve) =>
-        setTimeout(
-          resolve,
-          Math.max(
-            0,
-            bootstrap.connectInfo.jwtExpiresAt * 1000 - Date.now() + 1100,
-          ),
-        )
+      assert(verified.ok);
+      assert(
+        verified.admission.credential.expiresAt -
+          verified.admission.credential.issuedAt <=
+          18,
+        "the isolated runtime must issue the configured short-lived admission",
       );
-      const refreshed = await fetchServiceBootstrapInfo({
-        ...bootstrapRequest,
-        connectionId: bootstrap.connectInfo.connectionId,
-      });
-      const current = await contexts.install(
-        refreshed.connectInfo.authorizationContext,
-        {
-          bootstrapJwt: refreshed.connectInfo.jwt,
-          bootstrapJwtExpiresAt: refreshed.connectInfo.jwtExpiresAt,
-        },
-      );
-      const currentOptions = await sessionAuth.natsConnectOptions({
-        inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
-        contextDigest: current.contextDigest,
-        jwt: refreshed.connectInfo.jwt,
-      });
-      const currentConnection = await wsconnect({
-        servers,
-        authenticator: currentOptions.authenticator,
-        maxReconnectAttempts: 0,
-        timeout: 5_000,
-      });
-      await currentConnection.drain();
-      const expiredOptions = await sessionAuth.natsConnectOptions({
-        inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
-        contextDigest: current.contextDigest,
-        jwt: bootstrap.connectInfo.jwt,
-      });
-      await assertRejects(() =>
-        wsconnect({
-          servers,
-          authenticator: expiredOptions.authenticator,
+      try {
+        const original = await session.auth.natsConnectOptions({
+          inboxPrefix: connected.inboxPrefix,
+          admission,
+        });
+        const before = await connect({
+          servers: [...servers],
+          authenticator: original.authenticator,
           maxReconnectAttempts: 0,
-          timeout: 5_000,
-        })
-      );
-    } finally {
-      await service.stop();
-    }
-  }, {
-    authorization: {
-      contextLifetimeSeconds: 76,
-      refreshLeadSeconds: 15,
-      refreshJitterSeconds: 0,
-      minimumContextLifetimeSeconds: 46,
+          timeout: 5000,
+        });
+        await before.close();
+        const deadline = verified.admission.credential.expiresAt;
+        await runtime.waitFor(() => Date.now() > (deadline + 1) * 1000, {
+          timeoutMs: Math.max(0, deadline * 1000 - Date.now()) + 5000,
+        });
+        const renewed = (await session.refresh({})).orThrow();
+        const current = await session.auth.natsConnectOptions({
+          inboxPrefix: connected.inboxPrefix,
+          admission: renewed.admission,
+        });
+        const fresh = await connect({
+          servers: [...servers],
+          authenticator: current.authenticator,
+          maxReconnectAttempts: 0,
+          timeout: 5000,
+        });
+        await fresh.close();
+        const expired = await session.auth.natsConnectOptions({
+          inboxPrefix: connected.inboxPrefix,
+          admission,
+        });
+        await assert.rejects(() =>
+          connect({
+            servers: [...servers],
+            authenticator: expired.authenticator,
+            maxReconnectAttempts: 0,
+            timeout: 5000,
+          }),
+        );
+      } finally {
+        await connected.manager.close();
+      }
     },
-    trellis: { source: repoTrellisSource() },
-  });
+    {
+      authorization: {
+        contextLifetimeSeconds: 45,
+        oauthAdmissionLifetimeSeconds: 18,
+      },
+    },
+  );
 });

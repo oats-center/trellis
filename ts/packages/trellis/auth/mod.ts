@@ -5,21 +5,6 @@
  */
 
 export {
-  type AuthorizationContextBundle,
-  AuthorizationContextBundleSchema,
-  AuthorizationContextCache,
-  AuthorizationContextRefreshError,
-  AuthorizationProviderCache,
-  type AuthorizationProviderEvent,
-  type AuthorizationProviderRequest,
-  type AuthorizationRoutingMaterial,
-  type AuthorizationRuntimeBinding,
-  refreshAuthorizationContext,
-  refreshAuthorizationContextWithMetadata,
-  startAuthorizationContextRefresh,
-  type VerifiedAuthorizationContext,
-} from "./authorization_context.ts";
-export {
   type BrowserAuthRecoveryClassification,
   type BrowserAuthRecoveryKind,
   classifyBrowserAuthError,
@@ -31,31 +16,23 @@ export {
   deriveDeviceIdentity,
   waitForDeviceActivation,
 } from "./device_activation.ts";
+export { SessionAuthorityOwner } from "./authority.ts";
+// All transcript framing and authenticated verification is owned by Rust/WASM.
 export {
-  fetchPortalFlowState,
-  fetchPortalIntentState,
-  portalIntentFromUrl,
-  portalProviderLoginUrl,
-  portalRedirectLocation,
-  portalTransactionIdFromUrl,
-  startPortalTransaction,
-  submitPortalApproval,
-} from "./browser/portal.ts";
-export type {
-  DeviceUserAuthoritiesResolveOutput,
-  DeviceUserAuthoritiesResolveProgress,
-} from "../internal_sdk/generated/apis/auth/mod.js";
-// Context-bound proof helpers for local signing and signature verification.
-export {
-  buildEventProofInput,
-  buildProofInput,
   createEventProof,
   createProof,
-  type EventProofParams,
-  type ProofParams,
-  verifyEventProof,
-  verifyProof,
+  createResponseProof,
+  type RequestSignature,
 } from "./proof.ts";
+export {
+  type SessionRequest,
+  type SessionEvent,
+  type SessionResponse,
+  type VerifySessionResponseArgs,
+  type VerifySessionResponseResult,
+  verifySessionRequestWasm,
+  verifySessionResponseWasm,
+} from "./protocol_wasm.ts";
 export {
   parseSessionProof,
   SESSION_PROOF_FORMAT_V1,
@@ -70,8 +47,6 @@ export {
 } from "./session_proof.ts";
 export {
   classifyTransportAuthorizationWasm,
-  encodePermissionTargetWasm,
-  participantResourceTarget,
   TRANSPORT_AUTHORIZATION_FORMAT_V1,
   transportAuthorizationDigestWasm,
   type TransportAuthorizationV1,

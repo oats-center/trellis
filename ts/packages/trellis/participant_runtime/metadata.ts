@@ -14,17 +14,23 @@ export const PARTICIPANT_EVENT_CONSUMERS_METADATA = Symbol.for(
   "@oatscenter/trellis/participant/event-consumers",
 );
 
-export type ParticipantJobsMetadata = Record<string, {
-  payload: unknown;
-  update?: unknown;
-  updateSchema?: SchemaLike;
-  result: unknown;
-}>;
-export type ParticipantKvMetadata = Record<string, {
-  required: boolean;
-  value: unknown;
-  schema: KvRepresentation<unknown>;
-}>;
+export type ParticipantJobsMetadata = Record<
+  string,
+  {
+    payload: unknown;
+    update?: unknown;
+    updateSchema?: SchemaLike;
+    result: unknown;
+  }
+>;
+export type ParticipantKvMetadata = Record<
+  string,
+  {
+    required: boolean;
+    value: unknown;
+    schema: KvRepresentation<unknown>;
+  }
+>;
 export type ParticipantStoreMetadata = Record<string, { required: boolean }>;
 export type TrellisValidationIssueHint = {
   code: string;

@@ -1,10 +1,10 @@
 import { TrellisService } from "@oatscenter/trellis/service";
-import { participants } from "orders-trellis";
+import { participants } from "./trellis/index.js";
 import { createOrder } from "./service.ts";
 
 // Environment variables are this example's configuration choice, not a Trellis requirement.
 function requiredEnv(name: string): string {
-  const value = Deno.env.get(name);
+  const value = process.env[name];
   if (!value) throw new Error(`Missing ${name}`);
   return value;
 }
@@ -18,14 +18,14 @@ const service = await TrellisService.connect({
 const stop = () => {
   void service.stop();
 };
-Deno.addSignalListener("SIGINT", stop);
-Deno.addSignalListener("SIGTERM", stop);
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
 try {
   await service.handleCreate(createOrder);
   console.log("Orders service connected; press Ctrl-C to stop.");
   await service.wait();
 } finally {
-  Deno.removeSignalListener("SIGINT", stop);
-  Deno.removeSignalListener("SIGTERM", stop);
+  process.off("SIGINT", stop);
+  process.off("SIGTERM", stop);
   await service.stop();
 }

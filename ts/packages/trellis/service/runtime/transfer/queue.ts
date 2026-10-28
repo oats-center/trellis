@@ -89,6 +89,7 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
   #bytes = 0;
   #received = 0n;
   #closed = false;
+  #ended = false;
   #error: unknown;
   #wake: (() => void) | undefined;
 
@@ -115,15 +116,18 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
     if (this.#closed) throw new Error("transfer ingress is closed");
     if (seq !== this.#received + 1n) throw new Error("transfer sequence gap");
     if (
-      chunk.length === 0 || chunk.length > this.maxFrameBytes ||
+      chunk.length === 0 ||
+      chunk.length > this.maxFrameBytes ||
       this.#values.length >= this.windowFrames ||
       this.#bytes + chunk.length > this.windowBytes
-    ) throw new Error("transfer receive window exceeded");
+    )
+      throw new Error("transfer receive window exceeded");
     this.#received = seq;
     this.#values.push({ seq, chunk });
     this.#bytes += chunk.length;
     recordCatalogUpDown("trellis.transfer.buffered.bytes", chunk.length, {
       "trellis.direction": this.direction,
+      "trellis.side": this.direction === "upload" ? "provider" : "client",
     });
     this.#wake?.();
   }
@@ -132,16 +136,21 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
   close(finalSeq: bigint): void {
     if (finalSeq !== this.#received) throw new Error("transfer completion gap");
     this.#closed = true;
+    this.#ended = true;
     this.#wake?.();
   }
 
   /** Abort queued and pending backend reads; aborted bytes never earn credit. */
   fail(error: unknown): void {
+    // Every frame of a completed transfer was already consumed: its end of
+    // file stands, so releasing the transfer cannot turn it into an error.
+    if (this.#ended && this.#values.length === 0) return;
     this.#error = error;
     this.#closed = true;
     this.#values = [];
     recordCatalogUpDown("trellis.transfer.buffered.bytes", -this.#bytes, {
       "trellis.direction": this.direction,
+      "trellis.side": this.direction === "upload" ? "provider" : "client",
     });
     this.#bytes = 0;
     this.#wake?.();
@@ -156,14 +165,17 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
         recordCatalogUpDown(
           "trellis.transfer.buffered.bytes",
           -value.chunk.length,
-          { "trellis.direction": this.direction },
+          {
+            "trellis.direction": this.direction,
+            "trellis.side": this.direction === "upload" ? "provider" : "client",
+          },
         );
         this.consumed(value.seq, value.chunk.length);
         yield value.chunk;
       } else if (this.#closed) {
         return;
       } else {
-        await new Promise<void>((resolve) => this.#wake = resolve);
+        await new Promise<void>((resolve) => (this.#wake = resolve));
         this.#wake = undefined;
       }
     }

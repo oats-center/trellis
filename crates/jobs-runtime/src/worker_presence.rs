@@ -91,11 +91,16 @@ pub async fn start_worker_presence_projector(
     store: SqliteJobsStore,
 ) -> Result<WorkerPresenceProjectorHandle, ServerError> {
     let mut messages = jobs_runtime
-        .filtered_messages(&jobs_stream, WORKER_PRESENCE_CONSUMER_NAME, WORKER_HEARTBEATS_WILDCARD)
+        .filtered_messages(
+            &jobs_stream,
+            WORKER_PRESENCE_CONSUMER_NAME,
+            WORKER_HEARTBEATS_WILDCARD,
+        )
         .await
         .map_err(|error| {
             ServerError::Nats(format!(
-                "failed to start worker presence consumer '{WORKER_PRESENCE_CONSUMER_NAME}' message stream: {error}"
+                "failed to start worker presence consumer \
+                '{WORKER_PRESENCE_CONSUMER_NAME}' message stream: {error}"
             ))
         })?;
     tracing::info!(
@@ -114,7 +119,8 @@ pub async fn start_worker_presence_projector(
         while let Some(message) = messages.next().await {
             let message = message.map_err(|error| {
                 ServerError::Nats(format!(
-                    "worker presence projector failed to pull from consumer '{WORKER_PRESENCE_CONSUMER_NAME}' on stream '{jobs_stream}': {error}"
+                    "worker presence projector failed to pull from consumer \
+                    '{WORKER_PRESENCE_CONSUMER_NAME}' on stream '{jobs_stream}': {error}"
                 ))
             })?;
             let Some((subject_service, job_type, instance_id)) =
@@ -145,7 +151,8 @@ pub async fn start_worker_presence_projector(
 
             project_worker_heartbeat(&store, &heartbeat).map_err(|error| {
                 ServerError::Nats(format!(
-                    "worker presence projector failed to project worker '{subject_service}/{job_type}/{instance_id}': {error}"
+                    "worker presence projector failed to project worker \
+                    '{subject_service}/{job_type}/{instance_id}': {error}"
                 ))
             })?;
             tracing::debug!(

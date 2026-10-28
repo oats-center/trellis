@@ -1,3 +1,4 @@
+import { copyFile, rm, writeFile } from "node:fs/promises";
 import ts from "typescript";
 import {
   resolveInternalNpmDependenciesForBuild,
@@ -11,6 +12,7 @@ export async function buildTypeScriptPackage(
     description: string;
     exports: Record<string, unknown>;
     dependencies: Record<string, string>;
+    engines?: Record<string, string>;
     peerDependencies?: Record<string, string>;
     peerDependenciesMeta?: Record<string, { optional: boolean }>;
   },
@@ -25,32 +27,26 @@ export async function buildTypeScriptPackage(
   const parsed = ts.parseJsonConfigFileContent(
     config.config,
     ts.sys,
-    Deno.cwd(),
+    process.cwd(),
   );
-  const program = ts.createProgram(
-    parsed.fileNames,
-    parsed.options,
-  );
-  const diagnostics = [
-    ...parsed.errors,
-    ...ts.getPreEmitDiagnostics(program),
-  ];
+  const program = ts.createProgram(parsed.fileNames, parsed.options);
+  const diagnostics = [...parsed.errors, ...ts.getPreEmitDiagnostics(program)];
   if (diagnostics.length) {
-    throw new Error(ts.formatDiagnosticsWithColorAndContext(diagnostics, {
-      getCanonicalFileName: (name) => name,
-      getCurrentDirectory: () => Deno.cwd(),
-      getNewLine: () => "\n",
-    }));
+    throw new Error(
+      ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+        getCanonicalFileName: (name) => name,
+        getCurrentDirectory: () => process.cwd(),
+        getNewLine: () => "\n",
+      }),
+    );
   }
-  await Deno.remove("npm", { recursive: true }).catch((error) => {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-  });
+  await rm("npm", { recursive: true, force: true });
   const emitted = program.emit();
   if (emitted.emitSkipped || emitted.diagnostics.length) {
     throw new Error("TypeScript package emission failed");
   }
   const buildVersion = resolvePackageBuildVersion(version);
-  await Deno.writeTextFile(
+  await writeFile(
     "npm/package.json",
     JSON.stringify(
       {
@@ -61,7 +57,7 @@ export async function buildTypeScriptPackage(
         publishConfig: { access: "public" },
         repository: {
           type: "git",
-          url: "git+https://github.com/OATS-Center/trellis.git",
+          url: "git+https://github.com/oats-center/trellis.git",
         },
         dependencies: resolveInternalNpmDependenciesForBuild(
           metadata.dependencies,
@@ -76,5 +72,5 @@ export async function buildTypeScriptPackage(
       2,
     ) + "\n",
   );
-  await Deno.copyFile("README.md", "npm/README.md");
+  await copyFile("README.md", "npm/README.md");
 }

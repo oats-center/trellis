@@ -1,0 +1,50 @@
+---
+title: "Libraries"
+description: "How Trellis programs use runtime libraries, generated SDKs, and API reference docs."
+---
+
+Trellis libraries are the normal way programs connect to a Trellis deployment.
+They hide the transport details and expose typed surfaces for calls, events,
+live observations, operations, state, jobs, and service resources.
+
+## Participants, not just clients and servers
+
+Trellis programs are participants. A participant is any program that connects to
+Trellis with an identity and a declared interface.
+
+That includes:
+
+- services
+- browser apps and portals
+- CLIs
+- devices
+- automation agents
+
+Some participants provide APIs. Some only call APIs. Many do both. For example,
+an orders service may handle an orders `Create` RPC, publish a `Shipped` event, and call
+an inventory service. A portal may call services and subscribe to live updates.
+A device may activate, connect, and publish or call only the surfaces it is
+allowed to use.
+
+## Language libraries
+
+- [TypeScript libraries](/guides/libraries/typescript) cover apps, services,
+  devices, CLIs, generated SDKs, Result-style errors, and Svelte integration.
+- [Rust libraries](/guides/libraries/rust) cover generated Cargo SDKs,
+  participant facades, service provider APIs, async calls, streams, and Rustdoc.
+- [Testing Trellis services](/guides/testing-trellis-services) covers
+  out-of-tree TypeScript integration tests with `@oatscenter/trellis-testkit`.
+
+## Learn by building
+
+- [Write a Service](/guides/write-a-service) walks through a full service in
+  TypeScript and Rust.
+- [Writing SvelteKit Apps](/guides/writing-sveltekit-apps) shows browser app
+  authentication and client usage.
+- [Devices](/guides/devices) introduces device activation and device identities.
+
+## Exact API reference
+
+Use the [API Reference](/api) when you need exact package exports, generated
+TypeScript documentation, or Rustdoc links. The guides explain the intended
+workflow; `/api` is the lookup surface for exact symbols.

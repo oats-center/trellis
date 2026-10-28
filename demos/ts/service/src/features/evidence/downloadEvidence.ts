@@ -27,7 +27,8 @@ function includesPermissionFailure(error: unknown): boolean {
 
   const message = error.message.toLowerCase();
   if (
-    message.includes("permission") || message.includes("authorization") ||
+    message.includes("permission") ||
+    message.includes("authorization") ||
     message.includes("not permitted")
   ) {
     return true;
@@ -59,7 +60,9 @@ function diagnoseDownloadFailure(args: {
   if (args.visibilityCheck === "visible_after_wait") return "object_store_race";
   if (causeReason === "timeout") return "object_store_visibility_timeout";
   if (
-    causeReason === "not_found" && causeKey && causeKey !== args.requestedKey
+    causeReason === "not_found" &&
+    causeKey &&
+    causeKey !== args.requestedKey
   ) {
     return "wrong_key";
   }
@@ -93,9 +96,8 @@ function annotateDownloadFailure(args: {
     transferReason: stringContext(transferContext, "reason"),
     transferCauseName: cause instanceof Error ? cause.name : undefined,
     transferCauseMessage: cause instanceof Error ? cause.message : undefined,
-    transferCauseOperation: cause instanceof StoreError
-      ? cause.operation
-      : undefined,
+    transferCauseOperation:
+      cause instanceof StoreError ? cause.operation : undefined,
     transferCauseReason: stringContext(causeContext, "reason"),
     transferCauseKey: stringContext(causeContext, "key"),
     visibilityCheck: args.visibilityCheck,
@@ -117,9 +119,7 @@ function shouldCheckStoreVisibility(error: TransferError): boolean {
 }
 
 /** Returns a receive transfer grant for stored evidence. */
-export function createDownloadEvidenceHandler(
-  deps: FieldOpsDeps,
-): Handler {
+export function createDownloadEvidenceHandler(deps: FieldOpsDeps): Handler {
   return async ({ context, input }) => {
     if (context.caller.type !== "verified") {
       return Result.err(
@@ -133,42 +133,35 @@ export function createDownloadEvidenceHandler(
     }
     const transferIssuer = deps.transferIssuer;
     const storeTtlMs = transferIssuer.store?.uploads?.binding?.ttlMs;
-    const transfer = await transferIssuer.createTransfer({
-      direction: "receive",
-      store: EVIDENCE_STORE,
-      key: input.key,
-      sessionKey: context.caller.sessionKey,
-      connectionId: context.caller.connectionId,
-      contextDigest: context.caller.contextDigest,
-      permission: context.permission,
-      requiredCapabilities: context.requiredCapabilities,
-      inboxPrefix: context.inboxPrefix,
-      expiresInMs: TRANSFER_GRANT_TTL_MS,
-    }).take();
+    const transfer = await transferIssuer
+      .createTransfer({
+        direction: "receive",
+        store: EVIDENCE_STORE,
+        key: input.key,
+        context,
+        expiresInMs: TRANSFER_GRANT_TTL_MS,
+      })
+      .take();
 
     if (isErr(transfer)) {
       if (shouldCheckStoreVisibility(transfer.error)) {
-        const visible = await transferIssuer.store?.uploads?.waitFor?.(
-          input.key,
-          {
+        const visible = await transferIssuer.store?.uploads
+          ?.waitFor?.(input.key, {
             timeoutMs: STORE_VISIBILITY_WAIT_MS,
             pollIntervalMs: STORE_VISIBILITY_POLL_MS,
-          },
-        ).take();
+          })
+          .take();
 
         if (visible && !isErr(visible)) {
-          const retried = await transferIssuer.createTransfer({
-            direction: "receive",
-            store: EVIDENCE_STORE,
-            key: input.key,
-            sessionKey: context.caller.sessionKey,
-            connectionId: context.caller.connectionId,
-            contextDigest: context.caller.contextDigest,
-            permission: context.permission,
-            requiredCapabilities: context.requiredCapabilities,
-            inboxPrefix: context.inboxPrefix,
-            expiresInMs: TRANSFER_GRANT_TTL_MS,
-          }).take();
+          const retried = await transferIssuer
+            .createTransfer({
+              direction: "receive",
+              store: EVIDENCE_STORE,
+              key: input.key,
+              context,
+              expiresInMs: TRANSFER_GRANT_TTL_MS,
+            })
+            .take();
           if (!isErr(retried)) {
             return ok({
               ...retried.info,
@@ -177,33 +170,39 @@ export function createDownloadEvidenceHandler(
             });
           }
 
-          return Result.err(annotateDownloadFailure({
-            error: retried.error,
-            key: input.key,
-            storeTtlMs,
-            visibilityCheck: "visible_after_wait",
-            retryFailed: true,
-          }));
+          return Result.err(
+            annotateDownloadFailure({
+              error: retried.error,
+              key: input.key,
+              storeTtlMs,
+              visibilityCheck: "visible_after_wait",
+              retryFailed: true,
+            }),
+          );
         }
 
-        return Result.err(annotateDownloadFailure({
+        return Result.err(
+          annotateDownloadFailure({
+            error: transfer.error,
+            key: input.key,
+            storeTtlMs,
+            visibilityCheck:
+              visible && isErr(visible)
+                ? "not_visible_after_wait"
+                : "visibility_check_unavailable",
+            visibilityError:
+              visible && isErr(visible) ? visible.error : undefined,
+          }),
+        );
+      }
+
+      return Result.err(
+        annotateDownloadFailure({
           error: transfer.error,
           key: input.key,
           storeTtlMs,
-          visibilityCheck: visible && isErr(visible)
-            ? "not_visible_after_wait"
-            : "visibility_check_unavailable",
-          visibilityError: visible && isErr(visible)
-            ? visible.error
-            : undefined,
-        }));
-      }
-
-      return Result.err(annotateDownloadFailure({
-        error: transfer.error,
-        key: input.key,
-        storeTtlMs,
-      }));
+        }),
+      );
     }
 
     return ok({

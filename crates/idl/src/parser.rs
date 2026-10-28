@@ -1,8 +1,8 @@
 use crate::{
     ast::{
-        Action, Alias, Api, ApiUse, Capability, Declaration, Enum, Field, Import, MemberValue,
-        Model, ParsedSource, Participant, Prelude, PreludeDependency, Resource, ResourceValue,
-        Selection, Spanned, TypeExpr,
+        Action, Alias, Api, ApiUse, Capability, CapabilityGroup, Declaration, Enum, Field, Import,
+        MemberValue, Model, ParsedSource, Participant, Prelude, PreludeDependency, Resource,
+        ResourceValue, Selection, Spanned, TypeExpr,
     },
     lexer::{lex, Token, TokenKind},
     semantic::SourceUnit,
@@ -155,7 +155,11 @@ impl<'a> Parser<'a> {
         self.token(TokenKind::LBrace)?;
         let mut symbols = Vec::new();
         while !self.at(TokenKind::RBrace) {
-            let symbol = self.ident()?;
+            let symbol = if self.at(TokenKind::String) {
+                self.string()?
+            } else {
+                self.ident()?
+            };
             if symbols.contains(&symbol) {
                 return Err(self.error_previous(format!("duplicate enum symbol '{symbol}'")));
             }
@@ -204,7 +208,7 @@ impl<'a> Parser<'a> {
                 }
             }
             "string" | "bool" | "int32" | "uint32" | "int64" | "uint64" | "number" | "bytes"
-            | "timestamp" | "ulid" => Ok(TypeExpr::Primitive(name, self.constraints()?)),
+            | "timestamp" | "ulid" | "json" => Ok(TypeExpr::Primitive(name, self.constraints()?)),
             "null" => Err(self.error_previous("'null' is only legal as 'T | null'")),
             _ => {
                 if self.at(TokenKind::LParen) {
@@ -255,6 +259,7 @@ impl<'a> Parser<'a> {
             errors: BTreeMap::new(),
             actions: Vec::new(),
             capabilities: Vec::new(),
+            capability_groups: Vec::new(),
             capabilities_present: false,
         };
         let mut members = BTreeSet::new();
@@ -287,7 +292,7 @@ impl<'a> Parser<'a> {
                     api.actions.push(self.action(kind.to_owned())?)
                 }
                 "capabilities" => {
-                    api.capabilities = self.capabilities()?;
+                    (api.capabilities, api.capability_groups) = self.capabilities()?;
                     api.capabilities_present = true;
                 }
                 other => {
@@ -312,7 +317,7 @@ impl<'a> Parser<'a> {
                 }
                 "errors" => MemberValue::Names(self.name_list_statement()?),
                 "params" => MemberValue::Paths(self.path_list_statement()?),
-                "upload" | "download" => {
+                "upload" | "download" | "stream" => {
                     self.token(TokenKind::Semi)?;
                     MemberValue::Flag
                 }
@@ -352,53 +357,95 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn capabilities(&mut self) -> miette::Result<Vec<Capability>> {
+    fn capabilities(&mut self) -> miette::Result<(Vec<Capability>, Vec<CapabilityGroup>)> {
         self.token(TokenKind::LBrace)?;
         let mut values = Vec::new();
+        let mut groups = Vec::new();
         while !self.at(TokenKind::RBrace) {
             let start = self.current_span().start;
             let head = self.word_text()?;
-            let (public, name) = match head.as_str() {
-                "public" => (true, "public".to_owned()),
-                "capability" => (false, self.ident()?),
-                _ => return Err(self.error_previous("expected 'public' or 'capability'")),
-            };
+            if head != "group" {
+                values.push(self.capability(start, &head)?);
+                continue;
+            }
+            let name = self.ident()?;
             self.token(TokenKind::LBrace)?;
-            let mut capability = Capability {
+            let mut group = CapabilityGroup {
                 name,
-                public,
                 title: String::new(),
                 description: String::new(),
-                consequence: String::new(),
-                allows: Vec::new(),
+                grants: String::new(),
+                members: Vec::new(),
                 span: start..start,
             };
-            let mut members = BTreeSet::new();
+            let mut fields = BTreeSet::new();
             while !self.at(TokenKind::RBrace) {
-                let member = self.word_text()?;
-                if !members.insert(member.clone()) {
-                    return Err(
-                        self.error_previous(format!("duplicate capability member '{member}'"))
-                    );
+                let field = self.word_text()?;
+                if field != "capability" && !fields.insert(field.clone()) {
+                    return Err(self.error_previous(format!("duplicate group member '{field}'")));
                 }
-                match member.as_str() {
-                    "title" => capability.title = self.string_statement()?,
-                    "description" => capability.description = self.string_statement()?,
-                    "consequence" => capability.consequence = self.string_statement()?,
-                    "allows" => capability.allows = self.selection_block(false)?,
+                match field.as_str() {
+                    "title" => group.title = self.string_statement()?,
+                    "description" => group.description = self.string_statement()?,
+                    "grants" => group.grants = self.string_statement()?,
+                    "capability" => group.members.push(self.name_statement()?),
                     other => {
                         return Err(
-                            self.error_previous(format!("unsupported capability member '{other}'"))
+                            self.error_previous(format!("unsupported group member '{other}'"))
                         )
                     }
                 }
             }
             self.token(TokenKind::RBrace)?;
-            capability.span = start..self.previous_span().end;
-            values.push(capability);
+            group.span = start..self.previous_span().end;
+            groups.push(group);
         }
         self.token(TokenKind::RBrace)?;
-        Ok(values)
+        Ok((values, groups))
+    }
+
+    fn capability(&mut self, start: usize, head: &str) -> miette::Result<Capability> {
+        let (public, name) = match head {
+            "public" => (true, "public".to_owned()),
+            "capability" => (false, self.capability_name()?),
+            _ => return Err(self.error_previous("expected 'public', 'capability', or 'group'")),
+        };
+        self.token(TokenKind::LBrace)?;
+        let mut capability = Capability {
+            name,
+            public,
+            title: String::new(),
+            description: String::new(),
+            grants: String::new(),
+            administrative: false,
+            allows: Vec::new(),
+            span: start..start,
+        };
+        let mut members = BTreeSet::new();
+        while !self.at(TokenKind::RBrace) {
+            let member = self.word_text()?;
+            if !members.insert(member.clone()) {
+                return Err(self.error_previous(format!("duplicate capability member '{member}'")));
+            }
+            match member.as_str() {
+                "title" => capability.title = self.string_statement()?,
+                "description" => capability.description = self.string_statement()?,
+                "grants" => capability.grants = self.string_statement()?,
+                "allows" => capability.allows = self.selection_block(false)?,
+                "administrative" => {
+                    self.token(TokenKind::Semi)?;
+                    capability.administrative = true;
+                }
+                other => {
+                    return Err(
+                        self.error_previous(format!("unsupported capability member '{other}'"))
+                    )
+                }
+            }
+        }
+        self.token(TokenKind::RBrace)?;
+        capability.span = start..self.previous_span().end;
+        Ok(capability)
     }
 
     fn participant(&mut self, kind: String, optional: bool) -> miette::Result<Participant> {
@@ -421,25 +468,40 @@ impl<'a> Parser<'a> {
                 "implements" => value.implements.push(self.name_statement()?),
                 "use" => {
                     let api = self.name()?;
-                    let mut selections = Vec::new();
+                    let mut required_capabilities = Vec::new();
                     let mut optional_capabilities = Vec::new();
                     if self.eat(TokenKind::Semi) {
                     } else {
                         self.token(TokenKind::LBrace)?;
                         while !self.at(TokenKind::RBrace) {
-                            if self.at_word("optional") {
-                                self.word("optional")?;
-                                self.word("capability")?;
-                                optional_capabilities.push(self.name_statement()?);
+                            let required = self.eat_word("required");
+                            // Capabilities are `area.action`; groups are one name.
+                            let kind = self.word_text()?;
+                            let name = self.name_statement()?;
+                            match kind.as_str() {
+                                "capability" if name.contains('.') || name == "public" => {}
+                                "group" if !name.contains('.') => {}
+                                "capability" | "group" => {
+                                    return Err(self
+                                        .error_previous(format!("'{name}' is not a {kind} name")))
+                                }
+                                _ => {
+                                    return Err(
+                                        self.error_previous("expected 'capability' or 'group'")
+                                    )
+                                }
+                            }
+                            if required {
+                                required_capabilities.push(name);
                             } else {
-                                selections.push(self.selection()?);
+                                optional_capabilities.push(name);
                             }
                         }
                         self.token(TokenKind::RBrace)?;
                     }
                     value.uses.push(ApiUse {
                         api,
-                        selections,
+                        required_capabilities,
                         optional_capabilities,
                     });
                 }
@@ -713,6 +775,16 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| self.error_previous("quantity exceeds u64"))
     }
 
+    /// A capability's `area.action` name.
+    fn capability_name(&mut self) -> miette::Result<String> {
+        let name = self.path()?;
+        if name.split('.').count() != 2 {
+            return Err(
+                self.error_previous(format!("capability '{name}' must be named 'area.action'"))
+            );
+        }
+        Ok(name)
+    }
     fn name(&mut self) -> miette::Result<String> {
         self.path()
     }

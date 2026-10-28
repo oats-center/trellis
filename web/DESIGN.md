@@ -1,387 +1,131 @@
-# Trellis Console — DESIGN.md (Stitch-Optimized)
-
-## PURPOSE
-
-This file defines the visual, structural, and behavioral rules for generating
-Trellis Console UI.
-
-Trellis Console is a **distributed runtime control plane**.
-
-All generated UI MUST follow this specification.
-
----
-
-## PRIMARY DESIGN INTENT
-
-Trellis Console is built for **operators managing live systems**, not for
-analytics or exploration.
-
-The UI MUST optimize for:
-
-1. Rapid scanning
-2. State awareness
-3. Operational decision making
-
-The UI MUST NOT resemble:
-
-- analytics dashboards
-- marketing SaaS tools
-- data visualization products
-
----
-
-## HARD CONSTRAINTS (DO NOT VIOLATE)
-
-- DO NOT use charts as primary UI
-- DO NOT use a card as the primary or only thing on any screen
-- DO NOT use DaisyUI `card` as default panel chrome
-- DO NOT create large card grids
-- DO NOT exceed 4 primary panels on screen
-- DO NOT introduce new colors outside defined tokens
-- DO NOT use decorative UI elements
-- DO NOT use excessive whitespace
-
-`card` is permitted only where it is a very good fit to the data being presented
-(rare). The default content container is the bordered section primitive
-(`Panel.svelte` / `trellis-section`), never a DaisyUI card frame.
-
-Charts are permitted as **secondary** diagnostic artifacts only when they
-explain a specific data series that the operator is already looking at. The
-table or list must remain the dominant visual element on every screen.
-Whole-system dashboards, large metric tiles, and chart-only views are not
-allowed.
-
----
-
-## LAYOUT SYSTEM
-
-### Global Layout
-
-ALWAYS use:
-
-- Left: persistent navigation (drawer)
-- Top: command bar (search, connection state, user)
-- Main: structured panels
-
----
-
-### Overview Page Layout (REQUIRED STRUCTURE)
-
-Order MUST be:
-
-1. Runtime Topology (horizontal strip)
-2. Metrics Strip (inline, NOT cards)
-3. Main Grid:
-   - Left (primary): Service Instances table
-   - Right (secondary): stacked panels
-4. Bottom: Recent Activity
-
----
-
-### Panel Hierarchy
-
-Panels are classified as:
-
-- Primary: tables (dominant visual weight)
-- Secondary: summaries (health, jobs, warnings)
-
-Rules:
-
-- Only ONE primary panel per screen
-- Secondary panels MUST be stacked, not grid-distributed
-- Avoid equal visual weight across panels
-
----
-
-## COMPONENT SYSTEM (DAISYUI RULES)
-
-### REQUIRED COMPONENTS
-
-Use DaisyUI primitives and the Trellis section layer:
-
-- Layout: `drawer`, `navbar`, `Panel` (`trellis-section` bordered sections)
-- Controls: `btn`, `badge`, `input`
-- Data: `table` (`DataTable`), `progress`, `MetricsLedger`, `StatusBadge`
-
----
-
-### ALLOWED CUSTOMIZATION
-
-Only override DaisyUI when:
-
-- Density is too low
-- Spacing is too loose
-- Visual weight is too high
-
-Allowed overrides:
-
-- Tighten table row height
-- Adjust spacing
-
----
-
-### FORBIDDEN CHANGES
-
-- Do not replace Daisy primitives
-- Do not introduce custom component systems
-- Do not create alternative button or badge styles
-
----
-
-## DENSITY RULES (CRITICAL)
-
-### Tables
-
-- Row height: 44–52px
-- Identifiers MUST NOT wrap
-- Use monospace for identifiers
-- Fixed column layout
-
-### Panels
-
-- No card frame, no shadow
-- Thin border
-- Header height: ~56px
-
-### Spacing
-
-- Tight vertical rhythm
-- Consistent horizontal padding
-- No large empty areas
-
----
-
-## STATUS SYSTEM (STRICT)
-
-### Status Mapping
-
-| Status    | Daisy Class   |
-| --------- | ------------- |
-| Healthy   | badge-success |
-| Degraded  | badge-warning |
-| Unhealthy | badge-error   |
-| Offline   | badge-neutral |
-
----
-
-### Rules
-
-- ALWAYS use badges for status
-- NEVER invent new colors
-- Use moderate saturation (not bright/neon)
-
----
-
-## DATA PRESENTATION RULES
-
-### Identifiers
-
-MUST use monospace for:
-
-- instance IDs
-- contract names
-- subjects / RPC paths
-
----
-
-### State, Health, and Authority
-
-Render administrative state, runtime health, and authorization as separate
-concepts. An active deployment or identity does not establish that a process is
-healthy or connected, and a heartbeat does not establish authority. Preserve
-unknown wire values neutrally instead of mapping them to a reassuring default.
-
-### Partial Reads and Exact Targets
-
-A page of results is not a global total; label counts with their scope. Editors
-must preserve existing values that a discovery catalog does not contain, and a
-missing or forbidden exact target renders an unavailable state with mutations
-disabled rather than silently selecting another record.
-
-### Displaying Generated Values
-
-Large integers, byte fields, and timestamps are generated wire values. Keep
-revisions, sequence numbers, and IDs exact for display and comparison; render
-byte fields explicitly rather than as comma-separated numbers. Use the shared
-display helper for JSON previews, copy, and search so `bigint` and byte values
-survive a round trip.
-
----
-
-### Tables
-
-- Left aligned text
-- Compact headers
-- Uppercase headers
-- Small font size for headers
-
----
-
-### Metadata
-
-- Secondary text only
-- Muted color
-- Smaller font size
-
----
-
-## SCREEN DEFINITIONS
-
-### Overview (REFERENCE IMPLEMENTATION)
-
-MUST include:
-
-- Service Instances table (primary)
-- Live Health panel
-- Jobs snapshot
-- Contract warnings
-- Recent activity
-
----
-
-### Health Events
-
-Structure:
-
-- Participants table (primary)
-- Heartbeat stream (secondary)
-
----
-
-### Contracts
-
-Structure:
-
-- Split pane layout (REQUIRED)
-  - Left: contract list
-  - Right: contract detail
-
-Detail MUST include:
-
-- RPC methods
-- Events
-- KV resources
-- Store and jobs resources
-- Derived NATS publish/subscribe rules
-- Required capabilities
-
-Contracts UI MUST NOT imply v1 supports caller-authored raw subject declarations
-or arbitrary stream resource requests. Runtime NATS subjects may be displayed as
-derived permissions only.
-
----
-
-### Jobs
-
-Structure:
-
-- Filter bar (search, state pills, service, window, more filters)
-- Inline metrics strip (total, queued, running, failed, workers)
-- Secondary job-type matrix: one row per job type with backlog, running, failed,
-  DLQ, queue wait p95, runtime p95, and a small sparkline for recent failures
-- Optional scoped diagnostic charts (event throughput and latency over time) for
-  the selected job type
-- Table only (primary): the workbench jobs table
-- Side panel (secondary): job inspector
-
-MUST include:
-
-- job state badges
-- filtering by service
-- click-to-scope behavior: selecting a job type filters the table and reveals
-  the scoped diagnostic charts for that type
-
----
-
-### Device Reviews
-
-Structure:
-
-- Review list (primary)
-- Side panel (secondary)
-
-MUST include:
-
-- approve / reject actions
-- copy that explains review decisions complete the original activation operation
-- metadata visibility toggle
-
----
-
-## VISUAL STYLE
-
-### Base Colors (Daisy Tokens)
-
-- Background: `--b2`
-- Panels: `--b1`
-- Borders: `--b3`
-- Text: `--bc`
-
----
-
-### Status Colors
-
-- Success: `--su`
-- Warning: `--wa`
-- Error: `--er`
-- Info: `--in`
-
----
-
-### Effects
-
-- Minimal shadows
-- Prefer borders over elevation
-- Subtle lattice/mesh motifs allowed ONLY in background areas
-
----
-
-## INTERACTION RULES
-
-- Hover states MUST be subtle
-- Table rows highlight on hover
-- Buttons use `ghost` or `outline`
-- No heavy animation
-
----
-
-## ANTI-PATTERNS (STRICTLY FORBIDDEN)
-
-- Charts or graphs as primary UI
-- Cards as primary content or default panel chrome
-- Large card grids
-- Uneven spacing
-- Decorative UI elements
-- Marketing-style layouts
-
----
-
-## GENERATION GUIDELINES (FOR AI SYSTEMS)
-
-When generating UI:
-
-1. Start from layout structure
-2. Place primary table first
-3. Add only necessary secondary panels
-4. Apply density rules
-5. Apply status system
-6. Validate against anti-patterns
-
-If uncertain:
-
-> Prefer simpler, denser, more structured UI
-
----
-
-## SUMMARY
-
-Trellis Console is:
-
-> A structured, dense, operator-first control plane UI
-
-All generated UI MUST reinforce:
-
-- clarity
-- hierarchy
-- consistency
-- operational efficiency
+# Trellis Console — DESIGN.md
+
+The local design contract for the Console (`web/`) and the OAuth portal
+(`portal/`). Read it before changing UI, layout, styling, or copy.
+
+## Who we design for
+
+System administrators and Trellis users doing focused work: checking whether
+things are healthy, finding a user or device, approving access, fixing what is
+broken. They know their organisation and their systems. They do not think in
+Trellis internals: contract IDs, capability atoms, bindings, delegations,
+generations, revisions, or ULIDs.
+
+Before designing a page, answer:
+
+1. Why did the person come here? What question or task brought them?
+2. What do they need to see first to answer it?
+3. What will they do next, and is that action one obvious step away?
+
+Design the page around those answers, not around the shape of the API.
+
+## Language
+
+- Use plain words for things people recognise: **Users, Roles, Apps, Connected
+  apps, Services, Devices, APIs, Sessions, Jobs, Events, Health.**
+- Never show raw capability IDs (`trellis.auth@v1::capabilityGrantsGrant`),
+  revisions, generations, digests, or internal state names in primary UI.
+  Show the human title. Put exact identifiers in a details disclosure or a copy
+  button when someone needs them for support or scripting.
+- Show names, not IDs. When a record only has an ID, show a short, copyable
+  form and work toward giving it a name.
+- No explanatory prose blocks. A page gets at most one short subtitle. If a
+  control needs a paragraph to be understood, redesign the control.
+- Write copy as plain, short sentences: "You haven't allowed the Console to see
+  users." not "Trellis could not reach the requested capability."
+- Errors say what happened and what to do. Technical detail goes behind
+  "Details".
+
+## Choosing the presentation
+
+Pick the form that fits the task. Tables are one tool, not the default.
+
+- **Table**: many similar records that people scan, sort, and filter (users,
+  services, sessions, events).
+- **List with detail panel**: review queues and anything where one item is
+  examined at a time (device activation review, job inspection).
+- **Summary cards and small charts**: the Overview and other "is everything
+  OK?" questions. Each metric shows its value, its trend, and links to where
+  to act.
+- **Grouped choices**: permission and access decisions. Group by what a person
+  recognises (Users, Devices, Jobs), show counts, expand for detail.
+- **Form**: creating or editing one thing. One column, labelled fields, the
+  primary action at the bottom.
+
+Keep one clear primary area per page. Avoid dashboards of equally weighted
+boxes, and never show an empty frame where an empty state belongs.
+
+## Layout
+
+- **Sidebar** (light, same tone as the page): logo at the top; unlabeled
+  primary group (Overview, Health, Events, Jobs, Sessions); then **Access**
+  (Users, Roles, Connected apps, Apps) and **Platform** (Services, Devices,
+  APIs, Sign-in page, Resources). Account sits at the bottom. The active item is a filled
+  primary pill.
+- **Top bar**: search field, connection status pill, theme toggle, avatar menu.
+- **Workspace**: a slightly lighter panel with a rounded top-left corner.
+- **Page header**: optional small uppercase eyebrow, large title, one-line
+  subtitle, primary action on the right ("+ New user").
+- **Filters** sit in one row above the content: search on the left, dropdown
+  filters and segmented tabs (All / Active / Disabled) next to it.
+
+## Visual style
+
+Warm, calm, and quiet. Colour communicates state and the primary action,
+nothing else.
+
+| Token        | Light     | Dark      | Use                              |
+| ------------ | --------- | --------- | -------------------------------- |
+| base-200     | `#f3f0e9` | `#1b1916` | page, sidebar                    |
+| base-100     | `#fbfaf6` | `#24211d` | panels, inputs                   |
+| base-300     | `#e3ddd1` | `#3a352e` | borders                          |
+| base-content | `#2e2924` | `#ece6db` | text                             |
+| primary      | `#8a7550` | `#b59a68` | primary buttons, active nav      |
+| success      | `#4f7a3f` | `#8fb07a` | healthy, active                  |
+| warning      | `#b8862a` | `#d9aa4c` | degraded, pending                |
+| error        | `#a33d31` | `#d7705f` | failed, destructive              |
+| info         | `#3f6283` | `#8fb0cf` | neutral highlights ("On demand") |
+
+- Radii: panels `0.75rem`, fields and buttons `0.5rem`, badges `0.375rem`.
+- Borders over shadows. No gradients, glass, or decorative imagery.
+- Type: Inter or system sans. Page title 2rem semibold; section titles 1rem
+  semibold; body 0.875–0.9375rem; muted text at ~65% opacity.
+- Monospace only for values people copy: IDs, codes, subjects.
+- The logo is the leaf mark (`art/trellis-mark.svg`) with the "Trellis"
+  wordmark.
+
+## Status
+
+- Health is a coloured dot plus a word (● Healthy, ● Degraded, ● Offline).
+- Lifecycle state (Active, Disabled, Archived, On demand, Pending) is a soft
+  tinted badge.
+- Never rely on colour alone. Keep administrative state, runtime health, and
+  authority separate: an enabled service is not necessarily healthy.
+- Preserve unknown values neutrally instead of mapping them to a reassuring
+  default.
+
+## Access and permissions
+
+- People choose what an app may do. Ask at the level they understand: groups
+  such as "Users" or "Jobs", with detail available on expansion.
+- When something isn't allowed, show a calm "Not allowed yet" state with a
+  **Change access** action — not an error banner.
+- Hide navigation for areas the user cannot use at all.
+
+## Data correctness
+
+- A page of results is not a total; label counts with their scope ("Showing
+  1–10").
+- A missing or forbidden exact target shows an unavailable state with actions
+  disabled; never silently select another record.
+- Keep large integers, revisions, and timestamps exact when displayed; use the
+  shared display helpers so `bigint` and byte values survive copy and search.
+
+## Interaction
+
+- Primary action: filled primary button. Secondary: outline. Tertiary: ghost
+  or link.
+- Destructive actions are red, named for what they do ("Disable device"), and
+  confirm with the record's name.
+- Row actions live in a trailing "⋯" menu.
+- Subtle hover, visible focus rings, no heavy animation, keyboard operable.

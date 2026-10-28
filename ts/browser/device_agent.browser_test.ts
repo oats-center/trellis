@@ -1,120 +1,186 @@
-import { assert, assertEquals } from "@std/assert";
-
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { join } from "node:path";
+import { ulid } from "ulid";
 import { Result } from "@oatscenter/result";
+import { deriveDeviceIdentity } from "@oatscenter/trellis/auth";
 import {
   checkDeviceActivation,
   TrellisDevice,
 } from "@oatscenter/trellis/device";
+import {
+  connectNativeClient,
+  discoverNativeOAuth,
+  NativeOAuthClient,
+  MemoryNativeOAuthCustody,
+} from "@oatscenter/trellis/native";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  participants,
+  types,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
   launchProfile,
-  signInIfPrompted,
 } from "./browser_test_support.ts";
 
-Deno.test("device agent activation completes through the browser portal", async () => {
+test("an enrolled device uses an independently browser-consented native companion", async () => {
   await withTrellisRuntime(async (runtime) => {
-    await runtime.ensureAdmin();
-    await runtime.deployments.create({ id: "child-provider", kind: "service" });
-    const childProviderIdentity = await runtime.services.createInstance({
-      deployment: "child-provider",
+    const providerIdentity = await runtime.registerService({
       name: "device-child-provider",
       contract: participants.ChildProvider.participant,
     });
-    const childProvider = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+    const provider = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.ChildProvider.participant,
-      seed: childProviderIdentity.seed,
+      seed: providerIdentity.seed,
     }).orThrow();
-    await childProvider.handleRequired(() => Result.ok({}));
-    await childProvider.handleOptional(() => Result.ok({}));
-    await runtime.deployments.create({
-      id: "agent-device",
-      kind: "device",
-      reviewMode: "none",
-    });
-    await runtime.contracts.install({
-      contract: participants.AgentDevice.Companion.participant,
-    });
-    await runtime.contracts.apply({
-      deployment: "agent-device",
-      contract: participants.AgentDevice.participant,
-    });
-    await runtime.ensurePortalConsentPolicy(
-      participants.AgentDevice.Companion.participant.identity,
-      [
-        "capability:runtime-trellis.device_child@v1::required",
-        "capability:runtime-trellis.device_child@v1::optional",
-        "capability:trellis.auth@v1::public",
-        "capability:trellis.state@v1::public",
-      ],
-    );
-    const provisioned = await runtime.devices.provision({
-      deploymentId: "agent-device",
-      participantId: participants.AgentDevice.participant.identity,
-      identityPublicKey: null,
-      instanceId: null,
-      idempotencyKey: crypto.randomUUID(),
-    });
-    assert(provisioned.provisioningSecret);
-    const rootSecret = crypto.getRandomValues(new Uint8Array(32));
-    const activation = await checkDeviceActivation({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.AgentDevice.participant,
-      rootSecret,
-      provisioningSecret: provisioned.provisioningSecret,
-    });
-    assert(activation.status === "activation_required");
-
-    const context = await launchProfile(runtime);
+    const providerExit = provider.wait().catch(() => undefined);
     try {
-      const page = await context.newPage();
-      const pageErrors: string[] = [];
-      page.on("pageerror", (error) => pageErrors.push(String(error)));
-      await page.goto(activation.activationUrl, {
-        waitUntil: "domcontentloaded",
+      await provider.handleRequired(() => Result.ok({}));
+      await provider.handleOptional(() => Result.ok({}));
+      const participant = participants.AgentDevice.participant;
+      const request = participants.AgentDevice.Companion.request;
+      const deployment = await runtime.contracts.apply({
+        deployment: "agent-device",
+        contract: participant,
       });
-      const continueButton = page.getByRole("button", {
-        name: "Continue to sign in",
+      const deploymentId = types.AuthDeploymentGetRequestCodec.decode({
+        deploymentId: deployment.deploymentId,
+      }).deploymentId;
+      const provisioned = await runtime.devices.provision({
+        deploymentId,
+        title: "Browser-consented device",
+        idempotencyKey: ulid(),
       });
-      if (
-        await continueButton.waitFor({ state: "visible", timeout: 3_000 })
-          .then(() => true)
-          .catch(() => false)
-      ) {
-        await continueButton.click();
-      }
-      await signInIfPrompted(
-        page,
-        { username: runtime.adminUsername, password: runtime.adminPassword },
-      );
-      const confirmationCode = page.getByLabel("Confirmation code");
-      await confirmationCode.waitFor({ state: "visible", timeout: 30_000 });
-      if ((await confirmationCode.inputValue()).trim() === "") {
-        await confirmationCode.fill(activation.confirmationCode);
-      }
-      await page.getByRole("button", { name: "Approve device" }).click();
-      await page
-        .getByText("Approval complete.")
-        .waitFor({ state: "visible", timeout: 60_000 });
-
-      const device = await TrellisDevice.connect({
-        trellisUrl: runtime.trellisUrl,
-        participant: participants.AgentDevice.participant,
+      assert(provisioned.provisioningSecret);
+      const rootSecret = crypto.getRandomValues(new Uint8Array(32));
+      const activation = await checkDeviceActivation({
+        trellisUrl: runtime.oauthIssuer,
+        participant,
         rootSecret,
-      }).orThrow();
-      const companion = device.companion;
-      assert(companion);
-
-      await page
-        .getByText("Approval complete.")
-        .waitFor({ state: "visible", timeout: 60_000 });
-      assertEquals(companion.connection.status.phase, "connected");
-      assertEquals(pageErrors, []);
+        provisioningSecret: provisioned.provisioningSecret,
+        statePath: join(runtime.workdir, "activation.json"),
+      });
+      assert(activation.status === "activation_required");
+      const reviewId = types.AuthDeviceReviewGetRequestCodec.decode({
+        reviewId: new URL(activation.activationUrl).searchParams.get(
+          "reviewId",
+        ),
+        confirmationCode: activation.confirmationCode,
+      }).reviewId;
+      const { review } = await runtime.callAdminRpc("authDevicesReviewsGet", {
+        reviewId,
+        confirmationCode: activation.confirmationCode,
+      });
+      const approved = await runtime.callAdminRpc("authDevicesReviewsDecide", {
+        reviewId,
+        confirmationCode: activation.confirmationCode,
+        expectedRevision: review.revision,
+        decision: "approved",
+        idempotencyKey: ulid(),
+      });
+      await activation.waitForOnlineApproval();
+      const prepared = await runtime.registerClient({
+        name: "companion-user-grants",
+        contract: request,
+      });
+      await prepared.session.close();
+      const server = (await discoverNativeOAuth(runtime.oauthIssuer)).orThrow();
+      const credentialCustody = new MemoryNativeOAuthCustody();
+      const custody = (
+        await NativeOAuthClient.open({
+          custody: credentialCustody,
+          scope: {
+            issuer: server.issuer,
+            instanceId: server.trust.instanceId,
+            account: server.trust.account,
+            clientId: `trellis.device.${deploymentId}.companion`,
+            credentialHandle: ulid(),
+          },
+          trust: server.trust,
+        })
+      ).orThrow();
+      const context = await launchProfile(runtime);
+      try {
+        const flow = (await custody.startDevice(request)).orThrow();
+        const page = await context.newPage();
+        await page.goto(flow.verificationUri);
+        await page.getByLabel("Code", { exact: true }).fill(flow.userCode);
+        await page
+          .getByRole("button", { name: "Continue", exact: true })
+          .click();
+        await page
+          .getByLabel("Username", { exact: true })
+          .fill(runtime.adminUsername);
+        await page
+          .getByLabel("Password", { exact: true })
+          .fill(runtime.adminPassword);
+        await page
+          .getByRole("button", { name: "Sign in", exact: true })
+          .click();
+        await page
+          .getByRole("heading", { name: /wants to use your account/ })
+          .waitFor();
+        for (const choice of await page.getByRole("checkbox").all())
+          if (await choice.isEnabled()) await choice.check();
+        await page.getByRole("button", { name: "Allow", exact: true }).click();
+        const session = (await flow.complete()).orThrow();
+        const scope = session.scope;
+        const companion = await connectNativeClient({
+          session,
+          servers: server.natsServers,
+          request,
+        }).orThrow();
+        try {
+          await companion
+            .deviceCompanionsAttach({
+              reviewId,
+              confirmationCode: activation.confirmationCode,
+              expectedRevision: approved.review.revision,
+              idempotencyKey: ulid(),
+            })
+            .orThrow();
+        } finally {
+          await companion.connection.close();
+        }
+        const resumedCustody = (
+          await NativeOAuthClient.open({
+            custody: credentialCustody,
+            scope,
+            trust: server.trust,
+          })
+        ).orThrow();
+        try {
+          const resumedSession = (await resumedCustody.resume()).orThrow();
+          const identity = await deriveDeviceIdentity(rootSecret);
+          const device = await TrellisDevice.connect({
+            participant,
+            servers: [...server.natsServers],
+            trellisInstanceId: server.trust.instanceId,
+            audienceNatsAccount: server.trust.account,
+            issuers: [server.trust.issuer],
+            seed: identity.identitySeedBase64url,
+            companion: { session: resumedSession, servers: server.natsServers },
+          }).orThrow();
+          try {
+            assert(device.companion);
+            assert.deepEqual(await device.companion.required({}).orThrow(), {});
+          } finally {
+            await device.companion?.connection.close();
+            await device.connection.close();
+          }
+        } finally {
+          await resumedCustody.close();
+        }
+      } finally {
+        await context.close();
+        await custody.close();
+      }
     } finally {
-      await context.close();
+      await provider.stop();
+      await providerExit;
     }
   }, browserRuntimeOptions());
 });

@@ -8,7 +8,7 @@ import { encodeEventSubjectParameterToken } from "../helpers.ts";
 import { base64urlEncode } from "../auth/utils.ts";
 import type { TransportLease } from "../transport/generations.ts";
 import { SenderWindow } from "../data_plane/flow.ts";
-import type { PermissionAtom } from "../auth/protocol_wasm.ts";
+import type { CatalogActionIdentity } from "../auth/protocol_wasm.ts";
 import {
   liveConstants,
   type LiveControlResponse,
@@ -34,24 +34,15 @@ import { type LiveCloseReceipt, LiveEnd, LiveStreamError } from "./types.ts";
 import {
   authorityLostEnd,
   type LiveAuthorityLost,
-  type PinnedPeerIdentity,
+  type LiveAuthorityGuard,
 } from "./authority.ts";
 import { LiveTelemetryOwner } from "./telemetry.ts";
 import type { ClosedReceipt, LiveSessionManager } from "./manager.ts";
-import {
-  recordCatalogCounter,
-  recordCatalogUpDown,
-} from "../telemetry/metrics.ts";
 
 const C = liveConstants();
 
 type ProviderPhase =
-  | "offered"
-  | "activating"
-  | "active"
-  | "draining"
-  | "closing"
-  | "closed";
+  "offered" | "activating" | "active" | "draining" | "closing" | "closed";
 
 /** Provider host identity used to sign and address live messages. */
 export type LiveProviderIdentity = {
@@ -68,9 +59,7 @@ export type LiveProviderCaller = {
   connectionId: string;
   sessionKey: string;
   principalId: string;
-  participantId: string;
-  deploymentId?: string;
-  instanceId?: string;
+  binding: import("../auth/protocol_wasm.ts").SessionBinding;
   contextDigest: string;
 };
 
@@ -80,22 +69,7 @@ export type LiveProviderCaller = {
  * {@link LiveAuthorityGuard} satisfies it in production; deterministic
  * component tests may supply an equivalent fence.
  */
-export type ProviderAuthorityPort = {
-  readonly contextDigest: string;
-  readonly identity: PinnedPeerIdentity;
-  checkNow(): LiveAuthorityLost | undefined;
-  /** Reconcile with current authorization; returns the terminal loss, if any. */
-  reconcile(): Promise<LiveAuthorityLost | undefined>;
-  /** Rebind onto the current transport generation after an ordinary reconnect. */
-  rebindCurrentGeneration(): Promise<LiveAuthorityLost | undefined>;
-  allows(permission: PermissionAtom): boolean;
-  subscribeChanges(callback: () => void): () => void;
-  release(): void;
-  prepareReplacement(digest: string): Promise<ProviderAuthorityPort>;
-  commitReplacement(
-    candidate: ProviderAuthorityPort,
-  ): LiveAuthorityLost | undefined;
-};
+export type ProviderAuthorityPort = LiveAuthorityGuard;
 
 /** Provider host dependencies supplied by the owning connection. */
 export type LiveProviderHost = {
@@ -114,13 +88,13 @@ export type LiveProviderHost = {
    */
   refreshOwnAuthority: () => Promise<void>;
   /** Route permission the admitted observer must hold. */
-  permission: PermissionAtom;
+  action: CatalogActionIdentity;
   /** Route session kind used for admission-level telemetry. */
   kind?: "standalone" | "operation";
   /** Retain one admitted caller context as a covered fence. */
   retainCallerAuthority: (
     digest: string,
-    permission: PermissionAtom,
+    action: CatalogActionIdentity,
   ) => Promise<ProviderAuthorityPort>;
   /** The connection's single live session manager. */
   manager: LiveSessionManager;
@@ -320,7 +294,7 @@ export class LiveProvider {
     const records = [...this.#sessions.values()];
     await Promise.allSettled(
       records.map((record) =>
-        this.#terminate(record, new LiveEnd("local_shutdown"))
+        this.#terminate(record, new LiveEnd("local_shutdown")),
       ),
     );
     for (const unregister of this.#providerRegistrations.values()) unregister();
@@ -385,12 +359,6 @@ export class LiveProvider {
     const guard = this.#host.ownGuard;
     const lost = await guard.reconcile();
     if (!lost) return undefined;
-    if (lost === "epoch_changed") {
-      // A real reconnect replaced the physical attachment. Rebind this
-      // long-lived guard onto the new generation so new sessions are admitted;
-      // existing sessions were already fenced by the real outage.
-      return await guard.rebindCurrentGeneration();
-    }
     if (await this.#refreshOwnAuthority()) return undefined;
     return guard.checkNow() ?? lost;
   }
@@ -429,10 +397,18 @@ export class LiveProvider {
     if (!msg.reply) return;
     // Validate the shared opening bound before any resource is allocated.
     const maxDataBodyBytes = this.#negotiate(open.receiveMaxPayloadBytes);
+    // Idle routes have no session timer to adopt a promoted own context. Refresh
+    // before signing the offer, not after the observer receives stale evidence.
+    if (await this.#ownAuthorityLost()) {
+      throw new LiveStreamError(
+        "authorization_unavailable",
+        "Live provider authority is unavailable",
+      );
+    }
     const sessionId = liveGenerateNonce();
     const callerGuard = await this.#host.retainCallerAuthority(
       caller.contextDigest,
-      this.#host.permission,
+      this.#host.action,
     );
     let permit: { [Symbol.dispose](): void };
     try {
@@ -543,7 +519,7 @@ export class LiveProvider {
         connectionId: caller.connectionId,
         sessionKey: encodeEventSubjectParameterToken(caller.sessionKey),
         principalId: caller.principalId,
-        participantId: caller.participantId,
+        binding: caller.binding,
       },
       limits: {
         maxDataBodyBytes,
@@ -556,9 +532,8 @@ export class LiveProvider {
       },
     };
     try {
-      await this.#withSessionLane(
-        record,
-        () => this.#publishSigned(msg.reply!.toString(), jsonBytes(offer)),
+      await this.#withSessionLane(record, () =>
+        this.#publishSigned(msg.reply!.toString(), jsonBytes(offer)),
       );
     } catch (cause) {
       // A failed handoff must enter owned teardown, never leave an untimed
@@ -579,9 +554,7 @@ export class LiveProvider {
    */
   async handleControl(
     msg: Msg,
-    authenticate: (
-      msg: Msg,
-    ) => Promise<LiveProviderCaller | undefined>,
+    authenticate: (msg: Msg) => Promise<LiveProviderCaller | undefined>,
   ): Promise<void> {
     let deliveryLease: TransportLease | undefined;
     try {
@@ -640,7 +613,8 @@ export class LiveProvider {
         // close from the retained receipt, and only for its original owner.
         const receipt = this.#host.manager.receipt(control.sessionId);
         if (
-          receipt && control.action === "close" &&
+          receipt &&
+          control.action === "close" &&
           receipt.ownerConnectionId === caller.connectionId &&
           receipt.ownerSessionKey === caller.sessionKey
         ) {
@@ -658,7 +632,8 @@ export class LiveProvider {
       if (record.closed) {
         const receipt = this.#host.manager.receipt(control.sessionId);
         if (
-          receipt && control.action === "close" &&
+          receipt &&
+          control.action === "close" &&
           receipt.ownerConnectionId === caller.connectionId &&
           receipt.ownerSessionKey === caller.sessionKey
         ) {
@@ -680,7 +655,11 @@ export class LiveProvider {
       if (
         caller.connectionId !== record.consumer.connectionId ||
         caller.principalId !== record.consumer.principalId ||
-        caller.participantId !== record.consumer.participantId
+        Object.entries(caller.binding).some(
+          ([key, value]) => Reflect.get(record.consumer.binding, key) !== value,
+        ) ||
+        Object.keys(caller.binding).length !==
+          Object.keys(record.consumer.binding).length
       ) {
         this.#routeTelemetry.rejection("foreign_identity");
         return;
@@ -705,9 +684,8 @@ export class LiveProvider {
       record.telemetry.frame("control", "receive");
       const now = this.#clock.nowMs();
       const requestId = singletonHeader(msg.headers, "request-id") ?? "";
-      const result = await this.#withSessionLane(
-        record,
-        async () => this.#applyControl(record, control, msg.data, now),
+      const result = await this.#withSessionLane(record, async () =>
+        this.#applyControl(record, control, msg.data, now),
       );
       if (result.kind === "error") {
         const error = this.#controlErrorBody(
@@ -716,9 +694,8 @@ export class LiveProvider {
           requestId,
           result.code,
         );
-        await this.#withSessionLane(
-          record,
-          () => this.#tryPublishSigned(msg.reply!.toString(), jsonBytes(error)),
+        await this.#withSessionLane(record, () =>
+          this.#tryPublishSigned(msg.reply!.toString(), jsonBytes(error)),
         );
         return;
       }
@@ -740,9 +717,8 @@ export class LiveProvider {
         return;
       }
       const ack = this.#ackBody(record, control, requestId, outcome);
-      const published = await this.#withSessionLane(
-        record,
-        () => this.#tryPublishSigned(msg.reply!.toString(), jsonBytes(ack)),
+      const published = await this.#withSessionLane(record, () =>
+        this.#tryPublishSigned(msg.reply!.toString(), jsonBytes(ack)),
       );
       if (!published) {
         await this.#terminate(
@@ -767,7 +743,7 @@ export class LiveProvider {
         if (ownLost || callerLost) {
           await this.#terminate(
             record,
-            authorityLostEnd(ownLost ?? callerLost ?? "coverage_lost"),
+            authorityLostEnd(ownLost ?? callerLost ?? "unavailable"),
           );
           return;
         }
@@ -783,10 +759,12 @@ export class LiveProvider {
     control: LiveControlWire,
     rawBody: Uint8Array,
     nowMs: number,
-  ): { kind: "ok"; outcome: ControlOutcome } | {
-    kind: "error";
-    code: string;
-  } {
+  ):
+    | { kind: "ok"; outcome: ControlOutcome }
+    | {
+        kind: "error";
+        code: string;
+      } {
     let hash: string;
     try {
       hash = liveLogicalControlHash(rawBody);
@@ -926,9 +904,7 @@ export class LiveProvider {
     }
   }
 
-  #stateFor(
-    record: ProviderSessionRecord,
-  ): "activating" | "active" | "closed" {
+  #stateFor(record: ProviderSessionRecord): "activating" | "active" | "closed" {
     if (record.phase === "closed" || record.phase === "closing") {
       return "closed";
     }
@@ -974,14 +950,14 @@ export class LiveProvider {
       acceptedConsumedSeq: record.highestConsumed.toString(),
       terminal: outcome.terminal
         ? {
-          reason: outcome.terminal.reason,
-          error: outcome.terminal.error
-            ? {
-              code: outcome.terminal.error.code,
-              message: outcome.terminal.error.message,
-            }
-            : null,
-        }
+            reason: outcome.terminal.reason,
+            error: outcome.terminal.error
+              ? {
+                  code: outcome.terminal.error.code,
+                  message: outcome.terminal.error.message,
+                }
+              : null,
+          }
         : null,
       cleanup: outcome.cleanup,
     };
@@ -1156,24 +1132,17 @@ export class LiveProvider {
       challengeId: challenge.id,
       lastSentSeq: challenge.lastSentSeq,
     });
-    await this.#withSessionLane(
-      record,
-      () => this.#tryPublishFrame(record, body, "control"),
+    await this.#withSessionLane(record, () =>
+      this.#tryPublishFrame(record, body, "control"),
     );
   }
 
-  async #publishSigned(
-    subject: string,
-    body: Uint8Array,
-  ): Promise<void> {
+  async #publishSigned(subject: string, body: Uint8Array): Promise<void> {
     const headers = await this.#liveHeaders(subject, body);
     this.#host.nats.publish(subject, body, { headers });
   }
 
-  async #tryPublishSigned(
-    subject: string,
-    body: Uint8Array,
-  ): Promise<boolean> {
+  async #tryPublishSigned(subject: string, body: Uint8Array): Promise<boolean> {
     try {
       await this.#publishSigned(subject, body);
       this.#routeTelemetry.frame("control", "send");
@@ -1215,10 +1184,7 @@ export class LiveProvider {
     );
   }
 
-  async #liveHeaders(
-    subject: string,
-    body: Uint8Array,
-  ) {
+  async #liveHeaders(subject: string, body: Uint8Array) {
     const digest = this.#ownDigest();
     if (!digest) {
       throw new LiveStreamError(
@@ -1227,7 +1193,7 @@ export class LiveProvider {
       );
     }
     const proof = base64urlEncode(
-      await this.#host.sign(liveServerProofDigest(digest, subject, body)),
+      await this.#host.sign(await liveServerProofDigest(digest, subject, body)),
     );
     const headers = natsHeaders();
     headers.set("authorization-context", digest);
@@ -1237,19 +1203,14 @@ export class LiveProvider {
   }
 
   #negotiate(consumerMaxPayloadBytes: number): number {
-    const providerMax = Number(
-      this.#host.nats.info?.max_payload ?? 0,
-    );
+    const providerMax = Number(this.#host.nats.info?.max_payload ?? 0);
     if (providerMax <= 0) {
       throw new LiveStreamError(
         "protocol_error",
         "provider NATS payload limit is unavailable",
       );
     }
-    return liveNegotiateMaxDataBodyBytes(
-      consumerMaxPayloadBytes,
-      providerMax,
-    );
+    return liveNegotiateMaxDataBodyBytes(consumerMaxPayloadBytes, providerMax);
   }
 
   async #runSource(
@@ -1294,7 +1255,9 @@ export class LiveProvider {
 
   async #emit(record: ProviderSessionRecord, value: unknown): Promise<void> {
     if (
-      record.closed || record.phase === "closing" || record.phase === "closed"
+      record.closed ||
+      record.phase === "closing" ||
+      record.phase === "closed"
     ) {
       throw new LiveStreamError("closed", "live session is closed");
     }
@@ -1303,7 +1266,7 @@ export class LiveProvider {
     if (ownLost || callerLost) {
       await this.#terminate(
         record,
-        authorityLostEnd(ownLost ?? callerLost ?? "coverage_lost"),
+        authorityLostEnd(ownLost ?? callerLost ?? "unavailable"),
       );
       throw new LiveStreamError("closed", "live session is closed");
     }
@@ -1330,7 +1293,7 @@ export class LiveProvider {
     });
     if (
       record.flow.validateFrameSlot(body.length, maxDataBodyBytes) ===
-        "payload_too_large"
+      "payload_too_large"
     ) {
       throw new LiveStreamError(
         "payload_too_large",
@@ -1343,7 +1306,7 @@ export class LiveProvider {
       // Wait for credit through an owned notification, not a zero-delay spin.
       while (
         record.flow.validateFrameSlot(body.length, maxDataBodyBytes) ===
-          "window_full"
+        "window_full"
       ) {
         if (record.abort.signal.aborted || record.closed) {
           throw new LiveStreamError("cancelled", "live session was cancelled");
@@ -1382,7 +1345,7 @@ export class LiveProvider {
     if (record.endPublished) return true;
     // The first committed terminal is authoritative; a later source or control
     // completion never overwrites it.
-    const committed = record.terminal ??= end;
+    const committed = (record.terminal ??= end);
     const body = jsonBytes({
       format: LIVE_VERSION,
       type: "end",
@@ -1395,9 +1358,8 @@ export class LiveProvider {
           : null,
       },
     });
-    const published = await this.#withSessionLane(
-      record,
-      () => this.#tryPublishFrame(record, body, "control"),
+    const published = await this.#withSessionLane(record, () =>
+      this.#tryPublishFrame(record, body, "control"),
     );
     if (!published) return false;
     record.endPublished = true;
@@ -1424,9 +1386,8 @@ export class LiveProvider {
       return {
         end: record.endPublished ? end : new LiveEnd("cancelled"),
         remote: "confirmed",
-        cleanup: record.cleanupState === "unknown"
-          ? "unknown"
-          : record.cleanupState,
+        cleanup:
+          record.cleanupState === "unknown" ? "unknown" : record.cleanupState,
       };
     }
     this.#fence(record);
@@ -1459,9 +1420,8 @@ export class LiveProvider {
     return {
       end: committed,
       remote: "confirmed",
-      cleanup: record.cleanupState === "unknown"
-        ? "unknown"
-        : record.cleanupState,
+      cleanup:
+        record.cleanupState === "unknown" ? "unknown" : record.cleanupState,
     };
   }
 
@@ -1516,7 +1476,8 @@ export class LiveProvider {
     record.closeSettled = (async () => {
       record.telemetry.closing();
       record.telemetry.end(
-        record.terminal ?? record.lastControl?.outcome.terminal ??
+        record.terminal ??
+          record.lastControl?.outcome.terminal ??
           new LiveEnd("cancelled"),
       );
       const settled = await this.#awaitSettlement(record);
@@ -1538,9 +1499,8 @@ export class LiveProvider {
         pending.requestId,
         outcome,
       );
-      await this.#withSessionLane(
-        record,
-        () => this.#tryPublishSigned(pending.reply, jsonBytes(ack)),
+      await this.#withSessionLane(record, () =>
+        this.#tryPublishSigned(pending.reply, jsonBytes(ack)),
       );
     })();
     return record.closeSettled;

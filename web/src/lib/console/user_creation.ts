@@ -32,16 +32,16 @@ export type UserCreationSetupInput = apis.auth.UsersPasswordResetCreateInput;
 
 /** Account identity retained once `Users.Create` succeeds. */
 export type CreatedUser = {
-  readonly userId: string;
+  readonly userId: apis.auth.UsersGetInput["userId"];
   readonly label: string;
 };
 
-/** A one-time password setup URL bound to the account it was created for. */
+/** A one-time password-reset token bound to the account it was created for. */
 export type SetupReceipt = {
   readonly userId: string;
   readonly label: string;
-  readonly setupUrl: string;
-  readonly expiresAt: bigint;
+  readonly token: string;
+  readonly expiresAt: apis.auth.UsersPasswordResetCreateOutput["expiresAt"];
 };
 
 /** Safe, serializable failure detail for rendering. */
@@ -170,7 +170,6 @@ export class UserCreationController {
   async createUser(input: {
     readonly username: string;
     readonly name: string | null;
-    readonly email: string | null;
   }): Promise<void> {
     if (this.#disposed || this.#state.stage !== "editing") return;
     const username = input.username.trim();
@@ -186,10 +185,8 @@ export class UserCreationController {
       label: username,
       idempotencyKey: key,
       input: {
-        email: input.email,
         idempotencyKey: key,
-        image: null,
-        name: input.name,
+        displayName: input.name?.trim() || username,
         username,
       },
       scope: { routeKey: "user-new", workflowGeneration: generation },
@@ -210,10 +207,8 @@ export class UserCreationController {
       // The account exists from this point on. A later setup failure must never
       // re-create it.
       const created: CreatedUser = {
-        userId: outcome.value.user.userId,
-        label: outcome.value.user.name ??
-          outcome.value.user.email ??
-          outcome.value.user.userId,
+        userId: outcome.value.user.principalId,
+        label: outcome.value.user.displayName,
       };
       this.#commit({
         stage: "userCreated",
@@ -253,7 +248,9 @@ export class UserCreationController {
   async createSetupLink(): Promise<void> {
     const created = this.#state.createdUser;
     if (
-      this.#disposed || created === null || this.#state.busy ||
+      this.#disposed ||
+      created === null ||
+      this.#state.busy ||
       this.#state.stage === "setupUnknown"
     ) {
       return;
@@ -266,7 +263,7 @@ export class UserCreationController {
       targetId: userId,
       label: created.label,
       idempotencyKey: key,
-      input: { idempotencyKey: key, returnTarget: null, userId },
+      input: { idempotencyKey: key, userId },
       scope: { routeKey: "user-new", workflowGeneration: generation },
     });
     if (!this.#setupMutation.begin(intent)) return;
@@ -279,13 +276,15 @@ export class UserCreationController {
 
     const outcome = await this.#setupMutation.send({
       isStillValid: () =>
-        !this.#disposed && this.#generation === generation &&
+        !this.#disposed &&
+        this.#generation === generation &&
         this.#state.createdUser?.userId === userId,
       dispatch: async ({ input: exact }) =>
         await this.#ports.createSetupLink(exact),
     });
     if (
-      this.#disposed || this.#generation !== generation ||
+      this.#disposed ||
+      this.#generation !== generation ||
       this.#state.createdUser?.userId !== userId
     ) {
       return;
@@ -298,8 +297,8 @@ export class UserCreationController {
       const receipt: SetupReceipt = {
         userId,
         label: created.label,
-        setupUrl: outcome.value.flow.completionUrl,
-        expiresAt: outcome.value.flow.expiresAt,
+        token: outcome.value.token,
+        expiresAt: outcome.value.expiresAt,
       };
       this.#commit({
         stage: "setupReady",
@@ -349,7 +348,8 @@ export class UserCreationController {
    */
   startAnother(): boolean {
     if (
-      this.#disposed || this.#state.busy ||
+      this.#disposed ||
+      this.#state.busy ||
       this.#state.stage === "createUnknown" ||
       this.#state.stage === "setupUnknown"
     ) {

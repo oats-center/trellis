@@ -1,4 +1,5 @@
-import { assert, assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { ulid } from "ulid";
 
 import { portableBackend } from "./crypto.ts";
@@ -7,19 +8,8 @@ import {
   signSessionProof,
   verifySessionProof,
 } from "./session_proof.ts";
-import { base64urlDecode, base64urlEncode } from "./utils.ts";
-import vectors from "../../../../integration/fixtures/protocol/authorization-context/vectors.json" with {
-  type: "json",
-};
-
-type Chain = {
-  sessionSeed: string;
-  sessionPublicKey: string;
-  requestProofInputHex: string;
-  requestProofDigest: string;
-  requestProof: string;
-  eventProofDigest: string;
-};
+import { base64urlDecode, base64urlEncode, sha256 } from "./utils.ts";
+import vectors from "../../../../integration/fixtures/protocol/ed25519/vectors.json" with { type: "json" };
 
 function fromHex(hex: string): Uint8Array {
   return new Uint8Array(
@@ -28,12 +18,13 @@ function fromHex(hex: string): Uint8Array {
 }
 
 function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0"))
+  return Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 }
 
-Deno.test("portable Ed25519 interoperates with the Rust protocol boundary", async () => {
-  const chain = vectors.completeChain as unknown as Chain;
+test("portable Ed25519 interoperates with the Rust protocol boundary", async () => {
+  const chain = vectors;
   const portable = portableBackend();
 
   // A proof produced by the Rust protocol is accepted by the portable verifier.
@@ -58,33 +49,36 @@ Deno.test("portable Ed25519 interoperates with the Rust protocol boundary", asyn
   const signer = await portable.signerFromSeed(
     base64urlDecode(chain.sessionSeed),
   );
-  assertEquals(signer.publicKey, chain.sessionPublicKey);
+  assert.deepEqual(signer.publicKey, chain.sessionPublicKey);
   const iat = Date.now();
   const input: SessionProofInput = {
-    purpose: "userAuthRequest",
+    purpose: "deviceEnrollment",
     origin: "https://trellis.example",
     unsignedRequest: {
       requestId: ulid(),
-      issuedAt: iat,
-      sessionPublicKey: signer.publicKey,
+      iat,
+      identityKeyId: base64urlEncode(
+        await sha256(base64urlDecode(signer.publicKey)),
+      ),
+      sessionKey: signer.publicKey,
+      connectionId: ulid(),
       participantId: "test.portable",
-      redirectTarget: "https://app.example/return",
     },
   };
   const proof = await signSessionProof(input, signer, signer.publicKey);
   await verifySessionProof(input, proof, signer.publicKey, iat);
 });
 
-Deno.test("portable SHA-256 reproduces the pinned protocol digest", async () => {
-  const chain = vectors.completeChain as unknown as Chain;
+test("portable SHA-256 reproduces the pinned protocol digest", async () => {
+  const chain = vectors;
   const portable = portableBackend();
-  assertEquals(
+  assert.deepEqual(
     base64urlEncode(await portable.sha256(fromHex(chain.requestProofInputHex))),
     chain.requestProofDigest,
   );
 });
 
-Deno.test("portable HKDF and HMAC match externally defined RFC vectors", async () => {
+test("portable HKDF and HMAC match externally defined RFC vectors", async () => {
   const portable = portableBackend();
 
   // RFC 5869 HKDF-SHA256 test case 1.
@@ -94,7 +88,7 @@ Deno.test("portable HKDF and HMAC match externally defined RFC vectors", async (
     fromHex("f0f1f2f3f4f5f6f7f8f9"),
     42,
   );
-  assertEquals(
+  assert.deepEqual(
     toHex(okm),
     "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
   );
@@ -104,7 +98,7 @@ Deno.test("portable HKDF and HMAC match externally defined RFC vectors", async (
     new Uint8Array(20).fill(0x0b),
     new TextEncoder().encode("Hi There"),
   );
-  assertEquals(
+  assert.deepEqual(
     toHex(mac),
     "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
   );

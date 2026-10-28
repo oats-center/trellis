@@ -1,125 +1,132 @@
-//! Production-only helper for connecting a built-in live provider.
-//!
-//! Built-in roles that serve a live surface connect through the ordinary native
-//! service bootstrap and Auth Callout using their generated participant
-//! evidence and the provisioned identity seed from [`super::live_provider`].
-//! The returned client is an owned public-provider transport whose installed
-//! deployment is validated against the fixed reserved deployment for the role.
-//!
-//! Every input is either generated evidence or a provisioned native seed; this
-//! helper never accepts a preverified caller or an arbitrary unsigned context.
+//! Native built-in admission through the ordinary provisioned service boundary.
 
-use trellis_rs::client::{ServiceConnectWithContractOptions, TrellisClient, TrellisClientError};
+use trellis_protocol::SessionBinding;
+use trellis_rs::client::{
+    RuntimeAuthorizationTrust, ServiceConnectWithContractOptions, TrellisClient,
+};
 use trellis_rs::generated::ParticipantDescriptor;
 
 use super::live_provider::LiveProviderRole;
 use super::RuntimeError;
 
-/// Inputs for connecting one built-in live provider through normal bootstrap.
-pub struct BuiltinLiveProviderConnectOptions<'a> {
-    /// Configured Trellis HTTP origin.
-    pub trellis_url: &'a str,
+/// Prepare the selected generated role through ordinary provisioning and native
+/// declaration materialization, before its Callout admission is attempted.
+pub(crate) async fn prepare_builtin_live_provider(
+    role: LiveProviderRole,
+    store: &std::sync::Arc<super::auth::SqliteAuthorizationStore>,
+    operational: &async_nats::Client,
+    identity_seed: &str,
+) -> Result<super::auth::ProvisionedDeployment, RuntimeError> {
+    match role {
+        LiveProviderRole::Platform => {
+            super::bootstrap::prepare_builtin_provider::<
+                trellis_runtime_apis::participants::trellis_platform::Participant,
+            >(store, operational, identity_seed)
+            .await
+        }
+        LiveProviderRole::Health => {
+            super::bootstrap::prepare_builtin_provider::<
+                trellis_runtime_apis::participants::trellis_health_runtime::Participant,
+            >(store, operational, identity_seed)
+            .await
+        }
+        LiveProviderRole::Jobs => {
+            super::bootstrap::prepare_builtin_provider::<
+                trellis_runtime_apis::participants::trellis_jobs_runtime::Participant,
+            >(store, operational, identity_seed)
+            .await
+        }
+        LiveProviderRole::Events => {
+            super::bootstrap::prepare_builtin_provider::<
+                trellis_runtime_apis::participants::trellis_events_runtime::Participant,
+            >(store, operational, identity_seed)
+            .await
+        }
+    }
+}
+
+/// Configured transport/trust and the actual provisioned record to check locally.
+/// Expected identities are never sent to the SDK as admission assertions.
+#[derive(Debug)]
+pub struct BuiltinLiveProviderConnectOptions {
+    /// Concrete configured native endpoints.
+    pub nats_servers: Vec<String>,
+    /// Issuer and installation trust established by provisioning or the selected Auth origin.
+    pub trust: RuntimeAuthorizationTrust,
     /// Connect/request timeout in milliseconds.
     pub timeout_ms: u64,
 }
 
-/// Connect a built-in live provider through normal bootstrap and validate its
-/// installed deployment against the fixed reserved role deployment.
+/// Connect normally and compare the installed signed identity with provisioning.
 ///
 /// # Errors
-///
-/// Returns [`RuntimeError::Platform`] for bootstrap failure or when the
-/// installed participant/deployment does not match the provisioned role.
+/// Admission or a mismatch with the generated role and persisted record fails.
 pub async fn connect_builtin_live_provider(
     role: LiveProviderRole,
     identity_seed_base64url: &str,
-    options: BuiltinLiveProviderConnectOptions<'_>,
+    options: BuiltinLiveProviderConnectOptions,
 ) -> Result<TrellisClient, RuntimeError> {
-    let client = match role {
+    match role {
         LiveProviderRole::Platform => {
             connect::<trellis_runtime_apis::participants::trellis_platform::Participant>(
                 identity_seed_base64url,
                 options,
             )
-            .await?
+            .await
         }
         LiveProviderRole::Health => {
             connect::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>(
                 identity_seed_base64url,
                 options,
             )
-            .await?
+            .await
         }
         LiveProviderRole::Jobs => {
             connect::<trellis_runtime_apis::participants::trellis_jobs_runtime::Participant>(
                 identity_seed_base64url,
                 options,
             )
-            .await?
+            .await
         }
         LiveProviderRole::Events => {
             connect::<trellis_runtime_apis::participants::trellis_events_runtime::Participant>(
                 identity_seed_base64url,
                 options,
             )
-            .await?
-        }
-    };
-    match role {
-        LiveProviderRole::Platform => {
-            expect_deployment::<trellis_runtime_apis::participants::trellis_platform::Participant>(
-                role, &client,
-            )?;
-        }
-        LiveProviderRole::Health => {
-            expect_deployment::<
-                trellis_runtime_apis::participants::trellis_health_runtime::Participant,
-            >(role, &client)?;
-        }
-        LiveProviderRole::Jobs => {
-            expect_deployment::<
-                trellis_runtime_apis::participants::trellis_jobs_runtime::Participant,
-            >(role, &client)?;
-        }
-        LiveProviderRole::Events => {
-            expect_deployment::<
-                trellis_runtime_apis::participants::trellis_events_runtime::Participant,
-            >(role, &client)?;
+            .await
         }
     }
-    Ok(client)
 }
 
 async fn connect<C: ParticipantDescriptor>(
     identity_seed_base64url: &str,
-    options: BuiltinLiveProviderConnectOptions<'_>,
+    options: BuiltinLiveProviderConnectOptions,
 ) -> Result<TrellisClient, RuntimeError> {
-    TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
-        trellis_url: options.trellis_url,
+    let client = TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
+        nats_servers: options.nats_servers,
+        trust: options.trust,
         participant_id: C::ID,
-        participant_path: C::PATH,
-        package_evidence: C::package_evidence(),
         provisioned_identity_seed_base64url: identity_seed_base64url,
         name: None,
         timeout_ms: options.timeout_ms,
     })
     .await
-    .map_err(|error| RuntimeError::Platform(format!("built-in live provider connect: {error}")))
-}
-
-fn expect_deployment<C: ParticipantDescriptor>(
-    role: LiveProviderRole,
-    client: &TrellisClient,
-) -> Result<String, RuntimeError> {
-    let deployment_id = client
-        .runtime_deployment_id()
-        .map_err(|error: TrellisClientError| RuntimeError::Platform(error.to_string()))?;
-    let expected = role.deployment_id();
-    if deployment_id != expected {
-        return Err(RuntimeError::Platform(format!(
-            "built-in live provider '{}' is installed under deployment '{deployment_id}' instead of '{expected}'",
-            C::ID
-        )));
+    .map_err(|error| {
+        RuntimeError::Platform(format!("built-in native provider connect: {error}"))
+    })?;
+    let context = client
+        .authorization_context()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+        .ok_or_else(|| {
+            RuntimeError::Platform("built-in provider has no installed authority".into())
+        })?;
+    if !matches!(
+        &context.context.unsigned.binding,
+        SessionBinding::Service { participant_id, .. } if participant_id == C::ID
+    ) {
+        return Err(RuntimeError::Platform(
+            "installed built-in authority does not match the generated role".into(),
+        ));
     }
-    Ok(deployment_id)
+    Ok(client)
 }

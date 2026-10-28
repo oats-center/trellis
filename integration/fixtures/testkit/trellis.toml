@@ -1,6 +1,6 @@
 [package]
 name = "trellis-test-fixture"
-version = "0.100.0"
+version = "0.100.0-rc.12"
 
 [sources]
 echo = "contract.trellis"
@@ -8,5 +8,8 @@ echo = "contract.trellis"
 [generate.rust]
 output = "crates/trellis-test-fixture"
 
+[generate.typescript]
+output = "packages/trellis-test-fixture"
+
 [dependencies]
-trellis = { package = "trellis", path = "../../../crates/runtime" }
+trellis = { package = "trellis", path = "../../../crates/builtin-contracts" }

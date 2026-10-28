@@ -937,7 +937,8 @@ fn validate_loaded_state(
         return Err(NatsKeyCoordinatorError::Decode {
             key: key.to_string(),
             details: format!(
-                "loaded key state does not match expected service/job/key/hash: expected {}/{}/{}/{}, found version={} {}/{}/{}/{}",
+                "loaded key state does not match expected service/job/key/hash: \
+                expected {}/{}/{}/{}, found version={} {}/{}/{}/{}",
                 policy.service,
                 policy.job_type,
                 policy.key,

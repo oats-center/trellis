@@ -45,9 +45,7 @@ impl JobsRuntime {
     }
 
     /// Create the Jobs runtime facade for a Trellis-owned built-in provider.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    pub fn from_nats(nats: async_nats::Client) -> Self {
+    pub(crate) fn from_provider_nats(nats: async_nats::Client) -> Self {
         Self { nats, client: None }
     }
 
@@ -186,8 +184,9 @@ impl JobsRuntime {
                         if consecutive_failures >= FILTERED_REOPEN_MAX_FAILURES {
                             return Some((
                                 Err(format!(
-                                    "Jobs pull consumer '{consumer_name}' on stream '{stream_name}' failed {consecutive_failures} consecutive times: {stream_error}"
-                                )),
+                            "Jobs pull consumer '{consumer_name}' on stream '{stream_name}' failed \
+                            {consecutive_failures} consecutive times: {stream_error}"
+                        )),
                                 (None, consecutive_failures),
                             ));
                         }
@@ -220,10 +219,11 @@ impl JobsRuntime {
                                     }
                                     if consecutive_failures >= FILTERED_REOPEN_MAX_FAILURES {
                                         return Some((
-                                            Err(format!(
-                                                "Jobs pull consumer '{consumer_name}' on stream '{stream_name}' could not reopen after {consecutive_failures} consecutive failures: {error}"
-                                            )),
-                                            (None, consecutive_failures),
+                                    Err(format!(
+                                        "Jobs pull consumer '{consumer_name}' on stream '{stream_name}' could \
+                                        not reopen after {consecutive_failures} consecutive failures: {error}"
+                                    )),
+                                    (None, consecutive_failures),
                                         ));
                                     }
                                     tokio::time::sleep(FILTERED_REOPEN_DELAY).await;

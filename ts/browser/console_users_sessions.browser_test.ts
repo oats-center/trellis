@@ -1,49 +1,174 @@
 // Console user and session journeys. Real runtime, real generated client.
 
-import { assertEquals, assertExists } from "@std/assert";
-import { join } from "@std/path";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { join } from "node:path";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
+import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
+import { API as authApi } from "../packages/trellis/internal_sdk/generated/apis/auth/mod.js";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
-  createOrdinaryUserWithPassword,
   launchProfile,
-  openConsole,
 } from "./browser_test_support.ts";
 import {
   assertNoBrowserErrors,
   captureBrowserErrors,
   openConsoleAsRuntimeAdmin,
   waitForConsoleShell,
+  wireNatsGate,
 } from "./console_test_support.ts";
 
-Deno.test("B25 users list renders and exact edit reloads on query change", async () => {
+test("an empty later page of users still offers the previous page", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();
-    const username = `ct-b25-${crypto.randomUUID().slice(0, 8)}`;
-    const otherUsername = `ct-b25-other-${crypto.randomUUID().slice(0, 8)}`;
+    const suffix = ulid().toLowerCase();
+    // One more than a page, so the list has a second page.
+    for (let index = 0; index < 51; index++)
+      await runtime.callAdminRpc("authUsersCreate", {
+        idempotencyKey: ulid(),
+        displayName: `Paged ${index} ${suffix}`,
+        username: `paged-${index}-${suffix}`,
+      });
+
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForConsoleShell(page);
+      const rows = page.locator(".users-row");
+      await runtime.waitFor(async () => (await rows.count()) === 50, {
+        timeoutMs: 30_000,
+      });
+      await page.getByRole("button", { name: "Next page" }).click();
+      await runtime.waitFor(async () => (await rows.count()) < 50, {
+        timeoutMs: 30_000,
+      });
+
+      // Every user is active, so this page shows nothing when filtered.
+      await page
+        .getByLabel("Filter by status")
+        .selectOption({ label: "Inactive" });
+      await page
+        .getByText("No users found")
+        .waitFor({ state: "visible", timeout: 30_000 });
+      const previous = page.getByRole("button", { name: "Previous page" });
+      await previous.waitFor({ state: "visible", timeout: 5_000 });
+      assert.equal(await previous.isEnabled(), true);
+      await previous.click();
+      await page
+        .getByLabel("Filter by status")
+        .selectOption({ label: "All statuses" });
+      await runtime.waitFor(async () => (await rows.count()) === 50, {
+        timeoutMs: 30_000,
+      });
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
+test("a late reply to an earlier user search does not replace newer results", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const suffix = ulid().toLowerCase();
+    for (const name of ["alpha", "beta"])
+      await runtime.callAdminRpc("authUsersCreate", {
+        idempotencyKey: ulid(),
+        displayName: `Search ${name} ${suffix}`,
+        username: `search-${name}-${suffix}`,
+      });
+
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const wired = await wireNatsGate(page);
+      try {
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+          waitUntil: "domcontentloaded",
+        });
+        await waitForConsoleShell(page);
+        const rows = page.locator(".users-row");
+        await rows.first().waitFor({ state: "visible", timeout: 30_000 });
+        const search = page.getByLabel("Search users");
+
+        const held = wired.gate.armNextReply(
+          authApi.actions["rpc:Users.List"].subject,
+        );
+        await search.fill(`search-alpha-${suffix}`);
+        await search.press("Enter");
+        await held;
+        await wired.gate.waitHeld();
+        await search.fill(`search-beta-${suffix}`);
+        await search.press("Enter");
+        // The first page lists both users; wait for the newer search's own
+        // result, which narrows the list to one row.
+        await runtime.waitFor(
+          async () =>
+            (await rows.count()) === 1 &&
+            (await rows
+              .filter({ hasText: `Search beta ${suffix}` })
+              .count()) === 1,
+          { timeoutMs: 30_000 },
+        );
+
+        // The earlier search's reply now arrives after the newer one and must
+        // not replace the newer results.
+        wired.releaseToPage();
+        const stale = await rows
+          .filter({ hasText: `Search alpha ${suffix}` })
+          .waitFor({ state: "visible", timeout: 3_000 })
+          .then(
+            () => true,
+            () => false,
+          );
+        assert.equal(stale, false, "the stale search results were shown");
+        assert.equal(await rows.count(), 1);
+        await rows
+          .filter({ hasText: `Search beta ${suffix}` })
+          .waitFor({ state: "visible" });
+      } finally {
+        wired.gate.dispose();
+      }
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
+test("B25 users list renders and exact edit reloads on query change", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const username = `ct-b25-${ulid()}`.toLowerCase();
+    const otherUsername = `ct-b25-other-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b25@example.com",
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: ulid(),
       image: null,
-      name: "Console B25",
+      displayName: "Console B25",
       username,
     });
-    const userId = created.user.userId;
-    assertExists(userId);
+    const userId = created.user.principalId;
+    assert.ok(userId);
     const other = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b25-other@example.com",
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: ulid(),
       image: null,
-      name: "Console B25 Other",
+      displayName: "Console B25 Other",
       username: otherUsername,
     });
 
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
@@ -60,38 +185,44 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      await page.getByRole("heading", {
-        name: username,
-        exact: true,
-        level: 1,
-      }).waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      await page.evaluate((id) => {
-        const link = document.createElement("a");
-        link.href = `/console/admin/users/edit?userId=${
-          encodeURIComponent(id)
-        }`;
-        (document.querySelector("main") ?? document.body).append(link);
-        link.click();
-      }, other.user.userId);
-      await page.getByRole("heading", {
-        name: otherUsername,
-        exact: true,
-        level: 1,
-      }).waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      await page.getByLabel("Name", { exact: true }).fill("Updated B25 Other");
-      await page.getByRole("button", { name: "Save profile", exact: true })
-        .click();
-      await page.getByText(`Updated ${otherUsername}.`, { exact: true })
+      await page
+        .getByRole("heading", {
+          name: username,
+          exact: true,
+          level: 1,
+        })
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
+      await page.evaluate((id) => {
+        const link = document.createElement("a");
+        link.href = `/console/admin/users/edit?userId=${encodeURIComponent(
+          id,
+        )}`;
+        (document.querySelector("main") ?? document.body).append(link);
+        link.click();
+      }, other.user.principalId);
+      await page
+        .getByRole("heading", {
+          name: otherUsername,
+          exact: true,
+          level: 1,
+        })
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+      await page
+        .getByLabel("Display name", { exact: true })
+        .fill("Updated B25 Other");
+      await page
+        .getByRole("button", { name: "Save profile", exact: true })
+        .click();
+      await page.getByText("Profile updated.", { exact: true }).waitFor({
+        state: "visible",
+        timeout: 30_000,
+      });
       await page.goto(
         `${runtime.trellisUrl}/console/admin/users/edit?userId=${userId}`,
         {
@@ -99,53 +230,57 @@ Deno.test("B25 users list renders and exact edit reloads on query change", async
         },
       );
       await waitForConsoleShell(page);
-      await page.getByRole("heading", {
-        name: username,
-        exact: true,
-        level: 1,
-      }).waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      assertEquals(
-        await page.getByLabel("Name", { exact: true }).inputValue(),
+      await page
+        .getByRole("heading", {
+          name: username,
+          exact: true,
+          level: 1,
+        })
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+      assert.deepEqual(
+        await page.getByLabel("Display name", { exact: true }).inputValue(),
         "Console B25",
       );
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${other.user.userId}`,
+        `${runtime.trellisUrl}/console/admin/users/edit?userId=${other.user.principalId}`,
         {
           waitUntil: "domcontentloaded",
         },
       );
       await waitForConsoleShell(page);
-      await page.getByRole("heading", {
-        name: otherUsername,
-        exact: true,
-        level: 1,
-      }).waitFor({ state: "visible" });
-      assertEquals(
-        await page.getByLabel("Name", { exact: true }).inputValue(),
+      await page
+        .getByRole("heading", {
+          name: otherUsername,
+          exact: true,
+          level: 1,
+        })
+        .waitFor({ state: "visible" });
+      assert.deepEqual(
+        await page.getByLabel("Display name", { exact: true }).inputValue(),
         "Updated B25 Other",
       );
-      assertNoBrowserErrors(errors);
+      await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("B27 a disabled user stays disabled after a metadata edit", async () => {
+test("B27 a disabled user stays disabled after a metadata edit", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();
-    const username = `ct-b27-${crypto.randomUUID().slice(0, 8)}`;
+    const username = `ct-b27-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b27@example.com",
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: ulid(),
       image: null,
-      name: "Console B27",
+      displayName: "Console B27",
       username,
     });
-    const userId = created.user.userId;
+    const userId = created.user.principalId;
 
     const context = await launchProfile(runtime);
     try {
@@ -156,54 +291,50 @@ Deno.test("B27 a disabled user stays disabled after a metadata edit", async () =
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      // The form shows the real returned state and offers only supported states.
       const main = page.locator("main");
-      await main.getByText("State", { exact: true }).first().waitFor({
+      await main.getByRole("checkbox", { name: /^Enabled/ }).uncheck();
+      await main
+        .getByRole("button", { name: "Save profile", exact: true })
+        .click();
+      await page.getByText("Profile updated.", { exact: true }).waitFor({
         state: "visible",
-        timeout: 30_000,
       });
-      assertEquals(
-        await main.locator(".badge", { hasText: "active" }).count() > 0,
-        true,
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await main
+        .getByRole("heading", { name: username, exact: true, level: 1 })
+        .waitFor();
+      assert.equal(
+        await main.getByRole("checkbox", { name: /^Enabled/ }).isChecked(),
+        false,
       );
-      await main.getByRole("checkbox", { name: "Active" }).uncheck();
-      await main.getByRole("button", { name: "Save profile", exact: true })
+      await main
+        .getByLabel("Display name", { exact: true })
+        .fill("Console B27 edited");
+      await main
+        .getByRole("button", { name: "Save profile", exact: true })
         .click();
-      await main.locator(".badge", { hasText: "disabled" }).waitFor({
+      await page.getByText("Profile updated.", { exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      await page.getByText(`Updated ${username}.`, { exact: true }).waitFor({
-        state: "hidden",
-      });
-      await main.getByLabel("Name", { exact: true }).fill("Console B27 edited");
-      await main.getByRole("button", { name: "Save profile", exact: true })
-        .click();
-      await page.getByText(`Updated ${username}.`, { exact: true })
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForConsoleShell(page);
+      await main
+        .getByRole("heading", {
+          name: username,
+          exact: true,
+          level: 1,
+        })
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await waitForConsoleShell(page);
-      await main.getByRole("heading", {
-        name: username,
-        exact: true,
-        level: 1,
-      }).waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      await main.locator(".badge", { hasText: "disabled" }).waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      assertEquals(
-        await main.getByLabel("Name", { exact: true }).inputValue(),
+      assert.deepEqual(
+        await main.getByLabel("Display name", { exact: true }).inputValue(),
         "Console B27 edited",
       );
-      assertEquals(
-        await main.getByRole("checkbox", { name: "Active" }).isChecked(),
+      assert.deepEqual(
+        await main.getByRole("checkbox", { name: /^Enabled/ }).isChecked(),
         false,
       );
     } finally {
@@ -212,12 +343,12 @@ Deno.test("B27 a disabled user stays disabled after a metadata edit", async () =
   }, browserRuntimeOptions());
 });
 
-Deno.test("B28 user creation rotates the one-time setup receipt", async () => {
+test("B28 user creation rotates the one-time setup receipt", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(`${runtime.trellisUrl}/console/admin/users/new`, {
         waitUntil: "domcontentloaded",
@@ -225,7 +356,7 @@ Deno.test("B28 user creation rotates the one-time setup receipt", async () => {
       await waitForConsoleShell(page);
 
       const main = page.locator("main");
-      const username = `ct-b28-${crypto.randomUUID().slice(0, 8)}`;
+      const username = `ct-b28-${ulid()}`.toLowerCase();
       await main.getByRole("textbox").nth(0).fill(username);
       await main.getByRole("textbox").nth(1).fill("Console B28");
       await main.getByRole("button", { name: "Create user" }).click();
@@ -238,22 +369,30 @@ Deno.test("B28 user creation rotates the one-time setup receipt", async () => {
       // This administrator is permitted the setup step, so the terminal state
       // is the ready receipt. Wait for that actual condition rather than
       // counting headings while the separate setup request is still running.
-      await page.getByText("Password setup URL").first().waitFor({
+      await page.getByText("Password-reset token").first().waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      assertEquals(
-        await page.getByRole("button", { name: "Create user", exact: true })
+      assert.deepEqual(
+        await page
+          .getByRole("button", { name: "Create user", exact: true })
           .count(),
         0,
         "the account was created, so the create form must not be re-offered",
       );
-      const firstId = await main.locator(".trellis-identifier").first()
+      const firstId = await main
+        .locator(".trellis-identifier")
+        .first()
         .innerText();
-      const firstUrl = await page.getByLabel("Password setup URL").inputValue();
+      const firstUrl = await page
+        .getByLabel("Password-reset token")
+        .inputValue();
       await page.getByRole("button", { name: "Create another user" }).click();
-      assertEquals(await page.getByLabel("Password setup URL").count(), 0);
-      const secondUsername = `ct-b28-next-${crypto.randomUUID().slice(0, 8)}`;
+      assert.deepEqual(
+        await page.getByLabel("Password-reset token").count(),
+        0,
+      );
+      const secondUsername = `ct-b28-next-${ulid()}`.toLowerCase();
       await main.getByRole("textbox").nth(0).fill(secondUsername);
       await main.getByRole("textbox").nth(1).fill("Console B28 Next");
       await main.getByRole("button", { name: "Create user" }).click();
@@ -261,15 +400,18 @@ Deno.test("B28 user creation rotates the one-time setup receipt", async () => {
         state: "visible",
         timeout: 30_000,
       });
-      await page.getByText("Password setup URL").first().waitFor({
+      await page.getByText("Password-reset token").first().waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      const secondId = await main.locator(".trellis-identifier").first()
+      const secondId = await main
+        .locator(".trellis-identifier")
+        .first()
         .innerText();
-      assertEquals(secondId !== firstId, true);
-      assertEquals(
-        await page.getByLabel("Password setup URL").inputValue() === firstUrl,
+      assert.deepEqual(secondId !== firstId, true);
+      assert.deepEqual(
+        (await page.getByLabel("Password-reset token").inputValue()) ===
+          firstUrl,
         false,
       );
       await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
@@ -282,21 +424,19 @@ Deno.test("B28 user creation rotates the one-time setup receipt", async () => {
         state: "visible",
         timeout: 30_000,
       });
-      assertNoBrowserErrors(errors);
+      await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("a one-time password reset receipt is one-time and clears on close", async () => {
+test("a password reset receipt clears its token when closed", async () => {
   await withTrellisRuntime(async (runtime) => {
     const created = await runtime.callAdminRpc("authUsersCreate", {
-      email: null,
-      idempotencyKey: crypto.randomUUID(),
-      image: null,
-      name: "Console N07",
-      username: `ct-n07-${crypto.randomUUID().slice(0, 8)}`,
+      idempotencyKey: ulid(),
+      displayName: "Console N07",
+      username: `ct-n07-${ulid()}`,
     });
     const context = await launchProfile(runtime);
     try {
@@ -306,22 +446,27 @@ Deno.test("a one-time password reset receipt is one-time and clears on close", a
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
-      await page.getByLabel("Search users").fill(created.user.userId);
+      assert(created.user.account);
+      await page.getByLabel("Search users").fill(created.user.account.username);
       await page.getByLabel("Search users").press("Enter");
-      const row = page.locator(".users-row", { hasText: created.user.userId });
+      const row = page.locator(".users-row", {
+        hasText: created.user.account.username,
+      });
       await row.waitFor({ state: "visible", timeout: 30_000 });
-      await row.locator("summary").click();
-      await row.getByRole("button", { name: "Create reset link" }).click();
-      await page.getByLabel("Password reset URL").waitFor({
+      await row.getByRole("button", { name: "Actions" }).click();
+      await row.getByRole("button", { name: "Reset password" }).click();
+      await page.getByLabel("Password-reset token").waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      const url = await page.getByLabel("Password reset URL").inputValue();
-      assertEquals(url.length > 0, true);
-      await page.getByRole("button", {
-        name: "Close password reset link dialog",
-      }).click();
-      await page.getByLabel("Password reset URL").waitFor({
+      const url = await page.getByLabel("Password-reset token").inputValue();
+      assert.deepEqual(url.length > 0, true);
+      await page
+        .getByRole("button", {
+          name: "Close password reset link dialog",
+        })
+        .click();
+      await page.getByLabel("Password-reset token").waitFor({
         state: "detached",
       });
     } finally {
@@ -330,149 +475,12 @@ Deno.test("a one-time password reset receipt is one-time and clears on close", a
   }, browserRuntimeOptions());
 });
 
-Deno.test("N07 a real setup denial is recovered by a permission change without a second create", async () => {
+test("N09 a stale user edit cannot overwrite a concurrent update and can be resubmitted after reload", async () => {
   await withTrellisRuntime(async (runtime) => {
-    await runtime.ensureAdmin();
-    const suffix = crypto.randomUUID().slice(0, 8);
-    const operator = {
-      username: `ct-n07-op-${suffix}`,
-      password: `ct-n07-op-password-${suffix}`,
-    };
-    const operatorId = await createOrdinaryUserWithPassword(runtime, operator);
-
-    // Exactly one user is created for this journey. It carries the admin
-    // platform privilege so the non-admin operator resolves it as an
-    // admin target, which is the shipped contract's authoritative
-    // per-operation setup denial.
-    const targetName = `Console N07 Target ${suffix}`;
-    const target = await runtime.callAdminRpc("authUsersCreate", {
-      email: null,
-      idempotencyKey: crypto.randomUUID(),
-      image: null,
-      name: targetName,
-      username: `ct-n07-target-${suffix}`,
-    });
-    const targetId = target.user.userId;
-    const installed = await runtime.callAdminRpc("authParticipantsGet", {
-      participantId: "trellis.console",
-    });
-    // Inferred from the generated client: no hand-written wire type here.
-    const consoleBinding = async (ownerId: string) => {
-      const listed = await runtime.callAdminRpc("authGrantsList", {
-        ownerKind: "user",
-        ownerId,
-        page: { limit: 100 },
-      });
-      const binding = listed.items.find((item) =>
-        item.participantId === "trellis.console"
-      );
-      return binding === undefined ? null : {
-        revision: binding.revision,
-        permissions: binding.grants.permissions,
-      };
-    };
-    await runtime.callAdminRpc("authGrantsSet", {
-      ownerKind: "user",
-      ownerId: targetId,
-      participantId: "trellis.console",
-      installedRevision: installed.participant.revision,
-      grants: { format: "trellis.grant-set.v1", permissions: [] },
-      platformPrivileges: ["trellis.auth::admin"],
-      expiresAt: null,
-      expectedRevision: (await consoleBinding(targetId))?.revision ?? 0n,
-      idempotencyKey: crypto.randomUUID(),
-    });
-
-    const context = await launchProfile(runtime);
-    try {
-      const page = await context.newPage();
-      await openConsole(page, runtime, operator);
-      const search = async () => {
-        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
-          waitUntil: "domcontentloaded",
-        });
-        await waitForConsoleShell(page);
-        await page.getByLabel("Search users").fill(targetId);
-        await page.getByLabel("Search users").press("Enter");
-      };
-      await search();
-      const rows = page.locator(".users-row", { hasText: targetId });
-      await rows.first().waitFor({ state: "visible", timeout: 30_000 });
-      assertEquals(await rows.count(), 1, "exactly one target user exists");
-
-      // The non-admin operator asks Trellis for the setup link. Trellis
-      // answers with its authoritative denial; the account stays committed.
-      await rows.locator("summary").click();
-      await rows.getByRole("button", { name: "Create reset link" }).click();
-      await page.getByText("You do not have permission for this operation.")
-        .first().waitFor({ state: "visible", timeout: 30_000 });
-      assertEquals(await rows.count(), 1, "the target account remains");
-      assertEquals(
-        await page.getByLabel("Password reset URL").count(),
-        0,
-        "a denied setup exposes no receipt",
-      );
-
-      // Real permission change through the real administrator context: the
-      // operator gains the admin privilege that the admin-target rule needs.
-      const operatorBinding = await consoleBinding(operatorId);
-      assertExists(operatorBinding, "the operator holds a Console binding");
-      await runtime.callAdminRpc("authGrantsSet", {
-        ownerKind: "user",
-        ownerId: operatorId,
-        participantId: "trellis.console",
-        installedRevision: installed.participant.revision,
-        grants: {
-          format: "trellis.grant-set.v1",
-          permissions: operatorBinding.permissions,
-        },
-        platformPrivileges: ["trellis.auth::admin"],
-        expiresAt: null,
-        expectedRevision: operatorBinding.revision,
-        idempotencyKey: crypto.randomUUID(),
-      });
-
-      // Ordinary reconnect: a reload obtains a fresh authorization context
-      // carrying the changed privilege. No local permission refresh is a
-      // dispatch prerequisite.
-      await search();
-      const retryRows = page.locator(".users-row", { hasText: targetId });
-      await retryRows.first().waitFor({ state: "visible", timeout: 30_000 });
-      await retryRows.locator("summary").click();
-      await retryRows.getByRole("button", { name: "Create reset link" })
-        .click();
-      await page.getByLabel("Password reset URL").waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      const url = await page.getByLabel("Password reset URL").inputValue();
-      assertEquals(url.length > 0, true);
-
-      // Still exactly one created account: the retry was a setup operation
-      // for the same user, never another create.
-      await search();
-      const finalRows = page.locator(".users-row", { hasText: targetId });
-      await finalRows.first().waitFor({ state: "visible", timeout: 30_000 });
-      assertEquals(await finalRows.count(), 1);
-      assertEquals(
-        (await finalRows.first().innerText()).includes(targetId),
-        true,
-        "the recovered setup link belongs to the same created user",
-      );
-    } finally {
-      await context.close();
-    }
-  }, browserRuntimeOptions());
-});
-
-Deno.test("N09 a real user version conflict preserves the unsaved draft", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const username = `ct-n09-${crypto.randomUUID().slice(0, 8)}`;
+    const username = `ct-n09-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
-      email: null,
-      idempotencyKey: crypto.randomUUID(),
-      image: null,
-      name: "Original name",
+      idempotencyKey: ulid(),
+      displayName: "Original name",
       username,
     });
     const context = await launchProfile(runtime);
@@ -480,87 +488,107 @@ Deno.test("N09 a real user version conflict preserves the unsaved draft", async 
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.userId}`,
+        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
         {
           waitUntil: "domcontentloaded",
         },
       );
       await waitForConsoleShell(page);
-      await page.getByLabel("Name", { exact: true }).fill("Operator draft");
+      await page
+        .getByLabel("Display name", { exact: true })
+        .fill("Operator draft");
 
       const secondPage = await context.newPage();
       await secondPage.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.userId}`,
+        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(secondPage);
-      await secondPage.getByLabel("Name", { exact: true }).fill(
-        "Concurrent edit",
-      );
-      await secondPage.getByRole("button", {
-        name: "Save profile",
-        exact: true,
-      }).click();
-      await secondPage.getByText(`Updated ${username}.`, {
-        exact: true,
-      })
+      await secondPage
+        .getByLabel("Display name", { exact: true })
+        .fill("Concurrent edit");
+      await secondPage
+        .getByRole("button", {
+          name: "Save profile",
+          exact: true,
+        })
+        .click();
+      await secondPage
+        .getByText("Profile updated.", {
+          exact: true,
+        })
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
       await secondPage.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(secondPage);
-      await secondPage.getByRole("heading", {
-        name: username,
-        exact: true,
-        level: 1,
-      }).waitFor({ state: "visible" });
-      assertEquals(
-        await secondPage.getByLabel("Name", { exact: true }).inputValue(),
+      await secondPage
+        .getByRole("heading", {
+          name: username,
+          exact: true,
+          level: 1,
+        })
+        .waitFor({ state: "visible" });
+      assert.deepEqual(
+        await secondPage
+          .getByLabel("Display name", { exact: true })
+          .inputValue(),
         "Concurrent edit",
       );
-      await page.getByRole("button", { name: "Save profile", exact: true })
+      await page
+        .getByRole("button", { name: "Save profile", exact: true })
         .click();
-      await page.getByRole("button", { name: "Refresh version (keep draft)" })
+      await page
+        .getByRole("button", { name: "Reload user", exact: true })
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
-      assertEquals(
-        await page.getByLabel("Name", { exact: true }).inputValue(),
+      assert.deepEqual(
+        await page.getByLabel("Display name", { exact: true }).inputValue(),
         "Operator draft",
       );
-      await page.getByRole("button", { name: "Refresh version (keep draft)" })
+      await page
+        .getByRole("button", { name: "Reload user", exact: true })
         .click();
-      await page.getByRole("button", { name: "Save profile", exact: true })
+      await page
+        .getByRole("button", { name: "Save profile", exact: true })
         .waitFor({
           state: "visible",
         });
-      assertEquals(
-        await page.getByLabel("Name", { exact: true }).inputValue(),
-        "Operator draft",
+      await runtime.waitFor(
+        async () =>
+          (await page
+            .getByLabel("Display name", { exact: true })
+            .inputValue()) === "Concurrent edit",
       );
-      await page.getByRole("button", { name: "Save profile", exact: true })
+      await page
+        .getByLabel("Display name", { exact: true })
+        .fill("Operator draft");
+      await page
+        .getByRole("button", { name: "Save profile", exact: true })
         .click();
-      await page.getByText(`Updated ${username}.`, { exact: true })
-        .waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await waitForConsoleShell(page);
-      await page.getByLabel("Name", { exact: true }).waitFor({
+      await page.getByText("Profile updated.", { exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      assertEquals(
-        await page.getByLabel("Name", { exact: true }).inputValue(),
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await waitForConsoleShell(page);
+      await page.getByLabel("Display name", { exact: true }).waitFor({
+        state: "visible",
+        timeout: 30_000,
+      });
+      assert.deepEqual(
+        await page.getByLabel("Display name", { exact: true }).inputValue(),
         "Operator draft",
       );
       await secondPage.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(secondPage);
-      assertEquals(
-        await secondPage.getByLabel("Name", { exact: true }).inputValue(),
+      assert.deepEqual(
+        await secondPage
+          .getByLabel("Display name", { exact: true })
+          .inputValue(),
         "Operator draft",
       );
     } finally {
@@ -569,7 +597,7 @@ Deno.test("N09 a real user version conflict preserves the unsaved draft", async 
   }, browserRuntimeOptions());
 });
 
-Deno.test("B30 session and connection URLs use canonical IDs with no first-row fallback", async () => {
+test("B30 session and connection URLs use canonical IDs with no first-row fallback", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
@@ -578,229 +606,267 @@ Deno.test("B30 session and connection URLs use canonical IDs with no first-row f
 
       // A missing session target must render unavailable, not select row one.
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/revoke?sessionId=sess_missing_b30`,
+        `${runtime.trellisUrl}/console/admin/sessions/revoke?authorizationSessionId=${ulid()}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      await page.getByText("Session unavailable").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
+      await page
+        .getByText("This session has already ended or doesn't exist.", {
+          exact: false,
+        })
+        .first()
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
 
       // A missing connection target behaves the same way.
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/kick?connectionId=conn_missing_b30`,
+        `${runtime.trellisUrl}/console/admin/sessions/kick?attachmentId=${ulid()}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      await page.getByText("Connection unavailable").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-
-      // The legacy parameter names are not aliases.
-      await page.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/revoke?sessionKey=sess_legacy`,
-        { waitUntil: "domcontentloaded" },
-      );
-      await waitForConsoleShell(page);
-      await page.getByText("Session unavailable").count();
+      await page
+        .getByText("This session has already ended or doesn't exist.", {
+          exact: false,
+        })
+        .first()
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("N03 query-only client navigation clears session and connection targets", async () => {
+test("N03 query-only client navigation clears session and connection targets", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(`${runtime.trellisUrl}/console/admin/sessions/revoke`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
-      const sessionId = await page.getByLabel("Session").locator("option").nth(
-        1,
-      )
+      const sessionId = await page
+        .getByLabel("Session", { exact: true })
+        .locator("option")
+        .nth(1)
         .getAttribute("value");
-      assertExists(sessionId);
+      assert.ok(sessionId);
       await page.evaluate(() => {
         const marker = document.createElement("div");
         marker.id = "same-document-marker";
         document.body.append(marker);
       });
       const navigate = async (path: string) => {
-        await page.evaluate(
-          (href) => {
-            const anchor = document.createElement("a");
-            anchor.href = href;
-            anchor.textContent = "Navigate to target";
-            document.body.append(anchor);
-            anchor.click();
-            anchor.remove();
-          },
-          `${runtime.trellisUrl}/console${path}`,
-        );
+        await page.evaluate((href) => {
+          const anchor = document.createElement("a");
+          anchor.href = href;
+          anchor.textContent = "Navigate to target";
+          document.body.append(anchor);
+          anchor.click();
+          anchor.remove();
+        }, `${runtime.trellisUrl}/console${path}`);
       };
       await navigate(
-        `/admin/sessions/revoke?sessionId=${encodeURIComponent(sessionId)}`,
+        `/admin/sessions/revoke?authorizationSessionId=${encodeURIComponent(sessionId)}`,
       );
-      await page.getByLabel("Session").and(page.locator("input"))
+      await page
+        .getByLabel("Session", { exact: true })
+        .and(page.locator("input"))
         .waitFor({ state: "visible", timeout: 30_000 });
-      assertEquals(await page.getByLabel("Session").inputValue(), sessionId);
-      await page.getByText(sessionId, { exact: true }).first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      await page.locator("main").getByRole("button", {
-        name: /Revoke (session|and sign out)/,
-      }).click();
+      assert.deepEqual(
+        await page.getByLabel("Session", { exact: true }).inputValue(),
+        sessionId,
+      );
+      await page
+        .locator("main")
+        .getByRole("button", {
+          name: /^Sign out$/,
+        })
+        .click();
       await page.locator("dialog[open]").waitFor({ state: "visible" });
-      await navigate("/admin/sessions/revoke?sessionId=sess_missing_n03");
-      await page.getByText("Session unavailable").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
+      await navigate(`/admin/sessions/revoke?authorizationSessionId=${ulid()}`);
+      await page
+        .getByText("This session has already ended or doesn't exist.", {
+          exact: false,
+        })
+        .first()
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+      await page
+        .locator("dialog[open]")
+        .locator(".modal-action")
+        .getByRole("button", { name: "Cancel", exact: true })
+        .click();
       await page.locator("dialog[open]").waitFor({ state: "hidden" });
-      assertEquals(
-        await page.getByRole("button", { name: /Revoke/ }).count(),
+      assert.deepEqual(
+        await page
+          .locator("main")
+          .getByRole("button", { name: "Sign out", exact: true })
+          .count(),
         0,
       );
-      assertEquals(await page.locator("#same-document-marker").count(), 1);
+      assert.deepEqual(await page.locator("#same-document-marker").count(), 1);
       await navigate(
-        `/admin/sessions/revoke?sessionId=${encodeURIComponent(sessionId)}`,
+        `/admin/sessions/revoke?authorizationSessionId=${encodeURIComponent(sessionId)}`,
       );
-      await page.getByLabel("Session").waitFor({
+      await page.getByLabel("Session", { exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      assertEquals(await page.getByLabel("Session").inputValue(), sessionId);
-      await navigate("/admin/sessions/kick");
-      const connectionId = await page.getByLabel("Connection").locator("option")
-        .nth(1).getAttribute("value");
-      assertExists(connectionId);
-      await navigate(
-        `/admin/sessions/kick?connectionId=${encodeURIComponent(connectionId)}`,
+      assert.deepEqual(
+        await page.getByLabel("Session", { exact: true }).inputValue(),
+        sessionId,
       );
-      await page.getByLabel("Connection").and(page.locator("input"))
+      await navigate("/admin/sessions/kick");
+      const connectionId = await page
+        .getByLabel("Connection", { exact: true })
+        .locator("option")
+        .nth(1)
+        .getAttribute("value");
+      assert.ok(connectionId);
+      await navigate(
+        `/admin/sessions/kick?attachmentId=${encodeURIComponent(connectionId)}`,
+      );
+      await page
+        .getByLabel("Connection", { exact: true })
+        .and(page.locator("input"))
         .waitFor({ state: "visible", timeout: 30_000 });
-      assertEquals(
-        await page.getByLabel("Connection").inputValue(),
+      assert.deepEqual(
+        await page.getByLabel("Connection", { exact: true }).inputValue(),
         connectionId,
       );
-      await navigate("/admin/sessions/kick?connectionId=conn_missing_n03");
-      await page.getByText("Connection unavailable").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      assertEquals(
-        await page.getByRole("button", { name: "Kick connection" }).count(),
+      await navigate(`/admin/sessions/kick?attachmentId=${ulid()}`);
+      await page
+        .getByText("This session has already ended or doesn't exist.", {
+          exact: false,
+        })
+        .first()
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+      assert.deepEqual(
+        await page
+          .locator("main")
+          .getByRole("button", { name: "Disconnect", exact: true })
+          .count(),
         0,
       );
-      assertEquals(await page.locator("#same-document-marker").count(), 1);
-      assertNoBrowserErrors(errors);
+      assert.deepEqual(await page.locator("#same-document-marker").count(), 1);
+      await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("N03 switching targets during A confirmation revokes only B", async () => {
+test("N03 switching targets during A confirmation revokes only B", async () => {
   await withTrellisRuntime(async (runtime) => {
     const contextA = await launchProfile(runtime);
     const contextB = await chromium.launchPersistentContext(
       join(runtime.workdir, "browser-profile-b"),
-      { headless: true },
+      { headless: true, env: browserTrustEnvironment() },
     );
     try {
       const pageA = await contextA.newPage();
       const pageB = await contextB.newPage();
-      const errors = captureBrowserErrors(pageA);
+      const errors = await captureBrowserErrors(pageA);
       await openConsoleAsRuntimeAdmin(pageA, runtime);
+      const initialSessions = await runtime.callAdminRpc(
+        "authAuthorizationSessionsList",
+        { page: { limit: 100 } },
+      );
+      const sessionA = initialSessions.items.find(
+        (item) => item.binding.clientId === "trellis.console",
+      )?.authorizationSessionId;
+      assert(sessionA);
       await openConsoleAsRuntimeAdmin(pageB, runtime);
-      const currentSession = async (page: typeof pageA): Promise<string> => {
-        await page.goto(`${runtime.trellisUrl}/console/admin/sessions`, {
-          waitUntil: "domcontentloaded",
-        });
-        await waitForConsoleShell(page);
-        const href = await page.getByText("Current", { exact: true })
-          .locator("xpath=ancestor::tr")
-          .locator('a[href*="sessionId="]')
-          .getAttribute("href");
-        assertExists(href);
-        const id = new URL(href, runtime.trellisUrl).searchParams.get(
-          "sessionId",
-        );
-        assertExists(id);
-        return id;
-      };
-      const sessionA = await currentSession(pageA);
-      const sessionB = await currentSession(pageB);
-      assertEquals(sessionA === sessionB, false);
+      const laterSessions = await runtime.callAdminRpc(
+        "authAuthorizationSessionsList",
+        { page: { limit: 100 } },
+      );
+      const sessionB = laterSessions.items.find(
+        (item) =>
+          item.binding.clientId === "trellis.console" &&
+          item.authorizationSessionId !== sessionA,
+      )?.authorizationSessionId;
+      assert(sessionB);
+      assert.deepEqual(sessionA === sessionB, false);
 
       await pageA.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/revoke?sessionId=${sessionA}`,
+        `${runtime.trellisUrl}/console/admin/sessions/revoke?authorizationSessionId=${sessionA}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(pageA);
-      await pageA.getByLabel("Session").and(pageA.locator("input"))
+      await pageA
+        .getByLabel("Session", { exact: true })
+        .and(pageA.locator("input"))
         .waitFor({ state: "visible" });
-      await pageA.locator("main").getByRole("button", { name: /Revoke/ })
+      await pageA
+        .locator("main")
+        .getByRole("button", { name: "Sign out", exact: true })
         .click();
       const dialog = pageA.locator("dialog[open]");
       await dialog.waitFor({ state: "visible" });
-      await pageA.evaluate(
-        (href) => {
-          const marker = document.createElement("div");
-          marker.id = "same-document-marker";
-          document.body.append(marker);
-          const anchor = document.createElement("a");
-          anchor.href = href;
-          document.body.append(anchor);
-          anchor.click();
-          anchor.remove();
-        },
-        `${runtime.trellisUrl}/console/admin/sessions/revoke?sessionId=${sessionB}`,
+      await pageA.evaluate((href) => {
+        const marker = document.createElement("div");
+        marker.id = "same-document-marker";
+        document.body.append(marker);
+        const anchor = document.createElement("a");
+        anchor.href = href;
+        document.body.append(anchor);
+        anchor.click();
+        anchor.remove();
+      }, `${runtime.trellisUrl}/console/admin/sessions/revoke?authorizationSessionId=${sessionB}`);
+      await runtime.waitFor(
+        async () =>
+          (await pageA.getByLabel("Session", { exact: true }).inputValue()) ===
+          sessionB,
       );
-      await pageA.getByText(sessionB, { exact: true }).first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
+      await dialog
+        .getByRole("button", { name: "Sign out", exact: true })
+        .click();
       await dialog.waitFor({ state: "hidden", timeout: 30_000 });
-      assertEquals(await pageA.getByLabel("Session").inputValue(), sessionB);
-      assertEquals(await pageA.locator("#same-document-marker").count(), 1);
-      await pageA.getByRole("button", { name: "Revoke session" }).click();
+      assert.deepEqual(
+        await pageA.getByLabel("Session", { exact: true }).inputValue(),
+        sessionB,
+      );
+      assert.deepEqual(await pageA.locator("#same-document-marker").count(), 1);
+      await pageA
+        .locator("main")
+        .getByRole("button", { name: "Sign out", exact: true })
+        .click();
       await dialog.waitFor({ state: "visible" });
-      await dialog.locator("input").fill(sessionB);
-      await dialog.getByRole("button", { name: "Revoke session" }).click();
-      await pageA.waitForURL(
-        (url) => url.pathname === "/console/admin/sessions",
-        { timeout: 30_000 },
+      await dialog
+        .getByRole("button", { name: "Sign out", exact: true })
+        .click();
+      await pageA.getByText("Signed out.", { exact: false }).waitFor();
+      const finalSessions = await runtime.callAdminRpc(
+        "authAuthorizationSessionsList",
+        { page: { limit: 100 } },
       );
-
-      await pageA.goto(`${runtime.trellisUrl}/console/admin/sessions/revoke`, {
-        waitUntil: "domcontentloaded",
-      });
-      await waitForConsoleShell(pageA);
-      const selector = pageA.getByLabel("Session");
-      await selector.locator(`option[value="${sessionB}"]`).waitFor({
-        state: "attached",
-        timeout: 30_000,
-      });
-      assertEquals(
-        (await selector.locator(`option[value="${sessionB}"]`).innerText())
-          .includes("revoked"),
-        true,
+      assert.equal(
+        finalSessions.items.find(
+          (item) => item.authorizationSessionId === sessionB,
+        )?.state,
+        "revoked",
       );
-      assertEquals(
-        (await selector.locator(`option[value="${sessionA}"]`).innerText())
-          .includes("active"),
-        true,
+      assert.equal(
+        finalSessions.items.find(
+          (item) => item.authorizationSessionId === sessionA,
+        )?.state,
+        "active",
       );
-      assertNoBrowserErrors(errors);
+      await assertNoBrowserErrors(errors);
     } finally {
       await contextB.close();
       await contextA.close();
@@ -808,7 +874,7 @@ Deno.test("N03 switching targets during A confirmation revokes only B", async ()
   }, browserRuntimeOptions());
 });
 
-Deno.test("B31 cancelling a revoke confirmation keeps its session active", async () => {
+test("B31 cancelling a revoke confirmation keeps its session active", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();
     const context = await launchProfile(runtime);
@@ -820,20 +886,36 @@ Deno.test("B31 cancelling a revoke confirmation keeps its session active", async
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
-      const firstOption = await page.getByLabel("Session").locator("option")
-        .nth(1).getAttribute("value");
-      assertEquals(typeof firstOption, "string");
+      const firstOption = await page
+        .getByLabel("Session", { exact: true })
+        .locator("option")
+        .nth(1)
+        .getAttribute("value");
+      assert.deepEqual(typeof firstOption, "string");
       if (!firstOption) throw new Error("Expected an active session to revoke");
-      await page.getByLabel("Session").selectOption(firstOption);
-      await page.getByRole("button", { name: /Revoke/ }).first().click();
+      await page
+        .getByLabel("Session", { exact: true })
+        .selectOption(firstOption);
+      await page
+        .locator("main")
+        .getByRole("button", { name: "Sign out", exact: true })
+        .first()
+        .click();
       await page.getByRole("button", { name: "Cancel" }).first().click();
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(page);
-      assertEquals(
-        (await page.getByLabel("Session").locator(
-          `option[value="${firstOption}"]`,
-        ).innerText()).includes("active"),
-        true,
+      await page
+        .getByLabel("Session", { exact: true })
+        .selectOption(firstOption);
+      const sessions = await runtime.callAdminRpc(
+        "authAuthorizationSessionsList",
+        { page: { limit: 100 } },
+      );
+      assert.equal(
+        sessions.items.find(
+          (item) => item.authorizationSessionId === firstOption,
+        )?.state,
+        "active",
       );
     } finally {
       await context.close();
@@ -841,113 +923,107 @@ Deno.test("B31 cancelling a revoke confirmation keeps its session active", async
   }, browserRuntimeOptions());
 });
 
-Deno.test("B33 kicking a connection leaves the session valid", async () => {
+test("B33 kicking a connection leaves the session valid", async () => {
   await withTrellisRuntime(async (runtime) => {
     const contextA = await launchProfile(runtime);
     const contextB = await chromium.launchPersistentContext(
       join(runtime.workdir, "browser-profile-b"),
-      { headless: true },
+      { headless: true, env: browserTrustEnvironment() },
     );
     try {
       const pageA = await contextA.newPage();
       const pageB = await contextB.newPage();
       await openConsoleAsRuntimeAdmin(pageA, runtime);
-      await openConsoleAsRuntimeAdmin(pageB, runtime);
-      await pageB.goto(`${runtime.trellisUrl}/console/admin/sessions`, {
-        waitUntil: "domcontentloaded",
-      });
-      await waitForConsoleShell(pageB);
-      const href = await pageB.getByText("Current", { exact: true })
-        .locator("xpath=ancestor::tr").locator('a[href*="sessionId="]')
-        .getAttribute("href");
-      assertExists(href);
-      const sessionB = new URL(href, runtime.trellisUrl).searchParams.get(
-        "sessionId",
+      const initialSessions = await runtime.callAdminRpc(
+        "authAuthorizationSessionsList",
+        { page: { limit: 100 } },
       );
-      assertExists(sessionB);
-      const before = await runtime.callAdminRpc("authConnectionsList", {
-        sessionId: sessionB,
+      const initialIds = new Set(
+        initialSessions.items.map((item) => item.authorizationSessionId),
+      );
+      await openConsoleAsRuntimeAdmin(pageB, runtime);
+      const laterSessions = await runtime.callAdminRpc(
+        "authAuthorizationSessionsList",
+        { page: { limit: 100 } },
+      );
+      const newSessions = new Set(
+        laterSessions.items
+          .filter(
+            (item) =>
+              item.binding.clientId === "trellis.console" &&
+              !initialIds.has(item.authorizationSessionId),
+          )
+          .map((item) => item.authorizationSessionId),
+      );
+      const admitted = await runtime.callAdminRpc("authConnectionsList", {
+        state: "admitted",
         page: { limit: 100 },
       });
-      const connectionB = before.items[0]?.connectionId;
-      assertExists(connectionB);
+      const sessionB = admitted.items.find((item) =>
+        newSessions.has(item.authorizationSessionId),
+      )?.authorizationSessionId;
+      assert.ok(sessionB);
+      const before = await runtime.callAdminRpc("authConnectionsList", {
+        authorizationSessionId: codecs.ulid.decode(sessionB),
+        state: "admitted",
+        page: { limit: 100 },
+      });
+      const connectionB = before.items[0]?.attachmentId;
+      assert.ok(connectionB);
 
       await pageA.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/kick?connectionId=${connectionB}`,
+        `${runtime.trellisUrl}/console/admin/sessions/kick?attachmentId=${connectionB}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(pageA);
-      await pageA.getByLabel("Connection").and(pageA.locator("input"))
+      await pageA
+        .getByLabel("Connection", { exact: true })
+        .and(pageA.locator("input"))
         .waitFor({ state: "visible", timeout: 30_000 });
-      await pageA.getByRole("button", { name: "Kick connection" }).click();
+      await pageA
+        .getByRole("button", { name: "Disconnect", exact: true })
+        .click();
       const dialog = pageA.locator("dialog[open]");
       await dialog.waitFor({ state: "visible" });
-      await dialog.locator("input").fill(connectionB);
-      await dialog.getByRole("button", { name: "Kick connection" }).click();
-      await runtime.waitFor(async () => {
-        const after = await runtime.callAdminRpc("authConnectionsList", {
-          sessionId: sessionB,
-          page: { limit: 100 },
-        });
-        return after.items.every((entry) => entry.connectionId !== connectionB)
-          ? true
-          : undefined;
-      }, { timeoutMs: 30_000 });
+      await dialog
+        .getByRole("button", { name: "Disconnect", exact: true })
+        .click();
+      await runtime.waitFor(
+        async () => {
+          const after = await runtime.callAdminRpc("authConnectionsList", {
+            authorizationSessionId: codecs.ulid.decode(sessionB),
+            state: "admitted",
+            page: { limit: 100 },
+          });
+          return after.items.every(
+            (entry) => entry.attachmentId !== connectionB,
+          )
+            ? true
+            : undefined;
+        },
+        { timeoutMs: 30_000 },
+      );
       await pageA.goto(`${runtime.trellisUrl}/console/admin/sessions/revoke`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(pageA);
-      const optionB = pageA.getByLabel("Session").locator(
-        `option[value="${sessionB}"]`,
-      );
+      const optionB = pageA
+        .getByLabel("Session", { exact: true })
+        .locator(`option[value="${sessionB}"]`);
       await optionB.waitFor({ state: "attached", timeout: 30_000 });
-      assertEquals((await optionB.innerText()).includes("active"), true);
+      await pageA.getByLabel("Session", { exact: true }).selectOption(sessionB);
+      const sessions = await runtime.callAdminRpc(
+        "authAuthorizationSessionsList",
+        { page: { limit: 100 } },
+      );
+      assert.equal(
+        sessions.items.find((item) => item.authorizationSessionId === sessionB)
+          ?.state,
+        "active",
+      );
     } finally {
       await contextB.close();
       await contextA.close();
-    }
-  }, browserRuntimeOptions());
-});
-
-Deno.test("B35[partial] profile identities stay self-scoped for an administrator", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    // The administrator is the viewer here. The profile's identity panel reads
-    // the caller's own identities: Trellis scopes UserIdentities.List to the
-    // caller principal, so no cross-user identity can appear even for an
-    // administrator.
-    await runtime.ensureAdmin();
-    const context = await launchProfile(runtime);
-    try {
-      const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
-      await openConsoleAsRuntimeAdmin(page, runtime);
-      await page.goto(`${runtime.trellisUrl}/console/profile`, {
-        waitUntil: "domcontentloaded",
-      });
-      await waitForConsoleShell(page);
-      await page.getByRole("heading", { name: /Account/ }).first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      await page.getByText("How you sign in").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      // The identities shown are the caller's own: the panel renders the
-      // caller-scoped UserIdentities.List result for this administrator, and
-      // the page exposes no cross-user selector.
-      await page.getByText(/This account signs in through/).first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      assertEquals(
-        await page.getByRole("combobox").count(),
-        0,
-        "the profile must not offer a cross-user selector",
-      );
-      assertNoBrowserErrors(errors);
-    } finally {
-      await context.close();
     }
   }, browserRuntimeOptions());
 });

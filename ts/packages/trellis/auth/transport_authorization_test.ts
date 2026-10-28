@@ -1,8 +1,7 @@
-import { assert, assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
-import vectors from "../../../../integration/fixtures/protocol/transport-authorization/vectors.json" with {
-  type: "json",
-};
+import vectors from "../../../../integration/fixtures/protocol/transport-authorization/vectors.json" with { type: "json" };
 import {
   classifyTransportAuthorizationWasm,
   transportAuthorizationDigestWasm,
@@ -25,11 +24,11 @@ type DigestCase = {
   digest: string;
 };
 
-Deno.test("shared transport vectors classify identically in TypeScript over WASM", async () => {
+test("shared transport vectors classify identically in TypeScript over WASM", async () => {
   const cases = (vectors as { cases: Case[] }).cases;
   assert(cases.length > 0, "shared vectors must cover behavior");
   for (const testCase of cases) {
-    assertEquals(
+    assert.deepEqual(
       await classifyTransportAuthorizationWasm(
         testCase.admitted,
         testCase.allowed,
@@ -39,7 +38,7 @@ Deno.test("shared transport vectors classify identically in TypeScript over WASM
       testCase.name,
     );
     if (testCase.reverseClass) {
-      assertEquals(
+      assert.deepEqual(
         await classifyTransportAuthorizationWasm(
           testCase.allowed,
           testCase.admitted,
@@ -52,11 +51,11 @@ Deno.test("shared transport vectors classify identically in TypeScript over WASM
   }
 });
 
-Deno.test("shared transport digests match the cross-language fixture", async () => {
+test("shared transport digests match the cross-language fixture", async () => {
   const digests = (vectors as { digests: DigestCase[] }).digests;
   assert(digests.length > 0);
   for (const entry of digests) {
-    assertEquals(
+    assert.deepEqual(
       await transportAuthorizationDigestWasm(entry.policy),
       entry.digest,
       entry.name,

@@ -1,0 +1,72 @@
+---
+title: "Resources"
+description: "KV buckets, store resources, public app state, and runtime stream semantics."
+---
+
+# Runtime resources
+
+Participants declare State, KV, Store, Job, and Consumer resources in native
+IDL. Each declaration has a local name, title, description, and optional status.
+Trellis approves and provisions them before exposing generated handles.
+
+Capability approval is a human/policy decision; the server still derives exact
+runtime grants. Resource approval commits concrete physical semantics. Desired
+capacity fields are planning hints only: they do not grant approval, gate
+readiness, configure the provider, or become reported actual limits.
+
+## Lifecycle and ownership
+
+Each resource is identified by owner, participant, kind, and local name. Service
+resources belong to the deployment; device resources belong to the device;
+app/agent State belongs to the user and qualified participant.
+
+Removing a declaration performs Detach: it removes runtime authority without
+deleting the allocation or its data. A compatible, newly approved re-add of the
+same identity reattaches it. Rename or kind change creates a new identity.
+
+An existing provider resource at Trellis's deterministic name must carry the
+ownership marker for that catalog resource. Trellis rejects a foreign resource
+instead of adopting, purging, or destroying it. Explicit administrator
+`trellis resources destroy` accepts only a detached catalog resource and deletes
+its allocation only after ownership is proven. Because State shares one
+Trellis-owned bucket, State destruction purges only that resource's owned key.
+
+## State
+
+State is one typed value with `get`, `create`, `set`, `replace`, and `delete`.
+It has no application key or TTL. Revisions are opaque CAS tokens. An available
+but unwritten State resource returns no value; that differs from an unavailable
+optional resource handle.
+
+State values carry a positive representation version. Generated SDKs may run a
+declared direct historical-to-current migration in memory while preserving the
+original storage revision/time. Reads never write migrated values back.
+
+## KV
+
+KV is typed keyed storage with explicit revisions, CAS, bounded history, and
+watches including tombstones. Values use the Trellis envelope and generated
+codec. Approved hard commitments include history and TTL. Approved retention
+expansions reconcile in place; destructive reductions fail rather than mutate
+retained data.
+
+## Store
+
+Store holds opaque objects and metadata. It preserves streaming, checksum,
+cancellation, TTL, and provider-enforced capacity behavior. Store has no schema
+or representation migration. Listing uses finite cursor pages by object key.
+
+## Trellis-owned streams
+
+Runtime startup creates a missing Trellis-owned stream or accepts an exact
+existing configuration. It may reconcile only safe subject or retention-limit
+expansions. Startup fails for incompatible identity, storage, retention, discard,
+source, or limit settings and never applies a retention-reducing change.
+
+## Consumers and jobs
+
+A Consumer is a durable event cursor with local per-process concurrency, replay,
+retry, and an Events-owned per-Consumer DLQ. Replay targets only that Consumer
+and remains at least once. Jobs are private participant queues with durable
+progress, logs, retries, and dead-job lifecycle. Use durable Operations for
+caller-visible workflows.

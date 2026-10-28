@@ -128,6 +128,8 @@ CREATE TABLE IF NOT EXISTS jobs_events_projection (
     raw_event_json TEXT NOT NULL,
     projected INTEGER,
     reason TEXT,
+    -- Jobs stream sequence of the projected event, so redelivery is a no-op.
+    source_sequence INTEGER UNIQUE,
     PRIMARY KEY (service, job_type, id, sequence)
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_events_projection_job_time

@@ -7,13 +7,11 @@
 
 use futures_util::StreamExt;
 use runtime_trellis::apis::runtime_trellis_liveprobe_v1::{lives, rpc};
-use runtime_trellis::participants::runtime_trellis_live_probe_caller::Client;
+use runtime_trellis::apps::runtime_trellis_live_probe_caller::{Client, Request};
 use runtime_trellis::types::LiveProbeFrame;
 use runtime_trellis::Int64;
 use std::io::Write as _;
 use std::time::Duration;
-use trellis_rs::auth::{load_admin_session, start_agent_login, StartAgentLoginOpts};
-use trellis_rs::client::{UserConnectOptions, UserSessionCredentials};
 
 const BUSY_TOTAL: i64 = 1_026;
 const TWO_HEARTBEATS: Duration = Duration::from_millis(21_000);
@@ -43,27 +41,12 @@ where
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let url = std::env::var("TRELLIS_URL")?;
-    let login = start_agent_login(&StartAgentLoginOpts {
-        trellis_url: &url,
-        participant_id: "runtime-trellis.LiveProbeCaller",
-    })
-    .await?;
-    println!("liveprobe login {}", login.login_url());
-    std::io::stdout().flush()?;
-    let outcome = login.complete_without_persistence(&url).await?;
-    trellis_rs::auth::save_admin_session(&outcome.state)?;
-    let session = load_admin_session()?;
-    let client = Client::connect(UserConnectOptions::new(
-        &url,
-        5_000,
-        UserSessionCredentials {
-            login_session_id: &session.login_session_id,
-            session_key_seed_base64url: &session.session_seed,
-        },
-        "runtime-trellis.LiveProbeCaller",
-    ))
-    .await?;
+    let client = Client::from_generated(
+        trellis_rs::generated::Client::connect_user(
+            trellis_runtime_acceptance::user_options::<Request>(5_000).await?,
+        )
+        .await?,
+    );
     let api = client.runtime_trellis_liveprobe_v1();
     let run_id = format!("v3-{}", std::process::id());
     let mut busy = api
@@ -157,7 +140,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     println!(
-        "LIVE_PROBE_CALLER_RESULT {{\"busyFrames\":{},\"quietFrames\":1,\"busyStarts\":{},\"busyCleanups\":{},\"busyActive\":{},\"busyEmitted\":{},\"quietStarts\":{},\"quietCleanups\":{},\"quietActive\":{},\"quietEmitted\":{}}}",
+        "LIVE_PROBE_CALLER_RESULT {{\"busyFrames\":{},\"quietFrames\":1,\
+        \"busyStarts\":{},\"busyCleanups\":{},\"busyActive\":{},\
+        \"busyEmitted\":{},\"quietStarts\":{},\"quietCleanups\":{},\
+        \"quietActive\":{},\"quietEmitted\":{}}}",
         BUSY_TOTAL,
         busy_status.starts.0,
         busy_status.cleanups.0,

@@ -1,7 +1,7 @@
 /**
  * Real-boundary built-in Feed consumer isolation acceptance (BI02).
  *
- * Two public Console consumers open the same built-in Health, Jobs, or Events
+ * Two generated native consumers open the same built-in Health, Jobs, or Events
  * Feed against one all-in-one runtime. Closing one consumer must release
  * exactly that consumer's live session while the second consumer keeps
  * receiving new domain frames and the surviving connection still serves
@@ -11,8 +11,9 @@
 import { Result } from "@oatscenter/trellis";
 import type { CallerRuntime } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { assert, assertEquals } from "@std/assert";
-import { fromFileUrl } from "@std/path";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { ulid } from "ulid";
 import { metrics } from "@opentelemetry/api";
 import {
   AggregationTemporality,
@@ -21,9 +22,10 @@ import {
   PeriodicExportingMetricReader,
 } from "@opentelemetry/sdk-metrics";
 
-import { participants as webParticipants } from "trellis-web-generated";
-
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
@@ -33,7 +35,7 @@ const runtimeOptions = {
 };
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
-type ConsoleClient = CallerRuntime<typeof webParticipants.Console.participant>;
+type ConsoleClient = CallerRuntime<typeof apps.Observer.request>;
 
 /** Connects one fixture Provider service so Jobs and Events have a publisher. */
 async function connectProvider(runtime: Runtime, name: string) {
@@ -42,7 +44,7 @@ async function connectProvider(runtime: Runtime, name: string) {
     contract: participants.Provider.participant,
   });
   return await TrellisService.connect({
-    trellisUrl: runtime.trellisUrl,
+    trellisUrl: runtime.oauthIssuer,
     participant: participants.Provider.participant,
     name,
     seed: identity.seed,
@@ -94,8 +96,8 @@ function startMetricCapture() {
       if (metric.descriptor.name !== name) continue;
       for (const point of metric.dataPoints) {
         if (
-          Object.entries(subset).every(([key, value]) =>
-            point.attributes[key] === value
+          Object.entries(subset).every(
+            ([key, value]) => point.attributes[key] === value,
           )
         ) {
           sum += point.value as number;
@@ -126,23 +128,30 @@ async function closeConsumerA(
 ): Promise<void> {
   await metricsCapture.flush();
   const beforeEnds = metricsCapture.total("trellis.live.ends", {
-    "trellis.kind": "standalone",
+    "trellis.kind": "live",
     "trellis.side": "consumer",
   });
   abortA.abort();
   await iteratorA.return?.();
   await pumpA.catch(() => undefined);
-  await runtime.waitFor(async () => {
-    await metricsCapture.flush();
-    return metricsCapture.total("trellis.live.ends", {
-          "trellis.kind": "standalone",
+  await runtime.waitFor(
+    async () => {
+      await metricsCapture.flush();
+      return (
+        metricsCapture.total("trellis.live.ends", {
+          "trellis.kind": "live",
           "trellis.side": "consumer",
-        }) - beforeEnds >= 1;
-  }, { timeoutMs: 15_000 });
+        }) -
+          beforeEnds >=
+        1
+      );
+    },
+    { timeoutMs: 15_000 },
+  );
   await metricsCapture.flush();
-  assertEquals(
+  assert.deepEqual(
     metricsCapture.total("trellis.live.ends", {
-      "trellis.kind": "standalone",
+      "trellis.kind": "live",
       "trellis.side": "consumer",
     }) - beforeEnds,
     1,
@@ -152,23 +161,23 @@ async function closeConsumerA(
 
 /** Proves a surviving consumer still answers an unrelated finite RPC. */
 async function assertFiniteRpcSurvives(client: ConsoleClient): Promise<void> {
-  const sessions = await client.sessionsList({}).orThrow();
+  const events = await client.eventsQuery({}).orThrow();
   assert(
-    Array.isArray(sessions.items),
+    Array.isArray(events.items),
     "unrelated finite RPC on the surviving connection must succeed",
   );
 }
 
-Deno.test("BI02 closing one of two Health.Watch consumers leaves the other serving", async () => {
+test("BI02 closing one of two Health.Watch consumers leaves the other serving", async () => {
   const metricsCapture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
     const clientA = await runtime.connectClient({
-      name: `bi02-health-a-${crypto.randomUUID()}`,
-      contract: webParticipants.Console.participant,
+      name: `bi02-health-a-${ulid()}`,
+      contract: apps.Observer.request,
     });
     const clientB = await runtime.connectClient({
-      name: `bi02-health-b-${crypto.randomUUID()}`,
-      contract: webParticipants.Console.participant,
+      name: `bi02-health-b-${ulid()}`,
+      contract: apps.Observer.request,
     });
     const abortA = new AbortController();
     const abortB = new AbortController();
@@ -196,15 +205,12 @@ Deno.test("BI02 closing one of two Health.Watch consumers leaves the other servi
 
       // A fresh service heartbeat is a real Health change the surviving
       // consumer must still observe.
-      trigger = await connectProvider(
-        runtime,
-        `bi02-health-trigger-${crypto.randomUUID()}`,
-      );
+      trigger = await connectProvider(runtime, `bi02-health-trigger-${ulid()}`);
       await runtime.waitFor(
         () =>
-          framesB.slice(baselineB).some((frame) =>
-            frame.type === "healthInvalidated"
-          ),
+          framesB
+            .slice(baselineB)
+            .some((frame) => frame.type === "healthInvalidated"),
         { timeoutMs: 30_000 },
       );
 
@@ -223,37 +229,39 @@ Deno.test("BI02 closing one of two Health.Watch consumers leaves the other servi
   }, runtimeOptions);
 });
 
-Deno.test("BI02 closing one of two Jobs.Watch consumers leaves the other serving", async () => {
+test("BI02 closing one of two Jobs.Watch consumers leaves the other serving", async () => {
   const metricsCapture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
     const service = await connectProvider(
       runtime,
-      `bi02-jobs-provider-${crypto.randomUUID()}`,
+      `bi02-jobs-provider-${ulid()}`,
     );
     await service.jobs.work.handle(({ job }) =>
-      Promise.resolve(Result.ok(job.payload))
+      Promise.resolve(Result.ok(job.payload)),
     );
     const clientA = await runtime.connectClient({
-      name: `bi02-jobs-a-${crypto.randomUUID()}`,
-      contract: webParticipants.Console.participant,
+      name: `bi02-jobs-a-${ulid()}`,
+      contract: apps.Observer.request,
     });
     const clientB = await runtime.connectClient({
-      name: `bi02-jobs-b-${crypto.randomUUID()}`,
-      contract: webParticipants.Console.participant,
+      name: `bi02-jobs-b-${ulid()}`,
+      contract: apps.Observer.request,
     });
     const abortA = new AbortController();
     const abortB = new AbortController();
     const framesA: Record<string, unknown>[] = [];
     const framesB: Record<string, unknown>[] = [];
     try {
-      const iteratorA = (await clientA.jobsWatch(
-        { includeInitial: false },
-        { signal: abortA.signal },
-      ).orThrow())[Symbol.asyncIterator]();
-      const iteratorB = (await clientB.jobsWatch(
-        { includeInitial: false },
-        { signal: abortB.signal },
-      ).orThrow())[Symbol.asyncIterator]();
+      const iteratorA = (
+        await clientA
+          .jobsWatch({ includeInitial: false }, { signal: abortA.signal })
+          .orThrow()
+      )[Symbol.asyncIterator]();
+      const iteratorB = (
+        await clientB
+          .jobsWatch({ includeInitial: false }, { signal: abortB.signal })
+          .orThrow()
+      )[Symbol.asyncIterator]();
       const pumpA = pumpInto(iteratorA, framesA);
       const pumpB = pumpInto(iteratorB, framesB);
       await runtime.waitFor(
@@ -266,14 +274,16 @@ Deno.test("BI02 closing one of two Jobs.Watch consumers leaves the other serving
       await closeConsumerA(metricsCapture, runtime, iteratorA, pumpA, abortA);
       const baselineB = framesB.length;
 
-      await service.jobs.work.create({
-        value: `bi02-jobs-${crypto.randomUUID()}`,
-      }).orThrow();
+      await service.jobs.work
+        .create({
+          value: `bi02-jobs-${ulid()}`,
+        })
+        .orThrow();
       await runtime.waitFor(
         () =>
-          framesB.slice(baselineB).some((frame) =>
-            frame.kind === "queryInvalidated"
-          ),
+          framesB
+            .slice(baselineB)
+            .some((frame) => frame.kind === "queryInvalidated"),
         { timeoutMs: 30_000 },
       );
 
@@ -292,34 +302,36 @@ Deno.test("BI02 closing one of two Jobs.Watch consumers leaves the other serving
   }, runtimeOptions);
 });
 
-Deno.test("T09 disposing one of two scopes on one client leaves the other serving", async () => {
+test("T09 disposing one of two scopes on one client leaves the other serving", async () => {
   const metricsCapture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
     const service = await connectProvider(
       runtime,
-      `t09-jobs-provider-${crypto.randomUUID()}`,
+      `t09-jobs-provider-${ulid()}`,
     );
     await service.jobs.work.handle(({ job }) =>
-      Promise.resolve(Result.ok(job.payload))
+      Promise.resolve(Result.ok(job.payload)),
     );
     // One client connection owns both scopes.
     const client = await runtime.connectClient({
-      name: `t09-jobs-${crypto.randomUUID()}`,
-      contract: webParticipants.Console.participant,
+      name: `t09-jobs-${ulid()}`,
+      contract: apps.Observer.request,
     });
     const abortA = new AbortController();
     const abortB = new AbortController();
     const framesA: Record<string, unknown>[] = [];
     const framesB: Record<string, unknown>[] = [];
     try {
-      const iteratorA = (await client.jobsWatch(
-        { includeInitial: false },
-        { signal: abortA.signal },
-      ).orThrow())[Symbol.asyncIterator]();
-      const iteratorB = (await client.jobsWatch(
-        { includeInitial: false },
-        { signal: abortB.signal },
-      ).orThrow())[Symbol.asyncIterator]();
+      const iteratorA = (
+        await client
+          .jobsWatch({ includeInitial: false }, { signal: abortA.signal })
+          .orThrow()
+      )[Symbol.asyncIterator]();
+      const iteratorB = (
+        await client
+          .jobsWatch({ includeInitial: false }, { signal: abortB.signal })
+          .orThrow()
+      )[Symbol.asyncIterator]();
       const pumpA = pumpInto(iteratorA, framesA);
       const pumpB = pumpInto(iteratorB, framesB);
       await runtime.waitFor(
@@ -332,14 +344,16 @@ Deno.test("T09 disposing one of two scopes on one client leaves the other servin
       await closeConsumerA(metricsCapture, runtime, iteratorA, pumpA, abortA);
       const baselineB = framesB.length;
 
-      await service.jobs.work.create({
-        value: `t09-jobs-${crypto.randomUUID()}`,
-      }).orThrow();
+      await service.jobs.work
+        .create({
+          value: `t09-jobs-${ulid()}`,
+        })
+        .orThrow();
       await runtime.waitFor(
         () =>
-          framesB.slice(baselineB).some((frame) =>
-            frame.kind === "queryInvalidated"
-          ),
+          framesB
+            .slice(baselineB)
+            .some((frame) => frame.kind === "queryInvalidated"),
         { timeoutMs: 30_000 },
       );
 
@@ -357,14 +371,14 @@ Deno.test("T09 disposing one of two scopes on one client leaves the other servin
   }, runtimeOptions);
 });
 
-Deno.test("BI02 closing one of two Events.Watch consumers leaves the other serving", async () => {
+test("BI02 closing one of two Events.Watch consumers leaves the other serving", async () => {
   const metricsCapture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
     const service = await connectProvider(
       runtime,
-      `bi02-events-provider-${crypto.randomUUID()}`,
+      `bi02-events-provider-${ulid()}`,
     );
-    const published = `bi02-events-${crypto.randomUUID()}`;
+    const published = `bi02-events-${ulid()}`;
     const matchesPublished = (frame: Record<string, unknown>): boolean => {
       const events = frame.events;
       if (!Array.isArray(events)) return false;
@@ -373,9 +387,9 @@ Deno.test("BI02 closing one of two Events.Watch consumers leaves the other servi
         const payload = (event as { payload?: unknown }).payload;
         if (!(payload instanceof Uint8Array)) return false;
         try {
-          const decoded = JSON.parse(
-            new TextDecoder().decode(payload),
-          ) as { value?: unknown };
+          const decoded = JSON.parse(new TextDecoder().decode(payload)) as {
+            value?: unknown;
+          };
           return decoded.value === published;
         } catch {
           return false;
@@ -383,35 +397,54 @@ Deno.test("BI02 closing one of two Events.Watch consumers leaves the other servi
       });
     };
     const clientA = await runtime.connectClient({
-      name: `bi02-events-a-${crypto.randomUUID()}`,
-      contract: webParticipants.Console.participant,
+      name: `bi02-events-a-${ulid()}`,
+      contract: apps.Observer.request,
     });
     const clientB = await runtime.connectClient({
-      name: `bi02-events-b-${crypto.randomUUID()}`,
-      contract: webParticipants.Console.participant,
+      name: `bi02-events-b-${ulid()}`,
+      contract: apps.Observer.request,
     });
     const abortA = new AbortController();
     const abortB = new AbortController();
     const framesA: Record<string, unknown>[] = [];
     const framesB: Record<string, unknown>[] = [];
     try {
-      const iteratorA = (await clientA.eventsWatch({}, {
-        signal: abortA.signal,
-      }).orThrow())[Symbol.asyncIterator]();
-      const iteratorB = (await clientB.eventsWatch({}, {
-        signal: abortB.signal,
-      }).orThrow())[Symbol.asyncIterator]();
+      const iteratorA = (
+        await clientA
+          .eventsWatch(
+            {},
+            {
+              signal: abortA.signal,
+            },
+          )
+          .orThrow()
+      )[Symbol.asyncIterator]();
+      const iteratorB = (
+        await clientB
+          .eventsWatch(
+            {},
+            {
+              signal: abortB.signal,
+            },
+          )
+          .orThrow()
+      )[Symbol.asyncIterator]();
       const pumpA = pumpInto(iteratorA, framesA);
       const pumpB = pumpInto(iteratorB, framesB);
       // Events.Watch has no ready frame; one real publish proves both
       // consumers are admitted before A is closed.
-      await runtime.waitFor(async () => {
-        if (framesA.length > 0 && framesB.length > 0) return true;
-        await service.publishChanged({
-          value: `bi02-events-prime-${crypto.randomUUID()}`,
-        }).orThrow();
-        return false;
-      }, { timeoutMs: 30_000 });
+      await runtime.waitFor(
+        async () => {
+          if (framesA.length > 0 && framesB.length > 0) return true;
+          await service
+            .publishChanged({
+              value: `bi02-events-prime-${ulid()}`,
+            })
+            .orThrow();
+          return false;
+        },
+        { timeoutMs: 30_000 },
+      );
 
       await closeConsumerA(metricsCapture, runtime, iteratorA, pumpA, abortA);
       const baselineB = framesB.length;

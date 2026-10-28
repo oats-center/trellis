@@ -93,14 +93,18 @@ async function openKv(
   options: KvOpenOptions,
 ): Promise<KV> {
   const kvm = new Kvm(nats);
-  const kv = options.bindOnly ? await kvm.open(name) : await kvm.create(name, {
-    history: options.history ?? 1,
-    ttl: options.ttl ?? 0,
-    ...(options.replicas === undefined ? {} : { replicas: options.replicas }),
-    ...(options.maxValueBytes === undefined
-      ? {}
-      : { maxValueSize: options.maxValueBytes }),
-  });
+  const kv = options.bindOnly
+    ? await kvm.open(name)
+    : await kvm.create(name, {
+        history: options.history ?? 1,
+        ttl: options.ttl ?? 0,
+        ...(options.replicas === undefined
+          ? {}
+          : { replicas: options.replicas }),
+        ...(options.maxValueBytes === undefined
+          ? {}
+          : { maxValueSize: options.maxValueBytes }),
+      });
   await ensureExistingBucketOptions(kv, name, options);
   return kv;
 }
@@ -145,7 +149,8 @@ export async function ensureExistingBucketOptions(
   }
   if (
     maxValueBytes !== undefined &&
-    status.maxValueSize > 0 && status.maxValueSize < maxValueBytes
+    status.maxValueSize > 0 &&
+    status.maxValueSize < maxValueBytes
   ) {
     throw new Error(
       `KV bucket '${name}' provider size limit is less than requested`,
@@ -194,7 +199,8 @@ export function encodeResourceValue<T>(
   value: T,
 ) {
   if (
-    !Number.isInteger(representation.version) || representation.version <= 0 ||
+    !Number.isInteger(representation.version) ||
+    representation.version <= 0 ||
     representation.version > 0xffff_ffff
   ) {
     throw new RangeError("KV representation version must be a positive u32");
@@ -220,7 +226,8 @@ export async function decodeResourceValue<T>(
     bytes.length < KV_ENVELOPE_HEADER_BYTES ||
     KV_MAGIC.some((byte, index) => bytes[index] !== byte) ||
     bytes[4] !== KV_ENVELOPE_FORMAT
-  ) throw new Error("Invalid TRKV envelope");
+  )
+    throw new Error("Invalid TRKV envelope");
   const version = new DataView(
     bytes.buffer,
     bytes.byteOffset,
@@ -240,11 +247,13 @@ export async function decodeResourceValue<T>(
   const migrated = await migrate(historicCodec.decode(encoded));
   if (migrated instanceof Result) {
     if (migrated.isErr()) throw migrated.error;
-    return representation.codec.decode(representation.codec.encode(
-      migrated.unwrapOrElse(() => {
-        throw new Error("Resource migration unexpectedly failed");
-      }),
-    ));
+    return representation.codec.decode(
+      representation.codec.encode(
+        migrated.unwrapOrElse(() => {
+          throw new Error("Resource migration unexpectedly failed");
+        }),
+      ),
+    );
   }
   return representation.codec.decode(representation.codec.encode(migrated));
 }
@@ -304,8 +313,8 @@ export class TypedKV<T> {
   ) {
     this.#transport = transport;
     this.#options = options;
-    this.#acquireTimeoutMs = options.acquireTimeoutMs ??
-      DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS;
+    this.#acquireTimeoutMs =
+      options.acquireTimeoutMs ?? DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS;
   }
 
   /** Opens or creates a typed KV bucket on the current generation. */
@@ -315,22 +324,24 @@ export class TypedKV<T> {
     representation: KvRepresentation<T>,
     options: KvOpenOptions<T> = {},
   ): AsyncResult<TypedKV<T>, KVError> {
-    return AsyncResult.from((async () => {
-      const handle = new TypedKV(
-        transport,
-        name,
-        representation,
-        options.migrations ?? {},
-        options.isCurrent ?? (() => true),
-        options,
-      );
-      try {
-        await handle.#materialize();
-        return Result.ok(handle);
-      } catch (cause) {
-        return Result.err(kvError("open", undefined, cause));
-      }
-    })());
+    return AsyncResult.from(
+      (async () => {
+        const handle = new TypedKV(
+          transport,
+          name,
+          representation,
+          options.migrations ?? {},
+          options.isCurrent ?? (() => true),
+          options,
+        );
+        try {
+          await handle.#materialize();
+          return Result.ok(handle);
+        } catch (cause) {
+          return Result.err(kvError("open", undefined, cause));
+        }
+      })(),
+    );
   }
 
   /**
@@ -418,38 +429,40 @@ export class TypedKV<T> {
   /** Returns the current value, or `undefined` when absent or deleted. */
   get(key: string): AsyncResult<T | undefined, KVReadError> {
     return this.#observe("read", () => this.#readEntry(key)).map((entry) =>
-      entry?.operation === "put" ? entry.value : undefined
+      entry?.operation === "put" ? entry.value : undefined,
     );
   }
 
   /** Returns the latest value or tombstone with authoritative revision metadata. */
-  getEntry(
-    key: string,
-  ): AsyncResult<TypedKvEntry<T> | undefined, KVReadError> {
+  getEntry(key: string): AsyncResult<TypedKvEntry<T> | undefined, KVReadError> {
     return this.#observe("read", () => this.#readEntry(key));
   }
 
   #readEntry(
     key: string,
   ): AsyncResult<TypedKvEntry<T> | undefined, KVReadError> {
-    return AsyncResult.from((async () => {
-      try {
-        this.#assertCurrent();
-        const acquired = await this.#acquire("read");
+    return AsyncResult.from(
+      (async () => {
         try {
-          const entry = await acquired.kv.get(escapeKvKey(key));
-          return entry
-            ? await decodeEntry(this.representation, this.migrations, entry)
-            : Result.ok(undefined);
-        } finally {
-          acquired.release();
+          this.#assertCurrent();
+          const acquired = await this.#acquire("read");
+          try {
+            const entry = await acquired.kv.get(escapeKvKey(key));
+            return entry
+              ? await decodeEntry(this.representation, this.migrations, entry)
+              : Result.ok(undefined);
+          } finally {
+            acquired.release();
+          }
+        } catch (cause) {
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : kvError("get", key, cause),
+          );
         }
-      } catch (cause) {
-        return Result.err(
-          cause instanceof TransportError ? cause : kvError("get", key, cause),
-        );
-      }
-    })());
+      })(),
+    );
   }
 
   /** Creates a value only when the key has no current value. */
@@ -458,65 +471,71 @@ export class TypedKV<T> {
     value: T,
   ): AsyncResult<TypedKvEntry<T>, KVOperationError> {
     return this.#observe("cas", () =>
-      AsyncResult.from((async () => {
-        try {
-          this.#assertCurrent();
-          const acquired = await this.#acquire("write");
+      AsyncResult.from(
+        (async () => {
           try {
-            const revision = await acquired.kv.create(
-              escapeKvKey(key),
-              encodeResourceValue(this.representation, value),
+            this.#assertCurrent();
+            const acquired = await this.#acquire("write");
+            try {
+              const revision = await acquired.kv.create(
+                escapeKvKey(key),
+                encodeResourceValue(this.representation, value),
+              );
+              return Result.ok({
+                key,
+                value,
+                revision: revisionFromBackend(revision),
+                timestamp: new Date(),
+                operation: "put",
+              });
+            } finally {
+              acquired.release();
+            }
+          } catch (cause) {
+            return Result.err(
+              cause instanceof TransportError
+                ? cause
+                : kvError("create", key, cause),
             );
-            return Result.ok({
-              key,
-              value,
-              revision: revisionFromBackend(revision),
-              timestamp: new Date(),
-              operation: "put",
-            });
-          } finally {
-            acquired.release();
           }
-        } catch (cause) {
-          return Result.err(
-            cause instanceof TransportError
-              ? cause
-              : kvError("create", key, cause),
-          );
-        }
-      })()));
+        })(),
+      ),
+    );
   }
 
   /** Writes a value without a revision precondition. */
   put(key: string, value: T): AsyncResult<TypedKvEntry<T>, KVOperationError> {
     return this.#observe("write", () =>
-      AsyncResult.from((async () => {
-        try {
-          this.#assertCurrent();
-          const acquired = await this.#acquire("write");
+      AsyncResult.from(
+        (async () => {
           try {
-            const revision = await acquired.kv.put(
-              escapeKvKey(key),
-              encodeResourceValue(this.representation, value),
+            this.#assertCurrent();
+            const acquired = await this.#acquire("write");
+            try {
+              const revision = await acquired.kv.put(
+                escapeKvKey(key),
+                encodeResourceValue(this.representation, value),
+              );
+              return Result.ok({
+                key,
+                value,
+                revision: revisionFromBackend(revision),
+                timestamp: new Date(),
+                operation: "put",
+              });
+            } finally {
+              acquired.release();
+            }
+          } catch (cause) {
+            return Result.err(
+              cause instanceof TransportError
+                ? cause
+                : kvError("put", key, cause),
             );
-            return Result.ok({
-              key,
-              value,
-              revision: revisionFromBackend(revision),
-              timestamp: new Date(),
-              operation: "put",
-            });
-          } finally {
-            acquired.release();
           }
-        } catch (cause) {
-          return Result.err(
-            cause instanceof TransportError
-              ? cause
-              : kvError("put", key, cause),
-          );
-        }
-      })()));
+        })(),
+      ),
+    );
   }
 
   /** Replaces a value only when its current revision matches. */
@@ -526,34 +545,37 @@ export class TypedKV<T> {
     value: T,
   ): AsyncResult<TypedKvEntry<T>, KVOperationError> {
     return this.#observe("cas", () =>
-      AsyncResult.from((async () => {
-        try {
-          this.#assertCurrent();
-          const acquired = await this.#acquire("write");
+      AsyncResult.from(
+        (async () => {
           try {
-            const nextRevision = await acquired.kv.update(
-              escapeKvKey(key),
-              encodeResourceValue(this.representation, value),
-              revision,
+            this.#assertCurrent();
+            const acquired = await this.#acquire("write");
+            try {
+              const nextRevision = await acquired.kv.update(
+                escapeKvKey(key),
+                encodeResourceValue(this.representation, value),
+                revision,
+              );
+              return Result.ok({
+                key,
+                value,
+                revision: revisionFromBackend(nextRevision),
+                timestamp: new Date(),
+                operation: "put",
+              });
+            } finally {
+              acquired.release();
+            }
+          } catch (cause) {
+            return Result.err(
+              cause instanceof TransportError
+                ? cause
+                : kvError("replace", key, cause),
             );
-            return Result.ok({
-              key,
-              value,
-              revision: revisionFromBackend(nextRevision),
-              timestamp: new Date(),
-              operation: "put",
-            });
-          } finally {
-            acquired.release();
           }
-        } catch (cause) {
-          return Result.err(
-            cause instanceof TransportError
-              ? cause
-              : kvError("replace", key, cause),
-          );
-        }
-      })()));
+        })(),
+      ),
+    );
   }
 
   /** Deletes a key, optionally requiring its current revision. */
@@ -562,68 +584,74 @@ export class TypedKV<T> {
     revision?: ResourceRevision,
   ): AsyncResult<void, KVOperationError> {
     return this.#observe("delete", () =>
-      AsyncResult.from((async () => {
-        try {
-          this.#assertCurrent();
-          const acquired = await this.#acquire("write");
+      AsyncResult.from(
+        (async () => {
           try {
-            await acquired.kv.delete(
-              escapeKvKey(key),
-              revision === undefined ? {} : { previousSeq: revision },
+            this.#assertCurrent();
+            const acquired = await this.#acquire("write");
+            try {
+              await acquired.kv.delete(
+                escapeKvKey(key),
+                revision === undefined ? {} : { previousSeq: revision },
+              );
+              return Result.ok(undefined);
+            } finally {
+              acquired.release();
+            }
+          } catch (cause) {
+            return Result.err(
+              cause instanceof TransportError
+                ? cause
+                : kvError("delete", key, cause),
             );
-            return Result.ok(undefined);
-          } finally {
-            acquired.release();
           }
-        } catch (cause) {
-          return Result.err(
-            cause instanceof TransportError
-              ? cause
-              : kvError("delete", key, cause),
-          );
-        }
-      })()));
+        })(),
+      ),
+    );
   }
 
   /** Returns all retained revisions for a key, including tombstones. */
-  history(
-    key: string,
-  ): AsyncResult<readonly TypedKvEntry<T>[], KVReadError> {
+  history(key: string): AsyncResult<readonly TypedKvEntry<T>[], KVReadError> {
     return this.#observe("list", () =>
-      AsyncResult.from((async () => {
-        try {
-          this.#assertCurrent();
-          const acquired = await this.#acquire("read");
+      AsyncResult.from(
+        (async () => {
           try {
-            const history = await acquired.kv.history({
-              key: escapeKvKey(key),
-            });
-            const entries: TypedKvEntry<T>[] = [];
-            for await (const entry of history) {
-              this.#assertCurrent();
-              const decoded = await decodeEntry(
-                this.representation,
-                this.migrations,
-                entry,
-              );
-              if (decoded.isErr()) return decoded;
-              entries.push(decoded.unwrapOrElse(() => {
-                throw new Error("KV history decode unexpectedly failed");
-              }));
+            this.#assertCurrent();
+            const acquired = await this.#acquire("read");
+            try {
+              const history = await acquired.kv.history({
+                key: escapeKvKey(key),
+              });
+              const entries: TypedKvEntry<T>[] = [];
+              for await (const entry of history) {
+                this.#assertCurrent();
+                const decoded = await decodeEntry(
+                  this.representation,
+                  this.migrations,
+                  entry,
+                );
+                if (decoded.isErr()) return decoded;
+                entries.push(
+                  decoded.unwrapOrElse(() => {
+                    throw new Error("KV history decode unexpectedly failed");
+                  }),
+                );
+              }
+              entries.sort((left, right) => left.revision - right.revision);
+              return Result.ok(entries);
+            } finally {
+              acquired.release();
             }
-            entries.sort((left, right) => left.revision - right.revision);
-            return Result.ok(entries);
-          } finally {
-            acquired.release();
+          } catch (cause) {
+            return Result.err(
+              cause instanceof TransportError
+                ? cause
+                : kvError("history", key, cause),
+            );
           }
-        } catch (cause) {
-          return Result.err(
-            cause instanceof TransportError
-              ? cause
-              : kvError("history", key, cause),
-          );
-        }
-      })()));
+        })(),
+      ),
+    );
   }
 
   /**
@@ -636,59 +664,62 @@ export class TypedKV<T> {
     options: { signal?: AbortSignal } = {},
   ): AsyncResult<AsyncIterable<KvWatchItem<T>>, KVOperationError> {
     return this.#observe("watch_setup", () =>
-      AsyncResult.from((async () => {
-        try {
-          this.#assertCurrent();
-          options.signal?.throwIfAborted();
-          // A watcher is a pinned observation: it holds its generation until the
-          // iteration ends so a rollover cannot retire the backend underneath it.
-          const acquired = await this.#acquire("read");
-          let watcher;
+      AsyncResult.from(
+        (async () => {
           try {
-            watcher = await acquired.kv.watch({
-              ...(key === undefined ? {} : { key: escapeKvKey(key) }),
-              include: key === undefined ? "" : "history",
+            this.#assertCurrent();
+            options.signal?.throwIfAborted();
+            // A watcher is a pinned observation: it holds its generation until the
+            // iteration ends so a rollover cannot retire the backend underneath it.
+            const acquired = await this.#acquire("read");
+            let watcher;
+            try {
+              watcher = await acquired.kv.watch({
+                ...(key === undefined ? {} : { key: escapeKvKey(key) }),
+                include: key === undefined ? "" : "history",
+              });
+            } catch (cause) {
+              acquired.release();
+              throw cause;
+            }
+            const representation = this.representation;
+            const migrations = this.migrations;
+            const isCurrent = this.isCurrent;
+            let released = false;
+            const stop = () => {
+              watcher.stop();
+              if (!released) {
+                released = true;
+                acquired.release();
+              }
+            };
+            options.signal?.addEventListener("abort", stop, { once: true });
+            if (options.signal?.aborted) stop();
+            return Result.ok({
+              async *[Symbol.asyncIterator]() {
+                try {
+                  for await (const entry of watcher) {
+                    if (!isCurrent()) {
+                      throw new Error("KV resource binding is stale");
+                    }
+                    yield await decodeEntry(representation, migrations, entry);
+                  }
+                } finally {
+                  stop();
+                  options.signal?.removeEventListener("abort", stop);
+                }
+              },
             });
           } catch (cause) {
-            acquired.release();
-            throw cause;
+            return Result.err(
+              cause instanceof TransportError
+                ? cause
+                : kvError("watch", key, cause),
+            );
           }
-          const representation = this.representation;
-          const migrations = this.migrations;
-          const isCurrent = this.isCurrent;
-          let released = false;
-          const stop = () => {
-            watcher.stop();
-            if (!released) {
-              released = true;
-              acquired.release();
-            }
-          };
-          options.signal?.addEventListener("abort", stop, { once: true });
-          if (options.signal?.aborted) stop();
-          return Result.ok({
-            async *[Symbol.asyncIterator]() {
-              try {
-                for await (const entry of watcher) {
-                  if (!isCurrent()) {
-                    throw new Error("KV resource binding is stale");
-                  }
-                  yield await decodeEntry(representation, migrations, entry);
-                }
-              } finally {
-                stop();
-                options.signal?.removeEventListener("abort", stop);
-              }
-            },
-          });
-        } catch (cause) {
-          return Result.err(
-            cause instanceof TransportError
-              ? cause
-              : kvError("watch", key, cause),
-          );
-        }
-      })()));
+        })(),
+      ),
+    );
   }
 
   /** Lists live keys using the backend's bounded iterator. */
@@ -696,96 +727,104 @@ export class TypedKV<T> {
     filter: string | string[] = ">",
   ): AsyncResult<AsyncIterable<string>, KVOperationError> {
     return this.#observe("list", () =>
-      AsyncResult.from((async () => {
-        try {
-          this.#assertCurrent();
-          // The key iterator holds its generation until it is exhausted so a
-          // rollover cannot retire the backend mid-listing.
-          const acquired = await this.#acquire("read");
-          let keys: AsyncIterable<string>;
+      AsyncResult.from(
+        (async () => {
           try {
-            keys = await acquired.kv.keys(filter);
+            this.#assertCurrent();
+            // The key iterator holds its generation until it is exhausted so a
+            // rollover cannot retire the backend mid-listing.
+            const acquired = await this.#acquire("read");
+            let keys: AsyncIterable<string>;
+            try {
+              keys = await acquired.kv.keys(filter);
+            } catch (cause) {
+              acquired.release();
+              throw cause;
+            }
+            return Result.ok({
+              async *[Symbol.asyncIterator]() {
+                try {
+                  yield* keys;
+                } catch (cause) {
+                  throw kvError("keys", undefined, cause);
+                } finally {
+                  acquired.release();
+                }
+              },
+            });
           } catch (cause) {
-            acquired.release();
-            throw cause;
+            return Result.err(
+              cause instanceof TransportError
+                ? cause
+                : kvError("keys", undefined, cause),
+            );
           }
-          return Result.ok({
-            async *[Symbol.asyncIterator]() {
-              try {
-                yield* keys;
-              } catch (cause) {
-                throw kvError("keys", undefined, cause);
-              } finally {
-                acquired.release();
-              }
-            },
-          });
-        } catch (cause) {
-          return Result.err(
-            cause instanceof TransportError
-              ? cause
-              : kvError("keys", undefined, cause),
-          );
-        }
-      })()));
+        })(),
+      ),
+    );
   }
 
   /** Returns the backend live-value count. */
   status(): AsyncResult<{ values: number }, KVOperationError> {
     return this.#observe("read", () =>
-      AsyncResult.from((async () => {
-        try {
-          this.#assertCurrent();
-          const acquired = await this.#acquire("read");
+      AsyncResult.from(
+        (async () => {
           try {
-            return Result.ok({ values: (await acquired.kv.status()).values });
-          } finally {
-            acquired.release();
+            this.#assertCurrent();
+            const acquired = await this.#acquire("read");
+            try {
+              return Result.ok({ values: (await acquired.kv.status()).values });
+            } finally {
+              acquired.release();
+            }
+          } catch (cause) {
+            return Result.err(
+              cause instanceof TransportError
+                ? cause
+                : kvError("status", undefined, cause),
+            );
           }
-        } catch (cause) {
-          return Result.err(
-            cause instanceof TransportError
-              ? cause
-              : kvError("status", undefined, cause),
-          );
-        }
-      })()));
+        })(),
+      ),
+    );
   }
 
   #observe<V, E extends BaseError>(
     operation: "read" | "write" | "list" | "cas" | "delete" | "watch_setup",
     run: () => AsyncResult<V, E>,
   ): AsyncResult<V, E> {
-    return AsyncResult.from((async () => {
-      const startedAt = performance.now();
-      let outcome = "error";
-      try {
-        const result = await run();
-        const value = result.take();
-        outcome = isErr(value)
-          ? value.error instanceof KVError &&
+    return AsyncResult.from(
+      (async () => {
+        const startedAt = performance.now();
+        let outcome = "error";
+        try {
+          const result = await run();
+          const value = result.take();
+          outcome = isErr(value)
+            ? value.error instanceof KVError &&
               value.error.cause instanceof Error &&
               Reflect.get(value.error.cause, "code") ===
                 JetStreamApiCodes.StreamWrongLastSequence
-            ? "conflict"
-            : "error"
-          : value === undefined && operation === "read"
-          ? "not_found"
-          : "ok";
-        return result;
-      } finally {
-        recordCatalogDuration(
-          "trellis.storage.duration",
-          performance.now() - startedAt,
-          {
-            "trellis.backend": "kv",
-            "trellis.operation": operation,
-            "trellis.phase": "total",
-            "trellis.outcome": outcome,
-          },
-        );
-      }
-    })());
+              ? "conflict"
+              : "error"
+            : value === undefined && operation === "read"
+              ? "not_found"
+              : "ok";
+          return result;
+        } finally {
+          recordCatalogDuration(
+            "trellis.storage.duration",
+            performance.now() - startedAt,
+            {
+              "trellis.backend": "kv",
+              "trellis.operation": operation,
+              "trellis.phase": "total",
+              "trellis.outcome": outcome,
+            },
+          );
+        }
+      })(),
+    );
   }
 
   #assertCurrent(): void {

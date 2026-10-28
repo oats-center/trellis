@@ -138,6 +138,8 @@ pub enum DurationFamily {
     Storage,
     /// One transfer session.
     Transfer,
+    /// Time blocked on Transfer credit or the next storage chunk.
+    TransferWait,
     /// One CLI command.
     Cli,
     /// One built-in browser navigation milestone.
@@ -171,6 +173,7 @@ impl DurationFamily {
             Self::Projection => "trellis.projection.duration",
             Self::Storage => "trellis.storage.duration",
             Self::Transfer => "trellis.transfer.duration",
+            Self::TransferWait => "trellis.transfer.wait.duration",
             Self::Cli => "trellis.cli.duration",
             Self::BrowserNavigation => "trellis.browser.navigation.duration",
             Self::AuthFlow => "trellis.auth.flow.duration",
@@ -218,8 +221,13 @@ pub enum CounterFamily {
     LiveFrames,
     /// Rejected live session messages by fixed reason category.
     LiveRejections,
-    /// Actual transmitted/received transfer payload bytes.
+    /// Transmitted/verified transfer DATA payload bytes.
+    TransferPayloadBytes,
+    /// Serialized transfer DATA messages: NATS header block plus payload.
     TransferWireBytes,
+    /// Serialized non-DATA transfer messages: controls, signals, EOF,
+    /// activation, completion and cancellation.
+    TransferControlBytes,
     /// Successfully transmitted or verified incoming transfer DATA frames.
     TransferFrames,
     /// Authenticated cumulative transfer-credit controls.
@@ -246,7 +254,9 @@ impl CounterFamily {
             Self::LiveEnds => "trellis.live.ends",
             Self::LiveFrames => "trellis.live.frames",
             Self::LiveRejections => "trellis.live.rejections",
+            Self::TransferPayloadBytes => "trellis.transfer.payload.bytes",
             Self::TransferWireBytes => "trellis.transfer.wire.bytes",
+            Self::TransferControlBytes => "trellis.transfer.control.bytes",
             Self::TransferFrames => "trellis.transfer.frames",
             Self::TransferCreditControls => "trellis.transfer.credit.controls",
             Self::RuntimeLeaseEvents => "trellis.runtime.lease.events",
@@ -266,7 +276,9 @@ impl CounterFamily {
             Self::LiveEnds => "{session}",
             Self::LiveFrames => "{frame}",
             Self::LiveRejections => "{message}",
-            Self::TransferWireBytes => "By",
+            Self::TransferPayloadBytes | Self::TransferWireBytes | Self::TransferControlBytes => {
+                "By"
+            }
             Self::TransferFrames => "{frame}",
             Self::TransferCreditControls => "{control}",
             Self::RpcClientAttempts => "{attempt}",
@@ -431,8 +443,6 @@ pub type ObservationSource = Arc<dyn Fn() -> Vec<(f64, Vec<KeyValue>)> + Send + 
 /// share it must share one instance, so dropping an arbitrary copy can never
 /// unregister a still-live owner.
 pub struct ObservationRegistration {
-    #[allow(dead_code)]
-    family: &'static str,
     id: u64,
 }
 
@@ -698,10 +708,7 @@ pub fn register_observable(
             .expect("family was just registered");
         family_sources.sources.push((id, source));
     }
-    ObservationRegistration {
-        family: family.name(),
-        id,
-    }
+    ObservationRegistration { id }
 }
 
 /// Records one accepted Auth/contract duration sample.

@@ -36,6 +36,11 @@ pub(crate) fn generate_once(root: &Path, check: bool) -> Result<usize> {
     let root = root.canonicalize().into_diagnostic()?;
     let manifest = read_manifest(&root.join("trellis.toml"))?;
     output_paths(&root, &manifest)?;
+    // An IDL edit changes the project's own locked digest; `--check` reports
+    // that as stale instead of rewriting the lock.
+    if !check {
+        crate::package::relock_own_package(&root, &manifest)?;
+    }
     let compiled = crate::package::compile_project(&root, &manifest)?;
     generate_compiled(&root, &manifest, &compiled, check)
 }
@@ -46,16 +51,18 @@ pub(crate) fn output_paths(
 ) -> Result<Vec<(&'static str, PathBuf)>> {
     let root = root.canonicalize().into_diagnostic()?;
     let has_rust = root.join("Cargo.toml").is_file();
-    let has_ts = ["package.json", "deno.json", "deno.jsonc"]
-        .iter()
-        .any(|file| root.join(file).is_file());
+    let has_ts = root.join("package.json").is_file();
     let config = &manifest.generate;
-    // A language generates when it is configured or its toolchain marker is
-    // present. Configuration alone is enough: a TypeScript app participant can
-    // emit a Rust projection for a Rust test harness, and vice versa.
+    // Explicit outputs select projections. Detect toolchains only when none are
+    // configured, so a Cargo build script can own Rust generation independently.
+    let configured = config.rust.is_some() || config.typescript.is_some();
     let targets = [
-        ("rust", has_rust, config.rust.as_ref()),
-        ("typescript", has_ts, config.typescript.as_ref()),
+        ("rust", has_rust && !configured, config.rust.as_ref()),
+        (
+            "typescript",
+            has_ts && !configured,
+            config.typescript.as_ref(),
+        ),
     ];
     let target_count = targets
         .iter()
@@ -68,9 +75,14 @@ pub(crate) fn output_paths(
     miette::ensure!(
         name.len() <= 214
             && name.starts_with(|character: char| character.is_ascii_lowercase())
-            && name.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-            && !name.ends_with('-') && !name.contains("--"),
-        "invalid generated package name '{name}'; use at most 214 characters: a lowercase ASCII letter followed by lowercase letters, digits, or single hyphens"
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && !name.ends_with('-')
+            && !name.contains("--"),
+        "invalid generated package name '{name}'; use at most 214 characters: a \
+        lowercase ASCII letter followed by lowercase letters, digits, or \
+        single hyphens"
     );
     let mut outputs = Vec::new();
     for (language, detected, selected) in targets {
@@ -84,7 +96,8 @@ pub(crate) fn output_paths(
                 // output; multiple targets must name their outputs explicitly.
                 miette::ensure!(
                     target_count == 1,
-                    "multiple languages detected; configure [generate.rust].output and [generate.typescript].output"
+                    "multiple languages detected; configure [generate.rust].output and \
+                    [generate.typescript].output"
                 );
                 "trellis"
             }
@@ -191,8 +204,14 @@ pub(crate) fn generate_compiled(
         .into_diagnostic()?;
         let fresh = staging.path().join("new");
         match *language {
-            "rust" => trellis_codegen_rust::generate_rust_package(compiled, &fresh, name)
-                .into_diagnostic()?,
+            "rust" => {
+                let bindings: Vec<trellis_codegen_rust::RustModelBinding> = serde_json::from_str(
+                    include_str!(concat!(env!("OUT_DIR"), "/rust-model-bindings.json")),
+                )
+                .into_diagnostic()?;
+                trellis_codegen_rust::generate_rust_package(compiled, &fresh, name, &bindings)
+                    .into_diagnostic()?;
+            }
             _ => {
                 trellis_codegen_ts::generate_ts_package(compiled, &fresh, name).into_diagnostic()?
             }
@@ -227,7 +246,8 @@ pub(crate) fn generate_compiled(
                     .is_some_and(|bytes| generated_file(relative, bytes));
             miette::ensure!(
                 check || previous.is_none() || owned,
-                "refusing to overwrite unrelated file {} (generated packages require an explicit Trellis package marker)",
+                "refusing to overwrite unrelated file {} (generated packages require an \
+                explicit Trellis package marker)",
                 old.display()
             );
             if new.is_file() {
@@ -303,7 +323,10 @@ pub(crate) fn generate_compiled(
                 .map(|(_, stage, _)| stage.keep().display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(miette!("generation publication failed: {error}; rollback failed: {rollback_error}; recoverable outputs retained at {recovery}"));
+            return Err(miette!(
+                "generation publication failed: {error}; rollback failed: \
+                {rollback_error}; recoverable outputs retained at {recovery}"
+            ));
         }
         return Err(error).into_diagnostic();
     }
@@ -455,7 +478,8 @@ mod tests {
         .unwrap();
         fs::write(
             root.path().join("trellis.toml"),
-            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.rust]\noutput='.'\n",
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\n\
+            main='contract.trellis'\n[generate.rust]\noutput='.'\n",
         )
         .unwrap();
         fs::write(root.path().join("contract.trellis"), "").unwrap();
@@ -473,7 +497,9 @@ mod tests {
         fs::write(root.path().join("package.json"), "{}").unwrap();
         fs::write(
             root.path().join("trellis.toml"),
-            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.typescript]\noutput='ts-out'\n[generate.rust]\noutput='rust-out'\n",
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\n\
+            main='contract.trellis'\n[generate.typescript]\noutput='ts-out'\n\
+            [generate.rust]\noutput='rust-out'\n",
         )
         .unwrap();
         fs::write(root.path().join("contract.trellis"), "").unwrap();
@@ -488,7 +514,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::write(
             root.path().join("trellis.toml"),
-            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.rust]\noutput='rust-out'\n",
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\n\
+            main='contract.trellis'\n[generate.rust]\noutput='rust-out'\n",
         )
         .unwrap();
         fs::write(root.path().join("contract.trellis"), "").unwrap();
@@ -496,22 +523,5 @@ mod tests {
         let outputs = output_paths(root.path(), &manifest).unwrap();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].0, "rust");
-    }
-
-    #[test]
-    fn multiple_targets_require_explicit_outputs() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("package.json"), "{}").unwrap();
-        fs::write(
-            root.path().join("trellis.toml"),
-            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.rust]\noutput='rust-out'\n",
-        )
-        .unwrap();
-        fs::write(root.path().join("contract.trellis"), "").unwrap();
-        let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
-        assert!(output_paths(root.path(), &manifest)
-            .unwrap_err()
-            .to_string()
-            .contains("multiple languages detected"));
     }
 }

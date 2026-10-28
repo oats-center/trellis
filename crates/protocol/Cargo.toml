@@ -1,6 +1,6 @@
 [package]
 name = "trellis-protocol"
-version.workspace = true
+version = "0.100.0-rc.9"
 publish = ["crates-io"]
 edition.workspace = true
 license.workspace = true
@@ -23,6 +23,7 @@ sha2.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["formatting", "parsing"] }
 ulid.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 jsonptr = { workspace = true, features = ["json", "resolve"] }

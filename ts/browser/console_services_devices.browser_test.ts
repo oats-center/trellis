@@ -1,6 +1,10 @@
 // Console service journeys. Real runtime, real generated client.
 
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
+import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -12,19 +16,20 @@ import {
   captureBrowserErrors,
   openConsoleAsRuntimeAdmin,
   seedDeviceDeployment,
-  seedProvisionableDeviceDeployment,
-  seedServiceWithoutParticipant,
   seedServiceWithResources,
-  waitForConsolePage,
+  seedServiceWithoutResources,
   waitForConsoleShell,
 } from "./console_test_support.ts";
 
-Deno.test("B01 service profile creation opens a no-participant detail", async () => {
+test("B01 creating a native service deployment opens its persisted implementation", async () => {
   await withTrellisRuntime(async (runtime) => {
+    await runtime.contracts.install({
+      contract: participants.EchoProvider.participant,
+    });
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(`${runtime.trellisUrl}/console/admin/services/new`, {
@@ -32,69 +37,84 @@ Deno.test("B01 service profile creation opens a no-participant detail", async ()
       });
       await waitForConsoleShell(page);
 
-      const displayName = `ct-b01-${crypto.randomUUID().slice(0, 8)}`;
-      await page.getByLabel("Display name").fill(displayName);
-      await page.getByRole("button", { name: "Create deployment profile" })
+      const displayName = `ct-b01-${ulid()}`;
+      await page.getByLabel("Name", { exact: true }).fill(displayName);
+      await page
+        .getByLabel("Participant name")
+        .fill(participants.EchoProvider.participant.identity);
+      await page
+        .getByLabel("Package", { exact: true })
+        .fill(
+          JSON.stringify(participants.EchoProvider.participant.packageEvidence),
+        );
+      await page
+        .getByRole("button", { name: "Add service", exact: true })
+        .click();
+      await page
+        .getByRole("link", { name: "Open service", exact: true })
         .click();
 
-      await waitForConsolePage(page);
-      await page.getByText(displayName).first().waitFor({
-        state: "visible",
-        timeout: 30_000,
+      await page
+        .getByRole("heading", { name: displayName, exact: true })
+        .waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+      const deploymentId = codecs.ulid.decode(
+        new URL(page.url()).pathname.split("/").at(-1),
+      );
+      const stored = await runtime.callAdminRpc("authDeploymentsGet", {
+        deploymentId,
       });
-      await page.getByText("No participant installed").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      assertEquals(
+      assert.equal(stored.deployment.title, displayName);
+      assert.equal(
+        stored.deployment.participantId,
+        participants.EchoProvider.participant.identity,
+      );
+      assert.deepEqual(
         new URL(page.url()).pathname.startsWith("/console/admin/services/"),
         true,
         "creating a profile must land on its own detail route",
       );
-      assertNoBrowserErrors(errors);
+      await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("B02 installed service resources render from real evidence", async () => {
+test("B02 installed service resources render from real evidence", async () => {
   await withTrellisRuntime(async (runtime) => {
     const seeded = await seedServiceWithResources(runtime, "b02");
     try {
-      const detail = await runtime.callAdminRpc("authDeploymentsGet", {
-        deploymentId: seeded.deploymentId,
+      const detail = await runtime.callAdminRpc("authResourcesList", {
+        ownerId: seeded.deploymentId,
       });
-      const resourceCount = detail.resources.length;
+      const resourceCount = detail.items.length;
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
 
-        await page.goto(
-          `${runtime.trellisUrl}/console/admin/services/${seeded.deploymentId}`,
-          { waitUntil: "domcontentloaded" },
-        );
-        await waitForConsoleShell(page);
-        await waitForConsolePage(page);
-
-        const resourcePanel = page.locator("section").filter({
-          has: page.getByRole("heading", {
-            name: "Resource evidence",
-            exact: true,
-          }),
+        await page.goto(`${runtime.trellisUrl}/console/admin/resources`, {
+          waitUntil: "domcontentloaded",
         });
-        await resourcePanel.waitFor({
+        await waitForConsoleShell(page);
+        await page.getByRole("button", { name: "All", exact: true }).click();
+        const resourceRows = page
+          .locator("tbody tr")
+          .filter({ hasText: seeded.displayName });
+        await resourceRows.first().waitFor({
           state: "visible",
           timeout: 30_000,
         });
-        assertEquals(
-          await resourcePanel.locator("table tbody tr").count(),
+        assert.deepEqual(
+          await resourceRows.count(),
           resourceCount,
           "expected one rendered row per materialized resource",
         );
-        assertNoBrowserErrors(errors);
+        await assertNoBrowserErrors(errors);
       } finally {
         await context.close();
       }
@@ -106,61 +126,57 @@ Deno.test("B02 installed service resources render from real evidence", async () 
   }, browserRuntimeOptions());
 });
 
-Deno.test("B03 same-document service navigation replaces A with B", async () => {
+test("B03 same-document service navigation replaces A with B", async () => {
   await withTrellisRuntime(async (runtime) => {
     const a = await seedServiceWithResources(runtime, "b03-a");
     try {
-      const b = await seedServiceWithoutParticipant(runtime, "b03-b");
+      const b = await seedServiceWithoutResources(runtime, "b03-b");
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
 
         await page.goto(
           `${runtime.trellisUrl}/console/admin/services/${a.deploymentId}`,
           { waitUntil: "domcontentloaded" },
         );
-        await waitForConsolePage(page);
-        await page.getByText("Resource evidence").first().waitFor({
-          state: "visible",
-        });
+        await page
+          .getByRole("heading", { name: a.displayName, exact: true })
+          .waitFor({
+            state: "visible",
+          });
 
         await page.evaluate((deploymentId) => {
-          document.querySelector('[data-testid="console-ready"]')?.setAttribute(
-            "id",
-            "same-console-document",
-          );
+          document
+            .querySelector('[data-testid="console-ready"]')
+            ?.setAttribute("id", "same-console-document");
           const link = document.createElement("a");
-          link.href = `/console/admin/services/${
-            encodeURIComponent(deploymentId)
-          }`;
+          link.href = `/console/admin/services/${encodeURIComponent(
+            deploymentId,
+          )}`;
           document.body.append(link);
           link.click();
           link.remove();
         }, b.deploymentId);
         await page.waitForURL((url) =>
-          url.pathname.endsWith(`/${b.deploymentId}`)
+          url.pathname.endsWith(`/${b.deploymentId}`),
         );
         await page.getByText(b.displayName).first().waitFor({
           state: "visible",
           timeout: 30_000,
         });
-        await page.getByText("No participant installed").first().waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
-        assertEquals(
+        assert.deepEqual(
           await page.getByText(a.displayName).count(),
           0,
           "service A's content must not remain after navigating to B",
         );
-        assertEquals(
+        assert.deepEqual(
           await page.locator("#same-console-document").count(),
           1,
           "the document and authority shell were reused",
         );
-        assertNoBrowserErrors(errors);
+        await assertNoBrowserErrors(errors);
       } finally {
         await context.close();
       }
@@ -170,7 +186,7 @@ Deno.test("B03 same-document service navigation replaces A with B", async () => 
   }, browserRuntimeOptions());
 });
 
-Deno.test("B04 a missing service ID renders unavailable, not a fallback", async () => {
+test("B04 a missing service ID renders unavailable, not a fallback", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
@@ -178,15 +194,15 @@ Deno.test("B04 a missing service ID renders unavailable, not a fallback", async 
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/services/dep_missing_${crypto.randomUUID()}`,
+        `${runtime.trellisUrl}/console/admin/services/${ulid()}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      await page.getByText("Deployment unavailable").first().waitFor({
+      await page.getByText("Not found", { exact: false }).first().waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      await page.getByRole("button", { name: "Retry" }).waitFor({
+      await page.getByRole("button", { name: "Refresh", exact: true }).waitFor({
         state: "visible",
       });
     } finally {
@@ -195,78 +211,88 @@ Deno.test("B04 a missing service ID renders unavailable, not a fallback", async 
   }, browserRuntimeOptions());
 });
 
-Deno.test("B05 service table pages and resets on filter change", async () => {
+test("B05 service table pages and resets on filter change", async () => {
   await withTrellisRuntime(async (runtime) => {
     for (let index = 0; index < 52; index += 1) {
-      await seedServiceWithoutParticipant(runtime, `b05-${index}`);
+      await seedServiceWithoutResources(runtime, `b05-${index}`);
     }
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(`${runtime.trellisUrl}/console/admin/services`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
-      await page.getByRole("heading", { name: "Service runtime", exact: true })
+      await page
+        .getByRole("heading", { name: "Services", exact: true })
         .waitFor({ state: "visible", timeout: 30_000 });
       await page.getByText("on this page").first().waitFor({
         state: "visible",
       });
-      const rows = page.locator('main a[href^="/console/admin/services/dep_"]');
+      const rows = page.locator(
+        'main tbody a[href^="/console/admin/services/"]',
+      );
       const firstPageId = await rows.first().getAttribute("href");
-      await page.getByRole("button", { name: "Next", exact: true }).click();
-      await page.getByRole("button", { name: "Previous", exact: true }).waitFor(
-        {
+      await page
+        .getByRole("button", { name: "Next page", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Previous page", exact: true })
+        .waitFor({
           state: "visible",
           timeout: 30_000,
-        },
-      );
+        });
       await page.waitForFunction(
         (first) =>
-          document.querySelector('main a[href^="/console/admin/services/dep_"]')
+          document
+            .querySelector('main tbody a[href^="/console/admin/services/"]')
             ?.getAttribute("href") !== first,
         firstPageId,
       );
-      assertEquals(
-        await rows.first().getAttribute("href") !== firstPageId,
+      assert.deepEqual(
+        (await rows.first().getAttribute("href")) !== firstPageId,
         true,
       );
 
-      // Filtering by a state with no rows resets the cursor and shows the empty
-      // state instead of leaving the previous page's rows.
-      await page.getByLabel("Filter by state").selectOption("revoked");
-      await page.getByText("No service deployments").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
-      });
-      await page.getByLabel("Filter by state").selectOption("");
+      // Filtering hides unmatched rows; clearing it must return to the first page.
+      await page.getByRole("button", { name: "Disabled", exact: true }).click();
+      await runtime.waitFor(async () => (await rows.count()) === 0);
+      await page.getByRole("button", { name: "All", exact: true }).click();
       await page.waitForFunction(
         (first) =>
-          document.querySelector('main a[href^="/console/admin/services/dep_"]')
+          document
+            .querySelector('main tbody a[href^="/console/admin/services/"]')
             ?.getAttribute("href") === first,
         firstPageId,
       );
-      assertEquals(
-        await page.getByRole("button", { name: "Previous", exact: true })
+      assert.deepEqual(
+        await page
+          .getByRole("button", { name: "Previous page", exact: true })
           .isDisabled(),
         true,
       );
-      assertNoBrowserErrors(errors);
+      await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("B06 device creation preserves review and delegation settings", async () => {
+test("B06 device creation persists the authored participant and returns its allocated identity", async () => {
   await withTrellisRuntime(async (runtime) => {
+    await runtime.contracts.install({
+      contract: participants.Device.participant,
+    });
+    await runtime.contracts.install({
+      contract: participants.ChildProvider.participant,
+    });
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
@@ -277,56 +303,49 @@ Deno.test("B06 device creation preserves review and delegation settings", async 
       );
       await waitForConsoleShell(page);
 
-      const displayName = `ct-b06-${crypto.randomUUID().slice(0, 8)}`;
-      let createdId = "";
-      await page.getByLabel("Display name").fill(displayName);
-      await page.getByLabel("Review mode").selectOption("required");
-      await page.getByLabel("Require user delegation").check();
-      await page.getByRole("button", { name: "Create deployment profile" })
+      const displayName = `ct-b06-${ulid()}`;
+      await page.getByLabel("Name", { exact: true }).fill(displayName);
+      await page
+        .getByLabel("Participant name")
+        .fill(participants.Device.participant.identity);
+      await page
+        .getByLabel("Package", { exact: true })
+        .fill(JSON.stringify(participants.Device.participant.packageEvidence));
+      await page
+        .getByRole("button", { name: "Add device type", exact: true })
         .click();
-      await page.getByText("Last confirmed device deployment profile:").first()
-        .waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
-      const notice = await page.getByText(
-        "Last confirmed device deployment profile:",
-      ).first()
-        .innerText();
-      const idMatch = /dep_[A-Za-z0-9]+/.exec(notice);
-      assertEquals(
-        idMatch !== null,
-        true,
-        "receipt shows the allocated deployment ID",
+      try {
+        await page
+          .getByText(`${displayName} was added.`)
+          .waitFor({ state: "visible", timeout: 30_000 });
+      } catch (cause) {
+        throw new Error(
+          `Device creation did not resolve: ${await page.locator("main").innerText()}`,
+          { cause },
+        );
+      }
+      const createdId = codecs.ulid.decode(
+        await page.getByTestId("created-id").textContent(),
       );
-      createdId = idMatch?.[0] ?? "";
-
-      // Verify the persisted deployment through the generated client: the
-      // chosen review mode and delegation flag must round-trip exactly.
       const listed = await runtime.callAdminRpc("authDeploymentsGet", {
         deploymentId: createdId,
       });
-      assertEquals(listed.deployment.displayName, displayName);
-      assertEquals(listed.deployment.reviewMode instanceof Uint8Array, true);
-      assertEquals(
-        new TextDecoder().decode(listed.deployment.reviewMode as Uint8Array),
-        '"required"',
+      assert.equal(listed.deployment.title, displayName);
+      assert.equal(
+        listed.deployment.participantId,
+        participants.Device.participant.identity,
       );
-      assertEquals(listed.deployment.requiresDeviceDelegation, true);
-      assertNoBrowserErrors(errors);
+      await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("B07 provisioning deep link selects exactly the requested deployment", async () => {
+test("B07 provisioning deep link selects exactly the requested deployment", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const target = await seedProvisionableDeviceDeployment(
-      runtime,
-      "b07-target",
-    );
-    const other = await seedProvisionableDeviceDeployment(runtime, "b07-other");
+    const target = await seedDeviceDeployment(runtime, "b07-target");
+    const other = await seedDeviceDeployment(runtime, "b07-other");
     const targetId = target.deploymentId;
     const otherId = other.deploymentId;
 
@@ -342,25 +361,29 @@ Deno.test("B07 provisioning deep link selects exactly the requested deployment",
       await waitForConsoleShell(page);
       const field = page.getByLabel("Deployment");
       await field.waitFor({ state: "visible", timeout: 30_000 });
-      assertEquals(await field.inputValue(), targetId);
-      assertEquals(await field.inputValue() === otherId, false);
+      assert.deepEqual(await field.inputValue(), targetId);
+      assert.deepEqual((await field.inputValue()) === otherId, false);
       // A read-only field proves the deep link cannot drift to another target.
-      assertEquals(await field.getAttribute("readonly") !== null, true);
+      assert.deepEqual((await field.getAttribute("readonly")) !== null, true);
 
+      const missingId = ulid();
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/instances/provision?deploymentId=dep_missing`,
+        `${runtime.trellisUrl}/console/admin/devices/instances/provision?deploymentId=${missingId}`,
         { waitUntil: "domcontentloaded" },
       );
-      await page.getByText("No deployment matches 'dep_missing'").first()
+      await page
+        .getByText(`No deployment matches '${missingId}'`)
+        .first()
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
-      assertEquals(
-        await page.getByRole("button", { name: "Provision", exact: true })
+      assert.equal(
+        await page
+          .getByRole("button", { name: "Provision", exact: true })
           .isDisabled(),
         true,
-        "provisioning an unavailable deployment must be disabled",
+        "an unavailable deployment cannot be provisioned",
       );
     } finally {
       await context.close();
@@ -368,10 +391,10 @@ Deno.test("B07 provisioning deep link selects exactly the requested deployment",
   }, browserRuntimeOptions());
 });
 
-Deno.test("N05 device disable after query navigation affects only the new target", async () => {
+test("N05 device disable after query navigation affects only the new target", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const a = await seedProvisionableDeviceDeployment(runtime, "n05-a");
-    const b = await seedProvisionableDeviceDeployment(runtime, "n05-b");
+    const a = await seedDeviceDeployment(runtime, "n05-a");
+    const b = await seedDeviceDeployment(runtime, "n05-b");
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
@@ -389,21 +412,31 @@ Deno.test("N05 device disable after query navigation affects only the new target
       await page.locator("dialog[open]").waitFor({ state: "visible" });
       await page.evaluate((id) => {
         const link = document.createElement("a");
-        link.href = `/console/admin/devices/profiles/disable?deployment=${
-          encodeURIComponent(id)
-        }`;
+        link.href = `/console/admin/devices/profiles/disable?deployment=${encodeURIComponent(
+          id,
+        )}`;
         (document.querySelector("main") ?? document.body).append(link);
         link.click();
       }, b.deploymentId);
-      await page.waitForURL((url) =>
-        url.searchParams.get("deployment") === b.deploymentId
+      await page.waitForURL(
+        (url) => url.searchParams.get("deployment") === b.deploymentId,
       );
       await page.locator("dialog[open]").waitFor({ state: "hidden" });
+      for (const target of [a, b]) {
+        const unchanged = await runtime.callAdminRpc("authDeploymentsGet", {
+          deploymentId: target.deploymentId,
+        });
+        assert.equal(
+          unchanged.deployment.state,
+          "enabled",
+          "stale confirmation must disable neither deployment",
+        );
+      }
       await page.getByLabel("Deployment").waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      assertEquals(
+      assert.deepEqual(
         await page.getByLabel("Deployment").inputValue(),
         b.deploymentId,
       );
@@ -412,7 +445,8 @@ Deno.test("N05 device disable after query navigation affects only the new target
       await dialog.waitFor({ state: "visible" });
       await dialog.locator("input").fill(b.deploymentId);
       await dialog.getByRole("button", { name: "Disable deployment" }).click();
-      await page.getByText(`Device deployment ${b.deploymentId} is disabled.`)
+      await page
+        .getByText(`Device deployment ${b.deploymentId} is disabled.`)
         .waitFor({ state: "visible", timeout: 30_000 });
       const [unchanged, disabled] = await Promise.all([
         runtime.callAdminRpc("authDeploymentsGet", {
@@ -422,27 +456,24 @@ Deno.test("N05 device disable after query navigation affects only the new target
           deploymentId: b.deploymentId,
         }),
       ]);
-      assertEquals(unchanged.deployment.state, "active");
-      assertEquals(disabled.deployment.state, "disabled");
+      assert.deepEqual(unchanged.deployment.state, "enabled");
+      assert.deepEqual(disabled.deployment.state, "disabled");
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("B08 provisioning receipt shows the returned identity", async () => {
+test("B08 provisioning receipt shows the returned identity", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const seeded = await seedProvisionableDeviceDeployment(
-      runtime,
-      "b08-device",
-    );
+    const seeded = await seedDeviceDeployment(runtime, "b08-device");
     const deploymentId = seeded.deploymentId;
-    const other = await seedProvisionableDeviceDeployment(runtime, "b08-next");
+    const other = await seedDeviceDeployment(runtime, "b08-next");
 
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
@@ -450,83 +481,95 @@ Deno.test("B08 provisioning receipt shows the returned identity", async () => {
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      await page.getByRole("button", { name: "Provision", exact: true })
+      await page
+        .getByRole("button", { name: "Provision", exact: true })
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
-      await page.getByRole("button", { name: "Provision", exact: true })
+      await page.getByLabel("Instance title").fill("B08 first instance");
+      await page
+        .getByRole("button", { name: "Provision", exact: true })
         .click();
 
       await page.getByText("Provisioning receipt").first().waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      const receiptText = await page.locator(
-        '[data-testid="console-page-ready"], main',
-      ).first().innerText();
-      assertEquals(receiptText.includes(deploymentId), true);
-      assertEquals(
-        await page.getByText("Store this secret now.").count() > 0,
+      const receiptText = await page
+        .locator('[data-testid="console-page-ready"], main')
+        .first()
+        .innerText();
+      assert.deepEqual(receiptText.includes(deploymentId), true);
+      assert.deepEqual(
+        (await page.getByText("Store this secret now.").count()) > 0,
         true,
       );
-      const firstInstanceId = await page.locator("dd.trellis-identifier")
-        .nth(1).innerText();
+      const firstInstanceId = await page
+        .locator("dd.trellis-identifier")
+        .nth(1)
+        .innerText();
       await page.evaluate((id) => {
         const link = document.createElement("a");
-        link.href = `/console/admin/devices/instances/provision?deploymentId=${
-          encodeURIComponent(id)
-        }`;
+        link.href = `/console/admin/devices/instances/provision?deploymentId=${encodeURIComponent(
+          id,
+        )}`;
         (document.querySelector("main") ?? document.body).append(link);
         link.click();
       }, other.deploymentId);
-      await page.waitForURL((url) =>
-        url.searchParams.get("deploymentId") === other.deploymentId
+      await page.waitForURL(
+        (url) => url.searchParams.get("deploymentId") === other.deploymentId,
       );
-      await page.getByText(
-        `This one-time receipt belongs to deployment ${deploymentId}, not the currently requested deployment ${other.deploymentId}.`,
-        { exact: false },
-      ).waitFor({ state: "visible", timeout: 30_000 });
+      await page
+        .getByText(
+          `This one-time receipt belongs to deployment ${deploymentId}, not the currently requested deployment ${other.deploymentId}.`,
+          { exact: false },
+        )
+        .waitFor({ state: "visible", timeout: 30_000 });
 
       // Starting another operation clears the previous one-time secret.
-      await page.getByRole("button", { name: "Provision another instance" })
+      await page
+        .getByRole("button", { name: "Provision another instance" })
         .click();
       await page.getByText("Provisioning receipt").first().waitFor({
         state: "hidden",
         timeout: 10_000,
       });
-      await page.getByRole("button", { name: "Provision", exact: true })
+      await page.getByLabel("Instance title").fill("B08 second instance");
+      await page
+        .getByRole("button", { name: "Provision", exact: true })
         .click();
       await page.getByText("Provisioning receipt").first().waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      assertEquals(
+      assert.deepEqual(
         await page.locator("dd.trellis-identifier").first().innerText(),
         other.deploymentId,
       );
-      assertEquals(
+      assert.deepEqual(
         (await page.locator("dd.trellis-identifier").nth(1).innerText()) !==
           firstInstanceId,
         true,
       );
-      assertNoBrowserErrors(errors);
+      await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("B09 missing device action targets never default to another row", async () => {
+test("B09 missing device action targets never default to another row", async () => {
   await withTrellisRuntime(async (runtime) => {
-    await seedDeviceDeployment(runtime, "b09-device");
+    const seeded = await seedDeviceDeployment(runtime, "b09-device");
+    const missingId = ulid();
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/profiles/disable?deployment=dep_missing_b09`,
+        `${runtime.trellisUrl}/console/admin/devices/profiles/disable?deployment=${missingId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -536,7 +579,7 @@ Deno.test("B09 missing device action targets never default to another row", asyn
       });
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/instances/disable?instance=dev_missing_b09`,
+        `${runtime.trellisUrl}/console/admin/devices/instances/disable?instance=${missingId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -545,49 +588,43 @@ Deno.test("B09 missing device action targets never default to another row", asyn
         timeout: 30_000,
       });
 
-      await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/activations/revoke?instance=dev_missing_b09`,
-        { waitUntil: "domcontentloaded" },
-      );
-      await waitForConsoleShell(page);
-      await page.getByText("has no active activation").first().waitFor({
-        state: "visible",
-        timeout: 30_000,
+      const unchanged = await runtime.callAdminRpc("authDeploymentsGet", {
+        deploymentId: seeded.deploymentId,
       });
+      assert.equal(
+        unchanged.deployment.state,
+        "enabled",
+        "unavailable targets must not mutate the existing deployment",
+      );
     } finally {
       await context.close();
     }
   }, browserRuntimeOptions());
 });
 
-Deno.test("B12 device back links stay inside the configured console path", async () => {
+test("B12 device back links stay inside the configured console path", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
 
-      for (
-        const route of [
-          "/console/admin/devices/profiles/new",
-          "/console/admin/devices/instances/provision",
-          "/console/admin/devices/reviews/decide",
-        ]
-      ) {
+      for (const route of [
+        "/console/admin/devices/profiles/new",
+        "/console/admin/devices/instances/provision",
+      ]) {
         await page.goto(`${runtime.trellisUrl}${route}`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
-        const links = await page.getByRole("link", { name: /Back to devices/ })
-          .all();
-        for (const link of links) {
-          const href = await link.getAttribute("href");
-          assertEquals(
-            href?.startsWith("/console/") ?? false,
-            true,
-            `back link ${href} escaped the console path on ${route}`,
-          );
-        }
+        await page
+          .getByRole("link", { name: /Back to (devices|deployments)/ })
+          .first()
+          .click();
+        await page.waitForURL(
+          (url) => url.pathname === "/console/admin/devices",
+        );
+        await waitForConsoleShell(page);
       }
     } finally {
       await context.close();

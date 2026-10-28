@@ -2,6 +2,7 @@
 members = [
   "crates/trellis",
   "crates/runtime-apis",
+  "crates/builtin-contracts",
   "crates/local-bootstrap",
   "crates/bootstrap",
   "crates/local-nats",
@@ -10,6 +11,7 @@ members = [
   "crates/trellis-testkit",
   "crates/idl",
   "crates/protocol",
+  "crates/models",
   "crates/protocol-wasm",
   "crates/codegen-ts",
   "crates/codegen-rust",
@@ -39,9 +41,32 @@ resolver = "2"
 
 [patch.crates-io]
 trellis-rs = { path = "crates/trellis" }
+trellis-protocol = { path = "crates/protocol" }
+trellis-models = { path = "crates/models" }
+
+# Browser and service protocol WASM: shipped to every TypeScript caller, so
+# size-optimized. Hashing-heavy work runs in native host crypto instead.
+# Dependencies (crypto, SQLite, serde) dominate test and live-suite runtime;
+# light optimization keeps workspace crates fast to rebuild while they run faster.
+# File-and-line backtraces without full DWARF: about 40% less target/ and a
+# third the binary size, with no cost to build time. For a debugger session,
+# set CARGO_PROFILE_DEV_DEBUG=true. The test profile inherits this.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.protocol-wasm]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
 
 [workspace.package]
-version = "0.100.0"
+version = "0.100.0-rc.12"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/oats-center/trellis"
@@ -52,7 +77,6 @@ rust.missing_docs = "deny"
 [workspace.dependencies]
 argon2 = "0.5.3"
 base64 = "0.22.1"
-data-encoding = "2.9.0"
 ed25519-dalek = "2.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
@@ -63,8 +87,7 @@ rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 ryu-js = "1.0.3"
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std"] }
 refinery = { version = "0.10.0", default-features = false, features = ["rusqlite"] }
-sha2 = "0.11.0"
-subtle = "2.6.1"
+sha2 = "0.10.9"
 thiserror = "2.0.18"
 tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "time"] }
 async-nats = "0.50"
@@ -76,7 +99,6 @@ getrandom = "0.3.4"
 clap = { version = "4.6.0", features = ["derive"] }
 clap_complete = "4.6.0"
 comfy-table = "7.2.2"
-heck = "0.5.0"
 jsonptr = { version = "0.7.1", default-features = false }
 jsonschema = { version = "0.47.0", default-features = false }
 miette = { version = "7.6.0", features = ["fancy"] }
@@ -90,10 +112,10 @@ opentelemetry_sdk = { version = "0.32.1", default-features = false, features = [
 opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "metrics", "trace"] }
 tracing-opentelemetry = "0.33.0"
 axum = "0.8.8"
-openidconnect = { version = "4.0.1", default-features = false }
-oauth2 = { version = "5.0.0", default-features = false }
+axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"] }
+openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
+oauth-as = { version = "=1.0.0", default-features = false, features = ["axum", "dpop", "jwt-p256", "rar", "cimd"] }
 nats-jwt-rs = "0.1.1"
-tower_governor = "0.8.0"
 tower-http = { version = "0.6.8", features = ["cors", "limit", "set-header", "trace"] }
 time = { version = "0.3.46", features = ["formatting"] }
 url = "2.5.8"
@@ -102,9 +124,12 @@ toml = "1.1.2"
 toml_edit = { version = "0.25.15", features = ["serde"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
 rustls-platform-verifier = "0.7.0"
-webpki-roots = "1.0.7"
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+x509-parser = "0.18.1"
+ipnet = { version = "2.12.0", features = ["serde"] }
 rand = "0.10.0"
 tempfile = "3.27.0"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 ulid = "1.2.1"
-trellis-protocol = { path = "crates/protocol", version = "0.100.0" }
+trellis-protocol = { path = "crates/protocol", version = "0.100.0-rc.9" }
+trellis-models = { path = "crates/models", version = "0.100.0-rc.12" }

@@ -1,490 +1,1157 @@
-name: Release
+name: Pipeline
 
+# One workflow builds, verifies and, on a `release/v*` push, publishes. The file
+# keeps the name release.yml because crates.io and npm trusted publishing name
+# it; renaming it requires updating those publisher settings first.
 on:
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Publish release artifacts and packages"
-        required: false
-        default: false
-        type: boolean
-      tag:
-        description: "Tag to publish when running manually (for example v0.100.0-rc.1)"
-        required: false
-        type: string
   push:
     branches:
+      - main
       - "release/v*"
+  pull_request:
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: pipeline-${{ github.ref }}
+  # A release run is never cancelled midway through publication.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/release/') }}
 
 env:
-  CARGO_HTTP_MULTIPLEXING: false
-  CARGO_TERM_COLOR: always
-  DENO_VERSION: 2.9.4
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: 24
+  CARGO_TERM_COLOR: always
+  CARGO_HTTP_MULTIPLEXING: false
   REGISTRY: ghcr.io
+  # CI debug/test artifacts retain file-and-line backtraces, not full DWARF.
+  # Production release optimization and debug assertions remain unchanged.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: "0"
+  RUSTUP_INIT_SKIP_PATH_CHECK: "yes"
 
 jobs:
-  resolve-release:
-    name: Resolve release marker
-    if: github.event_name != 'push' || github.event.deleted != true
-    runs-on: [self-hosted, Linux, X64]
-    outputs:
-      release-tag: ${{ steps.release.outputs.tag }}
-      release-version: ${{ steps.release.outputs.version }}
-      release-base-version: ${{ steps.release.outputs.base-version }}
-      should-publish: ${{ steps.release.outputs.should-publish }}
-      should-create-tag: ${{ steps.release.outputs.should-create-tag }}
-
+  # Formatting needs no generated artifacts, so it never holds back a build.
+  lint:
+    name: Formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Resolve release marker
+      - name: Set up Rust formatter
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install formatter
+        run: npm ci --ignore-scripts
+
+      # The same command local `npm test` runs; every check reports even when
+      # another fails.
+      - name: Check formatting
+        run: bash scripts/check.sh lint
+
+  # A pull request that touches only prose skips the build and test graph; the
+  # acceptance gate still reports. Pushes and manual runs always verify fully.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
+    steps:
+      - name: Classify changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!design/**'
+              - '!docs/src/**'
+              - '!docs/static/**'
+              - '!*.md'
+
+  install:
+    name: Generate artifacts, protocol WASM and browser apps
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Self-hosted runners keep target/ instead.
+      - name: Cache installation build
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-
+
+      # One job and one target/ build xtask once for the generated artifacts and
+      # the protocol WASM.
+      - name: Install generated artifacts and the protocol WASM
+        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install
+
+      - name: Report installation cache input size
+        if: always()
+        run: du -sh target 2>/dev/null || true
+
+      - name: Upload installed artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-generated
+          path: |
+            crates/trellis/generated
+            crates/models/generated
+            crates/trellis-testkit/generated
+            crates/runtime-apis/generated
+            web/trellis
+            ts/packages/trellis-testkit/trellis
+            integration/fixtures/runtime/packages/runtime-trellis
+            integration/fixtures/runtime/v2/packages/runtime-trellis
+            integration/fixtures/runtime-pinned/packages/runtime-trellis
+            integration/fixtures/runtime-removed/packages/runtime-trellis
+            integration/fixtures/client-upgrade/packages/client-upgrade
+            integration/fixtures/client-upgrade-narrow/packages/client-upgrade
+            integration/fixtures/client-upgrade-consent/packages/client-upgrade
+            integration/fixtures/client-upgrade-breaking/packages/client-upgrade
+            integration/fixtures/testkit/crates/trellis-test-fixture
+            integration/fixtures/testkit/packages/trellis-test-fixture
+            benchmarks/runtime/crates/performance-trellis
+            benchmarks/runtime/packages/performance-trellis
+            ts/packages/trellis/internal_sdk/generated
+            demos/rust/service/trellis
+            demos/rust/device/trellis
+            demos/ts/service/trellis
+            demos/ts/device/trellis
+            demos/app/trellis
+            docs/examples/orders/trellis
+          include-hidden-files: true
+          retention-days: 1
+
+      - name: Upload protocol WASM
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
+          retention-days: 1
+
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      # The runtime binaries embed the Console and Portal, built from the
+      # artifacts generated above without recompiling xtask or the WASM.
+      - name: Build embedded browser apps
+        run: npm run browser:embedded
+
+      - name: Upload embedded browser apps
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-portal
+          path: crates/runtime/generated
+          retention-days: 1
+
+  clippy:
+    name: Rust lint
+    needs: [install]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          portal: true
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Self-hosted runners keep target/ instead.
+      - name: Cache Rust lint artifacts
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-clippy-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-clippy-ci-linetables-v1-
+
+      # Each verification command lives in scripts/check.sh, which local
+      # `npm test` runs too.
+      - name: Lint Rust
+        run: bash scripts/check.sh clippy
+
+  build-fixtures:
+    name: Build integration fixture binaries
+    needs: [install]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          portal: true
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Self-hosted runners keep target/ instead.
+      - name: Cache fixture build artifacts
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-fixture-binaries-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'integration/fixtures/**/Cargo.toml', 'integration/fixtures/**/Cargo.lock', '.cargo/config.toml') }}
+          restore-keys: |
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-fixture-binaries-ci-linetables-v1-
+
+      # Cross-language helper/provider executables for the TypeScript integration
+      # tests, the testkit live test binary and the health_watch example. Built
+      # once here so the tests do not compile Rust while they run.
+      - name: Build integration fixture helpers
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          cargo build --bins \
+            --manifest-path integration/fixtures/runtime/Cargo.toml \
+            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
+            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
+            --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\""
+          cargo build --manifest-path Cargo.toml -p trellis-runtime --example health_watch
+
+      - name: Build the testkit test binaries
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euo pipefail
+          cargo test --no-run \
+            --manifest-path integration/fixtures/testkit/Cargo.toml \
+            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
+            --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\"" \
+            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
+            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
+            --tests \
+            --message-format=json > "$RUNNER_TEMP/testkit-tests.json"
+          mkdir -p target/debug/testkit-tests
+          jq -r 'select(.executable != null and .target.kind[0] == "test") | "\(.target.name) \(.executable)"' \
+            "$RUNNER_TEMP/testkit-tests.json" > "$RUNNER_TEMP/testkit-tests.txt"
+          while read -r name executable; do
+            if [ "$name" = live ]; then
+              cp "$executable" target/debug/trellis-testkit-live
+            else
+              cp "$executable" "target/debug/testkit-tests/$name"
+            fi
+          done < "$RUNNER_TEMP/testkit-tests.txt"
+          [ -x target/debug/trellis-testkit-live ] || {
+            echo "failed to locate the testkit live test binary" >&2
+            exit 1
+          }
+
+      # Multithreaded zstd instead of the upload's single-threaded compression;
+      # the tar preserves executable modes.
+      - name: Stage fixture binaries
+        run: |
+          set -euo pipefail
+          umask 077
+          staging="$RUNNER_TEMP/fixture-binaries"
+          rm -rf "$staging"
+          mkdir -p "$staging/fixtures" "$staging/examples"
+          cp target/debug/trellis-testkit-live "$staging/"
+          cp -R target/debug/testkit-tests "$staging/"
+          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller live_application_versions empty_watch finite_rpc rpc_distribution operation_target operation_storage_upload operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation stream_transfer jobs service_update; do
+            cp "target/debug/${bin}" "$staging/fixtures/"
+          done
+          cp target/debug/examples/health_watch "$staging/examples/"
+          find "$staging" -type f -exec strip --strip-unneeded {} +
+          tar -C "$staging" -cf - . | zstd -T0 -q -o "$RUNNER_TEMP/fixture-binaries.tar.zst"
+
+      - name: Upload fixture binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-fixture-binaries
+          path: ${{ runner.temp }}/fixture-binaries.tar.zst
+          compression-level: 0
+          retention-days: 1
+
+  build:
+    name: Build runtime binaries
+    needs: [install]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+
+      # The one release build every live, browser, demo, package, and image job
+      # runs, compiled against the runtime image's Debian bookworm glibc. See
+      # crates/runtime/Containerfile.build for why it is a container build.
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          docker buildx build --builder default --pull \
+            --file crates/runtime/Containerfile.build \
+            --output "type=local,dest=$RUNNER_TEMP/release" \
+            .
+
+      - name: Stage runtime binaries and CLI archives
+        run: |
+          set -euo pipefail
+          staging="$RUNNER_TEMP/runtime-binaries"
+          rm -rf "$staging"
+          mkdir -p "$staging"
+          cp "$RUNNER_TEMP/release/trellis" "$RUNNER_TEMP/release/trellis-server" "$staging/"
+          bash scripts/acquire-test-nats.sh --dest "$staging/nats"
+          tar -C "$staging" -czf "$RUNNER_TEMP/runtime-binaries.tar.gz" .
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          target="x86_64-unknown-linux-gnu"
+          mkdir -p dist
+          # One archive per binary, named after it: the CLI's self-update finds
+          # trellis-<version>-<target>.tar.gz.
+          for binary in trellis trellis-server; do
+            archive="${binary}-${version}-${target}.tar.gz"
+            tar -C "$RUNNER_TEMP/release" -czf "dist/$archive" "$binary"
+            # A bare file name, so `sha256sum -c` works beside the download.
+            (cd dist && sha256sum "$archive" > "checksum-${version}-${target}-${binary}.sha256")
+          done
+
+      - name: Upload runtime binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries.tar.gz
+          retention-days: 1
+
+      - name: Upload packaged CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          retention-days: 3
+
+  rust:
+    name: Rust tests
+    needs: [install, build, build-fixtures]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    timeout-minutes: 45
+    env:
+      NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
+      TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
+      TRELLIS_TEST_NATS_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
+      TRELLIS_NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
+      TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
+      TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
+      TRELLIS_TEST_EVENTS_BIN: ${{ github.workspace }}/dist/runtime-binaries/fixtures/events
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
+
+      - name: Download runtime and fixture binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: check-*-binaries
+          merge-multiple: true
+          path: ${{ runner.temp }}/binaries
+
+      - name: Extract runtime and fixture binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist/runtime-binaries
+          tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C dist/runtime-binaries
+          tar --zstd -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar.zst" -C dist/runtime-binaries
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Expose Rust toolchain binaries
+        run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
+
+      - name: Cache Rust build artifacts
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-ci-linetables-v1-
+
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      # The hosts' shared browser directory is read-only to the runners; keep
+      # each runner's browsers in its own persistent tool cache instead.
+      - name: Keep Playwright browsers in the runner's tool cache
+        if: runner.environment == 'self-hosted'
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright" >> "$GITHUB_ENV"
+
+      - name: Install Chromium for Rust-owned browser acceptance
+        run: npx playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
+
+      - name: Provide NSS certutil for generated-CA browser trust
+        run: command -v certutil >/dev/null || sudo apt-get install --yes --no-install-recommends libnss3-tools
+
+      # Nextest runs every test binary in parallel instead of one binary at a
+      # time; it does not run documentation examples, so those run separately.
+      - name: Test Rust workspace
+        run: bash scripts/check.sh rust
+
+  typescript-checks:
+    name: TypeScript checks
+    needs: [install, build]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          node: true
+
+      - name: Download producer-built adapter-test runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: dist
+
+      - name: Extract producer-built adapter-test runtime
+        run: mkdir -p dist/runtime-binaries && tar -xzf dist/runtime-binaries.tar.gz -C dist/runtime-binaries ./trellis ./trellis-server
+
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      # Each check reports even when another fails.
+      - name: Check and test TypeScript
+        env:
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
+        run: bash scripts/check.sh typescript-checks
+
+  demos:
+    name: Demo consumers
+    needs: [install, build]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
+
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+
+      - name: Expose repository CLI
+        run: echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Check demos and the TypeScript publication
+        run: bash scripts/check.sh demos
+
+      - name: Upload npm packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-packages
+          path: |
+            ts/packages/result/npm
+            ts/packages/trellis-testkit/npm
+            ts/packages/trellis/npm
+            ts/packages/trellis-svelte/npm
+          retention-days: 3
+
+  typescript-tests:
+    name: TypeScript tests
+    needs: [install, build, build-fixtures]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-ts"]') }}
+    timeout-minutes: 45
+    # One runner runs every test file, as many at once as it has cores.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
+
+      - name: Download runtime and fixture binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: check-*-binaries
+          merge-multiple: true
+          path: ${{ runner.temp }}/binaries
+
+      - name: Stage runtime and fixture binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C target/debug
+          tar --zstd -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar.zst" -C target/debug
+
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      - name: Run TypeScript tests
+        env:
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+        run: bash scripts/check.sh typescript-tests
+
+  testkit-tests:
+    name: Rust testkit tests
+    needs: [install, build, build-fixtures]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
+
+      - name: Download runtime and fixture binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: check-*-binaries
+          merge-multiple: true
+          path: ${{ runner.temp }}/binaries
+
+      - name: Stage runtime and fixture binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C target/debug
+          tar --zstd -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar.zst" -C target/debug
+
+      # The suites start TypeScript providers and callers from this checkout.
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      - name: Run Rust testkit tests
+        run: bash scripts/check.sh testkit-tests
+
+  examples:
+    name: Documented examples
+    needs: [install, build]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          node: true
+
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+
+      - name: Verify documented Orders service
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+        run: |
+          npm ci
+          bash scripts/check.sh examples
+
+  browser:
+    name: Browser tests
+    needs: [install, build]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-browser"]') }}
+    timeout-minutes: 45
+    # One runner runs every browser test file, several at once.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
+
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries
+
+      - name: Stage runtime binaries
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug
+          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      # The hosts' shared browser directory is read-only to the runners; keep
+      # each runner's browsers in its own persistent tool cache instead.
+      - name: Keep Playwright browsers in the runner's tool cache
+        if: runner.environment == 'self-hosted'
+        run: echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TOOL_CACHE/ms-playwright" >> "$GITHUB_ENV"
+
+      - name: Install pinned Chromium and browser dependencies
+        working-directory: ts
+        run: npm exec --yes --package=playwright@1.59.1 -- playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
+
+      - name: Provide NSS certutil for generated-CA browser trust
+        run: command -v certutil >/dev/null || sudo apt-get install --yes --no-install-recommends libnss3-tools
+
+      - name: Run browser tests
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+        run: bash scripts/check.sh browser
+
+      - name: Upload sanitized failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failure
+          path: |
+            ts/browser/test-results/**
+          if-no-files-found: ignore
+          retention-days: 3
+
+  rust-testkit-package:
+    name: Rust testkit bundle
+    needs: [install, build]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        if: runner.environment == 'self-hosted'
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
+      - name: Download production native archives
+        uses: actions/download-artifact@v4
+        with:
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: dist/native
+
+      # Packages the public crates and stages the artifact-only bundle that
+      # the next job verifies without a checkout.
+      - name: Package the public crates and the verification bundle
+        run: bash scripts/check.sh rust-testkit "$RUNNER_TEMP/rust-testkit-bundle.tar.gz"
+
+      - name: Upload public Rust packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-testkit-packages
+          path: target/package/*.crate
+          retention-days: 3
+
+      - name: Upload the verification bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-testkit-bundle
+          path: ${{ runner.temp }}/rust-testkit-bundle.tar.gz
+          retention-days: 3
+
+  rust-testkit-consumer:
+    name: Rust testkit artifact-only consumer
+    needs: [rust-testkit-package]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    timeout-minutes: 45
+    steps:
+      # A self-hosted runner reuses its workspace; this job has no checkout to clean it.
+      - name: Start from an empty workspace
+        if: runner.environment == 'self-hosted'
+        run: find . -mindepth 1 -delete
+
+      - name: Download the verification bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-testkit-bundle
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Extract the verification bundle
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          tar -xzf rust-testkit-bundle.tar.gz -C bundle --no-same-owner
+
+      - name: Verify the packaged testkit without a checkout
+        run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle"
+
+  verify-images:
+    name: Build verified ${{ matrix.image }} image
+    needs: [install, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: trellis-server
+            file: crates/runtime/Containerfile.release
+            title: trellis-server
+            description: Trellis Rust runtime
+          - image: console
+            file: web/Containerfile
+            title: console
+            description: Trellis administrative web console
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+
+      - name: Download native Linux runtime archives
+        if: matrix.image == 'trellis-server'
+        uses: actions/download-artifact@v4
+        with:
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: ${{ runner.temp }}/native-runtime
+
+      - name: Stage native binaries for image assembly
+        if: matrix.image == 'trellis-server'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/native/amd64
+          for binary in trellis trellis-server; do
+            tar --no-same-owner -xzf "$RUNNER_TEMP/native-runtime/${binary}-"[0-9]*-x86_64-unknown-linux-gnu.tar.gz \
+              -C dist/native/amd64 "$binary"
+          done
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build verified image archive
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          outputs: type=oci,dest=/tmp/${{ matrix.image }}.tar
+          build-args: |
+            TRELLIS_VERSION=${{ github.ref_name }}
+            TRELLIS_REVISION=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.title }}
+            org.opencontainers.image.description=${{ matrix.description }}
+
+      - name: Build native trellis image for the managed-mode smoke
+        if: matrix.image == 'trellis-server'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/runtime/Containerfile.release
+          platforms: linux/amd64
+          load: true
+          tags: trellis-smoke:test
+          build-args: |
+            TRELLIS_VERSION=${{ github.ref_name }}
+            TRELLIS_REVISION=${{ github.sha }}
+
+      - name: Smoke-test managed NATS in the trellis image
+        if: matrix.image == 'trellis-server'
+        shell: bash
+        run: bash scripts/check.sh images --smoke-only
+
+      - name: Upload verified image archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-image-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.tar
+          compression-level: 0
+          retention-days: 3
+
+  typescript-testkit-package:
+    name: TypeScript testkit package
+    needs: [install, demos, build]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          node: true
+
+      - name: Download the CLI archive
+        uses: actions/download-artifact@v4
+        with:
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: dist/native
+
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      - name: Download the npm packages the demos verified
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: ts/packages
+
+      - name: Test the packed testkit in a fresh project
+        run: bash scripts/check.sh typescript-testkit
+
+  acceptance:
+    name: Acceptance gate
+    needs:
+      - changes
+      - lint
+      - clippy
+      - rust
+      - typescript-checks
+      - demos
+      - examples
+      - browser
+      - typescript-tests
+      - testkit-tests
+      - rust-testkit-consumer
+      - typescript-testkit-package
+      - verify-images
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every verification job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A prose-only pull request skips verification; nothing may fail.
+          failed="$(jq -c --arg code "$CODE_CHANGED" '
+            (if $code == "true" or .changes.result != "success"
+              then ["success"] else ["success", "skipped"] end) as $allowed
+            | with_entries(select(.value.result as $result | $allowed | index($result) | not))
+            | map_values(.result)' <<<"$NEEDS")"
+          if [[ "$failed" != "{}" ]]; then
+            echo "verification did not all succeed: $failed" >&2
+            exit 1
+          fi
+          if [[ "$CODE_CHANGED" != "true" ]]; then
+            echo "only documentation changed; build and test verification skipped"
+          else
+            echo "all $(jq length <<<"$NEEDS") verification jobs succeeded"
+          fi
+
+  # Publication runs only for a `release/vX.Y.Z[-rc.N]` push, after every
+  # verification job, from this run's artifacts; it never rebuilds the product
+  # or verifies again, so a version that passed the gate publishes in full.
+  # A failed publish step is retried with "Re-run failed jobs": each step skips
+  # what is already published and never overwrites published bytes.
+  release-metadata:
+    name: Release metadata
+    if: startsWith(github.ref, 'refs/heads/release/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      latest: ${{ steps.release.outputs.latest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve the release tag
         id: release
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          INPUT_PUBLISH: ${{ inputs.publish || false }}
-          INPUT_TAG: ${{ inputs.tag || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
-          release_tag=""
-          should_publish=false
-          should_create_tag=false
-
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${INPUT_TAG}" ]; then
-            release_tag="${INPUT_TAG}"
-            if [ "${INPUT_PUBLISH}" = "true" ]; then
-              should_publish=true
-            fi
-          else
-            case "${GITHUB_REF}" in
-              refs/heads/release/v*)
-                release_tag="${GITHUB_REF_NAME#release/}"
-                should_publish=true
-                should_create_tag=true
-                ;;
-            esac
-          fi
-
-          if [ -n "${release_tag}" ] && [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
-            echo "::error::Invalid release tag '${release_tag}'; expected vX.Y.Z or vX.Y.Z-rc.1"
+          tag="${GITHUB_REF_NAME#release/}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Invalid release branch '$GITHUB_REF_NAME'; expected release/vX.Y.Z or release/vX.Y.Z-rc.N"
             exit 1
           fi
-
-          version=""
-          base_version=""
-          if [ -n "${release_tag}" ]; then
-            version="${release_tag#v}"
-            base_version="${version%%[-+]*}"
-          fi
-
-          if [ "${should_create_tag}" = "true" ] && git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
-            echo "::error::Release tag ${release_tag} already exists. Delete the release branch or choose a new version."
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::Release tag $tag already exists; choose a new version."
             exit 1
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # `latest` follows the newest prerelease until a stable release exists.
+          stable="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+            --limit 1 --json tagName --jq length)"
+          if [[ "$tag" != *-* || "$stable" == 0 ]]; then latest=true; else latest=false; fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
-          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-          echo "base-version=${base_version}" >> "${GITHUB_OUTPUT}"
-          echo "should-publish=${should_publish}" >> "${GITHUB_OUTPUT}"
-          echo "should-create-tag=${should_create_tag}" >> "${GITHUB_OUTPUT}"
-
-  prepare-release:
-    name: Prepare release workspace
-    needs: resolve-release
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 120
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      release-tag: ${{ needs.resolve-release.outputs.release-tag }}
-      release-version: ${{ needs.resolve-release.outputs.release-version }}
-      release-base-version: ${{ needs.resolve-release.outputs.release-base-version }}
-      should-publish: ${{ needs.resolve-release.outputs.should-publish }}
-      should-create-tag: ${{ needs.resolve-release.outputs.should-create-tag }}
-      check-run-id: ${{ steps.check.outputs.run-id }}
-    env:
-      RELEASE_TAG: ${{ needs.resolve-release.outputs.release-tag }}
-      SHOULD_PUBLISH: ${{ needs.resolve-release.outputs.should-publish }}
-      SHOULD_CREATE_TAG: ${{ needs.resolve-release.outputs.should-create-tag }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Rust toolchain
+      - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # Publication consumes the artifacts of the successful Check run for this
-      # exact candidate. It never builds the product and never falls back to
-      # "the latest green Check".
-      - name: Resolve the accepted Check run
-        id: check
-        shell: bash
+      - name: Validate release metadata and write the notes
         env:
-          GH_TOKEN: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          query="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/check.yml/runs?head_sha=${GITHUB_SHA}&per_page=100"
-          runs_file="${RUNNER_TEMP}/check-runs.json"
-          deadline=$((SECONDS + 5400))
-          run_id=""
-          while [ "${SECONDS}" -lt "${deadline}" ]; do
-            curl --fail --silent --show-error \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "${query}" -o "${runs_file}"
-            run_id="$(jq -r '[.workflow_runs[] | select(.conclusion == "success")] | sort_by(.run_attempt) | last | .id // empty' "${runs_file}")"
-            if [ -n "${run_id}" ]; then
-              break
-            fi
-            latest_status="$(jq -r '[.workflow_runs[]] | sort_by(.run_attempt) | last | .status // empty' "${runs_file}")"
-            if [ "${latest_status}" = "completed" ]; then
-              echo "::error::The Check run for ${GITHUB_SHA} completed without success; refusing to publish."
-              exit 1
-            fi
-            sleep 30
-          done
-          if [ -z "${run_id}" ]; then
-            echo "::error::Timed out waiting for a successful Check run for ${GITHUB_SHA}."
-            exit 1
-          fi
-          echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
-
-      - name: Validate release metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -n "${RELEASE_TAG}" ]; then
-            cargo run --manifest-path xtask/Cargo.toml -- release check-metadata --version "${RELEASE_TAG#v}"
-          else
-            cargo run --manifest-path xtask/Cargo.toml -- release check-metadata
-          fi
-
-      - name: Write release notes
-        if: env.RELEASE_TAG != ''
-        run: cargo run --manifest-path xtask/Cargo.toml -- release write-notes --tag "${RELEASE_TAG}" --output "${{ github.workspace }}/dist/release-notes.md"
+          cargo xtask release check-metadata --version "${RELEASE_TAG#v}"
+          cargo xtask release write-notes --tag "$RELEASE_TAG" --output dist/release-notes.md
 
       - name: Upload release notes
-        if: env.RELEASE_TAG != ''
         uses: actions/upload-artifact@v4
         with:
           name: release-notes
           path: dist/release-notes.md
 
-  release-gate:
-    name: Release gate
-    needs:
-      - prepare-release
-    if: needs.prepare-release.result == 'success'
-    runs-on: [self-hosted, Linux, X64]
-
-    steps:
-      - name: Confirm the candidate was accepted by Check
-        run: printf 'Publication input is the accepted Check run for this candidate.\n'
-
-  create-release-tag:
-    name: Create release tag
-    if: needs.prepare-release.outputs.should-create-tag == 'true'
-    needs:
-      - prepare-release
-      - release-gate
-      - publish-apis
-    runs-on: [self-hosted, Linux, X64]
-    permissions:
-      contents: write
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Create and push release tag
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-          EXPECTED_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-
-          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "::error::Release tag ${RELEASE_TAG} already exists."
-            exit 1
-          fi
-
-          branch_ref="refs/heads/release/${RELEASE_TAG}"
-          branch_line="$(git ls-remote --heads origin "${branch_ref}")"
-          branch_sha="${branch_line%%$'\t'*}"
-          if [ "${branch_sha}" != "${EXPECTED_SHA}" ]; then
-            echo "::error::Release branch ${branch_ref} points to ${branch_sha:-nothing}, expected ${EXPECTED_SHA}."
-            exit 1
-          fi
-
-          git tag "${RELEASE_TAG}" "${EXPECTED_SHA}"
-          git push origin "refs/tags/${RELEASE_TAG}"
-
-          branch_line="$(git ls-remote --heads origin "${branch_ref}")"
-          branch_sha="${branch_line%%$'\t'*}"
-          if [ "${branch_sha}" != "${EXPECTED_SHA}" ]; then
-            git push origin ":refs/tags/${RELEASE_TAG}" || true
-            echo "::error::Release branch ${branch_ref} moved to ${branch_sha:-nothing} while creating ${RELEASE_TAG}; deleted the new tag before publishing."
-            exit 1
-          fi
-
-          remote_line="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}")"
-          remote_sha="${remote_line%%$'\t'*}"
-          if [ "${remote_sha}" != "${EXPECTED_SHA}" ]; then
-            echo "::error::Release tag ${RELEASE_TAG} points to ${remote_sha}, expected ${EXPECTED_SHA}."
-            exit 1
-          fi
-
-  github-release:
-    name: Publish GitHub release
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.release-gate.result == 'success' && needs.publish-apis.result == 'success' && (needs.prepare-release.outputs.should-create-tag != 'true' || needs.create-release-tag.result == 'success')
-    needs:
-      - prepare-release
-      - release-gate
-      - create-release-tag
-      - publish-apis
-    runs-on: [self-hosted, Linux, X64]
-    permissions:
-      contents: write
-      actions: read
-
-    steps:
-      - name: Download packaged CLI artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          name: trellis-cli-x86_64-unknown-linux-gnu
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Download release notes
-        uses: actions/download-artifact@v4
-        with:
-          name: release-notes
-          path: dist
-
-      - name: Publish release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-          tag_name: ${{ needs.prepare-release.outputs.release-tag }}
-          target_commitish: ${{ github.sha }}
-          files: |
-            dist/trellis-*-x86_64-unknown-linux-gnu.tar.gz
-            dist/checksum-*-x86_64-unknown-linux-gnu-trellis.sha256
-          body_path: dist/release-notes.md
-          prerelease: ${{ contains(needs.prepare-release.outputs.release-tag, '-') }}
-
-  publish-crates:
-    name: Publish Rust crates
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success'
-    needs:
-      - prepare-release
-      - github-release
-    runs-on: [self-hosted, Linux, X64]
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download the accepted Rust packages
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-testkit-packages
-          path: dist/rust-packages
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Restore the accepted generated inputs
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Restore the accepted embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-
-      - name: Authenticate with crates.io
-        id: auth
-        uses: rust-lang/crates-io-auth-action@v1
-
-      - name: Publish crates
-        shell: bash
-        working-directory: .
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: |
-          set -euo pipefail
-
-          workspace_version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-          published=()
-          skipped=()
-
-          crate_exists() {
-            local crate="$1"
-            local version="$2"
-            curl --silent --show-error --fail "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1
-          }
-
-          wait_for_crate_index() {
-            local crate="$1"
-            local version="$2"
-
-            for attempt in {1..30}; do
-              if cargo info "${crate}@${version}" >/dev/null 2>&1; then
-                return 0
-              fi
-              printf 'Waiting for %s@%s to appear in the crates.io index (%s/30)\n' "$crate" "$version" "$attempt"
-              sleep 10
-            done
-
-            echo "::error::${crate}@${version} did not appear in the crates.io index"
-            return 1
-          }
-
-          record_skip() {
-            local crate="$1"
-            echo "Skipping ${crate}@${workspace_version} (already published)"
-            skipped+=("${crate}@${workspace_version}")
-            wait_for_crate_index "$crate" "$workspace_version"
-          }
-
-          record_publish() {
-            local crate="$1"
-            published+=("${crate}@${workspace_version}")
-          }
-
-          run_publish() {
-            local crate="$1"
-            shift
-            local output
-            local status
-
-            time bash scripts/prepare-rust-publication.sh \
-              dist/rust-packages target "$crate"
-
-            set +e
-            output=$(time cargo publish --allow-dirty --locked \
-              --config .cargo/publication.toml "$@" 2>&1)
-            status=$?
-            set -e
-
-            printf '%s\n' "$output"
-
-            if [ "$status" -eq 0 ]; then
-              record_publish "$crate"
-              wait_for_crate_index "$crate" "$workspace_version"
-              return 0
-            fi
-
-            if printf '%s\n' "$output" | grep -Fq "already exists on crates.io index"; then
-              record_skip "$crate"
-              return 0
-            fi
-
-            return "$status"
-          }
-
-          publish_workspace_crate() {
-            local crate="$1"
-
-            if crate_exists "$crate" "$workspace_version"; then
-              record_skip "$crate"
-              return 0
-            fi
-
-            run_publish "$crate" -p "$crate"
-          }
-
-          publish_workspace_crate trellis-protocol
-          publish_workspace_crate trellis-rs
-          publish_workspace_crate trellis-runtime-apis
-          publish_workspace_crate trellis-idl
-          publish_workspace_crate trellis-local-bootstrap
-          publish_workspace_crate trellis-events-runtime
-          publish_workspace_crate trellis-jobs-runtime
-          publish_workspace_crate trellis-runtime
-          publish_workspace_crate trellis-bootstrap
-          publish_workspace_crate trellis-local-nats
-          # Each dependency is available in the index before its consumer publishes.
-          publish_workspace_crate trellis-testkit
-
-          echo "Published ${#published[@]} crate(s)"
-          for item in "${published[@]}"; do
-            echo "  published: $item"
-          done
-
-          echo "Skipped ${#skipped[@]} crate(s)"
-          for item in "${skipped[@]}"; do
-            echo "  skipped: $item"
-          done
-
   publish-apis:
     name: Publish canonical APIs
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.release-gate.result == 'success'
-    needs:
-      - prepare-release
-      - release-gate
-    runs-on: [self-hosted, Linux, X64]
+    needs: [acceptance, release-metadata]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: write
-      actions: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download the packaged CLI
+      - name: Download the CLI archive
         uses: actions/download-artifact@v4
         with:
           name: trellis-cli-x86_64-unknown-linux-gnu
           path: ${{ runner.temp }}/cli
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Stage the CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/bin"
-          tar -xzf "$RUNNER_TEMP/cli/"trellis-*.tar.gz -C "$GITHUB_WORKSPACE/bin" trellis
 
       - name: Authenticate with GHCR
         uses: docker/login-action@v3
@@ -493,369 +1160,248 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The canonical APIs live in one native package (`crates/builtin-contracts`,
+      # package `trellis`); the other crates and TypeScript packages are
+      # generated consumers and carry no publishable `trellis.toml`.
       - name: Publish APIs
         shell: bash
         run: |
           set -euo pipefail
-          trellis="$GITHUB_WORKSPACE/bin/trellis"
-          # The canonical APIs live in one native package (`crates/runtime`,
-          # package `trellis`); the other crates and TypeScript packages are
-          # generated consumers and carry no publishable `trellis.toml`.
-          (cd crates/runtime && "$trellis" publish)
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/cli/"trellis-[0-9]*.tar.gz -C "$RUNNER_TEMP/bin" trellis
+          cd crates/builtin-contracts
+          "$RUNNER_TEMP/bin/trellis" publish
 
-  publish-npm:
-    name: Publish npm packages
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success'
-    needs:
-      - prepare-release
-      - github-release
+  create-release-tag:
+    name: Create release tag
+    needs: [release-metadata, publish-apis]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
-      contents: read
-      id-token: write
-      actions: read
-    env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-
+      contents: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download npm package artifact
+      - name: Tag the verified commit
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          branch="$(git ls-remote --heads origin "refs/heads/$GITHUB_REF_NAME" | cut -f1)"
+          if [ "$branch" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_REF_NAME moved to ${branch:-nothing}; this run verified $GITHUB_SHA."
+            exit 1
+          fi
+          existing="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" | cut -f1)"
+          if [ -z "$existing" ]; then
+            git tag "$RELEASE_TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+          elif [ "$existing" != "$GITHUB_SHA" ]; then
+            echo "::error::$RELEASE_TAG points to $existing, not $GITHUB_SHA."
+            exit 1
+          fi
+
+  github-release:
+    name: Publish GitHub release
+    needs: [release-metadata, create-release-tag]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the CLI archive
         uses: actions/download-artifact@v4
         with:
-          name: npm-packages
-          # The Check uploads the npm directories with 'ts/packages' as the
-          # artifact root (their least common ancestor), so extract there and
-          # the publish step's 'ts/packages/<package>/npm' paths resolve.
-          path: ts/packages
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: dist
+
+      - name: Download release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: dist
+
+      - name: Upload missing assets and verify existing bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" \
+              --notes-file dist/release-notes.md "${flags[@]}"
+          fi
+          release="$(gh release view "$RELEASE_TAG" --json assets)"
+          existing="$(mktemp -d "$RUNNER_TEMP/existing-release.XXXXXX")"
+          missing=()
+          for asset in dist/trellis-*.tar.gz dist/checksum-*.sha256; do
+            name="$(basename "$asset")"
+            if jq -e --arg name "$name" '.assets | any(.name == $name)' <<<"$release" >/dev/null; then
+              gh release download "$RELEASE_TAG" --pattern "$name" --dir "$existing"
+              cmp "$asset" "$existing/$name"
+            else
+              missing+=("$asset")
+            fi
+          done
+          # Never overwrite published bytes, including after a partial upload.
+          if [ "${#missing[@]}" -gt 0 ]; then
+            gh release upload "$RELEASE_TAG" "${missing[@]}"
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false
+
+  publish-crates:
+    name: Publish Rust crates
+    needs: [release-metadata, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore generated inputs
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish crates
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          crate_versions="$(cargo metadata --format-version 1 --no-deps --locked)"
+
+          wait_for_index() {
+            for attempt in {1..30}; do
+              if cargo info "$1@$2" >/dev/null 2>&1; then return 0; fi
+              printf 'Waiting for %s@%s in the crates.io index (%s/30)\n' "$1" "$2" "$attempt"
+              sleep 10
+            done
+            echo "::error::$1@$2 did not appear in the crates.io index"
+            return 1
+          }
+
+          # Each dependency reaches the index before its consumer publishes.
+          for crate in trellis-protocol trellis-models trellis-rs trellis-testkit; do
+            version="$(jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version' <<<"$crate_versions")"
+            # crates.io refuses API requests without a User-Agent (403), which
+            # would read as unpublished and republish a retained version.
+            if curl --silent --fail --user-agent "trellis-release (https://github.com/oats-center/trellis)" \
+              "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
+              echo "Skipping $crate@$version (already published)"
+            else
+              # The acceptance gate already verified these packages; upload
+              # without building them again.
+              cargo publish --no-verify --allow-dirty --locked --config .cargo/publication.toml -p "$crate"
+            fi
+            wait_for_index "$crate" "$version"
+          done
+
+  publish-npm:
+    name: Publish npm packages
+    needs: [release-metadata, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+      LATEST: ${{ needs.release-metadata.outputs.latest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # The packages the demos job verified, with 'ts/packages' as the
+      # artifact root.
+      - name: Download the verified npm packages
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: ts/packages
+
       - name: Publish packages
         shell: bash
         run: |
           set -euo pipefail
           npm_tag=latest
-          published=()
-          skipped=()
-
-          package_already_exists() {
-            local package_name="$1"
-            local package_version="$2"
-            npm view "${package_name}@${package_version}" version >/dev/null 2>&1
-          }
-
-          publish_or_skip() {
-            local pkg="$1"
-            local name="$2"
-            local version="$3"
-            local output
-            local status
-
-            if package_already_exists "$name" "$version"; then
+          if [[ "$LATEST" != true ]]; then npm_tag=rc; fi
+          publish() {
+            local name version
+            name="$(node -p "require('./$1/package.json').name")"
+            version="$(node -p "require('./$1/package.json').version")"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "Skipping $name@$version (already published)"
-              skipped+=("$name@$version")
               return 0
             fi
-
-            set +e
-            output=$(npm publish --access public --tag "$npm_tag" "$pkg" 2>&1)
-            status=$?
-            set -e
-
-            printf '%s\n' "$output"
-
-            if [ "$status" -eq 0 ]; then
-              published+=("$name@$version")
-              return 0
-            fi
-
-            if printf '%s\n' "$output" | grep -Eqi 'cannot publish over|previously published version|cannot modify pre-existing version|you cannot publish over'; then
-              echo "Skipping $name@$version (already published)"
-              skipped+=("$name@$version")
-              return 0
-            fi
-
-            return "$status"
+            npm publish --access public --tag "$npm_tag" "./$1"
           }
-
-          if [[ "${RELEASE_TAG}" == *-* ]]; then
-            npm_tag=rc
-          fi
-
-          packages=(
-            ts/packages/result/npm
-            ts/packages/trellis/npm
-            ts/packages/trellis-svelte/npm
-          )
+          packages=(ts/packages/result/npm ts/packages/trellis/npm ts/packages/trellis-svelte/npm ts/packages/trellis-testkit/npm)
+          # npm compares the repository with GitHub provenance case-sensitively.
           for pkg in "${packages[@]}"; do
-            package_json="$pkg/package.json"
-            name=$(node -p "require('./${package_json}').name")
-            version=$(node -p "require('./${package_json}').version")
-            publish_or_skip "$pkg" "$name" "$version"
+            npm pkg set "repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git" --prefix "$pkg"
           done
-
-          echo "Published ${#published[@]} package(s)"
-          for item in "${published[@]}"; do
-            echo "  published: $item"
-          done
-
-          echo "Skipped ${#skipped[@]} package(s)"
-          for item in "${skipped[@]}"; do
-            echo "  skipped: $item"
-          done
-
-  publish-jsr:
-    name: Publish JSR packages
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success'
-    needs:
-      - prepare-release
-      - github-release
-    runs-on: [self-hosted, Linux, X64]
-    permissions:
-      contents: read
-      id-token: write
-      actions: read
-    env:
-      RELEASE_VERSION: ${{ needs.prepare-release.outputs.release-version }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Cache Deno dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/deno
-            ts/node_modules
-          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('ts/deno.lock') }}
-          restore-keys: |
-            deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
-
-      - name: Download the exact staged testkit publication input
-        uses: actions/download-artifact@v4
-        with:
-          name: check-testkit-jsr
-          path: dist
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Extract the exact staged testkit
-        run: mkdir -p dist/testkit-jsr && tar -xzf dist/testkit-jsr.tar.gz -C dist/testkit-jsr
-
-      - name: Publish JSR packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          published=()
-          skipped=()
-
-          # JSR cannot follow the workspace's local package paths. Rewrite every
-          # '@oatscenter/*' mapping to its published JSR specifier, using each
-          # package's own exports map so subpaths stay exact; trellis-svelte
-          # generates the equivalent manifest for itself.
-          deno eval '
-            const version = Deno.env.get("RELEASE_VERSION");
-            const read = (path) => JSON.parse(Deno.readTextFileSync(path));
-            const manifests = {
-              "trellis": "ts/packages/trellis/deno.json",
-              "result": "ts/packages/result/deno.json",
-              "trellis-svelte": "ts/packages/trellis-svelte/deno.json",
-            };
-            const exportsByFile = (dir) => {
-              const raw = read(manifests[dir]).exports;
-              const map = typeof raw === "string" ? { ".": raw } : raw;
-              return Object.fromEntries(
-                Object.entries(map).map(([key, value]) => [
-                  value.startsWith("./") ? value.slice(2) : value,
-                  key,
-                ]),
-              );
-            };
-            const tables = Object.fromEntries(
-              Object.keys(manifests).map((dir) => [dir, exportsByFile(dir)]),
-            );
-            const root = read("ts/deno.json");
-            for (const [name, spec] of Object.entries(root.imports ?? {})) {
-              if (!spec.startsWith("./packages/")) continue;
-              const [dir, ...rest] = spec.slice("./packages/".length).split("/");
-              const key = tables[dir]?.[rest.join("/")];
-              if (key === undefined) continue;
-              root.imports[name] = `jsr:@oatscenter/${dir}@^${version}${
-                key === "." ? "" : key.slice(1)
-              }`;
-            }
-            Deno.writeTextFileSync("ts/deno.json", JSON.stringify(root, null, 2) + "\n");
-          '
-
-          package_field() {
-            local manifest="$1"
-            local field="$2"
-            deno eval 'const manifest = JSON.parse(await Deno.readTextFile(Deno.args[0])); console.log(manifest[Deno.args[1]]);' "$manifest" "$field"
-          }
-
-          jsr_package_exists() {
-            local package_name="$1"
-            local package_version="$2"
-            curl -fsL -o /dev/null "https://jsr.io/${package_name}/${package_version}_meta.json"
-          }
-
-          wait_for_jsr_package() {
-            local package_name="$1"
-            local package_version="$2"
-
-            for attempt in {1..30}; do
-              if jsr_package_exists "$package_name" "$package_version"; then
-                return 0
-              fi
-              printf 'Waiting for %s@%s to appear on JSR (%s/30)\n' "$package_name" "$package_version" "$attempt"
-              sleep 10
-            done
-
-            echo "::error::${package_name}@${package_version} did not appear on JSR"
-            return 1
-          }
-
-          publish_or_skip() {
-            local package_dir="$1"
-            local manifest="${package_dir}/deno.json"
-            local package_name
-            local package_version
-            package_name="$(package_field "$manifest" name)"
-            package_version="$(package_field "$manifest" version)"
-
-            if jsr_package_exists "$package_name" "$package_version"; then
-              echo "Skipping ${package_name}@${package_version} (already published)"
-              skipped+=("${package_name}@${package_version}")
-              wait_for_jsr_package "$package_name" "$package_version"
-              return 0
-            fi
-
-            (cd "$package_dir" && time deno publish --allow-slow-types --allow-dirty)
-            published+=("${package_name}@${package_version}")
-            wait_for_jsr_package "$package_name" "$package_version"
-          }
-
-          publish_or_skip ts/packages/result
-          publish_or_skip ts/packages/trellis
-          # GitHub release assets already exist. With fresh state and no source
-          # override, exercise the exact staged package's pinned acquisition and
-          # a real generated RPC before authorizing its publication.
-          smoke_root="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
-          deno_bin="$(command -v deno)"
-          mkdir -p "$smoke_root/home"
-          PATH='' HOME="$smoke_root/home" TRELLIS_TEST_CACHE_DIR="$smoke_root/cache" TMPDIR="$smoke_root" \
-            "$deno_bin" run -A --config dist/testkit-jsr/deno.json \
-              dist/testkit-jsr/tests/release_smoke.ts
-          publish_or_skip dist/testkit-jsr
-
-          TRELLIS_SVELTE_JSR_RUNTIME_DEPENDENCY_VERSION="${RELEASE_VERSION}" \
-            deno task -c ts/packages/trellis-svelte/deno.json build:npm
-          publish_or_skip ts/packages/trellis-svelte/jsr
-
-          echo "Published ${#published[@]} JSR package(s)"
-          for item in "${published[@]}"; do
-            echo "  published: $item"
-          done
-
-          echo "Skipped ${#skipped[@]} JSR package(s)"
-          for item in "${skipped[@]}"; do
-            echo "  skipped: $item"
-          done
+          for pkg in "${packages[@]}"; do publish "$pkg"; done
 
   publish-images:
     name: Publish ${{ matrix.image }} image
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.release-gate.result == 'success' && needs.github-release.result == 'success'
-    needs:
-      - prepare-release
-      - release-gate
-      - github-release
-    runs-on: [self-hosted, Linux, X64]
+    needs: [release-metadata, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
-      actions: read
     env:
-      RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-
+      RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+      LATEST: ${{ needs.release-metadata.outputs.latest }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: trellis
-          - image: console
-
+        image: [trellis-server, console]
     steps:
-      - name: Download verified image archive
-        # Check produces Linux amd64 images only; promotion preserves that archive.
+      - name: Download the verified image archive
         uses: actions/download-artifact@v4
         with:
           name: verified-image-${{ matrix.image }}
-          path: /tmp
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+          path: ${{ runner.temp }}/image
 
-      - name: Normalize image owner
-        id: owner
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "value=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-
-      - name: Set up image promotion
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes skopeo
-
-      - name: Extract image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ matrix.image }}
-          tags: |
-            type=raw,value=${{ env.RELEASE_TAG }},enable=${{ env.RELEASE_TAG != '' }}
-            type=sha,prefix=sha-
-            type=raw,value=rc,enable=${{ env.RELEASE_TAG != '' && contains(env.RELEASE_TAG, '-') }}
-            type=raw,value=latest,enable=${{ env.RELEASE_TAG != '' && !contains(env.RELEASE_TAG, '-') }}
-
-      - name: Promote verified image
+      - name: Promote the verified image
         shell: bash
         env:
-          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_USER: ${{ github.actor }}
+          IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
-          auth_file="${RUNNER_TEMP}/skopeo-auth.json"
-          printf '%s' "${REGISTRY_PASSWORD}" | skopeo login --authfile "${auth_file}" --username "${REGISTRY_USER}" --password-stdin "${REGISTRY}"
-          while IFS= read -r image_tag; do
-            [ -n "${image_tag}" ] || continue
-            skopeo copy --all --dest-authfile "${auth_file}" "oci-archive:/tmp/${{ matrix.image }}.tar" "docker://${image_tag}"
-          done <<< "${IMAGE_TAGS}"
+          owner="$(tr '[:upper:]' '[:lower:]' <<<"$GITHUB_REPOSITORY_OWNER")"
+          tags=("$RELEASE_TAG" "sha-${GITHUB_SHA:0:7}")
+          if [[ "$RELEASE_TAG" == *-* ]]; then tags+=(rc); fi
+          if [[ "$LATEST" == true ]]; then tags+=(latest); fi
+          command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install --yes skopeo; }
+          auth="$RUNNER_TEMP/skopeo-auth.json"
+          printf '%s' "$REGISTRY_PASSWORD" |
+            skopeo login --authfile "$auth" --username "$REGISTRY_USER" --password-stdin "$REGISTRY"
+          for tag in "${tags[@]}"; do
+            skopeo copy --all --dest-authfile "$auth" \
+              "oci-archive:$RUNNER_TEMP/image/$IMAGE.tar" "docker://$REGISTRY/$owner/$IMAGE:$tag"
+          done

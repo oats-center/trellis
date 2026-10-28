@@ -34,36 +34,23 @@ const DISABLED_HANDLE: TelemetryRuntimeHandle = {
 };
 
 type TracingRuntimeModules = {
-  NodeTracerProvider:
-    typeof import("@opentelemetry/sdk-trace-node").NodeTracerProvider;
-  ParentBasedSampler:
-    typeof import("@opentelemetry/sdk-trace-base").ParentBasedSampler;
-  TraceIdRatioBasedSampler:
-    typeof import("@opentelemetry/sdk-trace-base").TraceIdRatioBasedSampler;
-  AlwaysOnSampler:
-    typeof import("@opentelemetry/sdk-trace-base").AlwaysOnSampler;
-  AlwaysOffSampler:
-    typeof import("@opentelemetry/sdk-trace-base").AlwaysOffSampler;
-  OTLPTraceExporter:
-    typeof import("@opentelemetry/exporter-trace-otlp-proto").OTLPTraceExporter;
-  BatchSpanProcessor:
-    typeof import("@opentelemetry/sdk-trace-base").BatchSpanProcessor;
-  ConsoleSpanExporter:
-    typeof import("@opentelemetry/sdk-trace-base").ConsoleSpanExporter;
-  resourceFromAttributes:
-    typeof import("@opentelemetry/resources").resourceFromAttributes;
+  NodeTracerProvider: typeof import("@opentelemetry/sdk-trace-node").NodeTracerProvider;
+  ParentBasedSampler: typeof import("@opentelemetry/sdk-trace-base").ParentBasedSampler;
+  TraceIdRatioBasedSampler: typeof import("@opentelemetry/sdk-trace-base").TraceIdRatioBasedSampler;
+  AlwaysOnSampler: typeof import("@opentelemetry/sdk-trace-base").AlwaysOnSampler;
+  AlwaysOffSampler: typeof import("@opentelemetry/sdk-trace-base").AlwaysOffSampler;
+  OTLPTraceExporter: typeof import("@opentelemetry/exporter-trace-otlp-proto").OTLPTraceExporter;
+  BatchSpanProcessor: typeof import("@opentelemetry/sdk-trace-base").BatchSpanProcessor;
+  ConsoleSpanExporter: typeof import("@opentelemetry/sdk-trace-base").ConsoleSpanExporter;
+  resourceFromAttributes: typeof import("@opentelemetry/resources").resourceFromAttributes;
 };
 
 type MetricsRuntimeModules = {
   MeterProvider: typeof import("@opentelemetry/sdk-metrics").MeterProvider;
-  PeriodicExportingMetricReader:
-    typeof import("@opentelemetry/sdk-metrics").PeriodicExportingMetricReader;
-  ConsoleMetricExporter:
-    typeof import("@opentelemetry/sdk-metrics").ConsoleMetricExporter;
-  OTLPMetricExporter:
-    typeof import("@opentelemetry/exporter-metrics-otlp-proto").OTLPMetricExporter;
-  resourceFromAttributes:
-    typeof import("@opentelemetry/resources").resourceFromAttributes;
+  PeriodicExportingMetricReader: typeof import("@opentelemetry/sdk-metrics").PeriodicExportingMetricReader;
+  ConsoleMetricExporter: typeof import("@opentelemetry/sdk-metrics").ConsoleMetricExporter;
+  OTLPMetricExporter: typeof import("@opentelemetry/exporter-metrics-otlp-proto").OTLPMetricExporter;
+  resourceFromAttributes: typeof import("@opentelemetry/resources").resourceFromAttributes;
 };
 
 /** Default OpenTelemetry export timeout when the environment does not set one. */
@@ -135,8 +122,8 @@ function metricsEndpoint(): string | undefined {
 function exportTimeoutMillis(signal: "TRACES" | "METRICS"): number {
   return (
     positiveEnvMillis(`OTEL_EXPORTER_OTLP_${signal}_TIMEOUT`) ??
-      positiveEnvMillis("OTEL_EXPORTER_OTLP_TIMEOUT") ??
-      DEFAULT_EXPORT_TIMEOUT_MILLIS
+    positiveEnvMillis("OTEL_EXPORTER_OTLP_TIMEOUT") ??
+    DEFAULT_EXPORT_TIMEOUT_MILLIS
   );
 }
 
@@ -159,8 +146,8 @@ function resourceAttributes(
     "service.name": identity.serviceName,
     "service.version": identity.serviceVersion ?? "0.0.0",
     "service.namespace": "trellis",
-    "deployment.environment.name": envValue("TRELLIS_ENVIRONMENT") ??
-      "development",
+    "deployment.environment.name":
+      envValue("TRELLIS_ENVIRONMENT") ?? "development",
     "trellis.cluster": envValue("TRELLIS_CLUSTER") ?? "local",
     "trellis.role": identity.role,
   };
@@ -314,9 +301,10 @@ async function initialize(
   if ((envValue("OTEL_SDK_DISABLED") ?? "").toLowerCase() === "true") {
     return DISABLED_HANDLE;
   }
-  const tracesEnabled = !exporterDisabled("OTEL_TRACES_EXPORTER") &&
-    tracesEndpoint() !== undefined;
-  const metricsEnabled = !exporterDisabled("OTEL_METRICS_EXPORTER") &&
+  const tracesEnabled =
+    !exporterDisabled("OTEL_TRACES_EXPORTER") && tracesEndpoint() !== undefined;
+  const metricsEnabled =
+    !exporterDisabled("OTEL_METRICS_EXPORTER") &&
     metricsEndpoint() !== undefined;
   if (!tracesEnabled && !metricsEnabled) return DISABLED_HANDLE;
 
@@ -332,18 +320,18 @@ async function initialize(
       const endpoint = tracesEndpoint();
       const spanProcessors = endpoint
         ? [
-          new runtime.BatchSpanProcessor(
-            new runtime.OTLPTraceExporter({
-              url: endpoint,
-              timeoutMillis: exportTimeoutMillis("TRACES"),
-            }),
-            {
-              maxQueueSize: TRACE_QUEUE_SIZE,
-              maxExportBatchSize: TRACE_BATCH_MAX,
-              scheduledDelayMillis: TRACE_BATCH_DELAY_MILLIS,
-            },
-          ),
-        ]
+            new runtime.BatchSpanProcessor(
+              new runtime.OTLPTraceExporter({
+                url: endpoint,
+                timeoutMillis: exportTimeoutMillis("TRACES"),
+              }),
+              {
+                maxQueueSize: TRACE_QUEUE_SIZE,
+                maxExportBatchSize: TRACE_BATCH_MAX,
+                scheduledDelayMillis: TRACE_BATCH_DELAY_MILLIS,
+              },
+            ),
+          ]
         : [];
       if (getEnv("OTEL_TRACES_CONSOLE") === "true") {
         spanProcessors.push(
@@ -369,16 +357,16 @@ async function initialize(
       const endpoint = metricsEndpoint();
       const readers = endpoint
         ? [
-          new runtime.PeriodicExportingMetricReader({
-            exporter: new runtime.OTLPMetricExporter({
-              url: endpoint,
-              timeoutMillis: exportTimeoutMillis("METRICS"),
-            }),
-            exportIntervalMillis:
-              positiveEnvMillis("OTEL_METRIC_EXPORT_INTERVAL") ??
+            new runtime.PeriodicExportingMetricReader({
+              exporter: new runtime.OTLPMetricExporter({
+                url: endpoint,
+                timeoutMillis: exportTimeoutMillis("METRICS"),
+              }),
+              exportIntervalMillis:
+                positiveEnvMillis("OTEL_METRIC_EXPORT_INTERVAL") ??
                 METRICS_INTERVAL_MILLIS,
-          }),
-        ]
+            }),
+          ]
         : [];
       if (getEnv("TRELLIS_METRICS_CONSOLE") === "true") {
         readers.push(

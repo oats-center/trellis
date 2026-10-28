@@ -1,9 +1,10 @@
 use runtime_trellis::participants::runtime_trellis_operation_provider::{Participant, Provider};
 use runtime_trellis::types::{Update, UpdateDetail, Value};
+use futures_util::StreamExt;
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 use tokio::sync::Notify;
-use trellis_rs::service::{OperationCancellationReason, ServerError, ServiceConnectOptions};
+use trellis_rs::service::{OperationCancellationReason, ServerError};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,10 +27,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-    let mut service = Participant::connect(ServiceConnectOptions::new(
-        &std::env::var("TRELLIS_URL")?,
-        &std::env::var("TRELLIS_IDENTITY_SEED")?,
-    ))
+    let mut service = Participant::connect(
+        trellis_runtime_acceptance::service_options(
+            &std::env::var("TRELLIS_URL")?,
+            &std::env::var("TRELLIS_IDENTITY_SEED")?,
+        )
+        .await?,
+    )
     .await?;
     let mut provider = Provider::new(&mut service);
     let mut api = provider.runtime_trellis_runtime_v1();
@@ -46,6 +50,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 op.started().await?;
                 println!("entered");
                 std::io::stdout().flush().expect("stdout");
+                // Only the ownership check may refuse a retired execution's
+                // write; a refusal for any other reason would hide a missing one.
+                let outcome = |result: Result<(), ServerError>| match result {
+                    Err(ServerError::Nats(message)) if message.contains("stale") => "refused",
+                    Err(_) => "failed otherwise",
+                    Ok(()) => "accepted",
+                };
+                if input.value == "unreadable-signals" {
+                    // Proceed once the test withholds this provider's state reads.
+                    cleanup.notified().await;
+                    let mut signals = op.signals().await?;
+                    assert!(matches!(signals.next().await, Some(Err(_))));
+                    println!("signals failed");
+                    std::io::stdout().flush().expect("stdout");
+                    cleanup.notified().await;
+                    let completed = op
+                        .complete(Value {
+                            value: "after-interruption".to_owned(),
+                            extra: Default::default(),
+                        })
+                        .await;
+                    println!("complete {}", outcome(completed.map(drop)));
+                    std::io::stdout().flush().expect("stdout");
+                    return Ok(());
+                }
+                if input.value == "unreadable-state" {
+                    // The test sends one signal so its acknowledgement is real.
+                    let signal = op
+                        .signals()
+                        .await?
+                        .next()
+                        .await
+                        .expect("a signal")?;
+                    println!("signal received");
+                    std::io::stdout().flush().expect("stdout");
+                    // Proceed once the test withholds this provider's state reads.
+                    cleanup.notified().await;
+                    op.progress(Update {
+                        value: "unread".to_owned(),
+                        nested: UpdateDetail {
+                            count: runtime_trellis::Int64(1),
+                            payload: vec![1].into(),
+                            extra: Default::default(),
+                        },
+                        extra: Default::default(),
+                    })
+                    .await
+                    .expect_err("an unanswered state read must fail");
+                    assert_eq!(
+                        op.cancellation().cancelled().await,
+                        OperationCancellationReason::ServiceStopping
+                    );
+                    println!("read failed");
+                    std::io::stdout().flush().expect("stdout");
+                    // Storage answers again within the lease: the execution
+                    // that saw its state become unreadable must not write.
+                    cleanup.notified().await;
+                    println!("cancel {}", outcome(op.cancel().await.map(drop)));
+                    println!(
+                        "acknowledge {}",
+                        outcome(op.acknowledge_signal(signal.signal_sequence).await)
+                    );
+                    let completed = op
+                        .complete(Value {
+                            value: "after-interruption".to_owned(),
+                            extra: Default::default(),
+                        })
+                        .await;
+                    println!("complete {}", outcome(completed.map(drop)));
+                    std::io::stdout().flush().expect("stdout");
+                    return Ok(());
+                }
                 if input.value == "pending-control" {
                     // The real five-second CAS ACK timeout spans heartbeat ten.
                     tokio::time::sleep(std::time::Duration::from_secs(6)).await;

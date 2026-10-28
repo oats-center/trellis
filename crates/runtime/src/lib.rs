@@ -11,13 +11,19 @@
 
 /// Runtime configuration loading, defaults, and validation.
 pub mod config;
+mod listener;
 /// Runtime mode parsing and subsystem selection.
 pub mod mode;
+pub mod nats_websocket;
 /// Minimal HTTP readiness and version server.
 pub mod server;
 /// Cooperative runtime shutdown primitives.
 pub mod shutdown;
+/// Installation TLS certificate inspection.
+pub mod tls;
 
+mod blocking;
+mod clock;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 /// Built-in Events subsystem.
 pub mod events;
@@ -36,6 +42,8 @@ mod ownership;
 /// Platform subsystem scaffold and bootstrap services.
 pub mod platform;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
+mod resource_evidence;
+#[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 mod resources;
 #[cfg(feature = "sqlite-storage")]
 /// SQLite storage for built-in runtime subsystems.
@@ -46,12 +54,12 @@ pub mod supervisor;
 mod telemetry;
 
 pub use config::{
-    AuthConfig, AuthorizationConfig, ClientConfig, ConfigError, HttpConfig, LeasesConfig,
-    LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, OAuthConfig, OAuthProviderConfig, PlatformTtlConfig, ResolvedLeasesConfig,
-    ResolvedNatsAuthCalloutConfig, ResolvedRuntimeNatsConfig, RuntimeConfig, RuntimePathDefaults,
-    RuntimePathsConfig, SqliteStorageConfig, StorageBackend, StorageConfig, SubsystemConfig,
-    WebSourceConfig,
+    AdministrationConfig, AuthConfig, AuthorizationConfig, AvatarConfig, ClientConfig, ConfigError,
+    HttpConfig, LeasesConfig, ListenerTransport, LiveProviderSeedFilesConfig, LocalIdentityConfig,
+    NatsAuthCalloutConfig, NatsConfig, NatsRuntimeConfig, OAuthListenerConfig,
+    ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig, ResolvedRuntimeNatsConfig, RuntimeConfig,
+    RuntimePathDefaults, RuntimePathsConfig, SqliteStorageConfig, StorageBackend, StorageConfig,
+    SubsystemConfig, TlsConfig,
 };
 pub use mode::{RuntimeMode, RuntimeModeParseError, SubsystemName};
 pub use server::{

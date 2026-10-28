@@ -1,187 +1,41 @@
 # Trellis
 
-Trellis provides authenticated, contract-defined communication and runtime
-resources for TypeScript and Rust participants. Native IDL generates each
-participant's typed API. Connected calls run over NATS; the libraries own
-bootstrap, proofs, authorization, and connection lifecycle.
+> Trellis provides authenticated, contract-defined communication and runtime
+> resources for TypeScript and Rust participants. Native IDL generates each
+> participant's typed API; connected calls run over NATS, and the libraries own
+> bootstrap, proofs, authorization, and connection lifecycle.
 
-## Scope
+Use the guides from the same Trellis release or checkout as the installed CLI
+and libraries. In a checkout they live under `docs/static/`; raw GitHub links
+address the main branch and may be newer than an installed release. They cover
+Trellis interfaces, not application engineering policy: services choose their
+configuration, databases, domain models, dependency injection, layout, and
+tools.
 
-This guidance covers Trellis interfaces, not application engineering policy.
-Services choose their configuration and validation libraries, databases, domain
-models, dependency injection, project layout, and development tools. Examples
-choose a concrete stack to demonstrate Trellis, not to require that stack.
+## Guides
 
-Use documentation from the same Trellis release or source revision as the
-installed libraries and CLI. For a local checkout, these files live under
-`docs/static/`. The links below address the main branch and may be newer than an
-installed release.
-
-## Start Here
-
-- [Consumer guide](llms-full.txt): project files, generation, participants,
-  communication, authorization, resources, and testing.
-- [TypeScript](llms-typescript.txt): service connection, generated handlers,
-  events, operations, and transactional outbox integration.
-- [Rust](llms-rust.txt): generated Cargo crates, connection options, typed
-  callers, providers, resources, lifecycle, and opt-in SQL event stores.
+- [Trellis guide](llms-core.txt): project files and generation, running
+  Trellis, identity and connection, authorization, accounts, communication
+  surfaces, resources, platform APIs, and testing.
+- [TypeScript](llms-typescript.txt): generated packages, service connection,
+  handlers, events, operations and transfers, jobs, resources and the SQL
+  outbox, browser apps, and the Node testkit.
+- [Rust](llms-rust.txt): generated crates and features, connection options,
+  native OAuth and devices, typed surfaces, resources and transfers, and the
+  Rust testkit.
 - [Svelte](llms-svelte.txt): browser authentication and the Svelte integration.
-- Human service walkthrough: `/guides/write-a-service`.
-- Human IDL authoring guide: `/guides/authoring-contracts`.
-- Human testing walkthrough: `/guides/testing-trellis-services`.
-- Public API reference: `/api` on the docs site. Generated participant source
-  defines the exact names available for a project's declared actions.
+- [Complete guide](llms-full.txt): all of the above in one file.
 
-## Essential Workflow
+## Human Documentation
 
-Console user management supports profile and local-username edits, participant
-access grants, target-user password-reset and identity-link flows, sign-in
-methods, sessions, and connections. Exact grants apply capability groups as
-one-time presets, not live memberships. See the authentication-and-authorization
-guide for administrative scope and protected-account safeguards. Exact snapshots
-may initiate resource provisioning; readiness still gates access, and read-only
-resource approval does not grant write access.
+- Service walkthrough: `/guides/write-a-service`.
+- IDL authoring: `/guides/authoring-contracts`.
+- Testing: `/guides/testing-trellis-services`.
+- Running Trellis: `/guides/starting-trellis`.
+- Public API reference: `/api`. Generated participant source defines the exact
+  names available for a project's declared actions.
 
-Capability discovery includes installed application APIs. Access editors use the
-selected participant revision; global discovery distinguishes API definitions by
-digest rather than choosing one definition for a shared API ID.
+## Optional
 
-1. Author the `.trellis` files explicitly listed by `[sources]`.
-2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
-   run `trellis update` to resolve changes into `trellis.lock`. A durable
-   `consumer` needs a direct `trellis` package dependency containing
-   `trellis.events@v1`; choose its version explicitly.
-3. Run `trellis install` to reproduce locked dependencies and `trellis generate`
-   after IDL edits. `trellis generate --watch` supports the edit loop.
-4. Depend on the one ordinary generated package for your language. Import its
-   `apis` and `participants` namespaces, not separate API or participant
-   packages.
-5. Connect through that participant's supported runtime API. Use generated calls
-   and resolved resource handles; do not reconstruct Trellis transport metadata.
-
-Commit authored IDL, `trellis.toml`, and `trellis.lock`. Commit generated
-packages when clones should build without the Trellis CLI or source-package
-cache; regenerate rather than hand-edit them. Configure `[generate.rust].output`
-and/or `[generate.typescript].output`. Detection uses root Cargo, npm, or Deno
-manifests; no marker means no language package. Package version equals the
-source package version. TypeScript packages contain executable ESM JavaScript
-and declarations; Rust packages are ordinary path-dependency crates. Both use
-published runtime dependencies matching the CLI. No project-local installation
-tree, runtime-path configuration, or consumer transpilation step is required.
-Use exact declared action names, not suffixes or invented qualifiers. Failed
-compilation, rendering, or formatting retains the last successful generated
-outputs; colliding participant output paths are errors.
-
-Trellis Operations are durable, restartable, at-least-once caller-visible
-workflows; controls remain bound to the creator principal and participant across
-reconnects, and terminal states are immutable. An Operation observer is a
-separate live session from the durable executor: a watcher reconciles the
-current authoritative snapshot once its transport is ready, then delivers typed
-transient updates and terminal state. Transient updates are ordered and never
-silently dropped, while not-yet-delivered nonterminal snapshots may be
-conflated. Opening or closing a watcher never starts, cancels, or completes the
-durable work, and a transport interruption surfaces as an observation error
-rather than an invented terminal business state. Jobs are service-private; keyed
-capacity waits do not consume attempts. Service operation registrations expose
-local owner-fenced `control(id)` and owner-routed `reconcile(id)`, which
-re-enters the handler with persisted input, caller, and progress. A cancellation
-request stays nonterminal while the owner renews its lease and joins handler
-cleanup; only then is `Cancelled` persisted. Stalled cleanup has no forced
-terminal timeout, and external side effects may overlap across owner loss.
-Cancellation-first admission requires both Invoke and Cancel authority and the
-same caller-chosen invocation ID and input on every retry. It atomically records
-non-clearable cancellation intent; the handler must perform already-aborted
-cleanup before business work. Errors or explicit deferral leave cleanup pending.
-Job deadlines are creation-relative; retry defaults to five ordinary attempts
-delayed by 5s, 30s, 2m, and 10m. Broker redelivery is unlimited so execution
-owners can finish cleanup before Expired or Dead. Already-cancelled handlers
-must reconcile earlier side effects; cleanup errors preserve redelivery.
-Never-started expiration confirms terminal publication before releasing
-recovered key slots, without running handlers; terminal redelivery reconciles
-any remaining slot before acknowledgement. Ordinary queues use Block. At the
-coordinator boundary, fail-stale takeover preserves cleanup for the displaced
-job's recovered owner under a fresh fence; only that owner settles Stale.
-Ignored stale completions are nonterminal diagnostics and retain redelivery
-until cleanup settles. A never-started displaced reservation settles Pending to
-Stale without handler execution. Lifecycle publication awaits JetStream
-acknowledgement; typed live updates remain transient. Execution state and
-attempts follow accepted lifecycle transitions in broker stream-sequence order.
-Created initializes but cannot reopen a job. Diagnostics cannot override
-settlement or attempts. A valid Retried opens a new run without deleting
-history. Old-run deliveries are identified by their original lifecycle sequence
-and acknowledged without touching newer-run coordination. Deferred work rereads
-lifecycle state before acquisition. Jobs Summary is independent of Query pages.
-Capability approval is not an exact grant. Resource commitments are approvals;
-desired capacities are hints, while observed bindings are the usable limits.
-Trellis neither adopts nor destroys foreign-owned physical resources. Removal
-detaches access without deleting new-version data, allowing compatible approved
-reattachment. Store and file metadata listing uses opaque, query-bound keyset
-cursors with a default limit of 100 and maximum of 500. An administrator
-installs the immutable participant revision and writes a participant-scoped
-`GrantBinding`; deployment apply provisions exact resource evidence.
-Store streaming uses demand-driven, byte-capped reads and verifies chunk order,
-size, and SHA-256 before successful EOF; partial output is not a verified object.
-Backend consumer expiry permits exact-cursor continuation on the pinned
-connection, not transport reconnection. Cleanup retains the generation lease.
-Whole-buffer helpers retain the entire object; bounded source buffering is not a
-whole-process memory guarantee. Native ObjectStore links are unsupported.
-Services/devices bootstrap with identity and proof inputs only, while browsers
-bind a user login and then refresh. A device companion is established only by
-activation-owned separate consent and cannot bootstrap as a standalone
-participant. Authorization contexts, route JWTs, transports, grants, and issuer
-keys remain process-memory-only. Requests/events carry context digest, matching
-redundant `session-key`, and a message-specific proof.
-
-Browser sign-in carries a reusable signed intent; a bounded authentication
-transaction starts only when authentication begins, not when the portal renders.
-Only one outstanding attempt can claim an intent; concurrent starts cannot
-replace it. Persist the pending portal binding before the start request and
-reuse it after response loss or reload: same-binding retries recover the active
-transaction; another binding conflicts. Detached progress requires the initiating
-key's fresh proof, while
-public portal rendering exposes no transaction discovery. Denied, expired, or
-consumed attempts can restart from the same intent. Invalid login requires
-authentication; valid-login authorization denial surfaces its machine code
-without automatically sending the user through another login.
-
-Events use API-qualified subjects and base64url parameter tokens; their signed
-descriptor binds the exact API, dotted event name, and parameter count. Durable
-delivery acknowledges success only after the handler succeeds; final exhaustion
-is durably recorded in the per-Consumer DLQ before acknowledgement. Manual
-replay uses the same handler and a fresh delivery budget without rewinding the
-original Consumer, and successful replay is durably resolved before
-acknowledgement. Live observations and Operation watchers are authorized live
-sessions negotiated with bounded opening requests; the provider signs its offer
-and frames, control responses bind the session ID, logical command sequence, and
-command hash, and continued authority is rechecked from retained context rather
-than by a network lookup per frame. Sessions have protocol liveness and credit
-bounds, not a total age or message cap; an explicit close returns a receipt
-whose remote-cleanup state is complete, incomplete, or unconfirmed, and
-reconnect is an explicit new open rather than a silent reopen.
-
-Transfers use bounded, windowed raw-byte streaming over NATS, with storage
-protocols and credentials hidden behind runtime store handles. Use generated
-upload Operations and download helpers, not raw subjects. Network credit is not
-durability: upload success follows verified backend and durable Operation commit.
-Durable transfer progress is monotonic and may be coalesced; interrupted uploads
-restart from byte zero.
-An upload transport error is not proof that durable commit failed. Resume its
-Operation before retrying. TypeScript's connection timeout bounds transfer
-activation and each cancellation exchange, not the streaming body lifetime.
-
-Consumer AGENTS templates are available under `templates/`. They describe the
-Trellis boundary; application policies belong in the consumer repository.
-
-For live Rust tests, `trellis-testkit` links the real production runtime and
-manages a real NATS child without requiring the CLI/server executables. Its bare
-builder defaults to the verified pinned broker download; a prebuilt broker can
-be selected with `TRELLIS_TEST_NATS_BIN` or `NatsSource`. Only the verified NATS
-executable/archive cache is shared (`TRELLIS_CACHE_DIR` or the platform cache),
-allowing offline reuse; credentials and runtime state remain private. The
-TypeScript testkit
-acquires exact-version SHA-256-pinned production CLI/server archives (currently Linux x86-64 only)
-automatically; no installed Trellis executables or nsc are required. Production
-commands generate configuration and own managed NATS. Graceful TypeScript host
-shutdown has a bounded fallback that reclaims the isolated host/broker process
-group. Registry-distributed Rust implementation crates are not supported
-service-author APIs.
+- [Consumer AGENTS templates](templates/): the Trellis boundary for a service
+  repository's `AGENTS.md`; application policies belong in that repository.

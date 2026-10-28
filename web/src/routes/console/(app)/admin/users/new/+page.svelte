@@ -35,7 +35,6 @@
 
   let username = $state("");
   let name = $state("");
-  let email = $state("");
 
   // Mirrors of the controller snapshot, kept as reactive page state. The
   // controller is the single owner; these are only its rendered projection.
@@ -71,7 +70,9 @@
   );
   onDestroy(() => workflow.dispose());
 
-  const busy = $derived(stage === "creatingUser" || stage === "creatingSetupLink");
+  const busy = $derived(
+    stage === "creatingUser" || stage === "creatingSetupLink",
+  );
   const userExists = $derived(createdUser !== null);
   const setupPending = $derived(stage === "creatingSetupLink");
   const unknownOutcome = $derived(
@@ -82,19 +83,24 @@
     await workflow.createUser({
       username,
       name: trimmedOptional(name),
-      email: trimmedOptional(email),
     });
   }
 
   async function copySetupUrl(): Promise<void> {
     if (setupReceipt === null) return;
     if (typeof navigator === "undefined" || !navigator.clipboard) {
-      notifications.error("Clipboard access is unavailable in this browser.", "Copy failed");
+      notifications.error(
+        "Clipboard access is unavailable in this browser.",
+        "Copy failed",
+      );
       return;
     }
     try {
-      await navigator.clipboard.writeText(setupReceipt.setupUrl);
-      notifications.success("Setup URL copied to clipboard.", "Copied");
+      await navigator.clipboard.writeText(setupReceipt.token);
+      notifications.success(
+        "Password-reset token copied to clipboard.",
+        "Copied",
+      );
     } catch (cause) {
       notifications.error(failureFrom(cause).message, "Copy failed");
     }
@@ -104,55 +110,87 @@
     if (!workflow.startAnother()) return;
     username = "";
     name = "";
-    email = "";
   }
 </script>
 
 <section class="space-y-4">
-  <PageToolbar title="New user" description="Create a local account and, as a separate step, a password setup link.">
+  <PageToolbar
+    title="New user"
+    description="Create an account. You'll get a link to send them so they can set a password."
+  >
     {#snippet actions()}
-      <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Back to users</a>
+      <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}
+        >Back to users</a
+      >
     {/snippet}
   </PageToolbar>
 
   {#if failure}
-    <Notice variant={stage === "setupFailed" || stage === "setupUnknown" || stage === "createUnknown" ? "warning" : "error"}>
+    <Notice
+      variant={stage === "setupFailed" ||
+      stage === "setupUnknown" ||
+      stage === "createUnknown"
+        ? "warning"
+        : "error"}
+    >
       {failure.message}
-      {#if failure.id}<span class="ml-1 text-xs opacity-70">Reference: {failure.id}</span>{/if}
+      {#if failure.id}<span class="ml-1 text-xs opacity-70"
+          >Reference: {failure.id}</span
+        >{/if}
     </Notice>
   {/if}
 
   {#if userExists && createdUser}
-    <section class="divide-y divide-base-300 border-y border-base-300 bg-base-100">
+    <section
+      class="divide-y divide-base-300 border-y border-base-300 bg-base-100"
+    >
       <div class="px-5 py-3">
-        <p class="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-base-content/45">
+        <p
+          class="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-base-content/45"
+        >
           Account created
         </p>
         <p class="mt-1 text-sm font-medium">{createdUser.label}</p>
-        <p class="trellis-identifier mt-1 break-all text-xs text-base-content/60">{createdUser.userId}</p>
+        <p
+          class="trellis-identifier mt-1 break-all text-xs text-base-content/60"
+        >
+          {createdUser.userId}
+        </p>
         <p class="trellis-field-help mt-1">
-          This account exists now. The password setup link is a separate operation.
+          This account exists now. The password setup link is a separate
+          operation.
         </p>
       </div>
 
       {#if stage === "setupReady" && setupReceipt}
         <div class="px-5 py-3">
-          <div class="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <div
+            class="flex min-w-0 flex-wrap items-center justify-between gap-2"
+          >
             <div>
-              <h2 class="text-sm font-semibold">Password setup URL</h2>
+              <h2 class="text-sm font-semibold">Password-reset token</h2>
               <p class="trellis-field-help mt-1">
-                Send this portal URL to the user to complete local password setup.
-                It expires {formatDate(setupReceipt.expiresAt)}.
+                Send this one-time token to the user to complete local password
+                setup. It expires {formatDate(setupReceipt.expiresAt)}.
               </p>
             </div>
             <div class="flex flex-wrap gap-2">
-              <button class="btn btn-outline btn-sm" type="button" onclick={copySetupUrl}>Copy setup URL</button>
-              <a class="btn btn-ghost btn-sm" href={setupReceipt.setupUrl} target="_blank" rel="noreferrer">Open</a>
+              <button
+                class="btn btn-outline btn-sm"
+                type="button"
+                onclick={copySetupUrl}>Copy token</button
+              >
             </div>
           </div>
-          <input class="input input-bordered input-sm mt-3 w-full trellis-identifier" readonly value={setupReceipt.setupUrl} aria-label="Password setup URL" />
+          <input
+            class="input input-bordered input-sm mt-3 w-full trellis-identifier"
+            readonly
+            value={setupReceipt.token}
+            aria-label="Password-reset token"
+          />
           <p class="trellis-field-help mt-2">
-            A lost setup link is not recoverable; creating another one is a new explicit operation.
+            A lost setup link is not recoverable; creating another one is a new
+            explicit operation.
           </p>
         </div>
       {:else if stage === "setupFailed" || stage === "setupUnknown" || stage === "creatingSetupLink"}
@@ -161,60 +199,107 @@
             {stage === "setupUnknown"
               ? "User created; setup-link outcome unknown"
               : stage === "creatingSetupLink"
-              ? "Creating password setup link"
-              : "User created; setup link unavailable"}
+                ? "Creating password setup link"
+                : "User created; setup link unavailable"}
           </h2>
           <p class="trellis-field-help mt-1">
             {stage === "setupUnknown"
               ? "The request may have created a one-time link that cannot be recovered. Check the user before issuing another."
               : stage === "creatingSetupLink"
-              ? "The account already exists; this step only creates its one-time password setup link."
-              : setupDenied
-              ? "Trellis denied the setup-link operation for this account. The user account remains created."
-              : "The setup link operation failed. The user account remains created; retry only the setup link."}
+                ? "The account already exists; this step only creates its one-time password setup link."
+                : setupDenied
+                  ? "Trellis denied the setup-link operation for this account. The user account remains created."
+                  : "The setup link operation failed. The user account remains created; retry only the setup link."}
           </p>
-          <button class="btn btn-outline btn-sm mt-2" type="button" onclick={() => void workflow.createSetupLink()} disabled={stage === "setupUnknown" || setupPending}>
+          <button
+            class="btn btn-outline btn-sm mt-2"
+            type="button"
+            onclick={() => void workflow.createSetupLink()}
+            disabled={stage === "setupUnknown" || setupPending}
+          >
             {setupPending ? "Creating setup link…" : "Create setup link"}
           </button>
         </div>
       {/if}
 
       <div class="flex flex-wrap justify-end gap-2 px-5 py-3">
-        <a class="btn btn-ghost btn-sm" href={consoleUrl("/admin/users/edit", { query: { userId: createdUser.userId } })}>
+        <a
+          class="btn btn-ghost btn-sm"
+          href={consoleUrl("/admin/users/edit", {
+            query: { userId: createdUser.userId },
+          })}
+        >
           Edit user
         </a>
-        <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Back to users</a>
-        <button class="btn btn-outline btn-sm" type="button" onclick={startAnother} disabled={busy || unknownOutcome}>Create another user</button>
+        <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}
+          >Back to users</a
+        >
+        <button
+          class="btn btn-outline btn-sm"
+          type="button"
+          onclick={startAnother}
+          disabled={busy || unknownOutcome}>Create another user</button
+        >
       </div>
     </section>
   {:else}
-    <form class="divide-y divide-base-300 border-y border-base-300 bg-base-100" onsubmit={(event) => { event.preventDefault(); void createUser(); }}>
+    <form
+      class="divide-y divide-base-300 border-y border-base-300 bg-base-100"
+      onsubmit={(event) => {
+        event.preventDefault();
+        void createUser();
+      }}
+    >
       <section class="px-5 py-3">
-        <p class="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-base-content/45">User profile</p>
+        <p
+          class="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-base-content/45"
+        >
+          User profile
+        </p>
         <div class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           <label class="form-control w-full">
-            <span class="label py-1"><span class="label-text text-xs">Username</span><span class="label-text-alt">required</span></span>
-            <input class="input input-bordered input-sm trellis-identifier" bind:value={username} autocomplete="username" placeholder="local login" required />
+            <span class="label py-1"
+              ><span class="label-text text-xs">Username</span><span
+                class="label-text-alt">required</span
+              ></span
+            >
+            <input
+              class="input input-bordered input-sm trellis-identifier"
+              bind:value={username}
+              autocomplete="username"
+              placeholder="local login"
+              required
+            />
           </label>
           <label class="form-control w-full">
-            <span class="label py-1"><span class="label-text text-xs">Name</span><span class="label-text-alt">optional</span></span>
-            <input class="input input-bordered input-sm" bind:value={name} autocomplete="name" placeholder="Operator name" />
-          </label>
-          <label class="form-control w-full md:col-span-2">
-            <span class="label py-1"><span class="label-text text-xs">Email</span><span class="label-text-alt">optional</span></span>
-            <input class="input input-bordered input-sm" type="email" bind:value={email} autocomplete="email" placeholder="user@example.com" />
+            <span class="label py-1"
+              ><span class="label-text text-xs">Name</span><span
+                class="label-text-alt">optional</span
+              ></span
+            >
+            <input
+              class="input input-bordered input-sm"
+              bind:value={name}
+              autocomplete="name"
+              placeholder="Operator name"
+            />
           </label>
         </div>
         <p class="trellis-field-help mt-3">
-          Creating the account and creating its password setup link are two separate
-          operations. Participant capability policy is not set here; use Portal grants or
-          User grants for real authority.
+          Creating the account and creating its password setup link are two
+          separate operations. Whole-capability access is managed through roles
+          and direct capability grants.
         </p>
       </section>
 
       <section class="flex flex-wrap justify-end gap-2 px-5 py-3">
-        <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Cancel</a>
-        <button class="btn btn-primary btn-sm" type="submit" disabled={busy || unknownOutcome || username.trim() === ""}>
+        <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Cancel</a
+        >
+        <button
+          class="btn btn-primary btn-sm"
+          type="submit"
+          disabled={busy || unknownOutcome || username.trim() === ""}
+        >
           {stage === "creatingUser" ? "Creating…" : "Create user"}
         </button>
       </section>

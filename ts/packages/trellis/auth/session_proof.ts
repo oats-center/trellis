@@ -1,50 +1,19 @@
-import {
-  initializeProtocolWasm,
-  initializeProtocolWasmSync,
-} from "./protocol_wasm.ts";
-import * as protocol from "./protocol_wasm/trellis_protocol_wasm.js";
+import { initializeProtocolWasm, protocolBindings } from "./protocol_wasm.ts";
 import type { Ed25519Signer } from "./crypto.ts";
 import { base64urlDecode, base64urlEncode } from "./utils.ts";
 
-/** Strict signature envelope shared by auth, bootstrap, and context refresh. */
+/** Strict device-enrollment signature envelope. */
 export const SESSION_PROOF_FORMAT_V1 = "trellis.session-proof.v1" as const;
 
 /** One protocol-owned signature purpose. */
-export type SessionProofPurpose =
-  | "userAuthRequest"
-  | "userAuthProgress"
-  | "userAuthResume"
-  | "userAuthBind"
-  | "serviceBootstrap"
-  | "deviceBootstrap"
-  | "deviceEnrollment"
-  | "authorizationContextRefresh";
+export type SessionProofPurpose = "deviceEnrollment";
 
 /** Inputs validated and encoded by the Rust session-proof protocol. */
-export type SessionProofInput =
-  | {
-    purpose: "userAuthBind";
-    origin: string;
-    transactionId: string;
-    sessionPublicKey: string;
-    unsignedRequest: Record<string, unknown> & { issuedAt: number };
-  }
-  | {
-    purpose: "userAuthRequest" | "userAuthProgress" | "userAuthResume";
-    origin: string;
-    unsignedRequest: Record<string, unknown> & { issuedAt: number };
-  }
-  | {
-    purpose: "serviceBootstrap" | "deviceBootstrap" | "deviceEnrollment";
-    origin: string;
-    unsignedRequest: Record<string, unknown> & { iat: number };
-  }
-  | {
-    purpose: "authorizationContextRefresh";
-    origin: string;
-    sessionPublicKey: string;
-    unsignedRequest: Record<string, unknown> & { issuedAt: number };
-  };
+export type SessionProofInput = {
+  purpose: SessionProofPurpose;
+  origin: string;
+  unsignedRequest: Record<string, unknown> & { iat: number };
+};
 
 /** One strict session-proof signature envelope. */
 export type SessionProof = {
@@ -60,18 +29,19 @@ export type SessionProofPolicy = {
 
 /** Parse and validate one signature envelope through Rust. */
 export function parseSessionProof(value: unknown): SessionProof {
-  initializeProtocolWasmSync();
   return JSON.parse(
-    protocol.parse_session_proof(JSON.stringify(value)),
+    protocolBindings().parse_session_proof(JSON.stringify(value)),
   ) as SessionProof;
 }
 
-/** Hash a browser proof-bearing request using its protocol-owned payload rules. */
+/** Hash a proof-bearing request using its protocol-owned payload rules. */
 export async function sessionProofRequestDigest(
   request: Record<string, unknown>,
 ): Promise<string> {
   await initializeProtocolWasm();
-  return protocol.session_proof_request_digest(JSON.stringify(request));
+  return protocolBindings().session_proof_request_digest(
+    JSON.stringify(request),
+  );
 }
 
 /** Return the protocol-owned signing digest without implementing its framing in JS. */
@@ -79,7 +49,7 @@ export async function sessionProofSigningDigest(
   input: SessionProofInput,
 ): Promise<string> {
   await initializeProtocolWasm();
-  return protocol.session_proof_signing_digest(JSON.stringify(input));
+  return protocolBindings().session_proof_signing_digest(JSON.stringify(input));
 }
 
 /** Sign the Rust-produced digest, then verify the declared key and signature in Rust. */
@@ -98,13 +68,7 @@ export async function signSessionProof(
     input,
     proof,
     signerPublicKey,
-    Number(
-      input.purpose === "serviceBootstrap" ||
-        input.purpose === "deviceBootstrap" ||
-        input.purpose === "deviceEnrollment"
-        ? input.unsignedRequest.iat
-        : input.unsignedRequest.issuedAt,
-    ),
+    input.unsignedRequest.iat,
     { maximumAgeMs: 0, maximumFutureSkewMs: 0 },
   );
   return proof;
@@ -122,7 +86,7 @@ export async function verifySessionProof(
   },
 ): Promise<void> {
   await initializeProtocolWasm();
-  protocol.verify_session_proof(
+  protocolBindings().verify_session_proof(
     JSON.stringify(input),
     JSON.stringify(proof),
     signerPublicKey,

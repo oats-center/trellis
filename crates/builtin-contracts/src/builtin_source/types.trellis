@@ -1,0 +1,3987 @@
+// State, Jobs, Health, Events, and Core domain data.
+type HealthHeartbeatSampleSummary = string(max_length=1024);
+type HealthInspectRequestContractId = string(min_length=1, max_length=256);
+type HealthInspectRequestHistoryLimit = int64(min=1, max=500);
+type HealthInspectRequestInstanceId = string(min_length=1, max_length=128);
+type HealthMetricsRequestCheckNamesItem = string(min_length=1, max_length=128);
+type HealthMetricsRequestContractId = string(min_length=1, max_length=256);
+type HealthMetricsRequestInstanceIdsItem = string(min_length=1, max_length=128);
+type HealthMetricsRequestStepMs = int64(min=300000);
+type HealthQueryRequestContractIdsItem = string(min_length=1, max_length=256);
+type HealthQueryRequestDeploymentIdsItem = string(min_length=1, max_length=128);
+type HealthQueryRequestLimit = int64(min=1, max=200);
+type HealthQueryRequestSearch = string(max_length=256);
+type HealthQueryResponseLimit = int64(min=1);
+type HealthStatusChangedEventSummary = string(max_length=1024);
+type HealthWatchRequestContractIdsItem = string(min_length=1, max_length=256);
+type HealthWatchRequestDeploymentIdsItem = string(min_length=1, max_length=128);
+type HealthWatchRequestInstanceIdsItem = string(min_length=1, max_length=128);
+type HealthNotFoundErrorDataId = string(min_length=1);
+type HealthNotFoundErrorDataResource = string(min_length=1);
+type HealthHeartbeatSampleChecksItemError = string(max_length=1024);
+type HealthHeartbeatSampleChecksItemLatencyMs = number(min=0, max=3600000);
+type HealthHeartbeatSampleChecksItemName = string(min_length=1, max_length=128);
+type HealthHeartbeatSampleChecksItemSummary = string(max_length=1024);
+type HealthHeartbeatSampleParticipantContractDigest = string(min_length=1, max_length=256);
+type HealthHeartbeatSampleParticipantContractId = string(min_length=1, max_length=256);
+type HealthHeartbeatSampleParticipantInstanceId = string(min_length=1, max_length=128);
+type HealthHeartbeatSampleParticipantName = string(min_length=1, max_length=256);
+type HealthHeartbeatSampleParticipantPublishIntervalMs = int64(min=1000, max=600000);
+type HealthHeartbeatSampleParticipantRuntimeVersion = string(max_length=256);
+type HealthHeartbeatSampleParticipantVersion = string(max_length=256);
+type HealthInspectResponseHistoryItemIntervalId = int64(min=1);
+type HealthMetricsResponseSummaryAvailability = number(min=0, max=1);
+type HealthQueryResponseEntriesItemContractDigestsItem = string(min_length=1, max_length=128);
+type HealthQueryResponseEntriesItemDeploymentIdsItem = string(min_length=1, max_length=128);
+type HealthStatusChangedEventHeaderId = string(min_length=1, max_length=128);
+type HealthInspectResponseInstancesItemLatestSampleSummary = string(max_length=1024);
+type HealthInspectResponseInstancesItemLatestSampleChecksItemError = string(max_length=1024);
+type HealthInspectResponseInstancesItemLatestSampleChecksItemLatencyMs = number(min=0, max=3600000);
+type HealthInspectResponseInstancesItemLatestSampleChecksItemName = string(min_length=1, max_length=128);
+type HealthInspectResponseInstancesItemLatestSampleChecksItemSummary = string(max_length=1024);
+type HealthInspectResponseInstancesItemLatestSampleParticipantContractDigest = string(min_length=1, max_length=256);
+type HealthInspectResponseInstancesItemLatestSampleParticipantContractId = string(min_length=1, max_length=256);
+type HealthInspectResponseInstancesItemLatestSampleParticipantInstanceId = string(min_length=1, max_length=128);
+type HealthInspectResponseInstancesItemLatestSampleParticipantName = string(min_length=1, max_length=256);
+type HealthInspectResponseInstancesItemLatestSampleParticipantPublishIntervalMs = int64(min=1000, max=600000);
+type HealthInspectResponseInstancesItemLatestSampleParticipantRuntimeVersion = string(max_length=256);
+type HealthInspectResponseInstancesItemLatestSampleParticipantVersion = string(max_length=256);
+type HealthMetricsResponseSeriesItemBucketsItemChecksItemLatencyAverageMs = number(min=0);
+type HealthMetricsResponseSeriesItemBucketsItemChecksItemLatencyMaxMs = number(min=0);
+type StateResourceName = string(min_length=1);
+type StateRevision = string(min_length=1);
+type StateRepresentationVersion = uint32(min=1);
+type ResourceId = string(min_length=1);
+type ResourceOwnerId = string(min_length=1);
+type ResourceParticipantId = string(min_length=1);
+type ResourceLocalName = string(min_length=1);
+type ResourcePhysicalId = string(min_length=1);
+type ResourceBindingRevision = int64(min=1, max=9007199254740991);
+type ResourceVersion = int64(min=1, max=9007199254740991);
+type ResourceCapacityBytes = uint64(max=9007199254740991);
+type ResourceHistory = uint64(max=9007199254740991);
+type TrellisSurfaceStatusRequestContractId = string(min_length=1);
+type TrellisSurfaceStatusRequestSurface = string(min_length=1);
+type TrellisSurfaceStatusResponseStatus4ContractId = string(min_length=1);
+type TrellisSurfaceStatusResponseStatus5ContractId = string(min_length=1);
+type TrellisSurfaceStatusResponseStatus5Kind = string(min_length=1);
+type TrellisSurfaceStatusResponseStatus5Surface = string(min_length=1);
+type JobId = string(min_length=1);
+type JobMaxTries = int64(min=1);
+type JobService = string(min_length=1);
+type JobType = string(min_length=1);
+type JobConcurrencyMetadataKey = string(min_length=1);
+type JobConcurrencyMetadataKeyHash = string(min_length=1);
+type JobContextRequestId = string(min_length=1);
+type JobContextTracestate = string(min_length=1);
+type JobErrorDetailFingerprint = string(min_length=1);
+type JobQueuePolicyMetadataExistingJobId = string(min_length=1);
+type JobQueuePolicyMetadataOutcome = string(min_length=1);
+type JobQueuePolicyMetadataReason = string(min_length=1);
+type JobQueuePolicyMetadataReplacedJobId = string(min_length=1);
+type JobTimelineEventType = string(min_length=1);
+type JobWaitEdgeId = string(min_length=1);
+type JobWaitEdgeLabel = string(min_length=1);
+type JobWaitTargetId = string(min_length=1);
+type JobWaitTargetKey = string(min_length=1);
+type JobWaitTargetLabel = string(min_length=1);
+type JobWaitTargetOperation = string(min_length=1);
+type JobWaitTargetOperationId = string(min_length=1);
+type JobWaitTargetService = string(min_length=1);
+type JobWaitTargetSystem = string(min_length=1);
+type JobWaitTargetType = string(min_length=1);
+type JobsCancelRequestId = string(min_length=1);
+type JobsCancelRequestReason = string(min_length=1);
+type JobsDismissDLQRequestId = string(min_length=1);
+type JobsDismissDLQRequestReason = string(min_length=1);
+type JobsGetKeyRequestKey = string(min_length=1);
+type JobsGetKeyRequestService = string(min_length=1);
+type JobsGetKeyRequestType = string(min_length=1);
+type JobsGetKeyResponseKey = string(min_length=1);
+type JobsGetKeyResponseKeyHash = string(min_length=1);
+type JobsGetKeyResponseLatestPolicyReason = string(min_length=1);
+type JobsGetKeyResponseService = string(min_length=1);
+type JobsGetKeyResponseType = string(min_length=1);
+type JobsInspectRequestId = string(min_length=1);
+type JobsListDLQRequestLimit = int64(min=1);
+type JobsListDLQRequestService = string(min_length=1);
+type JobsListDLQRequestType = string(min_length=1);
+type JobsListDLQResponseLimit = int64(min=1);
+type JobsListServicesRequestLimit = int64(min=1);
+type JobsListServicesResponseLimit = int64(min=1);
+type JobsMetricsRequestService = string(min_length=1);
+type JobsMetricsRequestType = string(min_length=1);
+type JobsMetricsSummaryGroupFailureRate = number(min=0);
+type JobsQueryRequestLimit = int64(min=1);
+type JobsQueryRequestService = string(min_length=1);
+type JobsQueryRequestType = string(min_length=1);
+type JobsQueryResponseLimit = int64(min=1);
+type JobsReplayDLQRequestId = string(min_length=1);
+type JobsReplayDLQRequestReason = string(min_length=1);
+type JobsRetryRequestId = string(min_length=1);
+type JobsRetryRequestReason = string(min_length=1);
+type JobsWatchRequestJobId = string(min_length=1);
+type JobsWorkbenchGroupFailureRate = number(min=0);
+type JobsWorkbenchJobRowId = string(min_length=1);
+type JobsWorkbenchJobRowMaxTries = int64(min=1);
+type JobsWorkbenchJobRowService = string(min_length=1);
+type JobsWorkbenchJobRowType = string(min_length=1);
+type JobsNotFoundErrorDataId = string(min_length=1);
+type JobsNotFoundErrorDataJobId = string(min_length=1);
+type JobsNotFoundErrorDataResource = string(min_length=1);
+type JobConcurrencyKey = string(min_length=1);
+type JobConcurrencyKeyHash = string(min_length=1);
+type JobQueuePolicyExistingJobId = string(min_length=1);
+type JobQueuePolicyOutcome = string(min_length=1);
+type JobQueuePolicyReason = string(min_length=1);
+type JobQueuePolicyReplacedJobId = string(min_length=1);
+type JobWaitingOnItemId = string(min_length=1);
+type JobWaitingOnItemLabel = string(min_length=1);
+type JobTimelineEventErrorDetailFingerprint = string(min_length=1);
+type JobTimelineEventWaitEdgeId = string(min_length=1);
+type JobTimelineEventWaitEdgeLabel = string(min_length=1);
+type JobWaitEdgeTargetId = string(min_length=1);
+type JobWaitEdgeTargetKey = string(min_length=1);
+type JobWaitEdgeTargetLabel = string(min_length=1);
+type JobWaitEdgeTargetOperation = string(min_length=1);
+type JobWaitEdgeTargetOperationId = string(min_length=1);
+type JobWaitEdgeTargetService = string(min_length=1);
+type JobWaitEdgeTargetSystem = string(min_length=1);
+type JobWaitEdgeTargetType = string(min_length=1);
+type JobsCancelResponseJobId = string(min_length=1);
+type JobsCancelResponseJobMaxTries = int64(min=1);
+type JobsCancelResponseJobService = string(min_length=1);
+type JobsCancelResponseJobType = string(min_length=1);
+type JobsDismissDLQResponseJobId = string(min_length=1);
+type JobsDismissDLQResponseJobMaxTries = int64(min=1);
+type JobsDismissDLQResponseJobService = string(min_length=1);
+type JobsDismissDLQResponseJobType = string(min_length=1);
+type JobsGetKeyResponseActiveItemJobId = string(min_length=1);
+type JobsGetKeyResponseQueuedItemJobId = string(min_length=1);
+type JobsInspectResponseErrorsItemFingerprint = string(min_length=1);
+type JobsInspectResponseJobId = string(min_length=1);
+type JobsInspectResponseJobMaxTries = int64(min=1);
+type JobsInspectResponseJobService = string(min_length=1);
+type JobsInspectResponseJobType = string(min_length=1);
+type JobsInspectResponseRelatedItemId = string(min_length=1);
+type JobsInspectResponseRelatedItemMaxTries = int64(min=1);
+type JobsInspectResponseRelatedItemService = string(min_length=1);
+type JobsInspectResponseRelatedItemType = string(min_length=1);
+type JobsInspectResponseTimelineItemType = string(min_length=1);
+type JobsListDLQResponseEntriesItemId = string(min_length=1);
+type JobsListDLQResponseEntriesItemMaxTries = int64(min=1);
+type JobsListDLQResponseEntriesItemService = string(min_length=1);
+type JobsListDLQResponseEntriesItemType = string(min_length=1);
+type JobsListServicesResponseEntriesItemName = string(min_length=1);
+type JobsMetricsResponseSummaryItemFailureRate = number(min=0);
+type JobsQueryResponseEntriesItemId = string(min_length=1);
+type JobsQueryResponseEntriesItemMaxTries = int64(min=1);
+type JobsQueryResponseEntriesItemService = string(min_length=1);
+type JobsQueryResponseEntriesItemType = string(min_length=1);
+type JobsQueryResponseGroupsItemFailureRate = number(min=0);
+type JobsReplayDLQResponseJobId = string(min_length=1);
+type JobsReplayDLQResponseJobMaxTries = int64(min=1);
+type JobsReplayDLQResponseJobService = string(min_length=1);
+type JobsReplayDLQResponseJobType = string(min_length=1);
+type JobsRetryResponseJobId = string(min_length=1);
+type JobsRetryResponseJobMaxTries = int64(min=1);
+type JobsRetryResponseJobService = string(min_length=1);
+type JobsRetryResponseJobType = string(min_length=1);
+type JobsWatchFrameValue2Id = string(min_length=1);
+type JobsWatchFrameValue2Service = string(min_length=1);
+type JobsWatchFrameValue2Type = string(min_length=1);
+type JobsWatchFrameValue4Id = string(min_length=1);
+type JobsWatchRequestQueryService = string(min_length=1);
+type JobsWatchRequestQueryType = string(min_length=1);
+type JobsWorkbenchJobRowContextRequestId = string(min_length=1);
+type JobsWorkbenchJobRowContextTracestate = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemId = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemLabel = string(min_length=1);
+type JobWaitingOnItemTargetId = string(min_length=1);
+type JobWaitingOnItemTargetKey = string(min_length=1);
+type JobWaitingOnItemTargetLabel = string(min_length=1);
+type JobWaitingOnItemTargetOperation = string(min_length=1);
+type JobWaitingOnItemTargetOperationId = string(min_length=1);
+type JobWaitingOnItemTargetService = string(min_length=1);
+type JobWaitingOnItemTargetSystem = string(min_length=1);
+type JobWaitingOnItemTargetType = string(min_length=1);
+type JobTimelineEventWaitEdgeTargetId = string(min_length=1);
+type JobTimelineEventWaitEdgeTargetKey = string(min_length=1);
+type JobTimelineEventWaitEdgeTargetLabel = string(min_length=1);
+type JobTimelineEventWaitEdgeTargetOperation = string(min_length=1);
+type JobTimelineEventWaitEdgeTargetOperationId = string(min_length=1);
+type JobTimelineEventWaitEdgeTargetService = string(min_length=1);
+type JobTimelineEventWaitEdgeTargetSystem = string(min_length=1);
+type JobTimelineEventWaitEdgeTargetType = string(min_length=1);
+type JobsCancelResponseJobConcurrencyKey = string(min_length=1);
+type JobsCancelResponseJobConcurrencyKeyHash = string(min_length=1);
+type JobsCancelResponseJobContextRequestId = string(min_length=1);
+type JobsCancelResponseJobContextTracestate = string(min_length=1);
+type JobsCancelResponseJobErrorDetailFingerprint = string(min_length=1);
+type JobsCancelResponseJobQueuePolicyExistingJobId = string(min_length=1);
+type JobsCancelResponseJobQueuePolicyOutcome = string(min_length=1);
+type JobsCancelResponseJobQueuePolicyReason = string(min_length=1);
+type JobsCancelResponseJobQueuePolicyReplacedJobId = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemId = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemLabel = string(min_length=1);
+type JobsDismissDLQResponseJobConcurrencyKey = string(min_length=1);
+type JobsDismissDLQResponseJobConcurrencyKeyHash = string(min_length=1);
+type JobsDismissDLQResponseJobContextRequestId = string(min_length=1);
+type JobsDismissDLQResponseJobContextTracestate = string(min_length=1);
+type JobsDismissDLQResponseJobErrorDetailFingerprint = string(min_length=1);
+type JobsDismissDLQResponseJobQueuePolicyExistingJobId = string(min_length=1);
+type JobsDismissDLQResponseJobQueuePolicyOutcome = string(min_length=1);
+type JobsDismissDLQResponseJobQueuePolicyReason = string(min_length=1);
+type JobsDismissDLQResponseJobQueuePolicyReplacedJobId = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemId = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemLabel = string(min_length=1);
+type JobsInspectResponseAttemptsItemErrorFingerprint = string(min_length=1);
+type JobsInspectResponseJobConcurrencyKey = string(min_length=1);
+type JobsInspectResponseJobConcurrencyKeyHash = string(min_length=1);
+type JobsInspectResponseJobContextRequestId = string(min_length=1);
+type JobsInspectResponseJobContextTracestate = string(min_length=1);
+type JobsInspectResponseJobErrorDetailFingerprint = string(min_length=1);
+type JobsInspectResponseJobQueuePolicyExistingJobId = string(min_length=1);
+type JobsInspectResponseJobQueuePolicyOutcome = string(min_length=1);
+type JobsInspectResponseJobQueuePolicyReason = string(min_length=1);
+type JobsInspectResponseJobQueuePolicyReplacedJobId = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemId = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemLabel = string(min_length=1);
+type JobsInspectResponseRelatedItemContextRequestId = string(min_length=1);
+type JobsInspectResponseRelatedItemContextTracestate = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemId = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemLabel = string(min_length=1);
+type JobsInspectResponseTimelineItemErrorDetailFingerprint = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeId = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeLabel = string(min_length=1);
+type JobsListDLQResponseEntriesItemConcurrencyKey = string(min_length=1);
+type JobsListDLQResponseEntriesItemConcurrencyKeyHash = string(min_length=1);
+type JobsListDLQResponseEntriesItemContextRequestId = string(min_length=1);
+type JobsListDLQResponseEntriesItemContextTracestate = string(min_length=1);
+type JobsListDLQResponseEntriesItemErrorDetailFingerprint = string(min_length=1);
+type JobsListDLQResponseEntriesItemQueuePolicyExistingJobId = string(min_length=1);
+type JobsListDLQResponseEntriesItemQueuePolicyOutcome = string(min_length=1);
+type JobsListDLQResponseEntriesItemQueuePolicyReason = string(min_length=1);
+type JobsListDLQResponseEntriesItemQueuePolicyReplacedJobId = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemId = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemLabel = string(min_length=1);
+type JobsListServicesResponseEntriesItemWorkersItemConcurrency = int64(min=1);
+type JobsListServicesResponseEntriesItemWorkersItemInstanceId = string(min_length=1);
+type JobsListServicesResponseEntriesItemWorkersItemJobType = string(min_length=1);
+type JobsListServicesResponseEntriesItemWorkersItemService = string(min_length=1);
+type JobsListServicesResponseEntriesItemWorkersItemVersion = string(min_length=1);
+type JobsQueryResponseEntriesItemContextRequestId = string(min_length=1);
+type JobsQueryResponseEntriesItemContextTracestate = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemId = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemLabel = string(min_length=1);
+type JobsReplayDLQResponseJobConcurrencyKey = string(min_length=1);
+type JobsReplayDLQResponseJobConcurrencyKeyHash = string(min_length=1);
+type JobsReplayDLQResponseJobContextRequestId = string(min_length=1);
+type JobsReplayDLQResponseJobContextTracestate = string(min_length=1);
+type JobsReplayDLQResponseJobErrorDetailFingerprint = string(min_length=1);
+type JobsReplayDLQResponseJobQueuePolicyExistingJobId = string(min_length=1);
+type JobsReplayDLQResponseJobQueuePolicyOutcome = string(min_length=1);
+type JobsReplayDLQResponseJobQueuePolicyReason = string(min_length=1);
+type JobsReplayDLQResponseJobQueuePolicyReplacedJobId = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemId = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemLabel = string(min_length=1);
+type JobsRetryResponseJobConcurrencyKey = string(min_length=1);
+type JobsRetryResponseJobConcurrencyKeyHash = string(min_length=1);
+type JobsRetryResponseJobContextRequestId = string(min_length=1);
+type JobsRetryResponseJobContextTracestate = string(min_length=1);
+type JobsRetryResponseJobErrorDetailFingerprint = string(min_length=1);
+type JobsRetryResponseJobQueuePolicyExistingJobId = string(min_length=1);
+type JobsRetryResponseJobQueuePolicyOutcome = string(min_length=1);
+type JobsRetryResponseJobQueuePolicyReason = string(min_length=1);
+type JobsRetryResponseJobQueuePolicyReplacedJobId = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemId = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemLabel = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemTargetId = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemTargetKey = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemTargetLabel = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemTargetOperation = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemTargetService = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemTargetSystem = string(min_length=1);
+type JobsWorkbenchJobRowWaitingOnItemTargetType = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemTargetId = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemTargetKey = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemTargetLabel = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemTargetOperation = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemTargetService = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemTargetSystem = string(min_length=1);
+type JobsCancelResponseJobWaitingOnItemTargetType = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemTargetId = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemTargetKey = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemTargetLabel = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemTargetOperation = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemTargetService = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemTargetSystem = string(min_length=1);
+type JobsDismissDLQResponseJobWaitingOnItemTargetType = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemTargetId = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemTargetKey = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemTargetLabel = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemTargetOperation = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemTargetService = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemTargetSystem = string(min_length=1);
+type JobsInspectResponseJobWaitingOnItemTargetType = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemTargetId = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemTargetKey = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemTargetLabel = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemTargetOperation = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemTargetService = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemTargetSystem = string(min_length=1);
+type JobsInspectResponseRelatedItemWaitingOnItemTargetType = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeTargetId = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeTargetKey = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeTargetLabel = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeTargetOperation = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeTargetOperationId = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeTargetService = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeTargetSystem = string(min_length=1);
+type JobsInspectResponseTimelineItemWaitEdgeTargetType = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemTargetId = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemTargetKey = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemTargetLabel = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemTargetOperation = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemTargetService = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemTargetSystem = string(min_length=1);
+type JobsListDLQResponseEntriesItemWaitingOnItemTargetType = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemTargetId = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemTargetKey = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemTargetLabel = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemTargetOperation = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemTargetService = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemTargetSystem = string(min_length=1);
+type JobsQueryResponseEntriesItemWaitingOnItemTargetType = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemTargetId = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemTargetKey = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemTargetLabel = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemTargetOperation = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemTargetService = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemTargetSystem = string(min_length=1);
+type JobsReplayDLQResponseJobWaitingOnItemTargetType = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemTargetId = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemTargetKey = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemTargetLabel = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemTargetOperation = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemTargetOperationId = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemTargetService = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemTargetSystem = string(min_length=1);
+type JobsRetryResponseJobWaitingOnItemTargetType = string(min_length=1);
+type EventsConsumersQueryRequestLimit = int64(min=1, max=500);
+type EventsQueryRequestLimit = int64(min=1, max=500);
+
+model HealthHeartbeatSample {
+  checks: list<HealthHeartbeatSampleChecksItem>;
+  participant: HealthHeartbeatSampleParticipant;
+  reportedStatus: HealthHeartbeatSampleReportedStatus;
+  sample: HealthHeartbeatSampleSample;
+  summary?: HealthHeartbeatSampleSummary;
+}
+
+model HealthInspectRequest {
+  contractId: HealthInspectRequestContractId;
+  historyLimit?: HealthInspectRequestHistoryLimit;
+  historySince?: string;
+  instanceId?: HealthInspectRequestInstanceId;
+  participantKind: HealthInspectRequestParticipantKind;
+}
+
+model HealthInspectResponse {
+  asOf: string;
+  history: list<HealthInspectResponseHistoryItem>;
+  instances: list<HealthInspectResponseInstancesItem>;
+  participant: HealthInspectResponseParticipant;
+  projection: HealthInspectResponseProjection;
+}
+
+model HealthMetricsRequest {
+  checkNames?: list<HealthMetricsRequestCheckNamesItem>;
+  contractId: HealthMetricsRequestContractId;
+  end: string;
+  instanceIds?: list<HealthMetricsRequestInstanceIdsItem>;
+  participantKind: HealthMetricsRequestParticipantKind;
+  start: string;
+  stepMs: HealthMetricsRequestStepMs;
+}
+
+model HealthMetricsResponse {
+  asOf: string;
+  projection: HealthMetricsResponseProjection;
+  series: list<HealthMetricsResponseSeriesItem>;
+  summary: HealthMetricsResponseSummary;
+}
+
+model HealthProjectionDiagnostics {
+  completeSince?: string;
+  gapDetected: bool;
+  lastStreamSequence: uint64;
+  retainedFrom?: string;
+  revision: uint64;
+}
+
+model HealthQueryRequest {
+  contractIds?: list<HealthQueryRequestContractIdsItem>;
+  deploymentIds?: list<HealthQueryRequestDeploymentIdsItem>;
+  page?: CursorQuery;
+  participantKinds?: list<HealthQueryRequestParticipantKinds>;
+  search?: HealthQueryRequestSearch;
+  statuses?: list<HealthQueryRequestStatuses>;
+}
+
+type HealthQueryResponse = CursorPage<HealthQueryResponseEntriesItem>;
+
+model HealthSummaryRequest {
+  contractIds?: list<HealthQueryRequestContractIdsItem>;
+  deploymentIds?: list<HealthQueryRequestDeploymentIdsItem>;
+  participantKinds?: list<HealthQueryRequestParticipantKinds>;
+  search?: HealthQueryRequestSearch;
+  statuses?: list<HealthQueryRequestStatuses>;
+}
+
+model HealthSummaryResponse {
+  asOf: string;
+  count: uint64;
+  projection: HealthQueryResponseProjection;
+}
+
+model HealthStatusChangedEvent {
+  changedAt: string;
+  header: HealthStatusChangedEventHeader;
+  lastSeenAt: string;
+  participant: HealthStatusChangedEventParticipant;
+  previousStatus: HealthStatusChangedEventPreviousStatus;
+  reason: string;
+  reportedStatus: HealthStatusChangedEventReportedStatus;
+  status: HealthStatusChangedEventStatus;
+  summary?: HealthStatusChangedEventSummary;
+}
+
+model HealthWatchRequest {
+  contractIds?: list<HealthWatchRequestContractIdsItem>;
+  deploymentIds?: list<HealthWatchRequestDeploymentIdsItem>;
+  instanceIds?: list<HealthWatchRequestInstanceIdsItem>;
+  participantKinds?: list<HealthWatchRequestParticipantKinds>;
+}
+
+model HealthNotFoundErrorData {
+  context?: HealthNotFoundErrorDataContext;
+  id: HealthNotFoundErrorDataId;
+  message: string;
+  resource: HealthNotFoundErrorDataResource;
+  traceId?: string;
+  type: HealthNotFoundErrorDataType;
+}
+
+model HealthHeartbeatSampleChecksItem {
+  error?: HealthHeartbeatSampleChecksItemError;
+  info?: HealthHeartbeatSampleChecksItemInfo;
+  latencyMs: HealthHeartbeatSampleChecksItemLatencyMs;
+  name: HealthHeartbeatSampleChecksItemName;
+  status: HealthHeartbeatSampleChecksItemStatus;
+  summary?: HealthHeartbeatSampleChecksItemSummary;
+}
+
+model HealthHeartbeatSampleParticipant {
+  contractDigest: HealthHeartbeatSampleParticipantContractDigest;
+  contractId: HealthHeartbeatSampleParticipantContractId;
+  info?: HealthHeartbeatSampleParticipantInfo;
+  instanceId: HealthHeartbeatSampleParticipantInstanceId;
+  kind: HealthHeartbeatSampleParticipantKind;
+  name: HealthHeartbeatSampleParticipantName;
+  publishIntervalMs: HealthHeartbeatSampleParticipantPublishIntervalMs;
+  runtime: HealthHeartbeatSampleParticipantRuntime;
+  runtimeVersion?: HealthHeartbeatSampleParticipantRuntimeVersion;
+  startedAt: string;
+  version?: HealthHeartbeatSampleParticipantVersion;
+}
+
+model HealthHeartbeatSampleSample {
+  id: string;
+  time: string;
+}
+
+model HealthInspectResponseHistoryItem {
+  checks: list<HealthInspectResponseHistoryItemChecksItem>;
+  effectiveStatus: HealthInspectResponseHistoryItemEffectiveStatus;
+  endedAt?: string;
+  instanceId: string;
+  intervalId: HealthInspectResponseHistoryItemIntervalId;
+  reason: string;
+  reportedStatus: HealthInspectResponseHistoryItemReportedStatus;
+  startedAt: string;
+}
+
+model HealthInspectResponseInstancesItem {
+  ageMs: uint64;
+  contractDigest: string;
+  deploymentId: string;
+  effectiveStatus: HealthInspectResponseInstancesItemEffectiveStatus;
+  heartbeatDeadline: string;
+  instanceId: string;
+  latestSample: HealthInspectResponseInstancesItemLatestSample;
+  observedAt: string;
+  reportedStatus: HealthInspectResponseInstancesItemReportedStatus;
+  startedAt: string;
+}
+
+model HealthInspectResponseParticipant {
+  contractId: string;
+  effectiveStatus: HealthInspectResponseParticipantEffectiveStatus;
+  offlineInstances: uint64;
+  onlineInstances: uint64;
+  participantKind: HealthInspectResponseParticipantParticipantKind;
+  participantName: string;
+}
+
+model HealthInspectResponseProjection {
+  completeSince?: string;
+  gapDetected: bool;
+  lastStreamSequence: uint64;
+  retainedFrom?: string;
+  revision: uint64;
+}
+
+model HealthMetricsResponseProjection {
+  completeSince?: string;
+  gapDetected: bool;
+  lastStreamSequence: uint64;
+  retainedFrom?: string;
+  revision: uint64;
+}
+
+model HealthMetricsResponseSeriesItem {
+  buckets: list<HealthMetricsResponseSeriesItemBucketsItem>;
+  contractId: string;
+  instanceId: string;
+  participantKind: HealthMetricsResponseSeriesItemParticipantKind;
+}
+
+model HealthMetricsResponseSummary {
+  availability?: HealthMetricsResponseSummaryAvailability;
+  observedMs: uint64;
+  onlineMs: uint64;
+  sampleCount: uint64;
+  transitions: uint64;
+}
+
+model HealthQueryResponseEntriesItem {
+  contractDigests: list<HealthQueryResponseEntriesItemContractDigestsItem>;
+  contractId: string;
+  deploymentIds: list<HealthQueryResponseEntriesItemDeploymentIdsItem>;
+  effectiveStatus: HealthQueryResponseEntriesItemEffectiveStatus;
+  lastSeenAt: string;
+  offlineInstances: uint64;
+  onlineInstances: uint64;
+  participantKind: HealthQueryResponseEntriesItemParticipantKind;
+  participantName: string;
+  runtimes: list<string>;
+  versions: list<string>;
+}
+
+model HealthQueryResponseProjection {
+  completeSince?: string;
+  gapDetected: bool;
+  lastStreamSequence: uint64;
+  retainedFrom?: string;
+  revision: uint64;
+}
+
+model HealthStatusChangedEventHeader {
+  id: HealthStatusChangedEventHeaderId;
+  time: string;
+}
+
+model HealthStatusChangedEventParticipant {
+  contractId: string;
+  deploymentId: string;
+  instanceId: string;
+  kind: HealthStatusChangedEventParticipantKind;
+  name: string;
+}
+
+model HealthWatchFrameValue1 {
+  projectionRevision: uint64;
+  type: HealthWatchFrameValue1Type;
+}
+
+model HealthWatchFrameValue2 {
+  changes?: list<HealthWatchFrameValue2ChangesItem>;
+  projectionRevision: uint64;
+  type: HealthWatchFrameValue2Type;
+}
+
+model HealthNotFoundErrorDataContext {
+
+}
+
+model HealthHeartbeatSampleChecksItemInfo {
+
+}
+
+model HealthHeartbeatSampleParticipantInfo {
+
+}
+
+model HealthInspectResponseHistoryItemChecksItem {
+  name: string;
+  status: HealthInspectResponseHistoryItemChecksItemStatus;
+}
+
+model HealthInspectResponseInstancesItemLatestSample {
+  checks: list<HealthInspectResponseInstancesItemLatestSampleChecksItem>;
+  participant: HealthInspectResponseInstancesItemLatestSampleParticipant;
+  reportedStatus: HealthInspectResponseInstancesItemLatestSampleReportedStatus;
+  sample: HealthInspectResponseInstancesItemLatestSampleSample;
+  summary?: HealthInspectResponseInstancesItemLatestSampleSummary;
+}
+
+model HealthMetricsResponseSeriesItemBucketsItem {
+  checks: list<HealthMetricsResponseSeriesItemBucketsItemChecksItem>;
+  degradedMs: uint64;
+  end: string;
+  healthyMs: uint64;
+  observedMs: uint64;
+  offlineMs: uint64;
+  sampleCount: uint64;
+  start: string;
+  unhealthyMs: uint64;
+}
+
+model HealthWatchFrameValue2ChangesItem {
+  contractId: string;
+  deploymentId: string;
+  instanceId: string;
+  participantKind: HealthWatchFrameValue2ChangesItemParticipantKind;
+}
+
+model HealthInspectResponseInstancesItemLatestSampleChecksItem {
+  error?: HealthInspectResponseInstancesItemLatestSampleChecksItemError;
+  info?: HealthInspectResponseInstancesItemLatestSampleChecksItemInfo;
+  latencyMs: HealthInspectResponseInstancesItemLatestSampleChecksItemLatencyMs;
+  name: HealthInspectResponseInstancesItemLatestSampleChecksItemName;
+  status: HealthInspectResponseInstancesItemLatestSampleChecksItemStatus;
+  summary?: HealthInspectResponseInstancesItemLatestSampleChecksItemSummary;
+}
+
+model HealthInspectResponseInstancesItemLatestSampleParticipant {
+  contractDigest: HealthInspectResponseInstancesItemLatestSampleParticipantContractDigest;
+  contractId: HealthInspectResponseInstancesItemLatestSampleParticipantContractId;
+  info?: HealthInspectResponseInstancesItemLatestSampleParticipantInfo;
+  instanceId: HealthInspectResponseInstancesItemLatestSampleParticipantInstanceId;
+  kind: HealthInspectResponseInstancesItemLatestSampleParticipantKind;
+  name: HealthInspectResponseInstancesItemLatestSampleParticipantName;
+  publishIntervalMs: HealthInspectResponseInstancesItemLatestSampleParticipantPublishIntervalMs;
+  runtime: HealthInspectResponseInstancesItemLatestSampleParticipantRuntime;
+  runtimeVersion?: HealthInspectResponseInstancesItemLatestSampleParticipantRuntimeVersion;
+  startedAt: string;
+  version?: HealthInspectResponseInstancesItemLatestSampleParticipantVersion;
+}
+
+model HealthInspectResponseInstancesItemLatestSampleSample {
+  id: string;
+  time: string;
+}
+
+model HealthMetricsResponseSeriesItemBucketsItemChecksItem {
+  failedCount: uint64;
+  latencyAverageMs: HealthMetricsResponseSeriesItemBucketsItemChecksItemLatencyAverageMs;
+  latencyMaxMs: HealthMetricsResponseSeriesItemBucketsItemChecksItemLatencyMaxMs;
+  name: string;
+  okCount: uint64;
+  sampleCount: uint64;
+}
+
+model HealthInspectResponseInstancesItemLatestSampleChecksItemInfo {
+
+}
+
+model HealthInspectResponseInstancesItemLatestSampleParticipantInfo {
+
+}
+
+type HealthWatchFrame = bytes;
+
+enum HealthHeartbeatSampleReportedStatus {
+  healthy;
+  degraded;
+  unhealthy;
+}
+
+enum HealthInspectRequestParticipantKind {
+  service;
+  device;
+}
+
+enum HealthMetricsRequestParticipantKind {
+  service;
+  device;
+}
+
+enum HealthQueryRequestParticipantKinds {
+  service;
+  device;
+}
+
+enum HealthQueryRequestStatuses {
+  healthy;
+  degraded;
+  unhealthy;
+  offline;
+}
+
+enum HealthStatusChangedEventPreviousStatus {
+  healthy;
+  degraded;
+  unhealthy;
+  offline;
+}
+
+enum HealthStatusChangedEventReportedStatus {
+  healthy;
+  degraded;
+  unhealthy;
+}
+
+enum HealthStatusChangedEventStatus {
+  healthy;
+  degraded;
+  unhealthy;
+  offline;
+}
+
+enum HealthWatchRequestParticipantKinds {
+  service;
+  device;
+}
+
+enum HealthNotFoundErrorDataType {
+  NotFoundError;
+}
+
+enum HealthHeartbeatSampleChecksItemStatus {
+  ok;
+  failed;
+}
+
+enum HealthHeartbeatSampleParticipantKind {
+  service;
+  device;
+}
+
+enum HealthHeartbeatSampleParticipantRuntime {
+  deno;
+  node;
+  rust;
+}
+
+enum HealthInspectResponseHistoryItemEffectiveStatus {
+  healthy;
+  degraded;
+  unhealthy;
+  offline;
+}
+
+enum HealthInspectResponseHistoryItemReportedStatus {
+  healthy;
+  degraded;
+  unhealthy;
+}
+
+enum HealthInspectResponseInstancesItemEffectiveStatus {
+  healthy;
+  degraded;
+  unhealthy;
+  offline;
+}
+
+enum HealthInspectResponseInstancesItemReportedStatus {
+  healthy;
+  degraded;
+  unhealthy;
+}
+
+enum HealthInspectResponseParticipantEffectiveStatus {
+  healthy;
+  degraded;
+  unhealthy;
+  offline;
+}
+
+enum HealthInspectResponseParticipantParticipantKind {
+  service;
+  device;
+}
+
+enum HealthMetricsResponseSeriesItemParticipantKind {
+  service;
+  device;
+}
+
+enum HealthQueryResponseEntriesItemEffectiveStatus {
+  healthy;
+  degraded;
+  unhealthy;
+  offline;
+}
+
+enum HealthQueryResponseEntriesItemParticipantKind {
+  service;
+  device;
+}
+
+enum HealthStatusChangedEventParticipantKind {
+  service;
+  device;
+}
+
+enum HealthWatchFrameValue1Type {
+  ready;
+}
+
+enum HealthWatchFrameValue2Type {
+  healthInvalidated;
+}
+
+enum HealthInspectResponseHistoryItemChecksItemStatus {
+  ok;
+  failed;
+}
+
+enum HealthInspectResponseInstancesItemLatestSampleReportedStatus {
+  healthy;
+  degraded;
+  unhealthy;
+}
+
+enum HealthWatchFrameValue2ChangesItemParticipantKind {
+  service;
+  device;
+}
+
+enum HealthInspectResponseInstancesItemLatestSampleChecksItemStatus {
+  ok;
+  failed;
+}
+
+enum HealthInspectResponseInstancesItemLatestSampleParticipantKind {
+  service;
+  device;
+}
+
+enum HealthInspectResponseInstancesItemLatestSampleParticipantRuntime {
+  deno;
+  node;
+  rust;
+}
+
+model StateDeleteRequest {
+  revision?: StateRevision;
+  resourceName: StateResourceName;
+}
+
+model StateRepresentation {
+  version: StateRepresentationVersion;
+  schema: bytes;
+}
+
+model StateRegisterRequest {
+  resourceName: StateResourceName;
+  representation: StateRepresentation;
+  accepts: list<StateRepresentation>;
+  expectedRevision: StateRevision;
+  idempotencyKey: ulid;
+}
+
+model StateRegisterResponse {
+  revision: StateRevision;
+}
+
+model StateRegistrationConflict {
+  currentRevision: StateRevision;
+}
+
+model StateDeleteResponse {
+  deleted: bool;
+}
+
+model StoredState {
+  createdAt: timestamp;
+  representationVersion: StateRepresentationVersion;
+  revision: StateRevision;
+  updatedAt: timestamp;
+  value: bytes;
+}
+
+model StateGetRequest {
+  resourceName: StateResourceName;
+}
+
+model StateGetResponse {
+  entry?: StoredState;
+}
+
+model StatePutRequest {
+  mode: StatePutMode;
+  representationVersion: StateRepresentationVersion;
+  revision?: StateRevision;
+  resourceName: StateResourceName;
+  value: bytes;
+}
+
+model StatePutResponse {
+  entry: StoredState;
+}
+
+model StateConflict {
+  current?: StoredState;
+}
+
+model StateRepresentationError {
+  representationVersion: StateRepresentationVersion;
+  resourceName: StateResourceName;
+}
+
+enum StatePutMode {
+  create;
+  replace;
+  set;
+}
+
+model ResourcesQueryRequest {
+  kind?: ResourceKind;
+  ownerId?: ResourceOwnerId;
+  ownerKind?: ResourceOwnerKind;
+  participantId?: ResourceParticipantId;
+  state?: ResourceLifecycleState;
+  page?: CursorQuery;
+}
+
+type ResourcesQueryResponse = CursorPage<ResourceInspection>;
+
+model ResourcesInspectRequest {
+  resourceId: ResourceId;
+}
+
+model ResourcesInspectResponse {
+  resource: ResourceInspection;
+}
+
+model ResourcesDestroyRequest {
+  confirmPhysicalId: ResourcePhysicalId;
+  expectedRevision: ResourceBindingRevision;
+  resourceId: ResourceId;
+}
+
+model ResourcesDestroyResponse {
+  destroyed: bool;
+}
+
+model ResourceInspection {
+  actual?: ResourceActual;
+  bindingRevision: ResourceBindingRevision;
+  commitment: ResourceCommitment;
+  createdAt: string;
+  desired: ResourceDesired;
+  history: list<ResourceHistoryEntry>;
+  kind: ResourceKind;
+  localName: ResourceLocalName;
+  ownerId: ResourceOwnerId;
+  ownerKind: ResourceOwnerKind;
+  participantId: ResourceParticipantId;
+  physicalId?: ResourcePhysicalId;
+  readiness: ResourceReadiness;
+  resourceId: ResourceId;
+  state: ResourceLifecycleState;
+  updatedAt: string;
+  version: ResourceVersion;
+}
+
+model ResourceCommitment {
+  desiredMaxObjectBytes?: ResourceCapacityBytes;
+  desiredMaxTotalBytes?: ResourceCapacityBytes;
+  desiredMaxValueBytes?: ResourceCapacityBytes;
+  history?: ResourceHistory;
+  ttlMs?: uint64;
+}
+
+model ResourceDesired {
+  commitment: ResourceCommitment;
+  representationVersion?: StateRepresentationVersion;
+}
+
+model ResourceActual {
+  maxObjectBytes?: ResourceCapacityBytes;
+  maxTotalBytes?: ResourceCapacityBytes;
+  maxValueBytes?: ResourceCapacityBytes;
+  history?: ResourceHistory;
+  representationVersion?: StateRepresentationVersion;
+  ttlMs?: uint64;
+}
+
+model ResourceHistoryEntry {
+  actual?: ResourceActual;
+  changedAt: string;
+  desired: ResourceDesired;
+  state: ResourceLifecycleState;
+  version: ResourceVersion;
+}
+
+model ResourceReadiness {
+  reason?: string;
+  ready: bool;
+}
+
+enum ResourceKind {
+  consumer;
+  job;
+  kv;
+  state;
+  store;
+}
+
+enum ResourceOwnerKind {
+  agent;
+  app;
+  device;
+  service;
+}
+
+enum ResourceLifecycleState {
+  detached;
+  destroying;
+  failed;
+  pending;
+  ready;
+}
+
+model TrellisSurfaceStatusRequest {
+  action?: TrellisSurfaceStatusRequestAction;
+  contractId: TrellisSurfaceStatusRequestContractId;
+  kind: TrellisSurfaceStatusRequestKind;
+  surface: TrellisSurfaceStatusRequestSurface;
+}
+
+model TrellisSurfaceStatusResponse {
+  status: bytes;
+}
+
+model TrellisSurfaceStatusResponseStatus1 {
+  liveImplementer: bool;
+  runtime: TrellisSurfaceStatusResponseStatus1Runtime;
+  state: TrellisSurfaceStatusResponseStatus1State;
+}
+
+model TrellisSurfaceStatusResponseStatus2 {
+  reason: TrellisSurfaceStatusResponseStatus2Reason;
+  state: TrellisSurfaceStatusResponseStatus2State;
+}
+
+model TrellisSurfaceStatusResponseStatus3 {
+  missingCapabilities: list<string>;
+  state: TrellisSurfaceStatusResponseStatus3State;
+}
+
+model TrellisSurfaceStatusResponseStatus4 {
+  contractId: TrellisSurfaceStatusResponseStatus4ContractId;
+  state: TrellisSurfaceStatusResponseStatus4State;
+}
+
+model TrellisSurfaceStatusResponseStatus5 {
+  contractId: TrellisSurfaceStatusResponseStatus5ContractId;
+  kind: TrellisSurfaceStatusResponseStatus5Kind;
+  state: TrellisSurfaceStatusResponseStatus5State;
+  surface: TrellisSurfaceStatusResponseStatus5Surface;
+}
+
+enum TrellisSurfaceStatusRequestAction {
+  call;
+  publish;
+  subscribe;
+  observe;
+}
+
+enum TrellisSurfaceStatusRequestKind {
+  rpc;
+  operation;
+  event;
+  live;
+}
+
+enum TrellisSurfaceStatusResponseStatus1Runtime {
+  live;
+  no_live_implementer;
+  disabled;
+}
+
+enum TrellisSurfaceStatusResponseStatus1State {
+  available;
+}
+
+enum TrellisSurfaceStatusResponseStatus2Reason {
+  authority_unavailable;
+}
+
+enum TrellisSurfaceStatusResponseStatus2State {
+  unavailable;
+}
+
+enum TrellisSurfaceStatusResponseStatus3State {
+  unauthorized;
+}
+
+enum TrellisSurfaceStatusResponseStatus4State {
+  unknown_contract;
+}
+
+enum TrellisSurfaceStatusResponseStatus5State {
+  unknown_surface;
+}
+
+model Empty {
+
+}
+
+model Job {
+  completedAt?: string;
+  concurrency?: JobConcurrency;
+  context: JobContext;
+  createdAt: string;
+  deadline?: string;
+  errorDetail?: JobErrorDetail;
+  id: JobId;
+  lastError?: string;
+  lineage?: JobLineage;
+  logs?: list<JobLogsItem>;
+  maxTries: JobMaxTries;
+  payload: bytes;
+  progress?: JobProgress;
+  queuePolicy?: JobQueuePolicy;
+  result?: bytes;
+  service: JobService;
+  startedAt?: string;
+  state: JobState;
+  tries: uint64;
+  trigger?: JobTrigger;
+  type: JobType;
+  updatedAt: string;
+  waitingOn?: list<JobWaitingOnItem>;
+}
+
+model JobConcurrencyMetadata {
+  heartbeatAt?: string;
+  key: JobConcurrencyMetadataKey;
+  keyHash: JobConcurrencyMetadataKeyHash;
+  leaseExpiresAt?: string;
+  staleTakeoverCount?: uint64;
+}
+
+model JobContext {
+  requestId: JobContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobContextTracestate;
+}
+
+model JobErrorDetail {
+  causes?: list<JobErrorDetailCausesItem>;
+  fingerprint: JobErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobErrorDetailWorker;
+}
+
+model JobLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobLogEntry {
+  level: JobLogEntryLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobQueuePolicyMetadata {
+  existingJobId?: JobQueuePolicyMetadataExistingJobId;
+  outcome: JobQueuePolicyMetadataOutcome;
+  reason?: JobQueuePolicyMetadataReason;
+  replacedJobId?: JobQueuePolicyMetadataReplacedJobId;
+}
+
+model JobTimelineEvent {
+  error?: string;
+  errorDetail?: JobTimelineEventErrorDetail;
+  logs?: list<JobTimelineEventLogsItem>;
+  message?: string;
+  previousState?: JobTimelineEventPreviousState;
+  progress?: JobTimelineEventProgress;
+  projected?: bool;
+  rawEvent?: bytes;
+  reason?: string;
+  sequence: uint64;
+  state: JobTimelineEventState;
+  timestamp: string;
+  tries?: uint64;
+  type: JobTimelineEventType;
+  waitEdge?: JobTimelineEventWaitEdge;
+  workerInstanceId?: string;
+}
+
+model JobTrigger {
+  id?: string;
+  kind: JobTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobWaitEdge {
+  id: JobWaitEdgeId;
+  label?: JobWaitEdgeLabel;
+  startedAt: string;
+  target: JobWaitEdgeTarget;
+}
+
+model JobWaitTarget {
+  id?: JobWaitTargetId;
+  key?: JobWaitTargetKey;
+  kind: JobWaitTargetKind;
+  label?: JobWaitTargetLabel;
+  operation?: JobWaitTargetOperation;
+  operationId?: JobWaitTargetOperationId;
+  service?: JobWaitTargetService;
+  system?: JobWaitTargetSystem;
+  type?: JobWaitTargetType;
+}
+
+model JobsCancelRequest {
+  id: JobsCancelRequestId;
+  reason?: JobsCancelRequestReason;
+}
+
+model JobsCancelResponse {
+  job: JobsCancelResponseJob;
+}
+
+model JobsDismissDLQRequest {
+  id: JobsDismissDLQRequestId;
+  reason?: JobsDismissDLQRequestReason;
+}
+
+model JobsDismissDLQResponse {
+  job: JobsDismissDLQResponseJob;
+}
+
+model JobsGetKeyRequest {
+  key: JobsGetKeyRequestKey;
+  service: JobsGetKeyRequestService;
+  type: JobsGetKeyRequestType;
+}
+
+model JobsGetKeyResponse {
+  active: list<JobsGetKeyResponseActiveItem>;
+  key: JobsGetKeyResponseKey;
+  keyHash: JobsGetKeyResponseKeyHash;
+  latestPolicyReason?: JobsGetKeyResponseLatestPolicyReason;
+  queued: list<JobsGetKeyResponseQueuedItem>;
+  queuedDepth: uint64;
+  service: JobsGetKeyResponseService;
+  staleTakeoverCount: uint64;
+  type: JobsGetKeyResponseType;
+}
+
+model JobsInspectRequest {
+  id: JobsInspectRequestId;
+}
+
+model JobsInspectResponse {
+  attempts: list<JobsInspectResponseAttemptsItem>;
+  errors: list<JobsInspectResponseErrorsItem>;
+  job: JobsInspectResponseJob;
+  lineage?: JobsInspectResponseLineage;
+  related: list<JobsInspectResponseRelatedItem>;
+  timeline: list<JobsInspectResponseTimelineItem>;
+  trigger?: JobsInspectResponseTrigger;
+}
+
+model JobsListDLQRequest {
+  page?: CursorQuery;
+  service?: JobsListDLQRequestService;
+  since?: string;
+  type?: JobsListDLQRequestType;
+}
+
+type JobsListDLQResponse = CursorPage<JobsListDLQResponseEntriesItem>;
+
+model JobsListServicesRequest {
+  page?: CursorQuery;
+}
+
+type JobsListServicesResponse = CursorPage<JobsListServicesResponseEntriesItem>;
+
+model JobsMetricsBucket {
+  end: string;
+  groups: list<JobsMetricsBucketGroupsItem>;
+  start: string;
+}
+
+model JobsMetricsBucketGroup {
+  cancelled: uint64;
+  completed: uint64;
+  dead: uint64;
+  dismissed: uint64;
+  failed: uint64;
+  key: string;
+  label: string;
+  queueWait: JobsMetricsBucketGroupQueueWait;
+  retried: uint64;
+  runtime: JobsMetricsBucketGroupRuntime;
+  started: uint64;
+  submitted: uint64;
+}
+
+model JobsMetricsLatency {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsMetricsRequest {
+  groupBy: JobsMetricsRequestGroupBy;
+  queueKey?: string;
+  service?: JobsMetricsRequestService;
+  state?: list<JobsMetricsRequestState>;
+  step: string;
+  trigger?: string;
+  type?: JobsMetricsRequestType;
+  window: string;
+}
+
+model JobsMetricsResponse {
+  buckets: list<JobsMetricsResponseBucketsItem>;
+  generatedAt: string;
+  groupBy: string;
+  step: string;
+  summary: list<JobsMetricsResponseSummaryItem>;
+  window: string;
+}
+
+model JobsMetricsSummaryGroup {
+  byState: map<uint64>;
+  dead?: uint64;
+  failed?: uint64;
+  failureRate?: JobsMetricsSummaryGroupFailureRate;
+  key: string;
+  label: string;
+  latestUpdatedAt?: string;
+  oldestCreatedAt?: string;
+  queueWait: JobsMetricsSummaryGroupQueueWait;
+  queued?: uint64;
+  running?: uint64;
+  runtime: JobsMetricsSummaryGroupRuntime;
+  slow?: uint64;
+  total: uint64;
+}
+
+model JobsQueryRequest {
+  groupBy?: JobsQueryRequestGroupBy;
+  page?: CursorQuery;
+  queueKey?: string;
+  runtimeBand?: JobsQueryRequestRuntimeBand;
+  search?: string;
+  service?: JobsQueryRequestService;
+  sort?: JobsQueryRequestSort;
+  state?: list<JobsQueryRequestState>;
+  trigger?: string;
+  type?: JobsQueryRequestType;
+  window?: string;
+}
+
+type JobsQueryResponse = CursorPage<JobsQueryResponseEntriesItem>;
+
+model JobsSummaryRequest {
+  groupBy?: JobsQueryRequestGroupBy;
+  queueKey?: string;
+  runtimeBand?: JobsQueryRequestRuntimeBand;
+  search?: string;
+  service?: JobsQueryRequestService;
+  state?: list<JobsQueryRequestState>;
+  trigger?: string;
+  type?: JobsQueryRequestType;
+  window?: string;
+}
+
+model JobsSummaryResponse {
+  count: uint64;
+  groups: list<JobsQueryResponseGroupsItem>;
+  stats: JobsQueryResponseStats;
+}
+
+model JobsReplayDLQRequest {
+  id: JobsReplayDLQRequestId;
+  reason?: JobsReplayDLQRequestReason;
+}
+
+model JobsReplayDLQResponse {
+  job: JobsReplayDLQResponseJob;
+}
+
+model JobsRetryRequest {
+  id: JobsRetryRequestId;
+  reason?: JobsRetryRequestReason;
+}
+
+model JobsRetryResponse {
+  job: JobsRetryResponseJob;
+}
+
+model JobsWatchRequest {
+  includeInitial?: bool;
+  jobId?: JobsWatchRequestJobId;
+  query?: JobsWatchRequestQuery;
+}
+
+model JobsWorkbenchGroup {
+  count: uint64;
+  depth?: uint64;
+  failureRate?: JobsWorkbenchGroupFailureRate;
+  key: string;
+  label: string;
+  latestUpdatedAt?: string;
+  oldestCreatedAt?: string;
+  state?: JobsWorkbenchGroupState;
+}
+
+model JobsWorkbenchJobRow {
+  completedAt?: string;
+  context?: JobsWorkbenchJobRowContext;
+  createdAt: string;
+  errorFingerprint?: string;
+  id: JobsWorkbenchJobRowId;
+  lastError?: string;
+  lineage?: JobsWorkbenchJobRowLineage;
+  maxTries: JobsWorkbenchJobRowMaxTries;
+  progress?: JobsWorkbenchJobRowProgress;
+  queueAgeMs?: uint64;
+  queueKey?: string;
+  runtimeBand?: string;
+  runtimeMs?: uint64;
+  service: JobsWorkbenchJobRowService;
+  startedAt?: string;
+  state: JobsWorkbenchJobRowState;
+  tries: uint64;
+  trigger?: JobsWorkbenchJobRowTrigger;
+  type: JobsWorkbenchJobRowType;
+  updatedAt: string;
+  waitingOn?: list<JobsWorkbenchJobRowWaitingOnItem>;
+}
+
+model JobsWorkbenchStats {
+  byState: map<uint64>;
+  dead?: uint64;
+  failed?: uint64;
+  queued?: uint64;
+  running?: uint64;
+  slow?: uint64;
+  total: uint64;
+}
+
+model JobsNotFoundErrorData {
+  context?: JobsNotFoundErrorDataContext;
+  id: JobsNotFoundErrorDataId;
+  jobId?: JobsNotFoundErrorDataJobId;
+  message: string;
+  resource: JobsNotFoundErrorDataResource;
+  traceId?: string;
+  type: JobsNotFoundErrorDataType;
+}
+
+model JobConcurrency {
+  heartbeatAt?: string;
+  key: JobConcurrencyKey;
+  keyHash: JobConcurrencyKeyHash;
+  leaseExpiresAt?: string;
+  staleTakeoverCount?: uint64;
+}
+
+model JobLogsItem {
+  level: JobLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobQueuePolicy {
+  existingJobId?: JobQueuePolicyExistingJobId;
+  outcome: JobQueuePolicyOutcome;
+  reason?: JobQueuePolicyReason;
+  replacedJobId?: JobQueuePolicyReplacedJobId;
+}
+
+model JobWaitingOnItem {
+  id: JobWaitingOnItemId;
+  label?: JobWaitingOnItemLabel;
+  startedAt: string;
+  target: JobWaitingOnItemTarget;
+}
+
+model JobErrorDetailCausesItem {
+
+}
+
+model JobErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobTimelineEventErrorDetail {
+  causes?: list<JobTimelineEventErrorDetailCausesItem>;
+  fingerprint: JobTimelineEventErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobTimelineEventErrorDetailWorker;
+}
+
+model JobTimelineEventLogsItem {
+  level: JobTimelineEventLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobTimelineEventProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobTimelineEventWaitEdge {
+  id: JobTimelineEventWaitEdgeId;
+  label?: JobTimelineEventWaitEdgeLabel;
+  startedAt: string;
+  target: JobTimelineEventWaitEdgeTarget;
+}
+
+model JobWaitEdgeTarget {
+  id?: JobWaitEdgeTargetId;
+  key?: JobWaitEdgeTargetKey;
+  kind: JobWaitEdgeTargetKind;
+  label?: JobWaitEdgeTargetLabel;
+  operation?: JobWaitEdgeTargetOperation;
+  operationId?: JobWaitEdgeTargetOperationId;
+  service?: JobWaitEdgeTargetService;
+  system?: JobWaitEdgeTargetSystem;
+  type?: JobWaitEdgeTargetType;
+}
+
+model JobsCancelResponseJob {
+  completedAt?: string;
+  concurrency?: JobsCancelResponseJobConcurrency;
+  context: JobsCancelResponseJobContext;
+  createdAt: string;
+  deadline?: string;
+  errorDetail?: JobsCancelResponseJobErrorDetail;
+  id: JobsCancelResponseJobId;
+  lastError?: string;
+  lineage?: JobsCancelResponseJobLineage;
+  logs?: list<JobsCancelResponseJobLogsItem>;
+  maxTries: JobsCancelResponseJobMaxTries;
+  payload: bytes;
+  progress?: JobsCancelResponseJobProgress;
+  queuePolicy?: JobsCancelResponseJobQueuePolicy;
+  result?: bytes;
+  service: JobsCancelResponseJobService;
+  startedAt?: string;
+  state: JobsCancelResponseJobState;
+  tries: uint64;
+  trigger?: JobsCancelResponseJobTrigger;
+  type: JobsCancelResponseJobType;
+  updatedAt: string;
+  waitingOn?: list<JobsCancelResponseJobWaitingOnItem>;
+}
+
+model JobsDismissDLQResponseJob {
+  completedAt?: string;
+  concurrency?: JobsDismissDLQResponseJobConcurrency;
+  context: JobsDismissDLQResponseJobContext;
+  createdAt: string;
+  deadline?: string;
+  errorDetail?: JobsDismissDLQResponseJobErrorDetail;
+  id: JobsDismissDLQResponseJobId;
+  lastError?: string;
+  lineage?: JobsDismissDLQResponseJobLineage;
+  logs?: list<JobsDismissDLQResponseJobLogsItem>;
+  maxTries: JobsDismissDLQResponseJobMaxTries;
+  payload: bytes;
+  progress?: JobsDismissDLQResponseJobProgress;
+  queuePolicy?: JobsDismissDLQResponseJobQueuePolicy;
+  result?: bytes;
+  service: JobsDismissDLQResponseJobService;
+  startedAt?: string;
+  state: JobsDismissDLQResponseJobState;
+  tries: uint64;
+  trigger?: JobsDismissDLQResponseJobTrigger;
+  type: JobsDismissDLQResponseJobType;
+  updatedAt: string;
+  waitingOn?: list<JobsDismissDLQResponseJobWaitingOnItem>;
+}
+
+model JobsGetKeyResponseActiveItem {
+  heartbeatAgeMs: uint64;
+  heartbeatAt: string;
+  instanceId: string;
+  jobId: JobsGetKeyResponseActiveItemJobId;
+  leaseExpiresAt: string;
+  startedAt: string;
+}
+
+model JobsGetKeyResponseQueuedItem {
+  createdAt: string;
+  jobId: JobsGetKeyResponseQueuedItemJobId;
+}
+
+model JobsInspectResponseAttemptsItem {
+  endedAt?: string;
+  error?: JobsInspectResponseAttemptsItemError;
+  startedAt: string;
+  state?: JobsInspectResponseAttemptsItemState;
+  try: uint64;
+}
+
+model JobsInspectResponseErrorsItem {
+  causes?: list<JobsInspectResponseErrorsItemCausesItem>;
+  fingerprint: JobsInspectResponseErrorsItemFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsInspectResponseErrorsItemWorker;
+}
+
+model JobsInspectResponseJob {
+  completedAt?: string;
+  concurrency?: JobsInspectResponseJobConcurrency;
+  context: JobsInspectResponseJobContext;
+  createdAt: string;
+  deadline?: string;
+  errorDetail?: JobsInspectResponseJobErrorDetail;
+  id: JobsInspectResponseJobId;
+  lastError?: string;
+  lineage?: JobsInspectResponseJobLineage;
+  logs?: list<JobsInspectResponseJobLogsItem>;
+  maxTries: JobsInspectResponseJobMaxTries;
+  payload: bytes;
+  progress?: JobsInspectResponseJobProgress;
+  queuePolicy?: JobsInspectResponseJobQueuePolicy;
+  result?: bytes;
+  service: JobsInspectResponseJobService;
+  startedAt?: string;
+  state: JobsInspectResponseJobState;
+  tries: uint64;
+  trigger?: JobsInspectResponseJobTrigger;
+  type: JobsInspectResponseJobType;
+  updatedAt: string;
+  waitingOn?: list<JobsInspectResponseJobWaitingOnItem>;
+}
+
+model JobsInspectResponseLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsInspectResponseRelatedItem {
+  completedAt?: string;
+  context?: JobsInspectResponseRelatedItemContext;
+  createdAt: string;
+  errorFingerprint?: string;
+  id: JobsInspectResponseRelatedItemId;
+  lastError?: string;
+  lineage?: JobsInspectResponseRelatedItemLineage;
+  matchedBy?: JobsInspectResponseRelatedItemMatchedBy;
+  maxTries: JobsInspectResponseRelatedItemMaxTries;
+  progress?: JobsInspectResponseRelatedItemProgress;
+  queueAgeMs?: uint64;
+  queueKey?: string;
+  runtimeBand?: string;
+  runtimeMs?: uint64;
+  service: JobsInspectResponseRelatedItemService;
+  startedAt?: string;
+  state: JobsInspectResponseRelatedItemState;
+  tries: uint64;
+  trigger?: JobsInspectResponseRelatedItemTrigger;
+  type: JobsInspectResponseRelatedItemType;
+  updatedAt: string;
+  waitingOn?: list<JobsInspectResponseRelatedItemWaitingOnItem>;
+}
+
+model JobsInspectResponseTimelineItem {
+  error?: string;
+  errorDetail?: JobsInspectResponseTimelineItemErrorDetail;
+  logs?: list<JobsInspectResponseTimelineItemLogsItem>;
+  message?: string;
+  previousState?: JobsInspectResponseTimelineItemPreviousState;
+  progress?: JobsInspectResponseTimelineItemProgress;
+  projected?: bool;
+  rawEvent?: bytes;
+  reason?: string;
+  sequence: uint64;
+  state: JobsInspectResponseTimelineItemState;
+  timestamp: string;
+  tries?: uint64;
+  type: JobsInspectResponseTimelineItemType;
+  waitEdge?: JobsInspectResponseTimelineItemWaitEdge;
+  workerInstanceId?: string;
+}
+
+model JobsInspectResponseTrigger {
+  id?: string;
+  kind: JobsInspectResponseTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsListDLQResponseEntriesItem {
+  completedAt?: string;
+  concurrency?: JobsListDLQResponseEntriesItemConcurrency;
+  context: JobsListDLQResponseEntriesItemContext;
+  createdAt: string;
+  deadline?: string;
+  errorDetail?: JobsListDLQResponseEntriesItemErrorDetail;
+  id: JobsListDLQResponseEntriesItemId;
+  lastError?: string;
+  lineage?: JobsListDLQResponseEntriesItemLineage;
+  logs?: list<JobsListDLQResponseEntriesItemLogsItem>;
+  maxTries: JobsListDLQResponseEntriesItemMaxTries;
+  payload: bytes;
+  progress?: JobsListDLQResponseEntriesItemProgress;
+  queuePolicy?: JobsListDLQResponseEntriesItemQueuePolicy;
+  result?: bytes;
+  service: JobsListDLQResponseEntriesItemService;
+  startedAt?: string;
+  state: JobsListDLQResponseEntriesItemState;
+  tries: uint64;
+  trigger?: JobsListDLQResponseEntriesItemTrigger;
+  type: JobsListDLQResponseEntriesItemType;
+  updatedAt: string;
+  waitingOn?: list<JobsListDLQResponseEntriesItemWaitingOnItem>;
+}
+
+model JobsListServicesResponseEntriesItem {
+  healthy: bool;
+  name: JobsListServicesResponseEntriesItemName;
+  workers: list<JobsListServicesResponseEntriesItemWorkersItem>;
+}
+
+model JobsMetricsBucketGroupsItem {
+  cancelled: uint64;
+  completed: uint64;
+  dead: uint64;
+  dismissed: uint64;
+  failed: uint64;
+  key: string;
+  label: string;
+  queueWait: JobsMetricsBucketGroupsItemQueueWait;
+  retried: uint64;
+  runtime: JobsMetricsBucketGroupsItemRuntime;
+  started: uint64;
+  submitted: uint64;
+}
+
+model JobsMetricsBucketGroupQueueWait {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsMetricsBucketGroupRuntime {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsMetricsResponseBucketsItem {
+  end: string;
+  groups: list<JobsMetricsResponseBucketsItemGroupsItem>;
+  start: string;
+}
+
+model JobsMetricsResponseSummaryItem {
+  byState: map<uint64>;
+  dead?: uint64;
+  failed?: uint64;
+  failureRate?: JobsMetricsResponseSummaryItemFailureRate;
+  key: string;
+  label: string;
+  latestUpdatedAt?: string;
+  oldestCreatedAt?: string;
+  queueWait: JobsMetricsResponseSummaryItemQueueWait;
+  queued?: uint64;
+  running?: uint64;
+  runtime: JobsMetricsResponseSummaryItemRuntime;
+  slow?: uint64;
+  total: uint64;
+}
+
+model JobsMetricsSummaryGroupQueueWait {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsMetricsSummaryGroupRuntime {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsQueryRequestSort {
+  direction?: JobsQueryRequestSortDirection;
+  field: JobsQueryRequestSortField;
+}
+
+model JobsQueryResponseEntriesItem {
+  completedAt?: string;
+  context?: JobsQueryResponseEntriesItemContext;
+  createdAt: string;
+  errorFingerprint?: string;
+  id: JobsQueryResponseEntriesItemId;
+  lastError?: string;
+  lineage?: JobsQueryResponseEntriesItemLineage;
+  maxTries: JobsQueryResponseEntriesItemMaxTries;
+  progress?: JobsQueryResponseEntriesItemProgress;
+  queueAgeMs?: uint64;
+  queueKey?: string;
+  runtimeBand?: string;
+  runtimeMs?: uint64;
+  service: JobsQueryResponseEntriesItemService;
+  startedAt?: string;
+  state: JobsQueryResponseEntriesItemState;
+  tries: uint64;
+  trigger?: JobsQueryResponseEntriesItemTrigger;
+  type: JobsQueryResponseEntriesItemType;
+  updatedAt: string;
+  waitingOn?: list<JobsQueryResponseEntriesItemWaitingOnItem>;
+}
+
+model JobsQueryResponseGroupsItem {
+  count: uint64;
+  depth?: uint64;
+  failureRate?: JobsQueryResponseGroupsItemFailureRate;
+  key: string;
+  label: string;
+  latestUpdatedAt?: string;
+  oldestCreatedAt?: string;
+  state?: JobsQueryResponseGroupsItemState;
+}
+
+model JobsQueryResponseStats {
+  byState: map<uint64>;
+  dead?: uint64;
+  failed?: uint64;
+  queued?: uint64;
+  running?: uint64;
+  slow?: uint64;
+  total: uint64;
+}
+
+model JobsReplayDLQResponseJob {
+  completedAt?: string;
+  concurrency?: JobsReplayDLQResponseJobConcurrency;
+  context: JobsReplayDLQResponseJobContext;
+  createdAt: string;
+  deadline?: string;
+  errorDetail?: JobsReplayDLQResponseJobErrorDetail;
+  id: JobsReplayDLQResponseJobId;
+  lastError?: string;
+  lineage?: JobsReplayDLQResponseJobLineage;
+  logs?: list<JobsReplayDLQResponseJobLogsItem>;
+  maxTries: JobsReplayDLQResponseJobMaxTries;
+  payload: bytes;
+  progress?: JobsReplayDLQResponseJobProgress;
+  queuePolicy?: JobsReplayDLQResponseJobQueuePolicy;
+  result?: bytes;
+  service: JobsReplayDLQResponseJobService;
+  startedAt?: string;
+  state: JobsReplayDLQResponseJobState;
+  tries: uint64;
+  trigger?: JobsReplayDLQResponseJobTrigger;
+  type: JobsReplayDLQResponseJobType;
+  updatedAt: string;
+  waitingOn?: list<JobsReplayDLQResponseJobWaitingOnItem>;
+}
+
+model JobsRetryResponseJob {
+  completedAt?: string;
+  concurrency?: JobsRetryResponseJobConcurrency;
+  context: JobsRetryResponseJobContext;
+  createdAt: string;
+  deadline?: string;
+  errorDetail?: JobsRetryResponseJobErrorDetail;
+  id: JobsRetryResponseJobId;
+  lastError?: string;
+  lineage?: JobsRetryResponseJobLineage;
+  logs?: list<JobsRetryResponseJobLogsItem>;
+  maxTries: JobsRetryResponseJobMaxTries;
+  payload: bytes;
+  progress?: JobsRetryResponseJobProgress;
+  queuePolicy?: JobsRetryResponseJobQueuePolicy;
+  result?: bytes;
+  service: JobsRetryResponseJobService;
+  startedAt?: string;
+  state: JobsRetryResponseJobState;
+  tries: uint64;
+  trigger?: JobsRetryResponseJobTrigger;
+  type: JobsRetryResponseJobType;
+  updatedAt: string;
+  waitingOn?: list<JobsRetryResponseJobWaitingOnItem>;
+}
+
+model JobsWatchFrameValue1 {
+  kind: JobsWatchFrameValue1Kind;
+  timestamp: string;
+}
+
+model JobsWatchFrameValue2 {
+  id: JobsWatchFrameValue2Id;
+  kind: JobsWatchFrameValue2Kind;
+  service: JobsWatchFrameValue2Service;
+  state: JobsWatchFrameValue2State;
+  type: JobsWatchFrameValue2Type;
+  updatedAt: string;
+}
+
+model JobsWatchFrameValue3 {
+  kind: JobsWatchFrameValue3Kind;
+  reason: string;
+  timestamp: string;
+}
+
+model JobsWatchFrameValue4 {
+  id: JobsWatchFrameValue4Id;
+  kind: JobsWatchFrameValue4Kind;
+  timestamp: string;
+}
+
+model JobsWatchRequestQuery {
+  groupBy?: JobsWatchRequestQueryGroupBy;
+  queueKey?: string;
+  runtimeBand?: JobsWatchRequestQueryRuntimeBand;
+  search?: string;
+  service?: JobsWatchRequestQueryService;
+  sort?: JobsWatchRequestQuerySort;
+  state?: list<JobsWatchRequestQueryState>;
+  trigger?: string;
+  type?: JobsWatchRequestQueryType;
+  window?: string;
+}
+
+model JobsWorkbenchJobRowContext {
+  requestId: JobsWorkbenchJobRowContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsWorkbenchJobRowContextTracestate;
+}
+
+model JobsWorkbenchJobRowLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsWorkbenchJobRowProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsWorkbenchJobRowTrigger {
+  id?: string;
+  kind: JobsWorkbenchJobRowTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsWorkbenchJobRowWaitingOnItem {
+  id: JobsWorkbenchJobRowWaitingOnItemId;
+  label?: JobsWorkbenchJobRowWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsWorkbenchJobRowWaitingOnItemTarget;
+}
+
+model JobsNotFoundErrorDataContext {
+
+}
+
+model JobWaitingOnItemTarget {
+  id?: JobWaitingOnItemTargetId;
+  key?: JobWaitingOnItemTargetKey;
+  kind: JobWaitingOnItemTargetKind;
+  label?: JobWaitingOnItemTargetLabel;
+  operation?: JobWaitingOnItemTargetOperation;
+  operationId?: JobWaitingOnItemTargetOperationId;
+  service?: JobWaitingOnItemTargetService;
+  system?: JobWaitingOnItemTargetSystem;
+  type?: JobWaitingOnItemTargetType;
+}
+
+model JobTimelineEventErrorDetailCausesItem {
+
+}
+
+model JobTimelineEventErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobTimelineEventWaitEdgeTarget {
+  id?: JobTimelineEventWaitEdgeTargetId;
+  key?: JobTimelineEventWaitEdgeTargetKey;
+  kind: JobTimelineEventWaitEdgeTargetKind;
+  label?: JobTimelineEventWaitEdgeTargetLabel;
+  operation?: JobTimelineEventWaitEdgeTargetOperation;
+  operationId?: JobTimelineEventWaitEdgeTargetOperationId;
+  service?: JobTimelineEventWaitEdgeTargetService;
+  system?: JobTimelineEventWaitEdgeTargetSystem;
+  type?: JobTimelineEventWaitEdgeTargetType;
+}
+
+model JobsCancelResponseJobConcurrency {
+  heartbeatAt?: string;
+  key: JobsCancelResponseJobConcurrencyKey;
+  keyHash: JobsCancelResponseJobConcurrencyKeyHash;
+  leaseExpiresAt?: string;
+  staleTakeoverCount?: uint64;
+}
+
+model JobsCancelResponseJobContext {
+  requestId: JobsCancelResponseJobContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsCancelResponseJobContextTracestate;
+}
+
+model JobsCancelResponseJobErrorDetail {
+  causes?: list<JobsCancelResponseJobErrorDetailCausesItem>;
+  fingerprint: JobsCancelResponseJobErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsCancelResponseJobErrorDetailWorker;
+}
+
+model JobsCancelResponseJobLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsCancelResponseJobLogsItem {
+  level: JobsCancelResponseJobLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobsCancelResponseJobProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsCancelResponseJobQueuePolicy {
+  existingJobId?: JobsCancelResponseJobQueuePolicyExistingJobId;
+  outcome: JobsCancelResponseJobQueuePolicyOutcome;
+  reason?: JobsCancelResponseJobQueuePolicyReason;
+  replacedJobId?: JobsCancelResponseJobQueuePolicyReplacedJobId;
+}
+
+model JobsCancelResponseJobTrigger {
+  id?: string;
+  kind: JobsCancelResponseJobTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsCancelResponseJobWaitingOnItem {
+  id: JobsCancelResponseJobWaitingOnItemId;
+  label?: JobsCancelResponseJobWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsCancelResponseJobWaitingOnItemTarget;
+}
+
+model JobsDismissDLQResponseJobConcurrency {
+  heartbeatAt?: string;
+  key: JobsDismissDLQResponseJobConcurrencyKey;
+  keyHash: JobsDismissDLQResponseJobConcurrencyKeyHash;
+  leaseExpiresAt?: string;
+  staleTakeoverCount?: uint64;
+}
+
+model JobsDismissDLQResponseJobContext {
+  requestId: JobsDismissDLQResponseJobContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsDismissDLQResponseJobContextTracestate;
+}
+
+model JobsDismissDLQResponseJobErrorDetail {
+  causes?: list<JobsDismissDLQResponseJobErrorDetailCausesItem>;
+  fingerprint: JobsDismissDLQResponseJobErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsDismissDLQResponseJobErrorDetailWorker;
+}
+
+model JobsDismissDLQResponseJobLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsDismissDLQResponseJobLogsItem {
+  level: JobsDismissDLQResponseJobLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobsDismissDLQResponseJobProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsDismissDLQResponseJobQueuePolicy {
+  existingJobId?: JobsDismissDLQResponseJobQueuePolicyExistingJobId;
+  outcome: JobsDismissDLQResponseJobQueuePolicyOutcome;
+  reason?: JobsDismissDLQResponseJobQueuePolicyReason;
+  replacedJobId?: JobsDismissDLQResponseJobQueuePolicyReplacedJobId;
+}
+
+model JobsDismissDLQResponseJobTrigger {
+  id?: string;
+  kind: JobsDismissDLQResponseJobTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsDismissDLQResponseJobWaitingOnItem {
+  id: JobsDismissDLQResponseJobWaitingOnItemId;
+  label?: JobsDismissDLQResponseJobWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsDismissDLQResponseJobWaitingOnItemTarget;
+}
+
+model JobsInspectResponseAttemptsItemError {
+  causes?: list<JobsInspectResponseAttemptsItemErrorCausesItem>;
+  fingerprint: JobsInspectResponseAttemptsItemErrorFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsInspectResponseAttemptsItemErrorWorker;
+}
+
+model JobsInspectResponseErrorsItemCausesItem {
+
+}
+
+model JobsInspectResponseErrorsItemWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsInspectResponseJobConcurrency {
+  heartbeatAt?: string;
+  key: JobsInspectResponseJobConcurrencyKey;
+  keyHash: JobsInspectResponseJobConcurrencyKeyHash;
+  leaseExpiresAt?: string;
+  staleTakeoverCount?: uint64;
+}
+
+model JobsInspectResponseJobContext {
+  requestId: JobsInspectResponseJobContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsInspectResponseJobContextTracestate;
+}
+
+model JobsInspectResponseJobErrorDetail {
+  causes?: list<JobsInspectResponseJobErrorDetailCausesItem>;
+  fingerprint: JobsInspectResponseJobErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsInspectResponseJobErrorDetailWorker;
+}
+
+model JobsInspectResponseJobLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsInspectResponseJobLogsItem {
+  level: JobsInspectResponseJobLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobsInspectResponseJobProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsInspectResponseJobQueuePolicy {
+  existingJobId?: JobsInspectResponseJobQueuePolicyExistingJobId;
+  outcome: JobsInspectResponseJobQueuePolicyOutcome;
+  reason?: JobsInspectResponseJobQueuePolicyReason;
+  replacedJobId?: JobsInspectResponseJobQueuePolicyReplacedJobId;
+}
+
+model JobsInspectResponseJobTrigger {
+  id?: string;
+  kind: JobsInspectResponseJobTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsInspectResponseJobWaitingOnItem {
+  id: JobsInspectResponseJobWaitingOnItemId;
+  label?: JobsInspectResponseJobWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsInspectResponseJobWaitingOnItemTarget;
+}
+
+model JobsInspectResponseRelatedItemContext {
+  requestId: JobsInspectResponseRelatedItemContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsInspectResponseRelatedItemContextTracestate;
+}
+
+model JobsInspectResponseRelatedItemLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsInspectResponseRelatedItemProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsInspectResponseRelatedItemTrigger {
+  id?: string;
+  kind: JobsInspectResponseRelatedItemTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsInspectResponseRelatedItemWaitingOnItem {
+  id: JobsInspectResponseRelatedItemWaitingOnItemId;
+  label?: JobsInspectResponseRelatedItemWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsInspectResponseRelatedItemWaitingOnItemTarget;
+}
+
+model JobsInspectResponseTimelineItemErrorDetail {
+  causes?: list<JobsInspectResponseTimelineItemErrorDetailCausesItem>;
+  fingerprint: JobsInspectResponseTimelineItemErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsInspectResponseTimelineItemErrorDetailWorker;
+}
+
+model JobsInspectResponseTimelineItemLogsItem {
+  level: JobsInspectResponseTimelineItemLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobsInspectResponseTimelineItemProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsInspectResponseTimelineItemWaitEdge {
+  id: JobsInspectResponseTimelineItemWaitEdgeId;
+  label?: JobsInspectResponseTimelineItemWaitEdgeLabel;
+  startedAt: string;
+  target: JobsInspectResponseTimelineItemWaitEdgeTarget;
+}
+
+model JobsListDLQResponseEntriesItemConcurrency {
+  heartbeatAt?: string;
+  key: JobsListDLQResponseEntriesItemConcurrencyKey;
+  keyHash: JobsListDLQResponseEntriesItemConcurrencyKeyHash;
+  leaseExpiresAt?: string;
+  staleTakeoverCount?: uint64;
+}
+
+model JobsListDLQResponseEntriesItemContext {
+  requestId: JobsListDLQResponseEntriesItemContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsListDLQResponseEntriesItemContextTracestate;
+}
+
+model JobsListDLQResponseEntriesItemErrorDetail {
+  causes?: list<JobsListDLQResponseEntriesItemErrorDetailCausesItem>;
+  fingerprint: JobsListDLQResponseEntriesItemErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsListDLQResponseEntriesItemErrorDetailWorker;
+}
+
+model JobsListDLQResponseEntriesItemLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsListDLQResponseEntriesItemLogsItem {
+  level: JobsListDLQResponseEntriesItemLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobsListDLQResponseEntriesItemProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsListDLQResponseEntriesItemQueuePolicy {
+  existingJobId?: JobsListDLQResponseEntriesItemQueuePolicyExistingJobId;
+  outcome: JobsListDLQResponseEntriesItemQueuePolicyOutcome;
+  reason?: JobsListDLQResponseEntriesItemQueuePolicyReason;
+  replacedJobId?: JobsListDLQResponseEntriesItemQueuePolicyReplacedJobId;
+}
+
+model JobsListDLQResponseEntriesItemTrigger {
+  id?: string;
+  kind: JobsListDLQResponseEntriesItemTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsListDLQResponseEntriesItemWaitingOnItem {
+  id: JobsListDLQResponseEntriesItemWaitingOnItemId;
+  label?: JobsListDLQResponseEntriesItemWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsListDLQResponseEntriesItemWaitingOnItemTarget;
+}
+
+model JobsListServicesResponseEntriesItemWorkersItem {
+  concurrency?: JobsListServicesResponseEntriesItemWorkersItemConcurrency;
+  instanceId: JobsListServicesResponseEntriesItemWorkersItemInstanceId;
+  jobType: JobsListServicesResponseEntriesItemWorkersItemJobType;
+  service: JobsListServicesResponseEntriesItemWorkersItemService;
+  timestamp: string;
+  version?: JobsListServicesResponseEntriesItemWorkersItemVersion;
+}
+
+model JobsMetricsBucketGroupsItemQueueWait {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsMetricsBucketGroupsItemRuntime {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsMetricsResponseBucketsItemGroupsItem {
+  cancelled: uint64;
+  completed: uint64;
+  dead: uint64;
+  dismissed: uint64;
+  failed: uint64;
+  key: string;
+  label: string;
+  queueWait: JobsMetricsResponseBucketsItemGroupsItemQueueWait;
+  retried: uint64;
+  runtime: JobsMetricsResponseBucketsItemGroupsItemRuntime;
+  started: uint64;
+  submitted: uint64;
+}
+
+model JobsMetricsResponseSummaryItemQueueWait {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsMetricsResponseSummaryItemRuntime {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsQueryResponseEntriesItemContext {
+  requestId: JobsQueryResponseEntriesItemContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsQueryResponseEntriesItemContextTracestate;
+}
+
+model JobsQueryResponseEntriesItemLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsQueryResponseEntriesItemProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsQueryResponseEntriesItemTrigger {
+  id?: string;
+  kind: JobsQueryResponseEntriesItemTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsQueryResponseEntriesItemWaitingOnItem {
+  id: JobsQueryResponseEntriesItemWaitingOnItemId;
+  label?: JobsQueryResponseEntriesItemWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsQueryResponseEntriesItemWaitingOnItemTarget;
+}
+
+model JobsReplayDLQResponseJobConcurrency {
+  heartbeatAt?: string;
+  key: JobsReplayDLQResponseJobConcurrencyKey;
+  keyHash: JobsReplayDLQResponseJobConcurrencyKeyHash;
+  leaseExpiresAt?: string;
+  staleTakeoverCount?: uint64;
+}
+
+model JobsReplayDLQResponseJobContext {
+  requestId: JobsReplayDLQResponseJobContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsReplayDLQResponseJobContextTracestate;
+}
+
+model JobsReplayDLQResponseJobErrorDetail {
+  causes?: list<JobsReplayDLQResponseJobErrorDetailCausesItem>;
+  fingerprint: JobsReplayDLQResponseJobErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsReplayDLQResponseJobErrorDetailWorker;
+}
+
+model JobsReplayDLQResponseJobLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsReplayDLQResponseJobLogsItem {
+  level: JobsReplayDLQResponseJobLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobsReplayDLQResponseJobProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsReplayDLQResponseJobQueuePolicy {
+  existingJobId?: JobsReplayDLQResponseJobQueuePolicyExistingJobId;
+  outcome: JobsReplayDLQResponseJobQueuePolicyOutcome;
+  reason?: JobsReplayDLQResponseJobQueuePolicyReason;
+  replacedJobId?: JobsReplayDLQResponseJobQueuePolicyReplacedJobId;
+}
+
+model JobsReplayDLQResponseJobTrigger {
+  id?: string;
+  kind: JobsReplayDLQResponseJobTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsReplayDLQResponseJobWaitingOnItem {
+  id: JobsReplayDLQResponseJobWaitingOnItemId;
+  label?: JobsReplayDLQResponseJobWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsReplayDLQResponseJobWaitingOnItemTarget;
+}
+
+model JobsRetryResponseJobConcurrency {
+  heartbeatAt?: string;
+  key: JobsRetryResponseJobConcurrencyKey;
+  keyHash: JobsRetryResponseJobConcurrencyKeyHash;
+  leaseExpiresAt?: string;
+  staleTakeoverCount?: uint64;
+}
+
+model JobsRetryResponseJobContext {
+  requestId: JobsRetryResponseJobContextRequestId;
+  traceId: string;
+  traceparent: string;
+  tracestate?: JobsRetryResponseJobContextTracestate;
+}
+
+model JobsRetryResponseJobErrorDetail {
+  causes?: list<JobsRetryResponseJobErrorDetailCausesItem>;
+  fingerprint: JobsRetryResponseJobErrorDetailFingerprint;
+  firstSeen?: string;
+  message: string;
+  occurrenceCount?: uint64;
+  stack?: string;
+  type?: string;
+  worker?: JobsRetryResponseJobErrorDetailWorker;
+}
+
+model JobsRetryResponseJobLineage {
+  operationId?: string;
+  parentJobId?: string;
+  relatedKeys?: list<string>;
+  rootJobId?: string;
+}
+
+model JobsRetryResponseJobLogsItem {
+  level: JobsRetryResponseJobLogsItemLevel;
+  message: string;
+  timestamp: string;
+}
+
+model JobsRetryResponseJobProgress {
+  current?: uint64;
+  message?: string;
+  step?: string;
+  total?: uint64;
+}
+
+model JobsRetryResponseJobQueuePolicy {
+  existingJobId?: JobsRetryResponseJobQueuePolicyExistingJobId;
+  outcome: JobsRetryResponseJobQueuePolicyOutcome;
+  reason?: JobsRetryResponseJobQueuePolicyReason;
+  replacedJobId?: JobsRetryResponseJobQueuePolicyReplacedJobId;
+}
+
+model JobsRetryResponseJobTrigger {
+  id?: string;
+  kind: JobsRetryResponseJobTriggerKind;
+  operationId?: string;
+  parentJobId?: string;
+  requestId?: string;
+  subject?: string;
+  traceId?: string;
+}
+
+model JobsRetryResponseJobWaitingOnItem {
+  id: JobsRetryResponseJobWaitingOnItemId;
+  label?: JobsRetryResponseJobWaitingOnItemLabel;
+  startedAt: string;
+  target: JobsRetryResponseJobWaitingOnItemTarget;
+}
+
+model JobsWatchRequestQuerySort {
+  direction?: JobsWatchRequestQuerySortDirection;
+  field: JobsWatchRequestQuerySortField;
+}
+
+model JobsWorkbenchJobRowWaitingOnItemTarget {
+  id?: JobsWorkbenchJobRowWaitingOnItemTargetId;
+  key?: JobsWorkbenchJobRowWaitingOnItemTargetKey;
+  kind: JobsWorkbenchJobRowWaitingOnItemTargetKind;
+  label?: JobsWorkbenchJobRowWaitingOnItemTargetLabel;
+  operation?: JobsWorkbenchJobRowWaitingOnItemTargetOperation;
+  operationId?: JobsWorkbenchJobRowWaitingOnItemTargetOperationId;
+  service?: JobsWorkbenchJobRowWaitingOnItemTargetService;
+  system?: JobsWorkbenchJobRowWaitingOnItemTargetSystem;
+  type?: JobsWorkbenchJobRowWaitingOnItemTargetType;
+}
+
+model JobsCancelResponseJobErrorDetailCausesItem {
+
+}
+
+model JobsCancelResponseJobErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsCancelResponseJobWaitingOnItemTarget {
+  id?: JobsCancelResponseJobWaitingOnItemTargetId;
+  key?: JobsCancelResponseJobWaitingOnItemTargetKey;
+  kind: JobsCancelResponseJobWaitingOnItemTargetKind;
+  label?: JobsCancelResponseJobWaitingOnItemTargetLabel;
+  operation?: JobsCancelResponseJobWaitingOnItemTargetOperation;
+  operationId?: JobsCancelResponseJobWaitingOnItemTargetOperationId;
+  service?: JobsCancelResponseJobWaitingOnItemTargetService;
+  system?: JobsCancelResponseJobWaitingOnItemTargetSystem;
+  type?: JobsCancelResponseJobWaitingOnItemTargetType;
+}
+
+model JobsDismissDLQResponseJobErrorDetailCausesItem {
+
+}
+
+model JobsDismissDLQResponseJobErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsDismissDLQResponseJobWaitingOnItemTarget {
+  id?: JobsDismissDLQResponseJobWaitingOnItemTargetId;
+  key?: JobsDismissDLQResponseJobWaitingOnItemTargetKey;
+  kind: JobsDismissDLQResponseJobWaitingOnItemTargetKind;
+  label?: JobsDismissDLQResponseJobWaitingOnItemTargetLabel;
+  operation?: JobsDismissDLQResponseJobWaitingOnItemTargetOperation;
+  operationId?: JobsDismissDLQResponseJobWaitingOnItemTargetOperationId;
+  service?: JobsDismissDLQResponseJobWaitingOnItemTargetService;
+  system?: JobsDismissDLQResponseJobWaitingOnItemTargetSystem;
+  type?: JobsDismissDLQResponseJobWaitingOnItemTargetType;
+}
+
+model JobsInspectResponseAttemptsItemErrorCausesItem {
+
+}
+
+model JobsInspectResponseAttemptsItemErrorWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsInspectResponseJobErrorDetailCausesItem {
+
+}
+
+model JobsInspectResponseJobErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsInspectResponseJobWaitingOnItemTarget {
+  id?: JobsInspectResponseJobWaitingOnItemTargetId;
+  key?: JobsInspectResponseJobWaitingOnItemTargetKey;
+  kind: JobsInspectResponseJobWaitingOnItemTargetKind;
+  label?: JobsInspectResponseJobWaitingOnItemTargetLabel;
+  operation?: JobsInspectResponseJobWaitingOnItemTargetOperation;
+  operationId?: JobsInspectResponseJobWaitingOnItemTargetOperationId;
+  service?: JobsInspectResponseJobWaitingOnItemTargetService;
+  system?: JobsInspectResponseJobWaitingOnItemTargetSystem;
+  type?: JobsInspectResponseJobWaitingOnItemTargetType;
+}
+
+model JobsInspectResponseRelatedItemWaitingOnItemTarget {
+  id?: JobsInspectResponseRelatedItemWaitingOnItemTargetId;
+  key?: JobsInspectResponseRelatedItemWaitingOnItemTargetKey;
+  kind: JobsInspectResponseRelatedItemWaitingOnItemTargetKind;
+  label?: JobsInspectResponseRelatedItemWaitingOnItemTargetLabel;
+  operation?: JobsInspectResponseRelatedItemWaitingOnItemTargetOperation;
+  operationId?: JobsInspectResponseRelatedItemWaitingOnItemTargetOperationId;
+  service?: JobsInspectResponseRelatedItemWaitingOnItemTargetService;
+  system?: JobsInspectResponseRelatedItemWaitingOnItemTargetSystem;
+  type?: JobsInspectResponseRelatedItemWaitingOnItemTargetType;
+}
+
+model JobsInspectResponseTimelineItemErrorDetailCausesItem {
+
+}
+
+model JobsInspectResponseTimelineItemErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsInspectResponseTimelineItemWaitEdgeTarget {
+  id?: JobsInspectResponseTimelineItemWaitEdgeTargetId;
+  key?: JobsInspectResponseTimelineItemWaitEdgeTargetKey;
+  kind: JobsInspectResponseTimelineItemWaitEdgeTargetKind;
+  label?: JobsInspectResponseTimelineItemWaitEdgeTargetLabel;
+  operation?: JobsInspectResponseTimelineItemWaitEdgeTargetOperation;
+  operationId?: JobsInspectResponseTimelineItemWaitEdgeTargetOperationId;
+  service?: JobsInspectResponseTimelineItemWaitEdgeTargetService;
+  system?: JobsInspectResponseTimelineItemWaitEdgeTargetSystem;
+  type?: JobsInspectResponseTimelineItemWaitEdgeTargetType;
+}
+
+model JobsListDLQResponseEntriesItemErrorDetailCausesItem {
+
+}
+
+model JobsListDLQResponseEntriesItemErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsListDLQResponseEntriesItemWaitingOnItemTarget {
+  id?: JobsListDLQResponseEntriesItemWaitingOnItemTargetId;
+  key?: JobsListDLQResponseEntriesItemWaitingOnItemTargetKey;
+  kind: JobsListDLQResponseEntriesItemWaitingOnItemTargetKind;
+  label?: JobsListDLQResponseEntriesItemWaitingOnItemTargetLabel;
+  operation?: JobsListDLQResponseEntriesItemWaitingOnItemTargetOperation;
+  operationId?: JobsListDLQResponseEntriesItemWaitingOnItemTargetOperationId;
+  service?: JobsListDLQResponseEntriesItemWaitingOnItemTargetService;
+  system?: JobsListDLQResponseEntriesItemWaitingOnItemTargetSystem;
+  type?: JobsListDLQResponseEntriesItemWaitingOnItemTargetType;
+}
+
+model JobsMetricsResponseBucketsItemGroupsItemQueueWait {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsMetricsResponseBucketsItemGroupsItemRuntime {
+  count: uint64;
+  maxMs?: uint64;
+  p50Ms?: uint64;
+  p95Ms?: uint64;
+}
+
+model JobsQueryResponseEntriesItemWaitingOnItemTarget {
+  id?: JobsQueryResponseEntriesItemWaitingOnItemTargetId;
+  key?: JobsQueryResponseEntriesItemWaitingOnItemTargetKey;
+  kind: JobsQueryResponseEntriesItemWaitingOnItemTargetKind;
+  label?: JobsQueryResponseEntriesItemWaitingOnItemTargetLabel;
+  operation?: JobsQueryResponseEntriesItemWaitingOnItemTargetOperation;
+  operationId?: JobsQueryResponseEntriesItemWaitingOnItemTargetOperationId;
+  service?: JobsQueryResponseEntriesItemWaitingOnItemTargetService;
+  system?: JobsQueryResponseEntriesItemWaitingOnItemTargetSystem;
+  type?: JobsQueryResponseEntriesItemWaitingOnItemTargetType;
+}
+
+model JobsReplayDLQResponseJobErrorDetailCausesItem {
+
+}
+
+model JobsReplayDLQResponseJobErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsReplayDLQResponseJobWaitingOnItemTarget {
+  id?: JobsReplayDLQResponseJobWaitingOnItemTargetId;
+  key?: JobsReplayDLQResponseJobWaitingOnItemTargetKey;
+  kind: JobsReplayDLQResponseJobWaitingOnItemTargetKind;
+  label?: JobsReplayDLQResponseJobWaitingOnItemTargetLabel;
+  operation?: JobsReplayDLQResponseJobWaitingOnItemTargetOperation;
+  operationId?: JobsReplayDLQResponseJobWaitingOnItemTargetOperationId;
+  service?: JobsReplayDLQResponseJobWaitingOnItemTargetService;
+  system?: JobsReplayDLQResponseJobWaitingOnItemTargetSystem;
+  type?: JobsReplayDLQResponseJobWaitingOnItemTargetType;
+}
+
+model JobsRetryResponseJobErrorDetailCausesItem {
+
+}
+
+model JobsRetryResponseJobErrorDetailWorker {
+  instanceId?: string;
+  runtime?: string;
+  service?: string;
+  version?: string;
+}
+
+model JobsRetryResponseJobWaitingOnItemTarget {
+  id?: JobsRetryResponseJobWaitingOnItemTargetId;
+  key?: JobsRetryResponseJobWaitingOnItemTargetKey;
+  kind: JobsRetryResponseJobWaitingOnItemTargetKind;
+  label?: JobsRetryResponseJobWaitingOnItemTargetLabel;
+  operation?: JobsRetryResponseJobWaitingOnItemTargetOperation;
+  operationId?: JobsRetryResponseJobWaitingOnItemTargetOperationId;
+  service?: JobsRetryResponseJobWaitingOnItemTargetService;
+  system?: JobsRetryResponseJobWaitingOnItemTargetSystem;
+  type?: JobsRetryResponseJobWaitingOnItemTargetType;
+}
+
+type JobsWatchFrame = bytes;
+
+enum JobState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobLogEntryLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobTimelineEventPreviousState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobTimelineEventState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobWaitTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsMetricsRequestGroupBy {
+  type;
+  service;
+  queueKey;
+  state;
+  trigger;
+}
+
+enum JobsMetricsRequestState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsQueryRequestGroupBy {
+  service;
+  type;
+  state;
+  queueKey;
+  trigger;
+  runtimeBand;
+}
+
+enum JobsQueryRequestRuntimeBand {
+  queued;
+  running;
+  slow;
+  terminal;
+}
+
+enum JobsQueryRequestState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsWorkbenchGroupState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsWorkbenchJobRowState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsNotFoundErrorDataType {
+  NotFoundError;
+}
+
+enum JobLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobTimelineEventLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobWaitEdgeTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsCancelResponseJobState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsDismissDLQResponseJobState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsInspectResponseAttemptsItemState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsInspectResponseJobState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsInspectResponseRelatedItemMatchedBy {
+  trace;
+  parent;
+  root;
+  operation;
+  concurrency;
+  wait;
+}
+
+enum JobsInspectResponseRelatedItemState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsInspectResponseTimelineItemPreviousState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsInspectResponseTimelineItemState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsInspectResponseTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsListDLQResponseEntriesItemState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsQueryRequestSortDirection {
+  asc;
+  desc;
+}
+
+enum JobsQueryRequestSortField {
+  updatedAt;
+  queueAge;
+  runtime;
+  failureRate;
+  retries;
+  depth;
+}
+
+enum JobsQueryResponseEntriesItemState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsQueryResponseGroupsItemState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsReplayDLQResponseJobState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsRetryResponseJobState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsWatchFrameValue1Kind {
+  ready;
+}
+
+enum JobsWatchFrameValue2Kind {
+  jobChanged;
+}
+
+enum JobsWatchFrameValue2State {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsWatchFrameValue3Kind {
+  queryInvalidated;
+}
+
+enum JobsWatchFrameValue4Kind {
+  jobInspectChanged;
+}
+
+enum JobsWatchRequestQueryGroupBy {
+  service;
+  type;
+  state;
+  queueKey;
+  trigger;
+  runtimeBand;
+}
+
+enum JobsWatchRequestQueryRuntimeBand {
+  queued;
+  running;
+  slow;
+  terminal;
+}
+
+enum JobsWatchRequestQueryState {
+  pending;
+  active;
+  retry;
+  completed;
+  failed;
+  cancelled;
+  skipped;
+  stale;
+  expired;
+  dead;
+  dismissed;
+}
+
+enum JobsWorkbenchJobRowTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobTimelineEventWaitEdgeTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsCancelResponseJobLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobsCancelResponseJobTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsDismissDLQResponseJobLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobsDismissDLQResponseJobTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsInspectResponseJobLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobsInspectResponseJobTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsInspectResponseRelatedItemTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsInspectResponseTimelineItemLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobsListDLQResponseEntriesItemLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobsListDLQResponseEntriesItemTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsQueryResponseEntriesItemTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsReplayDLQResponseJobLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobsReplayDLQResponseJobTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsRetryResponseJobLogsItemLevel {
+  info;
+  warn;
+  error;
+}
+
+enum JobsRetryResponseJobTriggerKind {
+  schedule;
+  operation;
+  rpc;
+  event;
+  manualReplay;
+  serviceCode;
+  parentJob;
+}
+
+enum JobsWatchRequestQuerySortDirection {
+  asc;
+  desc;
+}
+
+enum JobsWatchRequestQuerySortField {
+  updatedAt;
+  queueAge;
+  runtime;
+  failureRate;
+  retries;
+  depth;
+}
+
+enum JobsWorkbenchJobRowWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsCancelResponseJobWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsDismissDLQResponseJobWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsInspectResponseJobWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsInspectResponseRelatedItemWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsInspectResponseTimelineItemWaitEdgeTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsListDLQResponseEntriesItemWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsQueryResponseEntriesItemWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsReplayDLQResponseJobWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+enum JobsRetryResponseJobWaitingOnItemTargetKind {
+  job;
+  operation;
+  external;
+}
+
+model EventConsumerStatusRow {
+  ackPending: int64;
+  ackWaitMs?: int64;
+  consumerName: string;
+  contractId?: string;
+  deploymentId?: string;
+  filterSubjects: list<string>;
+  group?: string;
+  managedBy?: EventConsumerStatusRowManagedBy;
+  maxDeliver?: int64;
+  oldestPendingAt?: string;
+  oldestPendingEventId?: string;
+  pending: int64;
+  redelivered?: int64;
+  status: EventConsumerStatusRowStatus;
+  stream: string;
+  resourceId: string;
+  waitingPulls: int64;
+}
+
+model EventsConsumersInspectRequest {
+  resourceId: string;
+}
+
+model EventsConsumersInspectResponse {
+  consumer: EventConsumerStatusRow;
+}
+
+model EventsConsumersQueryRequest {
+  contractId?: string;
+  deploymentId?: string;
+  page?: CursorQuery;
+  resourceId?: string;
+  ownerContractId?: string;
+  status?: list<EventsConsumersQueryRequestStatus>;
+  subject?: string;
+}
+
+type EventsConsumersQueryResponse = CursorPage<EventConsumerStatusRow>;
+
+model EventsInspectRequest {
+  eventId?: string;
+  streamSequence?: int64;
+}
+
+model EventsInspectResponse {
+  event: EventsEventDetail;
+}
+
+model EventsEventDetail {
+  headers: map<string>;
+  payload: bytes;
+  row: EventsRow;
+}
+
+model EventsMetricsRequest {
+  resourceId?: string;
+  window?: string;
+}
+
+model EventsMetricsResponse {
+  buckets: list<EventsMetricsResponseBucketsItem>;
+  summary: EventsMetricsResponseSummary;
+}
+
+model EventsQueryRequest {
+  consumerDeploymentId?: string;
+  consumerName?: string;
+  excludeEventTypes?: list<EventsQueryRequestExcludeEventTypesItem>;
+  includeEventTypes?: list<EventsQueryRequestIncludeEventTypesItem>;
+  integrityExceptionOnly?: bool;
+  page?: CursorQuery;
+  ownerContractId?: string;
+  ownerEventName?: string;
+  publisherDeploymentId?: string;
+  publisherParticipantId?: string;
+  resolution?: list<EventsQueryRequestResolution>;
+  search?: string;
+  sort?: EventsQueryRequestSort;
+  subject?: string;
+  verificationStatus?: list<EventsQueryRequestVerificationStatus>;
+  window?: string;
+}
+
+type EventsQueryResponse = CursorPage<EventsRow>;
+
+model EventsDiagnosticsRequest {
+}
+
+model EventsDiagnosticsResponse {
+  asOf: string;
+  completeSince?: string;
+  gapDetected: bool;
+  lastStreamSequence: uint64;
+  retainedFrom?: string;
+  revision: uint64;
+}
+
+model EventsConsumersReportDeliveryRequest {
+  deliveryCount: uint32;
+  deliveryProof: string;
+  error?: string;
+  outcome: EventsDeliveryOutcome;
+  replayGeneration?: uint32;
+  resourceId: string;
+  sourceSequence: uint64;
+  sourceStream: string;
+}
+
+model EventsConsumersReportDeliveryResponse {
+  deadLetter?: EventsDeadLetter;
+  stale: bool;
+}
+
+model EventsDeadLettersQueryRequest {
+  page?: CursorQuery;
+  resourceId?: string;
+  state?: list<EventsDeadLetterState>;
+}
+
+type EventsDeadLettersQueryResponse = CursorPage<EventsDeadLetter>;
+
+model EventsDeadLettersInspectRequest {
+  deadLetterId: string;
+  resourceId: string;
+}
+
+model EventsDeadLettersInspectResponse {
+  deadLetter: EventsDeadLetterDetail;
+}
+
+model EventsDeadLettersReplayRequest {
+  deadLetterId: string;
+  expectedRevision: uint64;
+  requestId: string;
+  resourceId: string;
+}
+
+model EventsDeadLettersReplayResponse {
+  deadLetter: EventsDeadLetter;
+}
+
+model EventsDeadLettersDismissRequest {
+  deadLetterId: string;
+  expectedRevision: uint64;
+  requestId: string;
+  resourceId: string;
+}
+
+model EventsDeadLettersDismissResponse {
+  deadLetter: EventsDeadLetter;
+}
+
+model EventsDeadLetter {
+  deadLetterId: string;
+  deliveries: uint32;
+  generation: uint32;
+  lastError?: string;
+  originalSequence: uint64;
+  originalStream: string;
+  resourceId: string;
+  revision: uint64;
+  state: EventsDeadLetterState;
+  updatedAt: string;
+}
+
+model EventsDeadLetterDetail {
+  deadLetter: EventsDeadLetter;
+  originalHeaders: map<string>;
+  originalPayload: bytes;
+  originalPublishedAt: string;
+  originalSubject: string;
+  transitionReferences: list<uint64>;
+  verificationStatus: EventsDeadLetterVerificationStatus;
+}
+
+model EventsErrorData {
+  code: string;
+  currentRevision?: uint64;
+  deadLetterId?: string;
+  resourceId?: string;
+}
+
+enum EventsDeliveryOutcome {
+  exhausted;
+  succeeded;
+  unreplayable;
+}
+
+enum EventsDeadLetterState {
+  dead;
+  dismissed;
+  replayPending;
+  replaying;
+  resolved;
+}
+
+enum EventsDeadLetterVerificationStatus {
+  invalid;
+  revoked;
+  unavailable;
+  verified;
+}
+
+model EventsRow {
+  eventId: string;
+  eventTime: string;
+  headerCount: int64;
+  ownerContractId?: string;
+  ownerEventName?: string;
+  payloadSizeBytes: int64;
+  publisherDeploymentId?: string;
+  publisherInstanceId?: string;
+  publisherKind?: EventsRowPublisherKind;
+  publisherParticipantDigest?: string;
+  publisherParticipantId?: string;
+  resolution: EventsRowResolution;
+  streamSequence: int64;
+  subject: string;
+  traceId?: string;
+  verificationStatus: EventsRowVerificationStatus;
+}
+
+model EventsWatchFrame {
+  events: list<EventsEventDetail>;
+  lastStreamSequence: uint64;
+}
+
+model EventsWatchRequest {
+  consumerDeploymentId?: string;
+  consumerName?: string;
+  excludeEventTypes?: list<EventsQueryRequestExcludeEventTypesItem>;
+  includeEventTypes?: list<EventsQueryRequestIncludeEventTypesItem>;
+  ownerContractId?: string;
+  ownerEventName?: string;
+  publisherDeploymentId?: string;
+  publisherParticipantId?: string;
+  resourceId?: string;
+  subject?: string;
+}
+
+model EventsNotFoundErrorData {
+  context?: EventsNotFoundErrorDataContext;
+  id: string;
+  message: string;
+  type: EventsNotFoundErrorDataType;
+}
+
+model EventsMetricsResponseBucketsItem {
+  byResolution: EventsMetricsResponseBucketsItemByResolution;
+  byVerificationStatus: EventsMetricsResponseBucketsItemByVerificationStatus;
+  integrityExceptions: int64;
+  payloadSizeBytes: int64;
+  start: string;
+  total: int64;
+}
+
+model EventsMetricsResponseSummary {
+  byResolution: EventsMetricsResponseSummaryByResolution;
+  byVerificationStatus: EventsMetricsResponseSummaryByVerificationStatus;
+  deadLettersByState: EventsDeadLetterCounts;
+  eventTypes: list<EventsMetricsResponseSummaryEventTypesItem>;
+  integrityExceptions: int64;
+  payloadSizeBytes: int64;
+  total: int64;
+  uniqueSubjects: int64;
+}
+
+model EventsQueryRequestExcludeEventTypesItem {
+  ownerContractId: string;
+  ownerEventName: string;
+}
+
+model EventsQueryRequestIncludeEventTypesItem {
+  ownerContractId: string;
+  ownerEventName: string;
+}
+
+model EventsQueryRequestSort {
+  direction: EventsSortDirection;
+  field: EventsSortField;
+}
+
+model EventsNotFoundErrorDataContext {
+  eventId?: string;
+  resourceId?: string;
+  streamSequence?: uint64;
+}
+
+model EventsDeadLetterCounts {
+  dead: uint64;
+  dismissed: uint64;
+  replayPending: uint64;
+  replaying: uint64;
+  resolved: uint64;
+}
+
+enum EventsSortDirection {
+  asc;
+  desc;
+}
+
+enum EventsSortField {
+  eventTime;
+  payloadSize;
+  streamSequence;
+}
+
+model EventsMetricsResponseBucketsItemByResolution {
+  malformed?: int64;
+  resolved?: int64;
+  unresolved?: int64;
+}
+
+model EventsMetricsResponseBucketsItemByVerificationStatus {
+  authUnavailable?: int64;
+  invalidSignature?: int64;
+  missingProof?: int64;
+  missingSession?: int64;
+  outsideSessionWindow?: int64;
+  subjectDenied?: int64;
+  verified?: int64;
+}
+
+model EventsMetricsResponseSummaryByResolution {
+  malformed?: int64;
+  resolved?: int64;
+  unresolved?: int64;
+}
+
+model EventsMetricsResponseSummaryByVerificationStatus {
+  authUnavailable?: int64;
+  invalidSignature?: int64;
+  missingProof?: int64;
+  missingSession?: int64;
+  outsideSessionWindow?: int64;
+  subjectDenied?: int64;
+  verified?: int64;
+}
+
+model EventsMetricsResponseSummaryEventTypesItem {
+  count: int64;
+  ownerContractId: string;
+  ownerEventName: string;
+}
+
+enum EventConsumerStatusRowManagedBy {
+  authority;
+  platform;
+  external;
+}
+
+enum EventConsumerStatusRowStatus {
+  current;
+  processing;
+  behind;
+  saturated;
+  inactive;
+  failing;
+  missing;
+  orphaned;
+}
+
+enum EventsConsumersQueryRequestStatus {
+  current;
+  processing;
+  behind;
+  saturated;
+  inactive;
+  failing;
+  missing;
+  orphaned;
+}
+
+enum EventsQueryRequestResolution {
+  resolved;
+  unresolved;
+  malformed;
+}
+
+enum EventsQueryRequestVerificationStatus {
+  verified;
+}
+
+enum EventsRowPublisherKind {
+  service;
+  device;
+  user;
+}
+
+enum EventsRowResolution {
+  resolved;
+  unresolved;
+  malformed;
+}
+
+enum EventsRowVerificationStatus {
+  verified;
+}
+
+enum EventsNotFoundErrorDataType {
+  NotFoundError;
+}
+model JobsHistoryRequest {
+  queue: string;
+  jobId: string;
+  fromSequence: uint64;
+  throughSequence?: uint64;
+}
+
+model JobsHistoryEntry {
+  sequence: uint64;
+  payload: bytes;
+}
+
+model JobsHistoryResponse {
+  entries: list<JobsHistoryEntry>;
+  throughSequence: uint64;
+  nextSequence?: uint64;
+}

@@ -5,19 +5,21 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Internal managed NATS server download, verification, and lifecycle for Trellis."
-publish = ["crates-io"]
+publish = false
 
 [lints]
 workspace = true
 
 [dependencies]
 flate2 = "1.1.9"
+getrandom.workspace = true
 libc = "0.2.186"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+socket2 = "0.6.4"
 tar = "0.4.46"
 tempfile.workspace = true
 thiserror.workspace = true
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0" }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.12" }
 ureq = "3.3.0"

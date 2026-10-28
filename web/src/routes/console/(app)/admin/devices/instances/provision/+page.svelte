@@ -1,13 +1,20 @@
 <script lang="ts">
   import { ulid } from "ulid";
   import { err, isErr, ok } from "@oatscenter/result";
-  import { type apis } from "trellis-web-generated";
+  import { apis } from "trellis-web-generated";
   import { page } from "$app/state";
   import { onMount } from "svelte";
-  import { catalogPage, traverseAll } from "$lib/console/paging.ts";
+  import { traverseAll } from "$lib/console/paging.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
-  import { captureIntent, isIntentCurrent, MutationController } from "$lib/console/mutation.ts";
-  import { authorityIdentityChanged, getConsoleAuthority } from "$lib/console/authority.svelte.ts";
+  import {
+    captureIntent,
+    isIntentCurrent,
+    MutationController,
+  } from "$lib/console/mutation.ts";
+  import {
+    authorityIdentityChanged,
+    getConsoleAuthority,
+  } from "$lib/console/authority.svelte.ts";
   import {
     TargetResolver,
     type TargetResolution,
@@ -29,9 +36,14 @@
   const RPC_TIMEOUT_MS = 10_000;
 
   // A deep link selects exactly this deployment; it never substitutes another.
-  const requestedDeploymentId = $derived(page.url.searchParams.get("deploymentId") ?? "");
+  const requestedDeploymentId = $derived(
+    page.url.searchParams.get("deploymentId") ?? "",
+  );
   const scope = new RequestScope("provision");
-  const mutation = new MutationController<apis.auth.DevicesProvisionInput, apis.auth.DevicesProvisionOutput>();
+  const mutation = new MutationController<
+    apis.auth.DevicesProvisionInput,
+    apis.auth.DevicesProvisionOutput
+  >();
   /** Exact target resolution for a deep-linked deployment. */
   const target = new TargetResolver<Deployment>("provision-target");
 
@@ -45,22 +57,28 @@
   let catalogIncomplete = $state(false);
   let provisionDeploymentId = $state("");
   /** Exact deep-link resolution; the record is the only usable target. */
-  let requested = $state<TargetResolution<Deployment>>({ kind: "not-requested" });
-  let instanceId = $state("");
+  let requested = $state<TargetResolution<Deployment>>({
+    kind: "not-requested",
+  });
+  let instanceTitle = $state("");
   let identityPublicKey = $state("");
   /** Receipt for the last successful provision, with its exact identity. */
   let receipt = $state<{
     instanceId: string;
     principalId: string;
     deploymentId: string;
-    secret: string;
+    secret?: string;
   } | null>(null);
-  const receiptTargetChanged = $derived(receipt !== null && requestedDeploymentId !== "" && receipt.deploymentId !== requestedDeploymentId);
-
+  const receiptTargetChanged = $derived(
+    receipt !== null &&
+      requestedDeploymentId !== "" &&
+      receipt.deploymentId !== requestedDeploymentId,
+  );
 
   const activeDeployments = $derived(
-    deployments.filter((deployment) =>
-      deployment.state === "active" && deployment.kind === "device"
+    deployments.filter(
+      (deployment) =>
+        deployment.state === "enabled" && deployment.kind === "device",
     ),
   );
   /**
@@ -72,13 +90,14 @@
   );
   /** The deep-link record only when it is a usable device deployment. */
   const requestedUsable = $derived(
-    requestedDeployment !== null && requestedDeployment.kind === "device" &&
-
-      requestedDeployment.state === "active",
+    requestedDeployment !== null &&
+      requestedDeployment.kind === "device" &&
+      requestedDeployment.state === "enabled",
   );
   const requestedUnavailable = $derived(
-    requestedDeploymentId !== "" && requested.kind === "ready" && !requestedUsable,
-
+    requestedDeploymentId !== "" &&
+      requested.kind === "ready" &&
+      !requestedUsable,
   );
   const requestedMissing = $derived(
     requestedDeploymentId !== "" && requested.kind === "not-found",
@@ -87,8 +106,8 @@
     requestedDeploymentId !== "" && requested.kind === "forbidden",
   );
   const requestedFailed = $derived(
-    requestedDeploymentId !== "" && (requested.kind === "error" || requested.kind === "incomplete"),
-
+    requestedDeploymentId !== "" &&
+      (requested.kind === "error" || requested.kind === "incomplete"),
   );
   /**
    * The submit target: the exact deep-linked record in deep-link mode, or the
@@ -98,14 +117,21 @@
   const submitTarget = $derived(
     requestedDeploymentId !== ""
       ? requestedUsable
-        ? requestedDeployment?.deploymentId ?? ""
+        ? (requestedDeployment?.deploymentId ?? "")
         : ""
       : provisionDeploymentId,
   );
   const canSubmit = $derived(
-    !loading && !catalogIncomplete && !pending && !uncertain && submitTarget !== "" && !requestedUnavailable &&
-
-      !requestedMissing && !requestedForbidden && !requestedFailed,
+    !loading &&
+      !catalogIncomplete &&
+      !pending &&
+      !uncertain &&
+      instanceTitle.trim() !== "" &&
+      submitTarget !== "" &&
+      !requestedUnavailable &&
+      !requestedMissing &&
+      !requestedForbidden &&
+      !requestedFailed,
   );
 
   /**
@@ -118,9 +144,14 @@
       // The generated Get wraps the profile; the resolver works on the profile
       // itself so both resolution paths yield the same record shape.
       get: async (id) => {
-        const taken = (await trellis.deploymentsGet({ deploymentId: id }, {
-          timeout: RPC_TIMEOUT_MS,
-        })).take();
+        const input = apis.auth.API.actions["rpc:Deployments.Get"].input.decode(
+          { deploymentId: id },
+        );
+        const taken = (
+          await trellis.deploymentsGet(input, {
+            timeout: RPC_TIMEOUT_MS,
+          })
+        ).take();
         return isErr(taken) ? err(taken.error) : ok(taken.deployment);
       },
       idOf: (deployment) => deployment.deploymentId,
@@ -133,17 +164,23 @@
    */
   async function loadCatalog(): Promise<void> {
     const traversed = await traverseAll<Deployment>(async (pageRequest) => {
-      const taken = (await trellis.deploymentsList({
-        kind: "device",
-        page: pageRequest,
-      }, { timeout: RPC_TIMEOUT_MS })).take();
+      const taken = (
+        await trellis.deploymentsList(
+          {
+            page: pageRequest,
+          },
+          { timeout: RPC_TIMEOUT_MS },
+        )
+      ).take();
       if (isErr(taken)) throw taken.error;
       return {
         items: taken.items ?? [],
         cursor: taken.page.nextCursor ?? undefined,
       };
     });
-    deployments = [...traversed.items];
+    deployments = traversed.items.filter(
+      (deployment) => deployment.kind === "device",
+    );
     catalogIncomplete = !traversed.complete;
   }
 
@@ -176,13 +213,14 @@
     const token = scope.begin();
     const intent = captureIntent<apis.auth.DevicesProvisionInput>({
       operation: "devicesProvision",
-      input: {
+      input: apis.auth.API.actions["rpc:Devices.Provision"].input.decode({
         deploymentId: dispatchTarget,
+        title: instanceTitle.trim(),
         idempotencyKey,
-        instanceId: instanceId.trim() || null,
-        identityPublicKey: identityPublicKey.trim() || null,
-        participantId: null,
-      },
+        ...(identityPublicKey.trim()
+          ? { identityPublicKey: identityPublicKey.trim() }
+          : {}),
+      }),
       label: dispatchTarget,
       targetId: dispatchTarget,
       scope: { routeKey: requestedDeploymentId },
@@ -193,36 +231,49 @@
     error = null;
     try {
       const outcome = await mutation.send({
-        isStillValid: () => scope.isCurrent(token) && !disposed && isIntentCurrent(intent, { routeKey: requestedDeploymentId }) &&
+        isStillValid: () =>
+          scope.isCurrent(token) &&
+          !disposed &&
+          isIntentCurrent(intent, { routeKey: requestedDeploymentId }) &&
+          submitTarget === intent.targetId &&
+          !loading &&
+          !catalogIncomplete &&
+          !requestedUnavailable &&
+          !requestedMissing &&
+          !requestedForbidden &&
+          !requestedFailed,
 
-          submitTarget === intent.targetId && !loading && !catalogIncomplete && !requestedUnavailable && !requestedMissing && !requestedForbidden && !requestedFailed,
-
-        dispatch: (captured) => trellis.devicesProvision(captured.input).orThrow(),
+        dispatch: (captured) =>
+          trellis.devicesProvision(captured.input).orThrow(),
       });
       if (!outcome) return;
-      if (disposed || authorityIdentityChanged(actingIdentity, authority.identity)) { mutation.reset(); return; }
+      if (
+        disposed ||
+        authorityIdentityChanged(actingIdentity, authority.identity)
+      ) {
+        mutation.reset();
+        return;
+      }
       if (outcome.kind === "unknown") {
         uncertain = true;
         error = `Provisioning outcome unknown for ${intent.label}. Inspect device instances and reload before trying again; a one-time secret cannot be recovered.`;
         return;
       }
-      if (outcome.kind !== "succeeded") { error = errorMessage(outcome.error); return; }
-      const response = outcome.value;
-      if (response.provisioningSecret === null) {
-        uncertain = true;
-        error = "The instance was provisioned without a recoverable secret. Inspect device instances and reload before any further provisioning.";
+      if (outcome.kind !== "succeeded") {
+        error = errorMessage(outcome.error);
         return;
       }
+      const response = outcome.value;
       // A new success replaces the previous receipt; a failed attempt never
       // re-displays the old secret as its own result.
       receipt = {
-        instanceId: response.device.instanceId,
-        principalId: response.device.principalId,
-        deploymentId: response.device.deploymentId,
+        instanceId: response.instance.instanceId,
+        principalId: response.instance.principal.principalId,
+        deploymentId: response.instance.deploymentId,
         secret: response.provisioningSecret,
       };
       notifications.success("Device instance provisioned.", "Provisioned");
-      instanceId = "";
+      instanceTitle = "";
       identityPublicKey = "";
     } catch (cause) {
       error = errorMessage(cause);
@@ -236,7 +287,7 @@
     mutation.reset();
     receipt = null;
     error = null;
-    instanceId = "";
+    instanceTitle = "";
     identityPublicKey = "";
   }
 
@@ -264,9 +315,14 @@
 </script>
 
 <section class="space-y-4">
-  <PageToolbar title="Provision device instance" description="Create a device identity and one-time provisioning secret.">
+  <PageToolbar
+    title="Add a device"
+    description="Creates a device and a one-time setup key to put on it."
+  >
     {#snippet actions()}
-      <a class="btn btn-ghost btn-sm" href={resolve("/admin/devices")}>Back to devices</a>
+      <a class="btn btn-ghost btn-sm" href={resolve("/admin/devices")}
+        >Back to devices</a
+      >
     {/snippet}
   </PageToolbar>
 
@@ -276,8 +332,8 @@
 
   {#if requestedMissing}
     <Notice variant="warning">
-      No deployment matches '{requestedDeploymentId}'. Return to the device list and choose an
-      existing deployment.
+      No deployment matches '{requestedDeploymentId}'. Return to the device list
+      and choose an existing deployment.
     </Notice>
   {:else if requestedForbidden}
     <Notice variant="warning">
@@ -285,25 +341,28 @@
     </Notice>
   {:else if requestedUnavailable}
     <Notice variant="warning">
-      Deployment '{requestedDeploymentId}' is not an active device deployment. Choose a different
-      deployment or return to the device list.
+      Deployment '{requestedDeploymentId}' is not an active device deployment.
+      Choose a different deployment or return to the device list.
     </Notice>
   {:else if requestedFailed}
     <Notice variant="error">
-      Deployment '{requestedDeploymentId}' could not be resolved, so it is not known whether it
-      exists. Retry before provisioning.
-      <button class="btn btn-ghost btn-xs ml-2" type="button" onclick={load}>Retry</button>
+      Deployment '{requestedDeploymentId}' could not be resolved, so it is not
+      known whether it exists. Retry before provisioning.
+      <button class="btn btn-ghost btn-xs ml-2" type="button" onclick={load}
+        >Retry</button
+      >
     </Notice>
   {/if}
 
   {#if receipt}
     {#if receiptTargetChanged}
       <Notice variant="warning">
-        This one-time receipt belongs to deployment {receipt.deploymentId}, not the currently
-        requested deployment {requestedDeploymentId}. Save it before provisioning another instance.
+        This one-time receipt belongs to deployment {receipt.deploymentId}, not
+        the currently requested deployment {requestedDeploymentId}. Save it
+        before provisioning another instance.
       </Notice>
     {/if}
-    <Panel title="Provisioning receipt" eyebrow="One-time output">
+    <Panel title="Provisioning receipt">
       <dl class="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
         <dt class="text-base-content/60">Deployment</dt>
         <dd class="trellis-identifier break-all">{receipt.deploymentId}</dd>
@@ -311,15 +370,17 @@
         <dd class="trellis-identifier break-all">{receipt.instanceId}</dd>
         <dt class="text-base-content/60">Principal</dt>
         <dd class="trellis-identifier break-all">{receipt.principalId}</dd>
-        <dt class="text-base-content/60">Secret</dt>
+        <dt class="text-base-content/60">Provisioning</dt>
         <dd>
-          <code class="break-all select-all">{receipt.secret}</code>
+          {#if receipt.secret}<code class="break-all select-all"
+              >{receipt.secret}</code
+            >{:else}Public identity installed; no provisioning secret issued.{/if}
         </dd>
       </dl>
-      <p class="mt-3 text-xs text-base-content/60">
-        Store this secret now. Trellis does not retain a readable copy; the device must
-        complete activation with it.
-      </p>
+      {#if receipt.secret}<p class="mt-3 text-xs text-base-content/60">
+          Store this secret now. Trellis does not retain a readable copy; the
+          device must complete activation with it.
+        </p>{/if}
       <div class="mt-3 flex flex-wrap gap-2">
         <button
           class="btn btn-outline btn-sm"
@@ -335,31 +396,48 @@
   {:else if catalogIncomplete}
     <Panel>
       <Notice variant="error">
-        The device deployment catalog could not be fully loaded, so a target cannot be declared
-        absent. Retry the lookup.
-        <button class="btn btn-ghost btn-xs ml-2" type="button" onclick={load}>Retry</button>
+        The device deployment catalog could not be fully loaded, so a target
+        cannot be declared absent. Retry the lookup.
+        <button class="btn btn-ghost btn-xs ml-2" type="button" onclick={load}
+          >Retry</button
+        >
       </Notice>
     </Panel>
   {:else if requestedDeploymentId === "" && activeDeployments.length === 0}
     <EmptyState
-      title="No active device deployments"
-      description="Create or enable a device deployment before provisioning instances."
+      title="No device types yet"
+      description="Add a device type first, then add devices to it."
       class="m-5"
     >
       {#snippet actions()}
-        <a class="btn btn-outline btn-sm" href={resolve("/admin/devices/profiles/new")}>
+        <a
+          class="btn btn-outline btn-sm"
+          href={resolve("/admin/devices/profiles/new")}
+        >
           Create device deployment
         </a>
       {/snippet}
     </EmptyState>
   {:else}
-    <Panel title="Instance identity" eyebrow="Device identity">
-      <form class="trellis-form" onsubmit={(event) => { event.preventDefault(); void provisionInstance(); }}>
+    <Panel title="Device">
+      <form
+        class="trellis-form"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void provisionInstance();
+        }}
+      >
         <div class="trellis-record-summary">
-          <div class="trellis-record-summary-title">{instanceId.trim() || "New device instance"}</div>
-          <div class="trellis-metadata">Deployment {submitTarget || "not selected"}</div>
+          <div class="trellis-record-summary-title">
+            {instanceTitle.trim() || "New device instance"}
+          </div>
+          <div class="trellis-metadata">
+            Deployment {submitTarget || "not selected"}
+          </div>
           {#if identityPublicKey.trim()}
-            <div class="trellis-identifier break-all">{identityPublicKey.trim()}</div>
+            <div class="trellis-identifier break-all">
+              {identityPublicKey.trim()}
+            </div>
           {/if}
         </div>
 
@@ -369,7 +447,8 @@
             {#if requestedDeploymentId !== ""}
               <input
                 class="input input-bordered input-sm font-mono"
-                value={requestedDeployment?.deploymentId ?? requestedDeploymentId}
+                value={requestedDeployment?.deploymentId ??
+                  requestedDeploymentId}
                 readonly
                 aria-label="Deployment"
               />
@@ -381,25 +460,39 @@
               >
                 <option value="" disabled>Select a deployment…</option>
                 {#each activeDeployments as deployment (deployment.deploymentId)}
-                  <option value={deployment.deploymentId}>{deployment.displayName} ({deployment.deploymentId})</option>
+                  <option value={deployment.deploymentId}
+                    >{deployment.displayName} ({deployment.deploymentId})</option
+                  >
                 {/each}
               </select>
             {/if}
           </label>
 
           <label class="trellis-field">
-            <span class="trellis-field-label">Instance ID</span>
-            <input class="input input-bordered input-sm font-mono" bind:value={instanceId} placeholder="Generated when omitted" />
+            <span class="trellis-field-label">Instance title</span>
+            <input
+              class="input input-bordered input-sm"
+              bind:value={instanceTitle}
+              required
+            />
           </label>
 
           <label class="trellis-field">
             <span class="trellis-field-label">Public identity key</span>
-            <input class="input input-bordered input-sm font-mono" bind:value={identityPublicKey} placeholder="Generated by the device; optional" />
+            <input
+              class="input input-bordered input-sm font-mono"
+              bind:value={identityPublicKey}
+              placeholder="Generated by the device; optional"
+            />
           </label>
         </div>
 
         <div class="trellis-action-row">
-          <button type="submit" class="btn btn-primary btn-sm" disabled={!canSubmit}>
+          <button
+            type="submit"
+            class="btn btn-primary btn-sm"
+            disabled={!canSubmit}
+          >
             {pending ? "Provisioning…" : "Provision"}
           </button>
         </div>

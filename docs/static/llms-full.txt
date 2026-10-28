@@ -1,23 +1,70 @@
-# Trellis Consumer Guide
+# Trellis: Complete Guide
 
-For services, apps, agents, and devices consuming Trellis. Read the
-[TypeScript](llms-typescript.txt), [Rust](llms-rust.txt), or
-[Svelte](llms-svelte.txt) guide for language-specific usage. Use the guide from
-the same release or checkout as the CLI and libraries.
+Every Trellis LLM guide in one file: the language-neutral guide, then the
+TypeScript, Rust, and Svelte guides. Generated from llms-core.txt, llms-typescript.txt, llms-rust.txt, llms-svelte.txt by
+`node docs/scripts/build_llms_full.ts`; edit those files instead.
 
-## What Trellis Owns
+## Trellis Guide
+
+The language-neutral guide for services, apps, agents, and devices that consume
+Trellis. Read it with the [TypeScript](llms-typescript.txt), [Rust](llms-rust.txt),
+or [Svelte](llms-svelte.txt) guide, from the same release or checkout as the CLI
+and libraries.
+
+### Overview
+
+Trellis provides authenticated, contract-defined communication and runtime
+resources for TypeScript and Rust participants. Native IDL generates each
+participant's typed API. Connected calls run over NATS; the libraries own
+bootstrap, proofs, authorization, and connection lifecycle.
 
 Trellis owns native contract compilation, generated APIs, authenticated
 communication, connection lifecycle, and declared runtime resources. It does not
 choose an application's configuration format, environment parser, database, ORM,
 dependency injection, folder structure, UI framework, or testing policy.
-Application-owned code can use other systems alongside Trellis.
+Application-owned code can use other systems alongside Trellis. The requirements
+in these guides apply when using Trellis surfaces: a Trellis event's proof and
+subject are runtime-owned, but an application may use a separate message system
+for unrelated work. Examples choose a concrete stack to demonstrate Trellis, not
+to require that stack.
 
-The requirements below apply when using Trellis surfaces. For example, a Trellis
-event's proof and subject are runtime-owned; that does not prohibit an
-application from using a separate message system for unrelated work.
+Use documentation from the same Trellis release or source revision as the
+installed libraries and CLI. In a checkout these files live under `docs/static/`;
+the raw GitHub links address the main branch and may be newer than an installed
+release. Use matching runtime, SDK, and generated package versions.
 
-## Project And Generation
+This unreleased Revision 7 branch implements authoritative Auth capability
+evaluation, reviewed catalog acceptance, logical authorization sessions, signed
+verification material, and durable retirement effects. OAuth/Callout admission
+and SDK/provider transports use this model. The former GrantBinding/browser-bind
+protocols are not a compatibility option; do not adapt applications to them or
+install a watcher per context as a fallback.
+
+Consumer AGENTS templates are available under `templates/`. They describe the
+Trellis boundary; application policies belong in the consumer repository.
+
+Human guides on the docs site: `/guides/write-a-service` (service walkthrough),
+`/guides/authoring-contracts` (IDL), `/guides/testing-trellis-services`,
+`/guides/starting-trellis` (runtime operation), and `/api` (public language
+APIs). Generated participant source defines the exact names available for a
+project's declared actions.
+
+### Project And Generation
+
+The workflow:
+
+1. Author the `.trellis` files explicitly listed by `[sources]`.
+2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;
+   run `trellis update` to resolve changes into `trellis.lock`.
+3. Run `trellis install` to reproduce locked dependencies and `trellis generate`
+   after IDL edits; it re-records your own package in `trellis.lock` (commit
+   it), and `trellis generate --check` fails on a stale lock or output in CI.
+   `trellis generate --watch` supports the edit loop.
+4. Depend on the one ordinary generated package for your language. Import its
+   `apis`, `participants`, and `apps` namespaces, not separate API or participant
+   packages.
+5. Connect through that participant's supported runtime API. Use generated calls
+   and resolved resource handles; do not reconstruct Trellis transport metadata.
 
 A minimal `trellis.toml` is:
 
@@ -30,14 +77,44 @@ version = "1.0.0"
 orders = "contract.trellis"
 ```
 
-Author APIs and participants in the `.trellis` files explicitly listed under
-`[sources]`. An API defines models and public RPC, event, live, and operation
-surfaces. A participant identifies a service, app, agent, or device, the API it
-implements, its selected dependencies, and its runtime resources. Participant
-identity, API identity, API release version, and surface transport version are
-separate concepts.
+#### Authoring
 
-Dependency commands:
+An API defines models and public RPC, event, live, and operation surfaces. A
+deployable participant (`service` or `device`) identifies the API it implements,
+its selected dependencies, and its runtime resources. Apps and agents instead
+author application request descriptors, exported through the generated `apps`
+namespace; they are not installable principals.
+
+A use body selects whole capabilities, named `area.action`:
+`required capability orders.read;` is required and `capability orders.export;`
+is optional. Required wins when a capability is repeated; `use Api;` selects
+nothing. `required group support;` selects an API's developer-defined group,
+which stands for its current members. Generated callers expose the selected
+actions; check capability availability before using an optional capability,
+because selecting it does not mean it was approved. Availability has a key for
+each optional capability and group, plus each member of an optional group that
+allows a selected action: a member is available when the caller holds it and
+its selected actions are allowed, and a group only when all of its selected
+actions are, so gate each feature on the member it needs. Users approve a capability's or
+group's `grants` text; changing that text makes them approve again, while
+editing `title`, `description`, `allows`, or group members does not. Keep
+`grants` honest, and put changes that break what users agreed to in a new API
+major version. Authors declare no revision counters.
+Participant identity, API identity, API release version, and surface transport
+version are separate concepts.
+
+Selections must exactly match a name in the chosen API: `Get` and `Sites.Get`
+are distinct. Invented prefixes are not qualifiers. Unsupported surface members
+and incompatible constraints are compilation errors, not ignored options.
+Numeric bounds accept finite JSON literals such as `-1` and `2.5`; string
+lengths and list counts require unsigned integer literals. The IDL reference
+documents each surface's members and each constraint's applicable types.
+Use the `json` type for an opaque JSON value (for example free-form
+configuration or details); it is carried unchecked and cannot be an event
+parameter or job key. There are no string formats: a UUID or email is a
+`string`, and there are no tagged unions of models.
+
+#### Dependencies
 
 - `trellis add` and `trellis rm` change dependency declarations.
 - `trellis update` resolves dependencies and updates `trellis.lock`.
@@ -48,110 +125,443 @@ Dependency commands:
 Dependencies reference local or OCI native source packages. Remote locks pin
 release and digests; credentials use the Docker credential configuration. If a
 participant declares a durable `consumer`, add a direct `trellis` source package
-dependency containing `trellis.events@v1` and choose its version in
-`trellis.toml`. Run `trellis update` to lock it. Compilation fails if the
-dependency or the Events API is missing; the platform does not choose a version
-for the contract owner. Installation validates exact remote APIs in the global
-content-addressed OCI cache, without a project-local installation tree. Direct
-local dependencies contribute only requested APIs compiled from their own IDL,
-without recursively resolving producer participants or manifests. Tooling
-supplies validated API values to the compiler; it does not execute
-source-language modules. Generation is offline; install missing remote
-dependencies first.
+dependency containing `trellis.events@v1`, choose its version in `trellis.toml`,
+and run `trellis update` to lock it. Compilation fails if the dependency or the
+Events API is missing; the platform does not choose a version for the contract
+owner. Installation validates exact remote APIs in the global content-addressed
+OCI cache, without a project-local installation tree. Direct local dependencies
+contribute only requested APIs compiled from their own IDL, without recursively
+resolving producer participants or manifests. Tooling supplies validated API
+values to the compiler; it does not execute source-language modules. Generation
+is offline; install missing remote dependencies first.
+
+#### Generated packages
 
 Configure `[generate.rust].output` and/or `[generate.typescript].output`.
+Explicit targets are authoritative and select only the named outputs; without
+them, detection uses root Cargo or npm manifests, and with neither no language
+package is emitted.
 
-Each language gets one ordinary package at the source package version. APIs and
-participants are separate `apis` and `participants` module namespaces, not
+Each language gets one ordinary package at the source package version, with
+separate `apis`, `participants`, and `apps` module namespaces rather than
 independent packages or flattened root exports. TypeScript output contains
 executable ESM `.js`, `.d.ts`, and `package.json`, with no consumer
 transpilation step. Rust output is an ordinary path-dependency crate. Both
 declare published Trellis runtime dependencies matching the CLI version.
 Generation never edits the consumer's language manifests or chooses runtime
-paths from repository ancestry. Use normal ecosystem overrides if developing
+paths from repository ancestry; use normal ecosystem overrides when developing
 against a local runtime.
 
 Each package contains generated APIs, participants, types, codecs, and runtime
 descriptors. Published packages contain native source and frozen resolution
-metadata, not canonical API/participant JSON. Generated descriptors are support
-ABI, not a contract-as-code authoring surface.
+metadata, not canonical API/participant JSON; native source packages are the
+publication and evidence boundary. Generated descriptors are support ABI, not a
+contract-as-code authoring surface.
 
-Capability approvals are policy decisions; exact signed grants are derived from
-selected actions and current ceilings. Resource commitments approve hard
-semantics, while desired capacities are sizing hints and do not allocate larger
-resources by themselves. Approval views distinguish requested commitments from
-observed provider limits; runtime handles use the observed binding limits.
-Trellis refuses to adopt or destroy a physical resource whose ownership marker
-does not match. Removal detaches access without deleting new-version data;
-compatible approved re-add reattaches the same resource identity. When running a
-local Trellis environment, keep the platform database and NATS JetStream data
-together. Trellis refuses to start the platform with a missing or different
-JetStream identity after binding: restore the matching store or use fresh
-platform and JetStream state and provision deployments again. Recreating
-consumers and buckets alone does not recover job keys or stored objects.
+Generated SDKs are disposable build artifacts. Commit authored IDL,
+`trellis.toml`, and `trellis.lock`, not generated implementations. Run
+`trellis install` before compiling local consumers, and package generated code
+when distributing a consumer. Compilation, renderer, and formatter failures
+preserve the last successful generated outputs. Namespace and participant
+output-path collisions are errors, unrelated user files are protected, and
+publication uses only short-lived staging and backups.
 
-State is one typed value without a key or TTL. KV is typed history and Store is
-raw bytes. State/KV migration is direct and in-memory, with no write-on-read.
-Operations are durable restartable at-least-once workflows. Consumers have local
-per-process concurrency and Events-owned scoped DLQ/replay. Jobs remain private
-durable queues. Cursor pagination ends only when `nextCursor` is absent and does
-not generally promise a snapshot.
+Generated names depend on declared action names and dependency aliases. Check
+the generated participant rather than inventing a method from a generic example.
+TypeScript participants expose flat caller methods and generated `handle...`,
+`publish...`, and `on...` methods where the selection allows them. Rust
+participants expose typed methods through generated facades.
 
-Commit IDL, `trellis.toml`, and `trellis.lock`. Commit generated packages when
-clones should build without the CLI or source-package cache; regenerate rather
-than hand-edit. Compilation, renderer, and formatter failures preserve the last
-successful generated outputs. Namespace collisions are errors, unrelated user
-files are protected, and publication uses only short-lived staging and backups.
+#### Rust models and published archives
 
-Selections must exactly match a name in the chosen API: `Get` and `Sites.Get`
-are distinct. Invented prefixes are not qualifiers. Unsupported surface members
-and incompatible constraints are compilation errors, not ignored options.
-Numeric bounds accept finite JSON literals such as `-1` and `2.5`; string
-lengths and list counts require unsigned integer literals. The IDL reference
-documents each surface's members and each constraint's applicable types.
+Generated Rust ABI 2 shares primitive wire wrappers, nullable values, and cursor
+pages in `trellis-protocol`. Authored model identity and wire serialization do
+not change. Regenerate with the matching CLI and SDK; ABI mismatches fail
+compilation. Generated Rust packages select `trellis-models` bundles directly by
+exact native package identity, version, and semantic digest;
+compilation rejects a mismatched provider. Model bundles are versioned
+independently of SDK implementation releases: old bundles can coexist with newer
+SDK models, and compatible SDK fixes do not require regeneration. A model
+snapshot change that alters generated Rust types takes an incompatible Cargo
+version. Published model and SDK archives contain frozen sources and
+need no compiler or generator build dependencies; bare Git checkouts require
+preparation. Only `trellis-rs`, `trellis-protocol`, `trellis-models`, and
+`trellis-testkit` are registry packages; server, compiler, and bootstrap crates
+are not consumer dependencies.
 
-The generated names depend on declared action names and dependency aliases.
-Check the generated participant, rather than inventing a method from a generic
-example. TypeScript participants expose flat caller methods and generated
-`handle...`, `publish...`, and `on...` methods where the selection allows them.
-Rust participants expose typed methods through generated facades.
+### Running Trellis
 
-Rust schema-validation issue paths use JSON Pointer: an empty path addresses the
-root, `/` addresses an empty-name property, and property names escape `~` as `~0`
-and `/` as `~1`, including missing required fields.
+#### Installation bundle
 
-## Connect And Authorize
+`trellis-server init --out <dir>` writes a bundle whose `config.toml` sets
+`[paths]` so data, state, cache, runtime files, and logs live in folders inside
+that bundle; start the server with `trellis-server --config <dir>/config.toml`.
+Each bundle is a separate installation, so several servers can share a host.
+`trellis-server --system init` omits `[paths]` for a read-only bundle served
+with `--system`, which uses FHS locations.
 
-Service/device bootstrap sends only provisioned identity and proof inputs.
-Browser bind creates a user-login session and then performs context refresh.
-These are different identity lifecycles, not interchangeable shortcuts. A device
-companion is created only as part of device activation after its own user
-consent. It receives a separate ordinary App/Agent user session and cannot
-bootstrap independently or borrow the parent device's authority.
+#### TLS
 
-Browser sign-in begins with a proof-bound request that returns `intentId`, an
-opaque signed `intent`, and `loginUrl`. The intent binds the participant,
-initiating public key, origin, exact return target, portal, and online issuer;
-it is not a bearer login credential. Portal rendering verifies it and reads
-current public choices without starting an authentication attempt. Local
-authentication or provider selection starts an independently portal-bound
-transaction, selecting the current participant revision and starting its
-deadline. Identity, provider state, consent, and completion belong to
-`transactionId`. Account continuations use `browserTransactionId`; account and
-device review lifetimes remain separate. Expiry leaves the intent available for
-a fresh attempt, without returning to the initiating app.
+Trellis listeners use TLS by default. `trellis-server init` generates a
+name-constrained installation CA and short-lived certificates unless
+certificates are supplied (`--tls supplied`); plaintext exists only in explicit
+loopback development (`--tls loopback-development`). Clients trust a generated
+or other private CA only explicitly, after verifying its SHA-256 fingerprint
+(`trellis-server tls status`) out of band: never disable certificate verification and
+never accept a CA from broker or metadata responses. Generated leaves expire
+after 90 days; `trellis-server tls renew --bundle <dir>` replaces them without changing
+client trust. Console and OAuth may run behind an HTTPS-terminating proxy with
+`--trusted-proxy`; native NATS always terminates its own TLS. Console and the
+isolated OAuth listener require HTTPS outside explicit loopback development; the
+HTTP insecure-origin allowlist does not relax that requirement.
 
-Only one outstanding transaction can claim an intent. Persist the pending portal
-binding before starting it and reuse that binding after response loss or reload.
-A same-binding retry returns the existing active transaction without resetting
-state or expiry; a different binding receives `intent_transaction_active`,
-including while approval awaits bind. Denial, expiry, and consumed completion
-permit another transaction. Public `/auth/intents/view` is for portal rendering,
-not transaction discovery. Detached clients use `/auth/intents/progress` with a
-fresh initiating-key proof; only `ready` returns a transaction ID. Portal
-progress requires the raw transaction binding. Browser OIDC starts with a JSON
-POST and returns to the selected portal with `transactionId` on both first and
-replayed callbacks.
+Rust participants put a private CA in `RuntimeAuthorizationTrust.root_certificates`
+or pass it to `discover_native_oauth(origin, &[ca_path])`. Node participants
+start with `NODE_EXTRA_CA_CERTS=<ca path>`. `trellis login <oauth-origin>`
+shows an untrusted CA's fingerprint and pins it once accepted (prompt, or
+`--ca-fingerprint <sha256>`); `--ca-certificate <ca path>` trusts a CA file
+directly. A pinned CA that changes is a hard error. Browsers trust the CA
+through the operating system or browser trust store. With generated TLS,
+`trellis-server init` has the runtime relay NATS WebSockets at
+`wss://<console host>/nats` by default (`--nats-websocket direct` opts out), so
+one host and certificate cover both.
+
+#### OAuth portal and issuer custody
+
+OAuth login and consent belong to a separate, required portal on its own origin,
+not a Console route. Origins must differ; a different hostname is recommended,
+not mandatory, and a shared hostname emits a prominent security warning because
+cookies are not port-scoped. Dex is an upstream OIDC integration-test dependency
+only, never a required Trellis deployment component. Administrators brand the
+portal per installation or per client from the Console's **Sign-in page** or
+`trellis theme show|set|remove [--client <id>]` (name, logo, palette, a few
+headings and a footer, plus an installation-only stylesheet); changes apply at
+once, and apps cannot replace the portal or change what consent shows.
+
+Installation identity and the independently provisioned OAuth storage key
+survive restarts and issuer rotation. `Issuers.Rotate` requires
+`trellis.auth.v1:platform.manage`, the expected current key ID, and an
+idempotency key. Auth generates and durably flushes a private successor key on
+its own host, then atomically commits the old-key-signed chain link, activation,
+publication intent, and replay result; replays do not rotate again, and private
+keys never cross the RPC. SDKs verify the successor chain from pinned trust.
+Back up the issuer seed and the Auth database's sibling
+`<database-stem>.issuer-keys` directory (`platform.issuer-keys` by default) with
+the database and the OAuth storage key. Restart loads the database-current key
+and fails closed on missing custody.
+
+#### Administrator bootstrap
+
+Fresh startup creates the protected administrator and accepted built-in authority
+before provider admission. The username defaults to `admin`. Without an initial
+password, startup emits `adminAccountUrl`, a one-time password-setup link on the
+isolated OAuth origin that expires after five minutes; no default password
+exists. Startup flags `--admin-username`, `--admin-password`, and
+`--admin-password-stdin` configure fresh credentials. Explicit initialization
+uses `trellis-server init admin --config <path>` with `--username` (default `admin`),
+optional `--password`, or `--password-stdin`. Until password setup, each startup
+prints a fresh link and invalidates prior links. After setup, restarts preserve
+credentials and print no link. Explicit `--reset-admin` issues a replacement
+reset link and revokes existing logins on completion; ordinary RPCs cannot reset
+the protected administrator.
+
+Fresh initialization grants only the current accepted Trellis-owned
+Auth/Core/State/Health/Jobs/Events capabilities, atomically with Console/CLI
+registration; the administrator holds the administrative capabilities
+inherently. Replay grants no future capabilities and does not rewrite clients.
+Domain API access remains explicitly granted, and Console/CLI connections still
+require selection and consent: administrator status is not blanket app
+authority.
+
+#### Operator CLI
+
+`trellis clients list|get|put|disable|delete` manages public OAuth
+registrations, including exact loopback browser redirects. `put` reads generated
+`AuthOAuthClientPutRequest` JSON, and mutations are revision-fenced. Client flows
+are fixed on every Put: browser callbacks enable Authorization Code + refresh;
+native without callbacks enables Device Code + refresh; native with callbacks
+enables both + refresh. Adding or removing native callbacks updates the
+supported flows. Kind is immutable; use a new client ID to switch kind. Native
+HTTP loopback callbacks need no development flag; browser loopback does.
+
+A deployment needs every API its participant implements accepted first:
+`trellis apis accept --source <project-root> [--participant <package>.<Name>]`
+reviews each from the compiled package evidence and accepts compatible ones
+(`apis review` with the same flags only reviews), then `trellis svc <name>
+create` installs the participant; create names any API not yet accepted. An
+incompatible change needs `trellis apis force-replace` with generated
+`AuthApiForceReplaceRequest` JSON, `trellis.auth.v1:apis.forceReplace`, and
+explicit breakage/consent acknowledgements. Console exposes OAuth clients and the
+API catalog.
+
+A running service updates itself. When its generated participant digest differs
+from the revision its instance runs, the service SDK submits its package evidence
+(`Auth.ServiceUpdates.Submit`, which every service instance may call) and
+connects again once Auth installs it. A build that asks for no capability,
+resource, or API the deployment does not already hold installs at once,
+accepting compatible new revisions of the APIs it already provides. A build that
+asks for more, including reattaching a resource an earlier build dropped or
+starting to provide an API, waits for an administrator: the SDK logs the Console review link
+(`/console/admin/services/<deploymentId>?update=<updateId>`) and prints it as a
+terminal QR code, and `trellis svc <deployment-id> updates|approve|reject` does
+the same from the CLI. Dropping a resource only detaches it; its data stays until
+`Resources.Remove`, and an approved reattachment brings it back. A build that
+implements an API another deployment already serves needs an explicit
+acknowledgement on approval (`acknowledgeSharedApis`, or
+`approve --acknowledge-shared-apis`), and so do `Deployments.Create`/`Apply`
+(`svc create|apply --acknowledge-shared-apis`): both deployments then share the API's queue
+group, so requests split at random between services with separate data. Scale or
+move a service with more instances of one deployment instead. A build whose
+implemented API changed incompatibly is refused until the API is force-replaced.
+`trellis svc <deployment-id> apply` still installs a build ahead of time.
+
+For `trellis identity grants set`, the input file contains only
+`installedRevision`, `grants`, and `expiresAt`; all three are required.
+`installedRevision` accepts a JSON integer or decimal string in
+`1..=9007199254740991`; `expiresAt` accepts `null`, or a JSON integer or decimal
+string in `0..=9007199254740991`. Omitting `--expected-revision` uses the current
+binding revision, or zero for creation; a stale revision is rejected without
+changing the binding.
+
+#### Local state
+
+Keep the platform database and NATS JetStream data together. Trellis refuses to
+start with a missing or different JetStream identity after binding: restore the
+matching store, or use fresh platform and JetStream state and provision
+deployments again. Recreating consumers and buckets alone does not recover job
+keys or stored objects. Rust and Node replicas use one deployment-scoped
+Operation storage codec; this pre-release cutover does not migrate earlier
+records, so retain existing installations unchanged and use fresh
+development/test state. Unsupported records fail visibly; the runtime never
+deletes or recreates them as empty state.
+
+For multiple local managed-NATS servers, give each its own bundle and HTTP port,
+and pass `--local-nats-ports=4223,8223,8081` with `trellis-server --dev` for a
+second NATS client, monitor, and WebSocket port set. The default set is
+4222/8222/8080; generated local configs use a 30-second owner lease renewed
+every 5 seconds.
+
+#### Health
+
+Provisioned services and devices publish the native `Health.Heartbeat` event
+automatically, using ordinary SessionEvent signatures and the runtime-only
+`trellis.health.v1:health.report` capability that Auth assigns through native
+provisioning; users and apps cannot obtain it. The collector verifies whole
+catalog authority, broker chronology, retirement cutoff, and signed
+deployment/instance identity; the signed `trellis.nativeParticipant.v1`
+extension supplies installed revision and participant digest, never payload
+claims. No health declaration is needed in service contracts, and initial
+publication does not gate connection.
+
+### Identity And Connection
+
+#### Participants and admission
+
+Services and devices are deployable principals that present a signed
+provisioned admission in NATS CONNECT; there is no HTTP bootstrap. Browser and
+native apps obtain a DPoP-bound OAuth token whose signed Trellis admission
+authorizes CONNECT for a fresh runtime key. These are different identity
+lifecycles, not interchangeable shortcuts. Neither accepts a raw NATS URL/JWT or
+a client-authored assignment as authority.
+
+Provisioned services and devices prove possession of their identity key and a
+fresh runtime/session key for the configured installation/account. Auth derives
+their deployment, instance, participant, and implementation authority from
+current provisioning records; clients never assert those bindings during
+CONNECT. Provisioning supplies broker endpoints and pinned installation/issuer
+trust; obtain trust from initialization or authenticated provisioning, never an
+unsigned discovery response. Immediate `ServiceInstances.Provision` and
+`Devices.Provision` require `identityPublicKey` from a client-owned Ed25519 key;
+Trellis never stores or returns its private seed. Missing `identityPublicKey`
+returns `identity_public_key_required` without provisioning or consuming the
+idempotency key, and `provisioningSecret` is null. `ServiceInstances.Provision`
+awaits the native resource producer before success (empty declarations and KV
+are supported; other declarations fail explicitly). Retry the same request after
+broker failure; retained allocations are never destroyed.
+
+Auth Callout resolves the deployment, installed artifacts, capabilities,
+resources, online issuer, inbox, and exact transport permissions, and returns
+signed session authority that clients verify. Own-context bootstrap signs the
+exact physical socket's broker `attachmentId` and verifies its echoed signed
+registry ID; overlapping sockets never select the newest attachment as a
+fallback.
+
+#### Devices and companions
+
+Provisioning a device without `identityPublicKey` issues a one-use
+provisioning secret bound to the server-owned instance; `/auth/device/enroll`
+verifies durable and ephemeral key possession. `Devices.Reviews.Get/Decide`
+require the device's confirmation code and expected revision. Completed
+activation rechecks authenticate the retained challenge instead of opening
+another review; local completion never authorizes a disabled or removed device.
+
+A device companion is a native OAuth application request with independent user
+consent, credential custody, and connection. Accepted deployment registration
+creates the dedicated client `trellis.device.<deploymentId>.companion` but grants
+no user authority. Declare Auth's `deviceCompanionsManage` capability in the
+companion request, complete ordinary explicit Device Code consent, and invoke
+`DeviceCompanions.Attach` from that authenticated grant; parent credentials
+cannot substitute. A required wrapper refuses a missing companion; an optional
+wrapper can connect without it. `DeviceCompanions.Revoke` removes the
+association and revokes only its exact grant and refresh families, leaving other
+grants, the user login, and parent authority independent. The associated user
+or an administrator with current delegated `trellis.auth.v1:users.manage` may
+remove it. Removing the declaration rejects new and pending consent, while
+existing independently consented grants retain ordinary refresh. Parent and
+child maintain separate connections and revocation.
+
+#### Browser and native sign-in
+
+Browser sign-in uses OAuth Authorization Code with PKCE and DPoP. Public,
+credential-free discovery and issuer-chain metadata are readable before an
+unknown application's HTTPS CIMD document is prepared; client-bound token CORS
+and cookie-authenticated Portal routes remain separate. Auth validates client
+metadata retrieval, exact redirects, consent, and proof bindings. Sign-in
+carries a reusable signed intent; a bounded authentication transaction starts
+only when authentication begins, not when the portal renders, and only one
+outstanding attempt can claim an intent. Persist the pending portal binding
+before the start request and reuse it after response loss or reload:
+same-binding retries recover the active transaction, another binding conflicts.
+Detached progress requires the initiating key's fresh proof, and portal
+rendering exposes no transaction discovery. Denied, expired, or consumed
+attempts can restart from the same intent.
+
+The SDK validates OAuth state, callback, PKCE, and DPoP bindings before
+retaining credentials. Browser custody uses nonextractable keys in IndexedDB and
+cross-tab refresh ownership; Rust native custody uses owner-only files and a
+cross-process family lock; Node custody is process-local memory unless the
+application supplies a provider. A valid login can authenticate new consent
+without another password. Invalid login requires authentication; valid-login
+authorization denial surfaces its machine code and is not a reason to start a
+login loop. Consent cannot grant missing account entitlement.
+
+#### Refresh and renewal
+
+OAuth sessions retain their original verified refresh family. CONNECT,
+`Authority.Renew`, `OwnContextGet`, and `Admission.Renew` consult that exact
+family's revocation and absolute deadline; a different live family of the same
+grant cannot replace it, and rotation never extends it. `Admission.Renew` uses
+the live caller's session-key proof and own context digest to return same-key
+signed admission, at most 300 seconds and bounded by the candidate
+authority/family, without rotating refresh tokens. Invalid roots retire the
+session and enqueue cutoff/kicks. Provisioned admission still needs the
+client's identity signature (`provisioned_signature_required`).
+
+Cold OAuth resume verifies signed issuer successors from the retained pin using
+`GET /.well-known/trellis/issuer-chain` at the selected OAuth origin and
+persists successor trust before spending a refresh token. Unavailable or invalid
+chains leave it unspent. A returned new token survives later issuer
+verification failure, but its admission stays unusable until authenticated.
+Never retry an ambiguously spent predecessor; a lost refresh response requires
+recovery, not token replay. Discovery cannot replace a retained issuer pin; only
+an authenticated rotation chain advances it. Already-open browser tabs refresh
+discovery from retained trust before spending refresh tokens. Rejected
+cross-user Device Code reauthorization preserves existing credentials.
+
+Transport recovery reuses admission only while shared verification accepts its
+lifetime and current pinned trust; transport loss alone does not spend refresh
+custody. Renewal checks the selected HTTP origin before spending the token, and
+an ambiguous token POST still requires explicit recovery. Native renewal uses
+the current maintenance attachment through verified authority promotion,
+including after transport replacement. If no safe native carrier survives,
+fresh admission may replace a missed retired logical session under the same
+valid provisioned credential and pinned trust; removed permissions are not
+restored, and revoked roots or shutdown cannot recover. Preparation retries
+never retransmit application requests or clear known revocations.
+
+#### Authority on a live connection
+
+The libraries own proofs, context verification, proactive refresh, and transport
+maintenance. Session authority, admission credentials, transport endpoints,
+grants, clock offset, and issuer keys are process-memory-only. Renewing
+unchanged transport authority promotes the new session authority without
+replacing a healthy socket. Newly approved authority is adopted automatically on
+a readied successor, while safe accepted work retains its receiving connection.
+Retain the logical client, generated facades, and still-bound resources across
+these changes; no manual transport refresh or upgrade notification exists. Old
+sockets close after their retained work releases them. Reduced or revoked
+authority, physical failure, and hard authorization deadlines can interrupt
+affected work. Raw NATS connections are physical attachments, not
+generation-aware application handles.
+
+Live authority requires a verified initial revocation snapshot and continuing
+coverage; epoch fencing prevents old watchers from changing successor coverage.
+Fresh application IO cannot proceed while own revocation coverage is
+unavailable: bounded acquisitions wait within their budget, immediate ones report
+unavailability. Mirror rollover stages the replacement without withdrawing
+healthy predecessor coverage, and replacement IO stays fenced until authenticated
+replay and checked handover. On mirror failure, one cancellable private
+supervisor restores coverage on the surviving attachment while application IO
+remains fenced; it neither clears known revocations nor retransmits application
+requests. If authority expires during coverage loss, private admission obtains
+and verifies fresh authority before application use resumes; snapshot recovery
+alone never extends expired authority. Jobs and durable event intake keep
+bounded capacity across generations, with each delivery retaining its receiving
+connection through disposition.
+
+Native providers finish accepted RPCs across ordinary authority promotion by
+reacquiring a coherent current signing snapshot within one configured deadline.
+Handlers are not redispatched, and provider, issuer, expiry, and revocation
+checks remain mandatory. Accepted finite responses may outlive the opening
+caller context, but not their request deadline; expired evidence cannot start
+new work.
+
+Already admitted connections resolve public verification metadata through the
+read-only `trellis.auth.metadata.get` bootstrap; there is no typed Auth RPC for
+it and no admin capability is needed. Its issuer-signed responses resolve only
+requested authority material, logical status/cutoff, or pinned issuer rotation
+chains. Clients verify signatures, retained nonce/subject/reply/scope, and
+freshness against pinned trust; missing or unavailable responses never clear
+revocation or grant authority. Historical issuer keys are resolved the same way,
+authenticated by the active pinned issuer or its forward-verified successor.
+They never advance live trust; compromised keys remain unusable. A retired
+catalog signer does not invalidate an immutable catalog referenced by current
+signed authority.
+
+#### Logout
+
+Trellis HTTP endpoints serve bootstrap, browser/account flows, recovery, and
+browser assets; connected Trellis control uses generated APIs over NATS. Use the
+connected client's `logout()` for normal sign-out so local installation and
+connection state are updated together. Auth holds the caller's own revocation
+and disconnect for five seconds so the `Sessions.Logout` reply arrives first;
+Auth refuses the session from the cutoff. If a reply is still lost, `logout()`
+confirms revocation through signed HTTP recovery. Unrelated authorization
+failures do not count as successful logout.
+
+### Authorization
+
+#### Model
+
+Auth owns API-scoped capability grants, roles, OAuth consent, deployment
+implementation rights, and resource allocations; installing IDL grants nothing
+by itself. Auth unions valid entitlements and intersects them with the declared
+selection and approved consent in one authoritative transaction. Signed logical
+session authority is immutable; a reduction retires every live digest under that
+session ID. Compatible catalog expansion requires renewal and cannot silently
+approve declined capabilities. Signed revocations remain effective through
+mirror reconnect or missing entries until context acceptance deadlines expire.
+Service and device authority is deployment-owned and separate from
+independently consented user companion authority. Read-only capabilities do not
+grant write access.
+
+Capability approvals are policy decisions over whole capabilities, not saved
+exact-action grant snapshots. Holding a group grants its current members, so a
+membership change reaches holders at once; an app keeps the members its user
+consented to until the user approves again. Capability discovery does not grant
+authority. Own-authority and session maintenance are fixed session rights, not
+ordinary capability requests.
+
+`Auth.Capabilities.List` accepts optional `participantId`, `revision`, and
+`sourceApi` filters. A participant plus revision selects an exact retained
+snapshot; omitting revision selects that participant's current installation, and
+revision requires a participant. With neither scope filter, discovery uses every
+participant's current installation. Entries include `sourceApi` and `apiDigest`:
+identical API definitions deduplicate, while differing definitions under the
+same API ID remain distinct. Do not select an arbitrary definition by capability
+identity alone.
+
+#### Consent
 
 Existing grants are reused only when shared issuance/policy semantics prove
 compatibility without expanding approved authority; neither activity nor a
@@ -161,251 +571,415 @@ consent after authentication without a second password prompt. Stale consent
 decisions are rejected and refreshed; policy denial is an authorization error,
 while unavailable runtime/resource evidence remains bounded pending.
 
-Completion requires the initiating private key's proof, returns its `intentId`
-and minimal login metadata, and returns the same semantic login result on exact
-supported replay instead of creating another session. Independent transactions
-do not inherit identity or consent. The client validates intent, participant,
-and public-key bindings before committing login state and refreshing context.
-Only terminal failure with an invalid login clears it and requires
-authentication. Terminal authorization denial with a valid login preserves the
-login and propagates its stable machine code without an automatic login loop.
+Explicit one-off consent overrides older remembered choices without changing
+them. Reused choices retain their expiry; later shared withdrawals still retire
+affected sessions. A shortened effective authorization deadline is a reduction
+unless another entitlement path preserves the outstanding authority. Deadlines
+on newly gained rights bound new contexts, not older narrower contexts or the
+logical-session root. Consent approval binds the current server-owned
+presentation and the selected optional capabilities; stale forms require a fresh
+presentation. Signed session authority has a shared 64 KiB issuer,
+verification, and parsing budget.
 
-An administrator installs immutable participant revisions containing exact API
-artifacts and writes one `GrantBinding` per identity and participant. Deployment
-apply records exact resource evidence. Adding an action to IDL or installing a
-package grants nothing by itself. Optional actions remain unavailable unless the
-binding and current optional evidence both permit them. Capability names are
-API-scoped; subjects and physical resource names are not grants.
+Configured implied consent applies only to registered browser bindings and their
+bounded capability subset. Native and Device Code clients require explicit user
+approval even when registered, and Device Code confirmation remains mandatory.
 
-Console access editors save exact participant-scoped snapshots; capability
-groups are one-time permission presets, not ongoing memberships. Replacing a
-policy-approved grant with an exact grant changes its approval mode. Service and
-device grants are deployment-owned, separate from device user delegation. Exact
-snapshots can initiate resource provisioning without bypassing runtime
-readiness. Resource actions remain within the approved snapshot and delegation
-ceiling; read-only approval does not grant write access.
+Provisional CIMD client intake shares a 128-client/16 MiB budget and a
+five-minute lifetime; live decisions and approved refresh lifecycles are
+retained. Exhaustion returns `temporarily_unavailable`, not administrative
+registration or authority.
 
-`Auth.Capabilities.List` accepts optional `participantId`, `revision`, and
-`sourceApi` filters. A participant plus revision selects an exact retained
-snapshot; omitting revision selects that participant's current installation.
-Revision requires a participant. With neither scope filter, discovery uses every
-participant's current installation. Entries include `sourceApi` and `apiDigest`:
-identical API definitions deduplicate, while differing definitions under the
-same API ID remain distinct. Do not select an arbitrary definition by capability
-identity alone. Console access editing scopes capability discovery and preset
-expansion to the participant revision being edited, then saves exact
-permissions.
+OIDC claim refresh is scoped to the selected provider and upstream subject; a
+second linked identity cannot add or remove another identity's mapped roles.
+Direct grants remain independent of upstream role loss and claim freshness.
 
-For `trellis identity grants set`, the input file contains only
-`installedRevision`, `grants`, `platformPrivileges`, and `expiresAt`; all four
-fields are required. `installedRevision` accepts a JSON integer or decimal
-string in `1..=9007199254740991`. `expiresAt` accepts `null`, or a JSON integer
-or decimal string in `0..=9007199254740991`. The CLI normalizes these inputs for
-the generated request. Omitting `--expected-revision` uses the current binding
-revision, or zero for creation; an explicit zero is also valid. A stale revision
-is rejected without changing the binding. `Auth.Users.Update` accepts optional
-`username` to atomically rename an existing local credential and identity,
-preserving the user ID and password; uniqueness conflicts roll back the
-accompanying profile edits. Accounts without a local login establish one through
-an account flow. `Auth.Users.PasswordReset.Create` targets `userId` and returns
-a time-limited, one-use link; completing it revokes the target's existing
-sessions. `Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
-`Auth.Users.IdentityLink.Create` accept optional `userId`; omission targets the
-caller, while cross-user actions require platform administration.
-Last-sign-in-method and protected-administrator checks remain.
+Mark a role "give to new users" (`assignToNewUsers` on `Auth.Roles.Put`, the
+Console role form, or `trellis roles create|edit --new-users`) to give every
+user created afterwards a base set of permissions. Each gets an ordinary role
+assignment an administrator can revoke; existing users are unchanged.
+
+Sign-in methods are Auth state changed live, never configuration: the Console's
+Sign-in methods page, `trellis sign-in set`, or `Auth.SignInSettings.Update`
+turn username-and-password sign-in, local self sign-up and company sign-in
+(OIDC providers, also managed on that page) on or off. People can create their
+own account only where the installation allows it and the app they are signing
+in to does too (`trellis clients sign-up <app> --password|--providers`, the
+Console app form, or `Auth.OAuthClients.SignUp.Update`). New accounts get the
+roles marked for new users.
+
+#### Administrative capabilities
+
+Administrative Auth RPCs are allowed by the administrative capability that names
+them: `trellis.auth.v1:users.manage`, `trellis.auth.v1:roles.manage`,
+`trellis.auth.v1:apis.accept`, `trellis.auth.v1:apis.forceReplace`,
+`trellis.auth.v1:clients.manage`, and `trellis.auth.v1:platform.manage`. They
+are ordinary capabilities in a namespace only built-in Trellis contracts may
+use. Roles, direct grants, and identity-provider mappings can carry them;
+changing who holds one requires `trellis.auth.v1:platform.manage`. Auth rechecks
+current entitlements on every call.
+
+Apps request administrative capabilities like any other, through their generated
+required/optional selections; there is no separate privilege request. Optional
+administration is never preselected or remembered. Delegating one to an app has
+three safeguards, on by default under `[auth.administration]`: a separate consent
+confirmation, approval by another `trellis.auth.v1:platform.manage` holder
+(`Administration.Reviews.*`), and registered clients only. The initialized
+administrator holds all six inherently and needs no review. Localhost or
+development mode establishes no trust, and application/OAuth origins remain
+isolated.
+
+#### Verification
+
+Message proofs bind the authority digest, exact API/action identity, API
+generation/revision, actual subject, message identity, and exact payload bytes.
+The signed authority supplies the originating session public key; message
+headers do not establish another identity or carry permission lists.
+
+Request verification checks caller grants against the caller's exact signed
+catalog reference, independently of the provider's pinned implementation and
+certificate. Compatible accepted revisions within one API generation need not
+match; neither catalog grants additional rights to the other party.
+
+Provider-owned event publication requires the exact issuer-verified
+event-publish action in the certificate bound to the signed native authority,
+deployment, instance, implementation, API generation, and action introduction
+revision. It does not require consumer capabilities. Delegated publication uses
+whole-capability membership. Provider certificates never grant RPC caller or
+event-consumption rights.
+
+Historical event verification requires both the signed event timestamp and
+trusted original JetStream publication metadata (`published` and
+`stream_sequence`). Both timestamps must fall within the publisher authority's
+validity window and precede any ordinary session revocation cutoff; certified
+publication also requires both within the provider certificate's validity
+window. A consumer's read time is not publication evidence, so a backdated
+signature cannot authenticate a new publication after expiry or revocation.
+Current permission to read is a separate check from past publisher
+authenticity. Ordinary certificate expiry or issuer retirement does not
+invalidate authentic retained publications, including cold replay; compromised
+issuers remain unusable. Applications do not implement their own verifier or
+inspect Trellis's internal authorization registry.
+
+### Accounts And Directory
+
+- `accountRead` reveals your own profile (names, email and verification status,
+  and photo), account details, and current session, and permits signing out of
+  the current login and its application sessions. `Users.Resolve` is self-only
+  and includes the caller's `account`; `Sessions.Me` and `Sessions.Logout`
+  require normal selection and consent. None of this grants directory access.
+- `usersRead`, selected and consented, permits `Users.List/Get`: an active-user
+  directory with immutable `principalId`, names, available email, and photos.
+  Ordinary results omit `account`. Delegated and currently held
+  `trellis.auth.v1:users.manage` additionally exposes username, password status,
+  and lifecycle/revision, and permits inactive-user lookup and username search.
+- `accountProfileWrite` permits `Users.Profile.Update` on your own names, manual
+  unverified email, HTTPS picture override, and Gravatar preference. Use the self
+  account's `profileRevision` and an idempotency key. Omitted fields stay
+  unchanged; clear flags restore eligible linked-provider values. Manual choices
+  survive OIDC login, and matching-sub bounded UserInfo enriches presentation
+  only. Email equality never links identities.
+- Administrative `Users.Update` checks lifecycle `expectedRevision`; omitted
+  profile fields are untouched, and intentional profile changes also require
+  `expectedProfileRevision`. A stale combined save rolls back both.
+
+A handler sees its own caller's profile without any directory capability: a
+verified user caller carries `user` with `displayName`, optional `givenName`,
+`familyName`, `email` and `avatarUrl`, and `emailVerified`, as Auth signed them into the
+session's authority (later profile edits appear once Auth reissues it). Service
+and device callers carry no `user`. Use `usersRead` only to look up other users.
+
+Names and email are not unique identity keys. Key application-owned
+authorization by immutable `principalId`; a directory match does not grant
+access to application records.
+
+`avatarUrl` (directory results and `caller.user`) is a stable Trellis-hosted
+image URL for the current profile revision, like an OIDC `picture`. A new photo
+or profile change gets a new URL, and a disabled account's URL stops serving.
+Render with `referrerpolicy="no-referrer"` and show local initials on error.
+Revoking `usersRead` stops new URLs, not already issued ones. Manual unverified
+email never triggers Gravatar; opted-in verified email sends its normalized
+SHA-256 hash, which remains personal information. Operators disable all
+remote-derived images, including cached ones, with
+`auth.avatar.external_fetch_enabled=false`.
+
+`Users.PasswordReset.Create` targets `userId` and returns a five-minute, one-use
+token for `/account/reset?token=...` on the OAuth origin. Completion checks
+Origin/CSRF, credential CAS, and the requester's original active logical session
+and current `trellis.auth.v1:users.manage`, then atomically changes the password
+and revokes login/grant families. Bootstrap administrators use local recovery
+instead.
+
+`UserIdentities.List`, `UserIdentities.Unlink`, and `Users.IdentityLink.Create`
+target the current user. Linking returns a five-minute portal URL and requires
+the exact initiating user and fresh verified upstream OIDC with nonce/PKCE;
+provider changes and identities owned by another user are rejected. Creation
+replay keeps the original sealed response and never revives an action.
+Last-sign-in-method and protected-administrator checks remain. Approval is a
+protected same-origin POST whose no-store continuation page links to a
+60-second, one-use GET handoff bound to the portal session, provider, and
+account; top-level navigation reaches the verified IdP without relaxing
+`form-action 'self'` or leaking the handoff in referrers. Direct, expired, and
+replayed handoffs fail.
+
 `Auth.Connections.List` accepts `principalId` to filter physical connections.
 
-The server resolves assignment, installed artifacts, grants, resources, online
-issuer, route JWT, inbox, and exact transports. Clients verify that response.
-The libraries own proofs, context verification, proactive refresh, and transport
-maintenance. Renewing unchanged transport authority promotes context and routing
-credentials without replacing a healthy socket. Newly approved authority is
-adopted automatically on a readied successor, while safe accepted work retains
-its receiving connection. Retain the logical client, generated facades, and
-still-bound resources across these changes; no manual transport refresh or
-upgrade notification exists. Old sockets close after their retained work
-releases them. Reduced or revoked authority, physical failure, and hard
-authorization deadlines can interrupt affected work.
-
-Fresh application IO cannot proceed when own revocation coverage is unavailable.
-Bounded acquisitions wait within their budget; immediate acquisitions report
-unavailability. Guarded registry maintenance restores continuous coverage on an
-eligible admitted socket and wakes waiting calls. Successful make-before-break
-watch migration preserves cached authority and existing leases; actual
-revocation still fails closed. Jobs and durable event intake keep bounded
-capacity across generations, with each delivery retaining its receiving
-connection through disposition. Raw NATS connections are physical attachments,
-not generation-aware application handles. Authorization contexts, route JWTs,
-transport endpoints, grants, clock offset, and issuer keys are
-process-memory-only. Browser IndexedDB version 3 persists only the initiating
-session seed, nullable login metadata, pending signed intent/intent ID, and
-generation tombstone, keyed by canonical origin plus stable participant ID.
-Generation, public-key, intent, and login compare-and-swap fences prevent stale
-tabs from overwriting or clearing newer state.
-
-Trellis HTTP endpoints serve bootstrap, browser/account flows, recovery, and
-browser assets. Connected Trellis control uses generated APIs over NATS. Use the
-connected client's `logout()` for normal sign-out so local installation and
-connection state are updated together. Self-revocation can close the transport
-before the generated `Sessions.Logout` RPC reply arrives; `logout()` confirms
-that the session is revoked through signed HTTP recovery when the reply is lost.
-Unrelated authorization failures do not count as successful logout.
-
-For multiple local managed-NATS servers, give each its own bundle and HTTP port,
-and pass `--local-nats-ports=4223,8223,8081` with `trellis-server --dev` for a
-second NATS client, monitor, and WebSocket port set. The default set is
-4222/8222/8080; generated local configs use a 30-second owner lease renewed
-every 5 seconds.
-
-Requests/events carry context digest, matching redundant `session-key`, and the
-message proof; complete contexts and GrantSets are not message metadata. Proofs
-are verified before application handlers run. Ordinary context expiry allows
-eligible historical events to be verified; explicit context revocation
-invalidates all proofs from that context. Applications do not implement their
-own verifier or inspect Trellis's internal authorization KV registry. See the
-auth design documentation for protocol details.
-
-## Choose A Surface
+### Communication Surfaces
 
 - RPC: a typed request and response, including declared business errors.
 - Event: a published fact. Durable consumption uses participant-declared
-  Consumer resources and can redeliver; handlers need an appropriate duplicate
-  handling strategy for their side effects.
+  Consumer resources and can redeliver; handlers need a duplicate-handling
+  strategy for their side effects.
 - Live: connection-scoped live data. Closing or aborting the subscription
-  cancels provider work; it is not a durable event history.
+  cancels provider work; it is not durable event history.
 - Operation: caller-visible asynchronous work with progress, terminal output,
   and optional cancellation, updates, or transfer.
 - Job: service-private queued execution with retries and lifecycle state.
 
-Parameterized events derive their concrete subjects from payload pointers; the
-base subject includes the encoded qualified API identity, and listeners match
-the generated wildcard pattern. Parameter values use unpadded base64url, and the
-message proof binds the exact API, dotted event name, and parameter count. In
-Rust, retain the returned listener guard: dropping or aborting it removes that
-registration without stopping the other registrations in its group. Shared
-pull-loop failures are reported by the service lifecycle, and unmatched messages
-are not acknowledged as completed work. Durable names remain Trellis-owned.
+#### Routing
 
-Durable event success is acknowledged only after the handler succeeds. Retryable
-failure uses the declared backoff; final exhaustion is confirmed in that
-Consumer's Events DLQ before the source delivery is acknowledged. Manual replay
-uses the same handler with a fresh delivery budget, does not rewind the original
-Consumer, and confirms `resolved` before acknowledging success. Delivery and
-application side effects remain at least once.
+RPC, Operation starts, and Live openings use canonical generated API/action
+subjects. Providers sharing a logical API share request queues and must be
+suitable alternatives; identical IDL does not make independent databases or
+physical devices interchangeable. Signed provider identity, generation/action
+checks, and service-owned resources remain separate from caller capabilities.
+Established Live/Transfer traffic and existing Operation controls retain
+owner-directed routing. There is no persisted caller-to-deployment selection or
+automatic retry of potentially executed requests. This decision is still being
+integrated on this branch.
 
-Operations and jobs may expose typed live updates through an owned observation
-session that is separate from the durable executor. A watcher reconciles the
-current authoritative snapshot once its transport is ready, then delivers typed
-transient updates and terminal state; transient updates are ordered and never
-silently dropped, while not-yet-delivered nonterminal snapshots may be
-conflated. Updates are at-most-once, not persisted or replayed, and late
-subscribers may miss them. Durable progress and terminal output are separate
-from updates. Opening or closing a watcher does not start, cancel, or complete
-the durable work. Operation get, watch, signal, and cancel remain authorized to
-the creator principal plus participant, not a particular session or connection,
-so reconnect can resume control. Completed, failed, and cancelled records are
-immutable. Generated TypeScript service operation registrations expose the typed
-local owner-fenced `.control(id)` and owner-routed `.reconcile(id)`.
-Reconciliation serializes handler re-entry on the current owner with persisted
-input, verified caller, and progress; it never steals a live lease. Cancellation
-remains nonterminal during handler cleanup and owner lease renewal. `Cancelled`
-is persisted only after the handler joins its owned side-effecting children; a
-stalled cleanup has no forced terminal timeout. After owner loss, epoch fencing
-does not prevent arbitrary external side effects from overlapping.
-Cancellation-first admission requires both Invoke and Cancel authority before
-durable reservation. Retry with the same caller-chosen invocation ID and input:
-intent is atomic with fresh admission, merges into an exact existing invocation,
-cannot be cleared by a normal replay, and does not change terminal records.
-Reconciliation and recovery enter cleanup with the handler signal already
-aborted; throwing, returning an error, or explicit deferral leaves cancellation
-nonterminal. Native upload cancellation may have no transfer handle or staging;
-check cancellation before accessing transfer resources. TypeScript exposes the
-cancellation-first start option only for ordinary, non-transfer operations.
+#### RPC
 
-Keyed Jobs waiting for an active capacity slot maintain the current delivery and
-do not consume a retry attempt before handler entry. `Jobs.Summary` computes all
-matching totals, groups, and statistics independently of any `Jobs.Query` page.
-Job deadlines are creation-relative. Omitted retry means five ordinary attempts
-with delays of 5s, 30s, 2m, and 10m; explicit retry declares total attempts and
-exactly attempts-minus-one positive ordered backoffs. Broker redelivery is
-unlimited so execution owners can finish cleanup before Expired or Dead. Check
-cancellation before business work: already-cancelled job handlers reconcile
-earlier side effects, and cleanup errors preserve redelivery. Never-started
-expiration confirms terminal publication before releasing recovered key slots,
-without running handlers. Publication failure retains the reservation; terminal
-redelivery reconciles any remaining slot before acknowledgement. Ordinary queues
-use Block; stale-policy selection is not an authored option. Coordinator
-fail-stale takeover fences the old attempt and atomically preserves its cleanup
-obligation. The displaced job waits for capacity, recovers a fresh fence, and
-reconciles with stale-attempt cancellation before settling Stale. Only confirmed
-terminal settlement removes its obligation; the old token cannot mutate the
-replacement owner's slot. Ignored stale completions are nonterminal diagnostics
-and retain redelivery until cleanup settles. A never-started displaced
-reservation settles Pending to Stale without handler execution.
+RPC cancellation stops the caller's wait, not work already accepted by the
+service; neither cancellation nor an elapsed deadline undoes accepted work. Use
+Operation cancellation for business work. A no-responders reply means the target
+service is not currently reachable, including during a restart; it is not a
+malformed offer, a declared error, or a failed Operation.
 
-Lifecycle publication in both SDKs awaits JetStream acknowledgement. Typed live
-updates remain transient and do not require a durable stream. Execution state
-and attempts follow accepted lifecycle transitions in broker stream-sequence
-order. Created initializes but cannot reopen a job. Diagnostics, heartbeats,
-logs, and progress cannot override settlement or attempts. A valid Retried opens
-a new run under the same ID without deleting history. Work retains its original
-lifecycle sequence through broker source metadata. Old-run deliveries are
-acknowledged without touching newer-run coordination. Deferred work rereads
-lifecycle state before acquisition. Live observations and Operation watchers are
-authorized live sessions negotiated with bounded opening requests. The provider
-signs its offer and frames; control responses bind the session ID, logical
-command sequence, and command hash, and continued authority is rechecked from
-retained context rather than by a network lookup per frame. A session has
-protocol liveness and credit bounds, not a total age or message cap; closing
-returns a receipt whose remote-cleanup state is complete, incomplete, or
+Declare expected RPC and Operation errors in IDL to obtain typed generated error
+handling. Runtime validation and transport failures remain distinct from those
+business errors. Declared constraints (`min_length`, `max`, `max_items`, ...)
+are enforced by both SDKs: a provider rejects an RPC or Operation input that
+violates them with `ValidationError` before the handler runs, and TypeScript
+callers refuse to send one, so handlers need not re-check them. Cursor-paginated RPCs end only when `nextCursor` is absent, and
+pagination does not generally promise a snapshot.
+
+#### Events
+
+Event subjects include the encoded qualified API identity and unpadded base64url
+parameter tokens derived from payload pointers; listeners match the generated
+wildcard pattern, and the message proof binds the exact API, dotted event name,
+and parameter count. Subscriptions verify original bytes and proof before
+decoding. Core NATS delivery requires live publisher authority; durable delivery
+uses trusted original publication time, not today's publisher-context expiry.
+Consumer authority remains current. Durable names remain Trellis-owned. A normal
+publish happens immediately; it is not a database commit fence.
+
+Durable success is acknowledged only after the handler succeeds. Retryable
+failure uses the declared backoff; final exhaustion leaves delivery
+unacknowledged so Events captures the broker max-deliveries advisory into that
+Consumer's DLQ. Consumers have local per-process concurrency. Consumer ownership
+permits retained inspection and terminal replay reporting, not administrative
+Replay/Dismiss. Manual replay uses the same handler with a fresh delivery
+budget, does not rewind the original Consumer, and confirms `resolved` before
+acknowledging success. DLQ and replay retain the original broker publication
+time and resolve original bytes and `originalPublishedAt` through authenticated,
+resource-scoped Events inspection, even after source expiry; publisher headers
+and replay publication time never replace them. Delivery and application side
+effects remain at least once.
+
+#### Live
+
+Live observations and Operation watchers are authorized live sessions negotiated
+with bounded opening requests. The provider signs its offer and frames; control
+responses bind the session ID, logical command sequence, and command hash, and
+continued authority is rechecked from retained context rather than a network
+lookup per frame. Both SDKs verify the exact consumer binding in Live offers. A
+session has protocol liveness and credit bounds, not a total age or message cap.
+Closing returns a receipt whose remote-cleanup state is complete, incomplete, or
 unconfirmed, and reconnect is an explicit new open rather than a silent reopen.
 
-Declare expected RPC/operation errors in IDL to obtain typed generated error
-handling. Runtime validation and transport failures remain distinct from those
-business errors. Application-local error handling is an application decision.
+Live uses `trellis.live.v1` even for application APIs such as `documents@v2`.
+Generated canonical opening subjects are
+`live.v1.route.<b64(full_api_id)>.<action>`, with unpadded base64url identity
+tokens. The application's major belongs to that full API identity, not the Live
+protocol version. Use generated client/provider facades; dotted action names
+never imply a deployment selection or another Live protocol.
 
-## Resources And Application Data
+#### Operations
+
+Operations are durable, restartable, at-least-once caller-visible workflows.
+Their identity is `<API identity>@v<major>:operation:<action>` across SDKs,
+storage, and complete references; generated aliases are not durable identities.
+Canonical starts honor that API major, while owner-directed controls retain the
+fixed `operation.v1` transport family. Implementation-only providers can forward
+their own updates without receiving caller Observe authority. Transient updates
+carry operationId, sequence, timestamp, the declared update, and the unchanged
+observed snapshot.
+
+Complete serialized references require `deploymentId`, checked against certified
+signed acceptance. SDKs route get/watch/wait/cancel/signals to that deployment,
+not an instance, and restore only complete references, never IDs alone. Replicas
+in that deployment retain executor leases and CAS fencing. References are
+routing metadata, not authority. A handler can read its own complete reference,
+for example to put in a return URL it builds mid-operation; the caller resumes
+with it, and only a caller allowed to observe the operation can. Invocation
+deduplication is deployment-scoped:
+never automatically retry an uncertain canonical start into another deployment;
+no cross-deployment idempotency is promised.
+
+Starts default to canonical routing. An explicit targeted start persists
+deployment, invocation ULID, and frozen input before the first send and never
+falls back to another deployment. Choosing a target after losing a canonical
+reply cannot recover its unknown owner. Cancellation-first admission requires
+both Invoke and Cancel authority and the same caller-chosen invocation ID and
+input on every retry. It atomically records non-clearable cancellation intent
+with fresh admission or merges into an exact existing invocation; terminal
+records are unchanged.
+
+Controls (get, watch, signal, cancel) remain bound to the creator principal and
+participant across reconnects, not a session or connection. Completed, failed,
+and cancelled records are immutable. A watcher is a separate live session from
+the durable executor: it reconciles the current authoritative snapshot once its
+transport is ready, then delivers typed transient updates and terminal state.
+Get and initial watcher snapshots expose persisted state, not speculative
+handler state, and a committed write may be visible after its ACK is lost.
+Transient updates are ordered and never silently dropped, while not-yet-delivered
+nonterminal snapshots may be conflated. Updates are at-most-once, not persisted
+or replayed, and late subscribers may miss them; durable progress and terminal
+output are separate. Opening or closing a watcher never starts, cancels, or
+completes the work, and a transport interruption surfaces as an observation
+error rather than an invented terminal state.
+
+Service operation registrations expose a local owner-fenced `control(id)` and an
+owner-routed `reconcile(id)`, which re-enters the handler on the current owner
+with persisted input, verified caller, and progress; it never steals a live
+lease. A cancellation request stays nonterminal while the owner renews its lease
+and joins handler cleanup; `Cancelled` is persisted only after the handler joins
+its owned side-effecting children. Stalled cleanup has no forced terminal
+timeout, and external side effects may overlap across owner loss. Reconciliation
+and recovery re-enter cleanup with the handler signal already aborted; errors or
+explicit deferral leave cancellation nonterminal, so perform cleanup before
+business work. Before cancellation is observed, loss of the execution's
+receiving carrier or an authoritative state-read or watcher failure retires the
+local execution fence before handler code receives the error and stops renewing
+that lease, allowing takeover after lease expiry instead of persisting an
+invented failure. Genuine cancellation cleanup still renews its lease.
+
+#### Jobs
+
+Jobs are service-private durable queues. Keyed Jobs waiting for an active
+capacity slot maintain the current delivery and do not consume an attempt before
+handler entry. Job deadlines are creation-relative. Omitted retry means five
+ordinary attempts with delays of 5s, 30s, 2m, and 10m; explicit retry declares
+total attempts and exactly attempts-minus-one positive ordered backoffs. Broker
+redelivery is unlimited so execution owners can finish cleanup before Expired or
+Dead. Check cancellation before business work: already-cancelled handlers
+reconcile earlier side effects, and cleanup errors preserve redelivery.
+
+Never-started expiration confirms terminal publication before releasing
+recovered key slots, without running handlers; publication failure retains the
+reservation, and terminal redelivery reconciles any remaining slot before
+acknowledgement. Ordinary queues use Block; stale policy is not an authored
+option. Coordinator fail-stale takeover fences the old attempt and preserves its
+cleanup obligation: the displaced job recovers a fresh fence and reconciles with
+stale-attempt cancellation before settling Stale, and the old token cannot
+mutate the replacement owner's slot. Ignored stale completions are nonterminal
+diagnostics that retain redelivery until cleanup settles. A never-started
+displaced reservation settles Pending to Stale without handler execution.
+
+Lifecycle publication awaits JetStream acknowledgement; typed live updates stay
+transient and need no durable stream. Execution state and attempts follow
+accepted lifecycle transitions in broker stream-sequence order. Created
+initializes but cannot reopen a job. Diagnostics, heartbeats, logs, and progress
+cannot override settlement or attempts. A valid Retried opens a new run under the
+same ID without deleting history; old-run deliveries are identified by their
+original lifecycle sequence and acknowledged without touching newer-run
+coordination. Deferred work rereads lifecycle state before acquisition.
+
+Generated service job handles reconstruct retained lifecycle history through the
+deployment-scoped runtime `Jobs.History` route automatically. Do not grant raw
+shared JOBS-stream read permissions; ordinary service identities cannot read it.
+History pages retain original stream sequences and a fixed upper watermark, and
+ownership comes from verified service authority and its current queue binding.
+Recreated queues get fresh allocation-scoped delivery subjects, and saved purge
+cutoffs protect new keyed coordination from delayed old deletions.
+
+### Resources And Data
 
 Connected services expose declared KV, Store, Consumer, and Job handles. Apps,
-agents, and devices can declare State as one typed value without a key or TTL.
-State/KV representation migrations run directly from accepted historical bytes
-to current values in SDK memory and never write on read. State follows principal
-and qualified participant identity across reconnects.
+agents, and devices can declare State. State is one typed value without a key or
+TTL, KV is typed history, and Store is raw bytes. State and KV representation
+migrations run directly from accepted historical bytes to current values in SDK
+memory and never write on read. State follows principal and qualified
+participant identity across reconnects.
 
 Bindings are runtime internals. Use generated resource handles instead of
-constructing Trellis storage subjects or opening internal buckets. This does not
-constrain the application's own database or external storage clients.
+constructing Trellis storage subjects or opening internal buckets; this does not
+constrain the application's own database or external storage clients. Runtime
+Jobs/Events resource evidence uses authenticated `Auth.ResourceBindings.Query`
+with separate kind-scoped read capabilities; split roles never read another
+role's SQLite database.
 
-Store and transfer APIs support streaming. Shared Store adapters pull finite,
-byte-capped batches on demand and verify chunk order/count, size, and SHA-256
-before successful EOF. Partial output is not a verified complete object.
-Backend consumer expiry does not impose a reader idle limit: reads resume at the
-exact next chunk while the pinned connection and stored chunks remain available.
-Consumers are cleaned up before their generation lease is released; native
-ObjectStore links are unsupported. Whole-buffer helpers collect the entire value
-in memory, so bounded adapter buffering is not a whole-process memory guarantee.
-Transfer v2 uses raw-byte one-way NATS DATA with bounded
-frame/byte windows and cumulative consumed credit, not a request/reply per chunk.
-Grants bind logical connection/session identities and exact session subjects,
-never physical storage names, backend protocols, credentials, or presigned URLs.
-Use generated upload Operations and high-level download helpers rather than
-constructing grants. In-flight transfers pin their admitting transport generation;
-authority growth does not migrate them and physical disconnect interrupts them.
+#### Resource lifecycle
 
-Transfers authenticate cancellation and completion and independently verify size
-and SHA-256. Frames are bounded by negotiated peer payload limits, up to 1 MiB.
-Credit follows downstream consumption, not durable persistence. Upload success
-requires completed backend staging and durable Operation transfer commit before
-the handler runs. A lost commit reply is not proof of rollback: staged bytes are
-retained for durable reconciliation. Resume the Operation before retrying. Once
-commit is underway, wire cancellation cannot promise an uncommitted outcome.
-TypeScript's connection timeout bounds activation from transport acquisition
-through the provider reply and separately bounds each cancellation exchange,
-not the body lifetime. Cancellation timeout releases local ownership without
-confirming remote cleanup. Watch transfer progress is monotonic and may be coalesced:
-`chunkIndex`/`chunkBytes` identify the latest credited frame represented, not one
-event per frame. Final persisted `transferredBytes` is exact. Interrupted uploads
-restart from byte zero; partial replay/resumption is not supported.
+Resource commitments are approvals of hard semantics; desired capacities are
+sizing hints that do not allocate larger resources by themselves, and runtime
+handles use the observed binding limits. Approval views distinguish requested
+commitments from observed provider limits. Trellis refuses to adopt or destroy a
+physical resource whose ownership marker does not match.
+
+An administrator creates or applies a deployment, which installs the immutable
+participant revision and provisions exact resource evidence. Identical Apply
+retains only current ready resource evidence; changed or unmaterialized
+resources remain unavailable until reconciled. First-time provisioning can
+resume an interrupted allocation. Missing previously materialized consumers,
+KV/object stores, Job keyed coordination, or Operation storage fail closed;
+retries never replace lost durable state with empty data. Restore coherent
+durable state rather than resetting consumers, keyed ownership, or Operation
+storage.
+
+`Auth.Resources.List/Get` include all allocation states, including detached,
+with digest `resourceId`, `ownerKind` (user/deployment), `ownerId`, and explicit
+state. Declaration omission and deployment Remove detach and retain resource
+data; compatible re-add reattaches the same resource identity. Disable preserves
+bindings but revokes sessions and denies admission; Enable reuses retained
+bindings without reapplying the contract or recreating storage. There is no
+automatic resource deletion. Explicit admin `Resources.Remove` permanently
+deletes only the selected detached owned KV at `expectedRevision` after checking
+its physical ownership marker; shared streams and other queues remain intact.
+Retry the same request after broker failure; startup never resumes deletion.
+Removal is exclusively claimed and incarnation-fenced, and recreating a deleted
+logical resource uses a fresh allocation and physical bucket so delayed deletion
+cannot touch replacement data. KV history/TTL reductions that could lose retained
+data are rejected.
+
+#### State
+
+App State declarations request native State read/write/delete capabilities and
+register JSON-schema UTF-8 bytes projected from native IDL before handle use,
+starting at expected revision "0". Identical registration returns the current
+revision. Changes require explicit CAS on the current registration revision;
+handle `RegistrationConflict` without blind retry. Version schemas are immutable,
+and registration and value revisions are separate. Typed `watch()` uses certified
+Live Watch for the initial and later snapshots, with the same in-memory
+migrations as reads. Unwritten or deleted snapshots are None/undefined. Close
+observations explicitly for bounded cleanup; there is no silent reopen after
+transport or authorization loss. Generated device State Watch support needs no
+built-in API package dependency.
+
+#### Store
+
+Store reads pull finite, byte-capped batches on demand and verify chunk
+order/count, size, and SHA-256 before successful EOF; partial output is not a
+verified object. Backend consumer expiry imposes no reader idle limit: reads
+resume at the exact next chunk on the pinned connection while stored chunks
+remain. Consumers are cleaned up before their generation lease is released.
+Whole-buffer helpers retain the entire object, so bounded adapter buffering is
+not a whole-process memory guarantee. Native ObjectStore links are unsupported.
+Object deletion and replacement clean up chunks only in the admitted identity's
+allocated Object Store streams, including Operation staging; this does not
+authorize KV purge, stream destruction, or cross-owner Store access.
 
 Store and file metadata listing is key-sorted keyset pagination. The limit
 defaults to 100 and must be at most 500. Cursors are opaque and bound to the
@@ -413,77 +987,966 @@ query, including its prefix; changing the query invalidates the cursor. Only
 absent `nextCursor` means completion, and concurrent mutation means the pages
 are not a snapshot.
 
-Direct event publication does not atomically commit an application database
-transaction. When that atomicity is needed, the SQL outbox integration can write
-event/job intents in the same transaction. Trellis provides helper-table
-migrations; the application owns its database, transaction adapter, and
-migration execution. NATS KV outbox/inbox helpers are not atomic with unrelated
-database writes. Rust SQL adapters require the opt-in `trellis-rs` features
-`event-store-sqlite` or `event-store-postgres`; prepared events, memory stores,
-and common store interfaces do not require a SQL driver. See the language guides
-for the supported adapters.
+#### Transfer
 
-Rust SDK HTTP connections and optional `telemetry-otlp` exporters preserve an
-application-installed Rustls provider, otherwise use ring locally without
-changing the process-wide provider, and verify certificates against platform
-trust.
+Transfer v1 uses raw-byte one-way NATS DATA with bounded frame/byte windows and
+cumulative consumed credit, not a request/reply per chunk. Grants bind logical
+connection/session identities and exact session subjects, never physical storage
+names, backend protocols, credentials, or presigned URLs. Use generated upload
+Operations and high-level download helpers rather than constructing grants;
+transfer grants in RPC responses are untrusted until decoded, and the shared
+decoder checks wire structure while the transfer runtime separately verifies
+identity and authority. In-flight transfers pin their admitting transport
+generation; authority growth does not migrate them, and physical disconnect
+interrupts them.
 
-Outbox claims expire after 30 seconds and are recoverable; only the current
-claim can complete. Publication can repeat after a crash, so this is not
-exactly-once delivery. SQL inbox insertion returns true only to the caller that
-inserted the marker, including under concurrency. Schema creation does not
-upgrade old pre-release layouts; migrate retained databases explicitly.
+Use streaming bodies and readers for large objects. The runtime combines ready
+bytes without waiting for a full DATA frame, so slow producers still deliver
+their prefix. Reusing an unchanged authority context never skips per-frame
+proofs, expiry, revocation, coverage, scope, or provider checks. Transfers
+authenticate cancellation and completion and independently verify size and
+SHA-256. Frames are bounded by negotiated peer payload limits, up to 1 MiB.
+Operation upload grants last 15 minutes and admit at most 512 MiB; grant expiry
+ends an unfinished upload.
 
-## Optional Platform APIs
+Credit follows downstream consumption, not durability. Upload success requires
+completed backend staging and durable Operation transfer commit before the
+handler runs. An upload transport error or lost commit reply is not proof of
+rollback: staged bytes are retained for durable reconciliation, so resume the
+Operation before retrying. Once commit is underway, wire cancellation cannot
+promise an uncommitted outcome. Durable transfer progress is monotonic and may be
+coalesced: `chunkIndex`/`chunkBytes` identify the latest credited frame
+represented, and the final persisted `transferredBytes` is exact. Interrupted
+uploads restart from byte zero.
+
+Declare `stream;` instead of `upload;` on an Operation to deliver caller bytes
+directly to its running handler with no staging. The handler reads them once,
+backpressured by its reads; the stream ends only after the caller's size and
+SHA-256 are verified and delivery is recorded, and transfer failure,
+cancellation, or ownership loss ends it with an error. Streams cannot be
+replayed, so an interrupted `stream` Operation fails and the caller starts a new
+one; choose `upload` when work must survive a provider crash. Receive grants may
+come from a store key or any provider byte source whose size and digest are
+declared up front; bytes that end differently fail integrity.
+
+#### Transactional events
+
+Direct event publication does not commit atomically with an application database
+transaction. When that atomicity is needed, the SQL outbox writes event and job
+intents in the same transaction. Trellis provides helper-table migrations; the
+application owns its database, transaction adapter, and migration execution.
+NATS KV outbox/inbox helpers are not atomic with unrelated database writes.
+Outbox claims expire after 30 seconds and are recoverable; only the current claim
+can complete. Publication can repeat after a crash, so this is not exactly-once
+delivery. SQL inbox insertion returns true only to the caller that inserted the
+marker, including under concurrency. Schema creation does not upgrade
+pre-release layouts; migrate retained databases explicitly.
+
+### Platform APIs
 
 Declare these dependencies only when the application uses them:
 
-- `Auth.Users.Resolve` supplies minimal display labels for known Trellis user
-  IDs. It is not a general user directory or a restriction on application
-  profiles.
-- Jobs administration uses `Jobs.Query`, `Jobs.Metrics`, `Jobs.Inspect`, and
-  `Jobs.Summary`, and `Jobs.Watch`. Summary is page-independent; Watch is an
-  invalidation live, so reread the affected query and summary.
-- Events offers event history, Consumer observability, and per-Consumer DLQ
+- Jobs administration: `Jobs.Query`, `Jobs.Metrics`, `Jobs.Inspect`,
+  `Jobs.Summary`, and `Jobs.Watch`. Summary computes matching totals, groups,
+  and statistics independently of any Query page; Watch is an invalidation
+  Live, so reread the affected query and summary.
+- Events: event history, Consumer observability, and the per-Consumer DLQ
   through its Query, Inspect, Metrics, Consumers, and Watch surfaces.
+- Auth security events: `Connections.Opened/Closed/Kicked` publish generated
+  `AuthSecurityEvent` values through the admitted Auth provider. Event IDs and
+  occurrence times survive durable outbox retries. Identify attachments by
+  `attachmentId` and logical authority by `authorizationSessionId`. An expired
+  delivery claim alone does not stop Auth; stale workers cannot acknowledge or
+  reschedule the intent, which stays recoverable by its next owner.
 
-## Test And Troubleshoot
+### Test And Troubleshoot
 
 Choose application testing tools independently. For a test that needs real
-Trellis transport, authority, or restart behavior, the Deno package
-`@oatscenter/trellis-testkit` provides `TrellisTestRuntime`. The published Rust
-crate `trellis-testkit` provides the equivalent `TrellisTestRuntime` for Rust
-test crates: it links the real production runtime in-process with no CLI/server
-executable prerequisite, selects loopback ports automatically, and returns
-normal SDK connection options for generated participants. Both harnesses run
-real NATS child processes; the Rust bare builder defaults to the verified pinned
-download, requiring network on first use. Its verified executable/archive cache
-is shared (`TRELLIS_CACHE_DIR`, otherwise the platform cache); warmed-cache boots
-work offline. Credentials, broker state, databases, PID files, and logs remain
-sandbox-local. `TRELLIS_TEST_NATS_BIN` or
-`NatsSource::Path` selects a prebuilt broker; `NatsSource::PathLookup` uses
-PATH. Runtime/bootstrap Cargo dependencies are distribution-only implementation
-crates, not service-author APIs. The TypeScript harness acquires its
-exact-version production CLI/server from SHA-256-pinned release archives (currently Linux x86-64 only)
-automatically: no installed Trellis or nsc required. Production commands
-generate config and own managed NATS in a private sandbox with seeded admin.
-`trellis: { source: { kind: "path", cli, server } }` selects an exact-version
-prebuilt pair with no fallback. `restart()` preserves data/identity and restarts
-the full host and broker. Stop first requests graceful host shutdown; on timeout
-or host exit, isolated process-group cleanup reclaims remaining owned children
-before sandbox removal. Startup requires `/readyz` metadata's `processId` to
-match the spawned native host, not another runtime at the selected port.
-`firstAdmin: "browser-flow"` opts into browser setup.
-`TRELLIS_TEST_CACHE_DIR` reuses verified immutable binaries only. See
+Trellis transport, authority, or restart behavior, `@oatscenter/trellis-testkit`
+(npm) and `trellis-testkit` (crate) each provide a `TrellisTestRuntime`. Both own
+production CLI/server and NATS processes in a private sandbox with a seeded
+administrator, download the latest Trellis release on first use (newest stable,
+else newest prerelease; `TRELLIS_TEST_VERSION` selects another) verified against
+its published checksum, report the server version they test against, serve
+generated installation TLS, and trust each runtime's CA explicitly; never
+disable verification. `TRELLIS_TEST_CACHE_DIR` shares verified artifacts only;
+credentials, broker state, databases, PID files, and logs stay sandbox-local.
+Set `TRELLIS_TEST_SERVER_BIN` (or the
+language's path source) for explicit binaries with no download fallback.
+Distinct-user tests use ordinary accounts and explicit grants: one app
+registration supports independent real OAuth logins for multiple users, user
+handles expose no password, and explicit-user login never grants or restores
+revoked capabilities. See the language guides and
 `/guides/testing-trellis-services`.
 
 A missing generated method usually means the action was not selected or SDKs
 need regeneration. Authorization failures require inspecting the installed
-participant revision, current participant-scoped `GrantBinding`, required
-resource evidence, principal/login state, and online issuer, not constructing a
-raw subject or granting access in application code.
-
-For runtime operation, see `/guides/starting-trellis`. For a complete service,
-see `/guides/write-a-service`. Use `/api` for public language APIs and generated
-source for project-specific names. Run the consumer repository's own checks
+participant revision, the principal's capabilities, the client's approved
+consent or the deployment's selection, required resource evidence,
+principal/login state, and the online issuer, not constructing a raw subject or
+granting access in application code. Run the consumer repository's own checks
 after generation; Trellis-repository xtask commands are not consumer commands.
+
+## Trellis For TypeScript Consumers
+
+TypeScript-specific usage of Trellis. Read it with [the Trellis guide](llms-core.txt)
+from the same Trellis revision, which covers the language-neutral model,
+authorization, surfaces, and resources.
+
+### Overview
+
+Trellis requirements concern its own APIs and lifecycle. Configuration parsing,
+validation of non-Trellis inputs, databases, DI, code layout, and local testing
+tools are application choices. Neither Zod nor an ORM is required.
+
+The npm packages `@oatscenter/trellis` and `@oatscenter/result` contain ESM
+JavaScript and TypeScript declarations. Use `import`. CommonJS output and
+`require()` support have intentionally been removed, with no compatibility
+fallback. Revision 7 targets Node 24 LTS and npm ESM for native TypeScript
+tooling, and browser ESM for browser applications. Use ordinary npm dependencies
+and Node's standard test runner for native TypeScript tools and tests.
+
+### Generate
+
+Author native IDL, run `trellis update` after dependency changes, and run
+`trellis generate` after IDL changes (it re-records your package in
+`trellis.lock`). Set `[package]`, `[sources]`, and
+`[generate.typescript].output` in `trellis.toml`. For a durable `consumer`,
+declare a direct `trellis` source package dependency containing
+`trellis.events@v1`; select and lock its version before generation.
+
+Import `apis` and `participants` from that one ordinary local package, for
+example `import { participants } from "orders-trellis"` and the generated
+participant export. There are no per-API or participant packages. Output is
+executable ESM JavaScript plus declarations and `package.json`, at the source
+package version, depending on the published runtime matching the CLI. No
+consumer transpiler or runtime-path setting is required. Configure ordinary npm
+dependencies yourself; generation never edits them. Commit authored files and
+the lock, and commit output when ordinary clones should build without the
+Trellis CLI or source-package cache. There is no TypeScript contract-authoring
+execution step.
+
+Generated types map `int64`/`uint64` to `bigint`, `bytes` to `Uint8Array`, and
+the IDL `json` type to `JsonValue` (exported from
+`@oatscenter/trellis/generated`); encoding a `json` value rejects anything JSON cannot
+represent, such as functions or non-finite numbers.
+
+`timestamp` and `ulid` are branded strings, `Timestamp` and `Ulid`, exported
+from `@oatscenter/trellis`. Build them with `timestamp(date?)` (defaults to now)
+and `newUlid()`, or parse untrusted strings with `parseTimestamp(value)` and
+`parseUlid(value)`, which return `Result<_, ValidationError>`. Timestamps are
+normalized to canonical UTC RFC 3339, for example `2026-10-26T02:00:00.5Z`:
+
+```ts
+import { newUlid, timestamp } from "@oatscenter/trellis";
+
+await service.publishInvoiceIssued({ id: newUlid(), issuedAt: timestamp() });
+```
+
+### Connect
+
+Services import `TrellisService` from `@oatscenter/trellis/service`. Connect
+with the generated participant, provisioned identity seed, and Trellis URL;
+`name` is optional. Set `telemetry: false` to disable automatic telemetry.
+Optional `runtime` controls service logging (including `false` to disable it),
+default request timeout, event stream selection, no-responder retry, and health
+heartbeat interval. Deployment/instance assignment, installed
+package/participant evidence, capabilities, resources, signed session authority,
+and transport permissions are resolved server-side; no authorization-context
+store or client-supplied deployment/digest fields exist. The complete example is
+in `/guides/write-a-service/service-entrypoint`. When the build differs from the
+revision its instance runs, `TrellisService.connect` submits the build and
+resolves once it installs; a build that asks for new access keeps `connect`
+pending until an administrator approves it, logging the review link and printing
+it as a QR code on stderr. An administrator's rejection fails `connect`;
+`signal` cancels the wait.
+
+When the installation serves a private CA, such as the Trellis-generated
+installation CA, start Node services, devices, and native apps with
+`NODE_EXTRA_CA_CERTS=<path to ca.crt>`. Node then verifies OAuth HTTPS and
+native NATS TLS against that CA; never disable certificate verification.
+
+The SDK's shared protocol verifier is a WebAssembly module, fetched as a
+separate asset next to the SDK module when a client connects; bundlers that
+resolve `new URL(path, import.meta.url)` assets, such as Vite and webpack 5,
+need no configuration. In browsers, synchronous protocol helpers such as
+`decodeTransferGrant` need a connected client. Services and devices load a
+larger provider build automatically through `@oatscenter/trellis/service` and
+`@oatscenter/trellis/device`; import that entrypoint before using any other
+Trellis API in the process.
+
+Missing live authority is not optional-capability denial. Requests await
+verified authority before publication within their original deadline and
+cancellation; current authority that excludes the action still denies it.
+Requests are never replayed. Signed reply verification waits for
+already-received ordered revocation updates before its live checks; it does not
+retransmit the request or bypass lost coverage.
+
+#### Node native applications
+
+Node native applications import `@oatscenter/trellis/native`, not browser
+custody. Use `discoverNativeOAuth`, `NativeOAuthClient.open` with explicit scope
+and trust, Device Code or `resume`, and `connectNativeClient` with a generated
+native request. For Device Code, show `verificationUriComplete` (the link with
+the code filled in; fall back to `verificationUri`) and `userCode` for
+comparison. The entrypoint is Node/npm-only and defaults to process-local
+memory, with no credential files or SQLite requirement. Retain an explicit
+`MemoryNativeOAuthCustody` object to resume the same family across connections
+within one process. For remembered login across process restarts, supply an
+application-owned `NativeOAuthCustody` provider; Trellis ships no persistent
+Node backend. Providers must exclusively acquire the exact family, durably mark
+a token spent before returning it for submission, clear that mark in
+`abandonRotation()` (called only when the issuer refused the request unread),
+atomically commit successors, and retain authenticated trust; the SDK awaits
+those commits. A refresh refused by a rate limit fails with reason `OAuthBusy`
+and leaves the login usable; retry after about a minute.
+
+A successful connection owns the credential family until it closes; an earlier
+session reference cannot release that ownership. Await `connection.close()`
+before reacquiring: it joins settled exchanges and asynchronous lease release
+exactly once, reports release failures, and releases once across repeated
+closes.
+
+### Handlers
+
+For a participant declaring RPC `Orders.Create`, with matching generated input
+and output models:
+
+```ts
+import { Result } from "@oatscenter/trellis";
+
+await service.handleOrdersCreate(({ input }) =>
+  Result.ok({ orderId: crypto.randomUUID(), customerId: input.customerId }),
+);
+```
+
+The UUID is just this example's application identifier. Trellis does not choose
+the service's identifier scheme. Register providers, then await
+`service.wait()`; stop the service with `service.stop()` during shutdown.
+
+A caller that selects this action calls:
+
+```ts
+const order = await client.ordersCreate({ customerId: "customer-1" }).orThrow();
+```
+
+Generated flat names depend on action names and alias collisions; inspect the
+generated participant when choosing names. There is no `client.rpc.orders.create`
+or `service.handle.rpc.orders.create` tree. Dependency selections belong in IDL
+`use` blocks, not SDK `use(spec)` calls.
+
+Inline handlers infer their types at registration. Extracted handlers can use
+`RpcHandler<typeof participant, "Orders.Create">` from
+`@oatscenter/trellis/service`. `OperationHandler`, `LiveHandler`, `JobHandler`,
+and `ServiceEventHandler` provide corresponding typed boundaries.
+`RpcName<typeof participant>` is the union of owned RPC names, so
+`{ [K in RpcName<P>]: RpcHandler<P, K> }` is an exhaustive handler map, and
+helpers that receive a handler's `context` take `RpcHandlerContext`. Regenerate
+after an IDL change.
+
+Handlers receive Trellis-owned arguments such as `input`, `context`, and the
+scoped outbound `client`. Trellis does not inject application dependencies. A
+closure is one way to supply a database or domain function; an application can
+use its own DI system to construct that closure.
+
+Every public service handler receives the same flat, contract-selected
+`ServiceHandlerClient<typeof participant>` as its `client`. It exposes selected
+outbound RPC, Operation, Live, and Event-publish methods, owned Event publishers
+with `.prepare(...)`, bound `kv`, `store`, and `jobs` handles,
+`connection`/`name`, and `availability()`, `watchAvailability()`,
+`publishPrepared(...)`, and `transfer(...)`. Registration and lifecycle methods
+stay on the connected service; there is no generic
+`client.rpc`/`client.operation`/`client.event` tree.
+
+Declare wire models and expected errors in IDL. The generator owns the runtime
+schemas and generated error types. Construct a declared error from its declared
+payload alone, `new OrderNotFound({ orderId })` (or `new Gone()` without one);
+an optional second argument sets `message` (default: the error name),
+`context`, or `cause`, while `id`, `type` and the trace ID are filled in.
+`error.payload` holds the declared fields. Handlers return declared errors
+through `Result.err(...)`; callers can distinguish them from runtime/transport
+failures.
+`.orThrow()` converts a failed result to an exception where that matches the
+application's control flow. Native cursor-paginated RPCs add lazy `.pages()` and
+`.items()` iterators.
+
+RPC `RequestOpts.signal` cancels the caller's wait with
+`trellis.request.cancelled`, including after publication; an elapsed deadline
+reports `trellis.request.timeout`. Neither undoes accepted work.
+`TransportError` code `trellis.request.unavailable` with `noResponders: true`
+means the target service is not responding; restore reachability and retry
+observation of the same work rather than starting replacement business work.
+
+### Events And Live
+
+For a declared event `Orders.Changed`, generated service methods include
+`publishOrdersChanged(...)` and, when selected, `onOrdersChanged(...)`:
+
+```ts
+await service
+  .onOrdersChanged(({ event }) => {
+    console.log(event);
+    return Result.ok(undefined);
+  })
+  .orThrow();
+```
+
+The `event` is the typed payload; `context` carries runtime metadata. Durable
+delivery comes from declared Consumer resources. The runtime owns durable
+identity, local concurrency, retry, proof verification, and the scoped Events
+DLQ.
+
+Live providers receive an abort signal. Stop connection-scoped work when it
+aborts, and close or abort a caller subscription when no longer needed. A caller
+subscription is an owned async iterator: call `return()`/`throw()` or abort its
+signal to release it; disposal is idempotent even before the first `next()`.
+
+### Operations
+
+For operation `Reports.Generate`:
+
+```ts
+const operation = await client.reportsGenerate(input).start().orThrow();
+const terminal = await operation.wait().orThrow();
+if (terminal.state === "completed") console.log(terminal.output);
+```
+
+The provider registers through its generated participant facade. Open a watcher
+before reading the current snapshot. Transfer-capable invocations return a
+transfer-aware result; consult its generated type rather than assuming the
+ordinary operation result shape.
+
+In a handler, `op.ref` is the operation's complete serialized reference; a
+caller restores it with `client.reportsGenerate.resume(ref)`.
+
+The generated `service.handleReportsGenerate.control(id)` returns a typed
+owner-fenced local handle; non-owners cannot borrow the fence. Use
+`service.handleReportsGenerate.reconcile(id)` from another replica to ask the
+current owner to re-enter the handler. The handler's `signal` aborts on
+cancellation or ownership loss; await cleanup of side-effecting children before
+returning. Caller `operation.cancel()` returns terminal `Cancelled` only after
+this cleanup and the fenced terminal write. Throwing, returning an error, or
+`op.defer()` does not acknowledge successful cleanup. Recovered handlers enter
+with the signal already aborted: check it and clean up before business work, and
+return successfully only after cleanup completes. A stale executor cannot
+finalize cancellation.
+
+Starts default to canonical routing. For explicit pre-acceptance ownership,
+persist deployment, invocation ULID, and frozen input before sending, then use
+`.start(undefined, { invocationId, targetDeploymentId })`. Cancellation-first
+admission adds `cancellationRequested: true` with a caller-chosen ULID and the
+same frozen input on every retry. Native cancellation-first admission also
+supports upload operations without opening upload staging, so handler `transfer`
+is optional: handle already-aborted cleanup before accessing it, and require a
+transfer handle on the ordinary upload branch. The transfer-start builder
+accepts the target and invocation ID but not cancellation-first, because its
+result describes an actual transfer.
+
+#### Transfers
+
+For upload Operations, use the generated `.transfer(body).start()` workflow.
+Upload bodies accept `ReadableStream<Uint8Array>` and `AsyncIterable<Uint8Array>`.
+The runtime snapshots bounded blocks before advancing an iterator, so a producer
+may reuse a scratch buffer between chunks. `Uint8Array`/`ArrayBuffer` bodies
+remain caller-owned and must stay unchanged until upload settlement; bounded SDK
+queues do not bound producer-provided backing buffers. The provider consumes
+runtime-staged bytes with `transfer.stream()` or `transfer.bytes()`. Web Streams
+backpressure drives cumulative credit. The connection `timeout` covers transfer
+activation from transport acquisition through the provider reply, and separately
+bounds cancellation; it is not a body lifetime limit. A cancellation timeout
+releases local ownership but does not confirm remote cleanup.
+
+For `stream;` Operations, callers use the same `.transfer(body).start()`. The
+handler starts immediately; `transfer.stream()` returns the caller's live bytes
+exactly once (a second call fails), and `transfer.completed()` resolves after
+verified delivery. Serve generated downloads with
+`service.createTransfer({ direction: "receive", stream, info, context })`,
+where `context` is the RPC handler's context (the grant is bound to its verified
+caller and permission) and `info` declares the exact size and `SHA-256=` digest.
+
+A download RPC's response is typed with an optional
+`transfer: ReceiveTransferGrant`, decoded and checked when the reply arrives (an
+invalid or send-direction grant fails the call). Pass it straight to
+`client.transfer(response.transfer)`. Receive grants use the helper's `stream()` for large
+bodies or `bytes()` for a collected buffer.
+
+### Jobs
+
+Private queues are available as `service.jobs.<queue>`. Register handlers with
+`handle(...)`, create work with `create(...)`, and observe the returned job
+reference. Retry and automatic delivery acknowledgement are runtime-owned.
+Worker concurrency is local; optional keyed concurrency is a declared semantic
+policy. Before business work, check `job.signal.aborted`: already-aborted job
+handlers must reconcile earlier side effects. A recovered owner after
+fail-stale takeover sees `job.signal.reason === "stale-attempt"`.
+
+### Resources
+
+Use generated State, KV, Store, Consumer, and Job handles. These are
+Trellis-managed handles, not an application database abstraction.
+
+Retain `const state = client.state.savedResource` for app State. Generated
+schemas register before the first operation at expected revision "0"; explicitly
+`await state.register("0")` to retain its Result containing the registration
+revision. Representation changes require
+`state.register(currentRegistrationRevision, idempotencyKey)`.
+`const observation = (await state.watch()).orThrow()` opens certified Live Watch;
+use `for await (const snapshot of observation)` for the initial snapshot and
+updates, where undefined means unwritten or deleted. Leaving iteration or
+`observation.close()` releases it, and `observation.closed` reports the Live
+terminal outcome.
+
+Use Store entry `stream()` for large bodies; `bytes()` consumes the same reader
+but retains the entire object in memory. Streams fail on physical disconnect or
+closure. `TypedStore.list(...)` and file metadata lists use the shared keyset
+pagination.
+
+#### SQL outbox
+
+When SQL writes and event/job intents need one atomic commit, configure
+`service.createSqlOutbox(...)` with `dialect`, an `executor`, and a
+`transaction` runner. The transaction runner supplies the application's `tx` and
+a transaction-scoped `SqlExecutor`:
+
+```ts
+await outbox
+  .transaction(async ({ tx, event, job }) => {
+    await orders.markShipped(tx, orderId);
+    await event.orders.shipped.enqueue({ orderId }).orThrow();
+  })
+  .orThrow();
+```
+
+Here `orders` and `tx` belong to the application. The transaction-scoped event
+tree is an outbox API, unlike ordinary flat publish methods; normal event
+facades do not expose `enqueue`. Job submission intents use the callback's `job`
+tree. `getSqlOutboxMigrations(...)` returns Trellis helper-table migration
+artifacts for the application's migration tool to apply.
+
+Applications adapt their chosen database and transaction handles to the generic
+`SqlExecutor` interface; Trellis does not provide ORM-specific adapters.
+`claimDue(...)` returns the claimed records; pass a record, not just its ID, to
+`markDispatched(...)` or `markFailed(...)`, which return false when a newer
+claim superseded it. KV acquisition and completion use revision CAS. SQL inbox
+`record()` returns true only for the call that inserted the ID; commit that
+marker with a domain side effect when both must be atomic.
+
+### Browser Apps
+
+Browser apps use `TrellisClient.connect({ request, trellisUrl, auth: {
+clientId, redirectTo } })` with a generated browser request descriptor, or the
+[Svelte integration](llms-svelte.txt). A new app may identify itself by an HTTPS
+CIMD document; it does not require administrator registration.
+
+The SDK owns PKCE, DPoP, IndexedDB custody, exact callback validation, authority
+renewal, and transport maintenance. Persistent DPoP and encryption keys stay
+nonextractable in IndexedDB, and refresh exchange and commit share a Web Lock
+across tabs. A lost refresh response marks recovery required instead of
+replaying a spent token; credential handles cannot silently switch to another
+principal, and refresh-successor checkpointing is restricted to actual refresh
+exchanges. Retained clients refresh discovery from durable cross-tab trust
+before consuming a refresh token, with no client recreation or page reload.
+Browser IndexedDB version 3 persists only the initiating session seed, nullable
+login metadata, pending signed intent/intent ID, and generation tombstone, keyed
+by canonical origin plus stable participant ID; compare-and-swap fences prevent
+stale tabs from overwriting newer state.
+
+`onAuthRequired` receives `loginUrl` and `mode: "browser"`; caller-owned
+navigation may return `{ status: "handled" }`. Use the connected client's
+`logout()` to revoke its OAuth family and close its connection while retaining
+the Portal login. `logout({ endPortalLogin: true, returnTo })` also ends the
+Portal login on that browser: the browser goes through the Portal's sign-out and
+returns to `returnTo` (default: the current page), which must be on an origin the
+app registered a redirect URI on. Use it for "sign out" on shared computers and
+for "switch account", since the next sign-in asks for credentials. Never fabricate OAuth or authority metadata in application
+callbacks. Coverage loss suspends application use without invalidating retained
+identity; a cancelled renewal settles before its replacement starts, and logical
+close cancels maintenance and renewal.
+
+### Devices
+
+Pass the companion's independently held session as
+`TrellisDevice.connect({ ..., companion: { session, servers } })`. Obtain it by
+declaring Auth's `deviceCompanionsManage` in the child request, completing
+ordinary explicit OAuth user consent, and calling `DeviceCompanions.Attach` from
+that verified user connection with the approved review; then close that setup
+connection and resume its native credential handle. The wrapper checks signed
+request/client/grant assignment.
+
+### Accounts
+
+Generated account calls follow the language-neutral rules. Use
+`user.account.profileRevision` as `expectedRevision` for `usersProfileUpdate`
+with a fresh idempotency key. Administrative `usersUpdate` uses lifecycle
+`expectedRevision`; omit unchanged profile fields for lifecycle-only saves, and
+add `expectedProfileRevision` for intentional profile edits. Both revisions are
+checked atomically.
+
+### Testing
+
+For live Node tests, `await using runtime = await TrellisTestRuntime.start()`
+from `@oatscenter/trellis-testkit` downloads the latest Trellis CLI/server
+release (newest stable, else newest prerelease; `TRELLIS_TEST_VERSION` selects
+another), verified against its published checksum, currently for Linux x86-64
+only; no installed Trellis executables or nsc are required. Use
+`trellis: { source: { kind: "path", server } }`, or set `TRELLIS_TEST_SERVER_BIN`, for a prebuilt server, with
+no fallback. `restart()` retains data and identity and
+restarts the full host and broker. Stop first requests graceful host shutdown;
+on timeout or host exit, isolated process-group cleanup reclaims remaining owned
+children before sandbox removal. Startup requires `/readyz` metadata's
+`processId` to match the spawned native host. `firstAdmin: "browser-flow"` opts
+into browser setup.
+
+The kit adds each runtime's CA (`runtime.caCertificate`) to the test process's
+Node trust, so SDK clients need no TLS options. Launch Playwright browsers with
+`env: browserTrustEnvironment()`, which builds a private NSS trust store holding
+those CAs (requires NSS `certutil`); never use `ignoreHTTPSErrors`. Pass
+`NODE_EXTRA_CA_CERTS=runtime.caCertificate` to spawned Node processes and
+`--ca-certificate runtime.caCertificate` (or `--ca-fingerprint` with its
+SHA-256 fingerprint) to `trellis login`.
+
+Live testkit users are ordinary accounts: `runtime.createUser({ name })`, then
+`runtime.grantUserCapabilities({ user, capabilityIds })`, then
+`runtime.connectClient({ name, contract, user })` (or `registerClient`).
+Omitting `user` retains the seeded-admin helper. Use generated participants
+rather than handwritten bootstrap responses; see
+`/guides/testing-trellis-services`. Regenerate SDKs, then run the repository's
+own checks.
+
+## Trellis For Rust Consumers
+
+Rust-specific usage of Trellis. Read it with [the Trellis guide](llms-core.txt)
+from the same Trellis revision, which covers the language-neutral model,
+authorization, surfaces, and resources.
+
+### Overview
+
+Trellis does not prescribe an application's configuration parser, database,
+domain types, DI pattern, logging setup, or test framework. Trellis's supported
+Rust toolchain is current stable. Use `/api` for current Rustdoc and the
+generated participant source for project-specific APIs; private Trellis
+workspace crates are not consumer dependencies.
+
+`trellis-protocol` authenticates Auth's signed records (catalog snapshots,
+provider certificates, issuer rotations, logical-session authority, and
+revocations) against pinned instance/account trust. Catalog membership checks
+also require verified live authority and its retirement status; decoding a
+record is not trust.
+
+### Generated Package
+
+Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
+in `trellis.toml`. A durable `consumer` requires a direct `trellis` source
+package dependency containing `trellis.events@v1`; select and lock its version
+before generation.
+
+The output is one ordinary crate at the source package version, with
+`orders_trellis::apis::<api>`, `orders_trellis::participants::<participant>`, and
+`orders_trellis::apps::<request>` modules, not independent SDK or participant
+crates. Add an ordinary Cargo path dependency, for example
+`orders-trellis = { path = "trellis" }`. The generated crate declares the
+published runtime dependency matching the CLI. It has no generator build script,
+repository-relative runtime paths, or runtime-path config in `trellis.toml`. Use
+ordinary Cargo overrides when developing against a local runtime. Generation
+does not modify the consumer's Cargo manifest.
+
+An API SDK contains types and descriptors. The participant facade supplies the
+connection boundary and only the declared caller/provider surfaces. Its
+constants carry source-package/participant evidence; applications do not supply
+digests to service bootstrap. Matching built-in models come from
+`trellis-models` rather than being copied into each generated package;
+package-name equality alone never substitutes one schema for another. A
+support-ABI mismatch fails compilation and is not resolved through compatibility
+wrappers.
+
+Generated models keep wire distinctions: an optional field is `Option<T>`
+(`None` when omitted), `T | null` is `Nullable<T>`, so an optional nullable
+field decodes an explicit `null` as `Some(Nullable::Null)`. The IDL `json` type
+is `serde_json::Value`; an optional `json` field decodes a present `null` as
+`Some(Value::Null)`. Every model has an
+`extra` map preserving unknown fields and every enum an `Unknown(String)`
+variant; authored field `extra` or enum value `unknown` is rejected.
+
+#### Features
+
+`trellis-rs` enables `native-oauth` (native OAuth sign-in) and `device` (device
+enrollment and activation) by default. A service that connects only with its
+provisioned identity can build with `default-features = false`, which skips the
+HTTPS client and P-256. `telemetry-otlp` adds the OTLP exporter. Enable
+`event-store-sqlite` for `SqliteInboxStore`/`SqliteOutboxStore` or
+`event-store-postgres` for `PostgresInboxStore`/`PostgresOutboxStore`;
+database-specific `EventStoreError` variants follow the same features, and
+neither SQL driver is enabled by default.
+
+SDK HTTP connections and `telemetry-otlp` exporters preserve an
+application-installed Rustls provider, otherwise use ring locally without
+changing the process-wide provider, and verify certificates against platform
+trust.
+
+### Connection
+
+Service facades export `connect` and `ServiceConnectOptions`. Supply broker
+endpoints, pinned `RuntimeAuthorizationTrust`, and the provisioned identity
+seed. Name and timeout are optional builders:
+
+```rust
+let mut service = connect(
+    ServiceConnectOptions::new(nats_servers, runtime_trust, &identity_seed)
+        .with_name("orders-service")
+        .with_timeout_ms(10_000),
+).await?;
+```
+
+When the installation serves a private CA, such as the Trellis-generated
+installation CA, set `runtime_trust.root_certificates = vec![ca_path]` from
+provisioning. Native OAuth discovery takes the same roots:
+`discover_native_oauth(origin, &[ca_path])`, and the returned trust carries them
+into the broker connection. Non-empty roots replace the platform trust store for
+that installation; an empty list uses the platform store. Never disable
+certificate verification.
+
+When the build differs from the revision its instance runs, `connect` submits
+the build and returns once it installs. A build that asks for new access waits
+for an administrator, logging the review link and printing it as a QR code on
+stderr; a rejection returns `ServiceRuntimeError::UpdateRejected`.
+
+Register generated providers before `service.run().await`. The service lifecycle
+supervises its request host and workers. `with_timeout_ms(...)` bounds
+bootstrap, connect, and request operations. No context-store parameter exists.
+Retain generated facades, still-bound resources, and job references across
+transport handoffs.
+
+#### Native applications
+
+Apps and agents acquire native OAuth admission through the selected
+authorization origin. Pass the verified `NativeOAuthSession` and explicit broker
+endpoints to `UserConnectOptions::new(nats_servers, timeout_ms, session)`. Use
+Authorization Code with PKCE or Device Code according to the registered native
+client's flow. For Device Code, show `verification_uri_complete()` (the link
+with the code filled in; fall back to `verification_uri()`) and `user_code()`
+for comparison. Do not persist a bare session seed as a substitute for OAuth
+custody. The SDK retains credential custody and renews admission with the same
+runtime identity and key, using its owner's authenticated issuer pin. Recovery
+failure closes application transport without deleting the durable credential
+record.
+
+Native OAuth custody binds each credential handle to the selected issuer,
+installation, NATS account, and client identity. Owner-only files retain the
+persistent DPoP key and rotating refresh family; an operating-system lock spans
+read, exchange, and commit across processes. Recovery is marked before exchange
+so a lost response cannot trigger replay of a spent refresh token. Platforms
+without the owner-only adapter must supply an explicit secure-store adapter. The
+native CLI uses the same custody.
+
+Native OAuth renewal leases the current maintenance transport after HTTP
+refresh and retains it through signer lookup and verified authority promotion;
+replacing the physical NATS generation does not pin renewal to the original
+socket. Explicit native authority refresh uses the scheduled renewal worker and
+awaits authenticated publication and coverage.
+
+#### Devices
+
+Devices retain their provisioned identity seed and use generated activation and
+connect options. `DeviceActivationOptions` proves durable and ephemeral key
+possession for the one-use enrollment secret. For a companion, declare Auth's
+`deviceCompanionsManage` capability in the child request, obtain ordinary
+explicit native OAuth consent, associate with `DeviceCompanions.Attach` from
+that verified user connection, then drop the setup client and resume the same
+credential handle. Supply its independent `UserConnectOptions` via
+`DeviceConnectOptions::with_companion`; signed assignment must match the
+descriptor, native client, and exact OAuth grant.
+
+### Typed Surfaces
+
+Use the participant's generated methods. Dependency aliases are accessors on
+`client()`; owned provider registration is under `handle()`. For the tutorial's
+`orders` alias selecting RPC `Orders.Create`, use the generated
+`connected.client().orders().orders_create(...)` method. Its argument type comes
+from the generated API crate; it need not share the authored model's name.
+
+Exact method and model names come from the generated crate. Match generated
+declared-error variants directly; transport and unknown remote failures remain
+distinct. Native no-responder replies become `ServiceUnavailableError`, exposed
+through `CallError::ServiceUnavailable` or
+`TrellisClientError::ServiceUnavailable`. Generated cursor-paginated RPCs add
+lazy fallible page/item streams; a missing `next_cursor` is the sole end signal.
+
+Rust schema-validation issue paths use JSON Pointer: an empty path is the root,
+`/` is an empty-name property, and property names escape `~` as `~0` and `/` as
+`~1`, including missing required fields.
+
+#### Events
+
+Owned event publication uses generated publishers. Durable handlers use declared
+Consumer resources; Trellis resolves durable identity, local concurrency, retry,
+authority, and scoped Events DLQ/replay. Invalid core NATS publications are
+dropped without ending a healthy stream. Retain the returned listener guard:
+dropping or aborting it removes that registration without stopping the others
+in its group. Shared pull-loop failures are reported by the service lifecycle,
+and unmatched messages are not acknowledged as completed work.
+
+#### Operations
+
+Operations expose generated invokers and typed references for start, wait,
+progress/watch, and optional cancellation/transfer. Persist a caller-selected
+ULID before `start_with_invocation_id(id, &input)`; this is the durable
+operation ID. `OperationRef::reference()` exposes the complete serializable
+owner reference; restore it with the invoker's `control(reference)` without
+starting another execution. To cancel a reserved invocation that may not yet be
+admitted, use `start_cancelled_with_invocation_id(id, &input)` with its original
+input; the returned reference does not imply finished cleanup, so `wait()` for
+the terminal result.
+
+For explicit pre-acceptance owner selection, persist deployment, invocation
+ULID, and frozen input before sending, then use
+`start_on_deployment_with_invocation_id(deployment_id, invocation_id, &input)`
+or `start_cancelled_on_deployment_with_invocation_id(deployment_id,
+invocation_id, &input)`.
+
+In a handler, `control.operation_ref()` is the operation's complete serialized
+reference; a caller restores it with the generated operation's `control(ref)`.
+
+Operation handlers can clone `control.cancellation()` and observe `Requested`,
+`OwnershipLost`, or `ServiceStopping` with `is_cancelled()`, `reason()`, or
+`cancelled().await`. They must stop and join owned child work, including
+already-running `spawn_blocking` closures, before returning from requested
+cancellation. A cleanup handler error leaves cancellation nonterminal for
+recovery. Recovered handlers enter with `Requested` already set and must retry
+cleanup without starting new business work; return `Ok(())` only after cleanup
+succeeds. External effects may still overlap across owner loss; use idempotency
+or external fencing.
+
+#### Jobs
+
+Jobs are private service queues. Use generated queue handles and cloneable
+`jobs_client()` handles for submission from other handlers. Worker registration
+and processing are supervised by the service lifecycle, and delivery progress
+acknowledgement is automatic. Before business work, inspect
+`job.cancellation_token().reason()`: already-cancelled job handlers must
+reconcile earlier side effects. A recovered owner after fail-stale takeover sees
+`JobCancellationReason::StaleAttempt`.
+
+### Resources
+
+Use generated State, KV, Store, Consumer, and Job handles. Resolved binding
+payloads and subjects are runtime internals.
+
+App State accessors register generated native-IDL schemas asynchronously:
+`let (state, registration) = client.saved_resource("0", idempotency_key).await?;`
+(accepted historical versions add `&Migrations`).
+`let mut observation = state.watch().await?;` uses certified Live Watch, and
+`observation.next().await` returns
+`Option<Result<Option<StateValue<T>>, StateReadError>>`: outer None ends
+observation, inner None means unwritten or deleted. Use
+`observation.close().await?` and `observation.closed().await`; drop also closes.
+
+`StoreResourceHandle::list_page` and file metadata listing use the shared keyset
+pagination. Store readers and writers support bounded streaming through
+`write_from` and `read_into`. Reader drop starts owned cleanup on the creating
+Tokio runtime, including cross-thread drops; cleanup retains the generation
+lease. Whole-buffer helpers consume the same reader but retain the entire
+object in memory.
+
+#### Transfers
+
+Generated Operation references upload bytes with `upload(body)` or stream with
+`upload_from(reader)`; lower-level operation builders stream with
+`transfer_from(reader)` without a caller-supplied size or hash. Trellis counts
+and hashes bytes while sending and verifies size and SHA-256 on receipt.
+Download destination writes and upload backend-reader consumption release
+credit. Backend uploads pipeline bounded writes but await required
+acknowledgements and metadata commit before success. Cancellation before commit
+aborts staging; after commit it cannot undo the committed object. Cancel an
+upload with `upload_from_with_cancel(reader, &TransferCancellation)`: it returns
+`TransferCancelled` once the provider confirms, or `Timeout` after the client
+timeout when it does not, with remote cleanup unconfirmed.
+
+A `stream;` Operation handler takes the caller's live bytes with
+`operation.take_upload_stream()` (an `AsyncRead`, returned once). End of file
+means verified size/digest and recorded delivery, after which
+`operation.upload()` returns the metadata; a failed transfer is a read error.
+Serve generated downloads with
+`context.plan_stream_download_transfer(id, expires_at, info)` and
+`context.handle().spawn_stream_download_endpoint(plan, reader)`; `info` declares
+the exact size and digest.
+
+#### Transactional events
+
+Prepared events and SQL outbox stores let event intents participate in a local
+SQL transaction. The application owns its transaction and migration execution.
+Pass the claimed record to `mark_published`/`mark_failed`; false means ownership
+was superseded, and `dispatch_outbox_once` returns `ClaimLost` for superseded
+completion. See `/guides/libraries/rust` and current Rustdoc for supported
+stores and transaction APIs.
+
+### Accounts
+
+Generated account calls follow the language-neutral rules. Use
+`user.account.profile_revision` as `expected_revision` for
+`users_profile_update` with an idempotency key. Administrative `users_update`
+uses lifecycle `expected_revision`; omit unchanged profile fields for
+lifecycle-only saves, and add `expected_profile_revision` for intentional
+profile edits. Both revisions are checked atomically. Directory `avatar_url`
+follows the shared avatar rules.
+
+### Test And Verify
+
+Run generation and the consuming project's own Cargo checks. A Rust test uses
+the published `trellis-testkit` crate, which owns production server and broker
+processes, chooses loopback ports automatically, and returns the existing SDK
+connection options so generated service and app facades connect normally. No
+source checkout or compiler/runtime Cargo dependencies are required. The bare
+builder downloads the latest Trellis CLI/server release (or
+`TRELLIS_TEST_VERSION`), verified against its published checksum, and a pinned
+NATS archive (network on first use); the verified cache
+(`TRELLIS_TEST_CACHE_DIR`, otherwise the platform cache) lets later runtimes
+boot offline. Set `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
+`NatsSource::PathLookup` for a prebuilt broker. Set `TRELLIS_TEST_SERVER_BIN`, or use `NativeSource::Path { server }`, for
+explicit binaries with no fallback downloads. `trust_roots()` and
+`https_client_builder()` trust the runtime's generated CA. `restart()` restarts
+only the server, retaining its broker and durable installation;
+shutdown/cancellation reaps owned children before sandbox cleanup.
+
+Live user tests use `TrellisTestRuntime::create_user`, explicit
+`grant_user_capabilities(&user, Request::REQUIRED_CAPABILITIES)`, one
+`register_native_application::<Request>("app")`, then independent
+`login_native_application_as(&app, &user)` calls. `register_client_as` composes
+registration and login, and `register_client` retains its seeded-administrator
+convenience.
+
+A real-runtime test can also launch a Rust service from a Node test using
+`@oatscenter/trellis-testkit`; see the TypeScript guide.
+
+## Trellis AI guidance for Svelte browser apps
+
+Svelte and SvelteKit usage of Trellis, for AI coding agents working in a browser
+app repository. Read it with [the Trellis guide](llms-core.txt) and
+[the TypeScript guide](llms-typescript.txt) from the same Trellis revision as the
+installed libraries.
+
+### Overview
+
+This guide describes the optional Trellis Svelte integration. Trellis does not
+require Svelte, a UI design system, a configuration parser, or a particular
+application architecture.
+
+### Browser app setup
+
+Author the app in `contract.trellis`, run `trellis generate`, and pass its
+generated participant module to the Svelte integration. Set `[package]` and a
+package `name`, here `dashboard-trellis`, in `trellis.toml`. Install the resulting
+ordinary ESM package through your application's package manager.
+
+```ts
+import {
+  createTrellisApp,
+  type TrellisClientFor,
+} from "@oatscenter/trellis-svelte";
+import { apps } from "dashboard-trellis";
+
+const request = apps.AcmeDashboard.request;
+
+type AppClient = TrellisClientFor<typeof request>;
+
+export const trellisApp = createTrellisApp({
+  request,
+  trellisUrl: "https://localhost:3000",
+});
+```
+
+Trellis integration behavior:
+
+- `createTrellisApp(...)`, `TrellisProvider`, `SvelteTrellisConnection`, and
+  browser client auth mode `"browser"` are the intended browser-app wiring.
+- Browser sign-in is OAuth Authorization Code with PKCE and DPoP against the
+  installation's dedicated OAuth origin. Local-password or OIDC sign-in and
+  explicit capability consent happen on Trellis's own portal at that origin.
+  Application code never renders Trellis login or consent, handles upstream
+  provider callbacks, or constructs grant sets or capability lists.
+- Let `TrellisProvider` and `BrowserOAuthClient` from
+  `@oatscenter/trellis/auth/browser` own the redirect, callback, token exchange,
+  and refresh. Connected control uses generated APIs over NATS; do not call
+  Trellis HTTP endpoints directly or add HTTP context, logout, or bootstrap
+  calls. This does not restrict unrelated application HTTP APIs.
+- Browser custody lives in the `trellis-oauth` IndexedDB database: a
+  non-extractable DPoP key and an encrypted refresh credential scoped to the
+  selected installation and app. Ephemeral runtime keys, signed authority,
+  grants, transports, and issuer keys remain in memory.
+- Use `OwnAuthorityController` only when UI needs a reactive view of the SDK's
+  verified authority. It does not own refresh or verification; do not implement
+  a second verifier in Svelte or TypeScript code because Rust/WASM is
+  authoritative.
+- Issuer trust comes from the selected OAuth origin and authenticated rotation
+  links. Pending devices poll `/auth/device/enroll` through the device
+  activation helpers; approved devices connect with a signed provisioned
+  admission in NATS CONNECT, never an HTTP bootstrap.
+- `TrellisClientFor<typeof participant>` and `createTrellisApp(...)` consume the
+  generated participant directly. Do not reconstruct participant evidence in
+  application code.
+- Keep generated API SDKs and browser auth helpers on their explicit subpaths or
+  local workspace aliases.
+
+### Svelte integration
+
+Mount the app owner with `TrellisProvider` near the Svelte app root, then read
+the typed client with `trellisApp.getTrellis()` and connection status with
+`trellisApp.getConnection()`. The connection accessor returns a Svelte-reactive
+`SvelteTrellisConnection`.
+
+Keep this logical app owner across automatic transport handoffs. Equal-policy
+renewal keeps a healthy socket; newly approved authority is adopted on a ready
+successor without a manual refresh method or upgrade flag. Do not recreate the
+client or add an effect that reconnects it on each authorization refresh. Safe
+accepted work continues on its receiving connection. While own authorization
+coverage is unavailable, fresh calls either wait within their acquisition budget
+or report unavailability.
+
+Use Svelte context, not module-global mutable state, for app-scoped Trellis
+clients. `@oatscenter/trellis-svelte` owns the app context created by
+`createTrellisApp(...)`.
+
+### Cross-participant clients
+
+For calls to another API, declare the narrow required or optional `use`
+capability selection in `contract.trellis`. Generated participant types expose
+only the actions those capabilities allow.
+
+For labels of other Trellis users, select and obtain consent to `usersRead`,
+then use `Auth.Users.List/Get` for active directory profiles. For owner edits,
+select `accountProfileWrite` and call generated `usersProfileUpdate` with the
+self account's `profileRevision` and an idempotency key. Omitted fields stay
+unchanged; explicit clears restore linked-provider defaults, and manually set
+email is unverified. Manual choices survive later OIDC login. `Users.Resolve`
+with `accountRead` is self-only. Ordinary profiles omit `account`; admin details
+require delegated and currently held `trellis.auth.v1:users.manage`. A directory match
+does not grant access to application-owned records; key those rules by immutable
+`principalId`, not names or email.
+
+```trellis
+app Dashboard {
+  use orders { required capability orders.read; }
+}
+```
+
+### Vite, npm, and `svelte-check`
+
+Native generation does not execute TypeScript or require a Vite plugin. The
+application's bundler and type checker still need to resolve imports from the
+one generated package and the installed Trellis packages. Its executable `.js`
+and `.d.ts` require no consumer transpilation or Trellis CLI once packaged. Keep
+generated implementations out of Git and run `trellis install` before local builds.
+Use the
+resolver configuration appropriate to that application; the checked-in app demo
+illustrates one npm/Vite setup, not a required frontend stack.
+
+When an import fails, inspect its actual generated specifier and the installed
+package exports. Regenerate stale code rather than editing generated imports.
+Type the connected client with `TrellisClientFor<typeof participant>`; an extra
+API SDK is not needed just to type the app client.
+
+### Verification
+
+Use the format, typecheck, lint, test, run, and migration commands configured by
+the app repository. If contract artifacts or generated SDKs changed, run
+`trellis generate` and commit `trellis.lock`; `.trellis` output remains
+disposable.

@@ -1,60 +1,79 @@
-import { jetstream } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/nats-core";
-import { base64urlEncode } from "./auth/utils.ts";
+import { isErr } from "@oatscenter/result";
+import { API as HealthApi } from "./internal_sdk/generated/apis/health/mod.js";
 import {
   type HealthHeartbeatSample,
   HealthHeartbeatSampleCodec,
 } from "./internal_sdk/generated/types/_internal/p0.js";
+import { getApiRuntime } from "./participant_runtime/participant.ts";
+import { Trellis, type TrellisAuth } from "./session.ts";
+import type { TrellisTransportProvider } from "./transport/generations.ts";
 
-const HEALTH_HEARTBEAT_SUBJECT_PREFIX = "health.v1.heartbeat";
-
-export type HealthHeartbeatSubjectIdentity = {
-  sessionKey: string;
-  participantKind: "service" | "device";
-  contractId: string;
-  contractDigest: string;
-  deploymentId: string;
-  instanceId: string;
-};
-
-function subjectToken(value: string): string {
-  if (value.length === 0) throw new Error("health subject identity is empty");
-  return base64urlEncode(new TextEncoder().encode(value));
-}
-
-/** Builds the exact runtime subject authorized for one heartbeat publisher. */
-export function healthHeartbeatSubject(
-  identity: HealthHeartbeatSubjectIdentity,
-): string {
-  if (!/^[A-Za-z0-9_-]+$/.test(identity.sessionKey)) {
-    throw new Error("health session key is not canonical base64url");
-  }
-  return [
-    HEALTH_HEARTBEAT_SUBJECT_PREFIX,
-    identity.participantKind,
-    subjectToken(identity.contractId),
-    subjectToken(identity.contractDigest),
-    subjectToken(identity.deploymentId),
-    subjectToken(identity.instanceId),
-    identity.sessionKey,
-  ].join(".");
-}
-
-/** Publishes one validated-size heartbeat sample to its dedicated stream. */
-export async function publishHealthHeartbeatSample(args: {
+/** Publish the native Health descriptor through ordinary SessionEvent signing,
+ * capability/catalog authorization and generation-fenced JetStream publication.
+ */
+export function createHealthHeartbeatPublisher(args: {
   nc: NatsConnection;
-  identity: HealthHeartbeatSubjectIdentity;
-  sample: HealthHeartbeatSample;
-}): Promise<void> {
-  const payload = new TextEncoder().encode(
-    JSON.stringify(HealthHeartbeatSampleCodec.encode(args.sample)),
+  auth: TrellisAuth;
+  transport: TrellisTransportProvider;
+  inboxPrefix: string;
+}): (sample: HealthHeartbeatSample) => Promise<void> {
+  const publisher = new Trellis(
+    "native-self-health",
+    args.nc,
+    args.auth,
+    {
+      api: getApiRuntime(HealthApi),
+      transport: args.transport,
+    },
+    args.inboxPrefix,
   );
-  if (payload.byteLength > 65_536) {
-    throw new Error("health heartbeat sample exceeds 64 KiB");
-  }
-  await jetstream(args.nc).publish(
-    healthHeartbeatSubject(args.identity),
-    payload,
-    { msgID: args.sample.sample.id },
-  );
+  return async (sampleValue) => {
+    const authorityLease = args.auth.authorityOwner?.own();
+    if (!authorityLease)
+      throw new Error("health publisher has no verified authority");
+    try {
+      const authority = authorityLease.authority;
+      const binding = authority.binding;
+      if (binding.kind !== "service" && binding.kind !== "device")
+        throw new Error("health publisher is not provisioned");
+      const metadata = authority.extensions["trellis.nativeParticipant.v1"];
+      if (
+        !metadata ||
+        typeof metadata !== "object" ||
+        Array.isArray(metadata) ||
+        metadata.participantId !== binding.participantId ||
+        typeof metadata.participantDigest !== "string"
+      ) {
+        throw new Error("health publisher has no signed participant metadata");
+      }
+      const sample = HealthHeartbeatSampleCodec.encode({
+        ...sampleValue,
+        participant: {
+          ...sampleValue.participant,
+          kind: binding.kind,
+          contractId: binding.participantId,
+          contractDigest: metadata.participantDigest,
+          instanceId: binding.instanceId,
+        },
+      });
+      if (!sample || typeof sample !== "object" || Array.isArray(sample)) {
+        throw new Error("invalid encoded health sample");
+      }
+      if (
+        new TextEncoder().encode(JSON.stringify(sample)).byteLength > 65_536
+      ) {
+        throw new Error("health heartbeat sample exceeds 64 KiB");
+      }
+      const result = await publisher
+        .publish(
+          `${HealthApi.identity}:event:Heartbeat`,
+          sample as Record<string, unknown>,
+        )
+        .take();
+      if (isErr(result)) throw result.error;
+    } finally {
+      authorityLease.release();
+    }
+  };
 }

@@ -1,393 +1,252 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { join } from "node:path";
+import { ulid } from "ulid";
+import { Result } from "@oatscenter/trellis";
 import {
   checkDeviceActivation,
   TrellisDevice,
 } from "@oatscenter/trellis/device";
-import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { createClient } from "@libsql/client";
-import { assert, assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
-
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import type {
-  ConsentCapability,
-  ConsentResource,
-} from "../../integration/fixtures/runtime/packages/runtime-trellis/types/index.js";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { deriveDeviceIdentity } from "@oatscenter/trellis/auth";
 import {
-  admittedConnections,
-  brokerConnectionKey,
-  readRuntimeBrokerInventory,
-} from "./_support/broker_inventory.ts";
+  connectNativeClient,
+  discoverNativeOAuth,
+  NativeOAuthClient,
+  MemoryNativeOAuthCustody,
+} from "@oatscenter/trellis/native";
+import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
+import {
+  participants,
+  types,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("device companion requires separate selected consent across restart", async (t) => {
+test("device enrollment and independent companion consent survive restart without granting optional authority", async () => {
   await withTrellisRuntime(async (runtime) => {
-    await runtime.deployments.create({
-      id: "device",
-      kind: "device",
-      reviewMode: "none",
-    });
-    await runtime.deployments.create({ id: "child-provider", kind: "service" });
-    const childProviderIdentity = await runtime.services.createInstance({
+    const providerIdentity = await runtime.registerService({
       deployment: "child-provider",
       name: "device-child-provider",
       contract: participants.ChildProvider.participant,
     });
-    const childProvider = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+    const provider = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.ChildProvider.participant,
-      seed: childProviderIdentity.seed,
+      seed: providerIdentity.seed,
     }).orThrow();
-    await childProvider.handleRequired(() => Result.ok({}));
-    await childProvider.handleOptional(() => Result.ok({}));
-    await runtime.contracts.install({
-      contract: participants.Device.Companion.participant,
-    });
-    await runtime.contracts.apply({
+    const providerExit = provider.wait().catch(() => undefined);
+    await provider.handleRequired(() => Result.ok({}));
+    await provider.handleOptional(() => Result.ok({}));
+    const participant = participants.Device.participant;
+    const request = participants.Device.Companion.request;
+    const deployment = await runtime.contracts.apply({
       deployment: "device",
-      contract: participants.Device.participant,
+      contract: participant,
     });
-    await runtime.ensurePortalConsentPolicy(
-      participants.Device.Companion.participant.identity,
-      [
-        "capability:runtime-trellis.device_child@v1::required",
-        "capability:runtime-trellis.device_child@v1::optional",
-        "capability:trellis.auth@v1::public",
-        "capability:trellis.state@v1::public",
-      ],
-    );
+    assert(deployment.deploymentId);
+    const deploymentId = types.AuthDeploymentGetRequestCodec.decode({
+      deploymentId: deployment.deploymentId,
+    }).deploymentId;
     const provisioned = await runtime.devices.provision({
-      deploymentId: "device",
-      participantId: participants.Device.participant.identity,
-      identityPublicKey: null,
-      instanceId: null,
-      idempotencyKey: crypto.randomUUID(),
+      deploymentId,
+      title: "Device",
+      idempotencyKey: ulid(),
     });
     assert(provisioned.provisioningSecret);
     const rootSecret = crypto.getRandomValues(new Uint8Array(32));
-    const activation = await checkDeviceActivation({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Device.participant,
+    const activationOptions = {
+      trellisUrl: runtime.oauthIssuer,
+      participant,
       rootSecret,
       provisioningSecret: provisioned.provisioningSecret,
-    });
-    assert(activation.status === "activation_required");
-    const portal = await runtime.connectClient({
-      name: "device-activation-portal",
-      contract: participants.DevicePortal.participant,
-    });
-    await t.step("companion cannot bootstrap directly", async () => {
-      await assertRejects(() =>
-        runtime.connectClient({
-          name: "forbidden-device-companion",
-          contract: participants.Device.Companion.participant,
-        })
-      );
-    });
-
-    const flowId = new URL(activation.activationUrl).searchParams.get(
-      "flowId",
-    )!;
-    const pending = await portal.deviceUserAuthoritiesResolve({
-      flowId,
-      confirmationCode: activation.confirmationCode,
-    }).start().orThrow();
-    // BI07: a live observation of the real Platform Operation must deliver an
-    // authoritative snapshot and closing it must not cancel the operation.
-    {
-      const observation = await pending.live({}).orThrow();
-      const events: unknown[] = [];
-      for await (const event of observation) {
-        events.push(event);
-        break;
-      }
-      assert(
-        events.length === 1,
-        "Platform Operation observation yielded no initial frame",
-      );
-      const snapshot = await pending.get().orThrow();
-      assertEquals(snapshot.state, "running");
-    }
-    const pendingSnapshot = await runtime.waitFor(async () => {
-      const snapshot = await pending.get().orThrow();
-      return snapshot.progress?.companionConsent ? snapshot : undefined;
-    });
-    assertEquals(pendingSnapshot.state, "running");
-    const consent = pendingSnapshot.progress?.companionConsent;
-    assert(consent);
-    assertEquals(
-      (await checkDeviceActivation({
-        trellisUrl: runtime.trellisUrl,
-        participant: participants.Device.participant,
-        rootSecret,
-      })).status,
-      "activation_required",
-    );
-    const approval = {
-      mode: "capabilities" as const,
-      installedRevision: consent.installedRevision,
-      expectedGrantRevision: consent.expectedGrantRevision,
-      decisionDigest: consent.decisionDigest,
-      approvedCapabilities: consent.capabilities.filter((
-        item: ConsentCapability,
-      ) => item.required && item.eligible).map((item: ConsentCapability) => ({
-        id: item.id,
-        consentDigest: item.consentDigest,
-      })),
-      approvedResources: consent.resources.filter((item: ConsentResource) =>
-        item.required && item.eligible
-      ).map((item: ConsentResource) => ({
-        kind: item.kind,
-        name: item.name,
-        commitment: item.requestedCommitment,
-      })),
-      companionApproved: false,
+      statePath: join(runtime.workdir, "activation.json"),
     };
-
-    const approved = await portal.deviceUserAuthoritiesResolve({
-      flowId,
-      confirmationCode: activation.confirmationCode,
-      companionApproval: approval,
-    }).start().orThrow();
-    const approvedResult = await runtime.waitFor(async () => {
-      const snapshot = await approved.get().orThrow();
-      return snapshot.state === "running" ? undefined : snapshot;
-    }, { timeoutMs: 60_000 });
-    assertEquals(approvedResult.state, "completed");
-    const fetch = globalThis.fetch;
-    globalThis.fetch = async (input, init) => {
-      if (
-        new URL(input instanceof Request ? input.url : input).pathname ===
-          "/bootstrap/device"
-      ) {
-        const body = JSON.parse(String(init?.body));
-        body.companion.proof =
-          (body.companion.proof.startsWith("A") ? "B" : "A") +
-          body.companion.proof.slice(1);
-        return await fetch(input, { ...init, body: JSON.stringify(body) });
-      }
-      return await fetch(input, init);
+    const server = (await discoverNativeOAuth(runtime.oauthIssuer)).orThrow();
+    const identity = await deriveDeviceIdentity(rootSecret);
+    const connectOptions = {
+      servers: [...server.natsServers],
+      trellisInstanceId: server.trust.instanceId,
+      audienceNatsAccount: server.trust.account,
+      issuers: [server.trust.issuer],
+      seed: identity.identitySeedBase64url,
+      participant,
     };
+    let device:
+      | Awaited<
+          ReturnType<
+            ReturnType<
+              typeof TrellisDevice.connect<typeof participant>
+            >["orThrow"]
+          >
+        >
+      | undefined;
     try {
-      await assertRejects(() =>
-        TrellisDevice.connect({
-          trellisUrl: runtime.trellisUrl,
-          participant: participants.Device.participant,
-          rootSecret,
-        }).orThrow()
+      const activation = await checkDeviceActivation(activationOptions);
+      assert.equal(activation.status, "activation_required");
+      if (activation.status !== "activation_required")
+        throw new Error("Missing review");
+      await assert.rejects(() =>
+        TrellisDevice.connect(connectOptions).orThrow(),
       );
+      const reviewId = types.AuthDeviceReviewGetRequestCodec.decode({
+        reviewId: new URL(activation.activationUrl).searchParams.get(
+          "reviewId",
+        ),
+        confirmationCode: activation.confirmationCode,
+      }).reviewId;
+      const { review } = await runtime.callAdminRpc("authDevicesReviewsGet", {
+        reviewId,
+        confirmationCode: activation.confirmationCode,
+      });
+      const approved = await runtime.callAdminRpc("authDevicesReviewsDecide", {
+        reviewId,
+        confirmationCode: activation.confirmationCode,
+        expectedRevision: review.revision,
+        decision: "approved",
+        idempotencyKey: ulid(),
+      });
+      await activation.waitForOnlineApproval();
+      await assert.rejects(() =>
+        TrellisDevice.connect(connectOptions).orThrow(),
+      );
+      assert.equal(
+        (await checkDeviceActivation(activationOptions)).status,
+        "activated",
+      );
+      // Preparing the ordinary test account does not register a substitute OAuth
+      // client: the accepted device declaration owns this exact native client.
+      const prepared = await runtime.registerClient({
+        name: "companion-user-grants",
+        contract: request,
+      });
+      await prepared.session.close();
+      const credentialCustody = new MemoryNativeOAuthCustody();
+      const login = await loginNativeTestClient({
+        issuer: runtime.oauthIssuer,
+        custody: credentialCustody,
+        clientId: `trellis.device.${deployment.deploymentId}.companion`,
+        request,
+        username: runtime.adminUsername,
+        password: runtime.adminPassword,
+        approvedCapabilities: request.requiredCapabilities,
+      });
+      const scope = login.session.scope;
+      const trust = login.session.trust;
+      const companion = await connectNativeClient({
+        ...login,
+        request,
+      }).orThrow();
+      try {
+        assert.deepEqual(await companion.required({}).orThrow(), {});
+        assert((await companion.optional({})).isErr());
+        await companion
+          .deviceCompanionsAttach({
+            reviewId,
+            confirmationCode: activation.confirmationCode,
+            expectedRevision: approved.review.revision,
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+      } finally {
+        await companion.connection.close();
+      }
+      let custody = (
+        await NativeOAuthClient.open({
+          custody: credentialCustody,
+          scope,
+          trust,
+        })
+      ).orThrow();
+      let session = (await custody.resume()).orThrow();
+      device = await TrellisDevice.connect({
+        ...connectOptions,
+        companion: { session, servers: login.servers },
+      }).orThrow();
+      assert(device.companion);
+      assert.notEqual(device.companion.connection, device.connection);
+      assert.deepEqual(await device.companion.required({}).orThrow(), {});
+      assert((await device.companion.optional({})).isErr());
+      await device.state.telemetry.set({ value: "device retained" }).orThrow();
+      await device.companion.state.shared
+        .set({ value: "user retained" })
+        .orThrow();
+      await device.companion.connection.close();
+      await device.connection.close();
+      device = undefined;
+      await provider.stop();
+      await providerExit;
+      await runtime.restart();
+      assert.equal(
+        (await checkDeviceActivation(activationOptions)).status,
+        "activated",
+      );
+      custody = (
+        await NativeOAuthClient.open({
+          custody: credentialCustody,
+          scope,
+          trust,
+        })
+      ).orThrow();
+      session = (await custody.resume()).orThrow();
+      device = await TrellisDevice.connect({
+        ...connectOptions,
+        companion: { session, servers: login.servers },
+      }).orThrow();
+      assert.deepEqual((await device.state.telemetry.get().orThrow())?.value, {
+        value: "device retained",
+      });
+      assert.deepEqual(
+        (await device.companion.state.shared.get().orThrow())?.value,
+        { value: "user retained" },
+      );
+      const { deployment: current } = await runtime.callAdminRpc(
+        "authDeploymentsGet",
+        {
+          deploymentId,
+        },
+      );
+      await runtime.callAdminRpc("authDeploymentsDisable", {
+        deploymentId: current.deploymentId,
+        expectedRevision: current.revision,
+        idempotencyKey: ulid(),
+      });
+      await assert.rejects(() =>
+        TrellisDevice.connect(connectOptions).orThrow(),
+      );
+      await assert.rejects(() => checkDeviceActivation(activationOptions), {
+        status: 403,
+        code: "device_enrollment_denied",
+      });
+      await device.companion.connection.close();
+      await device.connection.close();
+      device = undefined;
+      // Parent shutdown closes its wrapper, not the independent OAuth grant.
+      custody = (
+        await NativeOAuthClient.open({
+          custody: credentialCustody,
+          scope,
+          trust,
+        })
+      ).orThrow();
+      session = (await custody.resume()).orThrow();
+      const independent = await connectNativeClient({
+        session,
+        servers: login.servers,
+        request,
+      }).orThrow();
+      try {
+        assert.deepEqual(
+          (await independent.state.shared.get().orThrow())?.value,
+          { value: "user retained" },
+        );
+      } finally {
+        await independent.connection.close();
+      }
     } finally {
-      globalThis.fetch = fetch;
+      await device?.companion?.connection.close();
+      await device?.connection.close();
+      await provider.stop();
+      await providerExit;
     }
-    let device = await TrellisDevice.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Device.participant,
-      rootSecret,
-    }).orThrow();
-    const companion = device.companion;
-    assert(companion);
-    assert(companion.connection !== device.connection);
-    await t.step("first companion uses approved authority", async () => {
-      assertEquals(companion.connection.status.phase, "connected");
-      assertEquals((await companion.required({})).isOk(), true);
-      assertEquals((await companion.optional({})).isErr(), true);
-    });
-
-    await t.step(
-      "native device renewal keeps its socket and State usable",
-      async () => {
-        const database = createClient({
-          url: `file:${
-            join(runtime.workdir, "data", "trellis", "platform.sqlite")
-          }`,
-        });
-        try {
-          const nativeDigests = async () => {
-            const contexts = await database.execute({
-              sql:
-                "SELECT DISTINCT context_digest FROM auth_authorization_contexts WHERE participant_id = ?",
-              args: [participants.Device.participant.identity],
-            });
-            return new Set(
-              contexts.rows.map((row) => String(row.context_digest)),
-            );
-          };
-          const before = await nativeDigests();
-          const initial = admittedConnections(
-            await readRuntimeBrokerInventory(runtime),
-            before,
-          );
-          assertEquals(initial.length, 1);
-          await device.state.telemetry.set({ value: "native-before-renewal" })
-            .orThrow();
-          await runtime.waitFor(
-            async () =>
-              (await nativeDigests()).size >= before.size + 2
-                ? true
-                : undefined,
-            { timeoutMs: 45_000, intervalMs: 250 },
-          );
-          assertEquals(
-            (await device.state.telemetry.get().orThrow())?.value,
-            { value: "native-before-renewal" },
-          );
-          await device.state.telemetry.set({ value: "native-renewed" })
-            .orThrow();
-          assertEquals(
-            (await device.state.telemetry.get().orThrow())?.value,
-            { value: "native-renewed" },
-          );
-          assertEquals((await companion.required({})).isOk(), true);
-          const renewed = admittedConnections(
-            await readRuntimeBrokerInventory(runtime, {
-              requiredServerIds: [initial[0].server],
-            }),
-            await nativeDigests(),
-          );
-          assertEquals(
-            renewed.map(brokerConnectionKey),
-            initial.map(brokerConnectionKey),
-            "policy-equivalent native renewal must retain the same single socket",
-          );
-        } finally {
-          database.close();
-        }
-      },
-    );
-
-    const secondProvisioned = await runtime.devices.provision({
-      deploymentId: "device",
-      participantId: participants.Device.participant.identity,
-      identityPublicKey: null,
-      instanceId: null,
-      idempotencyKey: crypto.randomUUID(),
-    });
-    assert(secondProvisioned.provisioningSecret);
-    const secondRootSecret = crypto.getRandomValues(new Uint8Array(32));
-    const secondActivation = await checkDeviceActivation({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Device.participant,
-      rootSecret: secondRootSecret,
-      provisioningSecret: secondProvisioned.provisioningSecret,
-    });
-    assert(secondActivation.status === "activation_required");
-    const secondFlowId = new URL(secondActivation.activationUrl).searchParams
-      .get(
-        "flowId",
-      )!;
-    const secondPending = await portal.deviceUserAuthoritiesResolve({
-      flowId: secondFlowId,
-      confirmationCode: secondActivation.confirmationCode,
-    }).start().orThrow();
-    const secondSnapshot = await runtime.waitFor(async () => {
-      const snapshot = await secondPending.get().orThrow();
-      const consent = snapshot.progress?.companionConsent;
-      return consent?.resources.every((resource: ConsentResource) =>
-          !resource.required || resource.actual
-        )
-        ? snapshot
-        : undefined;
-    });
-    const secondConsent = secondSnapshot.progress?.companionConsent;
-    assert(secondConsent);
-    assert(BigInt(secondConsent.expectedGrantRevision) > 0n);
-    const secondApproved = await portal.deviceUserAuthoritiesResolve({
-      flowId: secondFlowId,
-      confirmationCode: secondActivation.confirmationCode,
-      companionApproval: {
-        mode: "capabilities",
-        installedRevision: secondConsent.installedRevision,
-        expectedGrantRevision: secondConsent.expectedGrantRevision,
-        decisionDigest: secondConsent.decisionDigest,
-        approvedCapabilities: secondConsent.capabilities.filter((
-          item: ConsentCapability,
-        ) => item.required && item.eligible && !item.alreadyApproved).map((
-          item: ConsentCapability,
-        ) => ({
-          id: item.id,
-          consentDigest: item.consentDigest,
-        })),
-        approvedResources: secondConsent.resources.filter((
-          item: ConsentResource,
-        ) => item.required && item.eligible && !item.alreadyApproved).map((
-          item: ConsentResource,
-        ) => ({
-          kind: item.kind,
-          name: item.name,
-          commitment: item.requestedCommitment,
-        })),
-        companionApproved: false,
-      },
-    }).start().orThrow();
-    const secondResult = await runtime.waitFor(async () => {
-      const snapshot = await secondApproved.get().orThrow();
-      return snapshot.state === "running" ? undefined : snapshot;
-    }, { timeoutMs: 60_000 });
-    assertEquals(
-      secondResult.state,
-      "completed",
-      `second approval state ${secondResult.state}`,
-    );
-    let secondDevice = await TrellisDevice.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Device.participant,
-      rootSecret: secondRootSecret,
-    }).orThrow();
-    assertEquals((await secondDevice.companion?.required({}))?.isOk(), true);
-    await runtime.waitFor(async () => {
-      const result = await companion.required({});
-      return result.isOk() ? true : undefined;
-    });
-    await companion.state.shared.set({ value: "same-user" }).orThrow();
-    await runtime.waitFor(async () => {
-      const value = (await secondDevice.companion?.state.shared.get().orThrow())
-        ?.value;
-      return value?.value === "same-user" ? true : undefined;
-    });
-    await companion.connection.close();
-    await secondDevice.companion?.connection.close();
-    await device.connection.close();
-    await secondDevice.connection.close();
-
-    await runtime.restart();
-    device = await TrellisDevice.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Device.participant,
-      rootSecret,
-    }).orThrow();
-    const restartedCompanion = device.companion;
-    assertEquals(
-      (await device.state.telemetry.get().orThrow())?.value,
-      { value: "native-renewed" },
-    );
-    await device.state.telemetry.delete().orThrow();
-    assert(restartedCompanion);
-    assert(restartedCompanion.connection !== device.connection);
-    assertEquals((await restartedCompanion.required({})).isOk(), true);
-    secondDevice = await TrellisDevice.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Device.participant,
-      rootSecret: secondRootSecret,
-    }).orThrow();
-    assertEquals((await secondDevice.companion?.required({}))?.isOk(), true);
-    await restartedCompanion.logout();
-    assertEquals((await secondDevice.companion?.required({}))?.isOk(), true);
-    assertEquals(
-      (await secondDevice.companion?.state.shared.get().orThrow())?.value,
-      { value: "same-user" },
-    );
-    await secondDevice.companion?.state.shared.delete().orThrow();
-    await secondDevice.companion?.connection.close();
-    await device.connection.close();
-    await secondDevice.connection.close();
-    await portal.connection.close();
-    await childProvider.connection.close();
-  }, {
-    authorization: {
-      contextLifetimeSeconds: 62,
-      refreshLeadSeconds: 25,
-      refreshJitterSeconds: 0,
-      minimumContextLifetimeSeconds: 32,
-    },
   });
 });

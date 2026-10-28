@@ -1,0 +1,112 @@
+---
+title: "What is Trellis?"
+description: "A minimally technical overview of why Trellis exists, how it compares with REST and pub/sub, and what it gives teams building connected data systems."
+---
+
+Trellis helps teams build connected data systems without making every program
+invent its own API wiring, permissions, retries, and runtime conventions.
+
+It is for systems where many programs need to work together: backend services,
+web apps, command-line tools, devices, operator portals, and automation agents.
+Each program connects to Trellis, says what it provides or needs, and then uses a
+typed interface for requests, events, live views, and long-running work.
+
+## Why Trellis exists
+
+Most data systems start simple. One app calls one service. Then more services
+arrive. Some work becomes asynchronous. Some users need browser access. Devices
+need activation. Operators need to approve which programs may talk to which
+services. Teams need to evolve APIs without breaking everything.
+
+At that point, plain HTTP endpoints or a raw message bus leave too many choices
+to each team:
+
+- What payload shape is valid?
+- Who may call this action?
+- How does a caller know whether a failure is expected or a bug?
+- How should progress for long-running work be observed?
+- Which events are durable enough to process later?
+- How do apps, services, devices, and CLIs all connect consistently?
+
+Trellis exists to make those answers shared, typed, and repeatable.
+
+## Trellis compared with REST
+
+REST is a good fit when a client talks to a server through resource-shaped HTTP
+endpoints. It is familiar, easy to inspect, and widely supported.
+
+Trellis is for systems that need more than request and response:
+
+- Services can expose normal calls, but also publish events, provide filtered
+  live live observations, and run caller-visible operations.
+- Apps and CLIs can use typed generated clients instead of hand-written URL and
+  JSON glue.
+- Long-running work can report progress and finish later without inventing a
+  separate polling API.
+- Permissions are tied to the declared interface, not scattered across route
+  handlers and client code.
+
+Trellis does not try to make every interaction look like a REST resource. It
+gives each interaction the shape it naturally needs.
+
+## Trellis compared with raw pub/sub
+
+A message bus is powerful because it decouples programs. But raw pub/sub can
+also make systems harder to understand: subject names are strings, payloads are
+implicit, permissions are external, and failures are often handled differently
+by every team.
+
+Trellis keeps the decoupling while adding structure:
+
+- Message names and payloads come from generated interfaces.
+- Callers see ordinary typed methods instead of raw subjects.
+- Services still communicate asynchronously where that is the right model.
+- Operators can reason about which program is allowed to use which surface.
+
+You get the flexibility of a message-driven system without forcing every
+developer to work directly at the message-bus level.
+
+## What Trellis offers
+
+Trellis gives connected programs a common runtime and language libraries for:
+
+- typed request/response calls
+- durable events
+- filtered live live observations
+- long-running operations with progress and terminal results
+- expected error modeling
+- service and device authentication flows
+- deployment-aware permissions
+- generated TypeScript and Rust SDKs
+- resource bindings for service-owned data stores and background jobs
+
+The result is a safer developer experience for data systems. The shape of a call,
+the permissions needed to use it, and the errors a caller should handle are all
+described in one place and reflected in code.
+
+## Who uses Trellis
+
+Any program that connects to a Trellis deployment is a participant.
+
+Common participants include:
+
+- services that own business capabilities and data
+- browser apps and portals that users sign in to
+- CLIs and admin tools that automate operational tasks
+- devices that activate into a deployment and report data
+- automation agents that need limited access to approved capabilities
+
+Trellis is not a strict client/server framework. A service can both provide an
+API and call another service. A portal can call service APIs and watch live
+updates. A device can connect with its own identity. The important thing is that
+each program declares what it needs and uses the generated interface for it.
+
+## Where to go next
+
+- Read [Libraries](/guides/libraries) for the short technical orientation.
+- Follow [Write a Service](/guides/write-a-service) to build a service end to
+  end.
+- Follow [Writing SvelteKit Apps](/guides/writing-sveltekit-apps) for a browser
+  app path.
+- Use [Starting Trellis](/guides/starting-trellis) when you need a local runtime.
+- Use the [API Reference](/api) when you need exact TypeScript or Rust symbols.

@@ -2,8 +2,177 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
+/// Public OAuth client registration operations.
+#[derive(Debug, Subcommand)]
+pub enum ClientsCommand {
+    /// List one page of registered clients.
+    List {
+        /// Opaque next-page cursor from the preceding result.
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Read one registration, including its current revision.
+    Get { client_id: String },
+    /// Create or replace a registration using an AuthOAuthClientPutRequest JSON file.
+    /// Use kind=browser, development=true and exact redirectUris for localhost apps.
+    Put { input: PathBuf },
+    /// Choose how people may create their own account while signing in to
+    /// this app; options you leave out keep their current value.
+    SignUp(ClientSignUpArgs),
+    /// Disable a client at the explicit expected revision.
+    Disable(ClientMutationArgs),
+    /// Delete a client at the explicit expected revision.
+    Delete(ClientMutationArgs),
+}
+
+/// How people may create their own account while signing in to one app.
 #[derive(Debug, Args)]
-/// Start a detached portal login against an auth service.
+#[command(
+    group(clap::ArgGroup::new("password_state").args(["password", "no_password"])),
+    group(clap::ArgGroup::new("providers_state").args(["providers", "no_providers"]))
+)]
+pub struct ClientSignUpArgs {
+    pub client_id: String,
+    /// Allow a username and password chosen on the Portal. The installation
+    /// must also allow local sign-up (`trellis sign-in set --local-sign-up`).
+    #[arg(long)]
+    pub password: bool,
+    #[arg(long)]
+    pub no_password: bool,
+    /// Let a first sign-in with an identity provider create the account.
+    #[arg(long)]
+    pub providers: bool,
+    #[arg(long)]
+    pub no_providers: bool,
+}
+
+/// How people sign in to this Trellis. Changes apply at once.
+#[derive(Debug, Subcommand)]
+pub enum SignInCommand {
+    /// Show which sign-in methods are on.
+    Show,
+    /// Turn sign-in methods on or off; options you leave out keep their value.
+    Set(SignInSetArgs),
+}
+
+#[derive(Debug, Args)]
+#[command(
+    group(clap::ArgGroup::new("local_users_state").args(["local_users", "no_local_users"])),
+    group(clap::ArgGroup::new("local_sign_up_state").args(["local_sign_up", "no_local_sign_up"])),
+    group(clap::ArgGroup::new("providers_state").args(["providers", "no_providers"]))
+)]
+pub struct SignInSetArgs {
+    /// Sign in with a username and password.
+    #[arg(long)]
+    pub local_users: bool,
+    #[arg(long)]
+    pub no_local_users: bool,
+    /// Let people create their own username-and-password account, in apps
+    /// that also allow it (`trellis clients sign-up`).
+    #[arg(long)]
+    pub local_sign_up: bool,
+    #[arg(long)]
+    pub no_local_sign_up: bool,
+    /// Sign in with a company identity provider.
+    #[arg(long)]
+    pub providers: bool,
+    #[arg(long)]
+    pub no_providers: bool,
+}
+
+/// Login Portal branding, for the installation or one app.
+#[derive(Debug, Subcommand)]
+pub enum ThemeCommand {
+    /// Show a theme, including its current revision.
+    Show(ThemeTargetArgs),
+    /// Replace a theme with exactly the given settings.
+    Set(ThemeSetArgs),
+    /// Remove a theme, so the app falls back to the installation's.
+    Remove(ThemeTargetArgs),
+}
+
+/// The installation theme, or with `--client` that app's.
+#[derive(Debug, Args)]
+pub struct ThemeTargetArgs {
+    /// OAuth client ID of the app; omitted for the installation theme.
+    #[arg(long)]
+    pub client: Option<String>,
+    /// Theme revision for `remove`; omitted reads the current revision once.
+    #[arg(long)]
+    pub expected_revision: Option<u64>,
+}
+
+/// A complete theme. Anything not given is left unset.
+#[derive(Debug, Args)]
+pub struct ThemeSetArgs {
+    /// OAuth client ID of the app; omitted for the installation theme.
+    #[arg(long)]
+    pub client: Option<String>,
+    /// Name shown in the Portal header and page titles instead of "Trellis".
+    #[arg(long)]
+    pub name: Option<String>,
+    /// PNG, JPEG, WebP, or SVG logo (at most 256 KiB).
+    #[arg(long)]
+    pub logo: Option<PathBuf>,
+    /// Stylesheet loaded after the Portal's own (installation theme only).
+    #[arg(long)]
+    pub stylesheet: Option<PathBuf>,
+    /// Light colour as NAME=#hex; NAME is one of page, surface, ink, muted,
+    /// line, line-strong, primary, primary-hover, on-primary, soft.
+    #[arg(long = "color", value_name = "NAME=#HEX")]
+    pub colors: Vec<String>,
+    /// Dark colour as NAME=#hex, with the same names as `--color`.
+    #[arg(long = "dark-color", value_name = "NAME=#HEX")]
+    pub dark_colors: Vec<String>,
+    /// Copy as NAME=TEXT; NAME is sign_in_title, sign_in_subtitle, or footer.
+    #[arg(long = "copy", value_name = "NAME=TEXT")]
+    pub copy: Vec<String>,
+    /// Theme revision; omitted reads the current revision once.
+    #[arg(long)]
+    pub expected_revision: Option<u64>,
+}
+
+/// Revision-fenced public client mutation.
+#[derive(Debug, Args)]
+pub struct ClientMutationArgs {
+    pub client_id: String,
+    #[arg(long)]
+    pub expected_revision: u64,
+}
+
+/// Accepted API catalog operations using generated request JSON.
+#[derive(Debug, Subcommand)]
+pub enum ApisCommand {
+    /// List one page of accepted APIs.
+    List {
+        #[arg(long)]
+        cursor: Option<String>,
+    },
+    /// Inspect the accepted API and canonical IDL.
+    Get { api_id: String },
+    /// Review the APIs a source package's participant implements.
+    Review(ApisSourceArgs),
+    /// Accept the APIs a source package's participant implements, after a
+    /// compatible review. An incompatible change needs `force-replace`.
+    Accept(ApisSourceArgs),
+    /// Force an incompatible review using AuthApiForceReplaceRequest JSON.
+    /// Requires apis.forceReplace plus both explicit acknowledgement fields.
+    ForceReplace { input: PathBuf },
+}
+
+/// A participant in a native source package.
+#[derive(Debug, Args)]
+pub struct ApisSourceArgs {
+    /// Directory containing the package's `trellis.toml`.
+    #[arg(long)]
+    pub source: PathBuf,
+    /// Participant identity; required when the package has several.
+    #[arg(long)]
+    pub participant: Option<String>,
+}
+
+#[derive(Debug, Args)]
+/// Authorize this native client through the selected server's device flow.
 pub struct LoginArgs {
     #[arg(value_name = "TRELLIS_URL")]
     /// Base URL for the Trellis deployment.
@@ -12,71 +181,17 @@ pub struct LoginArgs {
     /// Write the login URL to this path once it is available.
     #[arg(long = "login-url-file", value_name = "PATH")]
     pub login_url_file: Option<PathBuf>,
-}
 
-#[derive(Debug, Args)]
-/// Manage identity-owned authority and grants.
-pub struct IdentityCommand {
-    #[command(subcommand)]
-    pub command: IdentitySubcommand,
-}
+    /// Trust only this PEM CA for the deployment's OAuth and NATS TLS, such as
+    /// a Trellis-generated installation CA. Verify its fingerprint out of band.
+    #[arg(long, value_name = "PATH", conflicts_with = "ca_fingerprint")]
+    pub ca_certificate: Option<PathBuf>,
 
-#[derive(Debug, Subcommand)]
-/// Identity grant operations.
-pub enum IdentitySubcommand {
-    /// Inspect or replace participant-scoped user grants.
-    Grants(IdentityGrantsCommand),
-}
-
-#[derive(Debug, Args)]
-/// Manage participant-scoped user grants.
-pub struct IdentityGrantsCommand {
-    #[command(subcommand)]
-    pub command: IdentityGrantsSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-/// Identity grant operations.
-pub enum IdentityGrantsSubcommand {
-    /// Filter user grants by owner or participant.
-    List(IdentityGrantsListArgs),
-    /// Inspect one participant grant.
-    Get(IdentityGrantsGetArgs),
-    /// Replace one participant grant.
-    Set(IdentityGrantsSetArgs),
-    /// Revoke one participant grant.
-    Revoke(IdentityGrantsRevokeArgs),
-}
-
-#[derive(Debug, Args)]
-/// Install participant definitions.
-pub struct ParticipantsCommand {
-    #[command(subcommand)]
-    pub command: ParticipantsSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-/// Participant definition operations.
-pub enum ParticipantsSubcommand {
-    /// Compile and install one participant definition.
-    Install(ParticipantsInstallArgs),
-}
-
-#[derive(Debug, Args)]
-/// Compile and install one participant definition.
-pub struct ParticipantsInstallArgs {
-    #[arg(long)]
-    /// Trellis source-package root containing trellis.toml and trellis.lock.
-    pub source: PathBuf,
-    #[arg(long)]
-    /// Participant ID when the project declares more than one candidate.
-    pub participant: Option<String>,
-    #[arg(long)]
-    /// Expected installed revision; omitted reads it once.
-    pub expected_revision: Option<u64>,
-    #[arg(long)]
-    /// Mark this exact package digest as operator-trusted platform evidence.
-    pub platform_trust: bool,
+    /// Trust and pin the CA the deployment presents only if its SHA-256
+    /// fingerprint is this value, without prompting. Without it, an untrusted
+    /// CA is shown by fingerprint and pinned once you accept it.
+    #[arg(long, value_name = "SHA256")]
+    pub ca_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -98,65 +213,6 @@ pub enum IssuersSubcommand {
 pub struct IssuersRevokeArgs {
     /// Issuer key ID.
     pub key_id: String,
-    #[arg(long)]
-    /// Operator-visible revocation reason.
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Args)]
-/// Filter user grants by owner or participant.
-pub struct IdentityGrantsListArgs {
-    #[arg(long)]
-    /// Restrict results to grants stored for one Trellis user ID.
-    pub user: Option<String>,
-
-    #[arg(long)]
-    /// Restrict results to one installed participant ID.
-    pub participant: Option<String>,
-}
-
-#[derive(Debug, Args)]
-/// Inspect one participant grant.
-pub struct IdentityGrantsGetArgs {
-    /// Installed participant ID.
-    pub participant_id: String,
-    #[arg(long)]
-    /// Grant owner; defaults to the authenticated user.
-    pub user: Option<String>,
-}
-
-#[derive(Debug, Args)]
-/// Replace one participant grant from exact JSON input.
-pub struct IdentityGrantsSetArgs {
-    /// Installed participant ID.
-    pub participant_id: String,
-    #[arg(long)]
-    /// Trellis user that owns the grant.
-    pub user: String,
-    #[arg(long)]
-    /// JSON file containing installedRevision, grants, platformPrivileges, and expiresAt.
-    /// Integers accept JSON numbers or canonical decimal strings; expiresAt may be null.
-    pub input: PathBuf,
-    #[arg(long)]
-    /// Expected current grant revision; omitted reads it once.
-    pub expected_revision: Option<u64>,
-}
-
-#[derive(Debug, Args)]
-/// Revoke one participant grant.
-pub struct IdentityGrantsRevokeArgs {
-    /// Installed participant ID.
-    pub participant_id: String,
-
-    #[arg(long)]
-    /// Grant owner; defaults to the authenticated user.
-    pub user: Option<String>,
-    #[arg(long)]
-    /// Expected current grant revision; omitted reads it once.
-    pub expected_revision: Option<u64>,
-    #[arg(long)]
-    /// Operator-visible revocation reason.
-    pub reason: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -164,38 +220,6 @@ pub struct IdentityGrantsRevokeArgs {
 pub struct UsersCommand {
     #[command(subcommand)]
     pub command: UsersSubcommand,
-}
-
-#[derive(Debug, Args)]
-/// Inspect and manage login portal admin surfaces.
-pub struct PortalsCommand {
-    #[command(subcommand)]
-    pub command: PortalsSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-/// Portal registry and login portal policy operations.
-pub enum PortalsSubcommand {
-    /// List visible login portals.
-    List,
-    /// Inspect login portal admin surfaces.
-    Login(PortalsLoginCommand),
-}
-
-#[derive(Debug, Args)]
-/// Inspect built-in login settings and selection routes.
-pub struct PortalsLoginCommand {
-    #[command(subcommand)]
-    pub command: PortalsLoginSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-/// Built-in login portal settings and route selection operations.
-pub enum PortalsLoginSubcommand {
-    /// Show built-in login registration defaults.
-    Default,
-    /// List login route selection rules.
-    Selection,
 }
 
 #[derive(Debug, Subcommand)]
@@ -212,6 +236,98 @@ pub enum UsersSubcommand {
 }
 
 #[derive(Debug, Args)]
+/// Manage roles: named sets of capabilities given to users.
+pub struct RolesCommand {
+    #[command(subcommand)]
+    pub command: RolesSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+/// Role administration operations.
+pub enum RolesSubcommand {
+    /// List roles.
+    List,
+    /// Show one role and the users who have it.
+    Show(RoleRefArgs),
+    /// Create one role.
+    Create(RoleCreateArgs),
+    /// Edit one role; options you leave out keep their current value.
+    Edit(RoleEditArgs),
+    /// Delete one role and remove it from everyone who has it.
+    Delete(RoleRefArgs),
+    /// Give one role to one user.
+    Assign(RoleMemberArgs),
+    /// Take one role away from one user.
+    Revoke(RoleMemberArgs),
+}
+
+#[derive(Debug, Args)]
+/// Reference one role and one user.
+pub struct RoleMemberArgs {
+    #[arg(value_name = "ROLE_ID")]
+    pub role_id: String,
+
+    #[arg(value_name = "USER_ID")]
+    pub user_id: String,
+}
+
+#[derive(Debug, Args)]
+/// Reference one role by role ID.
+pub struct RoleRefArgs {
+    #[arg(value_name = "ROLE_ID")]
+    pub role_id: String,
+}
+
+#[derive(Debug, Args)]
+/// Create one role.
+pub struct RoleCreateArgs {
+    #[arg(long)]
+    pub title: String,
+
+    #[arg(long, default_value = "")]
+    pub description: String,
+
+    /// Capability the role gives, such as `trellis.auth.v1:users.manage`.
+    /// Repeat for each capability.
+    #[arg(long = "capability", value_name = "CAPABILITY_ID")]
+    pub capabilities: Vec<String>,
+
+    /// Give this role to every user created from now on.
+    #[arg(long)]
+    pub new_users: bool,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("new_users_state")
+        .args(["new_users", "no_new_users"])
+        .multiple(false)
+))]
+/// Edit one role.
+pub struct RoleEditArgs {
+    #[arg(value_name = "ROLE_ID")]
+    pub role_id: String,
+
+    #[arg(long)]
+    pub title: Option<String>,
+
+    #[arg(long)]
+    pub description: Option<String>,
+
+    /// Replace the role's capabilities. Repeat for each capability.
+    #[arg(long = "capability", value_name = "CAPABILITY_ID")]
+    pub capabilities: Option<Vec<String>>,
+
+    /// Give this role to every user created from now on.
+    #[arg(long)]
+    pub new_users: bool,
+
+    /// Stop giving this role to new users; users who have it keep it.
+    #[arg(long)]
+    pub no_new_users: bool,
+}
+
+#[derive(Debug, Args)]
 /// Reference one user by Trellis user ID.
 pub struct UserRefArgs {
     #[arg(value_name = "USER_ID")]
@@ -225,13 +341,7 @@ pub struct UserCreateArgs {
     pub name: Option<String>,
 
     #[arg(long)]
-    pub email: Option<String>,
-
-    #[arg(long)]
-    pub username: Option<String>,
-
-    #[arg(long)]
-    pub inactive: bool,
+    pub username: String,
 }
 
 #[derive(Debug, Args)]
@@ -253,7 +363,4 @@ pub struct UserEditArgs {
 
     #[arg(long)]
     pub name: Option<String>,
-
-    #[arg(long)]
-    pub email: Option<String>,
 }

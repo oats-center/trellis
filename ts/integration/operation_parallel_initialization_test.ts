@@ -7,27 +7,27 @@
  * queue-grouped subscriptions, which is not observable through public behavior.
  */
 
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("concurrent operation registration succeeds and runs the operation once", async () => {
+test("concurrent operation registration succeeds and runs the operation once", async () => {
   await withTrellisRuntime(async (runtime) => {
     const contract = participants.Provider.participant;
-    await runtime.contracts.install({ contract });
-    const requested = await runtime.contracts.requestApply({ contract });
-    if (requested.status === "approval_required") {
-      await runtime.contracts.approveApply(requested.pendingId, {});
-    }
+    await runtime.contracts.apply({ contract });
     const instance = await runtime.services.createInstance({
       name: "parallel-init-provider",
       contract,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: contract,
       name: "parallel-init-provider",
       seed: instance.seed,
@@ -45,19 +45,21 @@ Deno.test("concurrent operation registration succeeds and runs the operation onc
         service.handleWork(handler),
         service.handleWork(handler),
       ]);
-      assertEquals(service.connection.status.phase, "connected");
+      assert.deepEqual(service.connection.status.phase, "connected");
 
       const caller = await runtime.connectClient({
         name: "parallel-init-caller",
-        contract: participants.Caller.participant,
+        contract: apps.Caller.request,
         timeout: 120_000,
       });
       try {
-        const operation = await caller.work({ value: "once" }).start()
+        const operation = await caller
+          .work({ value: "once" })
+          .start()
           .orThrow();
         const terminal = await operation.wait().orThrow();
-        assertEquals(terminal.output, { value: "ok" });
-        assertEquals(runs, 1, "the operation handler runs exactly once");
+        assert.deepEqual(terminal.output, { value: "ok" });
+        assert.deepEqual(runs, 1, "the operation handler runs exactly once");
       } finally {
         await caller.connection.close().catch(() => undefined);
       }

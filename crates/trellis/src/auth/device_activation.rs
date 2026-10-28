@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use hmac::{Hmac, KeyInit, Mac};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::client::{fetch_device_activation, DeviceConnectOptions, TrellisClientError};
@@ -267,6 +267,7 @@ fn activation_status<C>(
             }))
         }
         "rejected" => Err(DeviceActivationError::Rejected),
+        "expired" => Err(DeviceActivationError::Expired),
         state => Err(DeviceActivationError::UnexpectedState(state.to_owned())),
     }
 }

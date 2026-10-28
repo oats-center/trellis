@@ -1,10 +1,15 @@
 import {
   checkDeviceActivation,
   TrellisDevice,
+  type TrellisDeviceConnection,
 } from "@oatscenter/trellis/device";
+import {
+  base64urlDecode,
+  deriveDeviceIdentity,
+} from "@oatscenter/trellis/auth";
+import { discoverNativeOAuth } from "@oatscenter/trellis/native";
+import { decodeTransferGrant } from "@oatscenter/trellis";
 import { TransportError } from "@oatscenter/trellis/errors";
-import { TransferGrantSchema } from "@oatscenter/trellis";
-import { Value } from "typebox/value";
 import chalk from "chalk";
 import { readFile, writeFile } from "node:fs/promises";
 import process from "node:process";
@@ -34,14 +39,10 @@ async function prompt(
 const LIST_PAGE = { page: { limit: 50 } };
 
 async function main(): Promise<void> {
-  const [
-    trellisUrl,
-    rootSecret,
-    provisioningSecret,
-  ] = process.argv.slice(2);
+  const [trellisUrl, rootSecret, provisioningSecret] = process.argv.slice(2);
   if (!trellisUrl || !rootSecret) {
     console.error(
-      "Usage: deno task start <trellisUrl> <rootSecret> [provisioningSecret]",
+      "Usage: npm start -- <trellisUrl> <rootSecret> [provisioningSecret]",
     );
     process.exit(1);
   }
@@ -58,14 +59,20 @@ async function main(): Promise<void> {
   }
   if (activation.status === "activation_required") {
     console.info("Please activate device at:", activation.activationUrl);
+    console.info("Confirmation code:", activation.confirmationCode);
     renderCompactQr(activation.activationUrl);
     await activation.waitForOnlineApproval();
   }
 
+  const server = (await discoverNativeOAuth(trellisUrl)).orThrow();
+  const identity = await deriveDeviceIdentity(base64urlDecode(rootSecret));
   const device = await TrellisDevice.connect({
     participant: participants.Device.participant,
-    trellisUrl,
-    rootSecret,
+    seed: identity.identitySeedBase64url,
+    servers: [...server.natsServers],
+    trellisInstanceId: server.trust.instanceId,
+    audienceNatsAccount: server.trust.account,
+    issuers: [server.trust.issuer],
   }).orThrow();
 
   try {
@@ -118,15 +125,7 @@ async function main(): Promise<void> {
   }
 }
 
-type Device = Awaited<ReturnType<typeof connectForTypes>>;
-
-async function connectForTypes() {
-  return await TrellisDevice.connect({
-    participant: participants.Device.participant,
-    trellisUrl: "http://localhost:0",
-    rootSecret: "types-only",
-  }).orThrow();
-}
+type Device = TrellisDeviceConnection<typeof participants.Device.participant>;
 
 function printMenu(): void {
   console.log(chalk.cyan.bold("\nField Device Demo"));
@@ -162,27 +161,30 @@ async function runGuidedInspectionWizard(device: Device): Promise<void> {
     Number((await prompt("Inspection number", "1"))?.trim() || "1") - 1;
   const selected = assignments[selectedIndex] ?? assignments[0];
 
-  await device.state.selectedSite.set({
-    siteId: selected.siteId,
-    siteName: selected.siteName,
-    selectedAt: new Date().toISOString(),
-  }).orThrow();
+  await device.state.selectedSite
+    .set({
+      siteId: selected.siteId,
+      siteName: selected.siteName,
+      selectedAt: new Date().toISOString(),
+    })
+    .orThrow();
 
   console.info("Step 2: review and refresh the selected site.");
-  const site = await device.sitesGet({ siteId: selected.siteId })
-    .orThrow();
+  const site = await device.sitesGet({ siteId: selected.siteId }).orThrow();
   if (site.site) printSite(site.site);
   await refreshSiteById(device, selected.siteId);
 
   console.info("Step 3: attach optional evidence.");
-  const evidencePath = (await prompt("Evidence file path, or Enter to skip"))
-    ?.trim();
+  const evidencePath = (
+    await prompt("Evidence file path, or Enter to skip")
+  )?.trim();
   if (evidencePath) {
     await uploadEvidenceFile(device, evidencePath);
   }
 
   console.info("Step 4: generate the inspection report.");
-  const reportComment = (await prompt("Report comment"))?.trim() ||
+  const reportComment =
+    (await prompt("Report comment"))?.trim() ||
     "Guided field inspection completed.";
   await generateReportForInspection(
     device,
@@ -191,15 +193,18 @@ async function runGuidedInspectionWizard(device: Device): Promise<void> {
   );
 
   console.info("Step 5: save local draft notes.");
-  const notes = (await prompt("Draft notes"))?.trim() ||
+  const notes =
+    (await prompt("Draft notes"))?.trim() ||
     "Guided workflow notes captured from the field device.";
-  await device.kv.draftInspections.put(selected.inspectionId, {
-    inspectionId: selected.inspectionId,
-    siteId: selected.siteId,
-    checklistName: selected.checklistName,
-    notes,
-    updatedAt: new Date().toISOString(),
-  }).orThrow();
+  await device.kv.draftInspections
+    .put(selected.inspectionId, {
+      inspectionId: selected.inspectionId,
+      siteId: selected.siteId,
+      checklistName: selected.checklistName,
+      notes,
+      updatedAt: new Date().toISOString(),
+    })
+    .orThrow();
 
   console.info(chalk.green("Guided inspection workflow complete."));
 }
@@ -214,8 +219,10 @@ function contentTypeForFile(fileName: string): string {
 }
 
 function safeFileName(fileName: string): string {
-  return fileName.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ||
-    "evidence.bin";
+  return (
+    fileName.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ||
+    "evidence.bin"
+  );
 }
 
 async function listAssignments(device: Device): Promise<void> {
@@ -242,9 +249,11 @@ async function viewSelectedSite(device: Device): Promise<void> {
     return;
   }
 
-  const result = await device.sitesGet({
-    siteId: selected.value.siteId,
-  }).orThrow();
+  const result = await device
+    .sitesGet({
+      siteId: selected.value.siteId,
+    })
+    .orThrow();
 
   if (!result.site) {
     console.info(`Selected site ${selected.value.siteId} was not found.`);
@@ -266,16 +275,15 @@ async function refreshSite(device: Device): Promise<void> {
 
 async function refreshSiteById(device: Device, siteId: string): Promise<void> {
   console.log(chalk.green.bold("== Refreshing Site Summary"));
-  const operation = await device.sitesRefresh({ siteId })
-    .start()
-    .orThrow();
+  const operation = await device.sitesRefresh({ siteId }).start().orThrow();
   console.info(`Accepted refresh operation ${operation.id}`);
 
   const events = await operation.live({}).orThrow();
   for await (const event of events) {
     printOperationEvent(event);
     if (
-      event.type === "completed" || event.type === "failed" ||
+      event.type === "completed" ||
+      event.type === "failed" ||
       event.type === "cancelled"
     ) {
       break;
@@ -309,10 +317,11 @@ async function generateReportForInspection(
   reportComment: string,
 ): Promise<void> {
   console.log(chalk.green.bold("== Generating Inspection Report"));
-  const operation = await device.reportsGenerate({
-    inspectionId,
-    reportComment,
-  })
+  const operation = await device
+    .reportsGenerate({
+      inspectionId,
+      reportComment,
+    })
     .start()
     .orThrow();
   console.info(`Accepted report operation ${operation.id}`);
@@ -321,7 +330,8 @@ async function generateReportForInspection(
   for await (const event of events) {
     printOperationEvent(event);
     if (
-      event.type === "completed" || event.type === "failed" ||
+      event.type === "completed" ||
+      event.type === "failed" ||
       event.type === "cancelled"
     ) {
       break;
@@ -356,20 +366,21 @@ async function uploadEvidenceFile(
   console.log(chalk.green.bold("== Uploading Evidence"));
   console.info(`Uploading ${bytes.length} bytes to ${key}`);
 
-  const upload = await device.evidenceUpload({
-    key,
-    contentType: contentTypeForFile(originalFileName),
-    evidenceType: "field-photo",
-    metadata: {
-      evidenceId,
+  const upload = await device
+    .evidenceUpload({
+      key,
+      contentType: contentTypeForFile(originalFileName),
       evidenceType: "field-photo",
-      fileName: originalFileName,
-    },
-  })
+      metadata: {
+        evidenceId,
+        evidenceType: "field-photo",
+        fileName: originalFileName,
+      },
+    })
     .transfer(bytes)
     .onTransfer((event: { transfer: { transferredBytes: number } }) => {
       const percent = Math.floor(
-        event.transfer.transferredBytes / Math.max(bytes.length, 1) * 100,
+        (event.transfer.transferredBytes / Math.max(bytes.length, 1)) * 100,
       );
       if (percent >= nextProgressPercent) {
         console.info(
@@ -394,10 +405,12 @@ async function uploadEvidenceFile(
 
 async function listAndDownloadEvidence(device: Device): Promise<void> {
   console.log(chalk.green.bold("== Evidence Files"));
-  const result = await device.evidenceList({
-    ...LIST_PAGE,
-    prefix: "evidence/",
-  }).orThrow();
+  const result = await device
+    .evidenceList({
+      ...LIST_PAGE,
+      prefix: "evidence/",
+    })
+    .orThrow();
   if (result.items.length === 0) {
     console.info("No evidence files found.");
     return;
@@ -412,8 +425,9 @@ async function listAndDownloadEvidence(device: Device): Promise<void> {
     console.info(`   key=${item.key}`);
   });
 
-  const rawChoice = (await prompt("Download which number? Press Enter to skip"))
-    ?.trim();
+  const rawChoice = (
+    await prompt("Download which number? Press Enter to skip")
+  )?.trim();
   if (!rawChoice) return;
 
   const choice = Number(rawChoice);
@@ -431,10 +445,12 @@ async function listAndDownloadEvidence(device: Device): Promise<void> {
   const outputPath =
     (await prompt("Output path", `./${defaultName}`))?.trim() ||
     `./${defaultName}`;
-  const download = await device.evidenceDownload({
-    key: selected.key,
-  }).orThrow();
-  const transfer = Value.Parse(TransferGrantSchema, download.transfer);
+  const download = await device
+    .evidenceDownload({
+      key: selected.key,
+    })
+    .orThrow();
+  const transfer = decodeTransferGrant(download.transfer).orThrow();
   if (transfer.direction !== "receive") {
     throw new Error("Evidence download returned a send transfer grant.");
   }
@@ -453,20 +469,24 @@ async function watchActivity(device: Device): Promise<void> {
   const timer = setTimeout(() => controller.abort(), EVENT_WATCH_MS);
 
   try {
-    await device.onAuditRecorded(
-      (event) => {
-        console.info("Audit.Recorded");
-        console.dir(event, { depth: null });
-      },
-      { mode: "ephemeral", signal: controller.signal },
-    ).orThrow();
-    await device.onReportsPublished(
-      (event) => {
-        console.info("Reports.Published");
-        console.dir(event, { depth: null });
-      },
-      { mode: "ephemeral", signal: controller.signal },
-    ).orThrow();
+    await device
+      .onAuditRecorded(
+        (event) => {
+          console.info("Audit.Recorded");
+          console.dir(event, { depth: null });
+        },
+        { mode: "ephemeral", signal: controller.signal },
+      )
+      .orThrow();
+    await device
+      .onReportsPublished(
+        (event) => {
+          console.info("Reports.Published");
+          console.dir(event, { depth: null });
+        },
+        { mode: "ephemeral", signal: controller.signal },
+      )
+      .orThrow();
 
     await new Promise((resolve) => setTimeout(resolve, EVENT_WATCH_MS));
   } finally {
@@ -484,21 +504,26 @@ async function saveAndListDraftState(device: Device): Promise<void> {
     return;
   }
 
-  await device.state.selectedSite.set({
-    siteId: selected.siteId,
-    siteName: selected.siteName,
-    selectedAt: new Date().toISOString(),
-  }).orThrow();
+  await device.state.selectedSite
+    .set({
+      siteId: selected.siteId,
+      siteName: selected.siteName,
+      selectedAt: new Date().toISOString(),
+    })
+    .orThrow();
 
-  const notes = (await prompt("Draft notes"))?.trim() ||
+  const notes =
+    (await prompt("Draft notes"))?.trim() ||
     "Field notes captured from the consolidated device demo.";
-  await device.kv.draftInspections.put(selected.inspectionId, {
-    inspectionId: selected.inspectionId,
-    siteId: selected.siteId,
-    checklistName: selected.checklistName,
-    notes,
-    updatedAt: new Date().toISOString(),
-  }).orThrow();
+  await device.kv.draftInspections
+    .put(selected.inspectionId, {
+      inspectionId: selected.inspectionId,
+      siteId: selected.siteId,
+      checklistName: selected.checklistName,
+      notes,
+      updatedAt: new Date().toISOString(),
+    })
+    .orThrow();
 
   const selectedSite = await device.state.selectedSite.get().orThrow();
   const draftKeys = await device.kv.draftInspections.keys().orThrow();

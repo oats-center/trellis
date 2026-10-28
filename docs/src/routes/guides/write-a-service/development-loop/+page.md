@@ -1,0 +1,29 @@
+---
+title: "Development loop"
+description: "Know when to regenerate artifacts, review deployment authority, and restart the service."
+---
+
+# Development loop
+
+1. Edit a `.trellis` file explicitly listed by `[sources]`.
+2. Run `trellis generate`, or `trellis generate --watch` during development. It
+   re-records your package in `trellis.lock`; commit the updated lock.
+3. Run `trellis update` when dependency declarations change.
+4. Compile the generated language surface and application code.
+5. Restart the service. A build that asks for new capabilities or resources
+   waits for an administrator to approve it at the link it prints; anything
+   else installs as it connects.
+
+Watch mode observes the project and direct local dependencies. Temporary source
+errors are reported without deleting the last successful artifacts. Renderer and
+formatter failures also retain the previous successful outputs. Colliding
+participant output paths fail rather than overwriting another participant;
+installed API dependencies are left intact.
+
+Selections use exact names: `Get` and `Sites.Get` are distinct, and an invented
+prefix is not an API qualifier. Unsupported surface members and incompatible
+type constraints are source-located errors. Numeric bounds accept finite JSON
+literals, such as `number(minimum = -1, maximum = 2.5)`; lengths and item counts
+require unsigned integer literals. See the
+[IDL reference](/design/contracts/trellis-idl) for the member and constraint
+tables.

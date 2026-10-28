@@ -4,8 +4,8 @@
 #
 # Consumes the verification bundle produced by the release/check pipeline — a
 # gzipped tarball (or an already-extracted directory) containing the complete
-# unmodified Rust `.crate` dependency closure, a verified
-# NATS executable, the consumer fixture, and artifact-manifest.json. It validates
+# four public Rust crates, verified CLI/server/NATS
+# executables, the consumer fixture, and artifact-manifest.json. It validates
 # the manifest, hashes, and executable modes, extracts the
 # archives with path-safety checks, patches the staged artifacts into
 # a fresh isolated consumer build, audits the full declared dependency graph, and
@@ -13,20 +13,14 @@
 # required or used.
 #
 # Usage:
-#   verify-rust-test-package.sh --bundle ABSOLUTE_BUNDLE_DIR_OR_TARBALL --mode smoke
-#   verify-rust-test-package.sh --bundle ABSOLUTE_BUNDLE_DIR_OR_TARBALL --mode full
+#   verify-rust-test-package.sh --bundle ABSOLUTE_BUNDLE_DIR_OR_TARBALL
 set -euo pipefail
 
 bundle=""
-mode=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bundle)
       bundle="${2:-}"
-      shift 2
-      ;;
-    --mode)
-      mode="${2:-}"
       shift 2
       ;;
     *)
@@ -36,10 +30,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$bundle" ]] || { echo "--bundle is required" >&2; exit 2; }
-[[ "$mode" == "smoke" || "$mode" == "full" ]] || { echo "--mode must be smoke or full" >&2; exit 2; }
-for tool in cargo python3 tar; do
+for tool in cargo jq tar sha256sum; do
   command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 1; }
 done
+
+# Extract an archive after rejecting absolute or parent-relative entries and
+# links that point outside the destination.
+safe_extract() {
+  local archive="$1" dest="$2" name line target
+  while IFS= read -r name; do
+    if [[ "$name" == /* || "/$name/" == */../* ]]; then
+      echo "unsafe path in $(basename "$archive"): $name" >&2
+      exit 1
+    fi
+  done < <(tar -tzf "$archive")
+  while IFS= read -r line; do
+    target="${line##* -> }"
+    [[ "$line" != *" link to "* ]] || target="${line##* link to }"
+    if [[ "$target" == /* || "/$target/" == */../* ]]; then
+      echo "unsafe link in $(basename "$archive"): $target" >&2
+      exit 1
+    fi
+  done < <(tar -tvzf "$archive" | grep -E '^[lh]' || true)
+  tar -xzf "$archive" -C "$dest" --no-same-owner
+}
 
 work="$(mktemp -d)"
 extracted=""
@@ -49,11 +63,7 @@ trap cleanup EXIT
 # 0. Accept either a tarball or an already-extracted bundle directory.
 if [[ -f "$bundle" ]]; then
   extracted="$(mktemp -d)"
-  python3 - "$bundle" "$extracted" <<'PY'
-import sys, tarfile
-with tarfile.open(sys.argv[1]) as archive:
-    archive.extractall(sys.argv[2], filter="data")
-PY
+  safe_extract "$bundle" "$extracted"
   bundle="$extracted"
 fi
 [[ -d "$bundle" ]] || { echo "bundle not found: $bundle" >&2; exit 2; }
@@ -68,177 +78,132 @@ manifest="$bundle/artifact-manifest.json"
 
 # 1. Validate the artifact manifest, every recorded hash and mode, and the
 #    identity of the author-facing roots.
-python3 - "$manifest" "$bundle" <<'PY'
-import hashlib, json, os, sys
-
-manifest_path, bundle = sys.argv[1], os.path.abspath(sys.argv[2])
-try:
-    manifest = json.load(open(manifest_path))
-except json.JSONDecodeError as error:
-    raise SystemExit(f"invalid artifact-manifest.json: {error}")
-
-for key in ("source_sha", "target", "version", "packages", "files", "executables"):
-    if key not in manifest:
-        raise SystemExit(f"artifact-manifest.json is missing '{key}'")
-if not manifest["source_sha"] or not manifest["version"]:
-    raise SystemExit("artifact-manifest.json has an empty source_sha or version")
-for package in ("trellis-protocol", "trellis-rs", "trellis-testkit"):
-    if not manifest["packages"].get(package):
-        raise SystemExit(f"artifact-manifest.json is missing the {package} version")
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-for relative, expected in manifest["files"].items():
-    full = os.path.join(bundle, relative)
-    if not os.path.isfile(full):
-        raise SystemExit(f"artifact-manifest lists a missing file: {relative}")
-    actual = sha256(full)
-    if actual != expected:
-        raise SystemExit(f"hash mismatch for {relative}: expected {expected}, got {actual}")
-
-for relative in manifest["executables"]:
-    full = os.path.join(bundle, relative)
-    if not os.path.isfile(full):
-        raise SystemExit(f"artifact-manifest lists a missing executable: {relative}")
-    if os.stat(full).st_mode & 0o111 == 0:
-        raise SystemExit(f"bundle executable is not executable: {relative}")
-
-print(
-    "artifact manifest verified:",
-    f"source={manifest['source_sha']}",
-    f"version={manifest['version']}",
-    f"target={manifest['target']}",
-)
-PY
+jq -e . "$manifest" >/dev/null 2>&1 || { echo "invalid artifact-manifest.json" >&2; exit 1; }
+for key in source_sha target version packages files executables; do
+  jq -e --arg key "$key" 'has($key)' "$manifest" >/dev/null ||
+    { echo "artifact-manifest.json is missing '$key'" >&2; exit 1; }
+done
+[[ -n "$(jq -r '.source_sha // ""' "$manifest")" && -n "$(jq -r '.version // ""' "$manifest")" ]] ||
+  { echo "artifact-manifest.json has an empty source_sha or version" >&2; exit 1; }
+for package in trellis-protocol trellis-models trellis-rs trellis-testkit; do
+  [[ -n "$(jq -r --arg package "$package" '.packages[$package] // ""' "$manifest")" ]] ||
+    { echo "artifact-manifest.json is missing the $package version" >&2; exit 1; }
+done
+while IFS=$'\t' read -r relative expected; do
+  [[ -f "$bundle/$relative" ]] || { echo "artifact-manifest lists a missing file: $relative" >&2; exit 1; }
+  actual="$(sha256sum "$bundle/$relative" | cut -d ' ' -f 1)"
+  [[ "$actual" == "$expected" ]] ||
+    { echo "hash mismatch for $relative: expected $expected, got $actual" >&2; exit 1; }
+done < <(jq -r '.files | to_entries[] | "\(.key)\t\(.value)"' "$manifest")
+while IFS= read -r relative; do
+  [[ -f "$bundle/$relative" ]] ||
+    { echo "artifact-manifest lists a missing executable: $relative" >&2; exit 1; }
+  [[ -x "$bundle/$relative" ]] ||
+    { echo "bundle executable is not executable: $relative" >&2; exit 1; }
+done < <(jq -r '.executables[]' "$manifest")
+echo "artifact manifest verified: $(jq -r '"source=\(.source_sha) version=\(.version) target=\(.target)"' "$manifest")"
 
 # 2. Require the bundle's own executables; never inherit ambient discovery.
 unset TRELLIS_TEST_CLI_BIN TRELLIS_TEST_SERVER_BIN TRELLIS_TEST_NATS_BIN
 export TRELLIS_TEST_NATS_BIN="$bundle/nats/nats-server"
+export TRELLIS_TEST_CLI_BIN="$bundle/native/trellis"
+export TRELLIS_TEST_SERVER_BIN="$bundle/native/trellis-server"
 
 # 3. Extract the staged archives with traversal/absolute-path checks.
 mkdir -p "$work/packages"
-python3 - "$packages_dir" "$work/packages" <<'PY'
-import os, sys, tarfile
-packages_dir, dest = sys.argv[1], sys.argv[2]
-crates = sorted(f for f in os.listdir(packages_dir) if f.endswith(".crate"))
-if not crates:
-    raise SystemExit("no staged .crate files")
-for name in crates:
-    with tarfile.open(os.path.join(packages_dir, name)) as archive:
-        for member in archive.getmembers():
-            if member.name.startswith("/") or ".." in member.name.split("/"):
-                raise SystemExit(f"unsafe path in {name}: {member.name}")
-            if member.issym() or member.islnk():
-                target = member.linkname
-                if target.startswith("/") or ".." in target.split("/"):
-                    raise SystemExit(f"unsafe link in {name}: {member.name} -> {target}")
-        archive.extractall(dest, filter="data")
-print("extracted", ", ".join(crates))
-PY
+shopt -s nullglob
+crates=("$packages_dir"/*.crate)
+shopt -u nullglob
+(( ${#crates[@]} )) || { echo "no staged .crate files" >&2; exit 1; }
+for crate in "${crates[@]}"; do
+  safe_extract "$crate" "$work/packages"
+done
+echo "extracted ${crates[*]##*/}"
 
 # 4. Isolate the build and patch every extracted artifact.
 #    Run from a directory with no producer Cargo configuration so nothing leaks in.
 cp -R "$consumer_src" "$work/consumer"
 config="$work/cargo-config.toml"
-python3 - "$work/packages" "$config" "$manifest" <<'PY'
-import json, os, sys, tomllib
-root, config, manifest = sys.argv[1:]
-expected = json.load(open(manifest))["packages"]
-packages = {}
-for entry in os.scandir(root):
-    if not entry.is_dir():
-        raise SystemExit(f"unexpected archive root: {entry.path}")
-    with open(os.path.join(entry.path, "Cargo.toml"), "rb") as manifest:
-        package = tomllib.load(manifest)["package"]
-    name = package["name"]
-    if expected.get(name) != package["version"]:
-        raise SystemExit(f"archive identity does not match artifact manifest: {name}")
-    if name in packages:
-        raise SystemExit(f"duplicate staged package: {name}")
-    packages[name] = entry.path
-with open(config, "w") as output:
-    output.write("[patch.crates-io]\n")
-    for name, path in sorted(packages.items()):
-        output.write(f'{json.dumps(name)} = {{ path = {json.dumps(path)} }}\n')
-PY
+printf '[patch.crates-io]\n' > "$config"
+declare -A staged=()
+for root in "$work/packages"/*; do
+  [[ -d "$root" ]] || { echo "unexpected archive root: $root" >&2; exit 1; }
+  IFS=$'\t' read -r name version < <(
+    cargo metadata --no-deps --offline --format-version 1 --manifest-path "$root/Cargo.toml" |
+      jq -r '.packages[0] | "\(.name)\t\(.version)"'
+  )
+  [[ "$(jq -r --arg name "$name" '.packages[$name] // ""' "$manifest")" == "$version" ]] ||
+    { echo "archive identity does not match artifact manifest: $name" >&2; exit 1; }
+  [[ -z "${staged[$name]:-}" ]] || { echo "duplicate staged package: $name" >&2; exit 1; }
+  staged[$name]="$root"
+  printf '%s = { path = %s }\n' "$(jq -Rn --arg value "$name" '$value')" \
+    "$(jq -Rn --arg value "$root" '$value')" >> "$config"
+done
 
 export CARGO_HOME="$work/cargo-home"
 export CARGO_TARGET_DIR="$work/target"
 mkdir -p "$CARGO_HOME"
 cd "$work"
+consumer_manifest="$work/consumer/package-consumer/Cargo.toml"
 
 # Resolve the staged lockfile once, then require it to stay locked.
-cargo generate-lockfile --manifest-path "$work/consumer/Cargo.toml" --config "$config"
-cargo metadata --manifest-path "$work/consumer/Cargo.toml" --format-version 1 \
+cargo generate-lockfile --manifest-path "$consumer_manifest" --config "$config"
+cargo metadata --manifest-path "$consumer_manifest" --format-version 1 \
   --locked --config "$config" > "$work/metadata.json"
 
 # 5. Audit the full declared dependency graph: every manifest is a registry
 #    package from crates.io, one of the staged artifacts, or the
 #    consumer's own application/generated fixture. Traverse normal, build, dev,
 #    optional, and target-scoped declarations.
-python3 - "$work/metadata.json" "$work/packages" "$work/consumer" <<'PY'
-import json, os, sys
-metadata, packages_root, consumer_root = sys.argv[1], os.path.abspath(sys.argv[2]), os.path.abspath(sys.argv[3])
-crates_io = ("registry+https://github.com/rust-lang/crates.io-index", "registry+https://index.crates.io/")
+packages_root="$(cd "$work/packages" && pwd -P)/"
+consumer_root="$(cd "$work/consumer" && pwd -P)/"
+jq -r --arg packages "$packages_root" --arg consumer "$consumer_root" '
+  def allowed: startswith($packages) or startswith($consumer);
+  def registry($context):
+    if . == null then empty
+    elif startswith("git+") then "git dependency in the testkit closure: \($context) (\(.))"
+    elif (startswith("registry+https://github.com/rust-lang/crates.io-index")
+      or startswith("registry+https://index.crates.io/")) | not
+    then "non-crates.io registry dependency: \($context) (\(.))"
+    else empty end;
+  .packages[] as $package
+  | (if ($package.name | startswith("trellis-")) and $package.source != null
+      then "Trellis dependency was not staged: \($package.name)" else empty end),
+    (if $package.source == null
+      then (if $package.manifest_path | allowed then empty
+        else "local package outside the allowed roots: \($package.name) (\($package.manifest_path))" end)
+      else ($package.source | registry($package.name)) end),
+    ($package.dependencies[] as $dependency
+      | (if $dependency.path != null and ($dependency.path | allowed | not)
+          then "path dependency outside the allowed roots: \($package.name) -> \($dependency.path)"
+          else empty end),
+        ($dependency.source | registry("\($package.name) -> \($dependency.name)")))
+' "$work/metadata.json" > "$work/audit.txt"
+if [[ -s "$work/audit.txt" ]]; then
+  head -n1 "$work/audit.txt" >&2
+  exit 1
+fi
+echo "dependency audit passed for $(jq '.packages | length' "$work/metadata.json") packages"
 
-
-def allowed_root(path):
-    path = os.path.realpath(path)
-    return path.startswith(packages_root + os.sep) or path.startswith(consumer_root + os.sep)
-
-
-def check_source(context, source):
-    if source is None:
-        return
-    if source.startswith("git+"):
-        raise SystemExit(f"git dependency in the testkit closure: {context} ({source})")
-    if not any(source.startswith(root) for root in crates_io):
-        raise SystemExit(f"non-crates.io registry dependency: {context} ({source})")
-
-
-data = json.load(open(metadata))
-for package in data["packages"]:
-    name = package["name"]
-    manifest = os.path.abspath(package["manifest_path"])
-    source = package.get("source")
-    if name.startswith("trellis-") and source is not None:
-        raise SystemExit(f"Trellis dependency was not staged: {name}")
-    if source is None:
-        if not allowed_root(manifest):
-            raise SystemExit(f"local package outside the allowed roots: {name} ({manifest})")
-    else:
-        check_source(name, source)
-    for dependency in package.get("dependencies", []):
-        declared_path = dependency.get("path")
-        if declared_path is not None and not allowed_root(declared_path):
-            raise SystemExit(f"path dependency outside the allowed roots: {name} -> {declared_path}")
-        check_source(f"{name} -> {dependency.get('name')}", dependency.get("source"))
-print("dependency audit passed for", len(data["packages"]), "packages")
-PY
+# Generate and execute a fresh Rust consumer with the distributed CLI. This job
+# has no source checkout, including the compiler producer's built-in IDL tree.
+cp -R "$consumer_src/compiler-project" "$work/compiler-project"
+(
+  cd "$work/compiler-project"
+  export TRELLIS_CACHE="$work/compiler-cache"
+  "$TRELLIS_TEST_CLI_BIN" update
+  "$TRELLIS_TEST_CLI_BIN" generate
+  cargo run --config "$config"
+)
 
 # 6. Run the consumer's live target under the frozen lockfile.
 #
-# Serialize independent cases; the isolation case still starts eight concurrent runtimes.
-cargo test --manifest-path "$work/consumer/Cargo.toml" --locked --config "$config" \
+# Independent cases run four at a time, as the in-repo testkit suite does.
+cargo test --manifest-path "$consumer_manifest" --locked --config "$config" \
   --test live --no-run --message-format=json-render-diagnostics > "$work/build.json"
 mkdir -p "$work/runtime-path"
-python3 - "$work/build.json" "$work/runtime-path" <<'PY'
-import json, os, subprocess, sys
-executable = None
-for line in open(sys.argv[1]):
-    artifact = json.loads(line)
-    if artifact.get("reason") == "compiler-artifact" and artifact.get("executable"):
-        executable = artifact["executable"]
-if executable is None:
-    raise SystemExit("the live consumer executable was not produced")
-# A real user execution boundary: no CLI/server on PATH, and no binary overrides.
-env = dict(os.environ, PATH=sys.argv[2])
-raise SystemExit(subprocess.run([executable, "--test-threads=1"], env=env).returncode)
-PY
+executable="$(jq -r 'select(.reason == "compiler-artifact" and .executable != null) | .executable' \
+  "$work/build.json" | tail -n1)"
+[[ -n "$executable" ]] || { echo "the live consumer executable was not produced" >&2; exit 1; }
+# No tools on PATH; only the bundle's verified explicit executables.
+PATH="$work/runtime-path" "$executable" --test-threads=4

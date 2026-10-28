@@ -1,10 +1,10 @@
+import { DurableEventConsumers } from "./session/durable_events.ts";
 import {
-  type ConsumerMessages,
-  jetstream,
-  type JetStreamClient,
-  jetstreamManager,
-  type JsMsg,
-} from "@nats-io/jetstream";
+  sessionRequestSigningDigest,
+  sessionEventSigningDigest,
+  sessionResponseSigningDigest,
+} from "./auth/message_digests.ts";
+import { jetstream, type JetStreamClient } from "@nats-io/jetstream";
 import {
   createInbox,
   headers as natsHeaders,
@@ -12,42 +12,39 @@ import {
   type MsgHdrs,
   type NatsConnection,
 } from "@nats-io/nats-core";
-import type { EventDesc, InferSchemaType, LiveDesc } from "./participant.ts";
+import type { LiveDesc } from "./participant.ts";
 import {
-  boundApiSubject,
   type PermissionAtom as DescriptorPermissionAtom,
   routeQueueGroup,
   type RuntimeApi,
 } from "./participant_runtime/api.ts";
-import type { Codec } from "./generated.ts";
+
 import { encodeEventSubjectParameterToken } from "./helpers.ts";
 import { openLive, openLiveOperationWatch } from "./live/client_open.ts";
 import { LiveProvider, parseLiveOpen } from "./live/provider.ts";
-import type { PermissionAtom } from "./auth/protocol_wasm.ts";
+import type {
+  OriginalEventPublication,
+  SessionEvent,
+  SessionRequest,
+  SessionResponse,
+} from "./auth/protocol_wasm.ts";
 import { LiveAuthorityGuard } from "./live/authority.ts";
 import type { LiveSubscription } from "./live/subscription.ts";
 import { LiveStreamError } from "./live/types.ts";
-import type { ParticipantKvMetadata } from "./participant_runtime/metadata.ts";
-import type { EventConsumerResourceBinding } from "./participant_runtime/schemas.ts";
-import type { StaticDecode } from "typebox";
-import { buildEventProofInput } from "./auth/proof.ts";
-import { trellisCrypto } from "./auth/crypto.ts";
+
+import {} from "./auth/protocol_wasm.ts";
+
 import type {
-  AuthorizationProviderCache,
-  AuthorizationProviderEvent,
-  AuthorizationProviderRequest,
-} from "./auth/authorization_context.ts";
-import { AuthorizationProviderUnavailableError } from "./auth/authorization/provider_cache.ts";
+  PendingSessionRequest,
+  VerifiedAuthority,
+} from "./auth/authority.ts";
+import { operationRecordRepresentation } from "./service/runtime/operation_record.ts";
 import {
   fixedTransportProvider,
   type TransportLease,
   type TrellisTransportProvider,
 } from "./transport/generations.ts";
-import type {
-  AuthorizationVerificationErrorCode,
-  PermissionAtom as VerifierPermissionAtom,
-  VerifiedAuthorizationContextTokenProjection,
-} from "./auth/protocol_wasm.ts";
+import { PromotedOwnAuthorityView } from "./own_authority.ts";
 import {
   AsyncResult,
   BaseError,
@@ -61,72 +58,45 @@ import {
   createNatsHeaderCarrier,
   extractTraceContext,
   injectTraceContext,
-  recordCatalogCounter,
   recordCatalogDuration,
   recordCatalogUpDown,
   recordRpcAttempt,
-  recordTrellisError,
   SpanStatusCode,
   startClientSpan,
   startServerSpan,
-  type TrellisErrorMetricAttributes,
   trellisRoute,
-  UNKNOWN_ROUTE,
   withSpanAsync,
 } from "./telemetry/mod.ts";
-import { Type } from "typebox";
 import { Pointer } from "typebox/value";
 import { ulid } from "ulid";
-import {
-  encodeSchema,
-  type JsonValue,
-  parse,
-  parseUnknownSchema,
-} from "./codec.ts";
+import { encodeSchema, type JsonValue, parse } from "./codec.ts";
 import {
   AuthError,
-  getBuiltinRpcError,
-  machineErrorCode,
   type SchemaValidationError,
-  type StoreError,
   TransferError,
   TransportError,
-  type TrellisErrorInstance,
-  type TrellisErrorMap,
-  type TrellisErrorName,
   UnexpectedError,
   ValidationError,
 } from "./errors/index.ts";
 import { RemoteError } from "./errors/RemoteError.ts";
 import { logger, type LoggerLike } from "./globals.ts";
-import {
-  type KvRepresentation,
-  type ResourceMigrations,
-  TypedKV,
-} from "./kv.ts";
+import { type ResourceMigrations, TypedKV } from "./kv.ts";
 import { TrellisErrorDataSchema } from "./errors/RemoteError.ts";
-import type {
-  ActiveJob,
-  JobRef,
-  JobTypeMetadata,
-  JobUpdatesOptions,
-  JobUpdateSubscription,
-} from "./jobs.ts";
-import type { StoreWaitOptions, TypedStore, TypedStoreEntry } from "./store.ts";
+
 import {
   OperationInvoker,
-  type OperationRefData,
   type OperationTransport,
+  operationStartSubject,
 } from "./operations.ts";
 import type { Span } from "./telemetry/mod.ts";
 import {
-  API as STATE_API,
-  Conflict as StateRpcConflict,
   type DeleteOutput as StateDeleteResponse,
   type GetOutput as StateGetResponse,
   type PutOutput as StateSetResponse,
+  type RegisterOutput as StateRegisterResponse,
 } from "./internal_sdk/generated/apis/state/mod.js";
-import { API as EVENTS_API } from "./internal_sdk/generated/apis/events/mod.js";
+
+import { permission as actionPermission } from "./participant_runtime/participant.ts";
 import {
   createTransferHandle,
   type FileInfo,
@@ -140,1745 +110,246 @@ import {
 } from "./transfer.ts";
 import { TrellisTasks } from "./tasks.ts";
 import { TrellisConnection } from "./connection.ts";
+import { API as JOBS_HISTORY_API } from "./internal_sdk/generated/apis/jobs/mod.js";
+import { API as AUTH_API } from "./internal_sdk/generated/apis/auth/mod.js";
+import type {
+  AuthServiceUpdateResponse,
+  JobsHistoryRequest,
+  JobsHistoryResponse,
+} from "./internal_sdk/generated/types/index.js";
+import {
+  type EventOpts,
+  type GenerationIntakeInstall,
+  type LiveHandlerContext,
+  type LiveInputBuilder,
+  type LiveRegistration,
+  type LiveSubscribeOpts,
+  type ProviderGenerationAttachment,
+  type ProviderIngress,
+  type RequestOpts,
+  type TrellisAuth,
+  type TrellisMode,
+  type TrellisOpts,
+} from "./session/types.ts";
+import {
+  type EventDescriptorOf,
+  type EventOf,
+  type EventsOf,
+  type LiveDescriptorOf,
+  type LiveEventOf,
+  type LiveInputOf,
+  type LivesOf,
+  type MethodsOf,
+  type OperationsOf,
+  type PreparedTrellisEvent,
+  type RequestInputOf,
+  type RequestMethodOf,
+  type RequestOutputOf,
+  type RpcDescriptorOf,
+  type RpcRequestShapes,
+  type RuntimeStateStores,
+} from "./session/contract_types.ts";
+import {
+  createEventListenerContext,
+  internalEphemeralEventNeeds,
+  internalEventConsumers,
+  type InternalizedTrellisOpts,
+  type TrellisInternalOpts,
+} from "./session/events.ts";
+import {
+  STATE_RUNTIME_RPC,
+  StateHandle,
+  type StateFacade,
+  type ValueStateStoreClient,
+} from "./session/state.ts";
+import {
+  addSurfaceLeaf,
+  type ActiveEventFacade,
+  type ActiveEventPublishFacade,
+  type ActiveLiveFacade,
+  type ActiveOperationFacade,
+  type ActiveRpcFacade,
+  type ActiveRpcHandleFacade,
+  type EventCallback,
+  type HandlerFn,
+  type HandlerTrellis,
+  type MaybePromise,
+  type ProcessedRpcResponse,
+  type RpcHandlerContext,
+  type RuntimeEventLeaf,
+  type RuntimeEventPublishLeaf,
+  type RuntimeLiveLeaf,
+  type RuntimeOperationLeaf,
+  type RuntimeRpcLeaf,
+  type SurfaceGroups,
+} from "./session/facades.ts";
+import {
+  type DurableOperationRecord,
+  type OperationSurface,
+  type RuntimeOperationDesc,
+  type RuntimeOperationRecord,
+} from "./session/operations.ts";
+import {
+  EMPTY_TRELLIS_API,
+  activeTraceId,
+  causeLogData,
+  causeMessage,
+  ingressRetiredError,
+  isBrowserAuthRequiredError,
+  isRuntimeRpcErrorDesc,
+  payloadByteLength,
+  traceIdFromTraceparent,
+} from "./session/helpers.ts";
+import {
+  toCatalogAction,
+  verifyLocalAuthorization,
+  type RuntimeRpcErrorDesc,
+  type SessionCaller,
+  type VerifiedCaller,
+} from "./session/local_authorization.ts";
+import {
+  MAX_PENDING_OPENINGS,
+  base64urlEncode,
+  callerOwnsReply,
+  classifyRequestTransportFailure,
+  createTransportError,
+  encodeRuntimeSchema,
+  mapTransportAcquireFailure,
+  outcomeForFailure,
+  parseRuntimeSchema,
+  requestFailedTransportError,
+  safeJson,
+} from "./session/wire.ts";
+import {
+  annotateHandlerBoundaryError,
+  isResultLike,
+  reconstructDeclaredRpcError,
+  recordRuntimeError,
+} from "./session/handler_errors.ts";
+export {
+  verifyLocalAuthorization,
+  toCatalogAction,
+} from "./session/local_authorization.ts";
+export type {
+  VerifiedCaller,
+  InternalCaller,
+  SessionCaller,
+} from "./session/local_authorization.ts";
+export {
+  safeJson,
+  classifyRequestTransportFailure,
+  createActionUnavailableError,
+  base64urlEncode,
+  base64urlDecode,
+  toArrayBuffer,
+  sha256,
+} from "./session/wire.ts";
+export type {
+  GenerationIntakeTarget,
+  GenerationIntakeInstallResult,
+  GenerationIntakeInstall,
+  ProviderGenerationAttachment,
+  TrellisSigner,
+  TrellisAuth,
+  TrellisMode,
+  TrellisOpts,
+  RequestOpts,
+  EventOpts,
+  LiveSubscribeOpts,
+  LiveInputBuilder,
+  LiveHandlerContext,
+  LiveRegistration,
+} from "./session/types.ts";
+export type {
+  RuntimeStateStoreShape,
+  RuntimeStateStores,
+  RuntimeStateStoresForContract,
+  MethodsOf,
+  RpcMethodNameOf,
+  OperationsOf,
+  LivesOf,
+  RpcInputOf,
+  RpcOutputOf,
+  OperationHandlerErrorOf,
+  TrellisEventHeader,
+  TrellisEventMessage,
+  PreparedTrellisEvent,
+  LiveInputOf,
+  LiveEventOf,
+  OperationInputOf,
+  OperationProgressOf,
+  OperationUpdateOf,
+  OperationOutputOf,
+  RpcRequestErrorOf,
+  RpcHandlerErrorOf,
+  EventName,
+  EventType,
+  EventPayload,
+} from "./session/contract_types.ts";
+export {
+  isOperationDeferred,
+  buildRuntimeOperationSnapshot,
+  isTerminalRuntimeOperationSnapshot,
+} from "./session/operations.ts";
+export type {
+  OperationRuntimeHandle,
+  OperationDeferred,
+  AcceptedOperation,
+  OperationTransferHandle,
+  OperationHandlerContext,
+  OperationRegistration,
+  OperationTransferContextOf,
+  OperationSurface,
+  RuntimeOperationDesc,
+  RuntimeOperationSignal,
+  RuntimeOperationSignalWaiter,
+  RuntimeOperationTransferProgress,
+  RuntimeOperationState,
+  RuntimeOperationSnapshot,
+  RuntimeOperationRecord,
+  DurableOperationRecord,
+  RuntimeOperationAcceptedEnvelope,
+  RuntimeOperationControlRequest,
+  RuntimeOperationController,
+} from "./session/operations.ts";
+export {
+  StateConflictError,
+  ResourceUnavailableError,
+  StateHandle,
+} from "./session/state.ts";
+export type {
+  StateValue,
+  ValueStateStoreClient,
+  StateFacade,
+  StateResourceCalls,
+  StateRegistration,
+  StateWatch,
+} from "./session/state.ts";
+export {
+  isResultLike,
+  annotateHandlerBoundaryError,
+} from "./session/handler_errors.ts";
+export type { HandlerErrorAnnotationContext } from "./session/handler_errors.ts";
+export type { EventListenerContext } from "./session/events.ts";
+export type {
+  ActiveRpcFacade,
+  ActiveEventFacade,
+  ActiveEventPublishFacade,
+  ActiveLiveFacade,
+  ActiveOperationFacade,
+  ActiveRpcHandleFacade,
+  LiveSurface,
+  RpcHandlerContext,
+  HandlerTrellis,
+  HandlerKvFacade,
+  HandlerStoreHandle,
+  HandlerJobQueue,
+  HandlerJobsFacade,
+  HandlerTrellisForContract,
+  HandlerFn,
+} from "./session/facades.ts";
 
 export type { NatsConnection } from "@nats-io/nats-core";
-
-type RuntimeRpcErrorDesc = {
-  type: string;
-  schema?: unknown;
-  fromSerializable(data: unknown): Error;
-};
-
-type InferRuntimeRpcError<T> = T extends {
-  fromSerializable(data: unknown): infer TError;
-} ? TError
-  : never;
-
-/** Caller projection returned after a context-bound proof is verified locally. */
-export type VerifiedCaller = {
-  type: "verified";
-  sessionKey: string;
-  principalId: string;
-  principalKind: "user" | "service" | "device";
-  participantId: string;
-  contextDigest: string;
-  connectionId: string;
-  loginSessionId: string | null;
-  identityKeyId: string | null;
-  deploymentId: string | null;
-  instanceId: string | null;
-  grantRevision: number;
-  platformPrivileges: ("trellis.auth::admin")[];
-  inboxPrefix: string;
-};
-
-/** Internal system caller used only by explicitly unauthenticated surfaces. */
-export type InternalCaller = {
-  type: "internal";
-  capabilities: readonly [];
-};
-
-/** Caller data exposed to Trellis handlers. */
-export type SessionCaller = VerifiedCaller | InternalCaller;
-
-type LocalAuthorizationRequestMessage = Pick<
-  Msg,
-  "data" | "headers" | "reply" | "subject"
->;
-type LocalAuthorizationEventMessage = Pick<Msg, "data" | "headers" | "subject">;
-
-type LocalAuthorizationArgs =
-  | {
-    kind: "request";
-    cache: AuthorizationProviderCache | undefined;
-    message: LocalAuthorizationRequestMessage;
-    proofPayload?: Uint8Array;
-    permission: DescriptorPermissionAtom | undefined;
-    requiredCapabilities: readonly string[];
-    identityOnly?: boolean;
-  }
-  | {
-    kind: "transfer";
-    cache: AuthorizationProviderCache | undefined;
-    message: LocalAuthorizationRequestMessage;
-    proofPayload?: Uint8Array;
-    permission: DescriptorPermissionAtom | undefined;
-    requiredCapabilities: readonly string[];
-    transferId: string;
-    providerConnectionId: string;
-    consumerConnectionId: string;
-  }
-  | {
-    kind: "event";
-    cache: AuthorizationProviderCache | undefined;
-    message: LocalAuthorizationEventMessage;
-    permission: DescriptorPermissionAtom | undefined;
-    descriptorIdentity: string;
-    requiredCapabilities: readonly string[];
-  };
-
-type VerifyAuthorizationRequestResultLike =
-  | {
-    ok: true;
-    contextDigest: string;
-    context: VerifiedAuthorizationContextTokenProjection["context"];
-  }
-  | { ok: false; error: { code: AuthorizationVerificationErrorCode } };
-type VerifyAuthorizationEventResultLike = VerifyAuthorizationRequestResultLike;
-
-class EventVerificationAuthError extends AuthError {
-  constructor(readonly retryable: boolean) {
-    super({
-      reason: retryable ? "authorization_unavailable" : "invalid_signature",
-    });
-  }
-}
-
-/** Verifies one received request or event through the provider-local WASM cache. */
-export async function verifyLocalAuthorization(
-  args: LocalAuthorizationArgs,
-): Promise<Result<VerifiedCaller, AuthError>> {
-  const startedAt = performance.now();
-  let outcome = "invalid";
-  try {
-    if (!args.permission && !(args.kind === "request" && args.identityOnly)) {
-      outcome = "denied";
-      return err(new AuthError({ reason: "insufficient_permissions" }));
-    }
-    if (!args.cache) {
-      outcome = "unavailable";
-      return err(new AuthError({ reason: "invalid_signature" }));
-    }
-
-    const proof = args.message.headers?.get("proof");
-    const contextDigest = args.message.headers?.get("authorization-context");
-    const sessionKey = args.message.headers?.get("session-key");
-    if (!proof || !contextDigest || !sessionKey) {
-      return err(new AuthError({ reason: "missing_proof" }));
-    }
-
-    let result:
-      | VerifyAuthorizationRequestResultLike
-      | VerifyAuthorizationEventResultLike;
-    try {
-      if (args.kind === "request" || args.kind === "transfer") {
-        const iatHeader = args.message.headers?.get("iat");
-        const requestId = args.message.headers?.get("request-id");
-        const reply = args.message.reply;
-        const iat = Number(iatHeader);
-        if (!Number.isSafeInteger(iat) || !requestId || !reply) {
-          return err(new AuthError({ reason: "invalid_signature" }));
-        }
-        const request: AuthorizationProviderRequest = {
-          contextDigest,
-          sessionKey,
-          subject: args.message.subject,
-          reply,
-          payload: args.proofPayload ??
-            new Uint8Array(args.message.data ?? new Uint8Array()),
-          iat,
-          requestId,
-          proof,
-          requiredPermissions: args.permission
-            ? [toVerifierPermission(args.permission)]
-            : [],
-          requiredCapabilities: [...args.requiredCapabilities],
-        };
-        result = args.kind === "transfer"
-          ? await args.cache.verifyTransferRequest({
-            ...request,
-            transferId: args.transferId,
-            providerConnectionId: args.providerConnectionId,
-            consumerConnectionId: args.consumerConnectionId,
-          })
-          : await args.cache.verifyRequest(request);
-      } else {
-        const eventId = args.message.headers?.get("Nats-Msg-Id");
-        const eventTime = args.message.headers?.get("Trellis-Event-Time");
-        const descriptorIdentity = args.message.headers?.get(
-          "Trellis-Event-Descriptor",
-        );
-        if (
-          !eventId || !eventTime ||
-          descriptorIdentity !== args.descriptorIdentity
-        ) {
-          return err(new AuthError({ reason: "invalid_signature" }));
-        }
-        const event: AuthorizationProviderEvent = {
-          contextDigest,
-          sessionKey,
-          descriptorIdentity,
-          subject: args.message.subject,
-          payload: new Uint8Array(args.message.data ?? new Uint8Array()),
-          eventId,
-          eventTime,
-          proof,
-          requiredCapabilities: [...args.requiredCapabilities],
-        };
-        result = await args.cache.verifyEvent(event);
-      }
-    } catch (error) {
-      if (error instanceof AuthorizationProviderUnavailableError) {
-        outcome = "unavailable";
-        return err(
-          args.kind === "event"
-            ? new EventVerificationAuthError(true)
-            : new AuthError({ reason: "authorization_unavailable" }),
-        );
-      }
-      outcome = "error";
-      return err(new AuthError({ reason: "invalid_signature" }));
-    }
-
-    if (!result.ok) {
-      outcome = result.error.code === "PermissionDenied"
-        ? "denied"
-        : result.error.code === "ContextExpired"
-        ? "expired"
-        : result.error.code === "EventRevoked"
-        ? "revoked"
-        : "invalid";
-      return err(
-        new AuthError({
-          reason: localAuthorizationErrorReason(result.error.code),
-        }),
-      );
-    }
-    const caller = toVerifiedCaller(result.contextDigest, result.context);
-    outcome = "ok";
-    return ok(caller);
-  } finally {
-    try {
-      recordCatalogDuration(
-        "trellis.auth.verification.duration",
-        performance.now() - startedAt,
-        {
-          "trellis.purpose": args.kind,
-          "trellis.outcome": outcome,
-        },
-      );
-    } catch {
-      // Optional telemetry must not replace the verifier's result.
-    }
-  }
-}
-
-/** Map one descriptor permission atom into the verifier's nested atom. */
-export function toVerifierPermission(
-  permission: DescriptorPermissionAtom,
-): VerifierPermissionAtom {
-  if (
-    permission.surfaceKind === "operation" && permission.action === "control"
-  ) {
-    const separator = permission.surfaceName.lastIndexOf(".");
-    if (separator <= 0 || separator === permission.surfaceName.length - 1) {
-      throw new Error("operation signal permission is invalid");
-    }
-    return {
-      target: {
-        kind: "operationSignal",
-        api: `${permission.apiId}@${permission.apiVersion}`,
-        operation: permission.surfaceName.slice(0, separator),
-        signal: permission.surfaceName.slice(separator + 1),
-      },
-      action: permission.action,
-    };
-  }
-  return {
-    target: {
-      kind: "apiSurface",
-      api: `${permission.apiId}@${permission.apiVersion}`,
-      surface: permission.surfaceKind,
-      name: permission.surfaceName,
-    },
-    action: permission.action,
-  };
-}
-
-/**
- * How many live openings one route may verify concurrently before it sheds
- * excess unverified requests.
- */
-const MAX_PENDING_OPENINGS = 64;
-
-/**
- * Whether one reply destination is provably inside the verified caller's inbox.
- *
- * Live openings must never reflect a denial, validation error, or offer onto a
- * destination outside this prefix.
- */
-function callerOwnsReply(
-  reply: string | undefined,
-  inboxPrefix: string,
-): boolean {
-  if (!reply || !inboxPrefix) return false;
-  return reply === inboxPrefix || reply.startsWith(`${inboxPrefix}.`);
-}
-
-function toVerifiedCaller(
-  contextDigest: string,
-  projection: VerifiedAuthorizationContextTokenProjection["context"],
-): VerifiedCaller {
-  return {
-    type: "verified",
-    sessionKey: projection.sessionKey,
-    principalId: projection.principalId,
-    principalKind: projection.principalKind,
-    participantId: projection.participantId,
-    contextDigest,
-    connectionId: projection.connectionId,
-    loginSessionId: projection.loginSessionId,
-    identityKeyId: projection.identityKeyId,
-    deploymentId: projection.deploymentId,
-    instanceId: projection.instanceId,
-    grantRevision: projection.grantRevision,
-    platformPrivileges: [...projection.platformPrivileges],
-    inboxPrefix: projection.inboxPrefix,
-  };
-}
-
-function localAuthorizationErrorReason(
-  code: AuthorizationVerificationErrorCode,
-): string {
-  switch (code) {
-    case "PermissionDenied":
-      return "insufficient_permissions";
-    case "ReplySubjectMismatch":
-      return "reply_subject_mismatch";
-    case "ProofIatOutOfRange":
-      return "iat_out_of_range";
-    case "ContextExpired":
-    case "EventRevoked":
-      return "session_expired";
-    default:
-      return "invalid_signature";
-  }
-}
-
-/**
- * Safely extract JSON from a NATS message.
- * The .json() method can throw if the message data is not valid JSON.
- */
-export function safeJson(msg: Msg): Result<JsonValue, UnexpectedError> {
-  return Result.try(() => msg.json() as JsonValue);
-}
-
-function transportCauseContext(cause: unknown): Record<string, unknown> {
-  if (cause instanceof Error) {
-    return {
-      causeName: cause.name,
-      causeMessage: cause.message,
-    };
-  }
-
-  return { cause: String(cause) };
-}
-
-function createTransportError(args: {
-  code: string;
-  message: string;
-  hint: string;
-  context?: Record<string, unknown>;
-  cause?: unknown;
-}): TransportError {
-  return new TransportError({
-    code: args.code,
-    message: args.message,
-    hint: args.hint,
-    cause: args.cause,
-    context: {
-      ...(args.context ?? {}),
-      ...(args.cause === undefined ? {} : transportCauseContext(args.cause)),
-    },
-  });
-}
-
-function requestFailedTransportError(args: {
-  code: string;
-  method?: string;
-  subject: string;
-  hint: string;
-  message: string;
-  cause?: unknown;
-  context?: Record<string, unknown>;
-}): TransportError {
-  return createTransportError({
-    code: args.code,
-    message: args.message,
-    hint: args.hint,
-    cause: args.cause,
-    context: {
-      subject: args.subject,
-      ...(args.method === undefined ? {} : { method: args.method }),
-      ...(args.context ?? {}),
-    },
-  });
-}
-
-/** Bounded catalog outcome for one logical RPC failure. */
-function outcomeForFailure(
-  error: BaseError,
-):
-  | "declared_error"
-  | "denied"
-  | "invalid"
-  | "rate_limited"
-  | "timeout"
-  | "unavailable"
-  | "cancelled"
-  | "error" {
-  if (error instanceof RemoteError) return "declared_error";
-  if (error instanceof TransportError) {
-    switch (Reflect.get(error, "code")) {
-      case "trellis.request.denied":
-        return "denied";
-      case "trellis.request.unavailable":
-        return "unavailable";
-      case "trellis.request.timeout":
-        return "timeout";
-      case "trellis.request.cancelled":
-        return "cancelled";
-      case "trellis.request.invalid_response":
-      case "trellis.request.invalid":
-        return "invalid";
-      case "trellis.request.rate_limited":
-        return "rate_limited";
-      default:
-        return "error";
-    }
-  }
-  return "error";
-}
-
-export function classifyRequestTransportFailure(args: {
-  method?: string;
-  subject: string;
-  callerCapabilities?: readonly string[];
-  cause: unknown;
-}): TransportError {
-  const message = args.cause instanceof Error
-    ? args.cause.message
-    : String(args.cause);
-  const isNoResponders = message.includes("no responders");
-  const isNatsPermission = args.cause instanceof Error &&
-    [
-      "PermissionViolationError",
-      "AuthorizationError",
-      "UserAuthenticationExpiredError",
-    ]
-      .includes(args.cause.name);
-
-  return requestFailedTransportError({
-    code: isNoResponders
-      ? "trellis.request.unavailable"
-      : isNatsPermission
-      ? "trellis.request.denied"
-      : "trellis.request.failed",
-    message: isNoResponders
-      ? "Trellis could not reach the requested capability."
-      : isNatsPermission
-      ? "Trellis denied this request."
-      : "Trellis could not complete the request.",
-    hint: isNoResponders
-      ? "Check that the target service is installed and reachable, then try again."
-      : isNatsPermission
-      ? "Sign in with a profile that has the required capability, then try again."
-      : "Retry the request. If it keeps failing, check Trellis runtime health.",
-    cause: args.cause,
-    method: args.method,
-    subject: args.subject,
-    context: {
-      ...(args.callerCapabilities === undefined
-        ? {}
-        : { requiredCapabilities: args.callerCapabilities }),
-      noResponders: isNoResponders,
-      lowLevelMessage: message,
-    },
-  });
-}
-
-/**
- * Map a generation acquisition failure to the ordinary request transport error.
- *
- * Automatic adoption never invents `transport_upgrade_required`; a caller that
- * cannot obtain a suitable generation within its budget observes a normal
- * unavailable/timeout/cancelled request failure.
- */
-function mapTransportAcquireFailure(args: {
-  method?: string;
-  subject: string;
-  callerCapabilities?: readonly string[];
-  cause: unknown;
-}): TransportError {
-  const cause = args.cause;
-  if (cause instanceof TransportError) {
-    const code = cause.code === "trellis.transport.timeout"
-      ? "trellis.request.timeout"
-      : cause.code === "trellis.transport.aborted"
-      ? "trellis.request.cancelled"
-      : cause.code === "trellis.transport.closed"
-      ? "trellis.request.closed"
-      : "trellis.request.unavailable";
-    return requestFailedTransportError({
-      code,
-      message: cause.message,
-      hint: cause.hint,
-      method: args.method,
-      subject: args.subject,
-      cause,
-      context: {
-        ...(args.callerCapabilities === undefined
-          ? {}
-          : { requiredCapabilities: args.callerCapabilities }),
-        generationCode: cause.code,
-      },
-    });
-  }
-  return classifyRequestTransportFailure(args);
-}
-
-/** Creates the existing typed transport error for an unavailable optional action. */
-export function createActionUnavailableError(
-  action: string,
-  capabilities: readonly string[],
-): TransportError {
-  return requestFailedTransportError({
-    code: "trellis.request.unavailable",
-    message: "Trellis could not reach the requested capability.",
-    hint:
-      "Wait for the optional capability to become available, then try again.",
-    subject: action,
-    context: { action, capabilities },
-  });
-}
-
-function encodeRuntimeSchema(
-  schema: unknown,
-  data: unknown,
-): Result<string, SchemaValidationError | ValidationError | UnexpectedError> {
-  if (
-    schema && typeof schema === "object" &&
-    typeof Reflect.get(schema, "encode") === "function"
-  ) {
-    try {
-      const encoded = (schema as Codec<unknown>).encode(data);
-      const json = JSON.stringify(encoded);
-      if (json === undefined) {
-        throw new TypeError("Codec encoded no JSON value");
-      }
-      return ok(json);
-    } catch (cause) {
-      return err(new UnexpectedError({ cause }));
-    }
-  }
-  return encodeSchema(schema as never, data);
-}
-
-function parseRuntimeSchema(
-  schema: unknown,
-  data: JsonValue,
-): Result<unknown, SchemaValidationError | ValidationError | UnexpectedError> {
-  if (
-    schema && typeof schema === "object" &&
-    typeof Reflect.get(schema, "decode") === "function"
-  ) {
-    try {
-      return ok((schema as Codec<unknown>).decode(data));
-    } catch (cause) {
-      return err(new UnexpectedError({ cause }));
-    }
-  }
-  return parseUnknownSchema(
-    schema as Parameters<typeof parseUnknownSchema>[0],
-    data,
-  );
-}
-
-export function base64urlEncode(data: Uint8Array): string {
-  const b64 = btoa(String.fromCharCode(...data));
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-export function base64urlDecode(s: string): Uint8Array {
-  const normalized = s.replace(/-/g, "+").replace(/_/g, "/");
-  const padLen = (4 - (normalized.length % 4)) % 4;
-  const padded = normalized + "=".repeat(padLen);
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-export function toArrayBuffer(data: Uint8Array): ArrayBuffer {
-  const buf = data.buffer;
-  if (buf instanceof ArrayBuffer) {
-    return buf.slice(data.byteOffset, data.byteOffset + data.byteLength);
-  }
-  const copy = new Uint8Array(data.byteLength);
-  copy.set(data);
-  return copy.buffer;
-}
-
-export async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  return await (await trellisCrypto()).sha256(data);
-}
-
-export function buildProofInput(
-  contextDigest: string,
-  subject: string,
-  reply: string,
-  payloadHash: Uint8Array,
-  iat: number,
-  requestId: string,
-): Uint8Array {
-  const enc = new TextEncoder();
-  const contextDigestBytes = base64urlDecode(contextDigest);
-  if (contextDigestBytes.length !== 32) {
-    throw new Error("authorization context digest must encode 32 bytes");
-  }
-  if (reply.length === 0) {
-    throw new Error("request reply subject must not be empty");
-  }
-  const domainBytes = enc.encode(
-    "trellis.authorization-request-proof.v1",
-  );
-  const subjectBytes = enc.encode(subject);
-  const replyBytes = enc.encode(reply);
-  const iatBytes = enc.encode(String(iat));
-  const requestIdBytes = enc.encode(requestId);
-
-  const components = [
-    domainBytes,
-    contextDigestBytes,
-    subjectBytes,
-    replyBytes,
-    payloadHash,
-    iatBytes,
-    requestIdBytes,
-  ];
-  const total = components.reduce((sum, value) => sum + 4 + value.length, 0);
-  const buf = new Uint8Array(total);
-  const view = new DataView(buf.buffer);
-
-  let offset = 0;
-  for (const component of components) {
-    view.setUint32(offset, component.length);
-    offset += 4;
-    buf.set(component, offset);
-    offset += component.length;
-  }
-
-  return buf;
-}
-
-/** One admitted generation a framework intake installs onto. @internal */
-export type GenerationIntakeTarget = {
-  id: number;
-  nc: NatsConnection;
-  contextDigest: string;
-  lease?: () => TransportLease;
-};
-
-/** Handle returned by one framework intake install. @internal */
-export type GenerationIntakeInstallResult = {
-  /** Stop accepting new intake; accepted work continues to completion. */
-  drain: () => Promise<void>;
-  /** Resolves when every accepted intake loop has finished. */
-  done: Promise<void>;
-  /** Release per-generation framework resources. */
-  dispose: () => Promise<void>;
-};
-
-/** Installs framework-owned broker-ready intake on one admitted generation. @internal */
-export type GenerationIntakeInstall = (
-  target: GenerationIntakeTarget,
-) => Promise<GenerationIntakeInstallResult>;
-
-/**
- * Handle to retire and dispose one generation's generic provider intake.
- *
- * The same logical connection can install, drain, and dispose one attachment
- * per admitted generation. `retireIntake` is idempotent and stops *new* broker
- * deliveries; `intakeStopped` resolves once every outstanding intake loop has
- * been accounted for (including queued delivery ownership), and `dispose`
- * releases per-generation resources. Disposal is invoked only after intake has
- * stopped and the generation's accepted leases have drained.
- * @internal
- */
-export type ProviderGenerationAttachment = {
-  retireIntake(): void;
-  readonly intakeStopped: Promise<void>;
-  dispose(): Promise<void>;
-};
-
-/** One installed provider ingress for one admitted generation. @internal */
-type ProviderIngress = {
-  id: number;
-  nc: NatsConnection;
-  /** Exact admitted context this generation's providers were built from. */
-  contextDigest: string;
-  lease?: () => TransportLease;
-  /**
-   * Held from install until every intake *loop* has finished (not merely until
-   * `drain()` resolves), so a buffered accepted delivery cannot arrive after the
-   * generation is reaped but before its per-callback lease is taken.
-   */
-  intakeLease?: TransportLease;
-  /**
-   * Generic intake subscriptions (RPC + live openings + framework intake).
-   * `intakeId` names the framework registration that owns the entry, so a
-   * single registration can be retracted without disturbing the others.
-   */
-  retireFns: Array<{
-    intakeId?: string;
-    /** Owning generic surface; live owners persist across a drain. */
-    owner?: "rpc" | "live";
-    drain: () => Promise<void>;
-    done: Promise<void>;
-    /**
-     * Live only: re-create the generic open subscription on the same provider
-     * without duplicating it or disturbing accepted sessions/receipts.
-     */
-    reopen?: () =>
-      | { drain: () => Promise<void>; done: Promise<void> }
-      | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
-  }>;
-  /**
-   * Coherent per-generation provider disposal (session-serving control, owned
-   * sessions, retained authority). Run only when the generation physically
-   * closes, never when its generic intake is drained, so an accepted live
-   * session keeps control until it terminates.
-   */
-  disposeFns: Array<{
-    intakeId?: string;
-    owner?: "rpc" | "live";
-    dispose: () => Promise<void>;
-  }>;
-  /** Generic intake already drained; no new registrations install here. */
-  retired?: boolean;
-  /** Resolves when every outstanding intake loop is accounted for. */
-  intakeStopped?: Promise<void>;
-  /** In-flight coherent disposal, so concurrent calls share one run. */
-  disposing?: Promise<void>;
-};
-
-export type TrellisSigner = (
-  data: Uint8Array,
-) => Promise<Uint8Array> | Uint8Array;
-
-export type TrellisAuth = {
-  sessionKey: string;
-  sign: TrellisSigner;
-  currentIat?: () => number;
-  /** Current authorization-context digest bound into v1 request and event proofs. */
-  contextDigest?: string | (() => string);
-  /** Provider-only local verifier for service request and event handling. */
-  authorizationProviderCache?: AuthorizationProviderCache;
-};
-
-export type TrellisMode = "client" | "service";
-type Simplify<T> = { [K in keyof T]: T[K] } & {};
-type OwnedApiFor<TContract> = TContract extends
-  { implements: readonly unknown[] } ? RuntimeApi
-  : never;
-type ContractKvFor<TContract> = TContract extends {
-  resources: infer TResources extends Readonly<Record<string, unknown>>;
-} ? {
-    [
-      K in keyof TResources as TResources[K] extends { kind: "kv" } ? K
-        : never
-    ]: TResources[K] extends {
-      codec: infer TCodec;
-      availability: infer TAvailability;
-    } ? {
-        value: TCodec extends Codec<infer TValue> ? TValue : unknown;
-        schema: TCodec;
-        required: TAvailability extends "required" ? true : false;
-      }
-      : never;
-  }
-  : {};
-type ContractJobsFor<TContract> = TContract extends {
-  resources: infer TResources extends Readonly<Record<string, unknown>>;
-} ? {
-    [
-      K in keyof TResources as TResources[K] extends { kind: "job" } ? K
-        : never
-    ]: TResources[K] extends {
-      payload: infer TPayload;
-      result: infer TResult;
-      update: infer TUpdate;
-    } ? {
-        payload: TPayload extends Codec<infer TValue> ? TValue : unknown;
-        result: TResult extends Codec<infer TValue> ? TValue : void;
-        update: TUpdate extends Codec<infer TValue> ? TValue : never;
-      }
-      : never;
-  }
-  : {};
-export type RuntimeStateStoreShape = {
-  kind: "value";
-  value: unknown;
-  codec: Codec<unknown>;
-  version: number;
-  migrations: Readonly<Record<number, Codec<unknown>>>;
-};
-export type RuntimeStateStores = Record<string, RuntimeStateStoreShape>;
-export type RuntimeStateStoresForContract<TContract> = TContract extends {
-  resources: infer TResources extends Readonly<Record<string, unknown>>;
-} ? {
-    [
-      K in keyof TResources as TResources[K] extends { kind: "state" } ? K
-        : never
-    ]: TResources[K] extends { codec: infer TCodec } ? {
-        kind: "value";
-        value: TCodec extends Codec<infer TValue> ? TValue : unknown;
-        codec: TCodec;
-        version: TResources[K] extends { version: infer TVersion } ? TVersion
-          : number;
-        migrations: TResources[K] extends { migrations: infer TMigrations }
-          ? TMigrations
-          : {};
-      }
-      : never;
-  }
-  : {};
-type TrellisApiFor<TContract> = OwnedApiFor<TContract>;
-type RpcMethodsOf<TA extends RuntimeApi> = TA["rpc"];
-export type MethodsOf<TA extends RuntimeApi> =
-  & keyof RpcMethodsOf<TA>
-  & string;
-export type RpcMethodNameOf<TA extends RuntimeApi> = MethodsOf<TA>;
-export type OperationsOf<TA extends RuntimeApi> =
-  & keyof TA["operations"]
-  & string;
-type EventsOf<TA extends RuntimeApi> = keyof TA["events"] & string;
-export type LivesOf<TA extends RuntimeApi> =
-  & keyof NonNullable<TA["lives"]>
-  & string;
-type RpcMethodOf<TA extends RuntimeApi, M extends keyof TA["rpc"] & string> =
-  RpcMethodsOf<TA>[M];
-type MethodInputOf<
-  TA extends RuntimeApi,
-  M extends keyof TA["rpc"] & string,
-> = RpcMethodOf<TA, M> extends { input: infer TInput } ? InferSchemaType<TInput>
-  : never;
-export type RpcInputOf<
-  TA extends RuntimeApi,
-  M extends RpcMethodNameOf<TA>,
-> = MethodInputOf<TA, M>;
-type MethodOutputOf<
-  TA extends RuntimeApi,
-  M extends keyof TA["rpc"] & string,
-> = RpcMethodOf<TA, M> extends { output: infer TOutput }
-  ? InferSchemaType<TOutput>
-  : never;
-export type RpcOutputOf<
-  TA extends RuntimeApi,
-  M extends RpcMethodNameOf<TA>,
-> = MethodOutputOf<TA, M>;
-type RpcRequestShapes<TA extends RuntimeApi> = {
-  [M in keyof TA["rpc"] & string]: {
-    input: MethodInputOf<TA, M>;
-    output: MethodOutputOf<TA, M>;
-  };
-};
-type RequestMethodOf<TRequests> = keyof TRequests & string;
-type RequestInputOf<TRequests, M extends RequestMethodOf<TRequests>> =
-  TRequests[M] extends { input: infer TInput } ? TInput : never;
-type RequestOutputOf<TRequests, M extends RequestMethodOf<TRequests>> =
-  TRequests[M] extends { output: infer TOutput } ? TOutput : never;
-type RpcDescriptorOf<
-  TA extends RuntimeApi,
-  M extends keyof TA["rpc"] & string,
-> = RpcMethodOf<TA, M> extends {
-  input: infer TInput;
-  output: infer TOutput;
-  errors?: infer TErrors;
-  runtimeErrors?: infer TRuntimeErrors;
-  declaredErrorTypes?: infer TDeclaredErrorTypes;
-} ? {
-    input: TInput;
-    output: TOutput;
-    errors?: TErrors;
-    runtimeErrors?: TRuntimeErrors;
-    declaredErrorTypes?: TDeclaredErrorTypes;
-  } & RpcMethodOf<TA, M>
-  : never;
-type DeclaredBuiltinErrorOf<TNames> = TNames extends readonly (infer TName)[]
-  ? TName extends TrellisErrorName ? TrellisErrorMap[TName]
-  : never
-  : never;
-type DeclaredRuntimeErrorOf<TRuntimeErrors> = TRuntimeErrors extends readonly (
-  infer TRuntimeError
-)[] ? InferRuntimeRpcError<TRuntimeError>
-  : never;
-type MethodDeclaredErrorOf<
-  TA extends RuntimeApi,
-  M extends keyof TA["rpc"] & string,
-> = RpcDescriptorOf<TA, M> extends {
-  errors?: infer TErrors;
-  runtimeErrors?: infer TRuntimeErrors;
-} ? DeclaredBuiltinErrorOf<TErrors> | DeclaredRuntimeErrorOf<TRuntimeErrors>
-  : never;
-type RequestErrorOf<TA extends RuntimeApi, M extends MethodsOf<TA>> =
-  | MethodDeclaredErrorOf<TA, M>
-  | RemoteError
-  | TransportError
-  | ValidationError
-  | UnexpectedError;
-type HandlerErrorOf<TA extends RuntimeApi, M extends MethodsOf<TA>> =
-  | MethodDeclaredErrorOf<TA, M>
-  | TrellisErrorInstance;
-
-type OperationDescriptorOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends {
-  input: infer TInput;
-  progress?: infer TProgress;
-  output?: infer TOutput;
-  errors?: infer TErrors;
-  runtimeErrors?: infer TRuntimeErrors;
-  declaredErrorTypes?: infer TDeclaredErrorTypes;
-} ? {
-    input: TInput;
-    progress?: TProgress;
-    output?: TOutput;
-    errors?: TErrors;
-    runtimeErrors?: TRuntimeErrors;
-    declaredErrorTypes?: TDeclaredErrorTypes;
-  } & TA["operations"][O]
-  : never;
-
-type OperationDeclaredErrorOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = OperationDescriptorOf<TA, O> extends {
-  errors?: infer TErrors;
-  runtimeErrors?: infer TRuntimeErrors;
-} ? DeclaredBuiltinErrorOf<TErrors> | DeclaredRuntimeErrorOf<TRuntimeErrors>
-  : never;
-
-export type OperationHandlerErrorOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = OperationDeclaredErrorOf<TA, O> | TrellisErrorInstance;
-type EventMessageOf<TA extends RuntimeApi, E extends EventsOf<TA>> =
-  TA["events"][E] extends EventDesc<infer TEvent> ? InferSchemaType<TEvent>
-    : never;
-type EventOf<TA extends RuntimeApi, E extends EventsOf<TA>> = EventMessageOf<
-  TA,
-  E
->;
-type EventDescriptorOf<TA extends RuntimeApi, E extends EventsOf<TA>> =
-  TA["events"][E] extends EventDesc<infer TEvent>
-    ? EventDesc<TEvent> & TA["events"][E]
-    : never;
-type EventPayloadOf<TA extends RuntimeApi, E extends EventsOf<TA>> =
-  & EventOf<TA, E>
-  & Record<string, unknown>;
-/** Runtime metadata assigned to every Trellis event message. */
-export type TrellisEventHeader = Readonly<{
-  /** Stable event id used for event identity and JetStream de-duplication. */
-  id: string;
-  /** Event creation time in ISO-8601 format. */
-  time: string;
-}>;
-/** Event body plus Trellis runtime event metadata. */
-export type TrellisEventMessage<
-  TBody extends Record<string, unknown> = Record<string, unknown>,
-> = Readonly<{
-  /** User-authored contract event body. */
-  body: Readonly<TBody>;
-  /** Runtime metadata assigned by Trellis. */
-  header: TrellisEventHeader;
-}>;
-/** A fully encoded event whose subject, payload, and headers are stable. */
-export type PreparedTrellisEvent<
-  TPayload extends Record<string, unknown> = Record<string, unknown>,
-> = Readonly<{
-  event: string;
-  descriptorIdentity: string;
-  subject: string;
-  /** Runtime event metadata assigned when the event was prepared. */
-  header: TrellisEventHeader;
-  payload: Readonly<TPayload>;
-  encodedPayload: string;
-  headers: Readonly<Record<string, string>>;
-}>;
-export type LiveInputOf<TA extends RuntimeApi, F extends LivesOf<TA>> =
-  NonNullable<TA["lives"]>[F] extends LiveDesc<infer TInput, infer _TEvent>
-    ? InferSchemaType<TInput>
-    : never;
-export type LiveEventOf<TA extends RuntimeApi, F extends LivesOf<TA>> =
-  NonNullable<TA["lives"]>[F] extends LiveDesc<infer _TInput, infer TEvent>
-    ? InferSchemaType<TEvent>
-    : never;
-type LiveDescriptorOf<TA extends RuntimeApi, F extends LivesOf<TA>> =
-  NonNullable<TA["lives"]>[F] extends LiveDesc<infer TInput, infer TEvent>
-    ? LiveDesc<TInput, TEvent> & NonNullable<TA["lives"]>[F]
-    : never;
-export type OperationInputOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { input: infer TInput }
-  ? InferSchemaType<TInput>
-  : never;
-export type OperationProgressOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { progress?: infer TProgress }
-  ? TProgress extends undefined ? unknown
-  : InferSchemaType<NonNullable<TProgress>>
-  : unknown;
-/** Infers the transient update payload for an operation descriptor. */
-export type OperationUpdateOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { update?: infer TUpdate }
-  ? TUpdate extends undefined ? unknown : InferSchemaType<NonNullable<TUpdate>>
-  : unknown;
-export type OperationOutputOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { output?: infer TOutput }
-  ? TOutput extends undefined ? unknown : InferSchemaType<NonNullable<TOutput>>
-  : unknown;
-export type OperationRuntimeHandle<
-  TProgress,
-  TOutput,
-  TError extends BaseError,
-  TUpdate = unknown,
-> = {
-  id: string;
-  started(): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  progress(
-    value: TProgress,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  /** Emits a transient update without changing the persisted snapshot. */
-  emitUpdate(value: TUpdate): AsyncResult<void, BaseError>;
-  complete(
-    value: TOutput,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  fail(
-    error: TError,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  /** Durably requests cancellation; terminal state follows handler cleanup. */
-  cancel(): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  attach(
-    job: { wait(): AsyncResult<unknown, BaseError> },
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  signals(): AsyncIterable<RuntimeOperationSignal>;
-  nextSignal(
-    name?: string,
-  ): AsyncResult<RuntimeOperationSignal, BaseError>;
-  /** Durably acknowledges a signal after its side effects have been accepted. */
-  acknowledgeSignal(sequence: number): AsyncResult<void, BaseError>;
-  defer(): OperationDeferred;
-};
-export type OperationDeferred = {
-  kind: "deferred";
-};
-
-/**
- * Returns true when a handler result explicitly leaves operation completion to
- * an external control path.
- */
-export function isOperationDeferred(
-  value: unknown,
-): value is OperationDeferred {
-  return !!value && typeof value === "object" &&
-    "kind" in value && value.kind === "deferred";
-}
-export type AcceptedOperation<
-  TProgress,
-  TOutput,
-  TError extends BaseError,
-  TUpdate = unknown,
-> =
-  & OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>
-  & {
-    ref: OperationRefData;
-    snapshot: RuntimeOperationSnapshot & {
-      progress?: TProgress;
-      output?: TOutput;
-    };
-  };
-export type OperationTransferHandle = {
-  updates(): AsyncIterable<RuntimeOperationTransferProgress>;
-  completed(): AsyncResult<FileInfo, TransferOperationError>;
-  /** Waits for successful staging, then opens the staged upload object. */
-  stream(): AsyncResult<ReadableStream<Uint8Array>, TransferOperationError>;
-  /** Waits for successful staging, then reads the staged upload bytes. */
-  bytes(): AsyncResult<Uint8Array, TransferError>;
-};
-/** Decoded current State value and its opaque storage revision. */
-export type StateValue<T> = Readonly<{
-  value: T;
-  revision: string;
-  createdAt: string;
-  updatedAt: string;
-}>;
-
-/** State CAS failure with the authoritative current value, when present. */
-export class StateConflictError<T> extends BaseError {
-  override readonly name = "StateConflictError" as const;
-  readonly current?: StateValue<T>;
-
-  constructor(current?: StateValue<T>) {
-    super("State revision conflict");
-    this.current = current;
-  }
-
-  override toSerializable() {
-    return this.baseSerializable();
-  }
-}
-
-/** Raised when an optional participant resource is not installed. */
-export class ResourceUnavailableError extends BaseError {
-  override readonly name = "ResourceUnavailableError" as const;
-
-  /** Construct an unavailable-resource failure. */
-  constructor(readonly kind: string, readonly resourceName: string) {
-    super(`${kind} resource '${resourceName}' is unavailable`);
-  }
-
-  override toSerializable() {
-    return this.baseSerializable();
-  }
-}
-
-/** Typed single-value State handle. */
-export type ValueStateStoreClient<TValue> = StateHandle<TValue>;
-export type StateFacade<TState extends RuntimeStateStores> = {
-  [K in keyof TState]: ValueStateStoreClient<TState[K]["value"]>;
-};
-export type OperationHandlerContext<
-  TInput,
-  TProgress,
-  TOutput,
-  TTransfer,
-  TError extends BaseError,
-  TUpdate = unknown,
-> =
-  & {
-    input: TInput;
-    op: OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>;
-    caller: SessionCaller;
-    /**
-     * Aborted when cancellation is requested or this executor loses ownership.
-     * Cancellation-first admission and cancellation recovery enter the handler
-     * with this signal already aborted. Perform cleanup before business work or
-     * accessing transfer, then return successfully to acknowledge cleanup.
-     * Throwing, returning an error, or deferring leaves cancellation nonterminal.
-     */
-    signal: AbortSignal;
-    /** Whether this handler resumes an earlier invocation or reconciles durable state. */
-    resuming: boolean;
-    /** Last durably persisted progress available to a resumed handler. */
-    progress?: TProgress;
-  }
-  & (TTransfer extends undefined ? {} : {
-    /**
-     * Absent during cancellation-first admission or cancellation-only recovery
-     * when staging was not opened. Handle aborted-signal cleanup before use.
-     */
-    transfer?: TTransfer;
-  });
-export type OperationRegistration<
-  TInput,
-  TProgress,
-  TOutput,
-  TTransfer,
-  TError extends BaseError,
-  TUpdate = unknown,
-> = {
-  /**
-   * Loads an existing operation by id and returns a service-side control handle.
-   * The operation must belong to this service and registration name.
-   */
-  control(
-    operationId: string,
-  ): AsyncResult<
-    OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>,
-    BaseError
-  >;
-  /** Rerun the registered handler on its current owner with durable resume state. */
-  reconcile(
-    operationId: string,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  handle(
-    handler: (
-      context: OperationHandlerContext<
-        TInput,
-        TProgress,
-        TOutput,
-        TTransfer,
-        TError,
-        TUpdate
-      >,
-    ) => unknown | Promise<unknown>,
-  ): Promise<void>;
-};
-export type OperationTransferContextOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { transfer: infer TTransfer }
-  ? TTransfer extends undefined ? undefined
-  : OperationTransferHandle
-  : undefined;
-export type OperationSurface<
-  TA extends RuntimeApi,
-  TMode extends TrellisMode,
-  O extends OperationsOf<TA>,
-> = TMode extends "service" ? OperationRegistration<
-    OperationInputOf<TA, O>,
-    OperationProgressOf<TA, O>,
-    OperationOutputOf<TA, O>,
-    OperationTransferContextOf<TA, O>,
-    OperationHandlerErrorOf<TA, O>,
-    OperationUpdateOf<TA, O>
-  >
-  : OperationInvoker<TA["operations"][O] & RuntimeOperationDesc>;
-
-export function isResultLike(
-  value: unknown,
-): value is Result<unknown, BaseError> {
-  return value instanceof Result;
-}
-
-type SerializableRuntimeError = {
-  id?: string;
-  type: string;
-  message: string;
-  context?: Record<string, unknown>;
-  traceId?: string;
-} & Record<string, unknown>;
-
-export type HandlerErrorAnnotationContext = {
-  method?: string;
-  event?: string;
-  live?: string;
-  operation?: string;
-  jobType?: string;
-  requestId?: string;
-  service?: string;
-  contractId?: string;
-  contractDigest?: string;
-  traceId?: string;
-};
-
-function compactHandlerErrorContext(
-  context: HandlerErrorAnnotationContext,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(context).filter(([key, value]) =>
-      key !== "traceId" && value !== undefined
-    ),
-  );
-}
-
-function sanitizeHandlerErrorContext(error: BaseError): void {
-  delete error.getContext().subject;
-}
-
-export function annotateHandlerBoundaryError(
-  cause: unknown,
-  context: HandlerErrorAnnotationContext,
-): BaseError {
-  const error = cause instanceof BaseError && !(cause instanceof RemoteError)
-    ? cause
-    : new UnexpectedError({ cause });
-  sanitizeHandlerErrorContext(error);
-  error.withContext(compactHandlerErrorContext(context));
-  error.withTraceId(context.traceId);
-  return error;
-}
-
-function recordRuntimeError(
-  error: unknown,
-  attributes: TrellisErrorMetricAttributes,
-): void {
-  recordTrellisError(error, {
-    messagingSystem: "nats",
-    ...attributes,
-  });
-}
-
-export type RuntimeOperationDesc = {
-  subject: string;
-  input: unknown;
-  revision: number;
-  progress?: unknown;
-  update?: unknown;
-  output?: unknown;
-  signals?: Record<string, { input: unknown }>;
-  cancelCapabilities?: readonly string[];
-  controlCapabilities?: readonly string[];
-  transfer?: {
-    contentType?: `/${string}`;
-    metadata?: `/${string}`;
-    expiresInMs?: number;
-    maxBytes?: number;
-  };
-  cancel?: boolean;
-};
-
-export type RuntimeOperationSignal = {
-  operationId: string;
-  sequence: number;
-  requestId: string;
-  signal: string;
-  input?: JsonValue;
-  acceptedAt: string;
-  acknowledged: boolean;
-};
-
-export type RuntimeOperationSignalWaiter = (
-  result: Result<RuntimeOperationSignal, BaseError>,
-) => void;
-
-export type RuntimeOperationTransferProgress = {
-  chunkIndex: number;
-  chunkBytes: number;
-  transferredBytes: number;
-};
-
-export type RuntimeOperationState =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-export type RuntimeOperationSnapshot = {
-  id: string;
-  service: string;
-  operation: string;
-  revision: number;
-  state: RuntimeOperationState;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  progress?: unknown;
-  transfer?: RuntimeOperationTransferProgress;
-  output?: unknown;
-  error?: SerializableRuntimeError;
-};
-
-export type RuntimeOperationRecord = {
-  id: string;
-  service: string;
-  operation: string;
-  callerSessionKey: string;
-  invocationDigest: string;
-  caller: VerifiedCaller;
-  creatorPrincipalId: string;
-  creatorParticipantId: string;
-  apiId: string;
-  input: unknown;
-  telemetry?: { traceparent: string; tracestate?: string };
-  revision: number;
-  ownerInstanceId: string;
-  ownerConnectionId: string;
-  ownerEpoch: number;
-  leaseExpiresAt: string;
-  cancelRequestedAt?: string;
-  transferGrant?: SendTransferGrant;
-  /** Internal physical staging key committed with the upload; never public metadata. */
-  uploadStorageKey?: string;
-  snapshot: RuntimeOperationSnapshot;
-  sequence: number;
-  signalSequence: number;
-  signals: RuntimeOperationSignal[];
-  terminal: boolean;
-  watchers: Map<string, { includeUpdates: boolean }>;
-  frameQueue: Promise<void>;
-  signalWaiters: Set<RuntimeOperationSignalWaiter>;
-  cancellation: AbortController;
-  reclaimed?: boolean;
-};
-
-export type DurableOperationRecord = {
-  invocationId: string;
-  callerSessionKey: string;
-  invocationDigest: string;
-  caller: VerifiedCaller;
-  creatorPrincipalId: string;
-  creatorParticipantId: string;
-  apiId: string;
-  operation: string;
-  input: unknown;
-  telemetry?: { traceparent: string; tracestate?: string };
-  revision: number;
-  ownerInstanceId: string;
-  ownerConnectionId: string;
-  ownerEpoch: number;
-  leaseExpiresAt: string;
-  cancelRequestedAt?: string;
-  transferGrant?: SendTransferGrant;
-  /** Persisted physical staging locator, separate from the public logical FileInfo key. */
-  uploadStorageKey?: string;
-  sequence: number;
-  signalSequence: number;
-  signals: RuntimeOperationSignal[];
-  snapshot: RuntimeOperationSnapshot;
-};
-
-const DurableOperationSignalSchema = Type.Object({
-  operationId: Type.String(),
-  sequence: Type.Number(),
-  requestId: Type.String(),
-  signal: Type.String(),
-  input: Type.Optional(Type.Any()),
-  acceptedAt: Type.String(),
-  acknowledged: Type.Boolean(),
-});
-
-const DurableOperationSnapshotSchema = Type.Object({
-  id: Type.String(),
-  service: Type.String(),
-  operation: Type.String(),
-  revision: Type.Number(),
-  state: Type.Union([
-    Type.Literal("pending"),
-    Type.Literal("running"),
-    Type.Literal("completed"),
-    Type.Literal("failed"),
-    Type.Literal("cancelled"),
-  ]),
-  createdAt: Type.String(),
-  updatedAt: Type.String(),
-  completedAt: Type.Optional(Type.String()),
-  progress: Type.Optional(Type.Any()),
-  transfer: Type.Optional(Type.Object({
-    chunkIndex: Type.Number(),
-    chunkBytes: Type.Number(),
-    transferredBytes: Type.Number(),
-  })),
-  output: Type.Optional(Type.Any()),
-  error: Type.Optional(Type.Object({
-    id: Type.Optional(Type.String()),
-    type: Type.String(),
-    message: Type.String(),
-    context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-    traceId: Type.Optional(Type.String()),
-  })),
-});
-
-export const DurableOperationRecordSchema = Type.Object({
-  invocationId: Type.String(),
-  callerSessionKey: Type.String(),
-  apiId: Type.String(),
-  operation: Type.String(),
-  input: Type.Any(),
-  telemetry: Type.Optional(Type.Object({
-    traceparent: Type.String(),
-    tracestate: Type.Optional(Type.String()),
-  })),
-  ownerInstanceId: Type.String(),
-  ownerConnectionId: Type.String(),
-  ownerEpoch: Type.Number(),
-  leaseExpiresAt: Type.String(),
-  cancelRequestedAt: Type.Optional(Type.String()),
-  transferGrant: Type.Optional(Type.Any()),
-  uploadStorageKey: Type.Optional(Type.String()),
-  sequence: Type.Number(),
-  signalSequence: Type.Number(),
-  signals: Type.Array(DurableOperationSignalSchema),
-  snapshot: DurableOperationSnapshotSchema,
-});
-
-export type RuntimeOperationAcceptedEnvelope = {
-  kind: "accepted";
-  ref: OperationRefData;
-  snapshot: RuntimeOperationSnapshot;
-  transfer?: SendTransferGrant;
-};
-
-export type RuntimeOperationControlRequest =
-  | {
-    action: "get" | "cancel";
-    operationId: string;
-  }
-  | {
-    action: "watch";
-    operationId: string;
-    includeUpdates?: boolean;
-    observation?: {
-      format: string;
-      type: string;
-      openId: string;
-      receiveMaxPayloadBytes: number;
-    };
-  }
-  | {
-    action: "signal";
-    operationId: string;
-    signal: string;
-    input?: JsonValue;
-  };
-
-export type RuntimeOperationController = {
-  get(
-    operationId: string,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  started(
-    operationId: string,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  progress(
-    operationId: string,
-    progress: unknown,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  complete(
-    operationId: string,
-    output: unknown,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  fail(
-    operationId: string,
-    error: BaseError,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  cancel(
-    operationId: string,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  signals(operationId: string): AsyncIterable<RuntimeOperationSignal>;
-  nextSignal(
-    operationId: string,
-    name?: string,
-  ): AsyncResult<RuntimeOperationSignal, BaseError>;
-};
-
-export function buildRuntimeOperationSnapshot(
-  runtime: Pick<
-    RuntimeOperationRecord,
-    "id" | "service" | "operation" | "snapshot"
-  >,
-  state: RuntimeOperationState,
-  patch?: Partial<RuntimeOperationSnapshot>,
-): RuntimeOperationSnapshot {
-  const updatedAt = new Date().toISOString();
-  const completedAt =
-    state === "completed" || state === "failed" || state === "cancelled"
-      ? (patch?.completedAt ?? updatedAt)
-      : patch?.completedAt;
-  return {
-    id: runtime.id,
-    service: runtime.service,
-    operation: runtime.operation,
-    revision: patch?.revision ?? runtime.snapshot.revision + 1,
-    state,
-    createdAt: patch?.createdAt ?? runtime.snapshot.createdAt,
-    updatedAt,
-    ...(completedAt ? { completedAt } : {}),
-    ...(patch?.progress !== undefined
-      ? { progress: patch.progress }
-      : runtime.snapshot.progress !== undefined
-      ? { progress: runtime.snapshot.progress }
-      : {}),
-    ...(patch?.transfer !== undefined
-      ? { transfer: patch.transfer }
-      : runtime.snapshot.transfer !== undefined
-      ? { transfer: runtime.snapshot.transfer }
-      : {}),
-    ...(patch?.output !== undefined
-      ? { output: patch.output }
-      : runtime.snapshot.output !== undefined
-      ? { output: runtime.snapshot.output }
-      : {}),
-    ...(patch?.error
-      ? { error: patch.error }
-      : runtime.snapshot.error
-      ? { error: runtime.snapshot.error }
-      : {}),
-  };
-}
-
-function isRuntimeOperationSnapshot(
-  value: unknown,
-): value is RuntimeOperationSnapshot {
-  return !!value && typeof value === "object" &&
-    typeof (value as RuntimeOperationSnapshot).id === "string" &&
-    typeof (value as RuntimeOperationSnapshot).service === "string" &&
-    typeof (value as RuntimeOperationSnapshot).operation === "string" &&
-    typeof (value as RuntimeOperationSnapshot).revision === "number" &&
-    typeof (value as RuntimeOperationSnapshot).state === "string" &&
-    typeof (value as RuntimeOperationSnapshot).createdAt === "string" &&
-    typeof (value as RuntimeOperationSnapshot).updatedAt === "string";
-}
-
-export function isTerminalRuntimeOperationSnapshot(
-  value: unknown,
-): value is RuntimeOperationSnapshot {
-  return isRuntimeOperationSnapshot(value) && (
-    value.state === "completed" || value.state === "failed" ||
-    value.state === "cancelled"
-  );
-}
-
-type NoResponderRetryOpts = {
-  maxAttempts?: number;
-  baseDelayMs?: number;
-};
-
-export type TrellisOpts<TA extends RuntimeApi> = {
-  log?: LoggerLike;
-  timeout?: number;
-  stream?: string;
-  noResponderRetry?: NoResponderRetryOpts;
-  api?: TA;
-  state?: RuntimeStateStores;
-  stateMigrations?: Readonly<
-    Record<string, ResourceMigrations<unknown> | undefined>
-  >;
-  resourceGeneration?: () => number;
-  resourceAvailability?: (name: string) => boolean;
-  connection?: TrellisConnection;
-  /** Admitted-transport view for boundary checks, set by the connection owner. @internal */
-  /**
-   * Generation-aware transport provider. When present, finite request and event
-   * exchanges acquire a lease for the exact generation they use; when absent,
-   * the session keeps its single fixed physical connection. @internal
-   */
-  transport?: TrellisTransportProvider;
-  onSessionNotFound?: () => MaybePromise<void>;
-  contractId?: string;
-  contractDigest?: string;
-};
-
-export type RequestOpts = {
-  timeout?: number;
-  signal?: AbortSignal;
-};
-
-const MAX_OPERATION_INPUT_BYTES = 256 * 1024;
-const MAX_OPERATION_PROGRESS_BYTES = 64 * 1024;
-const MAX_OPERATION_OUTPUT_BYTES = 512 * 1024;
-const MAX_OPERATION_ERROR_BYTES = 32 * 1024;
-const MAX_OPERATION_SIGNALS = 100;
-const MAX_OPERATION_SIGNAL_BYTES = 64 * 1024;
-const MAX_OPERATION_RECORD_BYTES = 1024 * 1024;
-
-export type EventOpts = {
-  mode?: "durable" | "ephemeral";
-  /**
-   * Contract event consumer group to use for durable service listeners when an
-   * event is declared in more than one group.
-   */
-  group?: string;
-  signal?: AbortSignal;
-};
-
-/** Context provided to event listener callbacks. */
-export type EventListenerContext = {
-  /** Stable event id from the Trellis event header. */
-  id: string;
-  /** Event creation time from the Trellis event header. */
-  time: Date;
-  /** NATS subject that delivered the event. */
-  subject: string;
-  /** Runtime listener mode that delivered the event. */
-  mode: "durable" | "ephemeral";
-  /** Durable event consumer group, when delivered through a group. */
-  group?: string;
-  /** JetStream sequence number, when available. */
-  sequence?: number;
-};
-
-function createEventListenerContext(args: {
-  subject: string;
-  mode: "durable" | "ephemeral";
-  group?: string;
-  message: object;
-}): EventListenerContext {
-  const messageId = readMessageHeader(args.message, "Nats-Msg-Id");
-  const messageTime = readMessageHeader(args.message, "Trellis-Event-Time");
-  const sequence = Reflect.get(args.message, "seq");
-
-  return {
-    id: messageId ?? "",
-    time: new Date(messageTime ?? 0),
-    subject: args.subject,
-    mode: args.mode,
-    ...(args.group ? { group: args.group } : {}),
-    ...(typeof sequence === "number" ? { sequence } : {}),
-  };
-}
-
-function readMessageHeader(message: object, key: string): string | undefined {
-  const headers = Reflect.get(message, "headers");
-  if (typeof headers !== "object" || headers === null) return undefined;
-  const get = Reflect.get(headers, "get");
-  if (typeof get !== "function") return undefined;
-  const value = get.call(headers, key);
-  return typeof value === "string" ? value : undefined;
-}
-
-type RuntimeEventConsumers = {
-  metadata?: RuntimeEventConsumerGroups;
-  bindings?: Record<string, EventConsumerResourceBinding>;
-};
-
-type RuntimeEventConsumerGroup = {
-  uses?: Readonly<Record<string, readonly string[]>>;
-  self?: readonly string[];
-};
-
-type RuntimeEventConsumerGroups = Readonly<
-  Record<string, RuntimeEventConsumerGroup>
->;
-
-function eventConsumerGroupEvents(group: RuntimeEventConsumerGroup): string[] {
-  const events = new Set<string>();
-  for (const groupEvents of Object.values(group.uses ?? {})) {
-    for (const event of groupEvents) events.add(event);
-  }
-  for (const event of group.self ?? []) events.add(event);
-  return [...events].sort();
-}
-
-function jetStreamDeliveryProof(message: JsMsg): string {
-  const raw = Reflect.get(message, "msg");
-  const reply = raw && typeof raw === "object"
-    ? Reflect.get(raw, "reply")
-    : undefined;
-  if (typeof reply !== "string" || !reply.startsWith("$JS.ACK.")) {
-    throw new Error("JetStream delivery has no acknowledgement subject");
-  }
-  return reply;
-}
-
-function isConsumerNotFoundError(error: unknown): boolean {
-  return error instanceof Error && (
-    error.name === "ConsumerNotFoundError" ||
-    error.message.includes("consumer not found")
-  );
-}
-
-type TrellisInternalOpts<TA extends RuntimeApi> = TrellisOpts<TA> & {
-  inboxPrefix?: string;
-  eventConsumers?: RuntimeEventConsumers;
-  apiBindings?: Readonly<Record<string, unknown>>;
-  /**
-   * `event:<Name>` descriptor names this participant explicitly declares as
-   * subscribe needs. When present, explicit ephemeral delivery is allowed only
-   * for those events; the declared durable consumer never implies it.
-   */
-  ephemeralEventNeeds?: ReadonlySet<string>;
-};
-
-const internalEventConsumers = Symbol("trellis.internal.eventConsumers");
-const internalApiBindings = Symbol("trellis.internal.apiBindings");
-const internalEphemeralEventNeeds = Symbol(
-  "trellis.internal.ephemeralEventNeeds",
-);
-
-type InternalizedTrellisOpts<TA extends RuntimeApi> = TrellisOpts<TA> & {
-  [internalEventConsumers]?: RuntimeEventConsumers;
-  [internalApiBindings]?: Readonly<Record<string, unknown>>;
-  [internalEphemeralEventNeeds]?: ReadonlySet<string>;
-};
 
 /**
  * Creates a Trellis runtime with bootstrap-resolved bindings.
@@ -1895,17 +366,11 @@ export function createTrellisInternal<
   auth: TrellisAuth,
   opts?: TrellisInternalOpts<TA>,
 ): Trellis<TA, TMode, TState> {
-  const {
-    eventConsumers,
-    apiBindings,
-    ephemeralEventNeeds,
-    inboxPrefix,
-    ...publicOpts
-  } = opts ?? {};
+  const { eventConsumers, ephemeralEventNeeds, inboxPrefix, ...publicOpts } =
+    opts ?? {};
   const internalOpts: InternalizedTrellisOpts<TA> = {
     ...publicOpts,
     [internalEventConsumers]: eventConsumers,
-    [internalApiBindings]: apiBindings,
     [internalEphemeralEventNeeds]: ephemeralEventNeeds,
   };
   return new Trellis<TA, TMode, TState>(
@@ -1915,753 +380,6 @@ export function createTrellisInternal<
     internalOpts,
     inboxPrefix,
   );
-}
-
-type DurableEventRegistration<TA extends RuntimeApi> = {
-  event: EventsOf<TA>;
-  ctx: EventDescriptorOf<TA, EventsOf<TA>>;
-  subject: string;
-  fn: EventCallback<EventOf<TA, EventsOf<TA>>>;
-};
-
-type DurableEventConsumerLoop<TA extends RuntimeApi> = {
-  registrations: Array<DurableEventRegistration<TA>>;
-  concurrency: number;
-  startedWorkers: Set<number>;
-  messages: Set<ConsumerMessages>;
-};
-
-type ConsumerReplayEnvelope = {
-  deadLetterId: string;
-  generation: number;
-  resourceId: string;
-  originalRecordSequence: number;
-  originalSubject: string;
-  originalPayloadBytes: number[];
-  originalHeaders: Record<string, string[]>;
-};
-
-export type LiveSubscribeOpts = {
-  signal?: AbortSignal;
-};
-
-export type LiveInputBuilder<TInput, TEvent> = {
-  input(input: TInput): {
-    subscribe(
-      opts?: LiveSubscribeOpts,
-    ): AsyncResult<LiveSubscription<TEvent>, BaseError>;
-  };
-};
-
-export type LiveHandlerContext<TInput, TEvent> = {
-  input: TInput;
-  caller: SessionCaller;
-  signal: AbortSignal;
-  emit(
-    event: TEvent,
-  ): AsyncResult<
-    void,
-    SchemaValidationError | ValidationError | UnexpectedError
-  >;
-};
-
-export type LiveRegistration<TInput, TEvent> = {
-  handle(
-    handler: (
-      context: LiveHandlerContext<TInput, TEvent>,
-    ) => unknown | Promise<unknown>,
-  ): Promise<void>;
-};
-
-type SurfaceGroups<TLeaf> = Record<string, Record<string, TLeaf>>;
-type RuntimeRpcLeaf = (
-  input: unknown,
-  opts?: RequestOpts,
-) => AsyncResult<unknown, BaseError>;
-type RuntimeEventLeaf = {
-  prepare(
-    event: Record<string, unknown>,
-  ): Result<PreparedTrellisEvent, ValidationError | UnexpectedError>;
-  publish(
-    event: Record<string, unknown>,
-  ): AsyncResult<void, ValidationError | UnexpectedError>;
-  listen(
-    handler: EventCallback<unknown>,
-    subjectData?: Record<string, unknown>,
-    opts?: EventOpts,
-  ): AsyncResult<void, ValidationError | UnexpectedError>;
-};
-type RuntimeEventPublishLeaf = Omit<RuntimeEventLeaf, "listen">;
-type RuntimeLiveLeaf = (
-  input: unknown,
-  opts?: LiveSubscribeOpts,
-) => AsyncResult<LiveSubscription<unknown>, BaseError>;
-type RuntimeOperationLeaf = OperationInvoker<RuntimeOperationDesc>;
-type PascalSurfaceName<T extends string> = T extends
-  `${infer Head}.${infer Tail}`
-  ? `${Capitalize<Head>}${PascalSurfaceName<Tail>}`
-  : Capitalize<T>;
-type LowerCamelSurfaceName<T extends string> = Uncapitalize<
-  PascalSurfaceName<T>
->;
-type SurfaceGroupName<T extends string> = T extends `${infer Head}.${string}`
-  ? LowerCamelSurfaceName<Head>
-  : LowerCamelSurfaceName<T>;
-type SurfaceLeafName<T extends string> = T extends `${string}.${infer Tail}`
-  ? LowerCamelSurfaceName<Tail>
-  : LowerCamelSurfaceName<T>;
-type SurfaceKeysForGroup<TKeys extends string, TGroup extends string> =
-  TKeys extends string ? SurfaceGroupName<TKeys> extends TGroup ? TKeys : never
-    : never;
-
-export type ActiveRpcFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<MethodsOf<TA>>]: {
-    readonly [
-      M in SurfaceKeysForGroup<MethodsOf<TA>, TGroup> as SurfaceLeafName<M>
-    ]: (
-      input: RpcInputOf<TA, M>,
-      opts?: RequestOpts,
-    ) => AsyncResult<RpcOutputOf<TA, M>, BaseError>;
-  };
-};
-
-export type ActiveEventFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<EventsOf<TA>>]: {
-    readonly [
-      E in SurfaceKeysForGroup<EventsOf<TA>, TGroup> as SurfaceLeafName<E>
-    ]: {
-      prepare(
-        event: EventPayloadOf<TA, E>,
-      ): Result<
-        PreparedTrellisEvent<EventPayloadOf<TA, E>>,
-        ValidationError | UnexpectedError
-      >;
-      publish(
-        event: EventPayloadOf<TA, E>,
-      ): AsyncResult<void, ValidationError | UnexpectedError>;
-      listen(
-        handler: EventCallback<EventOf<TA, E>>,
-        subjectData?: Record<string, unknown>,
-        opts?: EventOpts,
-      ): AsyncResult<void, ValidationError | UnexpectedError>;
-    };
-  };
-};
-
-export type ActiveEventPublishFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<EventsOf<TA>>]: {
-    readonly [
-      E in SurfaceKeysForGroup<EventsOf<TA>, TGroup> as SurfaceLeafName<E>
-    ]: {
-      prepare(
-        event: EventPayloadOf<TA, E>,
-      ): Result<
-        PreparedTrellisEvent<EventPayloadOf<TA, E>>,
-        ValidationError | UnexpectedError
-      >;
-      publish(
-        event: EventPayloadOf<TA, E>,
-      ): AsyncResult<void, ValidationError | UnexpectedError>;
-    };
-  };
-};
-
-export type ActiveLiveFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<LivesOf<TA>>]: {
-    readonly [
-      F in SurfaceKeysForGroup<LivesOf<TA>, TGroup> as SurfaceLeafName<F>
-    ]: (
-      input: LiveInputOf<TA, F>,
-      opts?: LiveSubscribeOpts,
-    ) => AsyncResult<LiveSubscription<LiveEventOf<TA, F>>, BaseError>;
-  };
-};
-
-export type ActiveOperationFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<OperationsOf<TA>>]: {
-    readonly [
-      O in SurfaceKeysForGroup<OperationsOf<TA>, TGroup> as SurfaceLeafName<O>
-    ]: OperationInvoker<
-      TA["operations"][O] & RuntimeOperationDesc
-    >;
-  };
-};
-
-export type ActiveRpcHandleFacade<
-  TA extends RuntimeApi = RuntimeApi,
-  TRequests = RpcRequestShapes<TA>,
-> = {
-  readonly [TGroup in SurfaceGroupName<MethodsOf<TA>>]: {
-    readonly [
-      M in SurfaceKeysForGroup<MethodsOf<TA>, TGroup> as SurfaceLeafName<M>
-    ]: (
-      handler: HandlerFn<TA, M, TA, HandlerTrellis<TA, TRequests>>,
-    ) => Promise<void>;
-  };
-};
-
-export type LiveSurface<
-  TA extends RuntimeApi,
-  TMode extends TrellisMode,
-  F extends LivesOf<TA>,
-> = TMode extends "service"
-  ? LiveRegistration<LiveInputOf<TA, F>, LiveEventOf<TA, F>>
-  : LiveInputBuilder<LiveInputOf<TA, F>, LiveEventOf<TA, F>>;
-
-type MaybePromise<T> = T | Promise<T>;
-
-type EventCallback<TMessage> = {
-  bivarianceHack(
-    message: TMessage,
-    context: EventListenerContext,
-  ): MaybeAsync<void, BaseError>;
-}["bivarianceHack"];
-
-export type RpcHandlerContext = {
-  caller: SessionCaller;
-  sessionKey: string;
-  inboxPrefix: string;
-  /** Exact permission verified for this request. */
-  permission: DescriptorPermissionAtom;
-  /** Capabilities required by this request surface. */
-  requiredCapabilities: readonly string[];
-  requestId?: string;
-  traceId?: string;
-  /** Schedules work after the successful RPC response has reached NATS. */
-  afterReply(task: () => MaybePromise<void>): void;
-};
-
-type ProcessedRpcResponse = {
-  readonly payload: string;
-  readonly afterReply: readonly (() => MaybePromise<void>)[];
-};
-
-export type HandlerTrellis<
-  TA extends RuntimeApi,
-  TRequests = RpcRequestShapes<TA>,
-> = {
-  readonly rpc: ActiveRpcFacade<TA>;
-  readonly event: ActiveEventPublishFacade<TA>;
-  readonly live: ActiveLiveFacade<TA>;
-  readonly operation: ActiveOperationFacade<TA>;
-  request<const M extends RequestMethodOf<TRequests>>(
-    method: M,
-    input: RequestInputOf<TRequests, M>,
-    opts?: RequestOpts,
-  ): AsyncResult<RequestOutputOf<TRequests, M>, BaseError>;
-  publish(
-    event: string,
-    data: Record<string, unknown>,
-  ): AsyncResult<void, ValidationError | TransportError | UnexpectedError>;
-  prepare(
-    event: string,
-    data: Record<string, unknown>,
-  ): Result<PreparedTrellisEvent, ValidationError | UnexpectedError>;
-  publishPrepared(
-    event: PreparedTrellisEvent,
-  ): AsyncResult<void, TransportError | UnexpectedError>;
-  /** Stops durable event listener loops owned by this handler runtime. */
-  stopEventListeners(): void;
-};
-
-function surfaceGroupName(key: string): string {
-  return lowerCamelIdent(key.split(".")[0] ?? key);
-}
-
-function surfaceLeafName(key: string): string {
-  const parts = key.split(".");
-  parts.shift();
-  return lowerCamelIdent(parts.length === 0 ? key : parts.join("."));
-}
-
-function lowerCamelIdent(value: string): string {
-  const pascal = value
-    .split(/[^A-Za-z0-9]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => part[0]!.toUpperCase() + part.slice(1))
-    .join("");
-  return pascal.length === 0 ? "_" : pascal[0]!.toLowerCase() + pascal.slice(1);
-}
-
-function addSurfaceLeaf<TLeaf>(
-  surface: SurfaceGroups<TLeaf>,
-  key: string,
-  leaf: TLeaf,
-): void {
-  const group = surfaceGroupName(key);
-  surface[group] ??= {};
-  surface[group][surfaceLeafName(key)] = leaf;
-}
-
-function natsSubjectMatches(pattern: string, subject: string): boolean {
-  const patternParts = pattern.split(".");
-  const subjectParts = subject.split(".");
-  for (let index = 0; index < patternParts.length; index += 1) {
-    const part = patternParts[index];
-    if (part === ">") return true;
-    const subjectPart = subjectParts[index];
-    if (subjectPart === undefined) return false;
-    if (part !== "*" && part !== subjectPart) return false;
-  }
-  return patternParts.length === subjectParts.length;
-}
-
-export type HandlerKvFacade<TKv extends ParticipantKvMetadata> = {
-  [K in keyof TKv]: TKv[K]["required"] extends false
-    ? TypedKV<TKv[K]["value"]> | undefined
-    : TypedKV<TKv[K]["value"]>;
-};
-
-export type HandlerStoreHandle = {
-  open(): AsyncResult<TypedStore, StoreError>;
-  waitFor(
-    key: string,
-    options?: StoreWaitOptions,
-  ): AsyncResult<TypedStoreEntry, StoreError>;
-};
-
-export type HandlerJobQueue<
-  TPayload,
-  TResult,
-  TTrellis,
-  TUpdate = never,
-> = {
-  create(
-    payload: TPayload,
-  ): AsyncResult<JobRef<TPayload, TResult, TUpdate>, BaseError>;
-  updates(
-    jobId: string,
-    options?: JobUpdatesOptions,
-  ): AsyncResult<JobUpdateSubscription<TUpdate>, BaseError>;
-  handle(
-    handler: (args: {
-      job: ActiveJob<TPayload, TResult, TUpdate>;
-      client: TTrellis;
-    }) => Promise<Result<TResult, BaseError>>,
-  ): void;
-};
-
-export type HandlerJobsFacade<
-  TJobs extends Record<string, JobTypeMetadata>,
-  TTrellis,
-> = {
-  [K in keyof TJobs]: HandlerJobQueue<
-    TJobs[K]["payload"],
-    TJobs[K]["result"],
-    TTrellis,
-    TJobs[K]["update"]
-  >;
-};
-
-export type HandlerTrellisForContract<TContract> =
-  & HandlerTrellis<TrellisApiFor<TContract>>
-  & {
-    kv: HandlerKvFacade<ContractKvFor<TContract>>;
-    store: Record<string, HandlerStoreHandle>;
-    jobs: HandlerJobsFacade<
-      ContractJobsFor<TContract>,
-      HandlerTrellisForContract<TContract>
-    >;
-  };
-
-export type HandlerFn<
-  TMountApi extends RuntimeApi,
-  M extends MethodsOf<TMountApi>,
-  TOutboundApi extends RuntimeApi = TMountApi,
-  TTrellis = HandlerTrellis<TOutboundApi>,
-> = (args: {
-  input: MethodInputOf<TMountApi, M>;
-  context: RpcHandlerContext;
-  client: TTrellis;
-}) => MaybePromise<
-  Result<MethodOutputOf<TMountApi, M>, HandlerErrorOf<TMountApi, M>>
->;
-
-const STATE_RUNTIME_RPC = {
-  Get: {
-    subject: "rpc.v1.state.Get",
-    input: STATE_API.actions["rpc:Get"].input,
-    output: STATE_API.actions["rpc:Get"].output,
-    callerCapabilities: [],
-    errors: STATE_API.actions["rpc:Get"].errors.map((error) => error.type),
-    declaredErrorTypes: STATE_API.actions["rpc:Get"].errors.map((error) =>
-      error.type
-    ),
-    runtimeErrors: STATE_API.actions["rpc:Get"].errors,
-  },
-  Put: {
-    subject: "rpc.v1.state.Put",
-    input: STATE_API.actions["rpc:Put"].input,
-    output: STATE_API.actions["rpc:Put"].output,
-    callerCapabilities: [],
-    errors: STATE_API.actions["rpc:Put"].errors.map((error) => error.type),
-    declaredErrorTypes: STATE_API.actions["rpc:Put"].errors.map((error) =>
-      error.type
-    ),
-    runtimeErrors: STATE_API.actions["rpc:Put"].errors,
-  },
-  Delete: {
-    subject: "rpc.v1.state.Delete",
-    input: STATE_API.actions["rpc:Delete"].input,
-    output: STATE_API.actions["rpc:Delete"].output,
-    callerCapabilities: [],
-    errors: STATE_API.actions["rpc:Delete"].errors.map((error) => error.type),
-    declaredErrorTypes: STATE_API.actions["rpc:Delete"].errors.map((error) =>
-      error.type
-    ),
-    runtimeErrors: STATE_API.actions["rpc:Delete"].errors,
-  },
-};
-
-/** Transport calls consumed by a typed State handle. */
-export type StateResourceCalls = Readonly<{
-  get(
-    input: { resourceName: string },
-  ): PromiseLike<Result<StateGetResponse, BaseError>>;
-  set(input: {
-    resourceName: string;
-    representationVersion: bigint;
-    value: Uint8Array;
-    mode: "create" | "set" | "replace";
-    revision?: string;
-  }): PromiseLike<Result<StateSetResponse, BaseError>>;
-  delete(input: {
-    resourceName: string;
-    revision?: string;
-  }): PromiseLike<Result<StateDeleteResponse, BaseError>>;
-}>;
-
-/** Typed handle for one generated single-value State resource. */
-export class StateHandle<T> {
-  readonly #resourceName: string;
-  readonly #definition: KvRepresentation<T>;
-  readonly #migrations: ResourceMigrations<T>;
-  readonly #isCurrent: () => boolean;
-  readonly #isAvailable: () => boolean;
-  readonly #calls: StateResourceCalls;
-
-  /** Construct a handle from generated metadata and settled State transport calls. */
-  constructor(args: {
-    resourceName: string;
-    definition: KvRepresentation<T>;
-    migrations?: ResourceMigrations<T>;
-    isCurrent?: () => boolean;
-    isAvailable?: () => boolean;
-    calls: StateResourceCalls;
-  }) {
-    this.#resourceName = args.resourceName;
-    this.#definition = args.definition;
-    this.#migrations = args.migrations ?? {};
-    this.#isCurrent = args.isCurrent ?? (() => true);
-    this.#isAvailable = args.isAvailable ?? (() => true);
-    this.#calls = args.calls;
-  }
-
-  async #project(
-    entry: NonNullable<StateGetResponse["entry"]>,
-  ): Promise<StateValue<T>> {
-    const version = Number(entry.representationVersion);
-    const encoded = JSON.parse(new TextDecoder().decode(entry.value));
-    let value: T;
-    if (version === this.#definition.version) {
-      value = this.#definition.codec.decode(encoded);
-    } else {
-      const historicCodec = this.#definition.migrations[version];
-      const migrate = this.#migrations[version];
-      if (!historicCodec || !migrate) {
-        throw new Error(`Unsupported State representation version ${version}`);
-      }
-      const migrated = await migrate(historicCodec.decode(encoded));
-      value = this.#definition.codec.decode(this.#definition.codec.encode(
-        migrated instanceof Result ? migrated.orThrow() : migrated,
-      ));
-    }
-    return {
-      value,
-      revision: entry.revision,
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt,
-    };
-  }
-
-  #assertCurrent(): void {
-    if (!this.#isAvailable()) {
-      throw new ResourceUnavailableError("State", this.#resourceName);
-    }
-    if (!this.#isCurrent()) {
-      throw new Error(
-        `State resource '${this.#resourceName}' has a stale generation`,
-      );
-    }
-  }
-
-  async #conflict(error: StateRpcConflict) {
-    return Result.err(
-      new StateConflictError(
-        error.data.current
-          ? await this.#project(error.data.current)
-          : undefined,
-      ),
-    );
-  }
-
-  #write(
-    value: T,
-    mode: "create" | "set" | "replace",
-    expectedRevision?: string,
-  ): AsyncResult<StateValue<T>, BaseError> {
-    return AsyncResult.from((async () => {
-      try {
-        this.#assertCurrent();
-        const result = await this.#calls.set({
-          resourceName: this.#resourceName,
-          representationVersion: BigInt(this.#definition.version),
-          value: new TextEncoder().encode(
-            JSON.stringify(this.#definition.codec.encode(value)),
-          ),
-          mode,
-          ...(expectedRevision === undefined
-            ? {}
-            : { revision: expectedRevision }),
-        });
-        if (result.isErr()) {
-          return result.error instanceof StateRpcConflict
-            ? await this.#conflict(result.error)
-            : result;
-        }
-        return Result.ok(
-          await this.#project(
-            result.unwrapOrElse(() => {
-              throw new Error("State set unexpectedly failed");
-            }).entry,
-          ),
-        );
-      } catch (cause) {
-        return Result.err(
-          cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
-        );
-      }
-    })());
-  }
-
-  /** Read the current value, migrating only in memory when required. */
-  get(): AsyncResult<StateValue<T> | undefined, BaseError> {
-    return AsyncResult.from((async () => {
-      try {
-        this.#assertCurrent();
-        const result = await this.#calls.get({
-          resourceName: this.#resourceName,
-        });
-        if (result.isErr()) return result;
-        const response = result.unwrapOrElse(() => {
-          throw new Error("State get unexpectedly failed");
-        });
-        return Result.ok(
-          response.entry ? await this.#project(response.entry) : undefined,
-        );
-      } catch (cause) {
-        return Result.err(
-          cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
-        );
-      }
-    })());
-  }
-
-  /** Create the value only when no live value exists. */
-  create(value: T): AsyncResult<StateValue<T>, BaseError> {
-    return this.#write(value, "create");
-  }
-
-  /** Unconditionally replace the current value. */
-  set(value: T): AsyncResult<StateValue<T>, BaseError> {
-    return this.#write(value, "set");
-  }
-
-  /** Replace the value only while `revision` remains current. */
-  replace(revision: string, value: T): AsyncResult<StateValue<T>, BaseError> {
-    return this.#write(value, "replace", revision);
-  }
-
-  /** Delete unconditionally or only while `revision` remains current. */
-  delete(revision?: string): AsyncResult<boolean, BaseError> {
-    return AsyncResult.from((async () => {
-      try {
-        this.#assertCurrent();
-        const result = await this.#calls.delete({
-          resourceName: this.#resourceName,
-          ...(revision === undefined ? {} : { revision }),
-        });
-        if (result.isErr()) {
-          return result.error instanceof StateRpcConflict
-            ? await this.#conflict(result.error)
-            : result;
-        }
-        return Result.ok(
-          result.unwrapOrElse(() => {
-            throw new Error("State delete unexpectedly failed");
-          }).deleted,
-        );
-      } catch (cause) {
-        return Result.err(
-          cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
-        );
-      }
-    })());
-  }
-}
-
-export type RpcRequestErrorOf<
-  TA extends RuntimeApi,
-  M extends RpcMethodNameOf<TA>,
-> = RequestErrorOf<TA, M>;
-export type RpcHandlerErrorOf<
-  TA extends RuntimeApi,
-  M extends RpcMethodNameOf<TA>,
-> = HandlerErrorOf<TA, M>;
-export type EventName<TContract> = EventsOf<OwnedApiFor<TContract>>;
-export type EventType<
-  TContract,
-  E extends EventName<TContract>,
-> = EventOf<OwnedApiFor<TContract>, E>;
-export type EventPayload<
-  TContract,
-  E extends EventName<TContract>,
-> = EventPayloadOf<OwnedApiFor<TContract>, E>;
-
-type DeepRecord<T> = {
-  [k: string]: T | DeepRecord<T>;
-};
-
-const DEFAULT_NO_RESPONDER_MAX_RETRIES = 2;
-const DEFAULT_NO_RESPONDER_RETRY_MS = 200;
-
-function activeTraceId(span: Span): string | undefined {
-  const traceId = span.spanContext().traceId;
-  return traceId === "00000000000000000000000000000000" ? undefined : traceId;
-}
-
-function traceIdFromTraceparent(
-  traceparent: string | undefined,
-): string | undefined {
-  const [version, traceId, parentId, flags, extra] = traceparent?.split("-") ??
-    [];
-  if (
-    extra !== undefined ||
-    !/^[0-9a-f]{2}$/u.test(version ?? "") ||
-    version === "ff" ||
-    !/^[0-9a-f]{32}$/u.test(traceId ?? "") ||
-    traceId === "00000000000000000000000000000000" ||
-    !/^[0-9a-f]{16}$/u.test(parentId ?? "") ||
-    parentId === "0000000000000000" ||
-    !/^[0-9a-f]{2}$/u.test(flags ?? "")
-  ) {
-    return undefined;
-  }
-  return traceId;
-}
-
-const EMPTY_TRELLIS_API: RuntimeApi = {
-  rpc: {},
-  operations: {},
-  events: {},
-  lives: {},
-  subjects: {},
-};
-
-function isBrowserAuthRequiredError(error: unknown): boolean {
-  return machineErrorCode(error) === "session_not_found";
-}
-
-function isDeclaredRpcError(
-  errorNames: readonly string[] | undefined,
-  type: string,
-): boolean {
-  return !!errorNames?.includes(type);
-}
-
-function isRuntimeRpcErrorDesc(value: unknown): value is RuntimeRpcErrorDesc {
-  return !!value &&
-    (typeof value === "object" || typeof value === "function") &&
-    typeof Reflect.get(value, "type") === "string" &&
-    typeof Reflect.get(value, "fromSerializable") === "function";
-}
-
-const payloadSizeEncoder = new TextEncoder();
-
-function payloadByteLength(payload: string | Uint8Array): number {
-  return typeof payload === "string"
-    ? payloadSizeEncoder.encode(payload).byteLength
-    : payload.byteLength;
-}
-
-function causeMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
-function causeLogData(cause: unknown): unknown {
-  return cause instanceof Error
-    ? { message: cause.message, stack: cause.stack, name: cause.name }
-    : cause;
-}
-
-function reconstructDeclaredRpcError(
-  errorNames: readonly string[] | undefined,
-  runtimeErrors: readonly RuntimeRpcErrorDesc[] | undefined,
-  data: StaticDecode<typeof TrellisErrorDataSchema>,
-  json: JsonValue,
-): BaseError | ValidationError | UnexpectedError | null {
-  if (!isDeclaredRpcError(errorNames, data.type)) {
-    return null;
-  }
-
-  const runtimeError = getBuiltinRpcError(data.type) ??
-    runtimeErrors?.find((candidate) => candidate.type === data.type);
-  if (!runtimeError) {
-    return null;
-  }
-
-  const parsed = runtimeError.schema
-    ? parseRuntimeSchema(runtimeError.schema, json).take()
-    : data;
-  if (isErr(parsed)) {
-    return parsed.error instanceof ValidationError ||
-        parsed.error instanceof UnexpectedError
-      ? parsed.error
-      : new UnexpectedError({ cause: parsed.error });
-  }
-
-  try {
-    const reconstructed = runtimeError.fromSerializable(parsed);
-    if (reconstructed instanceof BaseError) {
-      return reconstructed;
-    }
-    return new UnexpectedError({
-      cause: new Error(
-        `RPC error '${data.type}' reconstructed to a non-Trellis error instance`,
-      ),
-    });
-  } catch (cause) {
-    return new UnexpectedError({ cause });
-  }
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Error for an owner whose generation was retired before it could install, so
- * it must not add resources to the disposed scope.
- */
-function ingressRetiredError(id: number): TransportError {
-  return createTransportError({
-    code: "trellis.transport.ingress_retired",
-    message:
-      "Trellis stopped installing provider intake for a retired generation.",
-    hint:
-      "Retry against the current generation. This is expected during a fast supersede.",
-    context: { generationId: id },
-  });
 }
 
 export class Trellis<
@@ -2677,7 +395,6 @@ export class Trellis<
   readonly rpc: ActiveRpcFacade<TA>;
   readonly event: ActiveEventFacade<TA>;
   readonly live: ActiveLiveFacade<TA>;
-  readonly operation: ActiveOperationFacade<TA>;
   readonly handle: { readonly rpc: ActiveRpcHandleFacade<TA, TRequests> };
   /** Framework-neutral lifecycle handle for this Trellis runtime connection. */
   readonly connection: TrellisConnection;
@@ -2685,25 +402,25 @@ export class Trellis<
   readonly contractDigest?: string;
 
   #transport: TrellisTransportProvider;
+  #operationFacade?: ActiveOperationFacade<TA>;
   #adaptiveTransport: boolean;
   #auth: TrellisAuth;
   #inboxPrefix: string;
   readonly api: TA;
+  #replyRequests = new WeakMap<
+    Msg,
+    { request: SessionRequest; digest: string }
+  >();
   #log: LoggerLike;
+  readonly #durableEvents: DurableEventConsumers<TA>;
   #tasks: TrellisTasks;
   #rpcTaskSeq = 0;
   #liveTaskSeq = 0;
   #hasExplicitApi: boolean;
-  #noResponderMaxRetries: number;
-  #noResponderRetryMs: number;
   #onSessionNotFound?: () => MaybePromise<void>;
   #operationStore?: Promise<TypedKV<DurableOperationRecord>>;
   #operationDeploymentId?: string;
-  #eventConsumers: RuntimeEventConsumers;
-  #apiBindings: Readonly<Record<string, unknown>>;
   #ephemeralEventNeeds?: ReadonlySet<string>;
-  #durableEventLoops = new Map<string, DurableEventConsumerLoop<TA>>();
-  #durableEventListenersStopped = false;
   #liveClosers = new Set<(terminal: void | Error) => void>();
   #resourceGeneration: () => number;
   #resourceAvailability: (name: string) => boolean;
@@ -2714,69 +431,65 @@ export class Trellis<
    * Logical provider core: registered RPC handlers survive every transport
    * generation. Ingress subscriptions are installed per generation.
    */
-  #rpcRegistrations = new Map<string, {
-    method: MethodsOf<TA>;
-    ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
-    subject: string;
-    fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
-    handlerTrellis: HandlerTrellis<TA, TRequests>;
-  }>();
+  #rpcRegistrations = new Map<
+    string,
+    {
+      method: MethodsOf<TA>;
+      ctx: RpcDescriptorOf<TA, MethodsOf<TA>>;
+      subject: string;
+      fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>;
+      handlerTrellis: HandlerTrellis<TA, TRequests>;
+    }
+  >();
   /**
    * Logical provider core: registered live handlers survive every transport
    * generation. Each holds a per-generation installer that builds the admitted
    * provider from that generation's exact context.
    */
-  #liveRegistrations = new Map<string, {
-    install: (target: {
-      id: number;
-      nc: NatsConnection;
-      contextDigest: string;
-      lease?: () => TransportLease;
-    }) => Promise<{
-      drain: () => Promise<void>;
-      done: Promise<void>;
-      /**
-       * Reinstall this generation's generic live-open intake on the same
-       * provider (its control subscription, retained authority, and accepted
-       * sessions stay intact). Used when a drained survivor is reactivated.
-       */
-      reopen: () =>
-        | { drain: () => Promise<void>; done: Promise<void> }
-        | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
-      /**
-       * Retire this generation's provider: stop session-serving control, fence
-       * and terminate owned sessions, and release its retained authority. Run
-       * only when the generation physically closes or a failed install is
-       * rolled back, never at a planned generic-intake cutover.
-       */
-      dispose: () => Promise<void>;
-    }>;
-  }>();
+  #liveRegistrations = new Map<
+    string,
+    {
+      install: (target: {
+        id: number;
+        nc: NatsConnection;
+        contextDigest: string;
+        retainAuthority?: () => VerifiedAuthority;
+        lease?: () => TransportLease;
+      }) => Promise<{
+        drain: () => Promise<void>;
+        done: Promise<void>;
+        /**
+         * Reinstall this generation's generic live-open intake on the same
+         * provider (its control subscription, retained authority, and accepted
+         * sessions stay intact). Used when a drained survivor is reactivated.
+         */
+        reopen: () =>
+          | { drain: () => Promise<void>; done: Promise<void> }
+          | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
+        /**
+         * Retire this generation's provider: stop session-serving control, fence
+         * and terminate owned sessions, and release its retained authority. Run
+         * only when the generation physically closes or a failed install is
+         * rolled back, never at a planned generic-intake cutover.
+         */
+        dispose: () => Promise<void>;
+      }>;
+    }
+  >();
   /**
    * Internal framework surfaces (operations) that install their own generic
    * intake per admitted generation through the shared provider-ingress
    * mechanism instead of subscribing on a fixed connection.
    */
-  #generationIntakes = new Map<
-    string,
-    (
-      target: {
-        id: number;
-        nc: NatsConnection;
-        contextDigest: string;
-        lease?: () => TransportLease;
-      },
-    ) => Promise<{
-      drain: () => Promise<void>;
-      done: Promise<void>;
-      dispose: () => Promise<void>;
-    }>
-  >();
+  #generationIntakes = new Map<string, GenerationIntakeInstall>();
   /**
    * One installed provider ingress per admitted generation, keyed by the
    * generation id the owning runtime reports.
    */
   #providerIngress = new Map<number, ProviderIngress>();
+
+  /** Current owner-backed, catalog-verified advisory identity and action projection. */
+  readonly ownAuthority: PromotedOwnAuthorityView | undefined;
 
   constructor(
     name: string, // Must be unique for a service
@@ -2805,19 +518,47 @@ export class Trellis<
     this.contractId = opts?.contractId;
     this.contractDigest = opts?.contractDigest;
     this.#hasExplicitApi = api !== undefined;
-    this.#noResponderMaxRetries = opts?.noResponderRetry?.maxAttempts ??
-      DEFAULT_NO_RESPONDER_MAX_RETRIES;
-    this.#noResponderRetryMs = opts?.noResponderRetry?.baseDelayMs ??
-      DEFAULT_NO_RESPONDER_RETRY_MS;
     this.#onSessionNotFound = opts?.onSessionNotFound;
     this.#resourceGeneration = opts?.resourceGeneration ?? (() => 0);
     this.#resourceAvailability = opts?.resourceAvailability ?? (() => true);
     this.#stateMigrations = opts?.stateMigrations ?? {};
-    this.#eventConsumers = internalOpts?.[internalEventConsumers] ?? {};
-    this.#apiBindings = internalOpts?.[internalApiBindings] ?? {};
+    const trellis = this;
+    this.#durableEvents = new DurableEventConsumers<TA>(
+      {
+        get timeout() {
+          return trellis.timeout;
+        },
+        get tasks() {
+          return trellis.#tasks;
+        },
+        get log() {
+          return trellis.#log;
+        },
+        get adaptiveTransport() {
+          return trellis.#adaptiveTransport;
+        },
+        transport: () => trellis.#transport,
+        nats: () => trellis.#nats,
+        js: () => trellis.#js,
+        requestBuiltRpc: (method, input, ctx, opts) =>
+          trellis.#requestBuiltRpc(method, input, ctx, opts),
+        invokeEventHandler: (args) => trellis.#invokeEventHandler(args),
+        parseEventMessage: (event, ctx, msg) =>
+          trellis.#parseEventMessage(event, ctx, msg),
+        validateEventProof: (event, descriptor, msg, original) =>
+          trellis.#validateEventProof(event, descriptor, msg, original),
+      },
+      internalOpts?.[internalEventConsumers] ?? {},
+    );
     this.#ephemeralEventNeeds = internalOpts?.[internalEphemeralEventNeeds];
-    this.connection = opts?.connection ??
-      new TrellisConnection({ kind: "client" });
+    this.connection =
+      opts?.connection ?? new TrellisConnection({ kind: "client" });
+    if (auth.authorityOwner) {
+      const view = new PromotedOwnAuthorityView(auth.authorityOwner, this.api);
+      this.ownAuthority = view;
+      void view.refresh().catch(() => undefined);
+      void this.#transport.closed().then(() => view.close());
+    }
 
     this.#tasks = new TrellisTasks({ log: this.#log });
     this.state = this.#createStateFacade(opts?.state as TState | undefined);
@@ -2825,7 +566,6 @@ export class Trellis<
     this.handle = { rpc: this.#createRpcHandleFacade() };
     this.event = this.#createEventFacade();
     this.live = this.#createLiveFacade();
-    this.operation = this.#createOperationFacade();
   }
 
   get #nats(): NatsConnection {
@@ -2851,11 +591,12 @@ export class Trellis<
   #createStateFacade(state: TState | undefined): StateFacade<TState> {
     const stores = (state ?? {}) as RuntimeStateStores;
     const facade: Record<string, ValueStateStoreClient<unknown>> = {};
-    const stateRpc = (name: "Get" | "Put" | "Delete") => {
-      const descriptor = Object.values(this.api.rpc).find((candidate) =>
-        candidate.permission.apiId === "trellis.state" &&
-        candidate.permission.apiVersion === "v1" &&
-        candidate.permission.surfaceName === name
+    const stateRpc = (name: "Register" | "Get" | "Put" | "Delete") => {
+      const descriptor = Object.values(this.api.rpc).find(
+        (candidate) =>
+          candidate.permission.apiId === "trellis.state" &&
+          candidate.permission.apiVersion === "v1" &&
+          candidate.permission.surfaceName === name,
       );
       if (!descriptor) {
         throw new Error(`Generated participant is missing State.${name}`);
@@ -2871,18 +612,44 @@ export class Trellis<
             resourceName,
             definition: descriptor,
             migrations: this.#stateMigrations[resourceName],
+            registration: descriptor.registration,
             isCurrent: () => generation === this.#resourceGeneration(),
             isAvailable: () => this.#resourceAvailability(resourceName),
             calls: {
-              get: (input) =>
-                this.#requestBuiltRpc<StateGetResponse>(
-                  "State.Get",
+              watch: (input, opts) => {
+                const live = Object.values(this.api.lives ?? {}).find(
+                  (candidate) =>
+                    candidate.permission.apiId === "trellis.state" &&
+                    candidate.permission.apiVersion === "v1" &&
+                    candidate.permission.surfaceName === "Watch",
+                );
+                if (!live)
+                  throw new Error(
+                    "Generated participant is missing State.Watch",
+                  );
+                return this.#subscribeLive<typeof input, StateGetResponse>(
+                  "State.Watch",
+                  live,
+                  input,
+                  opts,
+                );
+              },
+              register: (input) =>
+                this.#requestBuiltRpc<StateRegisterResponse>(
+                  "State.Register",
                   input,
                   {
-                    ...STATE_RUNTIME_RPC.Get,
-                    subject: stateRpc("Get").subject,
+                    ...STATE_RUNTIME_RPC.Register,
+                    subject: stateRpc("Register").subject,
+                    permission: stateRpc("Register").permission,
                   },
                 ),
+              get: (input) =>
+                this.#requestBuiltRpc<StateGetResponse>("State.Get", input, {
+                  ...STATE_RUNTIME_RPC.Get,
+                  subject: stateRpc("Get").subject,
+                  permission: stateRpc("Get").permission,
+                }),
               set: (input) =>
                 this.#requestBuiltRpc<StateSetResponse>(
                   "State.Put",
@@ -2898,6 +665,7 @@ export class Trellis<
                   {
                     ...STATE_RUNTIME_RPC.Put,
                     subject: stateRpc("Put").subject,
+                    permission: stateRpc("Put").permission,
                   },
                 ),
               delete: (input) =>
@@ -2912,6 +680,7 @@ export class Trellis<
                   {
                     ...STATE_RUNTIME_RPC.Delete,
                     subject: stateRpc("Delete").subject,
+                    permission: stateRpc("Delete").permission,
                   },
                 ),
             },
@@ -2948,16 +717,13 @@ export class Trellis<
       ) => Promise<void>
     > = {};
     for (const method of Object.keys(this.api.rpc ?? {})) {
-      addSurfaceLeaf(
-        surface,
-        method,
-        (handler) =>
-          this.mount(
-            method,
-            handler as Parameters<
-              Trellis<TA, TMode, TState, TRequests>["mount"]
-            >[1],
-          ),
+      addSurfaceLeaf(surface, method, (handler) =>
+        this.mount(
+          method,
+          handler as Parameters<
+            Trellis<TA, TMode, TState, TRequests>["mount"]
+          >[1],
+        ),
       );
     }
     return surface as ActiveRpcHandleFacade<TA, TRequests>;
@@ -2991,12 +757,9 @@ export class Trellis<
     const surface: SurfaceGroups<RuntimeLiveLeaf> = {};
     for (const live of Object.keys(this.api.lives ?? {})) {
       const leaf: RuntimeLiveLeaf = (input, opts) =>
-        this.liveHandle(live as LivesOf<TA>).input(
-          input as LiveInputOf<TA, LivesOf<TA>>,
-        ).subscribe(opts) as AsyncResult<
-          LiveSubscription<unknown>,
-          BaseError
-        >;
+        this.liveHandle(live as LivesOf<TA>)
+          .input(input as LiveInputOf<TA, LivesOf<TA>>)
+          .subscribe(opts) as AsyncResult<LiveSubscription<unknown>, BaseError>;
       addSurfaceLeaf(surface, live, leaf);
     }
     return surface as ActiveLiveFacade<TA>;
@@ -3016,15 +779,20 @@ export class Trellis<
     };
   }
 
+  /** Operation methods initialized after derived runtime construction. */
+  get operation(): ActiveOperationFacade<TA> {
+    return (this.#operationFacade ??= this.#createOperationFacade());
+  }
+
   #createOperationFacade(): ActiveOperationFacade<TA> {
     const surface: SurfaceGroups<RuntimeOperationLeaf> = {};
     for (const operation of Object.keys(this.api.operations ?? {})) {
       addSurfaceLeaf(
         surface,
         operation,
-        this.operationHandle(operation) as OperationInvoker<
-          RuntimeOperationDesc
-        >,
+        this.operationHandle(
+          operation,
+        ) as OperationInvoker<RuntimeOperationDesc>,
       );
     }
     return surface as ActiveOperationFacade<TA>;
@@ -3043,9 +811,7 @@ export class Trellis<
     );
   }
 
-  async operationStoreHandle(): Promise<
-    TypedKV<DurableOperationRecord>
-  > {
+  async operationStoreHandle(): Promise<TypedKV<DurableOperationRecord>> {
     if (!this.#operationStore) {
       if (!this.#operationDeploymentId) {
         throw new Error(
@@ -3059,18 +825,10 @@ export class Trellis<
         const result = await TypedKV.open<DurableOperationRecord>(
           this.#transport,
           bucket,
+          operationRecordRepresentation,
           {
-            version: 1,
-            migrations: {},
-            codec: {
-              encode: (value: DurableOperationRecord) => value,
-              decode: (value) => value as DurableOperationRecord,
-            },
-          },
-          {
+            // The platform producer owns framework retention and size limits.
             bindOnly: true,
-            ttl: 30 * 24 * 60 * 60 * 1_000,
-            maxValueBytes: 1024 * 1024,
             acquireTimeoutMs: this.timeout,
           },
         );
@@ -3121,11 +879,12 @@ export class Trellis<
     const revision = existing ? runtime.revision + 1 : runtime.revision;
     const record: DurableOperationRecord = {
       invocationId: runtime.id,
+      deploymentId: runtime.deploymentId,
       callerSessionKey: runtime.callerSessionKey,
       invocationDigest: runtime.invocationDigest,
       caller: runtime.caller,
       creatorPrincipalId: runtime.creatorPrincipalId,
-      creatorParticipantId: runtime.creatorParticipantId,
+      creatorBinding: runtime.creatorBinding,
       apiId: runtime.apiId,
       operation: runtime.operation,
       input: runtime.input,
@@ -3137,56 +896,28 @@ export class Trellis<
       leaseExpiresAt: runtime.leaseExpiresAt,
       ...(existing?.cancelRequestedAt || runtime.cancelRequestedAt
         ? {
-          cancelRequestedAt: existing?.cancelRequestedAt ??
-            runtime.cancelRequestedAt,
-        }
+            cancelRequestedAt:
+              existing?.cancelRequestedAt ?? runtime.cancelRequestedAt,
+          }
         : {}),
       ...(runtime.transferGrant
         ? { transferGrant: runtime.transferGrant }
         : {}),
-      ...(runtime.uploadStorageKey
-        ? { uploadStorageKey: runtime.uploadStorageKey }
-        : {}),
+      ...(runtime.uploadState ? { uploadState: runtime.uploadState } : {}),
       sequence: runtime.sequence,
       signalSequence: runtime.signalSequence,
       signals: runtime.signals,
-      snapshot: runtime.snapshot,
+      snapshot: { ...runtime.snapshot, revision },
     };
-    const byteLength = (value: unknown) =>
-      new TextEncoder().encode(JSON.stringify(value)).byteLength;
-    if (byteLength(record.input) > MAX_OPERATION_INPUT_BYTES) {
-      throw new Error("operation input exceeds 256 KiB");
-    }
-    if (
-      record.snapshot.progress !== undefined &&
-      byteLength(record.snapshot.progress) > MAX_OPERATION_PROGRESS_BYTES
-    ) throw new Error("operation progress exceeds 64 KiB");
-    if (
-      record.snapshot.output !== undefined &&
-      byteLength(record.snapshot.output) > MAX_OPERATION_OUTPUT_BYTES
-    ) throw new Error("operation output exceeds 512 KiB");
-    if (
-      record.snapshot.error !== undefined &&
-      byteLength(record.snapshot.error) > MAX_OPERATION_ERROR_BYTES
-    ) throw new Error("operation error exceeds 32 KiB");
-    if ((record.signals?.length ?? 0) > MAX_OPERATION_SIGNALS) {
-      throw new Error("operation signal limit exceeded");
-    }
-    for (const signal of record.signals) {
-      if (byteLength(signal.input ?? null) > MAX_OPERATION_SIGNAL_BYTES) {
-        throw new Error("operation signal payload exceeds 64 KiB");
-      }
-    }
-    if (byteLength(record) > MAX_OPERATION_RECORD_BYTES) {
-      throw new Error("operation record exceeds 1 MiB");
-    }
-    const saved = createOnly || loadedValue === undefined
-      ? await store.create(runtime.id, record)
-      : await store.replace(runtime.id, loadedValue.revision, record);
+    const saved =
+      createOnly || loadedValue === undefined
+        ? await store.create(runtime.id, record)
+        : await store.replace(runtime.id, loadedValue.revision, record);
     const value = saved.take();
     if (isErr(value)) throw value.error;
     runtime.cancelRequestedAt = record.cancelRequestedAt;
     runtime.revision = revision;
+    runtime.snapshot.revision = revision;
   }
 
   /**
@@ -3212,22 +943,29 @@ export class Trellis<
     opts?: RequestOpts,
   ): AsyncResult<unknown, BaseError> {
     const rpcApi = this.api["rpc"] as Record<string, unknown>;
-    const ctx = rpcApi[method] as {
-      subject: string;
-      input: unknown;
-      output: unknown;
-      callerCapabilities: readonly string[];
-      errors?: readonly string[];
-      declaredErrorTypes?: readonly string[];
-      runtimeErrors?: readonly RuntimeRpcErrorDesc[];
-    } | undefined;
+    const ctx = rpcApi[method] as
+      | {
+          subject: string;
+          permission: DescriptorPermissionAtom;
+          input: unknown;
+          output: unknown;
+          callerCapabilities: readonly string[];
+          errors?: readonly string[];
+          declaredErrorTypes?: readonly string[];
+          runtimeErrors?: readonly RuntimeRpcErrorDesc[];
+        }
+      | undefined;
     if (!ctx) {
-      return AsyncResult.from(Promise.resolve(err(
-        new UnexpectedError({
-          cause: this.#unknownApiError("RPC method", method.toString()),
-          context: { method: method.toString() },
-        }),
-      )));
+      return AsyncResult.from(
+        Promise.resolve(
+          err(
+            new UnexpectedError({
+              cause: this.#unknownApiError("RPC method", method.toString()),
+              context: { method: method.toString() },
+            }),
+          ),
+        ),
+      );
     }
 
     return this.#requestBuiltRpcUnknown(method, input, ctx, opts);
@@ -3238,6 +976,7 @@ export class Trellis<
     input: unknown,
     ctx: {
       subject: string;
+      permission: DescriptorPermissionAtom;
       input: unknown;
       output: unknown;
       callerCapabilities: readonly string[];
@@ -3255,6 +994,7 @@ export class Trellis<
     input: unknown,
     ctx: {
       subject: string;
+      permission: DescriptorPermissionAtom;
       input: unknown;
       output: unknown;
       callerCapabilities: readonly string[];
@@ -3264,65 +1004,140 @@ export class Trellis<
     },
     opts?: RequestOpts,
   ): AsyncResult<TOutput, BaseError> {
-    return AsyncResult.from((async () => {
-      this.#log.trace(
-        { method: String(method) },
-        `Calling ${method.toString()}.`,
-      );
+    return AsyncResult.from(
+      (async () => {
+        this.#log.trace(
+          { method: String(method) },
+          `Calling ${method.toString()}.`,
+        );
 
-      const msg = encodeRuntimeSchema(ctx.input, input).take();
-      if (isErr(msg)) {
-        recordRuntimeError(msg.error, {
-          surface: "rpc",
-          direction: "client",
-          operation: method,
-          phase: "request_encoding",
-        });
-        return msg;
-      }
-
-      const subject = this.template(ctx.subject, input).take();
-      if (isErr(subject)) {
-        recordRuntimeError(subject.error, {
-          surface: "rpc",
-          direction: "client",
-          operation: method,
-          phase: "request_encoding",
-        });
-        return subject;
-      }
-      const route = trellisRoute("rpc", method);
-      const span = startClientSpan(route);
-      const attempt = async (): Promise<Result<TOutput, BaseError>> => {
-        const msgResult = await this.#requestMessageWithRetry({
-          method,
-          route,
-          subject,
-          payload: msg,
-          timeout: opts?.timeout ?? this.timeout,
-          signal: opts?.signal,
-          callerCapabilities: ctx.callerCapabilities,
-          span,
-        });
-        const response = msgResult.take();
-        if (isErr(response)) {
-          recordRuntimeError(response.error, {
+        const msg = encodeRuntimeSchema(ctx.input, input).take();
+        if (isErr(msg)) {
+          recordRuntimeError(msg.error, {
             surface: "rpc",
             direction: "client",
             operation: method,
-            phase: "request_send",
+            phase: "request_encoding",
           });
-          return response;
+          return msg;
         }
 
-        if (response.headers?.get("status") === "error") {
+        const subject = this.template(ctx.subject, input).take();
+        if (isErr(subject)) {
+          recordRuntimeError(subject.error, {
+            surface: "rpc",
+            direction: "client",
+            operation: method,
+            phase: "request_encoding",
+          });
+          return subject;
+        }
+        const route = trellisRoute("rpc", method);
+        const span = startClientSpan(route);
+        const attempt = async (): Promise<Result<TOutput, BaseError>> => {
+          const msgResult = await this.#requestMessage({
+            method,
+            route,
+            subject,
+            payload: msg,
+            timeout: opts?.timeout ?? this.timeout,
+            signal: opts?.signal,
+            callerCapabilities: ctx.callerCapabilities,
+            permission: ctx.permission,
+            span,
+          });
+          const response = msgResult.take();
+          if (isErr(response)) {
+            recordRuntimeError(response.error, {
+              surface: "rpc",
+              direction: "client",
+              operation: method,
+              phase: "request_send",
+            });
+            return response;
+          }
+
+          if (response.headers?.get("status") === "error") {
+            const json = safeJson(response).take();
+            if (isErr(json)) {
+              const error = requestFailedTransportError({
+                code: "trellis.request.invalid_response",
+                message: "Trellis returned an invalid response.",
+                hint: "Retry the request. If it keeps happening, check the Trellis capability handling this request.",
+                method,
+                subject,
+                cause: json.error.cause,
+              });
+              recordRuntimeError(error, {
+                surface: "rpc",
+                direction: "client",
+                operation: method,
+                phase: "response_decoding",
+              });
+              return err(error);
+            }
+
+            const errorData = parse(TrellisErrorDataSchema, json).take();
+            if (isErr(errorData)) {
+              const error = requestFailedTransportError({
+                code: "trellis.request.invalid_response",
+                message: "Trellis returned an invalid response.",
+                hint: "Retry the request. If it keeps happening, check the Trellis capability handling this request.",
+                method,
+                subject,
+                cause: errorData.error,
+              });
+              recordRuntimeError(error, {
+                surface: "rpc",
+                direction: "client",
+                operation: method,
+                phase: "response_decoding",
+              });
+              return err(error);
+            }
+
+            const declaredErrorTypes = Array.isArray(ctx.declaredErrorTypes)
+              ? ctx.declaredErrorTypes.filter(
+                  (value): value is string => typeof value === "string",
+                )
+              : ctx.errors;
+            const runtimeErrors = Array.isArray(ctx.runtimeErrors)
+              ? ctx.runtimeErrors.filter(isRuntimeRpcErrorDesc)
+              : undefined;
+            const reconstructed = reconstructDeclaredRpcError(
+              declaredErrorTypes,
+              runtimeErrors,
+              errorData,
+              json,
+            );
+            if (reconstructed) {
+              await this.#handleBrowserAuthRequired(reconstructed);
+              recordRuntimeError(new RemoteError({ error: errorData }), {
+                surface: "rpc",
+                direction: "client",
+                operation: method,
+                phase: "remote_error",
+              });
+              return err(reconstructed);
+            }
+
+            const remoteError = new RemoteError({ error: errorData });
+            await this.#handleBrowserAuthRequired(remoteError);
+            recordRuntimeError(remoteError, {
+              surface: "rpc",
+              direction: "client",
+              operation: method,
+              phase: "remote_error",
+            });
+            return err(remoteError);
+          }
+
           const json = safeJson(response).take();
           if (isErr(json)) {
             const error = requestFailedTransportError({
               code: "trellis.request.invalid_response",
               message: "Trellis returned an invalid response.",
-              hint:
-                "Retry the request. If it keeps happening, check the Trellis capability handling this request.",
+              hint: "Retry the request. If it keeps happening, check the Trellis capability handling this request.",
               method,
               subject,
               cause: json.error.cause,
@@ -3336,148 +1151,74 @@ export class Trellis<
             return err(error);
           }
 
-          const errorData = parse(TrellisErrorDataSchema, json).take();
-          if (isErr(errorData)) {
-            const error = requestFailedTransportError({
-              code: "trellis.request.invalid_response",
-              message: "Trellis returned an invalid response.",
-              hint:
-                "Retry the request. If it keeps happening, check the Trellis capability handling this request.",
-              method,
-              subject,
-              cause: errorData.error,
-            });
-            recordRuntimeError(error, {
+          const outputResult = parseRuntimeSchema(ctx.output, json).take();
+          if (isErr(outputResult)) {
+            recordRuntimeError(outputResult.error, {
               surface: "rpc",
               direction: "client",
               operation: method,
               phase: "response_decoding",
             });
-            return err(error);
+            return err(outputResult.error);
           }
 
-          const declaredErrorTypes = Array.isArray(ctx.declaredErrorTypes)
-            ? ctx.declaredErrorTypes.filter((value): value is string =>
-              typeof value === "string"
-            )
-            : ctx.errors;
-          const runtimeErrors = Array.isArray(ctx.runtimeErrors)
-            ? ctx.runtimeErrors.filter(isRuntimeRpcErrorDesc)
-            : undefined;
-          const reconstructed = reconstructDeclaredRpcError(
-            declaredErrorTypes,
-            runtimeErrors,
-            errorData,
-            json,
-          );
-          if (reconstructed) {
-            await this.#handleBrowserAuthRequired(reconstructed);
-            recordRuntimeError(new RemoteError({ error: errorData }), {
+          return ok(outputResult as TOutput);
+        };
+
+        return await withSpanAsync(span, async () => {
+          // One logical RPC duration including retries, serialization, and final
+          // decode. The attempt counter remains the transport-attempt boundary.
+          const logicalStartedAt = performance.now();
+          const recordLogicalOutcome = (outcome: string): void => {
+            recordCatalogDuration(
+              "trellis.rpc.client.duration",
+              performance.now() - logicalStartedAt,
+              { "trellis.route": route, "trellis.outcome": outcome },
+            );
+          };
+          try {
+            const result = await attempt();
+            const value = result.take();
+            const outcome = isErr(value)
+              ? outcomeForFailure(value.error)
+              : "ok";
+            if (isErr(value)) {
+              span.setStatus({
+                code: SpanStatusCode.ERROR,
+                message: outcome,
+              });
+            } else {
+              span.setStatus({ code: SpanStatusCode.OK });
+            }
+            recordLogicalOutcome(outcome);
+            return result;
+          } catch (cause) {
+            const unexpected =
+              cause instanceof TransportError
+                ? cause
+                : new UnexpectedError({ cause });
+            span.setStatus({
+              code: SpanStatusCode.ERROR,
+              message: "error",
+            });
+            recordLogicalOutcome("error");
+            recordRuntimeError(unexpected, {
               surface: "rpc",
               direction: "client",
               operation: method,
-              phase: "remote_error",
+              phase: "unexpected",
             });
-            return err(reconstructed);
+            return err(unexpected);
+          } finally {
+            span.end();
           }
-
-          const remoteError = new RemoteError({ error: errorData });
-          await this.#handleBrowserAuthRequired(remoteError);
-          recordRuntimeError(remoteError, {
-            surface: "rpc",
-            direction: "client",
-            operation: method,
-            phase: "remote_error",
-          });
-          return err(remoteError);
-        }
-
-        const json = safeJson(response).take();
-        if (isErr(json)) {
-          const error = requestFailedTransportError({
-            code: "trellis.request.invalid_response",
-            message: "Trellis returned an invalid response.",
-            hint:
-              "Retry the request. If it keeps happening, check the Trellis capability handling this request.",
-            method,
-            subject,
-            cause: json.error.cause,
-          });
-          recordRuntimeError(error, {
-            surface: "rpc",
-            direction: "client",
-            operation: method,
-            phase: "response_decoding",
-          });
-          return err(error);
-        }
-
-        const outputResult = parseRuntimeSchema(ctx.output, json).take();
-        if (isErr(outputResult)) {
-          recordRuntimeError(outputResult.error, {
-            surface: "rpc",
-            direction: "client",
-            operation: method,
-            phase: "response_decoding",
-          });
-          return err(outputResult.error);
-        }
-
-        return ok(outputResult as TOutput);
-      };
-
-      return await withSpanAsync(span, async () => {
-        // One logical RPC duration including retries, serialization, and final
-        // decode. The attempt counter remains the transport-attempt boundary.
-        const logicalStartedAt = performance.now();
-        const recordLogicalOutcome = (outcome: string): void => {
-          recordCatalogDuration(
-            "trellis.rpc.client.duration",
-            performance.now() - logicalStartedAt,
-            { "trellis.route": route, "trellis.outcome": outcome },
-          );
-        };
-        try {
-          const result = await attempt();
-          const value = result.take();
-          const outcome = isErr(value) ? outcomeForFailure(value.error) : "ok";
-          if (isErr(value)) {
-            span.setStatus({
-              code: SpanStatusCode.ERROR,
-              message: outcome,
-            });
-          } else {
-            span.setStatus({ code: SpanStatusCode.OK });
-          }
-          recordLogicalOutcome(outcome);
-          return result;
-        } catch (cause) {
-          const unexpected = cause instanceof TransportError
-            ? cause
-            : new UnexpectedError({ cause });
-          span.setStatus({
-            code: SpanStatusCode.ERROR,
-            message: "error",
-          });
-          recordLogicalOutcome("error");
-          recordRuntimeError(unexpected, {
-            surface: "rpc",
-            direction: "client",
-            operation: method,
-            phase: "unexpected",
-          });
-          return err(unexpected);
-        } finally {
-          span.end();
-        }
-      });
-    })());
+        });
+      })(),
+    );
   }
 
   async #handleBrowserAuthRequired(error: unknown): Promise<void> {
-    if (
-      !this.#onSessionNotFound || !isBrowserAuthRequiredError(error)
-    ) {
+    if (!this.#onSessionNotFound || !isBrowserAuthRequiredError(error)) {
       return;
     }
 
@@ -3491,7 +1232,7 @@ export class Trellis<
   }): Promise<Result<SessionCaller, BaseError>> {
     return await verifyLocalAuthorization({
       kind: "request",
-      cache: this.#auth.authorizationProviderCache,
+      cache: this.#auth.authorityOwner,
       message: args.msg,
       permission: args.permission,
       requiredCapabilities: args.requiredCapabilities,
@@ -3500,12 +1241,10 @@ export class Trellis<
 
   liveHandle<F extends LivesOf<TA>>(
     live: F,
-  ):
-    & LiveInputBuilder<LiveInputOf<TA, F>, LiveEventOf<TA, F>>
-    & LiveRegistration<LiveInputOf<TA, F>, LiveEventOf<TA, F>> {
+  ): LiveInputBuilder<LiveInputOf<TA, F>, LiveEventOf<TA, F>> &
+    LiveRegistration<LiveInputOf<TA, F>, LiveEventOf<TA, F>> {
     const descriptor = this.api.lives?.[live] as
-      | LiveDescriptorOf<TA, F>
-      | undefined;
+      LiveDescriptorOf<TA, F> | undefined;
     if (!descriptor) {
       throw this.#unknownApiError("live", live.toString());
     }
@@ -3518,10 +1257,7 @@ export class Trellis<
             descriptor,
             input,
             opts,
-          ) as AsyncResult<
-            LiveSubscription<LiveEventOf<TA, F>>,
-            BaseError
-          >,
+          ) as AsyncResult<LiveSubscription<LiveEventOf<TA, F>>, BaseError>,
       }),
       handle: (
         handler: (
@@ -3537,7 +1273,6 @@ export class Trellis<
     input: TInput,
     opts?: LiveSubscribeOpts,
   ): AsyncResult<LiveSubscription<TEvent>, BaseError> {
-    const route = trellisRoute("rpc", live);
     let transport: { nc: NatsConnection; release(): void } | undefined;
     let subscription: LiveSubscription<TEvent> | undefined;
     const closeOnNats = () => {
@@ -3574,8 +1309,7 @@ export class Trellis<
             code: "trellis.live.subscribe_aborted",
             message:
               "The live subscription was aborted before Trellis acknowledged it.",
-            hint:
-              "Retry the subscription if the live observation is still needed.",
+            hint: "Retry the subscription if the live observation is still needed.",
             context: { live, subject },
           });
           return err(error);
@@ -3583,41 +1317,18 @@ export class Trellis<
         const abort = () => {
           const current = subscription;
           current?.fence();
-          if (current) void current.close().take().catch(() => undefined);
+          if (current)
+            void current
+              .close()
+              .take()
+              .catch(() => undefined);
         };
         try {
-          const cache = this.#auth.authorizationProviderCache;
+          const cache = this.#auth.authorityOwner;
           if (!cache) {
             throw new LiveStreamError(
               "authorization_unavailable",
               "provider authorization cache is required for live observations",
-            );
-          }
-          // The bound live subject encodes the exact API identity and the
-          // provider deployment the installed binding selected; decode them
-          // from the subject rather than trusting the offer's own claim.
-          const routeTokens = subject.split(".");
-          // Standalone live subjects carry an extra `route` token:
-          // `live.v1.route.<api>.<deployment>.<action>`; Operation subjects are
-          // `operation.v1.<api>.<deployment>.<action>`.
-          const routeOffset = routeTokens[2] === "route" ? 1 : 0;
-          const apiIdentity = routeTokens.length >= 4 + routeOffset
-            ? decodeSubjectToken(routeTokens[2 + routeOffset])
-            : undefined;
-          const selectedProviderDeploymentId =
-            routeTokens.length >= 4 + routeOffset
-              ? decodeSubjectToken(routeTokens[3 + routeOffset])
-              : undefined;
-          const expectedApi =
-            `${descriptor.permission.apiId}@${descriptor.permission.apiVersion}`;
-          if (
-            apiIdentity !== expectedApi ||
-            typeof selectedProviderDeploymentId !== "string" ||
-            selectedProviderDeploymentId.length === 0
-          ) {
-            throw new LiveStreamError(
-              "binding_changed",
-              "the selected provider binding is unavailable for this API",
             );
           }
           // Cancellation is live before the first awaited open allocation.
@@ -3629,12 +1340,14 @@ export class Trellis<
           if (opts?.signal?.aborted) {
             throw new LiveStreamError("cancelled", "live open was aborted");
           }
-          const acquired = (await this.#acquireRequestTransport({
-            method: live,
-            subject,
-            deadlineMs: Date.now() + this.timeout,
-            signal: opts?.signal,
-          })).take();
+          const acquired = (
+            await this.#acquireRequestTransport({
+              method: live,
+              subject,
+              deadlineMs: Date.now() + this.timeout,
+              signal: opts?.signal,
+            })
+          ).take();
           if (isErr(acquired)) {
             opts?.signal?.removeEventListener("abort", abort);
             recordRuntimeError(acquired.error, {
@@ -3656,11 +1369,12 @@ export class Trellis<
               timeoutMs: this.timeout,
               sessionKey: this.#auth.sessionKey,
               live: this.connection.live,
-              createRequestProof: (s, p, r) => this.createRequestProof(s, p, r),
+              createRequestProof: (s, p, r) =>
+                this.createRequestProof(s, p, r, descriptor.permission),
               authority: {
                 cache,
-                selectedProviderDeploymentId,
-                permission: toVerifierPermission(descriptor.permission),
+                apiId: `${descriptor.permission.apiId}@${descriptor.permission.apiVersion}`,
+                action: toCatalogAction(descriptor.permission),
                 localContextDigest: this.#contextDigest(),
               },
               decodeEvent: (value) => {
@@ -3681,18 +1395,20 @@ export class Trellis<
           // inactivity for a session the caller never received.
           if (opts?.signal?.aborted) {
             subscription.fence();
-            void subscription.close().take().catch(() => undefined);
+            void subscription
+              .close()
+              .take()
+              .catch(() => undefined);
             throw new LiveStreamError("cancelled", "live open was aborted");
           }
           this.#liveClosers.add(closeOnNats);
-          // The endpoint's own telemetry owner records the legacy Live
+          // The endpoint's own telemetry owner records the Live metrics
           // projection from the same local state; no second accounting here.
           void subscription.closed.then(() => {
             transport?.release();
             opts?.signal?.removeEventListener("abort", abort);
             this.#liveClosers.delete(closeOnNats);
           });
-          const _ = route;
           return ok(subscription!);
         } catch (cause) {
           opts?.signal?.removeEventListener("abort", abort);
@@ -3701,25 +1417,25 @@ export class Trellis<
           } else {
             transport?.release();
           }
-          const error = cause instanceof TransportError
-            ? cause
-            : cause instanceof LiveStreamError
-            ? createTransportError({
-              code: `trellis.live.${cause.code}`,
-              message: cause.message,
-              hint:
-                "Retry the subscription. If it keeps failing, check Trellis runtime health.",
-              cause,
-              context: { live, subject },
-            })
-            : createTransportError({
-              code: "trellis.live.subscribe_failed",
-              message: "Trellis could not subscribe to the live observation.",
-              hint:
-                "Retry the subscription. If it keeps failing, check Trellis runtime health.",
-              cause,
-              context: { live, subject },
-            });
+          const error =
+            cause instanceof TransportError
+              ? cause
+              : cause instanceof LiveStreamError
+                ? createTransportError({
+                    code: `trellis.live.${cause.code}`,
+                    message: cause.message,
+                    hint: "Retry the subscription. If it keeps failing, check Trellis runtime health.",
+                    cause,
+                    context: { live, subject },
+                  })
+                : createTransportError({
+                    code: "trellis.live.subscribe_failed",
+                    message:
+                      "Trellis could not subscribe to the live observation.",
+                    hint: "Retry the subscription. If it keeps failing, check Trellis runtime health.",
+                    cause,
+                    context: { live, subject },
+                  });
           recordRuntimeError(error, {
             surface: "live",
             direction: "client",
@@ -3741,7 +1457,7 @@ export class Trellis<
   ): Promise<void> {
     const subject = this.template(descriptor.subject, {}, true).take();
     if (isErr(subject)) throw subject.error;
-    const cache = this.#auth.authorizationProviderCache;
+    const cache = this.#auth.authorityOwner;
     if (!cache) {
       throw createTransportError({
         code: "trellis.live.listen_failed",
@@ -3754,6 +1470,7 @@ export class Trellis<
       id: number;
       nc: NatsConnection;
       contextDigest: string;
+      retainAuthority?: () => VerifiedAuthority;
       lease?: () => TransportLease;
     }) =>
       this.#startLiveProvider({
@@ -3782,6 +1499,7 @@ export class Trellis<
         id: ingress.id,
         nc: ingress.nc,
         contextDigest: ingress.contextDigest,
+        retainAuthority: ingress.retainAuthority,
         lease: ingress.lease,
       });
       ingress.retireFns.push({
@@ -3807,6 +1525,7 @@ export class Trellis<
     id: number;
     nc: NatsConnection;
     contextDigest: string;
+    retainAuthority?: () => VerifiedAuthority;
     lease?: () => TransportLease;
     live: string;
     subject: string;
@@ -3824,7 +1543,7 @@ export class Trellis<
   }> {
     const { id, nc, contextDigest, lease, live, subject, descriptor, handler } =
       args;
-    const cache = this.#auth.authorizationProviderCache;
+    const cache = this.#auth.authorityOwner;
     if (!cache) {
       throw createTransportError({
         code: "trellis.live.listen_failed",
@@ -3833,12 +1552,21 @@ export class Trellis<
         context: { live, subject },
       });
     }
-    const own = await cache.resolveContext(contextDigest);
     const ownGuard = await LiveAuthorityGuard.retain(
       cache,
       contextDigest,
-      { kind: "local-provider" },
+      {
+        kind: "local-provider",
+        apiId: `${descriptor.permission.apiId}@${descriptor.permission.apiVersion}`,
+        action: toCatalogAction(descriptor.permission),
+      },
+      args.retainAuthority,
     );
+    const own = ownGuard.identity;
+    if (own.binding.kind !== "service" && own.binding.kind !== "device") {
+      ownGuard.release();
+      throw new Error("live provider requires a provisioned binding");
+    }
     const refreshOwnAuthority = async (): Promise<void> => {
       const current = this.#contextDigest();
       if (!current) {
@@ -3856,21 +1584,22 @@ export class Trellis<
       nats: nc,
       lease,
       identity: {
-        connectionId: own.context.connectionId,
-        sessionKey: own.context.sessionKey,
-        principalId: own.context.principalId,
-        participantId: own.context.participantId,
-        deploymentId: own.context.deploymentId ?? "",
-        instanceId: own.context.instanceId ?? "",
+        connectionId: own.runtimeId,
+        sessionKey: own.sessionPublicKey,
+        principalId: own.principalId,
+        participantId: own.binding.participantId,
+        deploymentId: own.binding.deploymentId,
+        instanceId: own.binding.instanceId,
       },
       sign: async (digest) => await this.#auth.sign(digest),
       ownGuard,
       refreshOwnAuthority,
-      permission: toVerifierPermission(descriptor.permission),
-      retainCallerAuthority: (digest, permission) =>
+      action: toCatalogAction(descriptor.permission),
+      retainCallerAuthority: (digest, action) =>
         LiveAuthorityGuard.retain(cache, digest, {
           kind: "observer",
-          permission,
+          apiId: `${descriptor.permission.apiId}@${descriptor.permission.apiVersion}`,
+          action,
         }),
       manager: this.connection.live,
     });
@@ -3880,6 +1609,7 @@ export class Trellis<
     // the provider or disturbing accepted sessions/receipts.
     const openIntake = (): {
       drain: () => Promise<void>;
+      unsubscribe: () => void;
       done: Promise<void>;
     } => {
       const openSub = nc.subscribe(subject, {
@@ -3908,13 +1638,17 @@ export class Trellis<
         `live:${id}:${live}:open:${this.#liveTaskSeq++}`,
         openTask,
       );
-      openTask.then(() => openDone.resolve(), () => openDone.resolve());
+      openTask.then(
+        () => openDone.resolve(),
+        () => openDone.resolve(),
+      );
       return {
         drain: () => openSub.drain().catch(() => undefined),
+        unsubscribe: () => openSub.unsubscribe(),
         done: openDone.promise,
       };
     };
-    let open: { drain: () => Promise<void>; done: Promise<void> } | undefined;
+    let open: ReturnType<typeof openIntake> | undefined;
     try {
       controlSub = nc.subscribe(provider.wildcardSubject(subject));
       // Registered once this generation can actually receive control on the
@@ -3922,12 +1656,14 @@ export class Trellis<
       // session; `dispose()` unregisters it transactionally on failure.
       provider.registerRoute(subject);
       open = openIntake();
+      // Registration is usable only once the broker has acknowledged SUB, as
+      // for RPC handlers: an opening sent right after it must find the route.
+      await nc.flush();
     } catch (cause) {
       const error = createTransportError({
         code: "trellis.live.listen_failed",
         message: "Trellis could not listen for live requests.",
-        hint:
-          "Check the service deployment digest and runtime permissions, then restart the service.",
+        hint: "Check the service deployment digest and runtime permissions, then restart the service.",
         cause,
         context: { live, subject },
       });
@@ -3937,9 +1673,16 @@ export class Trellis<
         operation: live,
         phase: "listen",
       });
-      // Clean up the partial install: no subscription exists, so no session
-      // can be served; unregister the provider and release its retained own
-      // authority rather than leaking the guard for the process lifetime.
+      // Clean up the partial install. A subscription created before the
+      // failure would otherwise be replayed after a reconnect and take
+      // openings for a provider whose control loop never started. Remove both,
+      // let the opening loop finish, then unregister the provider and release
+      // its retained own authority rather than leaking the guard.
+      controlSub?.unsubscribe();
+      if (open) {
+        open.unsubscribe();
+        await open.done;
+      }
       await provider.dispose().catch(() => undefined);
       ownGuard.release();
       throw error;
@@ -3957,13 +1700,11 @@ export class Trellis<
             return undefined;
           }
           return {
-            connectionId: callerValue.connectionId,
-            sessionKey: callerValue.sessionKey,
+            connectionId: callerValue.runtimeId,
+            sessionKey: callerValue.sessionPublicKey,
             principalId: callerValue.principalId,
-            participantId: callerValue.participantId,
-            deploymentId: callerValue.deploymentId ?? undefined,
-            instanceId: callerValue.instanceId ?? undefined,
-            contextDigest: callerValue.contextDigest,
+            binding: callerValue.binding,
+            contextDigest: callerValue.authorityDigest,
           };
         });
       }
@@ -4037,8 +1778,7 @@ export class Trellis<
       const parsed = parseRuntimeSchema(
         descriptor.input,
         opening.input as JsonValue,
-      )
-        .take();
+      ).take();
       if (isErr(parsed)) {
         this.#respondWithError(msg, parsed.error);
         return;
@@ -4056,13 +1796,11 @@ export class Trellis<
           receiveMaxPayloadBytes: opening.receiveMaxPayloadBytes,
         },
         {
-          connectionId: callerValue.connectionId,
-          sessionKey: callerValue.sessionKey,
+          connectionId: callerValue.runtimeId,
+          sessionKey: callerValue.sessionPublicKey,
           principalId: callerValue.principalId,
-          participantId: callerValue.participantId,
-          deploymentId: callerValue.deploymentId ?? undefined,
-          instanceId: callerValue.instanceId ?? undefined,
-          contextDigest: callerValue.contextDigest,
+          binding: callerValue.binding,
+          contextDigest: callerValue.authorityDigest,
         },
         async ({ emit, signal }) => {
           await handler({
@@ -4070,13 +1808,17 @@ export class Trellis<
             caller: callerValue,
             signal,
             emit: (event: TEvent) =>
-              AsyncResult.from((async () => {
-                const payload = encodeRuntimeSchema(descriptor.event, event)
-                  .take();
-                if (isErr(payload)) return payload;
-                await emit(JSON.parse(payload));
-                return ok(undefined);
-              })()),
+              AsyncResult.from(
+                (async () => {
+                  const payload = encodeRuntimeSchema(
+                    descriptor.event,
+                    event,
+                  ).take();
+                  if (isErr(payload)) return payload;
+                  await emit(JSON.parse(payload));
+                  return ok(undefined);
+                })(),
+              ),
           });
         },
       );
@@ -4104,49 +1846,92 @@ export class Trellis<
     }
 
     const transport: OperationTransport = {
-      requestJson: (subject, body) => {
+      requestJson: (subject, body, expectedDeploymentId) => {
         const route = trellisRoute("operation", operation.toString());
         const error = unavailable?.();
+        const permissions = descriptor.permissions;
+        const boundStart =
+          expectedDeploymentId === undefined
+            ? undefined
+            : operationStartSubject(descriptor, expectedDeploymentId);
+        const isStart =
+          subject === descriptor.subject || subject === boundStart;
+        if (
+          !isStart &&
+          (boundStart === undefined || subject !== `${boundStart}.control`)
+        ) {
+          return AsyncResult.from(
+            Promise.resolve(
+              err(
+                new TransportError({
+                  code: "trellis.operation.invalid_route",
+                  message:
+                    "Operation subject does not match its descriptor and deployment.",
+                  hint: "Use the generated Operation start or restored owner reference.",
+                }),
+              ),
+            ),
+          );
+        }
+        const control =
+          body && typeof body === "object" && !Array.isArray(body)
+            ? body
+            : undefined;
+        const permission = isStart
+          ? permissions.invoke
+          : control?.action === "cancel"
+            ? permissions.cancel
+            : control?.action === "signal" && typeof control.signal === "string"
+              ? permissions.control[control.signal]
+              : permissions.observe;
         return error
           ? AsyncResult.from(Promise.resolve(err(error)))
-          : this.#requestJson(subject, body as JsonValue, route);
+          : this.#requestJson(
+              subject,
+              body as JsonValue,
+              route,
+              permission,
+              expectedDeploymentId,
+            );
       },
-      watchJson: (subject, body, decodeEvent) => {
+      watchJson: (subject, body, decodeEvent, expectedDeploymentId) => {
         const error = unavailable?.();
         if (error) return AsyncResult.from(Promise.resolve(err(error)));
         const permissions = Reflect.get(descriptor as object, "permissions") as
-          | Record<string, DescriptorPermissionAtom>
-          | undefined;
+          Record<string, DescriptorPermissionAtom> | undefined;
         const observe = permissions?.observe;
         return this.#watchJson(
           subject,
           body as JsonValue,
           decodeEvent,
-          observe ? toVerifierPermission(observe) : undefined,
+          observe,
+          expectedDeploymentId,
+          subject.slice(0, -".control".length),
         );
       },
       putTransfer: (
         grant: SendTransferGrant,
         body: TransferBody,
       ): AsyncResult<FileInfo, TransferOperationError> =>
-        AsyncResult.from((async () => {
-          const handle = createTransferHandle(
-            this.#transport,
-            this.#auth,
-            this.timeout,
-            grant,
-            this.#inboxPrefix,
-          );
-          if (!(handle instanceof Object) || !("send" in handle)) {
-            return err(
-              new TransferError({
-                operation: "transfer",
-                context: { reason: "invalid_operation_transfer_grant" },
-              }),
+        AsyncResult.from(
+          (async () => {
+            const handle = createTransferHandle(
+              this.#transport,
+              this.#auth,
+              this.timeout,
+              grant,
             );
-          }
-          return await handle.send(body);
-        })()),
+            if (!(handle instanceof Object) || !("send" in handle)) {
+              return err(
+                new TransferError({
+                  operation: "transfer",
+                  context: { reason: "invalid_operation_transfer_grant" },
+                }),
+              );
+            }
+            return await handle.send(body);
+          })(),
+        ),
     };
 
     return new OperationInvoker(
@@ -4166,12 +1951,13 @@ export class Trellis<
       this.#auth,
       this.timeout,
       grant,
-      this.#inboxPrefix,
     );
   }
 
   /*
-   * Mount a handler to process requests made to a specific Trellis API
+   * Mount a handler to process requests made to a specific Trellis API.
+   * On a service's admitted generations, resolves once the broker has
+   * confirmed the subscriptions and rejects when it cannot.
    */
   async mount(
     method: string,
@@ -4191,6 +1977,14 @@ export class Trellis<
       fn as HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>,
     );
     this.#tasks.add(methodName, task);
+    // On generations the task is just the broker acknowledgement; on a fixed
+    // connection it is the long-running intake and must not be awaited. A
+    // subscription the broker never confirmed may have no responder, so that
+    // failure rejects the mount.
+    if (this.#adaptiveTransport) {
+      const mounted = await task;
+      if (isErr(mounted)) throw mounted.error;
+    }
   }
 
   #handleRPC(
@@ -4219,11 +2013,16 @@ export class Trellis<
       // Logical provider core: the handler is registered once and every
       // admitted generation gets its own queue-grouped ingress subscription,
       // so overlapping generations deliver each request exactly once.
+      const flushed: Promise<void>[] = [];
       for (const ingress of this.#providerIngress.values()) {
         if (ingress.retired) continue;
         ingress.retireFns.push(this.#installRpcIngress(ingress, registration));
+        flushed.push(ingress.nc.flush());
       }
-      return AsyncResult.ok(undefined);
+      // Registration is usable only once the broker has acknowledged SUB.
+      return AsyncResult.try(async () => {
+        await Promise.all(flushed);
+      });
     }
 
     const sub = this.#nats.subscribe(subject, {
@@ -4258,6 +2057,7 @@ export class Trellis<
         id: ingress.id,
         nc: ingress.nc,
         contextDigest: ingress.contextDigest,
+        retainAuthority: ingress.retainAuthority,
         lease: ingress.lease,
       });
       ingress.retireFns.push({
@@ -4266,6 +2066,8 @@ export class Trellis<
         done: installed.done,
       });
       ingress.disposeFns.push({ intakeId: id, dispose: installed.dispose });
+      // Registration is usable only once the broker has acknowledged SUB.
+      await ingress.nc.flush();
     }
   }
 
@@ -4294,26 +2096,28 @@ export class Trellis<
     if (!this.#adaptiveTransport) return;
     const pending: Promise<void>[] = [];
     for (const ingress of this.#providerIngress.values()) {
-      const retired = ingress.retireFns.filter((entry) =>
-        entry.intakeId === id
+      const retired = ingress.retireFns.filter(
+        (entry) => entry.intakeId === id,
       );
       if (retired.length > 0) {
-        ingress.retireFns = ingress.retireFns.filter((entry) =>
-          entry.intakeId !== id
+        ingress.retireFns = ingress.retireFns.filter(
+          (entry) => entry.intakeId !== id,
         );
         for (const entry of retired) {
-          pending.push((async () => {
-            await entry.drain();
-            await entry.done;
-          })());
+          pending.push(
+            (async () => {
+              await entry.drain();
+              await entry.done;
+            })(),
+          );
         }
       }
-      const disposed = ingress.disposeFns.filter((entry) =>
-        entry.intakeId === id
+      const disposed = ingress.disposeFns.filter(
+        (entry) => entry.intakeId === id,
       );
       if (disposed.length > 0) {
-        ingress.disposeFns = ingress.disposeFns.filter((entry) =>
-          entry.intakeId !== id
+        ingress.disposeFns = ingress.disposeFns.filter(
+          (entry) => entry.intakeId !== id,
         );
         for (const entry of disposed) {
           // Invoke inside an async wrapper so a synchronous throw in `dispose`
@@ -4341,6 +2145,7 @@ export class Trellis<
     nc: NatsConnection;
     /** Exact admitted context this generation's providers are built from. */
     contextDigest: string;
+    retainAuthority?: () => VerifiedAuthority;
     /**
      * Lease the exact admitted generation the candidate ingress routes on. It is
      * called once for the ingress-lifetime pin and again per accepted callback;
@@ -4397,8 +2202,8 @@ export class Trellis<
     let liveEntries: ProviderIngress["retireFns"] = [];
     if (reinstateGeneric) {
       liveEntries = ingress.retireFns.filter((entry) => entry.owner === "live");
-      ingress.retireFns = ingress.retireFns.filter((entry) =>
-        entry.owner !== "rpc" && entry.intakeId === undefined
+      ingress.retireFns = ingress.retireFns.filter(
+        (entry) => entry.owner !== "rpc" && entry.intakeId === undefined,
       );
       // Replacing generic intake does not release its accepted work. Keep every
       // previous framework disposal owner until this physical generation ends,
@@ -4409,6 +2214,7 @@ export class Trellis<
     }
     ingress.nc = target.nc;
     ingress.contextDigest = target.contextDigest;
+    ingress.retainAuthority = target.retainAuthority;
     ingress.lease = target.lease;
     ingress.retired = false;
     ingress.intakeStopped = undefined;
@@ -4423,7 +2229,8 @@ export class Trellis<
     // therefore reject further installation too.
     const stillOwned = (): boolean =>
       this.#providerIngress.get(ingress.id) === ingress &&
-      !ingress.retired && !ingress.disposing;
+      !ingress.retired &&
+      !ingress.disposing;
     try {
       // Reinstall the live providers' generic open intake on the same provider
       // first, under the same owned rollback: their control subscription,
@@ -4451,6 +2258,7 @@ export class Trellis<
             id: ingress.id,
             nc: ingress.nc,
             contextDigest: ingress.contextDigest,
+            retainAuthority: ingress.retainAuthority,
             lease: ingress.lease,
           });
           if (!stillOwned()) {
@@ -4477,6 +2285,7 @@ export class Trellis<
           id: ingress.id,
           nc: ingress.nc,
           contextDigest: ingress.contextDigest,
+          retainAuthority: ingress.retainAuthority,
           lease: ingress.lease,
         });
         if (!stillOwned()) {
@@ -4514,8 +2323,7 @@ export class Trellis<
     return {
       retireIntake: () => this.retireProviderIngress(id),
       get intakeStopped() {
-        return ingresses.get(id)?.intakeStopped ??
-          Promise.resolve();
+        return ingresses.get(id)?.intakeStopped ?? Promise.resolve();
       },
       dispose: () => this.disposeProviderIngress(id),
     };
@@ -4640,7 +2448,10 @@ export class Trellis<
     );
     // `done` resolves when the intake loop itself finishes consuming buffered
     // messages, independent of when `drain()` protocol-flushes.
-    intake.then(() => completion.resolve(), () => completion.resolve());
+    intake.then(
+      () => completion.resolve(),
+      () => completion.resolve(),
+    );
     return {
       drain: () => sub.drain().catch(() => undefined),
       done: completion.promise,
@@ -4682,13 +2493,13 @@ export class Trellis<
           const result = resultPromise.take();
 
           if (isErr(result)) {
-            this.#respondWithError(msg, result.error, {
+            await this.#respondWithError(msg, result.error, {
               method: String(method),
             });
             continue;
           }
 
-          const sent = this.#respondWithPayload(
+          const sent = await this.respondWithPayload(
             msg,
             result.payload,
             undefined,
@@ -4700,15 +2511,14 @@ export class Trellis<
           if (sent.isErr()) {
             const responseBytes = payloadByteLength(result.payload);
             const message = causeMessage(sent.error.cause);
-            this.#respondWithError(
+            await this.#respondWithError(
               msg,
               new TransportError({
                 code: "trellis.rpc.response_send_failed",
                 message: message.includes("max_payload")
                   ? "Trellis RPC response exceeded NATS max_payload."
                   : "Trellis could not send the RPC response.",
-                hint:
-                  "Reduce the requested page size or use a narrower RPC that does not include large detail payloads.",
+                hint: "Reduce the requested page size or use a narrower RPC that does not include large detail payloads.",
                 cause: sent.error.cause,
                 context: {
                   method: String(method),
@@ -4800,40 +2610,6 @@ export class Trellis<
       const execute = async (): Promise<
         Result<ProcessedRpcResponse, BaseError>
       > => {
-        const jsonData = safeJson(msg).take();
-        if (isErr(jsonData)) {
-          this.#log.warn(
-            { method, error: jsonData.error.message },
-            "Failed to parse JSON",
-          );
-          span.setStatus({
-            code: SpanStatusCode.ERROR,
-            message: "Failed to parse JSON",
-          });
-          recordRuntimeError(jsonData.error, {
-            surface: "rpc",
-            direction: "server",
-            operation: String(method),
-            phase: "parse",
-          });
-          return jsonData;
-        }
-
-        const parsedInput = parseRuntimeSchema(ctx.input, jsonData).take();
-        if (isErr(parsedInput)) {
-          span.setStatus({
-            code: SpanStatusCode.ERROR,
-            message: "Input validation failed",
-          });
-          recordRuntimeError(parsedInput.error, {
-            surface: "rpc",
-            direction: "server",
-            operation: String(method),
-            phase: "input_validation",
-          });
-          return parsedInput;
-        }
-
         let caller: SessionCaller;
         let callerInboxPrefix = "_INBOX";
         const handlerRequestIdFromHeader = msg.headers?.get("request-id") ?? "";
@@ -4850,7 +2626,7 @@ export class Trellis<
         } else {
           const auth = await verifyLocalAuthorization({
             kind: "request",
-            cache: this.#auth.authorizationProviderCache,
+            cache: this.#auth.authorityOwner,
             message: msg,
             permission: ctx.permission,
             requiredCapabilities: ctx.callerCapabilities,
@@ -4871,50 +2647,94 @@ export class Trellis<
           }
           caller = authValue;
           callerInboxPrefix = authValue.inboxPrefix;
+          await this.rememberVerifiedRequest(msg, authValue, ctx.permission);
+        }
+
+        const jsonData = safeJson(msg).take();
+        if (isErr(jsonData)) {
+          this.#log.warn(
+            { method, error: jsonData.error.message },
+            "Failed to parse JSON",
+          );
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: "Failed to parse JSON",
+          });
+          recordRuntimeError(jsonData.error, {
+            surface: "rpc",
+            direction: "server",
+            operation: String(method),
+            phase: "parse",
+          });
+          return jsonData;
+        }
+        const parsedInput = parseRuntimeSchema(ctx.input, jsonData).take();
+        if (isErr(parsedInput)) {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: "Input validation failed",
+          });
+          recordRuntimeError(parsedInput.error, {
+            surface: "rpc",
+            direction: "server",
+            operation: String(method),
+            phase: "input_validation",
+          });
+          return parsedInput;
         }
 
         span.setAttribute("auth.caller.type", caller.type);
         if (caller.type === "verified") {
           span.setAttribute("auth.principal.kind", caller.principalKind);
           span.setAttribute("auth.principal.id", caller.principalId);
-          span.setAttribute("auth.participant.id", caller.participantId);
-          span.setAttribute("auth.connection.id", caller.connectionId);
-          span.setAttribute("auth.grant.revision", caller.grantRevision);
+          span.setAttribute("auth.runtime.id", caller.runtimeId);
+          span.setAttribute(
+            "auth.authorization_session.id",
+            caller.authorizationSessionId,
+          );
           if (caller.loginSessionId) {
             span.setAttribute("auth.login_session.id", caller.loginSessionId);
           }
-          if (caller.deploymentId) {
-            span.setAttribute("auth.deployment.id", caller.deploymentId);
-          }
-          if (caller.instanceId) {
-            span.setAttribute("auth.instance.id", caller.instanceId);
+          if (
+            caller.binding.kind === "service" ||
+            caller.binding.kind === "device"
+          ) {
+            span.setAttribute(
+              "auth.participant.id",
+              caller.binding.participantId,
+            );
+            span.setAttribute(
+              "auth.deployment.id",
+              caller.binding.deploymentId,
+            );
+            span.setAttribute("auth.instance.id", caller.binding.instanceId);
           }
         }
 
-        const invokeHandler = fn as (
-          args: {
-            input: unknown;
-            context: RpcHandlerContext;
-            client: HandlerTrellis<TA, TRequests>;
-          },
-        ) => MaybeAsync<unknown, BaseError>;
-        const handlerResultWrapped = await AsyncResult.try(async () =>
-          await Promise.resolve(
-            invokeHandler({
-              input: parsedInput,
-              context: {
-                caller,
-                sessionKey: caller.type === "verified" ? caller.sessionKey : "",
-                inboxPrefix: callerInboxPrefix,
-                permission: ctx.permission,
-                requiredCapabilities: ctx.callerCapabilities,
-                requestId: handlerRequestIdFromHeader || undefined,
-                traceId: handlerTraceIdFromHeader || undefined,
-                afterReply: (task) => afterReply.push(task),
-              },
-              client: handlerTrellis,
-            }),
-          )
+        const invokeHandler = fn as (args: {
+          input: unknown;
+          context: RpcHandlerContext;
+          client: HandlerTrellis<TA, TRequests>;
+        }) => MaybeAsync<unknown, BaseError>;
+        const handlerResultWrapped = await AsyncResult.try(
+          async () =>
+            await Promise.resolve(
+              invokeHandler({
+                input: parsedInput,
+                context: {
+                  caller,
+                  sessionKey:
+                    caller.type === "verified" ? caller.sessionPublicKey : "",
+                  inboxPrefix: callerInboxPrefix,
+                  permission: ctx.permission,
+                  requiredCapabilities: ctx.callerCapabilities,
+                  requestId: handlerRequestIdFromHeader || undefined,
+                  traceId: handlerTraceIdFromHeader || undefined,
+                  afterReply: (task) => afterReply.push(task),
+                },
+                client: handlerTrellis,
+              }),
+            ),
         );
 
         if (handlerResultWrapped.isErr()) {
@@ -4933,9 +2753,10 @@ export class Trellis<
             {
               method,
               error: error.message,
-              cause: error.cause instanceof Error
-                ? { message: error.cause.message, stack: error.cause.stack }
-                : error.cause,
+              cause:
+                error.cause instanceof Error
+                  ? { message: error.cause.message, stack: error.cause.stack }
+                  : error.cause,
             },
             "Handler threw unexpectedly.",
           );
@@ -4971,9 +2792,10 @@ export class Trellis<
               method,
               error: error.message,
               errorType: error.name,
-              cause: error.cause instanceof Error
-                ? { message: error.cause.message, stack: error.cause.stack }
-                : error.cause,
+              cause:
+                error.cause instanceof Error
+                  ? { message: error.cause.message, stack: error.cause.stack }
+                  : error.cause,
             },
             "Handler returned error.",
           );
@@ -5021,7 +2843,33 @@ export class Trellis<
     });
   }
 
-  #respondWithPayload(
+  /** Retain the exact verified opening for certified replies from RPC and Operation handlers. @internal */
+  protected async rememberVerifiedRequest(
+    msg: Msg,
+    caller: VerifiedCaller,
+    permission: DescriptorPermissionAtom,
+  ): Promise<void> {
+    const request: SessionRequest = {
+      authorityDigest: caller.authorityDigest,
+      apiId: `${permission.apiId}@${permission.apiVersion}`,
+      apiGeneration: msg.headers!.get("Trellis-Api-Generation")!,
+      acceptedRevision: msg.headers!.get("Trellis-Accepted-Revision")!,
+      action: permission.surfaceName,
+      subject: msg.subject,
+      replySubject: msg.reply!,
+      issuedAt: Number(msg.headers!.get("iat")),
+      requestId: msg.headers!.get("request-id")!,
+    };
+    this.#replyRequests.set(msg, {
+      request,
+      digest: base64urlEncode(
+        await sessionRequestSigningDigest(request, msg.data),
+      ),
+    });
+  }
+
+  /** Sign a response against its retained verified opening before publishing it. @internal */
+  protected async respondWithPayload(
     msg: Msg,
     payload: string,
     options: { headers?: MsgHdrs } | undefined,
@@ -5029,9 +2877,59 @@ export class Trellis<
       method?: string;
       responseKind: "success" | "error";
     },
-  ): Result<void, UnexpectedError> {
+  ): Promise<Result<void, UnexpectedError>> {
     const responseBytes = payloadByteLength(payload);
     try {
+      const opening = this.#replyRequests.get(msg);
+      if (opening) {
+        const owner = this.#auth.authorityOwner;
+        if (!owner) throw new Error("session authority owner unavailable");
+        const own = owner.own();
+        try {
+          const binding = own.authority.providerBindings.find(
+            (binding) =>
+              binding.apiId === opening.request.apiId &&
+              binding.generation === opening.request.apiGeneration,
+          );
+          if (!binding)
+            throw new Error(
+              "provider certificate is not in verified authority",
+            );
+          const response: SessionResponse = {
+            trellisInstanceId: owner.instanceId,
+            audienceNatsAccount: owner.account,
+            providerAuthorityDigest: own.digest,
+            providerCertificateDigest: binding.providerCertificateDigest,
+            apiId: opening.request.apiId,
+            apiGeneration: binding.generation,
+            action: opening.request.action,
+            requestAuthorityDigest: opening.request.authorityDigest,
+            requestId: opening.request.requestId,
+            requestProofDigest: opening.digest,
+            subject: msg.reply!,
+            kind: context.responseKind,
+            issuedAt: this.#currentIat(),
+          };
+          const proof = base64urlEncode(
+            await this.#auth.sign(
+              await sessionResponseSigningDigest(
+                response,
+                new TextEncoder().encode(payload),
+              ),
+            ),
+          );
+          own.assertCurrent();
+          const responseHeaders = options?.headers ?? natsHeaders();
+          responseHeaders.set(
+            "Trellis-Session-Response",
+            JSON.stringify(response),
+          );
+          responseHeaders.set("proof", proof);
+          options = { ...options, headers: responseHeaders };
+        } finally {
+          own.release();
+        }
+      }
       msg.respond(payload, options);
       return ok(undefined);
     } catch (cause) {
@@ -5061,15 +2959,15 @@ export class Trellis<
     }
   }
 
-  #respondWithError(
+  async #respondWithError(
     msg: Msg,
     error: Error | BaseError,
     context: { method?: string; responseBytes?: number } = {},
-  ): void {
-    const trellisError = error instanceof BaseError &&
-        !(error instanceof RemoteError)
-      ? error
-      : new UnexpectedError({ cause: error });
+  ): Promise<void> {
+    const trellisError =
+      error instanceof BaseError && !(error instanceof RemoteError)
+        ? error
+        : new UnexpectedError({ cause: error });
 
     this.#log.error(
       {
@@ -5091,7 +2989,7 @@ export class Trellis<
         { error: serialized.error },
         "Failed to serialize error response",
       );
-      this.#respondWithPayload(
+      await this.respondWithPayload(
         msg,
         '{"type":"UnexpectedError","message":"Failed to serialize error"}',
         { headers: hdrs },
@@ -5099,7 +2997,7 @@ export class Trellis<
       );
       return;
     }
-    this.#respondWithPayload(
+    await this.respondWithPayload(
       msg,
       serialized.take() as string,
       { headers: hdrs },
@@ -5107,8 +3005,9 @@ export class Trellis<
     );
   }
 
-  respondWithError(msg: Msg, error: Error | BaseError): void {
-    this.#respondWithError(msg, error);
+  /** Publish a signed error for a previously verified request. */
+  async respondWithError(msg: Msg, error: Error | BaseError): Promise<void> {
+    await this.#respondWithError(msg, error);
   }
 
   /**
@@ -5181,15 +3080,17 @@ export class Trellis<
       }
       headerRecord["Trellis-Event-Descriptor"] = ctx.descriptorIdentity;
 
-      return ok(Object.freeze({
-        event: event.toString(),
-        descriptorIdentity: ctx.descriptorIdentity,
-        subject,
-        header: Object.freeze(header),
-        payload,
-        encodedPayload: msg,
-        headers: Object.freeze(headerRecord),
-      }));
+      return ok(
+        Object.freeze({
+          event: event.toString(),
+          descriptorIdentity: ctx.descriptorIdentity,
+          subject,
+          header: Object.freeze(header),
+          payload,
+          encodedPayload: msg,
+          headers: Object.freeze(headerRecord),
+        }),
+      );
     } catch (cause) {
       const error = new UnexpectedError({
         cause,
@@ -5212,34 +3113,77 @@ export class Trellis<
   publishPrepared(
     event: PreparedTrellisEvent,
   ): AsyncResult<void, TransportError | UnexpectedError> {
-    return AsyncResult.from((async () => {
-      const startedAt = performance.now();
-      const route = trellisRoute("event", event.descriptorIdentity);
-      const finish = (outcome: "ok" | "error"): void => {
-        recordCatalogDuration(
-          "trellis.event.publish.duration",
-          performance.now() - startedAt,
-          {
-            "trellis.route": route,
-            "trellis.delivery": "durable",
-            "trellis.outcome": outcome,
-          },
-        );
-      };
-      // Generation acquisition and the publish+ack share one deadline.
-      const deadlineMs = Date.now() + this.timeout;
-      let lease: TransportLease | undefined;
-      if (this.#adaptiveTransport) {
-        try {
-          lease = await this.#transport.acquireFor(
-            { publish: [event.subject] },
-            { deadlineMs },
+    return AsyncResult.from(
+      (async () => {
+        const startedAt = performance.now();
+        const route = trellisRoute("event", event.descriptorIdentity);
+        const finish = (outcome: "ok" | "error"): void => {
+          recordCatalogDuration(
+            "trellis.event.publish.duration",
+            performance.now() - startedAt,
+            {
+              "trellis.route": route,
+              "trellis.delivery": "durable",
+              "trellis.outcome": outcome,
+            },
           );
+        };
+        // Generation acquisition and the publish+ack share one deadline.
+        const deadlineMs = Date.now() + this.timeout;
+        let lease: TransportLease | undefined;
+        if (this.#adaptiveTransport) {
+          try {
+            lease = await this.#transport.acquireFor(
+              { publish: [event.subject] },
+              { deadlineMs },
+            );
+          } catch (cause) {
+            finish("error");
+            const error = mapTransportAcquireFailure({
+              subject: event.subject,
+              cause,
+            });
+            recordRuntimeError(error, {
+              surface: "event",
+              direction: "publisher",
+              operation: event.event,
+              phase: "publish",
+            });
+            return err(error);
+          }
+        }
+        try {
+          const headers = natsHeaders();
+          for (const [key, value] of Object.entries(event.headers)) {
+            headers.set(key, value);
+          }
+          headers.set("Nats-Msg-Id", event.header.id);
+          headers.set("Trellis-Event-Time", event.header.time);
+          headers.set("Trellis-Event-Descriptor", event.descriptorIdentity);
+          const proof = await this.#createEventProof(event);
+          headers.set("proof", proof.proof);
+          headers.set("authorization-context", proof.contextDigest);
+          headers.set("Trellis-Api-Generation", proof.apiGeneration);
+          headers.set("Trellis-Accepted-Revision", proof.acceptedRevision);
+          headers.set("Trellis-Session-Event", JSON.stringify(proof.event));
+          headers.set("session-key", this.#auth.sessionKey);
+
+          logger.trace(
+            { subject: event.subject },
+            `Publishing ${event.event} event.`,
+          );
+          const js = lease ? jetstream(lease.nc) : this.#js;
+          await js.publish(event.subject, event.encodedPayload, {
+            headers,
+            timeout: Math.max(1, deadlineMs - Date.now()),
+          });
+          finish("ok");
+          return ok(undefined);
         } catch (cause) {
           finish("error");
-          const error = mapTransportAcquireFailure({
-            subject: event.subject,
+          const error = new UnexpectedError({
             cause,
+            context: { event: event.event },
           });
           recordRuntimeError(error, {
             surface: "event",
@@ -5248,49 +3192,11 @@ export class Trellis<
             phase: "publish",
           });
           return err(error);
+        } finally {
+          lease?.release();
         }
-      }
-      try {
-        const headers = natsHeaders();
-        for (const [key, value] of Object.entries(event.headers)) {
-          headers.set(key, value);
-        }
-        headers.set("Nats-Msg-Id", event.header.id);
-        headers.set("Trellis-Event-Time", event.header.time);
-        headers.set("Trellis-Event-Descriptor", event.descriptorIdentity);
-        const proof = await this.#createEventProof(event);
-        headers.set("proof", proof.proof);
-        headers.set("authorization-context", proof.contextDigest);
-        headers.set("session-key", this.#auth.sessionKey);
-
-        logger.trace(
-          { subject: event.subject },
-          `Publishing ${event.event} event.`,
-        );
-        const js = lease ? jetstream(lease.nc) : this.#js;
-        await js.publish(event.subject, event.encodedPayload, {
-          headers,
-          timeout: Math.max(1, deadlineMs - Date.now()),
-        });
-        finish("ok");
-        return ok(undefined);
-      } catch (cause) {
-        finish("error");
-        const error = new UnexpectedError({
-          cause,
-          context: { event: event.event },
-        });
-        recordRuntimeError(error, {
-          surface: "event",
-          direction: "publisher",
-          operation: event.event,
-          phase: "publish",
-        });
-        return err(error);
-      } finally {
-        lease?.release();
-      }
-    })());
+      })(),
+    );
   }
 
   publish(
@@ -5316,92 +3222,98 @@ export class Trellis<
     void,
     AuthError | ValidationError | TransportError | UnexpectedError
   > {
-    return AsyncResult.from((async () => {
-      try {
-        const eventName = event as EventsOf<TA>;
-        const ctx = this.api["events"][eventName] as EventDescriptorOf<
-          TA,
-          typeof eventName
-        >;
-        if (!ctx) {
+    return AsyncResult.from(
+      (async () => {
+        try {
+          const eventName = event as EventsOf<TA>;
+          const ctx = this.api["events"][eventName] as EventDescriptorOf<
+            TA,
+            typeof eventName
+          >;
+          if (!ctx) {
+            return err(
+              new UnexpectedError({
+                cause: this.#unknownApiError("event", event.toString()),
+                context: { event: event.toString() },
+              }),
+            );
+          }
+          const subject = this.template(ctx.subject, subjectData, true).take();
+          if (isErr(subject)) return subject;
+
+          if (opts?.mode === "ephemeral") {
+            // A declared durable consumer grants Consume authority only. Raw
+            // ephemeral observation needs its own Event Subscribe need; fail
+            // fast rather than sitting on a subscription the broker will not
+            // deliver to.
+            const need =
+              (ctx as { descriptorName?: string }).descriptorName ??
+              `event:${eventName}`;
+            if (
+              this.#ephemeralEventNeeds !== undefined &&
+              !this.#ephemeralEventNeeds.has(need)
+            ) {
+              return err(
+                new AuthError({
+                  reason: "insufficient_permissions",
+                  message:
+                    `ephemeral event delivery for '${eventName}' requires an Event Subscribe authority; ` +
+                    "a declared consumer grants durable delivery only",
+                  context: { event: String(eventName), requiredNeed: need },
+                }),
+              );
+            }
+            // An ephemeral observation pins one generation for its lifetime: the
+            // subscription is opened and closed on the same physical connection.
+            let lease: TransportLease | undefined;
+            if (this.#adaptiveTransport) {
+              try {
+                lease = await this.#transport.acquireFor(
+                  { subscribe: [subject] },
+                  {
+                    ...(opts.signal ? { signal: opts.signal } : {}),
+                    // Bound opening with the normal request budget instead of an
+                    // unbounded adoption wait when no signal is supplied.
+                    deadlineMs: Date.now() + this.timeout,
+                  },
+                );
+              } catch (cause) {
+                return err(mapTransportAcquireFailure({ subject, cause }));
+              }
+            }
+            return await this.#startEphemeralEvent(
+              eventName,
+              ctx,
+              subject,
+              fn,
+              opts.signal,
+              lease,
+            );
+          }
+
+          const groupResult = this.#durableEvents.resolveGroup(eventName, opts);
+          const group = groupResult.take();
+          if (isErr(group)) return group;
+
+          this.#durableEvents.register({
+            group,
+            event: eventName,
+            ctx,
+            subject,
+            fn,
+            signal: opts?.signal,
+          });
+          return ok(undefined);
+        } catch (cause) {
           return err(
             new UnexpectedError({
-              cause: this.#unknownApiError("event", event.toString()),
+              cause,
               context: { event: event.toString() },
             }),
           );
         }
-        const subject = this.template(ctx.subject, subjectData, true).take();
-        if (isErr(subject)) return subject;
-
-        if (opts?.mode === "ephemeral") {
-          // A declared durable consumer grants Consume authority only. Raw
-          // ephemeral observation needs its own Event Subscribe need; fail
-          // fast rather than sitting on a subscription the broker will not
-          // deliver to.
-          const need = (ctx as { descriptorName?: string }).descriptorName ??
-            `event:${eventName}`;
-          if (
-            this.#ephemeralEventNeeds !== undefined &&
-            !this.#ephemeralEventNeeds.has(need)
-          ) {
-            return err(
-              new AuthError({
-                reason: "insufficient_permissions",
-                message:
-                  `ephemeral event delivery for '${eventName}' requires an Event Subscribe authority; ` +
-                  "a declared consumer grants durable delivery only",
-                context: { event: String(eventName), requiredNeed: need },
-              }),
-            );
-          }
-          // An ephemeral observation pins one generation for its lifetime: the
-          // subscription is opened and closed on the same physical connection.
-          let lease: TransportLease | undefined;
-          if (this.#adaptiveTransport) {
-            try {
-              lease = await this.#transport.acquireFor(
-                { subscribe: [subject] },
-                {
-                  ...(opts.signal ? { signal: opts.signal } : {}),
-                  // Bound opening with the normal request budget instead of an
-                  // unbounded adoption wait when no signal is supplied.
-                  deadlineMs: Date.now() + this.timeout,
-                },
-              );
-            } catch (cause) {
-              return err(mapTransportAcquireFailure({ subject, cause }));
-            }
-          }
-          return await this.#startEphemeralEvent(
-            eventName,
-            ctx,
-            subject,
-            fn,
-            opts.signal,
-            lease,
-          );
-        }
-
-        const groupResult = this.#resolveEventConsumerGroup(eventName, opts);
-        const group = groupResult.take();
-        if (isErr(group)) return group;
-
-        this.#registerDurableEventHandler({
-          group,
-          event: eventName,
-          ctx,
-          subject,
-          fn,
-          signal: opts?.signal,
-        });
-        return ok(undefined);
-      } catch (cause) {
-        return err(
-          new UnexpectedError({ cause, context: { event: event.toString() } }),
-        );
-      }
-    })());
+      })(),
+    );
   }
 
   async #startEphemeralEvent(
@@ -5422,10 +3334,14 @@ export class Trellis<
           lease?.release();
           return ok(undefined);
         }
-        signal.addEventListener("abort", () => {
-          sub?.unsubscribe();
-          lease?.release();
-        }, { once: true });
+        signal.addEventListener(
+          "abort",
+          () => {
+            sub?.unsubscribe();
+            lease?.release();
+          },
+          { once: true },
+        );
       }
     } catch (cause) {
       if (sub) {
@@ -5527,15 +3443,17 @@ export class Trellis<
       );
     };
     try {
-      const result = await Promise.resolve(args.fn(
-        args.payload as EventOf<TA, EventsOf<TA>>,
-        createEventListenerContext({
-          subject: args.message.subject,
-          mode: args.mode,
-          ...(args.group ? { group: args.group } : {}),
-          message: args.message,
-        }),
-      ));
+      const result = await Promise.resolve(
+        args.fn(
+          args.payload as EventOf<TA, EventsOf<TA>>,
+          createEventListenerContext({
+            subject: args.message.subject,
+            mode: args.mode,
+            ...(args.group ? { group: args.group } : {}),
+            message: args.message,
+          }),
+        ),
+      );
       const outcome = isResultLike(result) ? result.take() : result;
       if (isErr(outcome)) {
         finish("retry");
@@ -5549,687 +3467,14 @@ export class Trellis<
     }
   }
 
-  #resolveEventConsumerGroup(
-    event: EventsOf<TA>,
-    opts: EventOpts | undefined,
-  ): Result<string, UnexpectedError> {
-    const metadata = this.#eventConsumers.metadata;
-    const bindings = this.#eventConsumers.bindings ?? {};
-    const groups = Object.entries(metadata ?? {})
-      .filter(([, group]) =>
-        eventConsumerGroupEvents(group).includes(String(event))
-      )
-      .map(([group]) => group);
-
-    if (opts?.group) {
-      if (!groups.includes(opts.group)) {
-        return err(
-          new UnexpectedError({
-            cause: new Error(
-              `Event '${
-                String(event)
-              }' is not declared in event consumer group '${opts.group}'.`,
-            ),
-            context: { event: String(event), group: opts.group },
-          }),
-        );
-      }
-      if (!bindings[opts.group]) {
-        return err(
-          new UnexpectedError({
-            cause: new Error(
-              `Event consumer group '${opts.group}' has no Trellis-provisioned binding.`,
-            ),
-            context: { event: String(event), group: opts.group },
-          }),
-        );
-      }
-      return ok(opts.group);
-    }
-
-    if (groups.length === 0) {
-      return err(
-        new UnexpectedError({
-          cause: new Error(
-            `Event '${
-              String(event)
-            }' is not declared in any event consumer group.`,
-          ),
-          context: { event: String(event) },
-        }),
-      );
-    }
-    if (groups.length > 1) {
-      return err(
-        new UnexpectedError({
-          cause: new Error(
-            `Event '${
-              String(event)
-            }' is declared in multiple event consumer groups; pass opts.group.`,
-          ),
-          context: { event: String(event), groups },
-        }),
-      );
-    }
-
-    const group = groups[0]!;
-    if (!bindings[group]) {
-      return err(
-        new UnexpectedError({
-          cause: new Error(
-            `Event consumer group '${group}' has no Trellis-provisioned binding.`,
-          ),
-          context: { event: String(event), group },
-        }),
-      );
-    }
-    return ok(group);
-  }
-
-  #registerDurableEventHandler(args: {
-    group: string;
-    event: EventsOf<TA>;
-    ctx: EventDescriptorOf<TA, EventsOf<TA>>;
-    subject: string;
-    fn: EventCallback<EventOf<TA, EventsOf<TA>>>;
-    signal?: AbortSignal;
-  }): void {
-    if (args.signal?.aborted || this.#durableEventListenersStopped) return;
-
-    const binding = this.#eventConsumers.bindings?.[args.group];
-    if (!binding) {
-      throw new Error(
-        `Event consumer group '${args.group}' has no Trellis-provisioned binding.`,
-      );
-    }
-    if (!Number.isInteger(binding.concurrency) || binding.concurrency < 1) {
-      throw new Error(
-        `Event consumer group '${args.group}' has invalid concurrency ${binding.concurrency}; expected a positive integer`,
-      );
-    }
-
-    const loop = this.#durableEventLoops.get(args.group) ?? {
-      registrations: [],
-      concurrency: binding.concurrency,
-      startedWorkers: new Set<number>(),
-      messages: new Set<ConsumerMessages>(),
-    };
-    if (loop.concurrency !== binding.concurrency) {
-      throw new Error(
-        `Event consumer group '${args.group}' is already registered with concurrency ${loop.concurrency}; binding now requires ${binding.concurrency}`,
-      );
-    }
-    const registration: DurableEventRegistration<TA> = {
-      event: args.event,
-      ctx: args.ctx,
-      subject: args.subject,
-      fn: args.fn,
-    };
-    loop.registrations.push(registration);
-    this.#durableEventLoops.set(args.group, loop);
-
-    args.signal?.addEventListener("abort", () => {
-      const index = loop.registrations.indexOf(registration);
-      if (index >= 0) loop.registrations.splice(index, 1);
-      if (!this.#durableEventConsumerGroupReady(args.group, loop)) {
-        for (const messages of loop.messages) messages.stop();
-      }
-    }, { once: true });
-
-    this.#startDurableEventConsumer(args.group, loop);
-  }
-
-  #startDurableEventConsumer(
-    group: string,
-    loop: DurableEventConsumerLoop<TA>,
-  ): void {
-    if (
-      this.#durableEventListenersStopped ||
-      !this.#durableEventConsumerGroupReady(group, loop)
-    ) {
-      return;
-    }
-    for (
-      let workerIndex = 0;
-      workerIndex < loop.concurrency;
-      workerIndex += 1
-    ) {
-      if (loop.startedWorkers.has(workerIndex)) continue;
-      loop.startedWorkers.add(workerIndex);
-      this.#tasks.add(
-        `event-consumer:${group}:${workerIndex}:${ulid()}`,
-        this.#runDurableEventConsumer(group, loop, workerIndex),
-      );
-    }
-  }
-
-  #durableEventConsumerGroupReady(
-    group: string,
-    loop: DurableEventConsumerLoop<TA>,
-  ): boolean {
-    const metadata = this.#eventConsumers.metadata?.[group];
-    if (!metadata) return false;
-    return eventConsumerGroupEvents(metadata).every((event) =>
-      loop.registrations.some((registration) =>
-        String(registration.event) === event
-      )
-    );
-  }
-
-  /**
-   * Runs work bound to the current ready generation's JetStream client, holding
-   * that generation's lease for the duration. A fixed connection uses the
-   * initial socket.
-   *
-   * Durable event consumption re-acquires here on every bounded batch, so a
-   * growth rollover is adopted on the next fetch while a delivery already being
-   * handled keeps the generation that accepted it pinned through its ack.
-   */
-  async #withDurableEventGeneration<U>(
-    work: (deps: {
-      nc: NatsConnection;
-      js: JetStreamClient;
-      jsm: Awaited<ReturnType<typeof jetstreamManager>>;
-      lease?: TransportLease;
-    }) => Promise<U>,
-  ): Promise<U> {
-    let lease: TransportLease | undefined;
-    if (this.#adaptiveTransport) {
-      lease = await this.#transport.acquireCurrent({
-        deadlineMs: Date.now() + this.timeout,
-      });
-    }
-    const nc = lease?.nc ?? this.#nats;
-    try {
-      const js = lease ? jetstream(nc) : this.#js;
-      const jsm = lease
-        ? await jetstreamManager(nc)
-        : await jetstreamManager(this.#nats);
-      return await work({ nc, js, jsm, ...(lease ? { lease } : {}) });
-    } finally {
-      lease?.release();
-    }
-  }
-
-  #runDurableEventConsumer(
-    group: string,
-    loop: DurableEventConsumerLoop<TA>,
-    workerIndex: number,
-  ): AsyncResult<void, ValidationError | UnexpectedError> {
-    return AsyncResult.from((async () => {
-      const binding = this.#eventConsumers.bindings?.[group];
-      if (!binding) {
-        return err(
-          new UnexpectedError({
-            cause: new Error(
-              `Event consumer group '${group}' has no Trellis-provisioned binding.`,
-            ),
-            context: { group },
-          }),
-        );
-      }
-
-      let originalOpened = false;
-      let fetchingReplay = true;
-      try {
-        const infoResult = await AsyncResult.try(async () => {
-          return await this.#withDurableEventGeneration(({ jsm }) =>
-            jsm.consumers.info(binding.stream, binding.consumerName)
-          );
-        });
-        const info = infoResult.take();
-        if (isErr(info)) {
-          if (
-            this.#durableEventListenersStopped ||
-            !this.#durableEventConsumerGroupReady(group, loop)
-          ) {
-            return ok(undefined);
-          }
-          if (isConsumerNotFoundError(info.error.cause)) {
-            this.#log.debug(
-              { group, stream: binding.stream, consumer: binding.consumerName },
-              "Durable event consumer is not available yet; retrying",
-            );
-            await sleep(25);
-            return ok(undefined);
-          }
-          return info;
-        }
-        originalOpened = true;
-
-        // Consumer metadata is stable across generations; only the physical
-        // connection it is consumed on moves.
-        const replayInfo = await this.#withDurableEventGeneration(({ jsm }) =>
-          jsm.consumers.info(
-            binding.replayBinding.stream,
-            binding.replayBinding.consumerName,
-          )
-        );
-        let replay = false;
-        while (
-          !this.#durableEventListenersStopped &&
-          this.#durableEventConsumerGroupReady(group, loop)
-        ) {
-          fetchingReplay = replay;
-          const isReplay = replay;
-          replay = !replay;
-          // One bounded batch per fetch on the current ready generation, pinned
-          // through the handler and its ack. Idle iterations release promptly,
-          // so growth is adopted on the next fetch with no second logical
-          // consumer.
-          await this.#withDurableEventGeneration(async ({ js }) => {
-            const messages = await js.consumers.getConsumerFromInfo(
-              isReplay ? replayInfo : info,
-            ).fetch({ max_messages: 1, expires: 1_000 });
-            loop.messages.add(messages);
-            if (!this.#durableEventConsumerGroupReady(group, loop)) {
-              messages.stop();
-              loop.messages.delete(messages);
-              return;
-            }
-            try {
-              await this.#handleDurableEventConsumer(
-                group,
-                loop,
-                messages,
-                isReplay,
-              )
-                .orThrow();
-            } finally {
-              loop.messages.delete(messages);
-            }
-          });
-        }
-      } catch (cause) {
-        if (
-          this.#durableEventListenersStopped ||
-          !this.#durableEventConsumerGroupReady(group, loop)
-        ) {
-          return ok(undefined);
-        }
-        if (this.#adaptiveTransport && this.#transport.isClosed()) {
-          // Terminal: a closed or revoked logical transport must stop durable
-          // consumption rather than retrying forever against no generation.
-          this.#durableEventListenersStopped = true;
-          return ok(undefined);
-        }
-        if (
-          isConsumerNotFoundError(cause) &&
-          (fetchingReplay || !originalOpened)
-        ) {
-          this.#log.debug(
-            { group, stream: binding.stream, consumer: binding.consumerName },
-            "Durable event consumer is not available yet; retrying",
-          );
-          await sleep(25);
-          return ok(undefined);
-        }
-        await sleep(25);
-        return err(new UnexpectedError({ cause, context: { group } }));
-      } finally {
-        loop.startedWorkers.delete(workerIndex);
-        if (!this.#durableEventListenersStopped) {
-          this.#startDurableEventConsumer(group, loop);
-        }
-      }
-      return ok(undefined);
-    })());
-  }
-
-  #handleDurableEventConsumer(
-    group: string,
-    loop: DurableEventConsumerLoop<TA>,
-    messages: ConsumerMessages,
-    isReplay = false,
-  ): AsyncResult<void, ValidationError | UnexpectedError> {
-    return AsyncResult.try(async () => {
-      const binding = this.#eventConsumers.bindings?.[group];
-      if (!binding) {
-        throw new Error(`Event consumer group '${group}' is unavailable`);
-      }
-      for await (const msg of messages) {
-        let replayEnvelope: ConsumerReplayEnvelope | undefined;
-        let deliveredMessage: Pick<
-          Msg,
-          "data" | "headers" | "subject" | "json"
-        > = msg;
-        if (isReplay) {
-          const parsedReplayEnvelope = JSON.parse(
-            new TextDecoder().decode(msg.data),
-          ) as ConsumerReplayEnvelope;
-          replayEnvelope = parsedReplayEnvelope;
-          if (
-            parsedReplayEnvelope.resourceId !== binding.resourceId ||
-            parsedReplayEnvelope.originalRecordSequence <= 0
-          ) {
-            this.#recordEventDisposition("ack", () => msg.ack());
-            continue;
-          }
-          let inspected: Record<string, unknown>;
-          try {
-            inspected = await this.#requestConsumerManagement(
-              "DeadLetters.Inspect",
-              {
-                resourceId: binding.resourceId,
-                deadLetterId: parsedReplayEnvelope.deadLetterId,
-              },
-            );
-          } catch (error) {
-            this.#log.warn(
-              { error, group },
-              "Replay state inspection unavailable",
-            );
-            const delivery = msg.info.deliveryCount;
-            this.#recordEventDisposition("nak", () =>
-              msg.nak(
-                binding.backoffMs[
-                  Math.min(
-                    Math.max(0, delivery - 1),
-                    binding.backoffMs.length - 1,
-                  )
-                ] ?? binding.ackWaitMs,
-              ));
-            continue;
-          }
-          const detail = Reflect.get(inspected, "deadLetter");
-          const deadLetter = detail && typeof detail === "object"
-            ? Reflect.get(detail, "deadLetter")
-            : undefined;
-          const projectedGeneration =
-            deadLetter && typeof deadLetter === "object"
-              ? Reflect.get(deadLetter, "generation")
-              : undefined;
-          if (
-            typeof projectedGeneration !== "number" ||
-            projectedGeneration < parsedReplayEnvelope.generation
-          ) {
-            this.#recordEventDisposition("nak", () => msg.nak(25));
-            continue;
-          }
-          if (
-            projectedGeneration !== parsedReplayEnvelope.generation ||
-            !["replayPending", "replaying"].includes(
-              Reflect.get(deadLetter, "state"),
-            )
-          ) {
-            this.#recordEventDisposition("ack", () => msg.ack());
-            continue;
-          }
-          const originalHeaders = natsHeaders();
-          for (
-            const [name, values] of Object.entries(
-              parsedReplayEnvelope.originalHeaders,
-            )
-          ) {
-            for (const value of values) originalHeaders.append(name, value);
-          }
-          const data = new Uint8Array(
-            parsedReplayEnvelope.originalPayloadBytes,
-          );
-          deliveredMessage = {
-            data,
-            headers: originalHeaders,
-            subject: parsedReplayEnvelope.originalSubject,
-            json: () => JSON.parse(new TextDecoder().decode(data)),
-          };
-        }
-        if (!this.#durableEventConsumerGroupReady(group, loop)) {
-          messages.stop();
-          break;
-        }
-        const matching = loop.registrations.filter((registration) =>
-          natsSubjectMatches(registration.subject, deliveredMessage.subject)
-        );
-        if (matching.length === 0) {
-          this.#log.warn(
-            { group, subject: msg.subject },
-            "Durable event consumer received message without registered handler",
-          );
-          this.#recordEventDisposition("nak", () => msg.nak());
-          continue;
-        }
-
-        let failed = false;
-        for (const registration of matching) {
-          const proofResult = await this.#validateEventProof(
-            registration.event,
-            registration.ctx,
-            deliveredMessage,
-          );
-          const proofValue = proofResult.take();
-          if (isErr(proofValue)) {
-            recordRuntimeError(proofValue.error, {
-              surface: "event",
-              direction: "consumer",
-              operation: String(registration.event),
-              phase: "auth",
-            });
-            this.#log.warn(
-              {
-                error: proofValue.error,
-                event: registration.event,
-                subject: msg.subject,
-              },
-              "Event auth validation failed",
-            );
-            if (
-              proofValue.error instanceof EventVerificationAuthError &&
-              proofValue.error.retryable
-            ) {
-              const delivery = msg.info.deliveryCount;
-              this.#recordEventDisposition("nak", () =>
-                msg.nak(
-                  binding.backoffMs[
-                    Math.min(
-                      Math.max(0, delivery - 1),
-                      binding.backoffMs.length - 1,
-                    )
-                  ] ?? binding.ackWaitMs,
-                ));
-            } else {
-              if (replayEnvelope) {
-                try {
-                  msg.working();
-                  await this.#reportConsumerDelivery({
-                    resourceId: binding.resourceId,
-                    sourceStream: binding.replayBinding.stream,
-                    sourceSequence: BigInt(msg.info.streamSequence),
-                    deliveryCount: msg.info.deliveryCount,
-                    deliveryProof: jetStreamDeliveryProof(msg),
-                    replayGeneration: replayEnvelope.generation,
-                    outcome: "unreplayable",
-                    error: proofValue.error.message,
-                  });
-                } catch (error) {
-                  this.#log.warn(
-                    { error, group },
-                    "Replay delivery report unavailable",
-                  );
-                  failed = true;
-                  break;
-                }
-              }
-              this.#recordEventDisposition("term", () => msg.term());
-            }
-            failed = true;
-            break;
-          }
-
-          const parsedEvent = this.#parseEventMessage(
-            registration.event,
-            registration.ctx,
-            deliveredMessage,
-          );
-          const eventPayload = parsedEvent.take();
-          if (isErr(eventPayload)) {
-            this.#log.error(
-              { error: eventPayload.error },
-              "Event validation failed",
-            );
-            recordRuntimeError(eventPayload.error, {
-              surface: "event",
-              direction: "consumer",
-              operation: String(registration.event),
-              phase: "input_validation",
-            });
-            this.#recordEventDisposition("term", () => msg.term());
-            failed = true;
-            break;
-          }
-
-          const delivery = msg.info.deliveryCount;
-          const wait = binding.backoffMs[
-            Math.min(Math.max(0, delivery - 1), binding.backoffMs.length - 1)
-          ] ?? binding.ackWaitMs;
-          const progress = setInterval(
-            () => msg.working(),
-            Math.max(1, Math.min(wait - 1, Math.floor(wait / 3))),
-          );
-          const handlerResult = await this.#invokeEventHandler({
-            event: registration.event,
-            payload: eventPayload,
-            mode: "durable",
-            group,
-            message: deliveredMessage,
-            fn: registration.fn,
-          }).finally(() => clearInterval(progress));
-          const handlerValue = handlerResult.take();
-          if (isErr(handlerValue)) {
-            recordRuntimeError(handlerValue.error, {
-              surface: "event",
-              direction: "consumer",
-              operation: String(registration.event),
-              phase: "handler_result",
-            });
-            this.#log.error(
-              {
-                error: handlerValue.error.toSerializable(),
-                event: registration.event,
-                subject: msg.subject,
-              },
-              "Event handler failed",
-            );
-            if (delivery >= binding.maxDeliver) {
-              try {
-                msg.working();
-                await this.#reportConsumerDelivery({
-                  resourceId: binding.resourceId,
-                  sourceStream: isReplay
-                    ? binding.replayBinding.stream
-                    : binding.stream,
-                  sourceSequence: BigInt(msg.info.streamSequence),
-                  deliveryCount: delivery,
-                  deliveryProof: jetStreamDeliveryProof(msg),
-                  ...(replayEnvelope
-                    ? { replayGeneration: replayEnvelope.generation }
-                    : {}),
-                  outcome: "exhausted",
-                  error: JSON.stringify(handlerValue.error.toSerializable()),
-                });
-                this.#recordEventDisposition("ack", () => msg.ack());
-              } catch (error) {
-                this.#log.warn({ error, group }, "Delivery report unavailable");
-              }
-              failed = true;
-              break;
-            }
-            const delay = binding.backoffMs[
-              Math.min(Math.max(0, delivery - 1), binding.backoffMs.length - 1)
-            ] ?? 0;
-            this.#recordEventDisposition("nak", () => msg.nak(delay));
-            failed = true;
-            break;
-          }
-        }
-
-        if (!failed) {
-          if (replayEnvelope) {
-            try {
-              msg.working();
-              await this.#reportConsumerDelivery({
-                resourceId: binding.resourceId,
-                sourceStream: binding.replayBinding.stream,
-                sourceSequence: BigInt(msg.info.streamSequence),
-                deliveryCount: msg.info.deliveryCount,
-                deliveryProof: jetStreamDeliveryProof(msg),
-                replayGeneration: replayEnvelope.generation,
-                outcome: "succeeded",
-              });
-            } catch (error) {
-              this.#log.warn({ error, group }, "Delivery report unavailable");
-              continue;
-            }
-          }
-          this.#recordEventDisposition("ack", () => msg.ack());
-        }
-      }
-    });
-  }
-
-  async #reportConsumerDelivery(input: Record<string, unknown>): Promise<void> {
-    let outcome = "error";
-    try {
-      await this.#requestConsumerManagement("Consumers.ReportDelivery", input);
-      outcome = "ok";
-    } finally {
-      try {
-        recordCatalogCounter("trellis.delivery.dispositions", 1, {
-          "trellis.family": "event",
-          "trellis.action": input.outcome === "exhausted"
-            ? "exhausted_report"
-            : "replay_report",
-          "trellis.outcome": outcome,
-        });
-      } catch {
-        // The report's original success or error owns the business outcome.
-      }
-    }
-  }
-
-  #recordEventDisposition(
-    action: "ack" | "nak" | "term",
-    publish: () => void,
-  ): void {
-    let outcome = "error";
-    try {
-      publish();
-      outcome = "ok";
-    } finally {
-      try {
-        recordCatalogCounter("trellis.delivery.dispositions", 1, {
-          "trellis.family": "event",
-          "trellis.action": action,
-          "trellis.outcome": outcome,
-        });
-      } catch {
-        // A failed optional observation must not replace a broker error.
-      }
-    }
-  }
-
-  async #requestConsumerManagement(
-    method: string,
-    input: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> {
-    const binding = this.#apiBindings[EVENTS_API.identity];
-    const providerDeploymentId = binding && typeof binding === "object"
-      ? Reflect.get(binding, "providerDeploymentId")
-      : undefined;
-    const action = method === "Consumers.ReportDelivery"
-      ? EVENTS_API.actions["rpc:Consumers.ReportDelivery"]
-      : method === "DeadLetters.Inspect"
-      ? EVENTS_API.actions["rpc:DeadLetters.Inspect"]
-      : undefined;
-    if (typeof providerDeploymentId !== "string" || !action) {
-      throw new Error(`Consumer management '${method}' is unavailable`);
-    }
-    return await this.#requestBuiltRpc<Record<string, unknown>>(method, input, {
-      subject: boundApiSubject(
-        "rpc",
-        EVENTS_API.identity,
-        providerDeploymentId,
-        method,
-      ),
+  /** @internal Read authoritative history for a verified deployment-owned job. */
+  async requestJobHistory(
+    input: JobsHistoryRequest,
+  ): Promise<JobsHistoryResponse> {
+    const action = JOBS_HISTORY_API.actions["rpc:History"];
+    return await this.#requestBuiltRpc<JobsHistoryResponse>("History", input, {
+      subject: action.subject,
+      permission: actionPermission(JOBS_HISTORY_API.identity, action, "call"),
       input: action.input,
       output: action.output,
       callerCapabilities: [],
@@ -6237,6 +3482,31 @@ export class Trellis<
       declaredErrorTypes: action.errors.map((error) => error.type),
       runtimeErrors: action.errors,
     }).orThrow();
+  }
+
+  /**
+   * Submit this service's own build, or read the state of its submission,
+   * through the Auth capability every service instance holds.
+   */
+  async requestServiceUpdate(
+    method: "ServiceUpdates.Submit" | "ServiceUpdates.Status",
+    input: { packageEvidence: unknown } | { updateId: string },
+  ): Promise<AuthServiceUpdateResponse> {
+    const action = AUTH_API.actions[`rpc:${method}`];
+    return await this.#requestBuiltRpc<AuthServiceUpdateResponse>(
+      method,
+      input,
+      {
+        subject: action.subject,
+        permission: actionPermission(AUTH_API.identity, action, "call"),
+        input: action.input,
+        output: action.output,
+        callerCapabilities: [],
+        errors: action.errors.map((error) => error.type),
+        declaredErrorTypes: action.errors.map((error) => error.type),
+        runtimeErrors: action.errors,
+      },
+    ).orThrow();
   }
 
   #parseEventMessage(
@@ -6264,11 +3534,13 @@ export class Trellis<
     _event: EventsOf<TA>,
     descriptor: EventDescriptorOf<TA, EventsOf<TA>>,
     msg: Pick<Msg, "data" | "headers" | "subject">,
+    originalPublication?: OriginalEventPublication,
   ): Promise<Result<VerifiedCaller, BaseError>> {
     return await verifyLocalAuthorization({
       kind: "event",
-      cache: this.#auth.authorizationProviderCache,
+      cache: this.#auth.authorityOwner,
       message: msg,
+      originalPublication,
       permission: descriptor.publishPermission,
       descriptorIdentity: descriptor.descriptorIdentity,
       requiredCapabilities: descriptor.publishCapabilities,
@@ -6281,11 +3553,7 @@ export class Trellis<
 
   /** Stops durable event listener loops without closing the underlying transport. */
   stopEventListeners(): void {
-    this.#durableEventListenersStopped = true;
-    for (const loop of this.#durableEventLoops.values()) {
-      loop.registrations.splice(0, loop.registrations.length);
-      for (const messages of loop.messages) messages.stop();
-    }
+    this.#durableEvents.stop();
   }
 
   // FIXME: If are validating things twice in most cases...
@@ -6314,18 +3582,22 @@ export class Trellis<
         );
       }
       if (
-        value !== undefined && value !== null && value !== "*" &&
-        (typeof value !== "string" && typeof value !== "number" ||
-          typeof value === "number" &&
+        value !== undefined &&
+        value !== null &&
+        value !== "*" &&
+        ((typeof value !== "string" && typeof value !== "number") ||
+          (typeof value === "number" &&
             (!Number.isFinite(value) ||
-              Number.isInteger(value) && !Number.isSafeInteger(value)))
+              (Number.isInteger(value) && !Number.isSafeInteger(value)))))
       ) {
         return err(
           new ValidationError({
-            errors: [{
-              path: key,
-              message: "Subject template values must be strings or numbers",
-            }],
+            errors: [
+              {
+                path: key,
+                message: "Subject template values must be strings or numbers",
+              },
+            ],
             context: { key },
           }),
         );
@@ -6355,9 +3627,10 @@ export class Trellis<
   }
 
   #contextDigest(): string {
-    const digest = typeof this.#auth.contextDigest === "function"
-      ? this.#auth.contextDigest()
-      : this.#auth.contextDigest;
+    const digest =
+      typeof this.#auth.contextDigest === "function"
+        ? this.#auth.contextDigest()
+        : this.#auth.contextDigest;
     if (digest === undefined) {
       throw new Error(
         "contextDigest is required to sign v1 request and event proofs",
@@ -6371,52 +3644,104 @@ export class Trellis<
     subject: string,
     payload: string,
     reply: string,
-  ): Promise<
-    { proof: string; iat: number; requestId: string; contextDigest: string }
-  > {
-    const contextDigest = this.#contextDigest();
-    const payloadBytes = new TextEncoder().encode(payload);
-    const payloadHash = await sha256(payloadBytes);
-    const iat = this.#currentIat();
-    const requestId = ulid();
-    const input = buildProofInput(
-      contextDigest,
-      subject,
-      reply,
-      payloadHash,
-      iat,
-      requestId,
-    );
-    const digest = await sha256(input);
-    const sigBytes = await this.#auth.sign(digest);
-    return {
-      proof: base64urlEncode(sigBytes),
-      iat,
-      requestId,
-      contextDigest,
-    };
+    permission: DescriptorPermissionAtom,
+    role: "consumer" | "provider" = "consumer",
+  ): Promise<{
+    proof: string;
+    iat: number;
+    requestId: string;
+    contextDigest: string;
+    request: SessionRequest;
+    requestProofDigest: string;
+  }> {
+    const owner = this.#auth.authorityOwner;
+    if (!owner) throw new Error("session authority owner unavailable");
+    const own = owner.own();
+    try {
+      const contextDigest = own.digest;
+      const payloadBytes = new TextEncoder().encode(payload);
+      const iat = this.#currentIat();
+      const requestId = ulid();
+      const apiId = `${permission.apiId}@${permission.apiVersion}`;
+      const api = own.authority.apis.find((api) => api.apiId === apiId);
+      if (!api) throw new Error("request API is not in verified authority");
+      if (role === "provider")
+        await own.authorizeProvider(
+          apiId,
+          api.generation,
+          toCatalogAction(permission),
+        );
+      else await own.authorize(apiId, toCatalogAction(permission));
+      const request: SessionRequest = {
+        authorityDigest: contextDigest,
+        apiId,
+        apiGeneration: api.generation,
+        acceptedRevision: api.acceptedRevision,
+        action: permission.surfaceName,
+        subject,
+        replySubject: reply,
+        issuedAt: iat,
+        requestId,
+      };
+      const digest = await sessionRequestSigningDigest(request, payloadBytes);
+      const sigBytes = await this.#auth.sign(digest);
+      own.assertCurrent();
+      return {
+        proof: base64urlEncode(sigBytes),
+        iat,
+        requestId,
+        contextDigest,
+        request,
+        requestProofDigest: base64urlEncode(digest),
+      };
+    } finally {
+      own.release();
+    }
   }
 
-  async #createEventProof(
-    event: PreparedTrellisEvent,
-  ): Promise<{ proof: string; contextDigest: string }> {
-    const contextDigest = this.#contextDigest();
-    const payloadHash = await sha256(
-      new TextEncoder().encode(event.encodedPayload),
-    );
-    const input = buildEventProofInput(
-      contextDigest,
-      event.descriptorIdentity,
-      event.subject,
-      payloadHash,
-      event.header.id,
-      event.header.time,
-    );
-    const digest = await sha256(input);
-    return {
-      proof: base64urlEncode(await this.#auth.sign(digest)),
-      contextDigest,
-    };
+  async #createEventProof(event: PreparedTrellisEvent): Promise<{
+    proof: string;
+    contextDigest: string;
+    apiGeneration: string;
+    acceptedRevision: string;
+    event: SessionEvent;
+  }> {
+    const owner = this.#auth.authorityOwner;
+    if (!owner) throw new Error("session authority owner unavailable");
+    const own = owner.own();
+    try {
+      const permission = this.api.events[event.event]?.publishPermission;
+      if (!permission) throw new Error("event descriptor unavailable");
+      const apiId = `${permission.apiId}@${permission.apiVersion}`;
+      const api = own.authority.apis.find((api) => api.apiId === apiId);
+      if (!api) throw new Error("event API is not in verified authority");
+      await own.authorize(apiId, toCatalogAction(permission));
+      const signedEvent: SessionEvent = {
+        authorityDigest: own.digest,
+        apiId,
+        apiGeneration: api.generation,
+        acceptedRevision: api.acceptedRevision,
+        action: permission.surfaceName,
+        subject: event.subject,
+        eventId: event.header.id,
+        eventTime: event.header.time,
+      };
+      const digest = await sessionEventSigningDigest(
+        signedEvent,
+        new TextEncoder().encode(event.encodedPayload),
+      );
+      const proof = base64urlEncode(await this.#auth.sign(digest));
+      own.assertCurrent();
+      return {
+        proof,
+        contextDigest: own.digest,
+        event: signedEvent,
+        apiGeneration: api.generation,
+        acceptedRevision: api.acceptedRevision,
+      };
+    } finally {
+      own.release();
+    }
   }
 
   /**
@@ -6433,18 +3758,67 @@ export class Trellis<
     deadlineMs: number;
     signal?: AbortSignal;
     callerCapabilities?: readonly string[];
-  }): Promise<Result<{ nc: NatsConnection; release(): void }, TransportError>> {
+  }): Promise<Result<TransportLease, TransportError>> {
+    try {
+      const authority = this.ownAuthority;
+      if (authority && !authority.current) {
+        const signal = AbortSignal.any([
+          ...(args.signal ? [args.signal] : []),
+          AbortSignal.timeout(Math.max(0, args.deadlineMs - Date.now())),
+        ]);
+        await new Promise<void>((resolve, reject) => {
+          let unsubscribe = () => {};
+          const changed = () => {
+            if (!authority.current && !this.#transport.isClosed()) return;
+            unsubscribe();
+            signal.removeEventListener("abort", aborted);
+            resolve();
+          };
+          const aborted = () => {
+            unsubscribe();
+            signal.removeEventListener("abort", aborted);
+            reject(
+              requestFailedTransportError({
+                code: args.signal?.aborted
+                  ? "trellis.request.cancelled"
+                  : "trellis.request.timeout",
+                message: args.signal?.aborted
+                  ? "The request was cancelled."
+                  : "The request timed out waiting for verified authority.",
+                hint: "Wait for verified authority before making another request.",
+                method: args.method,
+                subject: args.subject,
+                cause: signal.reason,
+              }),
+            );
+          };
+          signal.addEventListener("abort", aborted, { once: true });
+          unsubscribe = authority.subscribe(changed);
+          // subscribe invokes synchronously; recheck after retaining cleanup.
+          if (signal.aborted) aborted();
+          else changed();
+        });
+      }
+    } catch (cause) {
+      return err(
+        cause instanceof TransportError
+          ? cause
+          : mapTransportAcquireFailure({ ...args, cause }),
+      );
+    }
     if (!this.#adaptiveTransport) {
       if (this.#nats.isClosed()) {
-        return err(requestFailedTransportError({
-          code: "trellis.request.closed",
-          message: "The Trellis connection is closed.",
-          hint: "Connect to Trellis again before making another request.",
-          method: args.method,
-          subject: args.subject,
-        }));
+        return err(
+          requestFailedTransportError({
+            code: "trellis.request.closed",
+            message: "The Trellis connection is closed.",
+            hint: "Connect to Trellis again before making another request.",
+            method: args.method,
+            subject: args.subject,
+          }),
+        );
       }
-      return ok({ nc: this.#nats, release: () => {} });
+      return ok(await this.#transport.acquireCurrent());
     }
     let lease: TransportLease;
     try {
@@ -6459,43 +3833,48 @@ export class Trellis<
         },
       );
     } catch (cause) {
-      return err(mapTransportAcquireFailure({
-        method: args.method,
-        subject: args.subject,
-        callerCapabilities: args.callerCapabilities,
-        cause,
-      }));
+      return err(
+        mapTransportAcquireFailure({
+          method: args.method,
+          subject: args.subject,
+          callerCapabilities: args.callerCapabilities,
+          cause,
+        }),
+      );
     }
-    return ok({ nc: lease.nc, release: () => lease.release() });
+    return ok(lease);
   }
 
-  async #requestMessageWithRetry(args: {
+  async #requestMessage(args: {
     method?: string;
     /** Bounded registered-route token for attempt accounting. */
     route?: string;
     subject: string;
     payload: string;
+    permission: DescriptorPermissionAtom;
     timeout: number;
     signal?: AbortSignal;
     callerCapabilities?: readonly string[];
     span?: Span;
+    expectedDeploymentId?: string;
   }): Promise<Result<Msg, TransportError>> {
     const recordAttempt = (outcome: string): void => {
       if (args.route !== undefined) recordRpcAttempt(args.route, outcome);
     };
-    for (let retry = 0; retry <= this.#noResponderMaxRetries; retry++) {
+    {
       if (args.signal?.aborted) {
-        return err(classifyRequestTransportFailure({
-          method: args.method,
-          subject: args.subject,
-          callerCapabilities: args.callerCapabilities,
-          cause: args.signal.reason ??
-            new DOMException("Request aborted", "AbortError"),
-        }));
+        return err(
+          classifyRequestTransportFailure({
+            method: args.method,
+            subject: args.subject,
+            callerCapabilities: args.callerCapabilities,
+            cause:
+              args.signal.reason ??
+              new DOMException("Request aborted", "AbortError"),
+          }),
+        );
       }
-      // One physical-exchange deadline per attempt (the intentional
-      // no-responder retry contract re-creates it each time): generation
-      // acquisition and the actual publish/reply share it.
+      // Acquire and publish once. A potentially executed request is never replayed.
       const deadlineMs = Date.now() + args.timeout;
       const acquired = await this.#acquireRequestTransport({
         method: args.method,
@@ -6510,8 +3889,8 @@ export class Trellis<
           acquiredTransport.error.code === "trellis.request.cancelled"
             ? "cancelled"
             : acquiredTransport.error.code === "trellis.request.timeout"
-            ? "timeout"
-            : "unavailable",
+              ? "timeout"
+              : "unavailable",
         );
         return err(acquiredTransport.error);
       }
@@ -6524,6 +3903,7 @@ export class Trellis<
           args.subject,
           args.payload,
           reply,
+          args.permission,
         );
         const headers = natsHeaders();
         headers.set("authorization-context", authHeaders.contextDigest);
@@ -6531,26 +3911,109 @@ export class Trellis<
         headers.set("proof", authHeaders.proof);
         headers.set("iat", String(authHeaders.iat));
         headers.set("request-id", authHeaders.requestId);
+        headers.set(
+          "Trellis-Session-Request",
+          JSON.stringify(authHeaders.request),
+        );
+        headers.set(
+          "Trellis-Api-Generation",
+          authHeaders.request.apiGeneration,
+        );
+        headers.set(
+          "Trellis-Accepted-Revision",
+          authHeaders.request.acceptedRevision,
+        );
         injectTraceContext(createNatsHeaderCarrier(headers), args.span);
 
+        let waitFailure:
+          | {
+              cause: unknown;
+              kind: "cancelled" | "timeout";
+            }
+          | undefined;
         const result = await AsyncResult.try(async () => {
           const response = Promise.withResolvers<Msg>();
-          const abort = () =>
-            response.reject(
-              args.signal?.reason ??
+          const owner = this.#auth.authorityOwner;
+          if (!owner) throw new Error("session authority owner unavailable");
+          const pending: PendingSessionRequest = {
+            request: authHeaders.request,
+            proofDigest: authHeaders.requestProofDigest,
+            action: toCatalogAction(args.permission),
+            expectedDeploymentId: args.expectedDeploymentId ?? null,
+          };
+          let verified = false;
+          let verifying = 0;
+          const timer = setTimeout(
+            () => {
+              waitFailure = {
+                cause: new DOMException("Request timed out", "TimeoutError"),
+                kind: "timeout",
+              };
+              response.reject(waitFailure.cause);
+            },
+            Math.max(1, deadlineMs - Date.now()),
+          );
+          const abort = () => {
+            waitFailure = {
+              cause:
+                args.signal?.reason ??
                 new DOMException("Request aborted", "AbortError"),
-            );
+              kind: "cancelled",
+            };
+            response.reject(waitFailure.cause);
+          };
           args.signal?.addEventListener("abort", abort, { once: true });
           const subscription = nc.subscribe(reply, {
-            max: 1,
-            timeout: Math.max(1, deadlineMs - Date.now()),
             callback: (error, message) => {
               if (error) response.reject(error);
               else if (
-                message.data.length === 0 && message.headers?.code === 503
+                message.data.length === 0 &&
+                message.headers?.code === 503
               ) {
                 response.reject(new Error("no responders"));
-              } else response.resolve(message);
+              } else if (!verified && verifying < 8) {
+                // Unauthenticated traffic cannot consume the pending opening.
+                verifying++;
+                void (async () => {
+                  const encoded = message.headers?.values(
+                    "Trellis-Session-Response",
+                  );
+                  const proofs = message.headers?.values("proof");
+                  if (
+                    encoded?.length !== 1 ||
+                    proofs?.length !== 1 ||
+                    encoded[0].length > 16 * 1024
+                  )
+                    return;
+                  const signed = JSON.parse(encoded[0]) as SessionResponse;
+                  await owner.verifyResponse(
+                    signed,
+                    message.data,
+                    proofs[0],
+                    message.subject,
+                    pending,
+                  );
+                  if (
+                    signed.kind !==
+                    (message.headers?.get("status") === "error"
+                      ? "error"
+                      : "success")
+                  )
+                    return;
+                  if (
+                    !verified &&
+                    Date.now() < deadlineMs &&
+                    !args.signal?.aborted
+                  ) {
+                    verified = true;
+                    response.resolve(message);
+                  }
+                })()
+                  .catch(() => undefined)
+                  .finally(() => {
+                    verifying--;
+                  });
+              }
             },
           });
           // NATS noMux requests abandon their promise when connection closure
@@ -6563,22 +4026,18 @@ export class Trellis<
           // Publish denials arrive on this generation's own status stream, not
           // the reply inbox. Watch the leased connection, never a mutable
           // logical default.
-          const statusIterator = nc.status()[Symbol.asyncIterator]();
-          const stopWatching = (async () => {
-            while (true) {
-              const next = await statusIterator.next();
-              if (next.done) return;
-              const error = (next.value as { error?: unknown } | null)?.error;
-              if (
-                error instanceof Error &&
-                ((error.name === "PermissionViolationError" &&
-                  Reflect.get(error, "operation") === "publish" &&
-                  Reflect.get(error, "subject") === args.subject) ||
-                  error.name === "AuthorizationError" ||
-                  error.name === "UserAuthenticationExpiredError")
-              ) response.reject(error);
-            }
-          })().catch(() => undefined);
+          const stopWatching = acquiredTransport.watchStatus((event) => {
+            const error = (event as { error?: unknown } | null)?.error;
+            if (
+              error instanceof Error &&
+              ((error.name === "PermissionViolationError" &&
+                Reflect.get(error, "operation") === "publish" &&
+                Reflect.get(error, "subject") === args.subject) ||
+                error.name === "AuthorizationError" ||
+                error.name === "UserAuthenticationExpiredError")
+            )
+              response.reject(error);
+          });
           try {
             if (args.signal?.aborted) {
               abort();
@@ -6587,9 +4046,10 @@ export class Trellis<
             }
             return await response.promise;
           } finally {
+            verified = true;
+            clearTimeout(timer);
             args.signal?.removeEventListener("abort", abort);
-            void statusIterator.return?.();
-            void stopWatching;
+            stopWatching();
             subscription.unsubscribe();
           }
         });
@@ -6600,29 +4060,23 @@ export class Trellis<
         }
 
         const cause = result.error.cause;
-        const message = cause instanceof Error ? cause.message : String(cause);
-        const isNoResponders = message.includes("no responders");
-
-        if (isNoResponders && retry < this.#noResponderMaxRetries) {
-          recordAttempt("unavailable");
-          this.#log.debug(
-            { method: args.method, subject: args.subject, retry },
-            "No responders, retrying...",
+        if (waitFailure && cause === waitFailure.cause) {
+          recordAttempt(waitFailure.kind);
+          return err(
+            requestFailedTransportError({
+              code: `trellis.request.${waitFailure.kind}`,
+              message:
+                waitFailure.kind === "cancelled"
+                  ? "The request wait was cancelled."
+                  : "The request deadline elapsed.",
+              hint: "Stopping the wait does not undo work already accepted by the service.",
+              cause,
+              method: args.method,
+              subject: args.subject,
+            }),
           );
-          await new Promise<void>((resolve) => {
-            const done = () => {
-              clearTimeout(timeout);
-              args.signal?.removeEventListener("abort", done);
-              resolve();
-            };
-            const timeout = setTimeout(
-              done,
-              this.#noResponderRetryMs * (retry + 1),
-            );
-            args.signal?.addEventListener("abort", done, { once: true });
-          });
-          continue;
         }
+        const message = cause instanceof Error ? cause.message : String(cause);
 
         this.#log.warn(
           { method: args.method, subject: args.subject, error: message },
@@ -6632,300 +4086,278 @@ export class Trellis<
           args.signal?.aborted
             ? "cancelled"
             : /timeout/i.test(message)
-            ? "timeout"
-            : "unavailable",
+              ? "timeout"
+              : "unavailable",
         );
-        return err(classifyRequestTransportFailure({
-          method: args.method,
-          subject: args.subject,
-          callerCapabilities: args.callerCapabilities,
-          cause,
-        }));
+        return err(
+          classifyRequestTransportFailure({
+            method: args.method,
+            subject: args.subject,
+            callerCapabilities: args.callerCapabilities,
+            cause,
+          }),
+        );
       } finally {
         release();
       }
     }
-
-    recordAttempt("unavailable");
-    return err(
-      requestFailedTransportError({
-        code: "trellis.request.retry_exhausted",
-        message: "Trellis could not complete the request after retrying.",
-        hint:
-          "Retry the request. If it keeps failing, check that the target service is available.",
-        method: args.method,
-        subject: args.subject,
-        context: { retries: this.#noResponderMaxRetries + 1 },
-      }),
-    );
   }
 
   #requestJson(
     subject: string,
     body: JsonValue,
-    route: string = UNKNOWN_ROUTE,
+    route: string,
+    permission: DescriptorPermissionAtom,
+    expectedDeploymentId?: string,
   ): AsyncResult<JsonValue, TransportError | UnexpectedError> {
-    return AsyncResult.from((async () => {
-      const span = startClientSpan(route);
-      return await withSpanAsync(span, async () => {
-        try {
-          const payload = JSON.stringify(body);
-          const response = (await this.#requestMessageWithRetry({
-            route,
-            subject,
-            payload,
-            timeout: this.timeout,
-            span,
-          })).take();
-          if (isErr(response)) {
-            span.setStatus({
-              code: SpanStatusCode.ERROR,
-              message: response.error.message,
-            });
-            recordRuntimeError(response.error, {
-              surface: "operation",
-              direction: "client",
-              operation: "requestJson",
-              phase: "request_send",
-            });
-            return response;
-          }
+    return AsyncResult.from(
+      (async () => {
+        const span = startClientSpan(route);
+        return await withSpanAsync(span, async () => {
+          try {
+            const payload = JSON.stringify(body);
+            const response = (
+              await this.#requestMessage({
+                route,
+                subject,
+                payload,
+                permission,
+                timeout: this.timeout,
+                span,
+                expectedDeploymentId,
+              })
+            ).take();
+            if (isErr(response)) {
+              span.setStatus({
+                code: SpanStatusCode.ERROR,
+                message: response.error.message,
+              });
+              recordRuntimeError(response.error, {
+                surface: "operation",
+                direction: "client",
+                operation: "requestJson",
+                phase: "request_send",
+              });
+              return response;
+            }
 
-          const json = safeJson(response).take();
-          if (isErr(json)) {
-            const error = createTransportError({
-              code: "trellis.request.invalid_response",
-              message: "Trellis returned an invalid response.",
-              hint:
-                "Retry the request. If it keeps happening, reconnect to Trellis and try again.",
-              cause: json.error.cause,
-              context: { subject },
-            });
+            const json = safeJson(response).take();
+            if (isErr(json)) {
+              const error = createTransportError({
+                code: "trellis.request.invalid_response",
+                message: "Trellis returned an invalid response.",
+                hint: "Retry the request. If it keeps happening, reconnect to Trellis and try again.",
+                cause: json.error.cause,
+                context: { subject },
+              });
+              span.setStatus({
+                code: SpanStatusCode.ERROR,
+                message: error.message,
+              });
+              recordRuntimeError(error, {
+                surface: "operation",
+                direction: "client",
+                operation: "requestJson",
+                phase: "response_decoding",
+              });
+              return err(error);
+            }
+
+            if (response.headers?.get("status") === "error") {
+              const errorData = parse(TrellisErrorDataSchema, json).take();
+              if (isErr(errorData)) {
+                return err(
+                  createTransportError({
+                    code: "trellis.request.invalid_response",
+                    message:
+                      "Trellis returned an invalid operation error response.",
+                    hint: "Inspect the provider's operation error response.",
+                    cause: errorData.error,
+                    context: { subject },
+                  }),
+                );
+              }
+              return err(
+                createTransportError({
+                  code: "trellis.operation.remote_error",
+                  message: errorData.message,
+                  hint: "Inspect the provider error and its context.",
+                  context: {
+                    subject,
+                    remoteErrorType: errorData.type,
+                    remoteContext: errorData.context,
+                  },
+                }),
+              );
+            }
+
+            span.setStatus({ code: SpanStatusCode.OK });
+            return ok(json);
+          } catch (cause) {
+            const error = new UnexpectedError({ cause });
             span.setStatus({
               code: SpanStatusCode.ERROR,
-              message: error.message,
+              message: "operation transport failure",
             });
             recordRuntimeError(error, {
               surface: "operation",
               direction: "client",
               operation: "requestJson",
-              phase: "response_decoding",
+              phase: "unexpected",
             });
             return err(error);
+          } finally {
+            span.end();
           }
-
-          if (response.headers?.get("status") === "error") {
-            const errorData = parse(TrellisErrorDataSchema, json).take();
-            if (isErr(errorData)) {
-              return err(createTransportError({
-                code: "trellis.request.invalid_response",
-                message:
-                  "Trellis returned an invalid operation error response.",
-                hint: "Inspect the provider's operation error response.",
-                cause: errorData.error,
-                context: { subject },
-              }));
-            }
-            return err(createTransportError({
-              code: "trellis.operation.remote_error",
-              message: errorData.message,
-              hint: "Inspect the provider error and its context.",
-              context: {
-                subject,
-                remoteErrorType: errorData.type,
-                remoteContext: errorData.context,
-              },
-            }));
-          }
-
-          span.setStatus({ code: SpanStatusCode.OK });
-          return ok(json);
-        } catch (cause) {
-          const error = new UnexpectedError({ cause });
-          span.setStatus({
-            code: SpanStatusCode.ERROR,
-            message: "operation transport failure",
-          });
-          recordRuntimeError(error, {
-            surface: "operation",
-            direction: "client",
-            operation: "requestJson",
-            phase: "unexpected",
-          });
-          return err(error);
-        } finally {
-          span.end();
-        }
-      });
-    })());
+        });
+      })(),
+    );
   }
 
   #watchJson<T>(
     subject: string,
     body: JsonValue,
     decodeEvent: (value: unknown) => T | undefined,
-    observePermission: PermissionAtom | undefined,
-  ): AsyncResult<
-    LiveSubscription<T>,
-    TransportError | UnexpectedError
-  > {
-    return AsyncResult.from((async () => {
-      const record = body && typeof body === "object" && !Array.isArray(body)
-        ? body as { operationId?: unknown; includeUpdates?: unknown }
-        : undefined;
-      if (typeof record?.operationId !== "string") {
-        const error = createTransportError({
-          code: "trellis.watch.failed",
-          message: "Operation watch requires a durable operation id.",
-          hint: "Retry watching the operation with a valid operation id.",
-          context: { subject },
-        });
-        recordRuntimeError(error, {
-          surface: "operation",
-          direction: "client",
-          operation: "watchJson",
-          phase: "request_encoding",
-        });
-        return err(error);
-      }
-      if (!subject.endsWith(".control")) {
-        const error = createTransportError({
-          code: "trellis.watch.failed",
-          message: "Operation watch must open on the control route.",
-          hint: "Use the operation control subject for watch.",
-          context: { subject },
-        });
-        recordRuntimeError(error, {
-          surface: "operation",
-          direction: "client",
-          operation: "watchJson",
-          phase: "request_encoding",
-        });
-        return err(error);
-      }
-      const operationSubject = subject.slice(0, -".control".length);
-      const cache = this.#auth.authorizationProviderCache;
-      // The bound operation route encodes the exact API identity and provider
-      // deployment the selected binding resolved to.
-      const routeTokens = operationSubject.split(".");
-      const apiIdentity = routeTokens.length >= 4
-        ? decodeSubjectToken(routeTokens[2])
-        : undefined;
-      const selectedProviderDeploymentId = routeTokens.length >= 4
-        ? decodeSubjectToken(routeTokens[3])
-        : undefined;
-      if (
-        !cache || !observePermission || !apiIdentity ||
-        !selectedProviderDeploymentId
-      ) {
-        const error = createTransportError({
-          code: "trellis.watch.failed",
-          message: "The operation watch binding is unavailable.",
-          hint: "Reconnect to Trellis so the API binding is installed.",
-          context: { subject },
-        });
-        recordRuntimeError(error, {
-          surface: "operation",
-          direction: "client",
-          operation: "watchJson",
-          phase: "request_encoding",
-        });
-        return err(error);
-      }
-      let transport: { nc: NatsConnection; release(): void } | undefined;
-      try {
-        const acquired = (await this.#acquireRequestTransport({
-          subject,
-          deadlineMs: Date.now() + this.timeout,
-        })).take();
-        if (isErr(acquired)) {
-          recordRuntimeError(acquired.error, {
+    observePermission: DescriptorPermissionAtom | undefined,
+    expectedDeploymentId: string | undefined,
+    operationSubject: string,
+  ): AsyncResult<LiveSubscription<T>, TransportError | UnexpectedError> {
+    return AsyncResult.from(
+      (async () => {
+        const record =
+          body && typeof body === "object" && !Array.isArray(body)
+            ? (body as { operationId?: unknown; includeUpdates?: unknown })
+            : undefined;
+        if (typeof record?.operationId !== "string") {
+          const error = createTransportError({
+            code: "trellis.watch.failed",
+            message: "Operation watch requires a durable operation id.",
+            hint: "Retry watching the operation with a valid operation id.",
+            context: { subject },
+          });
+          recordRuntimeError(error, {
+            surface: "operation",
+            direction: "client",
+            operation: "watchJson",
+            phase: "request_encoding",
+          });
+          return err(error);
+        }
+        if (!subject.endsWith(".control")) {
+          const error = createTransportError({
+            code: "trellis.watch.failed",
+            message: "Operation watch must open on the control route.",
+            hint: "Use the operation control subject for watch.",
+            context: { subject },
+          });
+          recordRuntimeError(error, {
+            surface: "operation",
+            direction: "client",
+            operation: "watchJson",
+            phase: "request_encoding",
+          });
+          return err(error);
+        }
+        const cache = this.#auth.authorityOwner;
+        if (!cache || !observePermission) {
+          const error = createTransportError({
+            code: "trellis.watch.failed",
+            message: "The operation watch authority is unavailable.",
+            hint: "Reconnect to Trellis before watching the operation.",
+            context: { subject },
+          });
+          recordRuntimeError(error, {
+            surface: "operation",
+            direction: "client",
+            operation: "watchJson",
+            phase: "request_encoding",
+          });
+          return err(error);
+        }
+        let transport: { nc: NatsConnection; release(): void } | undefined;
+        try {
+          const acquired = (
+            await this.#acquireRequestTransport({
+              subject,
+              deadlineMs: Date.now() + this.timeout,
+            })
+          ).take();
+          if (isErr(acquired)) {
+            recordRuntimeError(acquired.error, {
+              surface: "operation",
+              direction: "client",
+              operation: "watchJson",
+              phase: "handshake",
+            });
+            return acquired;
+          }
+          transport = acquired;
+          const subscription = await openLiveOperationWatch(
+            {
+              nats: transport.nc,
+              inboxPrefix: this.#inboxPrefix,
+              timeoutMs: this.timeout,
+              sessionKey: this.#auth.sessionKey,
+              live: this.connection.live,
+              createRequestProof: (s, p, r) =>
+                this.createRequestProof(s, p, r, observePermission),
+              authority: {
+                cache,
+                apiId: `${observePermission.apiId}@${observePermission.apiVersion}`,
+                action: toCatalogAction(observePermission),
+                localContextDigest: this.#contextDigest(),
+                expectedDeploymentId,
+              },
+              decodeEvent,
+            },
+            operationSubject,
+            subject,
+            {
+              operationId: record.operationId,
+              includeUpdates: record.includeUpdates === true,
+            },
+          );
+          // Own the watch like a standalone live open, but fence only a clean
+          // local close: an involuntary transport error keeps its loss outcome.
+          const closeOnNats = (terminal: void | Error) => {
+            if (!(terminal instanceof Error)) subscription.close();
+            this.#liveClosers.delete(closeOnNats);
+          };
+          this.#liveClosers.add(closeOnNats);
+          void subscription.closed.then(() => {
+            transport?.release();
+            this.#liveClosers.delete(closeOnNats);
+          });
+          return ok(subscription);
+        } catch (cause) {
+          transport?.release();
+          const error =
+            cause instanceof TransportError
+              ? cause
+              : cause instanceof LiveStreamError
+                ? createTransportError({
+                    code: cause.codeString(),
+                    message: cause.message,
+                    hint: "Retry watching the operation. If it keeps failing, check Trellis runtime health.",
+                    cause,
+                    context: { subject, operationId: record.operationId },
+                  })
+                : createTransportError({
+                    code: "trellis.watch.failed",
+                    message: "Trellis could not start the operation watch.",
+                    hint: "Retry watching the operation. If it keeps failing, reconnect to Trellis and try again.",
+                    cause,
+                    context: { subject, operationId: record.operationId },
+                  });
+          recordRuntimeError(error, {
             surface: "operation",
             direction: "client",
             operation: "watchJson",
             phase: "handshake",
           });
-          return acquired;
+          return err(error);
         }
-        transport = acquired;
-        const subscription = await openLiveOperationWatch(
-          {
-            nats: transport.nc,
-            inboxPrefix: this.#inboxPrefix,
-            timeoutMs: this.timeout,
-            sessionKey: this.#auth.sessionKey,
-            live: this.connection.live,
-            createRequestProof: (s, p, r) => this.createRequestProof(s, p, r),
-            authority: {
-              cache,
-              selectedProviderDeploymentId,
-              permission: observePermission,
-              localContextDigest: this.#contextDigest(),
-            },
-            decodeEvent,
-          },
-          operationSubject,
-          subject,
-          {
-            operationId: record.operationId,
-            includeUpdates: record.includeUpdates === true,
-          },
-        );
-        // Own the watch like a standalone live open, but fence only a clean
-        // local close: an involuntary transport error keeps its loss outcome.
-        const closeOnNats = (terminal: void | Error) => {
-          if (!(terminal instanceof Error)) subscription.close();
-          this.#liveClosers.delete(closeOnNats);
-        };
-        this.#liveClosers.add(closeOnNats);
-        void subscription.closed.then(() => {
-          transport?.release();
-          this.#liveClosers.delete(closeOnNats);
-        });
-        return ok(subscription);
-      } catch (cause) {
-        transport?.release();
-        const error = cause instanceof TransportError
-          ? cause
-          : cause instanceof LiveStreamError
-          ? createTransportError({
-            code: cause.codeString(),
-            message: cause.message,
-            hint:
-              "Retry watching the operation. If it keeps failing, check Trellis runtime health.",
-            cause,
-            context: { subject, operationId: record.operationId },
-          })
-          : createTransportError({
-            code: "trellis.watch.failed",
-            message: "Trellis could not start the operation watch.",
-            hint:
-              "Retry watching the operation. If it keeps failing, reconnect to Trellis and try again.",
-            cause,
-            context: { subject, operationId: record.operationId },
-          });
-        recordRuntimeError(error, {
-          surface: "operation",
-          direction: "client",
-          operation: "watchJson",
-          phase: "handshake",
-        });
-        return err(error);
-      }
-    })());
-  }
-}
-
-/** Decode one base64url subject parameter token back to its exact identity. */
-function decodeSubjectToken(token: string): string | undefined {
-  try {
-    const normalized = token.replaceAll("-", "+").replaceAll("_", "/");
-    const padded = normalized +
-      "=".repeat((4 - (normalized.length % 4)) % 4);
-    const binary = atob(padded);
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return undefined;
+      })(),
+    );
   }
 }

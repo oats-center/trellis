@@ -2,12 +2,11 @@
 //! generated client against the live provider.
 use futures_util::StreamExt;
 use runtime_trellis::apis::runtime_trellis_runtime_v1::{lives, operations, rpc};
-use runtime_trellis::participants::runtime_trellis_caller::Client;
+use runtime_trellis::apps::runtime_trellis_caller::{Client, Request};
 use runtime_trellis::types::Value;
 use std::io::Write as _;
 use tracing_subscriber::prelude::*;
-use trellis_rs::auth::{load_admin_session, start_agent_login, StartAgentLoginOpts};
-use trellis_rs::client::{OperationState, UserConnectOptions, UserSessionCredentials};
+use trellis_rs::client::OperationState;
 use trellis_rs::telemetry::{init_from_env, TelemetryIdentity, TelemetryRole};
 
 #[tokio::main]
@@ -24,28 +23,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|tracer| tracing_opentelemetry::layer().with_tracer(tracer)),
         )
         .init();
-    let url = std::env::var("TRELLIS_URL")?;
-    let login = start_agent_login(&StartAgentLoginOpts {
-        trellis_url: &url,
-        participant_id: "runtime-trellis.Caller",
-    })
-    .await?;
-    println!("rust login {}", login.login_url());
-    std::io::stdout().flush()?;
-    let outcome = login.complete_without_persistence(&url).await?;
-    trellis_rs::auth::save_admin_session(&outcome.state)?;
-    let session = load_admin_session()?;
-    let client = Client::connect(UserConnectOptions::new(
-        &url,
-        5_000,
-        UserSessionCredentials {
-            login_session_id: &session.login_session_id,
-            session_key_seed_base64url: &session.session_seed,
-        },
-        "runtime-trellis.Caller",
-    ))
-    .await?;
+    let client = Client::from_generated(
+        trellis_rs::generated::Client::connect_user(
+            trellis_runtime_acceptance::user_options::<Request>(5_000).await?,
+        )
+        .await?,
+    );
     let runtime = client.runtime_trellis_runtime_v1();
+    if std::env::var("TRELLIS_CALLER_MODE").as_deref() == Ok("cancel-unresponsive-upload") {
+        // Upload from a source that stalls after its first bytes, then cancel
+        // on request while the test keeps the provider frozen.
+        let upload = runtime
+            .upload()
+            .start(&operations::UploadInput {
+                value: "cancel-unresponsive".to_owned(),
+                extra: Default::default(),
+            })
+            .await?;
+        let (mut source, mut reader) = tokio::io::duplex(64 * 1024);
+        let cancellation = trellis_rs::client::TransferCancellation::new();
+        let transfer = upload.upload_from_with_cancel(&mut reader, &cancellation);
+        tokio::pin!(transfer);
+        let feed = async {
+            use tokio::io::AsyncWriteExt as _;
+            source.write_all(&[7; 256 * 1024]).await?;
+            println!("uploading");
+            std::io::stdout().flush()?;
+            use tokio::io::AsyncBufReadExt as _;
+            let mut line = String::new();
+            tokio::io::BufReader::new(tokio::io::stdin())
+                .read_line(&mut line)
+                .await?;
+            Ok::<_, std::io::Error>(())
+        };
+        tokio::select! {
+            result = &mut transfer => {
+                return Err(format!("upload ended before cancellation: {result:?}").into());
+            }
+            fed = feed => fed?,
+        }
+        cancellation.cancel();
+        let started = std::time::Instant::now();
+        let result = transfer.await;
+        println!(
+            "{}",
+            serde_json::json!({
+                "cancelled": format!("{:?}", result.err()),
+                "ms": started.elapsed().as_millis(),
+            })
+        );
+        std::io::stdout().flush()?;
+        return Ok(());
+    }
     let echo = runtime
         .echo(&rpc::EchoInput {
             value: "from TypeScript".to_owned(),

@@ -11,8 +11,8 @@ fn attributes(direction: TransferDirection, side: &'static str) -> [KeyValue; 2]
         KeyValue::new(
             "trellis.direction",
             match direction {
-                TransferDirection::Send => "send",
-                TransferDirection::Receive => "receive",
+                TransferDirection::Send => "upload",
+                TransferDirection::Receive => "download",
             },
         ),
         KeyValue::new("trellis.side", side),
@@ -30,19 +30,65 @@ pub(crate) fn observation(
     )
 }
 
-pub(crate) fn frame(descriptor: &TransferFrameDescriptor, payload: &[u8], side: &'static str) {
+pub(crate) fn wait(
+    direction: TransferDirection,
+    side: &'static str,
+    phase: &'static str,
+) -> crate::telemetry::lifecycle::Observation {
+    let mut attrs = attributes(direction, side).to_vec();
+    attrs.push(KeyValue::new("trellis.phase", phase));
+    crate::telemetry::lifecycle::Observation::start(
+        crate::telemetry::instruments::DurationFamily::TransferWait,
+        attrs,
+        "aborted",
+    )
+}
+
+/// Serialized NATS header block size: `NATS/1.0\r\n`, one `name: value\r\n`
+/// line per value, and the terminating blank line.
+pub(crate) fn header_bytes(headers: &async_nats::HeaderMap) -> usize {
+    let lines: usize = headers
+        .iter()
+        .map(|(name, values)| {
+            let name: &str = name.as_ref();
+            values
+                .iter()
+                .map(|value| name.len() + 2 + value.as_str().len() + 2)
+                .sum::<usize>()
+        })
+        .sum();
+    10 + lines + 2
+}
+
+/// Count one sent or verified received message at the endpoint that owns it.
+///
+/// DATA charges its payload to `payload.bytes` and its serialized message
+/// (headers plus payload) to `wire.bytes`. Every other Transfer message
+/// (controls, signals, EOF, activation, completion and cancellation) charges
+/// its serialized message to `control.bytes`.
+pub(crate) fn frame(
+    descriptor: &TransferFrameDescriptor,
+    header_bytes: usize,
+    payload: &[u8],
+    side: &'static str,
+) {
     let attrs = attributes(descriptor.direction, side);
+    let serialized = (header_bytes + payload.len()) as u64;
     if descriptor.kind == TransferFrameKind::Data {
         add_counter(CounterFamily::TransferFrames, 1, &attrs);
         add_counter(
-            CounterFamily::TransferWireBytes,
+            CounterFamily::TransferPayloadBytes,
             payload.len() as u64,
             &attrs,
         );
-    } else if (descriptor.kind == TransferFrameKind::Control
+        add_counter(CounterFamily::TransferWireBytes, serialized, &attrs);
+        return;
+    }
+    add_counter(CounterFamily::TransferControlBytes, serialized, &attrs);
+    if (descriptor.kind == TransferFrameKind::Control
         && matches!(
             parse_transfer_control(payload),
-            Ok(TransferControl::Credit { .. } | TransferControl::EndAck { .. })
+            Ok(TransferControl::Credit { .. })
         ))
         || (descriptor.kind == TransferFrameKind::Signal
             && matches!(
@@ -191,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn backend_pipe_preserves_bytes_across_bounded_backpressure_and_eof() {
         let input = (0..=255).cycle().take(16_384).collect::<Vec<u8>>();
-        let (mut writer, mut reader) = pipe(7, TransferDirection::Receive, "provider-tx");
+        let (mut writer, mut reader) = pipe(7, TransferDirection::Receive, "provider");
         let mut output = Vec::new();
         let (written, read) = tokio::join!(
             async {

@@ -7,7 +7,7 @@
  * wraps it with reactive state and the Svelte context.
  *
  * Readiness is not a permission cache. It describes whether the shell has a
- * current, usable `Sessions.Me` result for the connected session. Every
+ * current verified promoted own-authority projection and authenticated profile. Every
  * validation re-enters `checking`, and a stale completion can never restore a
  * previous snapshot. The snapshot is advisory: Trellis authorizes every
  * request, so no route mount or dispatch depends on this state.
@@ -19,11 +19,7 @@ import type { Authority } from "../control-panel.ts";
 
 /** Shell states that must not collapse into each other. */
 export type AuthorityState =
-  | "checking"
-  | "ready"
-  | "forbidden"
-  | "auth-required"
-  | "error";
+  "checking" | "ready" | "forbidden" | "auth-required" | "error";
 
 /** Safe failure detail retained for the retry/error surface. */
 export type AuthorityFailure = {
@@ -48,30 +44,28 @@ export type AuthorityIdentity = {
   readonly connectionId: string | null;
 };
 
-/** Profile shape returned by `Sessions.Me`, in its generated form. */
-export type AuthorityProfile = apis.auth.SessionsMeOutput["user"] & {};
+/** Authenticated account profile in its generated form. */
+export type AuthorityProfile = apis.auth.UsersResolveOutput["user"];
 
 /** One completed authority validation. */
 export type AuthorityLoadResult =
   | {
-    readonly ok: true;
-    readonly authority: Authority;
-    readonly profile: AuthorityProfile | null;
-    readonly identity: AuthorityIdentity;
-  }
+      readonly ok: true;
+      readonly authority: Authority;
+      readonly profile: AuthorityProfile | null;
+      readonly identity: AuthorityIdentity;
+    }
   | {
-    readonly ok: false;
-    readonly error: unknown;
-    readonly identity: AuthorityIdentity;
-  };
+      readonly ok: false;
+      readonly error: unknown;
+      readonly identity: AuthorityIdentity;
+    };
 
-/** Loads `Sessions.Me` for the current connection. */
+/** Loads the verified authority and authenticated account profile. */
 export type AuthorityLoader = () => Promise<AuthorityLoadResult>;
 
 /** Classifies a failed validation into a shell state. */
-export type AuthorityFailureClassifier = (
-  error: unknown,
-) => {
+export type AuthorityFailureClassifier = (error: unknown) => {
   /** Shell state to enter, excluding a usable `ready`. */
   state: Extract<AuthorityState, "auth-required" | "forbidden" | "error">;
   failure: AuthorityFailure;
@@ -101,8 +95,10 @@ function sameIdentity(
   left: AuthorityIdentity,
   right: AuthorityIdentity,
 ): boolean {
-  return left.principalId === right.principalId &&
-    left.loginSessionId === right.loginSessionId;
+  return (
+    left.principalId === right.principalId &&
+    left.loginSessionId === right.loginSessionId
+  );
 }
 
 /** True when a snapshot carries authority the shell may act on. */
@@ -132,10 +128,7 @@ export class ConsoleAuthorityCore {
   #operations = 0;
   #disposed = false;
 
-  constructor(
-    loader: AuthorityLoader,
-    classify: AuthorityFailureClassifier,
-  ) {
+  constructor(loader: AuthorityLoader, classify: AuthorityFailureClassifier) {
     this.#loader = loader;
     this.#classify = classify;
   }

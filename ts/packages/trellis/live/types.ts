@@ -8,11 +8,7 @@ export class LiveStreamError extends Error {
   readonly code: LiveErrorCodeWire;
   readonly traceId: string | undefined;
 
-  constructor(
-    code: LiveErrorCodeWire,
-    message: string,
-    traceId?: string,
-  ) {
+  constructor(code: LiveErrorCodeWire, message: string, traceId?: string) {
     super(message);
     this.name = "LiveStreamError";
     this.code = code;

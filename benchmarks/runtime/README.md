@@ -4,11 +4,15 @@ Run from the repository root on Linux. This uses the ordinary production server,
 real NATS/JetStream, generated clients, and the existing testkit for isolated
 provisioning. Execution does **not** build executables.
 
+See [Streaming Transfer performance](TRANSFER_PERFORMANCE.md) for measured
+before/after results, Live latency tradeoffs, and the separately proposed window
+negotiation follow-up.
+
 ```sh
-cargo build --release -p trellis-server
+cargo build --release -p trellis-server -p trellis-cli
 cargo xtask install
-deno task -c ts/deno.json bench:runtime --output=/tmp/opencode/trellis-perf-baseline
-deno task -c ts/deno.json bench:runtime:report /tmp/opencode/trellis-perf-baseline
+npm run bench:runtime -- --output=/tmp/opencode/trellis-perf-baseline
+npm run bench:runtime:report -- /tmp/opencode/trellis-perf-baseline
 ```
 
 ## Complete repeated suite
@@ -21,12 +25,13 @@ and type-checks the requested native IDL contract variants during preparation.
 cargo xtask install
 cargo build --release -p trellis-server -p trellis-cli
 cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target
-deno task -c ts/deno.json bench:runtime:browser:build
-deno task -c ts/deno.json bench:runtime:suite --server=target/release/trellis-server --cli=target/release/trellis --rust-bin=target/release/trellis-performance --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/trellis-perf-suite
+npm ci
+npm run bench:runtime:browser:build
+npm run bench:runtime:suite -- --server=target/release/trellis-server --cli=target/release/trellis --rust-bin=target/release/trellis-performance --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/trellis-perf-suite
 ```
 
-Requires Linux, Python 3, `nats-server`, and installed `agent-browser` with
-Chromium. No browser download or executable compilation occurs during measured
+Requires Node 24, npm 11, Linux, Python 3, `nats-server`, and Playwright Chromium
+installed beforehand (`npm exec -- playwright install chromium`). No browser download or executable compilation occurs during measured
 workloads. Every suite run gets an isolated runtime; measured cases run
 **sequentially**, with deterministic order rotation across independent repeats.
 
@@ -44,30 +49,41 @@ same host and configuration, add `--compare=/path/to/previous-suite`. To
 regenerate or compare existing reports without rerunning workloads:
 
 ```sh
-deno task -c ts/deno.json bench:runtime:suite --output=/tmp/opencode/trellis-perf-suite --report-only --compare=/path/to/previous-suite
+npm run bench:runtime:suite -- --output=/tmp/opencode/trellis-perf-suite --report-only --compare=/path/to/previous-suite
 ```
 
 ### Focused lanes
 
 ```sh
-deno task -c ts/deno.json bench:runtime --lane=rust --rust-bin=target/release/trellis-performance --output=/tmp/opencode/native-perf
-deno task -c ts/deno.json bench:runtime --lane=browser --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/browser-perf
-deno task -c ts/deno.json bench:runtime --lane=lifecycle --output=/tmp/opencode/lifecycle-perf
-deno task -c ts/deno.json bench:runtime --providers=4 --output=/tmp/opencode/provider-perf
+npm run bench:runtime -- --lane=rust --rust-bin=target/release/trellis-performance --output=/tmp/opencode/native-perf
+npm run bench:runtime -- --lane=browser --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/browser-perf
+npm run bench:runtime -- --lane=lifecycle --output=/tmp/opencode/lifecycle-perf
+npm run bench:runtime -- --providers=4 --output=/tmp/opencode/provider-perf
 ```
 
 - Rust hosts generated Echo and transfer handlers and compares them with
-  Axum/reqwest. First-process readiness measures native session **resume**;
-  password login is prepared outside that timing. Both Rust upload paths read
+  Axum/reqwest. First-process readiness includes real Device Code authorization
+  and the first generated RPC. Both Rust upload paths read
   back persisted bytes and return their hash before completion.
+  A second fresh process then resumes the saved Rust OAuth credential and measures
+  `rust/first-process-resume-first-rpc` separately. This is the startup boundary
+  comparable to the pre-OAuth saved-session baseline; first-time Device Code login
+  is not relabeled as a resume. Authenticated provider responses remain enabled.
 - Chromium loads the actual generated SDK, logs in through the real portal
   protocol, reconnects a saved session over WebSocket, and proves the first Echo
   result. Document TTFB, navigation-to-first-authorized-response, and
   transferred bytes are reported. This is SDK/page delivery, **not Console
   rendering**. Document, bundle, and WASM delivery deliberately use `no-store`.
+  Browser latency defaults to one fresh-login/resume pair every 20 seconds
+  (`--arrival-rate=0.05`); spacing is outside measured durations and is recorded
+  in metadata. This avoids confusing single-user latency with authentication
+  overload. Use `--arrival-rate=0` for an unpaced burst; production OAuth limits
+  remain enabled and throttled samples fail. Different offered rates are not
+  matched comparisons.
 - Lifecycle uses a supported 120-second context window; metadata records the
   lifetime, lead, jitter, minimum-lifetime, and clock-skew settings. Real 10 Hz
-  RPC traffic crosses two **persisted context issuances for the exact session**.
+  RPC traffic crosses two **verified authority promotions**, observed through
+  the caller's public authority subscription rather than another role's database.
   Observation time is not issuance latency. TCP endpoint outages exercise real
   disconnection/reconnect followed by a verified RPC, without stopping the
   broker or bypassing authorization/readiness. The outage affects providers as
@@ -96,7 +112,7 @@ noise-sensitive percentage threshold replaces functional failure checks.
 For a smoke run:
 
 ```sh
-deno task -c ts/deno.json bench:runtime --samples=2 --calls=20 --sizes=65536,1048576 --sessions=1,3 --idle-seconds=1 --output=/tmp/opencode/trellis-perf-smoke
+npm run bench:runtime -- --samples=2 --calls=20 --sizes=65536,1048576 --sessions=1,3 --idle-seconds=1 --output=/tmp/opencode/trellis-perf-smoke
 ```
 
 For fixed-arrival-rate RPC load, add
@@ -108,6 +124,54 @@ reached. Drops fail the run. Do not compare different arrival-rate
 configurations as if they measure identical workloads.
 
 ## Workloads
+
+### Large-object streaming Transfer measurements
+
+`node --experimental-transform-types tools/perf/transfer.ts
+--output=benchmarks/runtime/results/baseline --samples=3 --warmups=1` reuses this
+runner's focused Transfer lane, with 8 MiB and 128 MiB objects. Override `--sizes`
+for larger objects (up to the existing 512 MiB Operation upload limit). Fixture production, HTTP bodies, persisted
+read-back and hashing stream with bounded buffers, rather than retaining objects.
+The Rust lane also streams uploads, downloads and HTTP bodies, and measures
+isolated backend reads/writes. Native per-transfer CPU windows are distinct from
+the mixed-process startup window.
+
+Storage-only measurements run in a finite, separately admitted worker after
+provider readiness. Repeated large-object rounds do not consume the startup
+deadline; a failed storage worker fails the run and leaves its diagnostic logs.
+
+The focused TypeScript Transfer lane also records 30 idle Live first-frame
+probes at a 50 ms offered interval, then runs one upload and one download of the
+largest configured object simultaneously. Both payloads and the persisted
+Operation result are verified. Live probes repeat only while DATA is active
+(after download delivery and upload source supply have started, before download
+EOF and upload Transfer commit). Their durations include client scheduler delay;
+the mixed CPU window covers both complete file workflows plus the probes. Short
+objects may finish before 30 loaded probes fit; counts remain visible and the
+report does not invent tail percentiles. This is Live **opening/first-frame**
+responsiveness, not steady-feed update latency, and is not an HTTP-equivalent or
+native Rust Live measurement. It adds no speed-based pass/fail threshold.
+
+Raw NATS additionally compares the same 64 KiB payloads with 16 versus 64
+outstanding frames under the same 4 MiB byte cap. This separates frame-count
+pressure from the larger-frame comparison. The 64-frame case is an unsigned
+diagnostic control, **not** a change to Trellis v1 limits or a proposed public
+tuning knob. Samples retain both requested window limits.
+
+Reports distinguish source exhaustion (not delivery), authenticated Transfer
+commit, and full read-back-verified Operation completion. Production wait metrics
+are retained in `metrics-client.json` and `metrics-provider.json` (Rust also emits
+`metrics-resume.json`); they separate credit waits from backend message waits.
+All values include warmups and setup unless the file explicitly scopes them.
+Periodic resource sampling reports observed memory peaks, not allocator counts.
+
+Use `--diagnostics` for a **separate diagnostic run**. Its passive privileged
+broker observer records actual DATA size distributions, Object Store publish-to-
+ACK timings, fetch-to-first-response timings and consumer INFO counts in
+`transfer-diagnostics.json`. Only bounded aggregates are retained, never bodies
+or credentials. An observer adds a copy of broker traffic: compare only runs
+with matching diagnostic settings, and use unobserved runs for throughput claims.
+Broker ACK timing is not fsync latency; a fetch's first response can be a status.
 
 - Fresh password login through first authorized RPC, first-process SDK
   initialization, session resume, and logout.
@@ -133,8 +197,8 @@ skips.
 
 `samples.json` retains individual timings and errors, plus exact workload
 resource windows. `resources.jsonl` retains the process timeline.
-`metadata.json` records revision, server binary hash, effective Argon2
-parameters, host/CPU/cgroup limits, load settings, topology, and telemetry
+`metadata.json` records revision, server binary hash, Node/V8 versions,
+host/CPU/cgroup limits, load settings, topology, and telemetry
 configuration. `source.diff` captures tracked edits; untracked benchmark source
 must be retained with the run until committed. `report.md` and `bencher.json`
 are generated by `bench:runtime:report`.
@@ -142,24 +206,63 @@ are generated by `bench:runtime:report`.
 Compare matched runs after changing the checkout and rebuilding the server:
 
 ```sh
-deno task -c ts/deno.json bench:runtime:report /tmp/opencode/trellis-perf-candidate /tmp/opencode/trellis-perf-baseline
+npm run bench:runtime:report -- /tmp/opencode/trellis-perf-candidate /tmp/opencode/trellis-perf-baseline
 ```
 
-Comparison rejects differing host, runtime, hashing parameters, resource limits,
+Comparison rejects differing host, JavaScript runtime, resource limits,
 or workload configuration. No automatic regression threshold is enabled. Run
 several independent repetitions on an otherwise idle host before treating a
 difference as a regression.
 
 ## Interpretation and current limits
 
-HTTP is a **plaintext baseline: no TLS, no authentication, and no
+By default HTTP is a **plaintext baseline: no TLS, no authentication, and no
 authorization**. It is a lower bound, not a security-equivalent stack. Each
-comparison uses the same language on both ends (Deno or Rust), loopback,
-identity encoding, and no caching. HTTP file storage and Trellis JetStream
-storage have different durability semantics. Transfer timings include complete
-integrity verification; first payload byte and setup are reported separately for
+comparison uses the same language on both ends (Node or Rust), loopback,
+identity encoding, and no caching. Transfer timings include complete integrity
+verification; first payload byte and setup are reported separately for
 downloads. Image-sized objects use binary payloads; image decoding and rendering
 are not measured.
+
+### HTTP transfer modes and matched security
+
+Both HTTP servers (Node `node:http`/`node:https` and Rust axum/hyper) serve
+three transfer modes, so each Trellis workload has an HTTP counterpart with the
+same outcome:
+
+| Mode     | Upload                                           | Download                       |
+| -------- | ------------------------------------------------ | ------------------------------ |
+| `raw`    | local file, closed but not fsynced, then re-read | local file                     |
+| `stream` | hashed inline and discarded                      | generated inline, no storage   |
+| `store`  | hashed inline into the provider's Object Store   | read from the provider's store |
+
+Store mode connects with the provider's own identity and uses the same `files`
+store through the ordinary service store API; it mounts no handlers. Uploads
+report two boundaries: **verified** (receiver checked size and digest) and
+**durable** (required write completed). Trellis `upload-staged` completes at
+the staged commit; `upload-persisted` additionally copies into the service
+store and re-reads it.
+
+`--http-chunk=<bytes>` (default 65536) sets one body chunk policy for both
+languages' clients and servers. `--http-tls` generates an ephemeral CA, server
+and client certificates, and an Ed25519 request-signing key before measuring.
+HTTP then requires mutual TLS and verifies a per-request signature over method,
+target, declared length, timestamp and single-use nonce. Integrity comes from
+TLS plus an end-to-end digest comparison. Trellis revocation, authority renewal
+and brokered per-frame proofs have no HTTP equivalent here.
+
+Trellis `stream;` lanes measure direct delivery: `upload-stream` hashes and
+discards in the handler, `upload-stream-store` writes the bytes once into the
+service store, and `download-stream` serves generated bytes with declared
+metadata. Both lanes probe responsiveness idle and under one concurrent
+upload and download of the largest object: Live first frame and an Echo RPC,
+30 each at a 50 ms offered interval. The Rust lane's loaded probes are its
+first loaded-Live measurement.
+
+The Rust lane also runs the raw Core NATS lower bound, using the testkit's
+runtime credentials, so both languages report stream-to-stream, stream-to-store
+and complete-workflow rows. Reports add server CPU core-seconds per GiB and the
+protocol byte overhead from production Transfer counters.
 
 CPU counters have kernel-tick resolution: short windows can report zero despite
 real work. PSS/RSS describe whole processes, not bytes allocated per session.

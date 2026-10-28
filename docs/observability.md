@@ -14,13 +14,13 @@ endpoint environment variables are explicitly configured with non-empty
 values. When no endpoint variable is set, the server does not create an OTLP
 exporter and does not attempt to connect anywhere.
 
-| Environment | Traces | Metrics |
-| --- | --- | --- |
-| No endpoint variable | off | off |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | on | on |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` only | on | off |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` only | off | on |
-| `trellis-server check ...` | off | off |
+| Environment                                | Traces | Metrics |
+| ------------------------------------------ | ------ | ------- |
+| No endpoint variable                       | off    | off     |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`              | on     | on      |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` only  | on     | off     |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` only | off    | on      |
+| `trellis-server check ...`                 | off    | off     |
 
 The supported transport is OTLP over HTTP/protobuf. The exporter honors the
 standard OpenTelemetry environment variables, including:
@@ -47,12 +47,12 @@ All duration histograms use seconds with explicit sub-second boundaries
 does not emit a separate average-time gauge; dashboards derive averages and
 percentiles from the histogram.
 
-| Metric | Kind | Dimensions |
-| --- | --- | --- |
-| `trellis.auth.flow.duration` | Histogram, s | `trellis.surface=auth`, `trellis.operation`, `trellis.phase`, `trellis.outcome` |
-| `trellis.auth.callout.duration` | Histogram, s | `trellis.surface=auth`, `trellis.operation`, `trellis.phase`, `trellis.outcome` |
-| `trellis.contract.analysis.duration` | Histogram, s | `trellis.surface=contract`, `trellis.operation`, `trellis.phase`, `trellis.outcome` |
-| `trellis.contract.cache.requests` | Counter, `{request}` | `trellis.cache.kind=evidence\|compatibility`, `trellis.cache.result=hit\|miss\|wait` |
+| Metric                               | Kind                 | Dimensions                                                                           |
+| ------------------------------------ | -------------------- | ------------------------------------------------------------------------------------ |
+| `trellis.auth.flow.duration`         | Histogram, s         | `trellis.surface=auth`, `trellis.operation`, `trellis.phase`, `trellis.outcome`      |
+| `trellis.auth.callout.duration`      | Histogram, s         | `trellis.surface=auth`, `trellis.operation`, `trellis.phase`, `trellis.outcome`      |
+| `trellis.contract.analysis.duration` | Histogram, s         | `trellis.surface=contract`, `trellis.operation`, `trellis.phase`, `trellis.outcome`  |
+| `trellis.contract.cache.requests`    | Counter, `{request}` | `trellis.cache.kind=evidence\|compatibility`, `trellis.cache.result=hit\|miss\|wait` |
 
 Operations and phases are fixed low-cardinality values: authorization context
 refresh, bootstrap issuance, current and resolved API bindings, NATS auth
@@ -65,6 +65,6 @@ instrumentation.
 ## Manual performance audit
 
 `tools/perf/connect.ts` is a manual same-machine developer audit of console
-connect latency. It is not part of CI, the `Check` workflow, or release
+connect latency. It is not part of CI, the `Pipeline` workflow, or release
 validation, and it never fails a build because of timing; performance timing is
 not a CI gate. See `tools/perf/README.md`.

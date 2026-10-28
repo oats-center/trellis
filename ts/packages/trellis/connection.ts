@@ -2,17 +2,17 @@ import type { NatsConnection } from "@nats-io/nats-core";
 import { logger as noopLogger, type LoggerLike } from "./globals.ts";
 import { LiveSessionManager } from "./live/manager.ts";
 import { trackConnection } from "./telemetry/lifecycle.ts";
+import type {
+  OwnAuthoritySnapshot,
+  OwnAuthorityView,
+} from "./own_authority.ts";
 
 /** Identifies the Trellis runtime that owns a connection. */
 export type TrellisConnectionKind = "client" | "device" | "service";
 
 /** Framework-neutral lifecycle phase for an observed Trellis transport. */
 export type TrellisConnectionPhase =
-  | "connected"
-  | "disconnected"
-  | "reconnecting"
-  | "error"
-  | "closed";
+  "connected" | "disconnected" | "reconnecting" | "error" | "closed";
 
 /** Diagnostic metadata copied from the underlying transport without exposing raw handles. */
 export type TrellisConnectionTransportMetadata = {
@@ -104,14 +104,12 @@ const attachTelemetry = Symbol("attachTelemetry");
 const transitionTelemetry = Symbol("transitionTelemetry");
 const terminalTelemetry = Symbol("terminalTelemetry");
 const disposeTelemetry = Symbol("disposeTelemetry");
-const installTransportBase = Symbol("installTransportBase");
 
 type ConnectionTelemetryHandle = ReturnType<typeof trackConnection>;
 
-function telemetryKind(kind: TrellisConnectionKind):
-  | "user"
-  | "service"
-  | "device" {
+function telemetryKind(
+  kind: TrellisConnectionKind,
+): "user" | "service" | "device" {
   return kind === "client" ? "user" : kind;
 }
 
@@ -150,6 +148,9 @@ export class TrellisConnection {
   #status: TrellisConnectionStatus;
   #listeners = new Set<TrellisConnectionStatusListener>();
   #availability: TrellisAvailability;
+  #authorityAvailability?: () => TrellisAvailability;
+  #ownAuthority?: OwnAuthorityView;
+  #unsubscribeAuthority?: () => void;
   #availabilityListeners = new Set<
     (availability: TrellisAvailability) => void
   >();
@@ -161,16 +162,16 @@ export class TrellisConnection {
   #stopped = false;
   #telemetry?: ReturnType<typeof trackConnection>;
   #telemetryUsable = false;
-  #transportBase: TrellisConnectionTransportMetadata = {};
   readonly live = new LiveSessionManager();
 
   /** Creates a Trellis connection lifecycle handle. */
   constructor(options: TrellisConnectionOptions) {
-    this.#status = options.initialStatus ??
-      createStatus(options.kind, "connected");
+    this.#status =
+      options.initialStatus ?? createStatus(options.kind, "connected");
     this.#closeTransport = options.close ?? (async () => {});
     this.#stopObserving = options.stopObserving ?? (async () => {});
-    this.#log = options.log === false ? noopLogger : options.log ?? noopLogger;
+    this.#log =
+      options.log === false ? noopLogger : (options.log ?? noopLogger);
     this.#availability = options.availability
       ? immutableAvailability(options.availability)
       : EMPTY_AVAILABILITY;
@@ -183,16 +184,51 @@ export class TrellisConnection {
 
   /** Returns the current immutable installed availability snapshot. */
   availability(): TrellisAvailability {
-    return this.#availability;
+    return this.#authorityAvailability?.() ?? this.#availability;
+  }
+
+  /** Check advisory action membership; undefined means live authority is unavailable. @internal */
+  allowsAction(
+    apiId: string,
+    kind: string,
+    name: string,
+    direction: string,
+  ): boolean | undefined {
+    return this.#ownAuthority?.current?.actions.some(
+      (allowed) =>
+        allowed.apiId === apiId &&
+        allowed.action.kind === kind &&
+        allowed.action.name === name &&
+        allowed.action.direction === direction,
+    );
+  }
+
+  /** Bind advisory optional availability to the same live verified owner used for signing. @internal */
+  bindAuthorityAvailability(
+    view: OwnAuthorityView,
+    project: (
+      snapshot: OwnAuthoritySnapshot | undefined,
+      installed: TrellisAvailability,
+    ) => TrellisAvailability,
+  ): void {
+    this.#unsubscribeAuthority?.();
+    this.#ownAuthority = view;
+    this.#authorityAvailability = () =>
+      immutableAvailability(project(view.current, this.#availability));
+    this.#unsubscribeAuthority = view.subscribe(() => {
+      const availability = this.availability();
+      for (const listener of this.#availabilityListeners)
+        listener(availability);
+    });
   }
 
   /** Yields the current availability and each subsequent installed replacement. */
   watchAvailability(): AsyncIterable<TrellisAvailability> {
     const availabilityListeners = this.#availabilityListeners;
-    const initialAvailability = this.#availability;
+    const connection = this;
     return {
       async *[Symbol.asyncIterator]() {
-        const pending = [initialAvailability];
+        const pending = [connection.availability()];
         let wake: (() => void) | undefined;
         const listener = (availability: TrellisAvailability) => {
           pending.push(availability);
@@ -221,17 +257,13 @@ export class TrellisConnection {
     if (availability === this.#availability) return;
     this.#availability = immutableAvailability(availability);
     for (const listener of this.#availabilityListeners) {
-      listener(this.#availability);
+      listener(this.availability());
     }
   }
 
-  [installTransportBase](base: TrellisConnectionTransportMetadata): void {
-    this.#transportBase = base;
-  }
-
   [attachTelemetry](telemetry?: ConnectionTelemetryHandle): void {
-    this.#telemetry = telemetry ??
-      trackConnection(telemetryKind(this.#status.kind));
+    this.#telemetry =
+      telemetry ?? trackConnection(telemetryKind(this.#status.kind));
   }
 
   [transitionTelemetry](state: "usable" | "suspended", reason: string): void {
@@ -272,11 +304,12 @@ export class TrellisConnection {
     }
 
     this.#stopped = true;
-    this.#observationStopped = Promise.resolve().then(() =>
-      this.#stopObserving()
-    ).catch((error) => {
-      this.#observationFailure = error;
-    });
+    this.#unsubscribeAuthority?.();
+    this.#observationStopped = Promise.resolve()
+      .then(() => this.#stopObserving())
+      .catch((error) => {
+        this.#observationFailure = error;
+      });
   }
 
   /** Closes the underlying transport and publishes a terminal closed status. */
@@ -302,7 +335,9 @@ export class TrellisConnection {
   /** Publishes a new status to all active listeners. */
   setStatus(status: TrellisConnectionStatus): void {
     if (
-      this.#stopped && status.phase !== "closed" && status.phase !== "error"
+      this.#stopped &&
+      status.phase !== "closed" &&
+      status.phase !== "error"
     ) {
       return;
     }
@@ -367,9 +402,10 @@ export function observeTrellisConnection(
 ): TrellisConnection {
   let stopped = false;
   const statusStream = options.transport.status;
-  const statusIterator = typeof statusStream === "function"
-    ? statusStream.call(options.transport)[Symbol.asyncIterator]()
-    : undefined;
+  const statusIterator =
+    typeof statusStream === "function"
+      ? statusStream.call(options.transport)[Symbol.asyncIterator]()
+      : undefined;
   let statusTask: Promise<void> | undefined;
   let closedFailure: unknown;
   let closedTask = Promise.resolve();
@@ -395,7 +431,6 @@ export function observeTrellisConnection(
     options.transport,
     options.transportName,
   );
-  connection[installTransportBase](baseTransport);
 
   if (statusIterator) {
     statusTask = (async () => {
@@ -425,10 +460,12 @@ export function observeTrellisConnection(
       } catch (error) {
         if (!stopped) {
           logTransportStatusWatcherFailure(options, error);
-          connection.setStatus(createStatus(options.kind, "error", {
-            ...baseTransport,
-            error,
-          }));
+          connection.setStatus(
+            createStatus(options.kind, "error", {
+              ...baseTransport,
+              error,
+            }),
+          );
         }
       }
     })();
@@ -441,10 +478,12 @@ export function observeTrellisConnection(
       if (closedError instanceof Error) {
         logTransportClosed(options, closedError);
         connection[terminalTelemetry]();
-        connection.setStatus(createStatus(options.kind, "error", {
-          ...baseTransport,
-          error: closedError,
-        }));
+        connection.setStatus(
+          createStatus(options.kind, "error", {
+            ...baseTransport,
+            error: closedError,
+          }),
+        );
         return;
       }
       logTransportClosed(options);
@@ -455,10 +494,12 @@ export function observeTrellisConnection(
       if (stopped) return;
       logTransportClosed(options, error);
       connection[terminalTelemetry]();
-      connection.setStatus(createStatus(options.kind, "error", {
-        ...baseTransport,
-        error,
-      }));
+      connection.setStatus(
+        createStatus(options.kind, "error", {
+          ...baseTransport,
+          error,
+        }),
+      );
     },
   );
 
@@ -477,8 +518,9 @@ export function sameTransportServers(
   b: readonly string[] | undefined,
 ): boolean {
   if (a === undefined || b === undefined) return a === b;
-  return a.length === b.length &&
-    a.every((server, index) => server === b[index]);
+  return (
+    a.length === b.length && a.every((server, index) => server === b[index])
+  );
 }
 
 export function observeNatsTrellisConnection(
@@ -548,7 +590,10 @@ function normalizeTransportStatus(status: unknown): Record<string, unknown> {
   };
 }
 
-function getNatsLifecycleLog(kind: TrellisConnectionKind, event: unknown): {
+function getNatsLifecycleLog(
+  kind: TrellisConnectionKind,
+  event: unknown,
+): {
   level: "info" | "warn" | "error";
   message: string;
 } | null {

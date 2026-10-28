@@ -3,8 +3,7 @@ import Type, { type Static } from "typebox";
 import { TrellisError } from "./TrellisError.ts";
 
 export type ValidationErrorInput =
-  | TLocalizedValidationError
-  | { path: string; message: string };
+  TLocalizedValidationError | { path: string; message: string };
 
 type NormalizedError = { schemaPath: string; message: string };
 

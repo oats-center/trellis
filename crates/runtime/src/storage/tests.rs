@@ -24,7 +24,6 @@ fn subsystem_config(path: PathBuf) -> crate::SubsystemConfig {
         transport_retention_hours: None,
         transport_max_bytes: None,
         retention_days: None,
-        ttl_ms: None,
     }
 }
 
@@ -43,7 +42,6 @@ fn invalid_postgres_subsystem_config() -> crate::SubsystemConfig {
         transport_retention_hours: None,
         transport_max_bytes: None,
         retention_days: None,
-        ttl_ms: None,
     }
 }
 
@@ -56,8 +54,10 @@ fn runtime_config() -> RuntimeConfig {
         live_provider_seed_files: None,
         paths: None,
         http: None,
+        tls: None,
         nats: Some(crate::NatsConfig {
             servers: Some("nats://127.0.0.1:4222".to_owned()),
+            ca_certificate: None,
             runtime: Some(crate::NatsRuntimeConfig {
                 auth_creds_path: Some(PathBuf::from("auth.creds")),
                 trellis_creds_path: Some(PathBuf::from("trellis.creds")),
@@ -78,22 +78,19 @@ fn runtime_config() -> RuntimeConfig {
             renew_ms: None,
         }),
         auth: Some(crate::AuthConfig {
+            avatar: None,
+            administration: Default::default(),
+            instance_id: None,
+            oauth: None,
+            oauth_storage_key_file: None,
             local_identity: None,
             authorization: Some(crate::AuthorizationConfig {
                 issuer_signing_seed_file: PathBuf::from("authorization-issuer.seed"),
                 context_lifetime_seconds: 300,
-                refresh_lead_seconds: 60,
-                refresh_jitter_seconds: 15,
-                minimum_context_lifetime_seconds: 76,
-                maximum_bootstrap_jwt_lifetime_seconds: 3_600,
                 allowed_clock_skew_seconds: 30,
-                maximum_context_bytes: 16_384,
-                maximum_permissions: 4_096,
-                context_bucket: "trellis_authorization_contexts".to_owned(),
-                registry_replicas: 1,
+                oauth_admission_lifetime_seconds: 300,
             }),
         }),
-        oauth: None,
         platform: None,
         jobs: None,
         health: None,
@@ -268,6 +265,7 @@ fn migrated_events_store_orders_events_and_dead_letters_by_timestamp(
                 original: Some(OriginalEvent {
                     stream: "trellis".to_owned(),
                     sequence,
+                    published_at: occurred_at.to_owned(),
                     event_id: Some(format!("event-{sequence}")),
                     subject: "events.v1.Test.Created".to_owned(),
                     payload_bytes: Vec::new(),

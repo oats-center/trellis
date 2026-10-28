@@ -55,7 +55,68 @@ api fieldops@v1 {
   event Evidence.Uploaded { payload EvidenceRecord; }
   event Sites.Refreshed { payload SitesRefreshedEvent; }
   live Audit.Feed { input ActivityLiveFeedRequest; event ActivityLiveFeedEvent; }
-  capabilities { public { allows { rpc Assignments.List; rpc Sites.List; rpc Sites.Get; rpc Evidence.List; rpc Evidence.Download; rpc Evidence.Delete; rpc Reports.List; operation Sites.Refresh; operation Reports.Generate; operation Evidence.Upload; publish event Audit.Recorded; publish event Reports.Published; publish event Evidence.Uploaded; publish event Sites.Refreshed; subscribe event Audit.Recorded; subscribe event Reports.Published; subscribe event Evidence.Uploaded; subscribe event Sites.Refreshed; live Audit.Feed; } } }
+  capabilities {
+    capability assignments.read {
+      title "Read inspection assignments";
+      description "List assigned inspections and their site and checklist details.";
+      grants "Reveals assigned inspection work.";
+      allows { rpc Assignments.List; }
+    }
+    capability sites.read {
+      title "Read site summaries";
+      description "List sites and inspect an individual site's current summary.";
+      grants "Reveals site identity and inspection status.";
+      allows { rpc Sites.List; rpc Sites.Get; }
+    }
+    capability evidence.read {
+      title "Read inspection evidence";
+      description "List evidence and download its original files.";
+      grants "Reveals evidence metadata and file contents.";
+      allows { rpc Evidence.List; rpc Evidence.Download; }
+    }
+    capability evidence.delete {
+      title "Delete inspection evidence";
+      description "Remove a stored evidence file.";
+      grants "Evidence files can be permanently removed.";
+      allows { rpc Evidence.Delete; }
+    }
+    capability reports.read {
+      title "Read inspection reports";
+      description "List published inspection reports.";
+      grants "Reveals report findings and comments.";
+      allows { rpc Reports.List; }
+    }
+    capability sites.refresh {
+      title "Refresh site summaries";
+      description "Start and follow a site-summary refresh.";
+      grants "Recomputes the site's published inspection status.";
+      allows { operation Sites.Refresh; }
+    }
+    capability reports.generate {
+      title "Generate inspection reports";
+      description "Start and follow report generation for an inspection.";
+      grants "Creates a report containing inspection findings and comments.";
+      allows { operation Reports.Generate; }
+    }
+    capability evidence.upload {
+      title "Upload inspection evidence";
+      description "Upload a file and follow its evidence-record creation.";
+      grants "Stores new evidence files and metadata.";
+      allows { operation Evidence.Upload; }
+    }
+    capability changes.observe {
+      title "Observe field-work changes";
+      description "Receive audit, report, evidence, and site-refresh events.";
+      grants "Continuously reveals changes to inspection work.";
+      allows { subscribe event Audit.Recorded; subscribe event Reports.Published; subscribe event Evidence.Uploaded; subscribe event Sites.Refreshed; }
+    }
+    capability audit.observe {
+      title "Follow field-work activity";
+      description "Follow the live combined field-work activity feed.";
+      grants "Continuously reveals audit activity and related records.";
+      allows { live Audit.Feed; }
+    }
+  }
 }
 
 service Service {

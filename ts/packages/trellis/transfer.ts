@@ -6,19 +6,21 @@ import {
 } from "@oatscenter/result";
 import Type, { type Static } from "typebox";
 import { Value } from "typebox/value";
-import { sha256 } from "@noble/hashes/sha256";
 import { type Msg, NoRespondersError } from "@nats-io/nats-core";
 import { base64urlEncode } from "./auth/utils.ts";
 import type { TrellisAuth } from "./session.ts";
 import { TransferError } from "./errors/TransferError.ts";
 import { TransportError } from "./errors/TransportError.ts";
 import type { TrellisTransportProvider } from "./transport/generations.ts";
+import { processReceiveBudget } from "./data_plane/budget.ts";
 import { SenderWindow } from "./data_plane/flow.ts";
 import {
+  recordTransferMessage,
   TransferCredit,
   TransferSession,
   transferWait,
 } from "./transfer/session.ts";
+import { createSha256 } from "./sha256.ts";
 import { TransferIngress } from "./service/runtime/transfer/queue.ts";
 import {
   transferConstants,
@@ -33,6 +35,7 @@ import {
   recordCatalogDuration,
 } from "./telemetry/mod.ts";
 import { recordCatalogUpDown } from "./telemetry/metrics.ts";
+import { frames, type TransferBody } from "./transfer/frames.ts";
 
 /** Failures a transfer handle operation can report. */
 export type TransferOperationError = TransferError | TransportError;
@@ -48,135 +51,33 @@ export const FileInfoSchema = Type.Object({
 });
 /** Logical metadata returned after storage completion. */
 export type FileInfo = Static<typeof FileInfoSchema>;
-const IdentitySchema = Type.Object({
-  connectionId: Type.String({ minLength: 1 }),
-  sessionKey: Type.String({ minLength: 1 }),
-});
-const GrantProperties = {
-  format: Type.Literal("trellis.transfer.v2"),
-  type: Type.Literal("TransferGrant"),
-  service: Type.String({ minLength: 1 }),
-  transferId: Type.String({ minLength: 1 }),
-  expiresAt: Type.String({ minLength: 1 }),
-  provider: IdentitySchema,
-  consumer: IdentitySchema,
-  dataSubject: Type.String({ minLength: 1 }),
-  controlSubject: Type.String({ minLength: 1 }),
-  signalSubject: Type.String({ minLength: 1 }),
-  maxFrameBytes: Type.Integer({ minimum: 1 }),
-  windowFrames: Type.Integer({ minimum: 1 }),
-  windowBytes: Type.Integer({ minimum: 1 }),
-};
-/** A runtime-issued upload session. Applications should not construct grants. */
-export const SendTransferGrantSchema = Type.Object({
-  ...GrantProperties,
-  direction: Type.Literal("send"),
-  maxBytes: Type.Optional(Type.Integer({ minimum: 1 })),
-  contentType: Type.Optional(Type.String({ minLength: 1 })),
-  metadata: Type.Optional(
-    Type.Record(Type.String({ minLength: 1 }), Type.String()),
-  ),
-});
-/** A runtime-issued download session carrying independently verified metadata. */
-export const ReceiveTransferGrantSchema = Type.Object({
-  ...GrantProperties,
-  direction: Type.Literal("receive"),
-  info: Type.Object({
-    ...FileInfoSchema.properties,
-    digest: Type.String({ minLength: 1 }),
-  }),
-});
-/** Schema for either one-way streaming direction. */
-export const TransferGrantSchema = Type.Union([
-  SendTransferGrantSchema,
-  ReceiveTransferGrantSchema,
-]);
 /** Prepared caller-to-provider stream. */
-export type SendTransferGrant = Static<typeof SendTransferGrantSchema>;
+export type SendTransferGrant =
+  import("./auth/protocol_wasm.ts").TransferSendGrantWire;
 /** Prepared provider-to-caller stream. */
-export type ReceiveTransferGrant = Static<typeof ReceiveTransferGrantSchema>;
+export type ReceiveTransferGrant =
+  import("./auth/protocol_wasm.ts").TransferReceiveGrantWire;
 /** Runtime-owned prepared transfer session. */
-export type TransferGrant = Static<typeof TransferGrantSchema>;
-/** Supported streaming upload sources. */
-export type TransferBody =
-  | Uint8Array
-  | ArrayBuffer
-  | ReadableStream<Uint8Array>
-  | AsyncIterable<Uint8Array>;
+export type TransferGrant = import("./auth/protocol_wasm.ts").TransferGrantWire;
 
-/** Split arbitrary source chunks using views, without payload-sized copies. */
-async function* frames(
-  body: TransferBody,
-  maxBytes: number,
-  signal: AbortSignal,
-): AsyncGenerator<Uint8Array> {
-  const reader = body instanceof ReadableStream ? body.getReader() : undefined;
-  const source: AsyncIterable<Uint8Array> =
-    body instanceof ArrayBuffer || body instanceof Uint8Array
-      ? (async function* () {
-        yield body instanceof Uint8Array ? body : new Uint8Array(body);
-      })()
-      : body;
-  const iterator: AsyncIterator<Uint8Array> = reader
-    ? {
-      next: async (): Promise<IteratorResult<Uint8Array>> => {
-        const result = await reader.read();
-        return result.done
-          ? { done: true, value: undefined }
-          : { done: false, value: result.value };
-      },
-    }
-    : source[Symbol.asyncIterator]();
-  const cancelReader = () => {
-    void reader?.cancel(signal.reason).catch(() => {});
-  };
-  signal.addEventListener("abort", cancelReader, { once: true });
-  let completed = false;
+/**
+ * Decode an untrusted transfer grant with the shared Rust/WASM wire validator.
+ * This validates its shape and bounds; the transfer handle still authenticates
+ * the provider and checks session authority before acquiring transport.
+ */
+export function decodeTransferGrant(
+  value: unknown,
+): ResultType<TransferGrant, TransferError> {
   try {
-    while (true) {
-      const next = await transferWait(iterator.next(), signal);
-      if (next.done) {
-        completed = true;
-        return;
-      }
-      const owned =
-        !(body instanceof ArrayBuffer || body instanceof Uint8Array);
-      if (owned) {
-        recordCatalogUpDown(
-          "trellis.transfer.buffered.bytes",
-          next.value.length,
-          { "trellis.direction": "upload" },
-        );
-      }
-      try {
-        for (let offset = 0; offset < next.value.length; offset += maxBytes) {
-          yield next.value.subarray(
-            offset,
-            Math.min(next.value.length, offset + maxBytes),
-          );
-        }
-      } finally {
-        if (owned) {
-          recordCatalogUpDown(
-            "trellis.transfer.buffered.bytes",
-            -next.value.length,
-            { "trellis.direction": "upload" },
-          );
-        }
-      }
-    }
-  } finally {
-    signal.removeEventListener("abort", cancelReader);
-    if (reader) {
-      if (!completed) cancelReader();
-      reader.releaseLock();
-    } else if (!completed) {
-      // Application iterators need not support interrupting an in-flight next.
-      // Observe their return, but never let that application promise pin the SDK.
-      void Promise.resolve(iterator.return?.()).catch(() => {});
-    }
+    return Result.ok(
+      transferParseGrant(new TextEncoder().encode(JSON.stringify(value))),
+    );
+  } catch (cause) {
+    return Result.err(new TransferError({ operation: "decodeGrant", cause }));
   }
 }
+
+export type { TransferBody } from "./transfer/frames.ts";
 
 class ClientSession {
   readonly activated = Promise.withResolvers<number>();
@@ -192,6 +93,13 @@ class ClientSession {
   #cancelled = false;
   #activationRequestId: string | undefined;
   #offeredMaxFrameBytes = 0;
+  /** Largest window activation may confirm: the grant, or what we admitted. */
+  #limitFrames = 0;
+  #limitBytes = 0;
+  /** Effective outstanding frames and bytes confirmed by activation. */
+  windowFrames = 0;
+  windowBytes = 0;
+  #receiveWindow: [number, number] | undefined;
 
   constructor(
     readonly session: TransferSession,
@@ -213,9 +121,9 @@ class ClientSession {
             session.fail(new Error("transfer signal flood"));
             return;
           }
-          this.#lane = this.#lane.then(() => this.#signal(msg)).finally(() =>
-            this.#pending--
-          );
+          this.#lane = this.#lane
+            .then(() => this.#signal(msg))
+            .finally(() => this.#pending--);
           session.run(this.#lane);
         },
       }),
@@ -245,11 +153,14 @@ class ClientSession {
         headerCount: msg.headers?.keys().length ?? 0,
         headerValueBytes: msg.headers
           ? [...msg.headers].reduce(
-            (bytes, [, values]) =>
-              bytes + values.reduce((n, value) =>
-                n + new TextEncoder().encode(value).length, 0),
-            0,
-          )
+              (bytes, [, values]) =>
+                bytes +
+                values.reduce(
+                  (n, value) => n + new TextEncoder().encode(value).length,
+                  0,
+                ),
+              0,
+            )
           : 0,
       });
       throw error;
@@ -266,11 +177,13 @@ class ClientSession {
           signal.requestId !== this.#activationRequestId ||
           signal.maxFrameBytes > this.session.grant.maxFrameBytes ||
           signal.maxFrameBytes > this.#offeredMaxFrameBytes ||
-          signal.windowFrames !== this.session.grant.windowFrames ||
-          signal.windowBytes !== this.session.grant.windowBytes
+          signal.windowFrames > this.#limitFrames ||
+          signal.windowBytes > this.#limitBytes
         ) {
           throw new Error("invalid negotiated frame size");
         }
+        this.windowFrames = signal.windowFrames;
+        this.windowBytes = signal.windowBytes;
         this.#active = true;
         this.activated.resolve(signal.maxFrameBytes);
         break;
@@ -285,16 +198,20 @@ class ClientSession {
             BigInt(signal.consumedSeq),
             transferParseCounter(signal.consumedBytes),
           )
-        ) throw new Error("invalid transfer credit");
+        )
+          throw new Error("invalid transfer credit");
         recordCatalogCounter("trellis.transfer.credit.controls", 1, {
           "trellis.direction": "upload",
+          "trellis.side": "client",
         });
         break;
       case "committed":
         if (
-          !this.#active || !this.window ||
+          !this.#active ||
+          !this.window ||
           !Value.Check(FileInfoSchema, signal.info)
-        ) throw new Error("invalid transfer commit");
+        )
+          throw new Error("invalid transfer commit");
         if (this.window.validateComplete(BigInt(signal.finalSeq))) {
           throw new Error("incomplete transfer commit");
         }
@@ -316,12 +233,13 @@ class ClientSession {
     consumedSeq = 0n,
     receiveMaxFrameBytes?: number,
     consumedBytes = 0,
+    receiveWindow?: [number, number],
   ): Promise<void> {
     this.#controlLane = this.#controlLane.then(async () => {
       const session = this.session;
-      const payload = new TextEncoder().encode(JSON.stringify(
-        {
-          format: "trellis.transfer.v2",
+      const payload = new TextEncoder().encode(
+        JSON.stringify({
+          format: "trellis.transfer.v1",
           type: "control",
           action,
           transferId: session.grant.transferId,
@@ -329,11 +247,19 @@ class ClientSession {
           receivedSeq: receivedSeq.toString(),
           consumedSeq: consumedSeq.toString(),
           ...(action === "activate"
-            ? { receiveMaxFrameBytes }
+            ? {
+                receiveMaxFrameBytes,
+                ...(receiveWindow
+                  ? {
+                      receiveWindowFrames: receiveWindow[0],
+                      receiveWindowBytes: receiveWindow[1],
+                    }
+                  : {}),
+              }
             : { consumedBytes: String(consumedBytes) }),
           ...(action === "end-ack" ? { finalSeq: consumedSeq.toString() } : {}),
-        },
-      ));
+        }),
+      );
       const headers = await session.requestHeaders(
         session.grant.controlSubject,
         payload,
@@ -348,6 +274,13 @@ class ClientSession {
         headers,
         reply: session.grant.signalSubject,
       });
+      recordTransferMessage(
+        session.grant.direction,
+        "client",
+        "control",
+        headers,
+        payload.length,
+      );
       if (action === "end-ack") {
         try {
           await transferWait(session.lease.nc.flush(), session.abort.signal);
@@ -356,8 +289,7 @@ class ClientSession {
             code: "trellis.request.unavailable",
             message:
               "Trellis could not deliver the transfer completion acknowledgement.",
-            hint:
-              "Check that the transfer provider is reachable, then try again.",
+            hint: "Check that the transfer provider is reachable, then try again.",
             cause,
           });
         }
@@ -366,31 +298,70 @@ class ClientSession {
     return this.#controlLane;
   }
 
+  /** Largest raw DATA frame both this connection and the grant can carry. */
+  #maxFrameBytes(): number {
+    const maxFrameBytes = Math.min(
+      this.session.grant.maxFrameBytes,
+      (this.session.lease.nc.info?.max_payload ?? 0) -
+        transferConstants().headerReserve,
+    );
+    if (maxFrameBytes < 1) {
+      throw new Error("NATS payload limit cannot carry transfer frames");
+    }
+    return maxFrameBytes;
+  }
+
+  /**
+   * Admit and fix a receiving consumer's window `[frames, bytes]` before its
+   * data subscription exists; activation declares it to the provider, which
+   * sends within the smaller of it and the grant. Released when the session
+   * ends, on every path.
+   */
+  admitReceiveWindow(): [number, number] {
+    if (this.#receiveWindow) return this.#receiveWindow;
+    const session = this.session;
+    const budget = processReceiveBudget();
+    const offered = budget.offer(this.#maxFrameBytes());
+    if (!offered) throw new Error("transfer receive capacity exhausted");
+    const window: [number, number] = [
+      Math.min(offered[0], session.grant.windowFrames),
+      Math.min(offered[1], session.grant.windowBytes),
+    ];
+    const release = budget.reserve(window[1]);
+    if (!release) throw new Error("transfer receive capacity exhausted");
+    session.abort.signal.addEventListener("abort", release, { once: true });
+    this.#receiveWindow = window;
+    return window;
+  }
+
   async activate(): Promise<number> {
     const session = this.session;
-    const timer = setTimeout(() =>
-      session.fail(
-        new TransportError({
-          code: "trellis.request.unavailable",
-          message: "Transfer activation timed out.",
-          hint:
-            "Check that the transfer provider is responding, then try again.",
-        }),
-      ), Math.max(0, this.activationDeadlineMs - Date.now()));
+    const timer = setTimeout(
+      () =>
+        session.fail(
+          new TransportError({
+            code: "trellis.request.unavailable",
+            message: "Transfer activation timed out.",
+            hint: "Check that the transfer provider is responding, then try again.",
+          }),
+        ),
+      Math.max(0, this.activationDeadlineMs - Date.now()),
+    );
     try {
       await session.retainLocal();
-      const maxFrameBytes = Math.min(
-        session.grant.maxFrameBytes,
-        (session.lease.nc.info?.max_payload ?? 0) -
-          transferConstants().headerReserve,
-      );
-      if (maxFrameBytes < 1) {
-        throw new Error("NATS payload limit cannot carry transfer frames");
-      }
+      const maxFrameBytes = this.#maxFrameBytes();
       this.#offeredMaxFrameBytes = maxFrameBytes;
+      const receiveWindow =
+        session.grant.direction === "receive"
+          ? this.admitReceiveWindow()
+          : undefined;
+      [this.#limitFrames, this.#limitBytes] = receiveWindow ?? [
+        session.grant.windowFrames,
+        session.grant.windowBytes,
+      ];
       await transferWait(session.lease.nc.flush(), session.abort.signal);
       await transferWait(
-        this.control("activate", 0n, 0n, maxFrameBytes),
+        this.control("activate", 0n, 0n, maxFrameBytes, 0, receiveWindow),
         session.abort.signal,
       );
       return await transferWait(this.activated.promise, session.abort.signal);
@@ -400,16 +371,18 @@ class ClientSession {
   }
 
   async cancel(): Promise<void> {
-    const timer = setTimeout(() =>
-      this.session.fail(
-        new TransportError({
-          code: "trellis.request.unavailable",
-          message:
-            "Transfer cancellation timed out; remote cleanup is unconfirmed.",
-          hint:
-            "Local ownership has been released. Reconcile the upload Operation before retrying.",
-        }),
-      ), this.timeoutMs);
+    const timer = setTimeout(
+      () =>
+        this.session.fail(
+          new TransportError({
+            code: "trellis.request.unavailable",
+            message:
+              "Transfer cancellation timed out; remote cleanup is unconfirmed.",
+            hint: "Local ownership has been released. Reconcile the upload Operation before retrying.",
+          }),
+        ),
+      this.timeoutMs,
+    );
     try {
       if (!this.session.abort.signal.aborted) {
         await transferWait(this.control("cancel"), this.session.abort.signal);
@@ -434,21 +407,27 @@ abstract class BaseTransferHandle {
     if (
       grant.consumer.sessionKey !== this.auth.sessionKey ||
       Date.now() >= Date.parse(grant.expiresAt)
-    ) throw new Error("invalid or expired transfer grant");
+    )
+      throw new Error("invalid or expired transfer grant");
     const activationDeadlineMs = Math.min(
       Date.now() + this.timeoutMs,
       Date.parse(grant.expiresAt),
     );
-    const lease = await this.transport.acquireFor({
-      publish: grant.direction === "send"
-        ? [grant.controlSubject, grant.dataSubject]
-        : [grant.controlSubject],
-      subscribe: grant.direction === "send"
-        ? [grant.signalSubject]
-        : [grant.signalSubject, grant.dataSubject],
-    }, {
-      deadlineMs: activationDeadlineMs,
-    });
+    const lease = await this.transport.acquireFor(
+      {
+        publish:
+          grant.direction === "send"
+            ? [grant.controlSubject, grant.dataSubject]
+            : [grant.controlSubject],
+        subscribe:
+          grant.direction === "send"
+            ? [grant.signalSubject]
+            : [grant.signalSubject, grant.dataSubject],
+      },
+      {
+        deadlineMs: activationDeadlineMs,
+      },
+    );
     return new ClientSession(
       new TransferSession(grant, lease, this.auth, false),
       activationDeadlineMs,
@@ -464,7 +443,6 @@ export class SendTransferHandle extends BaseTransferHandle {
     auth: TrellisAuth,
     timeoutMs: number,
     readonly grant: SendTransferGrant,
-    _inboxPrefix = "_INBOX",
   ) {
     super(transport, auth, timeoutMs);
   }
@@ -479,23 +457,40 @@ export class SendTransferHandle extends BaseTransferHandle {
           client = await this.open(this.grant);
           const session = client.session;
           const maxFrameBytes = await client.activate();
-          const window = client.window = new SenderWindow({
+          const window = (client.window = new SenderWindow({
             maxFrameBytes,
-            windowFrames: this.grant.windowFrames,
-            windowBytes: this.grant.windowBytes,
-          });
-          const hasher = sha256.create();
+            windowFrames: client.windowFrames,
+            windowBytes: client.windowBytes,
+          }));
+          const hasher = createSha256();
           let size = 0;
-          for await (
-            const frame of frames(body, maxFrameBytes, session.abort.signal)
-          ) {
+          for await (const frame of frames(
+            body,
+            maxFrameBytes,
+            session.abort.signal,
+            "upload",
+          )) {
             size += frame.length;
             if (
               !Number.isSafeInteger(size) ||
               (this.grant.maxBytes !== undefined && size > this.grant.maxBytes)
-            ) throw new Error("transfer maximum size exceeded");
+            )
+              throw new Error("transfer maximum size exceeded");
             while (window.validateFrameSlot(frame.length) === "window_full") {
-              await transferWait(window.waitCredit(), session.abort.signal);
+              const started = performance.now();
+              try {
+                await transferWait(window.waitCredit(), session.abort.signal);
+              } finally {
+                recordCatalogDuration(
+                  "trellis.transfer.wait.duration",
+                  performance.now() - started,
+                  {
+                    "trellis.direction": "upload",
+                    "trellis.phase": "credit",
+                    "trellis.side": "client",
+                  },
+                );
+              }
             }
             if (window.validateFrameSlot(frame.length)) {
               throw new Error("transfer frame exceeds limits");
@@ -515,22 +510,21 @@ export class SendTransferHandle extends BaseTransferHandle {
               reply: this.grant.signalSubject,
             });
             if (window.commitFrame(seq, frame.length)) {
-              throw new Error(
-                "transfer frame accounting failed",
-              );
+              throw new Error("transfer frame accounting failed");
             }
-            recordCatalogCounter("trellis.transfer.frames", 1, {
-              "trellis.direction": "upload",
-            });
-            recordCatalogCounter("trellis.transfer.wire.bytes", frame.length, {
-              "trellis.direction": "upload",
-            });
+            recordTransferMessage(
+              "send",
+              "client",
+              "data",
+              headers,
+              frame.length,
+            );
             hasher.update(frame);
           }
           const digest = `SHA-256=${base64urlEncode(hasher.digest())}`;
           const completion = new TextEncoder().encode(
             JSON.stringify({
-              format: "trellis.transfer.v2",
+              format: "trellis.transfer.v1",
               type: "complete",
               transferId: this.grant.transferId,
               finalSeq: window.highestSent.toString(),
@@ -549,6 +543,13 @@ export class SendTransferHandle extends BaseTransferHandle {
             headers: completionHeaders,
             reply: this.grant.signalSubject,
           });
+          recordTransferMessage(
+            "send",
+            "client",
+            "complete",
+            completionHeaders,
+            completion.length,
+          );
           const info = await transferWait(
             client.committed.promise,
             session.abort.signal,
@@ -556,16 +557,16 @@ export class SendTransferHandle extends BaseTransferHandle {
           if (
             info.size !== size ||
             info.digest?.replace(/=+$/, "") !== digest.replace(/=+$/, "")
-          ) throw new Error("transfer committed metadata mismatch");
-          observe("upload", started, true);
+          )
+            throw new Error("transfer committed metadata mismatch");
+          observe("upload", started, "ok");
           return Result.ok(info);
         } catch (cause) {
           // Cancellation has its own exchange budget and never substitutes for success.
           if (client && !client.session.abort.signal.aborted) {
-            await client
-              .cancel().catch(() => {});
+            await client.cancel().catch(() => {});
           }
-          observe("upload", started, false);
+          observe("upload", started, "error");
           return Result.err(
             cause instanceof TransportError || cause instanceof TransferError
               ? cause
@@ -587,7 +588,6 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
     auth: TrellisAuth,
     timeoutMs: number,
     readonly grant: ReceiveTransferGrant,
-    _inboxPrefix = "_INBOX",
   ) {
     super(transport, auth, timeoutMs);
   }
@@ -598,6 +598,14 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
       (async (): Promise<
         ResultType<ReadableStream<Uint8Array>, TransferOperationError>
       > => {
+        const started = performance.now();
+        // One duration per stream, recorded at its first terminal outcome.
+        let observed = false;
+        const settle = (outcome: "ok" | "error" | "cancelled") => {
+          if (observed) return;
+          observed = true;
+          observe("download", started, outcome);
+        };
         let client: ClientSession | undefined;
         try {
           client = await this.open(this.grant);
@@ -626,10 +634,12 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                 consumedBytes,
               ),
           );
+          // The provider sends within the window this consumer admits.
+          const [receiveFrames, receiveBytes] = client.admitReceiveWindow();
           const ingress = new TransferIngress(
             this.grant.maxFrameBytes,
-            this.grant.windowFrames,
-            this.grant.windowBytes,
+            receiveFrames,
+            receiveBytes,
             (seq, bytes) => {
               consumed = seq;
               consumedBytes += bytes;
@@ -638,16 +648,16 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             "download",
           );
           client.ingress = ingress;
-          const hash = sha256.create();
+          const hash = createSha256();
           let streamController:
-            | ReadableStreamDefaultController<Uint8Array>
-            | undefined;
+            ReadableStreamDefaultController<Uint8Array> | undefined;
           let streamTerminated = false;
           const abortStream = () => {
             scheduler.close();
             ingress.fail(session.abort.signal.reason);
             if (streamController && !streamTerminated) {
               streamTerminated = true;
+              settle("error");
               streamController.error(session.abort.signal.reason);
             }
           };
@@ -663,12 +673,12 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                 }
                 if (
                   ++pendingFrames + ingress.bufferedFrames >
-                    this.grant.windowFrames +
+                    receiveFrames +
                       (msg.headers?.get("trellis-transfer-control") === "eof"
                         ? 1
                         : 0) ||
                   (pendingBytes += msg.data.length) + ingress.bufferedBytes >
-                    this.grant.windowBytes
+                    receiveBytes
                 ) {
                   session.fail(
                     new Error("transfer receive verification window exceeded"),
@@ -682,81 +692,82 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                   recordCatalogUpDown(
                     "trellis.transfer.buffered.bytes",
                     -msg.data.length,
-                    { "trellis.direction": "download" },
+                    {
+                      "trellis.direction": "download",
+                      "trellis.side": "client",
+                    },
                   );
                 };
-                lane = lane.then(async () => {
-                  const negotiated = await transferWait(
-                    client!.activated.promise,
-                    session.abort.signal,
-                  );
-                  if (msg.data.length > negotiated) {
-                    throw new Error("transfer negotiated frame size exceeded");
-                  }
-                  const raw = msg.headers?.get(C.sequenceHeader);
-                  const seq = BigInt(transferParseCounter(raw ?? ""));
-                  const control = msg.headers?.get(C.controlHeader) ?? "";
-                  if (control !== "data" && control !== "eof") {
-                    throw new Error("invalid transfer download frame kind");
-                  }
-                  const terminal = control === "eof"
-                    ? transferParseTerminal(
-                      new TextEncoder().encode(
-                        msg.headers?.get(C.terminalHeader) ?? "",
-                      ),
-                    )
-                    : undefined;
-                  await session.verifyProvider(
-                    msg,
-                    seq.toString(),
-                    control,
-                    terminal,
-                  );
-                  if (control === "eof") {
-                    if (
-                      msg.data.length !== 0 || seq !== received ||
-                      terminal?.finalSeq !== seq.toString() ||
-                      terminal.size !== size ||
-                      terminal.digest !== this.grant.info.digest ||
-                      size !== this.grant.info.size ||
-                      `SHA-256=${base64urlEncode(hash.digest())}`.replace(
+                lane = lane
+                  .then(async () => {
+                    const negotiated = await transferWait(
+                      client!.activated.promise,
+                      session.abort.signal,
+                    );
+                    if (msg.data.length > negotiated) {
+                      throw new Error(
+                        "transfer negotiated frame size exceeded",
+                      );
+                    }
+                    const raw = msg.headers?.get(C.sequenceHeader);
+                    const seq = BigInt(transferParseCounter(raw ?? ""));
+                    const control = msg.headers?.get(C.controlHeader) ?? "";
+                    if (control !== "data" && control !== "eof") {
+                      throw new Error("invalid transfer download frame kind");
+                    }
+                    const terminal =
+                      control === "eof"
+                        ? transferParseTerminal(
+                            new TextEncoder().encode(
+                              msg.headers?.get(C.terminalHeader) ?? "",
+                            ),
+                          )
+                        : undefined;
+                    await session.verifyProvider(
+                      msg,
+                      seq.toString(),
+                      control,
+                      terminal,
+                    );
+                    if (control === "eof") {
+                      if (
+                        msg.data.length !== 0 ||
+                        seq !== received ||
+                        terminal?.finalSeq !== seq.toString() ||
+                        terminal.size !== size ||
+                        terminal.digest !== this.grant.info.digest ||
+                        size !== this.grant.info.size ||
+                        `SHA-256=${base64urlEncode(hash.digest())}`.replace(
                           /=+$/,
                           "",
                         ) !== this.grant.info.digest.replace(/=+$/, "")
-                    ) {
-                      throw new Error("transfer EOF metadata mismatch");
+                      ) {
+                        throw new Error("transfer EOF metadata mismatch");
+                      }
+                      ingress.close(seq);
+                    } else {
+                      if (control !== "data" || seq !== received + 1n) {
+                        throw new Error("transfer DATA sequence gap");
+                      }
+                      received = seq;
+                      size += msg.data.length;
+                      if (size > this.grant.info.size) {
+                        throw new Error("transfer download size exceeded");
+                      }
+                      hash.update(msg.data);
+                      handoff();
+                      ingress.push(seq, msg.data);
                     }
-                    ingress.close(seq);
-                  } else {
-                    if (control !== "data" || seq !== received + 1n) {
-                      throw new Error("transfer DATA sequence gap");
-                    }
-                    received = seq;
-                    size += msg.data.length;
-                    if (size > this.grant.info.size) {
-                      throw new Error("transfer download size exceeded");
-                    }
-                    hash.update(msg.data);
+                  })
+                  .finally(() => {
+                    pendingFrames--;
+                    pendingBytes -= msg.data.length;
                     handoff();
-                    ingress.push(seq, msg.data);
-                    recordCatalogCounter("trellis.transfer.frames", 1, {
-                      "trellis.direction": "download",
-                    });
-                    recordCatalogCounter(
-                      "trellis.transfer.wire.bytes",
-                      msg.data.length,
-                      { "trellis.direction": "download" },
-                    );
-                  }
-                }).finally(() => {
-                  pendingFrames--;
-                  pendingBytes -= msg.data.length;
-                  handoff();
-                });
+                  });
                 recordCatalogUpDown(
                   "trellis.transfer.buffered.bytes",
                   msg.data.length,
-                  { "trellis.direction": "download" },
+                  { "trellis.direction": "download", "trellis.side": "client" },
                 );
                 session.run(lane);
               },
@@ -766,67 +777,78 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
           const iterator = ingress[Symbol.asyncIterator]();
           const ownedClient = client;
           return Result.ok(
-            new ReadableStream<Uint8Array>({
-              start(controller) {
-                streamController = controller;
-                if (session.abort.signal.aborted) abortStream();
-              },
-              async pull(controller) {
-                if (streamTerminated) return;
-                try {
-                  const next = await transferWait(
-                    iterator.next(),
-                    session.abort.signal,
-                  );
-                  if (next.done) {
-                    await scheduler.flush();
-                    await ownedClient.control(
-                      "end-ack",
-                      received,
-                      consumed,
-                      undefined,
-                      consumedBytes,
+            new ReadableStream<Uint8Array>(
+              {
+                start(controller) {
+                  streamController = controller;
+                  if (session.abort.signal.aborted) abortStream();
+                },
+                async pull(controller) {
+                  if (streamTerminated) return;
+                  try {
+                    const next = await transferWait(
+                      iterator.next(),
+                      session.abort.signal,
                     );
+                    if (next.done) {
+                      await scheduler.flush();
+                      await ownedClient.control(
+                        "end-ack",
+                        received,
+                        consumed,
+                        undefined,
+                        consumedBytes,
+                      );
+                      scheduler.close();
+                      if (streamTerminated) return;
+                      streamTerminated = true;
+                      session.abort.signal.removeEventListener(
+                        "abort",
+                        abortStream,
+                      );
+                      controller.close();
+                      settle("ok");
+                      session.finish();
+                      await session.join();
+                    } else if (!streamTerminated)
+                      controller.enqueue(next.value);
+                  } catch (cause) {
                     scheduler.close();
-                    if (streamTerminated) return;
-                    streamTerminated = true;
-                    session.abort.signal.removeEventListener(
-                      "abort",
-                      abortStream,
-                    );
-                    controller.close();
+                    settle("error");
+                    session.fail(cause);
                     session.finish();
                     await session.join();
-                  } else if (!streamTerminated) controller.enqueue(next.value);
-                } catch (cause) {
-                  scheduler.close();
-                  session.fail(cause);
-                  session.finish();
-                  await session.join();
-                  if (!streamTerminated) {
-                    streamTerminated = true;
-                    session.abort.signal.removeEventListener(
-                      "abort",
-                      abortStream,
-                    );
-                    controller.error(cause);
+                    if (!streamTerminated) {
+                      streamTerminated = true;
+                      session.abort.signal.removeEventListener(
+                        "abort",
+                        abortStream,
+                      );
+                      controller.error(cause);
+                    }
                   }
-                }
+                },
+                async cancel() {
+                  streamTerminated = true;
+                  settle("cancelled");
+                  session.abort.signal.removeEventListener(
+                    "abort",
+                    abortStream,
+                  );
+                  try {
+                    await ownedClient.cancel();
+                  } finally {
+                    scheduler.close();
+                    session.finish();
+                    await session.join();
+                  }
+                },
               },
-              async cancel() {
-                streamTerminated = true;
-                session.abort.signal.removeEventListener("abort", abortStream);
-                try {
-                  await ownedClient.cancel();
-                } finally {
-                  scheduler.close();
-                  session.finish();
-                  await session.join();
-                }
-              },
-            }, { highWaterMark: 0 }),
+              { highWaterMark: 0 },
+            ),
           );
         } catch (cause) {
+          settle("error");
           client?.session.finish();
           await client?.session.join();
           return Result.err(
@@ -843,7 +865,6 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
   bytes(): AsyncResult<Uint8Array, TransferOperationError> {
     return AsyncResult.from(
       (async (): Promise<ResultType<Uint8Array, TransferOperationError>> => {
-        const started = performance.now();
         const stream = (await this.stream()).take();
         if (isErr(stream)) return Result.err(stream.error);
         const reader = stream.getReader();
@@ -854,7 +875,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
           recordCatalogUpDown(
             "trellis.transfer.buffered.bytes",
             retainedBytes,
-            { "trellis.direction": "download" },
+            { "trellis.direction": "download", "trellis.side": "client" },
           );
           let offset = 0;
           while (true) {
@@ -863,11 +884,9 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             bytes.set(next.value, offset);
             offset += next.value.length;
           }
-          observe("download", started, true);
           return Result.ok(bytes);
         } catch (cause) {
           await reader.cancel().catch(() => {});
-          observe("download", started, false);
           return Result.err(
             cause instanceof TransferError || cause instanceof TransportError
               ? cause
@@ -877,7 +896,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
           recordCatalogUpDown(
             "trellis.transfer.buffered.bytes",
             -retainedBytes,
-            { "trellis.direction": "download" },
+            { "trellis.direction": "download", "trellis.side": "client" },
           );
           reader.releaseLock();
         }
@@ -894,7 +913,6 @@ export function createTransferHandle(
   auth: TrellisAuth,
   timeoutMs: number,
   grant: SendTransferGrant,
-  inboxPrefix?: string,
 ): SendTransferHandle;
 /** Create a helper for a runtime-issued download grant. */
 export function createTransferHandle(
@@ -902,7 +920,6 @@ export function createTransferHandle(
   auth: TrellisAuth,
   timeoutMs: number,
   grant: ReceiveTransferGrant,
-  inboxPrefix?: string,
 ): ReceiveTransferHandle;
 /** Create the direction-specific helper without moving an in-flight generation. */
 export function createTransferHandle(
@@ -910,28 +927,30 @@ export function createTransferHandle(
   auth: TrellisAuth,
   timeoutMs: number,
   grant: TransferGrant,
-  inboxPrefix?: string,
 ): TransferHandle;
 export function createTransferHandle(
   transport: TrellisTransportProvider,
   auth: TrellisAuth,
   timeoutMs: number,
   grant: TransferGrant,
-  inboxPrefix = "_INBOX",
 ): TransferHandle {
   return grant.direction === "send"
-    ? new SendTransferHandle(transport, auth, timeoutMs, grant, inboxPrefix)
-    : new ReceiveTransferHandle(transport, auth, timeoutMs, grant, inboxPrefix);
+    ? new SendTransferHandle(transport, auth, timeoutMs, grant)
+    : new ReceiveTransferHandle(transport, auth, timeoutMs, grant);
 }
 
 function observe(
   direction: "upload" | "download",
   started: number,
-  ok: boolean,
+  outcome: "ok" | "error" | "cancelled",
 ): void {
   recordCatalogDuration(
     "trellis.transfer.duration",
     performance.now() - started,
-    { "trellis.direction": direction, "trellis.outcome": ok ? "ok" : "error" },
+    {
+      "trellis.direction": direction,
+      "trellis.side": "client",
+      "trellis.outcome": outcome,
+    },
   );
 }

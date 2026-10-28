@@ -55,6 +55,7 @@ pub(crate) async fn read_bounded_http_body(
 
 /// Use the application's provider when installed, otherwise choose ring locally.
 /// Platform certificate verification remains identical to Reqwest's default.
+#[cfg(any(feature = "device", feature = "telemetry-otlp"))]
 pub(crate) fn http_client_builder() -> Result<reqwest::ClientBuilder, super::TrellisClientError> {
     use rustls_platform_verifier::BuilderVerifierExt as _;
 

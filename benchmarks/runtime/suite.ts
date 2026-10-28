@@ -1,43 +1,38 @@
-import { parseArgs } from "@std/cli/parse-args";
-import { fromFileUrl, resolve } from "@std/path";
+import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { z } from "zod";
+import { spawnTracked } from "../../ts/integration/_support/process.ts";
 
-const root = fromFileUrl(new URL("../../", import.meta.url));
-const args = parseArgs(Deno.args, {
-  boolean: ["report-only"],
-  string: [
-    "output",
-    "server",
-    "cli",
-    "rust-bin",
-    "browser-bundle",
-    "repeats",
-    "samples",
-    "calls",
-    "sizes",
-    "sessions",
-    "idle-seconds",
-    "provider-counts",
-    "actions",
-    "compare",
-  ],
-  default: {
-    repeats: "3",
-    samples: "7",
-    calls: "1000",
-    sizes: "65536,1048576,8388608",
-    sessions: "1,10,100,500",
-    "idle-seconds": "5",
-    "provider-counts": "1,4",
-    actions: "1,32,128",
+const root = fileURLToPath(new URL("../../", import.meta.url));
+const { values: args } = parseArgs({
+  options: {
+    "report-only": { type: "boolean", default: false },
+    output: { type: "string" },
+    server: { type: "string" },
+    cli: { type: "string" },
+    "rust-bin": { type: "string" },
+    "browser-bundle": { type: "string" },
+    repeats: { type: "string", default: "3" },
+    samples: { type: "string", default: "7" },
+    calls: { type: "string", default: "1000" },
+    sizes: { type: "string", default: "65536,1048576,8388608" },
+    sessions: { type: "string", default: "1,10,100,500" },
+    "idle-seconds": { type: "string", default: "5" },
+    "provider-counts": { type: "string", default: "1,4" },
+    actions: { type: "string", default: "1,32,128" },
+    compare: { type: "string" },
   },
 });
 const output = resolve(z.string().parse(args.output));
 const positive = z.coerce.number().int().positive();
 const repeats = positive.parse(args.repeats);
-const providers = z.array(positive).nonempty().parse(
-  args["provider-counts"].split(","),
-);
+const providers = z
+  .array(positive)
+  .nonempty()
+  .parse(args["provider-counts"].split(","));
 const actions = z.array(positive).nonempty().parse(args.actions.split(","));
 const binaries = {
   server: resolve(
@@ -47,28 +42,24 @@ const binaries = {
     z.string().parse(args.cli ?? (args["report-only"] ? "" : undefined)),
   ),
   rust: resolve(
-    z.string().parse(
-      args["rust-bin"] ?? (args["report-only"] ? "" : undefined),
-    ),
+    z
+      .string()
+      .parse(args["rust-bin"] ?? (args["report-only"] ? "" : undefined)),
   ),
   browser: resolve(
-    z.string().parse(
-      args["browser-bundle"] ?? (args["report-only"] ? "" : undefined),
-    ),
+    z
+      .string()
+      .parse(args["browser-bundle"] ?? (args["report-only"] ? "" : undefined)),
   ),
 };
 if (!args["report-only"]) {
   for (const file of Object.values(binaries)) {
-    if (!(await Deno.stat(file)).isFile) {
+    if (!(await stat(file)).isFile()) {
       throw new Error(`Missing producer artifact: ${file}`);
     }
   }
-  await Deno.mkdir(output, { recursive: true });
-  const lock = await Deno.open(`${output}/suite.lock`, {
-    createNew: true,
-    write: true,
-  });
-  lock.close();
+  await mkdir(output, { recursive: true });
+  await (await open(`${output}/suite.lock`, "wx")).close();
 }
 const config = {
   repeats,
@@ -79,59 +70,47 @@ const config = {
   idleSeconds: Number(args["idle-seconds"]),
   providers,
   actions,
-  host: Deno.hostname(),
+  host: hostname(),
 };
 if (!args["report-only"]) {
-  await Deno.writeTextFile(
+  await writeFile(
     `${output}/suite-metadata.json`,
     JSON.stringify(config, null, 2),
   );
 }
 const execute = async (script: string, flags: string[], log: string) => {
-  const process = new Deno.Command(Deno.execPath(), {
-    args: [
-      "run",
-      "-A",
-      "-c",
-      `${root}/ts/deno.json`,
-      `${root}/benchmarks/runtime/${script}`,
-      ...flags,
-    ],
-    cwd: root,
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
-  const file = await Deno.open(log, {
-    create: true,
-    write: true,
-    truncate: true,
-  });
-  // Drain both pipes while running; do not buffer a long suite in memory.
-  const writes = [
-    process.stdout.pipeTo(file.writable, { preventClose: true }),
-    process.stderr.pipeTo(
-      new WritableStream({
-        async write(chunk) {
-          await file.write(chunk);
-        },
-      }),
-    ),
-  ];
-  const result = await process.status;
-  await Promise.all(writes);
-  file.close();
-  return result.success;
+  const file = await open(log, "w");
+  try {
+    const child = spawnTracked(
+      process.execPath,
+      [
+        "--experimental-transform-types",
+        `${root}/benchmarks/runtime/${script}`,
+        ...flags,
+      ],
+      { cwd: root, stdio: ["ignore", file.fd, file.fd] },
+    );
+    return (await child.exited).code === 0;
+  } finally {
+    await file.close();
+  }
 };
 if (
-  !args["report-only"] && !await execute("contracts.ts", [
-    "--cli",
-    binaries.cli,
-    "--output",
-    `${output}/generated`,
-    "--actions",
-    args.actions,
-  ], `${output}/generation.log`)
-) throw new Error("Contract generation failed; see generation.log");
+  !args["report-only"] &&
+  !(await execute(
+    "contracts.ts",
+    [
+      "--cli",
+      binaries.cli,
+      "--output",
+      `${output}/generated`,
+      "--actions",
+      args.actions,
+    ],
+    `${output}/generation.log`,
+  ))
+)
+  throw new Error("Contract generation failed; see generation.log");
 const cases = [
   ...providers.map((count) => ({
     key: `typescript-providers-${count}`,
@@ -172,27 +151,37 @@ const rows: {
 }[] = [];
 if (args["report-only"]) {
   rows.push(
-    ...z.array(
-      z.object({
-        case: z.string(),
-        repeat: positive,
-        report: z.string(),
-        success: z.boolean(),
-        summary: z.array(rowSchema),
-      }),
-    ).parse(JSON.parse(await Deno.readTextFile(`${output}/suite-runs.json`))),
+    ...z
+      .array(
+        z.object({
+          case: z.string(),
+          repeat: positive,
+          report: z.string(),
+          success: z.boolean(),
+          summary: z.array(rowSchema),
+        }),
+      )
+      .parse(JSON.parse(await readFile(`${output}/suite-runs.json`, "utf8"))),
   );
   for (const run of rows) {
     try {
-      run.summary = z.object({ summary: z.array(rowSchema) }).parse(
-        JSON.parse(
-          await Deno.readTextFile(
-            `${output}/${run.report.replace(/report\.md$/, "samples.json")}`,
+      run.summary = z
+        .object({ summary: z.array(rowSchema) })
+        .parse(
+          JSON.parse(
+            await readFile(
+              `${output}/${run.report.replace(/report\.md$/, "samples.json")}`,
+              "utf8",
+            ),
           ),
-        ),
-      ).summary;
+        ).summary;
     } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      if (!(
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ))
+        throw error;
     }
   }
 }
@@ -205,39 +194,51 @@ if (!args["report-only"]) {
     ];
     for (const item of ordered) {
       const dir = `${output}/repeat-${repeat}/${item.key}`;
-      await Deno.mkdir(`${output}/repeat-${repeat}`, { recursive: true });
+      await mkdir(`${output}/repeat-${repeat}`, { recursive: true });
       console.log(`Repeat ${repeat}/${repeats}: ${item.key}`);
-      const success = await execute("run.ts", [
-        "--server",
-        binaries.server,
-        "--output",
-        dir,
-        "--samples",
-        args.samples,
-        "--calls",
-        args.calls,
-        "--sizes",
-        args.sizes,
-        "--sessions",
-        item.key.startsWith("typescript") ? args.sessions : "1",
-        "--idle-seconds",
-        args["idle-seconds"],
-        ...item.flags,
-      ], `${output}/repeat-${repeat}/${item.key}.log`);
+      const success = await execute(
+        "run.ts",
+        [
+          "--server",
+          binaries.server,
+          "--output",
+          dir,
+          "--samples",
+          args.samples,
+          "--calls",
+          args.calls,
+          "--sizes",
+          args.sizes,
+          "--sessions",
+          item.key.startsWith("typescript") ? args.sessions : "1",
+          "--idle-seconds",
+          args["idle-seconds"],
+          ...item.flags,
+        ],
+        `${output}/repeat-${repeat}/${item.key}.log`,
+      );
       let summary: z.infer<typeof rowSchema>[] = [];
       try {
-        summary = z.object({ summary: z.array(rowSchema) }).parse(
-          JSON.parse(await Deno.readTextFile(`${dir}/samples.json`)),
-        ).summary;
+        summary = z
+          .object({ summary: z.array(rowSchema) })
+          .parse(
+            JSON.parse(await readFile(`${dir}/samples.json`, "utf8")),
+          ).summary;
       } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        if (!(
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ))
+          throw error;
       }
-      const reportSuccess = summary.length > 0 &&
-        await execute(
+      const reportSuccess =
+        summary.length > 0 &&
+        (await execute(
           "report.ts",
           [dir],
           `${output}/repeat-${repeat}/${item.key}-report.log`,
-        );
+        ));
       rows.push({
         case: item.key,
         repeat,
@@ -245,7 +246,7 @@ if (!args["report-only"]) {
         success: success && reportSuccess,
         summary,
       });
-      await Deno.writeTextFile(
+      await writeFile(
         `${output}/suite-runs.json`,
         JSON.stringify(rows, null, 2),
       );
@@ -267,23 +268,25 @@ const groups = new Map<
 for (const run of rows) {
   for (const row of run.summary) {
     const key = `${run.case}/${row.name}`;
-    const group = groups.get(key) ??
-      {
-        medians: [],
-        p95s: [],
-        attempts: 0,
-        errors: 0,
-        failures: 0,
-        runs: 0,
-        phases: {},
-      };
+    const group = groups.get(key) ?? {
+      medians: [],
+      p95s: [],
+      attempts: 0,
+      errors: 0,
+      failures: 0,
+      runs: 0,
+      phases: {},
+    };
     group.attempts += row.attempts;
     group.errors += row.errors;
     group.runs++;
     if (!run.success || row.errors) group.failures++;
     else {
       for (const [phase, value] of Object.entries(row.phases)) {
-        if (value !== null) (group.phases[phase] ??= []).push(value);
+        if (value !== null) {
+          group.phases[phase] ??= [];
+          group.phases[phase].push(value);
+        }
       }
       if (row.medianMs !== null) group.medians.push(row.medianMs);
       if (row.p95Ms !== null) group.p95s.push(row.p95Ms);
@@ -296,22 +299,26 @@ const median = (values: number[]) => {
   return sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
 };
 const summary = Object.fromEntries(
-  [...groups].map((
-    [name, group],
-  ) => [name, {
-    ...group,
-    medianOfMediansMs: median(group.medians),
-    medianOfP95sMs: median(group.p95s),
-  }]),
+  [...groups].map(([name, group]) => [
+    name,
+    {
+      ...group,
+      medianOfMediansMs: median(group.medians),
+      medianOfP95sMs: median(group.p95s),
+    },
+  ]),
 );
-const savedConfig = z.object({
-  repeats: positive,
-  providers: z.array(positive),
-  actions: z.array(positive),
-}).parse(JSON.parse(await Deno.readTextFile(`${output}/suite-metadata.json`)));
-const expectedRuns = savedConfig.repeats *
+const savedConfig = z
+  .object({
+    repeats: positive,
+    providers: z.array(positive),
+    actions: z.array(positive),
+  })
+  .parse(JSON.parse(await readFile(`${output}/suite-metadata.json`, "utf8")));
+const expectedRuns =
+  savedConfig.repeats *
   (savedConfig.providers.length + savedConfig.actions.length + 3);
-await Deno.writeTextFile(
+await writeFile(
   `${output}/suite-summary.json`,
   JSON.stringify(summary, null, 2),
 );
@@ -322,8 +329,8 @@ const lines = [
     rows.length < expectedRuns
       ? "PARTIAL — no complete baseline is claimed."
       : rows.some((run) => !run.success)
-      ? "FAILED — not a clean baseline."
-      : "All cases passed."
+        ? "FAILED — not a clean baseline."
+        : "All cases passed."
   }`,
   "",
   "Sequential isolated runtimes; independent repeats. Between-run medians are not pooled request percentiles. A failing run never contributes a clean score. **Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a same-language lower bound with different storage durability, not a security-equivalent comparison.",
@@ -347,7 +354,8 @@ for (const [name, group] of Object.entries(summary)) {
       group.medianOfMediansMs?.toFixed(3) ?? "—"
     } | ${reference.medianOfMediansMs?.toFixed(3) ?? "—"} | ${
       group.medianOfMediansMs !== null &&
-        reference.medianOfMediansMs !== null && reference.medianOfMediansMs > 0
+      reference.medianOfMediansMs !== null &&
+      reference.medianOfMediansMs > 0
         ? (group.medianOfMediansMs / reference.medianOfMediansMs).toFixed(2) +
           "×"
         : "—"
@@ -369,9 +377,9 @@ for (const [name, group] of Object.entries(summary)) {
       group.medianOfMediansMs?.toFixed(3) ?? "—"
     } | ${
       group.medians.length
-        ? `${Math.min(...group.medians).toFixed(3)}–${
-          Math.max(...group.medians).toFixed(3)
-        }`
+        ? `${Math.min(...group.medians).toFixed(3)}–${Math.max(
+            ...group.medians,
+          ).toFixed(3)}`
         : "—"
     } | ${group.medianOfP95sMs?.toFixed(3) ?? "—"} |`,
   );
@@ -388,27 +396,26 @@ lines.push(
 for (const [name, group] of groups) {
   if (Object.values(group.phases).some((values) => values.length > 0)) {
     lines.push(
-      `| ${name} | ${
-        [
-          "connectMs",
-          "firstRpcMs",
-          "firstByteMs",
-          "documentTtfbMs",
-          "navigationReadyMs",
-          "transferredBytes",
-        ].map((phase) => median(group.phases[phase] ?? [])?.toFixed(3) ?? "—")
-          .join(" | ")
-      } |`,
+      `| ${name} | ${[
+        "connectMs",
+        "firstRpcMs",
+        "firstByteMs",
+        "documentTtfbMs",
+        "navigationReadyMs",
+        "transferredBytes",
+      ]
+        .map((phase) => median(group.phases[phase] ?? [])?.toFixed(3) ?? "—")
+        .join(" | ")} |`,
     );
   }
 }
 if (args.compare) {
   const previous = resolve(args.compare);
   const oldConfig: unknown = JSON.parse(
-    await Deno.readTextFile(`${previous}/suite-metadata.json`),
+    await readFile(`${previous}/suite-metadata.json`, "utf8"),
   );
   const candidateConfig: unknown = JSON.parse(
-    await Deno.readTextFile(`${output}/suite-metadata.json`),
+    await readFile(`${output}/suite-metadata.json`, "utf8"),
   );
   if (JSON.stringify(oldConfig) !== JSON.stringify(candidateConfig)) {
     throw new Error(
@@ -417,7 +424,7 @@ if (args.compare) {
   }
   const comparisonKeys = [
     "host",
-    "deno",
+    "node",
     "cpuModel",
     "logicalCpus",
     "cgroup",
@@ -439,14 +446,15 @@ if (args.compare) {
   ];
   for (const run of rows.filter((run) => run.repeat === 1)) {
     const metadataPath = run.report.replace(/report\.md$/, "metadata.json");
-    const current = z.record(z.string(), z.unknown()).parse(
-      JSON.parse(await Deno.readTextFile(`${output}/${metadataPath}`)),
-    );
-    const previousMetadata = z.record(z.string(), z.unknown()).parse(
-      JSON.parse(await Deno.readTextFile(`${previous}/${metadataPath}`)),
-    );
-    const mismatches = comparisonKeys.filter((key) =>
-      JSON.stringify(current[key]) !== JSON.stringify(previousMetadata[key])
+    const current = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await readFile(`${output}/${metadataPath}`, "utf8")));
+    const previousMetadata = z
+      .record(z.string(), z.unknown())
+      .parse(JSON.parse(await readFile(`${previous}/${metadataPath}`, "utf8")));
+    const mismatches = comparisonKeys.filter(
+      (key) =>
+        JSON.stringify(current[key]) !== JSON.stringify(previousMetadata[key]),
     );
     if (mismatches.length) {
       throw new Error(
@@ -454,15 +462,17 @@ if (args.compare) {
       );
     }
   }
-  const prior = z.record(
-    z.string(),
-    z.object({
-      medianOfMediansMs: z.number().nullable(),
-      failures: z.number(),
-    }),
-  ).parse(
-    JSON.parse(await Deno.readTextFile(`${previous}/suite-summary.json`)),
-  );
+  const prior = z
+    .record(
+      z.string(),
+      z.object({
+        medianOfMediansMs: z.number().nullable(),
+        failures: z.number(),
+      }),
+    )
+    .parse(
+      JSON.parse(await readFile(`${previous}/suite-summary.json`, "utf8")),
+    );
   lines.push(
     "",
     "## Matched previous suite",
@@ -475,17 +485,19 @@ if (args.compare) {
   for (const [name, group] of Object.entries(summary)) {
     const old = prior[name];
     if (
-      old && !old.failures && !group.failures && old.medianOfMediansMs &&
+      old &&
+      !old.failures &&
+      !group.failures &&
+      old.medianOfMediansMs &&
       group.medianOfMediansMs !== null
     ) {
       lines.push(
-        `| ${name} | ${old.medianOfMediansMs.toFixed(3)} | ${
-          group.medianOfMediansMs.toFixed(3)
-        } | ${
-          ((group.medianOfMediansMs / old.medianOfMediansMs - 1) * 100).toFixed(
-            1,
-          )
-        }% |`,
+        `| ${name} | ${old.medianOfMediansMs.toFixed(3)} | ${group.medianOfMediansMs.toFixed(
+          3,
+        )} | ${(
+          (group.medianOfMediansMs / old.medianOfMediansMs - 1) *
+          100
+        ).toFixed(1)}% |`,
       );
     }
   }
@@ -504,8 +516,8 @@ for (const run of rows) {
     }`,
   );
 }
-await Deno.writeTextFile(`${output}/report.md`, lines.join("\n") + "\n");
+await writeFile(`${output}/report.md`, lines.join("\n") + "\n");
 console.log(`Suite report: ${output}/report.md`);
 if (rows.length !== expectedRuns || rows.some((run) => !run.success)) {
-  Deno.exitCode = 1;
+  process.exitCode = 1;
 }

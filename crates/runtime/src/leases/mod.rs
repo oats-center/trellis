@@ -154,7 +154,10 @@ impl LeaseManager {
                         })
                     }
                     Ok(Some(entry))
-                        if matches!(entry.operation, kv::Operation::Delete | kv::Operation::Purge) =>
+                        if matches!(
+                            entry.operation,
+                            kv::Operation::Delete | kv::Operation::Purge
+                        ) =>
                     {
                         Err(LeaseError::NotHeld { key })
                     }
@@ -164,7 +167,8 @@ impl LeaseManager {
                         key: Some(key),
                         operation: "renew",
                         message: format!(
-                            "ambiguous update ({update_error}); failed to inspect current lease entry: {inspect_error}"
+                            "ambiguous update ({update_error}); failed to inspect current lease \
+                            entry: {inspect_error}"
                         ),
                     }),
                 }
@@ -412,7 +416,8 @@ async fn classify_revision_error(
             key: Some(key),
             operation,
             message: format!(
-                "revision mismatch ({error}); failed to inspect current lease entry: {inspect_error}"
+                "revision mismatch ({error}); failed to inspect current lease entry: \
+                {inspect_error}"
             ),
         },
     }

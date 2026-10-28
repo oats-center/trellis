@@ -35,6 +35,7 @@ identifier!(PackageId);
 identifier!(TypeId);
 identifier!(ApiId);
 identifier!(ParticipantId);
+identifier!(AppRequestId);
 identifier!(CapabilityId);
 identifier!(ResourceName);
 
@@ -243,6 +244,7 @@ pub struct SemanticPackage {
     pub(crate) types: BTreeMap<TypeId, TypeDefinition>,
     pub(crate) apis: BTreeMap<ApiId, ApiDefinition>,
     pub(crate) participants: BTreeMap<ParticipantId, ParticipantDefinition>,
+    pub(crate) app_requests: BTreeMap<AppRequestId, AppRequestDefinition>,
     pub(crate) sources: SourceMap,
 }
 
@@ -271,9 +273,9 @@ impl SemanticPackage {
     pub fn participants(&self) -> &BTreeMap<ParticipantId, ParticipantDefinition> {
         &self.participants
     }
-    /// Return source locations, excluded from semantic identity.
-    pub fn source_map(&self) -> &SourceMap {
-        &self.sources
+    /// Return application authoring metadata, which does not define installable principals.
+    pub fn app_requests(&self) -> &BTreeMap<AppRequestId, AppRequestDefinition> {
+        &self.app_requests
     }
 }
 
@@ -318,6 +320,9 @@ pub enum Primitive {
     Timestamp,
     /// Canonical uppercase ULID.
     Ulid,
+    /// Any JSON value, carried unchecked: object, array, string, number, bool,
+    /// or null.
+    Json,
 }
 
 /// Scalar or collection bounds.
@@ -418,6 +423,7 @@ pub struct ApiDefinition {
     pub(crate) errors: BTreeMap<String, Option<TypeRef>>,
     pub(crate) actions: BTreeMap<ActionId, ActionDefinition>,
     pub(crate) capabilities: BTreeMap<CapabilityId, CapabilityDefinition>,
+    pub(crate) groups: BTreeMap<CapabilityId, CapabilityGroupDefinition>,
     pub(crate) subjects: trellis_protocol::DerivedApiSubjects,
 }
 
@@ -453,6 +459,32 @@ impl ApiDefinition {
     /// Return API capabilities.
     pub fn capabilities(&self) -> &BTreeMap<CapabilityId, CapabilityDefinition> {
         &self.capabilities
+    }
+
+    /// Return the developer-defined capability groups.
+    pub fn groups(&self) -> &BTreeMap<CapabilityId, CapabilityGroupDefinition> {
+        &self.groups
+    }
+
+    /// The capabilities a selected capability or group stands for.
+    pub fn members<'a>(&'a self, id: &'a CapabilityId) -> Option<Vec<&'a CapabilityId>> {
+        if self.capabilities.contains_key(id) {
+            Some(vec![id])
+        } else {
+            self.groups
+                .get(id)
+                .map(|group| group.members.iter().collect())
+        }
+    }
+
+    /// Every action a selected capability or group allows.
+    pub fn selection_allows(&self, id: &CapabilityId) -> Option<BTreeSet<&ActionSelection>> {
+        Some(
+            self.members(id)?
+                .into_iter()
+                .flat_map(|member| &self.capabilities[member].allows)
+                .collect(),
+        )
     }
 
     /// Return protocol-derived subjects for every API action.
@@ -534,6 +566,9 @@ pub enum ActionDefinition {
         signals: BTreeMap<String, TypeRef>,
         /// Whether invocation accepts an upload grant.
         upload: bool,
+        /// Whether uploaded bytes stream directly to the handler instead of
+        /// being durably staged first. Implies `upload`; not replayable.
+        stream: bool,
     },
     /// Event definition.
     Event {
@@ -558,6 +593,20 @@ pub enum Pagination {
     Cursor,
 }
 
+/// A developer-defined bundle of an API's capabilities. Holders get the
+/// group's current members, so a membership change reaches them directly.
+#[derive(Clone, Debug)]
+pub struct CapabilityGroupDefinition {
+    /// Presentation title.
+    pub title: String,
+    /// Consent description.
+    pub description: String,
+    /// What holding it lets the holder do, shown for consent.
+    pub grants: String,
+    /// Member capabilities of the same API.
+    pub members: BTreeSet<CapabilityId>,
+}
+
 /// Capability policy and consent text.
 #[derive(Clone, Debug)]
 pub struct CapabilityDefinition {
@@ -565,12 +614,40 @@ pub struct CapabilityDefinition {
     pub title: String,
     /// Consent description.
     pub description: String,
-    /// Consent consequence.
-    pub consequence: String,
+    /// What holding it lets the holder do, shown for consent.
+    pub grants: String,
+    /// Manages the Trellis installation itself. Only the builtin `trellis`
+    /// package declares these.
+    pub administrative: bool,
     /// Exact covered actions.
     pub allows: BTreeSet<ActionSelection>,
     /// Whether the capability is public.
     pub public: bool,
+}
+
+/// The capability ID prefix of an API: `trellis.auth@v1` becomes
+/// `trellis.auth.v1`.
+pub fn capability_prefix(api: &str) -> String {
+    match api.rsplit_once('@') {
+        Some((name, major)) => format!("{name}.{major}"),
+        None => api.to_owned(),
+    }
+}
+
+/// Split a capability or group ID, `<package>.<api>.v<major>:<name>`, into its
+/// API ID and its contract-local name.
+pub fn split_capability_id(id: &str) -> Option<(String, &str)> {
+    let (prefix, name) = id.rsplit_once(':')?;
+    let (api, major) = prefix.rsplit_once(".v")?;
+    if major.is_empty() || !major.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((format!("{api}@v{major}"), name))
+}
+
+/// The contract-local name of a capability ID.
+pub fn capability_name(id: &str) -> &str {
+    split_capability_id(id).map_or(id, |(_, name)| name)
 }
 
 /// A selected action and direction.
@@ -645,10 +722,48 @@ pub enum ParticipantKind {
     Service,
     /// Native device process.
     Device,
-    /// User application.
-    App,
-    /// User agent.
-    Agent,
+}
+
+/// Application credential flow described by source-owned request metadata.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppKind {
+    /// Browser application.
+    Browser,
+    /// Native application or headless companion.
+    Native,
+}
+
+/// Developer request and local encoding metadata, never a deployed participant.
+#[derive(Clone, Debug)]
+pub struct AppRequestDefinition {
+    pub(crate) identity: AppRequestId,
+    pub(crate) name: String,
+    pub(crate) kind: AppKind,
+    pub(crate) uses: BTreeMap<ApiId, InteractionSelection>,
+    pub(crate) states: BTreeMap<ResourceName, ResourceDefinition>,
+}
+
+impl AppRequestDefinition {
+    /// Return the source-local request identity, not an OAuth client identifier.
+    pub fn identity(&self) -> &AppRequestId {
+        &self.identity
+    }
+    /// Return the lexical request name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Return the application flow kind.
+    pub fn kind(&self) -> AppKind {
+        self.kind
+    }
+    /// Return the selected whole capabilities and their generated callable surfaces.
+    pub fn uses(&self) -> &BTreeMap<ApiId, InteractionSelection> {
+        &self.uses
+    }
+    /// Return local State codecs; these are not provisioned resources.
+    pub fn states(&self) -> &BTreeMap<ResourceName, ResourceDefinition> {
+        &self.states
+    }
 }
 
 /// Exact interaction selections for one API.
@@ -658,17 +773,18 @@ pub struct InteractionSelection {
     pub api: ApiId,
     /// Selected API actions.
     pub actions: BTreeSet<ActionSelection>,
-    /// Implicated capabilities explicitly allowed to be unavailable.
+    /// Whole capabilities required for readiness.
+    pub required_capabilities: BTreeSet<CapabilityId>,
+    /// Whole capabilities requested only when available and approved.
     pub optional_capabilities: BTreeSet<CapabilityId>,
 }
 
-/// Exact participant authority needs derived from selected interactions and resources.
+/// Whole capability requests and the digest of source-owned deployment requirements.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParticipantNeeds {
     pub(crate) digest: String,
-    pub(crate) required_grants: trellis_protocol::GrantSet,
-    pub(crate) optional_grants: BTreeMap<String, trellis_protocol::GrantSet>,
     pub(crate) required_capabilities: BTreeSet<CapabilityId>,
+    pub(crate) optional_capabilities: BTreeSet<CapabilityId>,
     /// Optional capability alternatives per selected action.
     ///
     /// An action that any non-optional path covers has no entry, because it is
@@ -684,17 +800,13 @@ impl ParticipantNeeds {
     pub fn digest(&self) -> &str {
         &self.digest
     }
-    /// Return exact grants required for participant readiness.
-    pub fn required_grants(&self) -> &trellis_protocol::GrantSet {
-        &self.required_grants
-    }
-    /// Return exact optional grant bundles keyed by capability or resource identity.
-    pub fn optional_grants(&self) -> &BTreeMap<String, trellis_protocol::GrantSet> {
-        &self.optional_grants
-    }
-    /// Return implicated named capabilities required for readiness.
+    /// Return whole capabilities required for readiness.
     pub fn required_capabilities(&self) -> &BTreeSet<CapabilityId> {
         &self.required_capabilities
+    }
+    /// Return whole capabilities requested only when available and approved.
+    pub fn optional_capabilities(&self) -> &BTreeSet<CapabilityId> {
+        &self.optional_capabilities
     }
 
     /// Return optional capability alternatives keyed by selected action.
@@ -707,11 +819,11 @@ impl ParticipantNeeds {
     }
 }
 
-/// A device's single nested app or agent.
+/// A device's single nested application request.
 #[derive(Clone, Debug)]
 pub struct CompanionDefinition {
-    /// Nested participant identity.
-    pub participant: ParticipantId,
+    /// Nested request metadata identity, never a provisioned principal.
+    pub request: AppRequestId,
     /// Whether the companion may be unavailable.
     pub optional: bool,
 }

@@ -1,114 +1,194 @@
-import init, {
-  initSync,
-  type SyncInitInput,
-  type VerifiedAuthorizationContextHandle as WasmAuthorizationContextHandle,
-} from "./protocol_wasm/trellis_protocol_wasm.js";
-import * as protocolWasmModule from "./protocol_wasm/trellis_protocol_wasm.js";
-import { PROTOCOL_WASM_BASE64 } from "./protocol_wasm/trellis_protocol_wasm_bytes.ts";
+import type {
+  AuthenticatedCatalogHandle as WasmCatalogHandle,
+  AuthenticatedProviderCertificateHandle as WasmProviderCertificateHandle,
+  VerifiedSessionAuthorityHandle as WasmSessionAuthorityHandle,
+} from "./protocol_wasm/client/trellis_protocol_wasm.js";
+import * as clientProtocolWasm from "./protocol_wasm/client/trellis_protocol_wasm.js";
+import type * as ProviderProtocolWasm from "./protocol_wasm/provider/trellis_protocol_wasm.js";
+import { z } from "zod";
 import { base64urlDecode, type JsonValue } from "./utils.ts";
 
 type JsonObject = { [key: string]: JsonValue };
 
-const protocolWasm = protocolWasmModule;
+/** Generated bindings of the request-serving protocol build. */
+export type ProviderProtocolWasmModule = typeof ProviderProtocolWasm;
 
-/** Verification policy accepted by the Rust authorization protocol. */
-export type AuthorizationVerificationPolicy = {
+// Callers use the client build. Services and devices select the provider build,
+// a superset, before first use; one process runs exactly one instance.
+let protocolWasm: typeof clientProtocolWasm = clientProtocolWasm;
+let providerProtocolWasm: ProviderProtocolWasmModule | undefined;
+let protocolWasmUrl = new URL(
+  "./protocol_wasm/client/trellis_protocol_wasm_bg.wasm",
+  import.meta.url,
+);
+
+/**
+ * Select the provider protocol build for a request-serving process.
+ *
+ * Called once by the service and device entrypoints at import, before any
+ * protocol use. Selecting after the client build was loaded fails, because
+ * values created by one instance are invalid in another.
+ */
+export function selectProviderProtocolWasm(
+  bindings: ProviderProtocolWasmModule,
+  url: URL,
+): void {
+  if (providerProtocolWasm) return;
+  if (initialized || initializedSync) {
+    throw new Error(
+      "Trellis loaded its client protocol build before the service or device entrypoint; import that entrypoint first",
+    );
+  }
+  providerProtocolWasm = bindings;
+  protocolWasm = bindings;
+  protocolWasmUrl = url;
+}
+
+function providerProtocol(): ProviderProtocolWasmModule {
+  if (!providerProtocolWasm) {
+    throw new Error(
+      "this protocol operation serves requests; import @oatscenter/trellis/service or /device",
+    );
+  }
+  return providerProtocolWasm;
+}
+
+/** Bindings of the selected protocol build, initialized for synchronous use. */
+export function protocolBindings(): typeof clientProtocolWasm {
+  initializeProtocolWasmSync();
+  return protocolWasm;
+}
+
+/** Validate framework-private Operation state through the shared native codec. */
+export function normalizeOperationRecordWasm(value: unknown): unknown {
+  initializeProtocolWasmSync();
+  return JSON.parse(
+    providerProtocol().normalize_operation_record(JSON.stringify(value)),
+  );
+}
+
+/** Bounds and explicit clock accepted by the shared session-authority verifier. */
+export type SessionAuthorityVerificationPolicy = {
   nowUnixSeconds: number;
   allowedClockSkewSeconds: number;
-  maximumContextLifetimeSeconds: number;
-  maximumContextBytes: number;
-  maximumPermissions: number;
+  maximumAuthorityLifetimeSeconds: number;
+  maximumAuthorityBytes: number;
+  maximumEntries: number;
 };
 
-/** Context verification policy fields used to schedule refresh. */
-export type AuthorizationContextVerificationPolicy =
-  & AuthorizationVerificationPolicy
-  & {
-    refreshLeadSeconds: number;
-    refreshJitterSeconds: number;
-  };
-
-/** Online issuer entry and signed context supplied to a local verifier. */
-export type AuthorizationContextVerificationInput = {
-  issuer: AuthorizationIssuerKey;
-  context: unknown;
-};
-
-/** Public issuer entry authenticated by the configured Trellis origin. */
-export type AuthorizationIssuerKey = {
+/** Caller-supplied pinned key or key authenticated by a pinned rotation chain. */
+export type AuthorityIssuerKey = {
   keyId: string;
   publicKey: string;
   state: "active" | "retired" | "revoked";
 };
 
-/** Meta-authority not represented by ordinary permission atoms. */
-export type PlatformPrivilege = "trellis.auth::admin";
+/** Exact Rust-owned OAuth admission signature domain. */
+export const OAUTH_ADMISSION_FORMAT_V1 = "trellis.oauth-admission.v1";
 
-/** One exact API or participant-resource permission target. */
-export type PermissionTarget =
-  | {
-    kind: "apiSurface";
-    api: string;
-    surface: "rpc" | "operation" | "event" | "live" | "state";
-    name: string;
+/** Auth-certified OAuth client binding, not caller-asserted permissions. */
+export type OAuthAdmissionBinding =
+  | Readonly<{ bindingKind: "browser"; browserOrigin: string }>
+  | Readonly<{ bindingKind: "native"; nativeDpopJkt: string }>;
+
+/** Immutable projection of the Rust-owned signed OAuth admission body. */
+export type OAuthAdmission = Readonly<{
+  format: typeof OAUTH_ADMISSION_FORMAT_V1;
+  issuerKeyId: string;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  oauthGrantId: string;
+  refreshFamilyId: string;
+  loginSessionId: string;
+  principalId: string;
+  clientId: string;
+  binding: OAuthAdmissionBinding;
+  persistentDpopJkt: string;
+  runtimeId: string;
+  ephemeralNkey: string;
+  issuedAt: number;
+  notBefore: number;
+  expiresAt: number;
+}>;
+
+/** Exact signed envelope returned by successful shared verification. */
+export type SignedOAuthAdmission = Readonly<{
+  credential: OAuthAdmission;
+  signature: string;
+}>;
+
+/** Explicit pinned scope, runtime key and bounded validity for Rust verification. */
+export type OAuthAdmissionVerificationInput = Readonly<{
+  issuer: Readonly<AuthorityIssuerKey>;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  ephemeralNkey: string;
+  nowUnixSeconds: number;
+  maximumLifetimeSeconds: number;
+}>;
+
+/** Structured success or current shared authorization error. */
+export type VerifyOAuthAdmissionResult =
+  | Readonly<{ ok: true; admission: SignedOAuthAdmission }>
+  | Readonly<{ ok: false; error: AuthorizationVerificationError }>;
+
+/**
+ * Authenticate strict signed OAuth bytes with the existing Rust verifier.
+ * Callers must additionally check runtime/client/DPoP binding and saved grant
+ * identity before installing the credential or connecting.
+ */
+export async function verifyOAuthAdmissionWasm(
+  bytes: Uint8Array,
+  verification: OAuthAdmissionVerificationInput,
+): Promise<VerifyOAuthAdmissionResult> {
+  await initializeProtocolWasm();
+  const result = JSON.parse(
+    protocolWasm.verify_oauth_admission(bytes, JSON.stringify(verification)),
+  ) as VerifyOAuthAdmissionResult;
+  if (result.ok) {
+    Object.freeze(result.admission.credential.binding);
+    Object.freeze(result.admission.credential);
+    Object.freeze(result.admission);
+  } else {
+    Object.freeze(result.error);
   }
-  | {
-    kind: "participantResource";
-    participant: string;
-    resource: "kv" | "store" | "jobQueue" | "eventConsumer" | "state";
-    name: string;
-  }
-  | {
-    kind: "operationSignal";
-    api: string;
-    operation: string;
-    signal: string;
-  };
+  return Object.freeze(result);
+}
 
-/** One exact machine-enforceable permission atom. */
-export type PermissionAtom = {
-  target: PermissionTarget;
-  action:
-    | "call"
-    | "invoke"
-    | "observe"
-    | "cancel"
-    | "control"
-    | "publish"
-    | "subscribe"
-    | "read"
-    | "write"
-    | "delete"
-    | "submit"
-    | "process"
-    | "consume";
+/** Explicit trust scope and logical-session state for authority verification. */
+export type SessionAuthorityVerificationInput = {
+  issuer: AuthorityIssuerKey;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  policy: SessionAuthorityVerificationPolicy;
+  purpose: "live" | "historicalEvent";
+  revocationCutoff: number | null;
 };
 
-/** Grant set projection returned by local authorization verification. */
-export type GrantSet = {
-  format: "trellis.grant-set.v1";
-  permissions: PermissionAtom[];
+/** Exact route identity bound by the Rust-owned request transcript. */
+export type SessionRequest = {
+  authorityDigest: string;
+  apiId: string;
+  apiGeneration: string;
+  acceptedRevision: string;
+  action: string;
+  subject: string;
+  replySubject: string | null;
+  requestId: string;
+  issuedAt: number;
 };
 
-/** Verified request caller projection. */
-export type VerifiedAuthorizationRequestProjection = { contextDigest: string };
-
-/** Verified event publisher projection. */
-export type VerifiedAuthorizationEventPublisher = {
-  kind: "user" | "service" | "device";
-  deploymentId: string | null;
-  instanceId: string | null;
-  participantId: string;
-  connectionId: string;
-  loginSessionId: string | null;
+/** Rust-owned original event identity and accepted-catalog stamp. */
+export type SessionEvent = {
+  authorityDigest: string;
+  apiId: string;
+  apiGeneration: string;
+  acceptedRevision: string;
+  action: string;
+  subject: string;
+  eventId: string;
+  eventTime: string;
 };
-
-/** Verified event publisher projection. */
-export type VerifiedAuthorizationEventProjection =
-  & VerifiedAuthorizationRequestProjection
-  & {
-    publisher: VerifiedAuthorizationEventPublisher;
-  };
 
 /** Stable error categories returned by local authorization verification. */
 export type AuthorizationVerificationErrorCode =
@@ -131,9 +211,12 @@ export type AuthorizationVerificationErrorCode =
   | "ContextLifetimeExceeded"
   | "InvalidSessionKey"
   | "PermissionDenied"
+  | "ScopeMismatch"
+  | "SessionRevoked"
   | "ContextTooLarge"
   | "ProofIatOutOfRange"
   | "InvalidRequestProof"
+  | "InvalidResponseProof"
   | "ReplySubjectMismatch"
   | "InvalidEventTime"
   | "InvalidEventProof"
@@ -145,41 +228,128 @@ export type AuthorizationVerificationError = {
   path: string;
 };
 
-/** Result envelope returned by a local request authorization verifier. */
-export type VerifyAuthorizationRequestResult =
-  | ({ ok: true } & VerifiedAuthorizationRequestProjection)
+/** Auth-verified client or provisioned deployment binding. */
+export type SessionBinding =
+  | { kind: "browser"; clientId: string; origin: string }
+  | { kind: "native"; clientId: string; durableDpopJkt: string }
+  | {
+      kind: "service" | "device";
+      deploymentId: string;
+      instanceId: string;
+      participantId: string;
+    };
+
+/** Approved whole-capability identity, with canonical decimal counters. */
+export type CapabilityAuthority = {
+  capabilityId: string;
+  identityGeneration: string;
+  consentRevision: string;
+};
+
+/** Accepted API stamp captured by the signed authority. */
+export type AuthorityApi = {
+  apiId: string;
+  generation: string;
+  acceptedRevision: string;
+  catalogSnapshotDigest: string;
+};
+
+/** Rust-owned authenticated identity projection; action authorization is separate. */
+export type AuthenticatedCaller = {
+  authorityDigest: string;
+  principalId: string;
+  principalKind: "user" | "service" | "device";
+  binding: SessionBinding;
+  authorizationSessionId: string;
+  runtimeId: string;
+  sessionPublicKey: string;
+  inboxPrefix: string;
+  loginSessionId?: string;
+  oauthGrantId?: string;
+  capabilities: CapabilityAuthority[];
+  apis: AuthorityApi[];
+  /** The user's own profile, for user principals. */
+  user?: CallerUser;
+};
+
+/**
+ * Auth's profile of a user caller, as of the authority's issuance.
+ *
+ * Identification only: the stable key is `principalId`, and names and email
+ * are neither unique nor authorization.
+ */
+export type CallerUser = {
+  displayName: string;
+  givenName?: string;
+  familyName?: string;
+  email?: string;
+  emailVerified: boolean;
+  /** Stable Trellis-hosted photo URL; a new photo gets a new URL. */
+  avatarUrl?: string;
+};
+
+/** Cryptographically authenticated request binding, before dispatch authorization. */
+export type VerifySessionRequestResult =
+  | {
+      ok: true;
+      authorityDigest: string;
+      requestProofDigest: string;
+      caller: AuthenticatedCaller;
+    }
   | { ok: false; error: AuthorizationVerificationError };
 
-/** Result envelope returned by a local event authorization verifier. */
-export type VerifyAuthorizationEventResult =
-  | ({ ok: true } & VerifiedAuthorizationEventProjection)
-  | { ok: false; error: AuthorizationVerificationError };
+/** Received bytes and actual route metadata, not a payload-supplied hash. */
+export type VerifySessionRequestArgs = {
+  authorityHandle: SessionAuthorityHandle;
+  request: SessionRequest;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
+  proof: string;
+  policy: SessionAuthorityVerificationPolicy;
+  knownRevoked: boolean;
+};
 
-/** Arguments for local context-bound request authorization. */
-export type VerifyAuthorizationRequestArgs = {
-  contextHandle: AuthorizationContextHandle;
-  subject: string;
-  reply: string | null;
-  payload: Uint8Array;
-  iat: number;
+/** Rust-owned provider response transcript fields, before verification. */
+export type SessionResponse = {
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  providerAuthorityDigest: string;
+  providerCertificateDigest: string;
+  apiId: string;
+  apiGeneration: string;
+  action: string;
+  requestAuthorityDigest: string;
   requestId: string;
-  proof: string;
-  requiredPermissions: PermissionAtom[];
-  policy: AuthorizationVerificationPolicy;
+  requestProofDigest: string;
+  subject: string;
+  kind: "success" | "error";
+  issuedAt: number;
 };
 
-/** Arguments for local context-bound event authorization. */
-export type VerifyAuthorizationEventArgs = {
-  contextHandle: AuthorizationContextHandle;
-  descriptorIdentity: string;
-  subject: string;
-  payload: Uint8Array;
-  eventId: string;
-  eventTime: string;
+/** Exact retained opening and actual transport metadata for provider verification. */
+export type VerifySessionResponseArgs = {
+  providerHandle: SessionAuthorityHandle;
+  response: SessionResponse;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
   proof: string;
-  policy: AuthorizationVerificationPolicy;
-  revokedAt?: number | null;
+  /** The provider's certificate, authenticated once when it was fetched. */
+  certificate: ProviderCertificateHandle;
+  certificateIssuer: AuthorityIssuerKey;
+  pendingRequest: SessionRequest;
+  pendingRequestDigest: string;
+  /** Route-owned surface/name/direction, never inferred from a response. */
+  action: JsonObject;
+  expectedDeploymentId: string | null;
+  receivedSubject: string;
+  policy: SessionAuthorityVerificationPolicy;
+  knownRevoked: boolean;
 };
+
+/** Only a successful shared verification authenticates application result bytes. */
+export type VerifySessionResponseResult =
+  | { ok: true; providerAuthorityDigest: string; response: SessionResponse }
+  | { ok: false; error: AuthorizationVerificationError };
 
 /**
  * Exact signed NATS transport authorization bound into a context.
@@ -208,103 +378,466 @@ export const TRANSPORT_AUTHORIZATION_FORMAT_V1 =
 
 /** Result of classifying admitted transport policy against currently allowed. */
 export type TransportPolicyClass =
-  | "current"
-  | "upgrade_available"
-  | "reduction_required";
+  "current" | "upgrade_available" | "reduction_required";
 
-/** Projection returned after verifying an online-issued context. */
-export type VerifiedAuthorizationContextTokenProjection = {
-  issuer: AuthorizationIssuerKey;
-  contextDigest: string;
-  refreshAt: number;
-  context: Record<string, unknown> & {
-    ownerKind: "deployment" | "user";
-    ownerId: string;
-    grantRevision: number;
-    principalId: string;
-    principalKind: "user" | "service" | "device";
-    participantId: string;
-    identityKeyId: string | null;
-    loginSessionId: string | null;
-    deploymentId: string | null;
-    instanceId: string | null;
-    issuerKeyId: string;
-    connectionId: string;
-    sessionKey: string;
-    inboxPrefix: string;
-    issuedAt: number;
-    notBefore: number;
-    expiresAt: number;
-    grants: GrantSet;
-    platformPrivileges: PlatformPrivilege[];
-    transportAuthorization: TransportAuthorizationV1;
-  };
+/** Immutable signed material authenticated by the Rust-owned parser/verifier. */
+export type VerifiedSessionAuthorityProjection = {
+  authorityDigest: string;
+  authority: SessionAuthority;
 };
 
-/** Opaque Rust/WASM verification state for one authorization context. */
-export type AuthorizationContextHandle = WasmAuthorizationContextHandle;
+/** Authenticated Rust projection, not a TypeScript contract-authoring schema. */
+export type SessionAuthority = Omit<AuthenticatedCaller, "authorityDigest"> & {
+  format: string;
+  issuerKeyId: string;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  providerBindings: {
+    apiId: string;
+    generation: string;
+    deploymentId: string;
+    implementationDigest: string;
+    providerCertificateDigest: string;
+  }[];
+  resourceBindingsDigest?: string;
+  issuedAt: number;
+  notBefore: number;
+  expiresAt: number;
+  extensions: JsonObject;
+  critical: string[];
+  signature: string;
+};
+
+/** Native protocol's ephemeral-key proof for the first own-context lookup. */
+export type AdmissionGet = {
+  trellisInstanceId: string;
+  runtimeId: string;
+  sessionPublicKey: string;
+  attachmentId: string;
+  requestNonce: string;
+  issuedAt: number;
+};
+
+/** Native protocol's issuer-authenticated installation response. */
+export type AdmissionContext = {
+  format: string;
+  issuerKeyId: string;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  runtimeId: string;
+  requestNonce: string;
+  requestSubject: string;
+  replySubject: string;
+  sessionAuthority: string;
+  registry: JsonObject;
+  issuedAt: number;
+  expiresAt: number;
+};
+
+/** Sign the native admission transcript, including actual request/reply subjects. */
+export async function signAdmissionGetWasm(
+  request: AdmissionGet,
+  subject: string,
+  reply: string,
+  seed: Uint8Array,
+): Promise<string> {
+  await initializeProtocolWasm();
+  return protocolWasm.sign_admission_get(
+    JSON.stringify(request),
+    subject,
+    reply,
+    seed,
+  );
+}
+
+/** Native provisioned CONNECT proof; Auth alone resolves principal and implementation. */
+export async function signProvisionedAdmissionWasm(
+  credential: {
+    format: "trellis.provisioned-admission.v1";
+    trellisInstanceId: string;
+    audienceNatsAccount: string;
+    credentialId: string;
+    runtimeId: string;
+    ephemeralNkey: string;
+    issuedAt: number;
+    expiresAt: number;
+  },
+  seed: Uint8Array,
+): Promise<string> {
+  await initializeProtocolWasm();
+  return providerProtocol().sign_provisioned_admission(
+    JSON.stringify(credential),
+    seed,
+  );
+}
+
+/** Authenticate exact own-context bytes against a selected issuer and pending lookup. */
+export async function verifyAdmissionContextWasm(
+  bytes: Uint8Array,
+  issuer: AuthorityIssuerKey,
+  request: AdmissionGet,
+  subject: string,
+  reply: string,
+  account: string,
+  now: number,
+): Promise<AdmissionContext> {
+  await initializeProtocolWasm();
+  const result: { response: AdmissionContext } = JSON.parse(
+    protocolWasm.verify_admission_context(
+      bytes,
+      JSON.stringify({
+        issuer,
+        request,
+        subject,
+        reply,
+        account,
+        nowUnixSeconds: now,
+      }),
+    ),
+  );
+  return result.response;
+}
+
+/** Compiler-owned exact dispatcher identity. */
+export type CatalogActionIdentity = {
+  kind: "rpc" | "event" | "operation" | "live" | "state";
+  name: string;
+  direction:
+    | "call"
+    | "invoke"
+    | "observe"
+    | "cancel"
+    | "control"
+    | "publish"
+    | "subscribe"
+    | "read"
+    | "write"
+    | "delete"
+    | "submit"
+    | "process"
+    | "consume";
+};
+
+/** Issuer-authenticated immutable catalog projection returned by Rust. */
+export type CatalogSnapshot = {
+  issuerKeyId: string;
+  apiId: string;
+  generation: string;
+  acceptedRevision: string;
+  definitionDigest: string;
+};
+
+/** Authenticated sticky logical-session retirement, also used for history. */
+export type SessionRevocation = {
+  issuerKeyId: string;
+  authorizationSessionId: string;
+  effectiveCutoff: number;
+  latestContextExpiry: number;
+};
+
+/** Exact protocol-owned public issuer metadata lookup. */
+export type IssuerMetadataQuery =
+  | { kind: "authorityResolve"; contextDigest: string }
+  | { kind: "authorityStatus"; authorizationSessionId: string }
+  | { kind: "issuerKey"; keyId: string }
+  | { kind: "issuerChain"; pinnedKeyId: string; targetKeyId: string };
+
+/** Retained scope and nonce for a signed issuer metadata exchange. */
+export type IssuerMetadataRequest = {
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  requestNonce: string;
+  query: IssuerMetadataQuery;
+};
+
+/** Issuer-authenticated result; missing and unavailable are never authority. */
+export type IssuerMetadataResponse = {
+  issuerKeyId: string;
+  request: IssuerMetadataRequest;
+  requestSubject: string;
+  replySubject: string;
+  issuedAt: number;
+  expiresAt: number;
+  result:
+    { kind: "value"; payload: string } | { kind: "missing" | "unavailable" };
+};
+
+/** Exact signed JSON text of one issuer-signed artifact. */
+const signedText = z.string().min(1);
+
+/** `authorityResolve` answer: an immutable authority and its signed material. */
+export const authorityMaterialSchema = z
+  .object({
+    authority: signedText,
+    catalogs: z.array(signedText),
+    providers: z.array(signedText),
+  })
+  .strict();
+export type AuthorityMaterial = z.infer<typeof authorityMaterialSchema>;
+
+/** `authorityStatus` answer: a logical session's state and any signed cutoff. */
+export const authorizationSessionStatusSchema = z
+  .object({
+    authorizationSessionId: z.string(),
+    state: z.enum(["active", "superseded", "revoked"]),
+    revocation: signedText.optional(),
+  })
+  .strict();
+export type AuthorizationSessionStatus = z.infer<
+  typeof authorizationSessionStatusSchema
+>;
+
+/** `issuerChain` answer and the HTTP issuer-chain response, oldest rotation first. */
+export const issuerChainSchema = z
+  .object({ rotations: z.array(signedText).max(128) })
+  .strict();
+export type IssuerChain = z.infer<typeof issuerChainSchema>;
+
+/** The bytes the verifiers take for a signed artifact's JSON text. */
+export function signedBytes(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+/** Read the shared protocol's admitted-only metadata route. */
+export async function issuerMetadataSubjectWasm(): Promise<string> {
+  await initializeProtocolWasm();
+  return protocolWasm.issuer_metadata_subject();
+}
+
+/** Authenticate exact request, route, reply destination, freshness and pinned issuer. */
+export async function verifyIssuerMetadataWasm(
+  bytes: Uint8Array,
+  verification: {
+    issuer: AuthorityIssuerKey;
+    request: IssuerMetadataRequest;
+    requestSubject: string;
+    replySubject: string;
+    nowUnixSeconds: number;
+  },
+): Promise<IssuerMetadataResponse> {
+  await initializeProtocolWasm();
+  return parseWasmResult<{ response: IssuerMetadataResponse }>(
+    protocolWasm.verify_issuer_metadata(JSON.stringify(verification), bytes),
+  ).response;
+}
+
+/** Trusted installation/account and signer supplied to metadata verification. */
+export type MetadataVerification = {
+  issuer: AuthorityIssuerKey;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  nowUnixSeconds: number;
+  installedSequence?: string;
+};
+
+/** Authenticate one bounded cold-path record in the canonical protocol implementation. */
+export async function verifyAuthorityMetadataWasm(
+  kind: "rotation" | "revocation",
+  bytes: Uint8Array,
+  verification: MetadataVerification,
+): Promise<{
+  digest: string;
+  record: JsonObject;
+  successor?: AuthorityIssuerKey;
+}> {
+  await initializeProtocolWasm();
+  return parseWasmResult(
+    protocolWasm.verify_authority_metadata(
+      kind,
+      bytes,
+      JSON.stringify(verification),
+    ),
+  );
+}
+
+/** Check whole-capability membership against a catalog authenticated once. */
+export async function authorizeCatalogActionWasm(
+  authority: SessionAuthorityHandle,
+  catalog: CatalogHandle,
+  verification: MetadataVerification,
+  action: CatalogActionIdentity,
+): Promise<boolean> {
+  await initializeProtocolWasm();
+  return parseWasmResult<{ authorized: boolean }>(
+    protocolWasm.authorize_catalog_action(
+      authority,
+      catalog,
+      JSON.stringify(verification),
+      JSON.stringify(action),
+    ),
+  ).authorized;
+}
+
+/** Issuers, scope and authenticated times for a provider's own event publication. */
+export type ProviderEventPublication = {
+  catalogIssuer: AuthorityIssuerKey;
+  certificateIssuer: AuthorityIssuerKey;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  at: number;
+  publishedAt?: number;
+};
+
+/** Authorize a provider's own event publication by its certified implementation. */
+export async function authorizeProviderEventPublicationWasm(
+  authority: SessionAuthorityHandle,
+  catalog: CatalogHandle,
+  certificate: ProviderCertificateHandle,
+  publication: ProviderEventPublication,
+  action: CatalogActionIdentity,
+): Promise<boolean> {
+  await initializeProtocolWasm();
+  return parseWasmResult<{ authorized: boolean }>(
+    protocolWasm.authorize_provider_event_publication(
+      authority,
+      catalog,
+      certificate,
+      JSON.stringify(publication),
+      JSON.stringify(action),
+    ),
+  ).authorized;
+}
+
+/** A catalog snapshot authenticated once by the shared protocol. */
+export type CatalogHandle = WasmCatalogHandle;
+
+/** A provider certificate authenticated once by the shared protocol. */
+export type ProviderCertificateHandle = WasmProviderCertificateHandle;
+
+/**
+ * Authenticate a catalog snapshot once. Later authorizations recheck only
+ * the issuer and trust scope against the returned handle.
+ */
+export async function authenticateCatalogWasm(
+  bytes: Uint8Array,
+  verification: MetadataVerification,
+): Promise<{ handle: CatalogHandle; digest: string; record: JsonObject }> {
+  await initializeProtocolWasm();
+  const handle = protocolWasm.create_catalog_handle(
+    bytes,
+    JSON.stringify(verification),
+  );
+  const { digest, record } = JSON.parse(handle.projection()) as {
+    digest: string;
+    record: JsonObject;
+  };
+  return { handle, digest, record };
+}
+
+/**
+ * Authenticate a provider certificate once, valid at
+ * `verification.nowUnixSeconds`. Later uses recheck issuer, scope and time.
+ */
+export async function authenticateProviderCertificateWasm(
+  bytes: Uint8Array,
+  verification: MetadataVerification,
+): Promise<{
+  handle: ProviderCertificateHandle;
+  digest: string;
+  record: JsonObject;
+}> {
+  await initializeProtocolWasm();
+  const handle = protocolWasm.create_provider_certificate_handle(
+    bytes,
+    JSON.stringify(verification),
+  );
+  const { digest, record } = JSON.parse(handle.projection()) as {
+    digest: string;
+    record: JsonObject;
+  };
+  return { handle, digest, record };
+}
+
+/** Original broker provenance; never synthesized from a publisher's header. */
+export type OriginalEventPublication = {
+  publishedAt: string;
+  streamSequence: string;
+};
+
+/** Verify live or historical event bytes with actual retained broker provenance. */
+export async function verifySessionEventWasm(args: {
+  authorityHandle: SessionAuthorityHandle;
+  event: SessionEvent;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
+  proof: string;
+  policy: SessionAuthorityVerificationPolicy;
+  originalPublication: OriginalEventPublication | null;
+  knownRevoked: boolean;
+}): Promise<
+  | { ok: true; authorityDigest: string; publisherAuthority: SessionAuthority }
+  | { ok: false; error: AuthorizationVerificationError }
+> {
+  await initializeProtocolWasm();
+  const { authorityHandle, payloadSha256, ...verification } = args;
+  return JSON.parse(
+    protocolWasm.verify_session_event(
+      authorityHandle,
+      JSON.stringify(verification),
+      payloadSha256,
+    ),
+  );
+}
+
+/** Opaque shared verification state for one immutable session authority. */
+export type SessionAuthorityHandle = WasmSessionAuthorityHandle;
 
 let initialized: Promise<void> | undefined;
 let initializedSync = false;
 
-async function wasmBytes(): Promise<Uint8Array> {
-  const url = new URL(
-    "./protocol_wasm/trellis_protocol_wasm_bg.wasm",
-    import.meta.url,
-  );
-  if (url.protocol === "file:") {
-    const { readFile } = await import("node:fs/promises");
-    return new Uint8Array(await readFile(url));
-  }
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(
-      `authorization protocol WASM returned HTTP ${response.status}`,
-    );
-  }
-  return new Uint8Array(await response.arrayBuffer());
-}
-
-/** Initialize the shared Rust protocol implementation before asynchronous use. */
+/** Initialize the selected protocol build before asynchronous use. */
 export async function initializeProtocolWasm(): Promise<void> {
+  if (initializedSync) return;
   initialized ??= (async () => {
-    await init({ module_or_path: await wasmBytes() });
+    const bindings = protocolWasm;
+    const url = protocolWasmUrl;
+    if (url.protocol === "file:") {
+      const { readFile } = await import("node:fs/promises");
+      await bindings.default({ module_or_path: await readFile(url) });
+      return;
+    }
+    // Browsers fetch the module as a separate cacheable asset.
+    await bindings.default({ module_or_path: fetch(url) });
   })();
   await initialized;
+  initializedSync = true;
 }
 
-/** Initialize the shared Rust protocol implementation before synchronous use. */
+/**
+ * Initialize the selected protocol build for synchronous use.
+ *
+ * Server runtimes read the module from disk. Browsers cannot load it
+ * synchronously; connecting initializes it first.
+ */
 export function initializeProtocolWasmSync(): void {
   if (initializedSync) return;
-  const url = new URL(
-    "./protocol_wasm/trellis_protocol_wasm_bg.wasm",
-    import.meta.url,
-  );
-  const runtime = globalThis as Record<string, unknown>;
-  const process = runtime["pro" + "cess"] as
-    | {
-      versions?: { node?: string };
-      getBuiltinModule?: (name: string) => {
-        readFileSync(path: URL): Uint8Array;
-      };
-    }
-    | undefined;
-  if (process?.versions?.node && process.getBuiltinModule) {
-    initSync({
-      module: process.getBuiltinModule("node:fs").readFileSync(
-        url,
-      ) as SyncInitInput,
-    });
-    initializedSync = true;
-    return;
+  const fs =
+    protocolWasmUrl.protocol === "file:"
+      ? globalThis.process?.getBuiltinModule?.("node:fs")
+      : undefined;
+  if (!fs) {
+    throw new Error(
+      "Trellis protocol is not initialized; connect, or await initializeProtocolWasm(), first",
+    );
   }
-  const binary = atob(PROTOCOL_WASM_BASE64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  initSync({ module: bytes as SyncInitInput });
+  protocolWasm.initSync({ module: fs.readFileSync(protocolWasmUrl) });
   initializedSync = true;
+}
+
+/** Verify before decoding a provider result or completing its pending request. */
+export async function verifySessionResponseWasm(
+  args: VerifySessionResponseArgs,
+): Promise<VerifySessionResponseResult> {
+  await initializeProtocolWasm();
+  const { providerHandle, certificate, payloadSha256, ...verification } = args;
+  return JSON.parse(
+    protocolWasm.verify_session_response(
+      providerHandle,
+      certificate,
+      JSON.stringify(verification),
+      payloadSha256,
+    ),
+  ) as VerifySessionResponseResult;
 }
 
 /** Derive an API-qualified event subject through the shared Rust protocol. */
@@ -348,62 +881,37 @@ export async function decodePaginationCursor<T>(
   ) as T;
 }
 
-/** Verify a complete signed authorization context through Rust/WASM. */
-export async function verifyAuthorizationContextWasm(args: {
-  issuer: AuthorizationIssuerKey;
-  context: unknown;
-  policy: AuthorizationContextVerificationPolicy;
-}): Promise<VerifiedAuthorizationContextTokenProjection> {
-  const { handle, verified } = await createAuthorizationContextHandleWasm(args);
-  handle.free();
-  return verified;
-}
-
-/** Verify and retain one authorization context for repeated proof checks. */
-export async function createAuthorizationContextHandleWasm(args: {
-  issuer: AuthorizationIssuerKey;
-  context: unknown;
-  policy: AuthorizationContextVerificationPolicy;
-  historical?: boolean;
+/** Verify bounded target authority under the configured pinned trust scope. */
+export async function createSessionAuthorityHandleWasm(args: {
+  verification: SessionAuthorityVerificationInput;
+  authorityBytes: Uint8Array;
 }): Promise<{
-  handle: AuthorizationContextHandle;
-  verified: VerifiedAuthorizationContextTokenProjection;
+  handle: SessionAuthorityHandle;
+  verified: VerifiedSessionAuthorityProjection;
 }> {
   await initializeProtocolWasm();
-  const handle = protocolWasm.create_authorization_context_handle(
-    JSON.stringify(args.issuer),
-    JSON.stringify(args.context),
-    JSON.stringify(wasmVerificationPolicy(args.policy)),
-    args.historical ?? false,
+  const handle = protocolWasm.create_session_authority_handle(
+    JSON.stringify(args.verification),
+    args.authorityBytes,
   );
   try {
-    const result = JSON.parse(
+    const verified = JSON.parse(
       handle.projection(),
-    ) as VerifiedAuthorizationContextTokenProjection;
-    const jitter = contextJitter(
-      result.contextDigest,
-      args.policy.refreshJitterSeconds,
-    );
-    return {
-      handle,
-      verified: {
-        ...result,
-        refreshAt: result.context.expiresAt - args.policy.refreshLeadSeconds -
-          jitter,
-      },
-    };
+    ) as VerifiedSessionAuthorityProjection;
+    return { handle, verified };
   } catch (error) {
     handle.free();
     throw error;
   }
 }
 
-/** Require an opaque verified context to be currently eligible. */
-export function assertAuthorizationContextHandleCurrentWasm(
-  handle: AuthorizationContextHandle,
-  policy: AuthorizationContextVerificationPolicy,
+/** Recheck time and sticky session revocation after any asynchronous resolution. */
+export function assertSessionAuthorityHandleCurrentWasm(
+  handle: SessionAuthorityHandle,
+  policy: SessionAuthorityVerificationPolicy,
+  knownRevoked: boolean,
 ): void {
-  handle.assert_current(JSON.stringify(wasmVerificationPolicy(policy)));
+  handle.assert_current(JSON.stringify(policy), knownRevoked);
 }
 
 /**
@@ -430,114 +938,55 @@ export async function classifyTransportAuthorizationWasm(
   allowed: TransportAuthorizationV1,
   nowUnixSeconds: number,
 ): Promise<TransportPolicyClass> {
+  if (!Number.isFinite(nowUnixSeconds)) {
+    throw new Error("now must be a finite number");
+  }
+  // Time enters only through the admitted policy's hard deadline; subject
+  // coverage between two immutable policies never changes, so it is computed
+  // once (at time 0, before every valid deadline) and reused.
+  if (
+    admitted.hardExpiresAt !== null &&
+    admitted.hardExpiresAt <= nowUnixSeconds
+  ) {
+    await initializeProtocolWasm();
+    return JSON.parse(
+      protocolWasm.classify_transport_authorization(
+        JSON.stringify(admitted),
+        JSON.stringify(allowed),
+        nowUnixSeconds,
+      ),
+    ) as TransportPolicyClass;
+  }
+  const admittedJson = JSON.stringify(admitted);
+  const allowedJson = JSON.stringify(allowed);
+  const key = `${admittedJson}\u0000${allowedJson}`;
+  const cached = transportClassCache.get(key);
+  if (cached) return cached;
   await initializeProtocolWasm();
-  return JSON.parse(
-    protocolWasm.classify_transport_authorization(
-      JSON.stringify(admitted),
-      JSON.stringify(allowed),
-      nowUnixSeconds,
-    ),
+  const relation = JSON.parse(
+    protocolWasm.classify_transport_authorization(admittedJson, allowedJson, 0),
   ) as TransportPolicyClass;
+  if (transportClassCache.size >= 256) transportClassCache.clear();
+  transportClassCache.set(key, relation);
+  return relation;
 }
+const transportClassCache = new Map<string, TransportPolicyClass>();
 
-/**
- * Encode a permission target as the canonical bytes an `AuthPermissionAtom`
- * carries.
- *
- * The protocol crate owns validation and the canonical (RFC 8785) encoding, so
- * TypeScript authors the logical target and never reconstructs the byte form.
- */
-export async function encodePermissionTargetWasm(
-  target: PermissionTarget,
-): Promise<Uint8Array> {
+/** Authenticate exact request bytes and captured API identity through Rust/WASM. */
+export async function verifySessionRequestWasm(
+  args: VerifySessionRequestArgs,
+): Promise<VerifySessionRequestResult> {
   await initializeProtocolWasm();
-  return protocolWasm.encode_permission_target(JSON.stringify(target));
-}
-
-/** Build a participant-resource permission target. */
-export function participantResourceTarget(args: {
-  participant: string;
-  resource: "kv" | "store" | "jobQueue" | "eventConsumer" | "state";
-  name: string;
-}): PermissionTarget {
-  return { kind: "participantResource", ...args };
-}
-
-/** Verify one context-bound request proof using actual received request bytes. */
-export async function verifyAuthorizationRequestWasm(
-  args: VerifyAuthorizationRequestArgs,
-): Promise<VerifyAuthorizationRequestResult> {
-  await initializeProtocolWasm();
-  const { contextHandle, payload, ...input } = args;
+  const { authorityHandle, payloadSha256, ...input } = args;
   return JSON.parse(
-    protocolWasm.verify_authorization_request(
-      contextHandle,
-      JSON.stringify({
-        ...input,
-        policy: wasmVerificationPolicy(args.policy),
-      }),
-      payload,
+    providerProtocol().verify_session_request(
+      authorityHandle,
+      JSON.stringify(input),
+      payloadSha256,
     ),
-  ) as VerifyAuthorizationRequestResult;
+  ) as VerifySessionRequestResult;
 }
 
-/** Verify a compact Transfer proof against exact pinned session coordinates. */
-export async function verifyTransferAuthorizationRequestWasm(
-  args: VerifyAuthorizationRequestArgs,
-  providerId: string,
-  expectedConsumerConnection: string,
-  transferId: string,
-): Promise<VerifyAuthorizationRequestResult> {
-  await initializeProtocolWasm();
-  const { contextHandle, payload, ...input } = args;
-  return JSON.parse(
-    protocolWasm.verify_transfer_authorization_request(
-      contextHandle,
-      JSON.stringify({ ...input, policy: wasmVerificationPolicy(args.policy) }),
-      payload,
-      providerId,
-      expectedConsumerConnection,
-      transferId,
-    ),
-  ) as VerifyAuthorizationRequestResult;
-}
-
-/** Verify one context-bound event proof, including historical time/revocation checks. */
-export async function verifyAuthorizationEventWasm(
-  args: VerifyAuthorizationEventArgs,
-): Promise<VerifyAuthorizationEventResult> {
-  await initializeProtocolWasm();
-  const { contextHandle, payload, ...input } = args;
-  return JSON.parse(
-    protocolWasm.verify_authorization_event(
-      contextHandle,
-      JSON.stringify({
-        ...input,
-        policy: wasmVerificationPolicy(args.policy),
-      }),
-      payload,
-    ),
-  ) as VerifyAuthorizationEventResult;
-}
-
-function wasmVerificationPolicy(
-  policy: AuthorizationVerificationPolicy,
-): AuthorizationVerificationPolicy {
-  return {
-    nowUnixSeconds: policy.nowUnixSeconds,
-    allowedClockSkewSeconds: policy.allowedClockSkewSeconds,
-    maximumContextLifetimeSeconds: policy.maximumContextLifetimeSeconds,
-    maximumContextBytes: policy.maximumContextBytes,
-    maximumPermissions: policy.maximumPermissions,
-  };
-}
-
-function contextJitter(contextDigest: string, maximum: number): number {
-  const bytes = base64urlDecode(contextDigest);
-  let value = 0n;
-  for (const byte of bytes.slice(0, 8)) value = (value << 8n) | BigInt(byte);
-  return Number(value % BigInt(maximum + 1));
-}
 /** Wire reason a live observation ended. */
 export type LiveEndReasonWire =
   | "complete"
@@ -560,29 +1009,29 @@ export type LiveErrorCodeWire = string;
 /** One parsed provider data-channel frame projection. */
 export type LiveFrameWire =
   | {
-    format: string;
-    type: "data";
-    sessionId: string;
-    seq: string;
-    value: unknown;
-  }
+      format: string;
+      type: "data";
+      sessionId: string;
+      seq: string;
+      value: unknown;
+    }
   | {
-    format: string;
-    type: "challenge";
-    sessionId: string;
-    challengeId: string;
-    lastSentSeq: string;
-  }
+      format: string;
+      type: "challenge";
+      sessionId: string;
+      challengeId: string;
+      lastSentSeq: string;
+    }
   | {
-    format: string;
-    type: "end";
-    sessionId: string;
-    finalSeq: string;
-    terminal: {
-      reason: LiveEndReasonWire;
-      error: { code: string; message: string; traceId?: string } | null;
+      format: string;
+      type: "end";
+      sessionId: string;
+      finalSeq: string;
+      terminal: {
+        reason: LiveEndReasonWire;
+        error: { code: string; message: string; traceId?: string } | null;
+      };
     };
-  };
 
 /** One parsed consumer control projection. */
 export type LiveControlWire = {
@@ -621,7 +1070,7 @@ export type LiveOfferWire = {
     connectionId: string;
     sessionKey: string;
     principalId: string;
-    participantId: string;
+    binding: SessionBinding;
   };
   limits: {
     maxDataBodyBytes: number;
@@ -643,38 +1092,40 @@ export type LiveWireTerminal = {
 /** One strict signed control response projection. */
 export type LiveControlResponse =
   | {
-    kind: "ack";
-    body: {
-      format: string;
-      type: "control-ack";
-      sessionId: string;
-      controlSeq: string;
-      requestId: string;
-      action: "activate" | "pulse" | "ack" | "close" | "end-ack";
-      state: "activating" | "active" | "closed";
-      acceptedReceivedSeq: string;
-      acceptedConsumedSeq: string;
-      terminal: LiveWireTerminal | null;
-      cleanup: "complete" | "incomplete" | null;
-    };
-  }
+      kind: "ack";
+      body: {
+        format: string;
+        type: "control-ack";
+        sessionId: string;
+        controlSeq: string;
+        requestId: string;
+        action: "activate" | "pulse" | "ack" | "close" | "end-ack";
+        state: "activating" | "active" | "closed";
+        acceptedReceivedSeq: string;
+        acceptedConsumedSeq: string;
+        terminal: LiveWireTerminal | null;
+        cleanup: "complete" | "incomplete" | null;
+      };
+    }
   | {
-    kind: "error";
-    body: {
-      format: string;
-      type: "control-error";
-      sessionId: string;
-      controlSeq: string;
-      requestId: string;
-      code: string;
+      kind: "error";
+      body: {
+        format: string;
+        type: "control-error";
+        sessionId: string;
+        controlSeq: string;
+        requestId: string;
+        code: string;
+      };
     };
-  };
 
 function parseWasmResult<T>(encoded: string): T {
-  const result = JSON.parse(encoded) as { ok: true } & T | {
-    ok: false;
-    error: { code: string; path: string };
-  };
+  const result = JSON.parse(encoded) as
+    | ({ ok: true } & T)
+    | {
+        ok: false;
+        error: { code: string; path: string };
+      };
   if (!result.ok) {
     throw new Error(
       `live protocol error ${result.error.code} at ${result.error.path}`,
@@ -827,9 +1278,7 @@ export function liveParseOffer(raw: Uint8Array): LiveOfferWire {
 }
 
 /** Parse one strict signed control response through the shared protocol. */
-export function liveParseControlResponse(
-  raw: Uint8Array,
-): LiveControlResponse {
+export function liveParseControlResponse(raw: Uint8Array): LiveControlResponse {
   initializeProtocolWasmSync();
   return JSON.parse(
     protocolWasm.live_parse_control_response(raw),
@@ -845,45 +1294,12 @@ export function liveLogicalOpenHash(identity: object): string {
 /** Compute the canonical logical-control hash through the shared protocol. */
 export function liveLogicalControlHash(raw: Uint8Array): string {
   initializeProtocolWasmSync();
-  return protocolWasm.live_logical_control_hash(raw);
-}
-
-/** Build the provider server-message proof digest over exact transmitted bytes. */
-export function liveServerProofDigest(
-  contextDigest: string,
-  subject: string,
-  rawBody: Uint8Array,
-): Uint8Array {
-  initializeProtocolWasmSync();
-  return base64urlDecode(
-    protocolWasm.live_server_proof_digest(contextDigest, subject, rawBody),
-  );
-}
-
-/** Verify one provider server-message proof against the pinned provider key. */
-export function liveVerifyServerProof(
-  proof: string,
-  contextDigest: string,
-  subject: string,
-  rawBody: Uint8Array,
-  providerKey: string,
-): void {
-  initializeProtocolWasmSync();
-  protocolWasm.live_verify_server_proof(
-    proof,
-    contextDigest,
-    subject,
-    rawBody,
-    providerKey,
-  );
+  return providerProtocol().live_logical_control_hash(raw);
 }
 
 /** Canonical Transfer session subject family. */
 export type TransferSubjectKind =
-  | "upload-data"
-  | "download-data"
-  | "control"
-  | "signal";
+  "upload-data" | "download-data" | "control" | "signal";
 
 /** Logical final object declaration authenticated by completion or EOF. */
 export type TransferTerminalWire = {
@@ -903,7 +1319,7 @@ export type TransferFrameDescriptor = {
 
 /** Shared caller-control prefix. All counters remain decimal strings. */
 type TransferControlBase = {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   type: "control";
   transferId: string;
   controlSeq: string;
@@ -912,10 +1328,15 @@ type TransferControlBase = {
 };
 
 /** Strict v2 caller controls, parsed and validated by canonical Rust/WASM. */
-export type TransferControlWire =
-  & TransferControlBase
-  & (
-    | { action: "activate"; receiveMaxFrameBytes: number }
+export type TransferControlWire = TransferControlBase &
+  (
+    | {
+        action: "activate";
+        receiveMaxFrameBytes: number;
+        /** A receiving consumer's admitted window; downloads only. */
+        receiveWindowFrames?: number;
+        receiveWindowBytes?: number;
+      }
     | { action: "credit" | "cancel"; consumedBytes: string }
     | { action: "end-ack"; consumedBytes: string; finalSeq: string }
   );
@@ -938,9 +1359,10 @@ export type TransferGrantIdentityWire = {
 
 /** Shared public grant coordinates, with no physical backend identifiers. */
 type TransferGrantBaseWire = {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   type: "TransferGrant";
   service: string;
+  origin: { apiId: string; action: CatalogActionIdentity };
   transferId: string;
   expiresAt: string;
   provider: TransferGrantIdentityWire;
@@ -969,8 +1391,7 @@ export type TransferReceiveGrantWire = TransferGrantBaseWire & {
 
 /** Canonically validated direction-specific public grant. */
 export type TransferGrantWire =
-  | TransferSendGrantWire
-  | TransferReceiveGrantWire;
+  TransferSendGrantWire | TransferReceiveGrantWire;
 
 /** Canonical terminal error categories, not physical backend diagnostics. */
 export type TransferErrorCode =
@@ -993,13 +1414,11 @@ export type TransferErrorCode =
   | "cancelled";
 
 /** Strict provider signals; consumed credit is distinct from durable commit. */
-export type TransferSignalWire =
-  & {
-    format: "trellis.transfer.v2";
-    transferId: string;
-  }
-  & (
-    | {
+export type TransferSignalWire = {
+  format: "trellis.transfer.v1";
+  transferId: string;
+} & (
+  | {
       type: "activated";
       controlSeq: string;
       requestId: string;
@@ -1007,34 +1426,39 @@ export type TransferSignalWire =
       windowFrames: number;
       windowBytes: number;
     }
-    | {
+  | {
       type: "credit";
       receivedSeq: string;
       consumedSeq: string;
       consumedBytes: string;
     }
-    | { type: "committed"; finalSeq: string; info: TransferFileInfoWire }
-    | { type: "cancelled" }
-    | { type: "error"; code: TransferErrorCode }
-  );
+  | { type: "committed"; finalSeq: string; info: TransferFileInfoWire }
+  | { type: "cancelled" }
+  | { type: "error"; code: TransferErrorCode }
+);
 
 /** Ordered upload completion on the same subject as upload DATA. */
 export type TransferCompleteWire = TransferTerminalWire & {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   type: "complete";
   transferId: string;
 };
 
 /** Canonical protocol limits and header names exported by Rust/WASM. */
 export type TransferConstants = {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   maxFrameBytes: number;
   windowFrames: number;
   windowBytes: number;
+  maxWindowFrames: number;
+  maxWindowBytes: number;
+  processReceiveBytes: number;
   creditFrameStep: number;
   creditByteStep: number;
   creditMaxDelayMs: number;
   headerReserve: number;
+  operationUploadLifetimeSeconds: number;
+  operationUploadMaxBytes: number;
   maxControlBytes: number;
   sequenceHeader: string;
   controlHeader: string;
@@ -1044,22 +1468,24 @@ export type TransferConstants = {
 
 /** Read canonical Transfer constants, initializing WASM only on first access. */
 export function transferConstants(): TransferConstants {
-  let constants: TransferConstants | undefined;
-  return new Proxy({} as TransferConstants, {
-    get(_target, property) {
-      initializeProtocolWasmSync();
-      constants ??= JSON.parse(
-        protocolWasm.transfer_constants(),
-      ) as TransferConstants;
-      return constants[property as keyof TransferConstants];
-    },
-  });
+  return transferConstantsProxy;
 }
+let transferConstantsValue: TransferConstants | undefined;
+// Read lazily, once: importing a module never loads the protocol build.
+const transferConstantsProxy = new Proxy({} as TransferConstants, {
+  get(_target, property) {
+    initializeProtocolWasmSync();
+    transferConstantsValue ??= JSON.parse(
+      protocolWasm.transfer_constants(),
+    ) as TransferConstants;
+    return transferConstantsValue[property as keyof TransferConstants];
+  },
+});
 
 /** Generate a canonical random transfer ID. */
 export function transferGenerateId(): string {
   initializeProtocolWasmSync();
-  return protocolWasm.transfer_generate_id();
+  return providerProtocol().transfer_generate_id();
 }
 
 /** Derive an exact session subject from both logical endpoint identities. */
@@ -1070,7 +1496,12 @@ export function transferSubject(
   transferId: string,
 ): string {
   initializeProtocolWasmSync();
-  return protocolWasm.transfer_subject(kind, provider, consumer, transferId);
+  return providerProtocol().transfer_subject(
+    kind,
+    provider,
+    consumer,
+    transferId,
+  );
 }
 
 /** Validate an exact subject and return its canonical family. */
@@ -1096,6 +1527,38 @@ export function transferNegotiateMaxFrameBytes(
   return protocolWasm.transfer_negotiate_max_frame_bytes(consumer, provider);
 }
 
+/**
+ * Receive window `[frames, bytes]` to offer from `available` admission bytes,
+ * or `undefined` when less than one frame fits. Shared with the Rust SDK.
+ */
+export function transferReceiveWindow(
+  available: number,
+  maxFrameBytes: number,
+): [number, number] | undefined {
+  initializeProtocolWasmSync();
+  const window: unknown = JSON.parse(
+    protocolWasm.transfer_receive_window(available, maxFrameBytes),
+  );
+  if (window === null) return undefined;
+  if (
+    !Array.isArray(window) ||
+    window.length !== 2 ||
+    !window.every((value) => Number.isSafeInteger(value))
+  )
+    throw new Error("invalid transfer receive window");
+  return [window[0], window[1]];
+}
+
+/** Verify a provider's Ed25519 proof over a natively computed 32-byte digest. */
+export function verifyProofDigest(
+  proof: string,
+  digest: Uint8Array,
+  providerKey: string,
+): void {
+  initializeProtocolWasmSync();
+  protocolWasm.verify_proof_digest(proof, digest, providerKey);
+}
+
 /** Validate a direction-specific public grant before any transport acquisition. */
 export function transferParseGrant(raw: Uint8Array): TransferGrantWire {
   initializeProtocolWasmSync();
@@ -1108,7 +1571,7 @@ export function transferParseGrant(raw: Uint8Array): TransferGrantWire {
 export function transferParseControl(raw: Uint8Array): TransferControlWire {
   initializeProtocolWasmSync();
   return JSON.parse(
-    protocolWasm.transfer_parse_control(raw),
+    providerProtocol().transfer_parse_control(raw),
   ) as TransferControlWire;
 }
 
@@ -1124,7 +1587,7 @@ export function transferParseSignal(raw: Uint8Array): TransferSignalWire {
 export function transferParseComplete(raw: Uint8Array): TransferCompleteWire {
   initializeProtocolWasmSync();
   return JSON.parse(
-    protocolWasm.transfer_parse_complete(raw),
+    providerProtocol().transfer_parse_complete(raw),
   ) as TransferCompleteWire;
 }
 

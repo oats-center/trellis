@@ -47,13 +47,17 @@ function pageIterator<TPage extends CursorPage<unknown>>(
   let stopped = false;
   let inFlight: AbortController | undefined;
   let serial = Promise.resolve();
-  const initialCursor = typeof input === "object" && input !== null &&
-      "page" in input && typeof input.page === "object" &&
-      input.page !== null &&
-      "cursor" in input.page && typeof input.page.cursor === "string" &&
-      input.page.cursor.length > 0
-    ? input.page.cursor
-    : undefined;
+  const initialCursor =
+    typeof input === "object" &&
+    input !== null &&
+    "page" in input &&
+    typeof input.page === "object" &&
+    input.page !== null &&
+    "cursor" in input.page &&
+    typeof input.page.cursor === "string" &&
+    input.page.cursor.length > 0
+      ? input.page.cursor
+      : undefined;
   const seen = new Set(initialCursor === undefined ? [] : [initialCursor]);
 
   const next = () => {
@@ -66,17 +70,22 @@ function pageIterator<TPage extends CursorPage<unknown>>(
         const signal = options?.signal
           ? AbortSignal.any([options.signal, controller.signal])
           : controller.signal;
-        const requestInput = cursor === undefined ? input ?? {} : {
-          ...(typeof input === "object" && input !== null ? input : {}),
-          page: {
-            ...(typeof input === "object" && input !== null &&
-                "page" in input && typeof input.page === "object" &&
-                input.page !== null
-              ? input.page
-              : {}),
-            cursor,
-          },
-        };
+        const requestInput =
+          cursor === undefined
+            ? (input ?? {})
+            : {
+                ...(typeof input === "object" && input !== null ? input : {}),
+                page: {
+                  ...(typeof input === "object" &&
+                  input !== null &&
+                  "page" in input &&
+                  typeof input.page === "object" &&
+                  input.page !== null
+                    ? input.page
+                    : {}),
+                  cursor,
+                },
+              };
         const result = await call(requestInput, { ...options, signal });
         if (inFlight === controller) inFlight = undefined;
         if (stopped) return { value: undefined, done: true };
@@ -99,7 +108,10 @@ function pageIterator<TPage extends CursorPage<unknown>>(
         return { value: ok<TPage, BaseError>(page), done: false };
       },
     );
-    serial = result.then(() => undefined, () => undefined);
+    serial = result.then(
+      () => undefined,
+      () => undefined,
+    );
     return result;
   };
 

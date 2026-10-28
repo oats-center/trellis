@@ -5,7 +5,9 @@ export type NatsConnectOpts = {
   servers: string | string[];
   token?: string;
   inboxPrefix?: string;
-  authenticator?: unknown;
+  authenticator?:
+    | import("@nats-io/nats-core").Authenticator
+    | import("@nats-io/nats-core").Authenticator[];
   maxReconnectAttempts?: number;
   waitOnFirstConnect?: boolean;
 } & Record<string, unknown>;

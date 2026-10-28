@@ -220,6 +220,17 @@ function projectionFromSource(
     ? context.reason
     : undefined;
   if (message === undefined && code === undefined) return undefined;
+  // The SDK reports an optional action the user never allowed with the
+  // selected action and its capabilities in context.
+  if (
+    typeof context?.action === "string" &&
+    Array.isArray(context.capabilities)
+  ) {
+    return {
+      message: "You haven't allowed the Console to do this.",
+      code: "not_allowed",
+    };
+  }
   const consentRequest = "consentRequest" in source
     ? source.consentRequest
     : data !== undefined && "consentRequest" in data

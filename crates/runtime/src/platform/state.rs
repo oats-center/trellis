@@ -1,66 +1,38 @@
 //! Platform-owned Trellis State RPC runtime.
 
-use std::collections::BTreeMap;
+use crate::platform::auth::blocking;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_nats::jetstream::{self, kv, stream::LastRawMessageErrorKind};
 use bytes::Bytes;
+use futures_util::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use trellis_protocol::{
-    AuthorizationPrincipalKind, ParticipantKind, ParticipantResourceKind, PermissionAction,
-    PermissionAtom, PermissionTarget, PlatformPrivilege,
-};
 use trellis_rs::service::{
-    internal::run_builtin_authenticated_router, DeclaredRpcError, RequestContext, Router,
-    ServerError, ValidationIssue,
+    ConnectedServiceRuntime, DeclaredRpcError, RequestContext, ServerError, ValidationIssue,
 };
+use trellis_runtime_apis::apis::trellis_state_v1::lives::Watch as StateWatch;
 use trellis_runtime_apis::apis::trellis_state_v1::rpc::{
-    Delete as StateDeleteRpc, Get as StateGetRpc, Put as StatePutRpc,
-    ResourcesInspect as StateResourcesInspectRpc, ResourcesQuery as StateResourcesQueryRpc,
+    Delete as StateDeleteRpc, Get as StateGetRpc, Put as StatePutRpc, Register as StateRegisterRpc,
 };
-use trellis_runtime_apis::types::{Bytes as WireBytes, StateDeleteResponse};
+use trellis_runtime_apis::types::{Bytes as WireBytes, StateDeleteResponse, StateGetResponse};
 
-use super::auth::context::AuthorizationContextRepository;
-use super::auth::verifier::RuntimeAuthVerifier;
-use super::auth::{
-    ParticipantBindingRecord, ParticipantBindingState, ResourceBindingState,
-    ResourceProviderIdentity, SqliteAuthorizationStore,
-};
-use crate::shutdown::StopHandle;
+use super::auth::{SqliteAuthorizationStore, StateDeclaration as Declaration};
 use crate::supervisor::RuntimeError;
 
-const API_ID: &str = "trellis.state@v1";
 const BUCKET: &str = "trellis_state";
 const STREAM: &str = "KV_trellis_state";
 const SUBJECT_PREFIX: &str = "$KV.trellis_state.";
 pub(crate) const OWNERSHIP_MARKER: &str = "Trellis shared State storage";
-const SUBJECTS: &[&str] = &[
-    StateGetRpc::SUBJECT,
-    StatePutRpc::SUBJECT,
-    StateDeleteRpc::SUBJECT,
-    StateResourcesInspectRpc::SUBJECT,
-    StateResourcesQueryRpc::SUBJECT,
-];
 
 #[derive(Clone)]
 pub(crate) struct StateRuntime {
-    repository: SqliteAuthorizationStore,
-    verifier: RuntimeAuthVerifier,
+    repository: Arc<SqliteAuthorizationStore>,
     store: kv::Store,
     jetstream: jetstream::Context,
-}
-
-#[derive(Clone)]
-struct Declaration {
-    resource_id: String,
-    participant_id: String,
-    resource_name: String,
-    schema: Value,
-    representation_version: u32,
-    accepted_versions: BTreeMap<u32, Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -80,8 +52,7 @@ struct PhysicalEntry {
 impl StateRuntime {
     pub(crate) async fn start(
         nats: async_nats::Client,
-        repository: SqliteAuthorizationStore,
-        verifier: RuntimeAuthVerifier,
+        repository: Arc<SqliteAuthorizationStore>,
     ) -> Result<Self, RuntimeError> {
         let jetstream = jetstream::new(nats);
         let config = kv::Config {
@@ -96,11 +67,17 @@ impl StateRuntime {
             Ok(store) => store,
             Err(open_error) => match jetstream.create_key_value(config).await {
                 Ok(store) => store,
-                Err(create_error) => jetstream.get_key_value(BUCKET).await.map_err(|retry_error| {
-                    RuntimeError::Platform(format!(
-                        "failed to open {BUCKET} ({open_error}), create it ({create_error}), or reopen it after a possible concurrent create ({retry_error})"
+                Err(create_error) => {
+                    jetstream
+                        .get_key_value(BUCKET)
+                        .await
+                        .map_err(|retry_error| {
+                            RuntimeError::Platform(format!(
+                        "failed to open {BUCKET} ({open_error}), create it ({create_error}), or \
+                        reopen it after a possible concurrent create ({retry_error})"
                     ))
-                })?,
+                        })?
+                }
             },
         };
         let status = store.status().await.map_err(|error| {
@@ -115,48 +92,59 @@ impl StateRuntime {
         }
         Ok(Self {
             repository,
-            verifier,
             store,
             jetstream,
         })
     }
 
-    pub(crate) async fn run(
-        self,
-        stop: StopHandle,
-        mut live_owner: tokio::sync::watch::Receiver<
-            Option<trellis_rs::service::LiveProviderOwner>,
-        >,
-    ) -> Result<(), RuntimeError> {
-        let Some(owner) = super::await_live_owner(&mut live_owner, &stop).await else {
-            return Ok(());
-        };
-        let mut router = self.router();
-        router.set_live_owner(owner.clone());
-        let loop_future = run_builtin_authenticated_router(
-            owner,
-            API_ID,
-            SUBJECTS,
-            router,
-            self.verifier.clone(),
-        );
-        tokio::select! {
-            result = loop_future => result.map_err(|error| RuntimeError::Platform(error.to_string())),
-            () = stop.stopped() => Ok(()),
-        }
-    }
-
-    fn router(&self) -> Router {
-        let mut router = Router::new();
-        router.set_provider_deployment_id("dep_trellis_auth_runtime");
+    pub(crate) fn register<P: trellis_rs::generated::ParticipantDescriptor>(
+        &self,
+        router: &mut ConnectedServiceRuntime<P>,
+    ) {
+        let state = self.clone();
+        router.register_rpc::<StateRegisterRpc, _, _>(move |context, input| {
+            let state = state.clone();
+            async move {
+                let caller = context
+                    .request()
+                    .verified_request()
+                    .ok_or_else(auth_denied)?
+                    .caller()
+                    .clone();
+                blocking(move || {
+                    Ok::<_, super::auth::AuthError>(
+                        state
+                            .repository
+                            .register_state(
+                                &caller.principal_id,
+                                &caller.binding,
+                                &input,
+                                crate::clock::unix_now(),
+                            )
+                            .map_err(|error| match error {
+                                super::auth::AuthError::Denied => auth_denied(),
+                                error => unexpected(error),
+                            }),
+                    )
+                })
+                .await
+                .map_err(unexpected)??
+                .map_err(|conflict| {
+                    ServerError::DeclaredRpc(DeclaredRpcError::new(
+                        "trellis.state@v1::RegistrationConflict",
+                        "State registration revision changed",
+                        [("currentRevision", json!(conflict.current_revision.0))],
+                    ))
+                })
+            }
+        });
         let state = self.clone();
         router.register_rpc::<StateGetRpc, _, _>(move |context, input| {
             let state = state.clone();
             async move {
                 let declaration = state
-                    .normal_declaration(&context, &input.resource_name.0)
+                    .normal_declaration(context.request(), &input.resource_name.0)
                     .await?;
-                state.require_resource(&context, &declaration, PermissionAction::Read)?;
                 let entry = state
                     .authoritative_entry(&declaration)
                     .await?
@@ -166,13 +154,68 @@ impl StateRuntime {
             }
         });
         let state = self.clone();
+        router.register_live::<StateWatch, _, _>(move |context, input| {
+            let state = state.clone();
+            futures_util::stream::once(async move {
+                let declaration = state
+                    .normal_declaration(context.context.request(), &input.resource_name.0)
+                    .await?;
+                // Establish ordered JetStream delivery before reading the baseline.
+                // Entries already covered by that baseline are discarded by revision.
+                let updates = state
+                    .store
+                    .watch(&declaration.resource_id)
+                    .await
+                    .map_err(kv_error)?;
+                let raw = state.authoritative_raw(&declaration.resource_id).await?;
+                let baseline = raw.as_ref().map_or(0, |(_, revision, _)| *revision);
+                let initial = raw
+                    .filter(|(put, _, _)| *put)
+                    .map(|(_, revision, payload)| {
+                        let entry = PhysicalEntry {
+                            revision,
+                            envelope: serde_json::from_slice(&payload)?,
+                        };
+                        project_entry(&declaration, &entry)
+                    })
+                    .transpose()?;
+                let initial: StateGetResponse = serde_json::from_value(json!({"entry":initial}))?;
+                let updates = updates.filter_map(move |entry| {
+                    let value = match entry {
+                        Ok(entry) if entry.revision <= baseline => None,
+                        Err(error) => Some(Err(kv_error(error))),
+                        Ok(entry) => Some((|| {
+                            let current = if entry.operation == kv::Operation::Put {
+                                Some(project_entry(
+                                    &declaration,
+                                    &PhysicalEntry {
+                                        revision: entry.revision,
+                                        envelope: serde_json::from_slice(&entry.value)?,
+                                    },
+                                )?)
+                            } else {
+                                None
+                            };
+                            serde_json::from_value::<StateGetResponse>(json!({"entry":current}))
+                                .map_err(ServerError::from)
+                        })()),
+                    };
+                    futures_util::future::ready(value)
+                });
+                Ok::<_, ServerError>(
+                    futures_util::stream::once(futures_util::future::ready(Ok(initial)))
+                        .chain(updates),
+                )
+            })
+            .try_flatten()
+        });
+        let state = self.clone();
         router.register_rpc::<StatePutRpc, _, _>(move |context, input| {
             let state = state.clone();
             async move {
                 let declaration = state
-                    .normal_declaration(&context, &input.resource_name.0)
+                    .normal_declaration(context.request(), &input.resource_name.0)
                     .await?;
-                state.require_resource(&context, &declaration, PermissionAction::Write)?;
                 let revision = input
                     .revision
                     .as_ref()
@@ -275,9 +318,8 @@ impl StateRuntime {
             let state = state.clone();
             async move {
                 let declaration = state
-                    .normal_declaration(&context, &input.resource_name.0)
+                    .normal_declaration(context.request(), &input.resource_name.0)
                     .await?;
-                state.require_resource(&context, &declaration, PermissionAction::Delete)?;
                 let expected = input
                     .revision
                     .as_ref()
@@ -321,38 +363,6 @@ impl StateRuntime {
                 }
             }
         });
-        let state = self.clone();
-        router.register_rpc::<StateResourcesInspectRpc, _, _>(move |context, input| {
-            let state = state.clone();
-            async move {
-                require_admin(&context)?;
-                let resource = state
-                    .repository
-                    .inspect_resource(input.resource_id.0)
-                    .await
-                    .map_err(unexpected)?;
-                serde_json::from_value(json!({ "resource": resource })).map_err(ServerError::from)
-            }
-        });
-        let state = self.clone();
-        router.register_rpc::<StateResourcesQueryRpc, _, _>(move |context, input| {
-            let state = state.clone();
-            async move {
-                require_admin(&context)?;
-                serde_json::from_value(
-                    state
-                        .repository
-                        .query_resources("state.Resources.Query", serde_json::to_value(input)?)
-                        .await
-                        .map_err(unexpected)?,
-                )
-                .map_err(ServerError::from)
-            }
-        });
-        router.rpc_handler_authorizes::<StateGetRpc>();
-        router.rpc_handler_authorizes::<StatePutRpc>();
-        router.rpc_handler_authorizes::<StateDeleteRpc>();
-        router
     }
 
     async fn normal_declaration(
@@ -360,95 +370,38 @@ impl StateRuntime {
         context: &RequestContext,
         resource_name: &str,
     ) -> Result<Declaration, ServerError> {
-        let caller = context.caller.as_ref().ok_or_else(auth_denied)?;
-        let retained = self
-            .repository
-            .get_context_by_digest(&caller.context_digest)
-            .await
-            .map_err(unexpected)?
-            .ok_or_else(auth_denied)?;
-        let (_, binding) = self
-            .repository
-            .get_installed_participant_record(
-                retained.participant_id.clone(),
-                Some(retained.installed_revision),
-            )
-            .await
-            .map_err(unexpected)?
-            .ok_or_else(auth_denied)?;
-        if binding.participant_id != caller.participant_id
-            || binding.state != ParticipantBindingState::Resolved
-            || !matches!(
-                (caller.principal_kind, binding.participant_kind),
-                (
-                    AuthorizationPrincipalKind::User,
-                    ParticipantKind::App | ParticipantKind::Agent
-                ) | (AuthorizationPrincipalKind::Device, ParticipantKind::Device)
-            )
-        {
-            return Err(auth_denied());
-        }
-        let resource = binding
-            .projection
-            .resources
-            .get(resource_name)
-            .filter(|resource| resource.kind == ParticipantResourceKind::State)
-            .ok_or_else(|| validation("/resourceName", "State resource is not declared"))?;
-        let representation = resource
-            .representation
-            .as_ref()
-            .ok_or_else(|| unexpected("State representation is missing"))?;
-        let schema = representation.schema.clone();
-        let representation_version = representation.version;
-        let accepted_versions = representation.accepts.clone();
-        let evidence = self
-            .repository
-            .get_resource_bindings(
-                retained.owner_kind,
-                retained.owner_id,
-                retained.participant_id,
-                retained.installed_revision,
-            )
-            .await
-            .map_err(unexpected)?
-            .into_iter()
-            .find(|evidence| {
-                evidence.resource_kind == "state"
-                    && evidence.local_name == resource_name
-                    && evidence.state == ResourceBindingState::Available
-                    && matches!(
-                        &evidence.provider_identity,
-                        ResourceProviderIdentity::State { bucket } if bucket == BUCKET
-                    )
+        let verified = context.verified_request().ok_or_else(auth_denied)?;
+        let caller = verified.caller();
+        let repository = self.repository.clone();
+        if matches!(
+            caller.binding,
+            trellis_protocol::SessionBinding::Device { .. }
+        ) {
+            let (principal, binding, name) = (
+                caller.principal_id.clone(),
+                caller.binding.clone(),
+                resource_name.to_owned(),
+            );
+            let digest = verified
+                .authority()
+                .authority()
+                .resource_bindings_digest
+                .clone();
+            return blocking(move || {
+                repository.device_state_declaration(&principal, &binding, digest.as_deref(), &name)
             })
-            .ok_or_else(auth_denied)?;
-        Ok(declaration_from_binding(
-            binding,
-            evidence.binding_id,
+            .await
+            .map_err(|_| auth_denied());
+        }
+        let (resource_id, _) = SqliteAuthorizationStore::state_namespace(
+            &caller.principal_id,
+            &caller.binding,
             resource_name,
-            schema,
-            representation_version,
-            accepted_versions,
-        ))
-    }
-
-    fn require_resource(
-        &self,
-        context: &RequestContext,
-        declaration: &Declaration,
-        action: PermissionAction,
-    ) -> Result<(), ServerError> {
-        let caller = context.caller.as_ref().ok_or_else(auth_denied)?;
-        let target = PermissionTarget::participant_resource(
-            declaration.participant_id.clone(),
-            ParticipantResourceKind::State,
-            declaration.resource_name.clone(),
         )
-        .map_err(unexpected)?;
-        let atom = PermissionAtom::new(target, action).map_err(unexpected)?;
-        self.verifier
-            .require_cached_permission(&caller.context_digest, &atom)
-            .map_err(|_| auth_denied())
+        .map_err(|_| auth_denied())?;
+        blocking(move || repository.state_declaration(&resource_id))
+            .await
+            .map_err(unexpected)
     }
 
     async fn authoritative_entry(
@@ -498,24 +451,6 @@ impl StateRuntime {
             Err(error) if error.kind() == LastRawMessageErrorKind::NoMessageFound => Ok(None),
             Err(error) => Err(kv_error(error)),
         }
-    }
-}
-
-fn declaration_from_binding(
-    binding: ParticipantBindingRecord,
-    resource_id: String,
-    resource_name: &str,
-    schema: Value,
-    representation_version: u32,
-    accepted_versions: BTreeMap<u32, Value>,
-) -> Declaration {
-    Declaration {
-        resource_id,
-        participant_id: binding.participant_id,
-        resource_name: resource_name.to_owned(),
-        schema,
-        representation_version,
-        accepted_versions,
     }
 }
 
@@ -670,18 +605,6 @@ fn auth_denied() -> ServerError {
     ))
 }
 
-fn require_admin(context: &RequestContext) -> Result<(), ServerError> {
-    if context.caller.as_ref().is_some_and(|caller| {
-        caller
-            .platform_privileges
-            .contains(&PlatformPrivilege::Admin)
-    }) {
-        Ok(())
-    } else {
-        Err(auth_denied())
-    }
-}
-
 fn unexpected(error: impl std::fmt::Display) -> ServerError {
     tracing::error!(error = %error, "State runtime failure");
     ServerError::DeclaredRpc(DeclaredRpcError::new(
@@ -750,9 +673,9 @@ mod tests {
 
     #[tokio::test]
     async fn nats_component_covers_state_write_modes_conflicts_tombstones_and_read() {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        // Held until the broker's listener is up; see ReservedPort.
+        let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+        let port = reservation.port();
         let directory = tempfile::tempdir().unwrap();
         let cache = std::env::var_os("TRELLIS_CACHE_DIR")
             .map(std::path::PathBuf::from)

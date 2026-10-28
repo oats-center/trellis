@@ -1,7 +1,7 @@
 # @oatscenter/trellis-testkit
 
-Deno helpers that own a real Trellis/NATS runtime for service-repository tests.
-Use ordinary `deno test -A`; there is no runner, matrix, or case registration.
+Node helpers that own a real Trellis/NATS runtime for service-repository tests.
+Use ordinary `node --test`; there is no runner, matrix, or case registration.
 
 ## Generated Participants
 
@@ -13,7 +13,7 @@ evidence by hand.
 ```ts
 import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { participants } from "test-trellis";
+import { apps, participants } from "test-trellis";
 
 await using runtime = await TrellisTestRuntime.start();
 const identity = await runtime.registerService({
@@ -21,22 +21,27 @@ const identity = await runtime.registerService({
   contract: participants.provider.participant,
 });
 const service = await TrellisService.connect({
-  trellisUrl: runtime.trellisUrl,
+  trellisUrl: runtime.oauthIssuer,
   participant: participants.provider.participant,
   name: "provider",
   seed: identity.seed,
 }).orThrow();
 const client = await runtime.connectClient({
   name: "caller",
-  contract: participants.caller.participant,
+  contract: apps.caller.request,
 });
 ```
+
+Each `registerService` call returns a new instance key. Without `deployment`,
+a service uses the runtime's default deployment unless a different participant
+already runs there; then it gets a deployment of its own. Registering the same
+participant again adds an instance (a replica) to its deployment.
 
 Register generated handlers before starting the service. Exercise generated
 caller methods and inspect their `Result` values with ordinary assertions. Stop
 the service in `finally`, await its run task, and let `await using` stop the
-test runtime. Ephemeral authorization storage is appropriate only for isolated
-tests; production clients need persistent trust state.
+test runtime. Node native OAuth defaults to process-local custody; applications
+that need persistent login provide their own explicit custody adapter.
 
 For events, subscribe through a generated surface before publishing, then await
 the actual typed payload. For operations and jobs, await their public terminal
@@ -44,10 +49,51 @@ result. No helper should replace a real boundary with a fabricated result.
 
 ## Ownership and Waiting
 
-The released package acquires the exact-version production CLI and server from
-release archives pinned by SHA-256. Automatic acquisition currently supports
+### Ordinary users sharing one app
+
+```ts
+const alice = await runtime.createUser({ name: "Alice" });
+const bob = await runtime.createUser({ name: "Bob" });
+for (const user of [alice, bob]) {
+  await runtime.grantUserCapabilities({
+    user,
+    capabilityIds: apps.caller.request.requiredCapabilities,
+  });
+}
+const a1 = await runtime.connectClient({
+  name: "Alice 1",
+  contract: apps.caller.request,
+  user: alice,
+});
+const a2 = await runtime.connectClient({
+  name: "Alice 2",
+  contract: apps.caller.request,
+  user: alice,
+});
+const b1 = await runtime.connectClient({
+  name: "Bob 1",
+  contract: apps.caller.request,
+  user: bob,
+});
+```
+
+The app registration is reused; every login has independent OAuth/DPoP custody.
+Alice's sessions retain one principal, distinct from Bob's. Runtime-owned user
+handles expose `name`, `username`, and `principalId`, never passwords. Explicit
+user login uses real consent and never grants or restores capabilities. This
+also applies to `registerClient` and `authorizeNativeUserCode` with `user`.
+Omitting `user` retains the seeded-admin convenience; service seeds are unchanged.
+
+### Runtime lifecycle
+
+The package downloads the latest production CLI and server release (the newest
+stable release, or the newest prerelease before the first stable one), verified
+against the checksum published with it; `TRELLIS_TEST_VERSION` selects another
+release, and `TRELLIS_TEST_SERVER_BIN` selects
+local binaries. It reports the `trellis-server` version it tests against.
+Automatic acquisition currently supports
 Linux x86-64 only; other native targets are not staged for release. Production
-`trellis init config` generates configuration and accounts;
+`trellis-server init` generates configuration and accounts;
 `trellis-server --local-nats` owns the real broker. There is no `nsc` dependency
 or TypeScript configuration renderer. `TRELLIS_TEST_CACHE_DIR` shares only
 verified native binaries; each runtime has private configuration, credentials,
@@ -55,7 +101,7 @@ SQLite data, broker state, process files, and logs.
 
 `start()` seeds an administrator by default. Use `firstAdmin: "browser-flow"`
 only when exercising first-admin browser setup. To use producer-built binaries
-without downloading, pass `trellis: { source: { kind: "path", cli, server } }`;
+without downloading, pass `trellis: { source: { kind: "path", server } }`;
 both files must match the package version. There is no fallback for invalid
 paths.
 
@@ -88,10 +134,10 @@ plane.
 ## Repository Live Suite
 
 See [integration setup](../../../integration/README.md) for generation, binary
-builds, and `TRELLIS_TEST_SERVER_BIN` / `TRELLIS_TEST_CLI_BIN` environment
+builds, and `TRELLIS_TEST_SERVER_BIN` environment
 variables. Run all or a native filter:
 
 ```sh
-deno test -A -c ts/integration/deno.json ts/integration
-deno test -A -c ts/integration/deno.json --filter 'generated runtime workflows' ts/integration
+npm run test:integration
+npm run test:integration -- --test-name-pattern='generated runtime workflows' ts/integration/runtime_test.ts
 ```

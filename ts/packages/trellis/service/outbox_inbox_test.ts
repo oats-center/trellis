@@ -1,6 +1,10 @@
 import { type Client, createClient } from "@libsql/client";
-import { assert, assertEquals, assertRejects } from "@std/assert";
-import { toFileUrl } from "@std/path";
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import {
   createSqliteOutboxSchema,
   MemoryOutboxRepository,
@@ -12,7 +16,7 @@ import {
   SqlOutboxRepository,
 } from "./outbox_inbox.ts";
 
-Deno.test("event outbox preserves exact descriptor identity", () => {
+test("event outbox preserves exact descriptor identity", () => {
   const descriptorIdentity = "v1.dGVzdEB2MQ.Q29ubmVjdGlvbnMuT3BlbmVk.0";
   const record = preparedTrellisEventToOutboxRecord({
     event: "Connections.Opened",
@@ -32,7 +36,7 @@ Deno.test("event outbox preserves exact descriptor identity", () => {
     updatedAt: "2026-01-01T00:00:00Z",
   });
 
-  assertEquals(prepared.descriptorIdentity, descriptorIdentity);
+  assert.deepEqual(prepared.descriptorIdentity, descriptorIdentity);
 });
 
 function sqlExecutor(database: Pick<Client, "execute">): SqlExecutor {
@@ -41,9 +45,12 @@ function sqlExecutor(database: Pick<Client, "execute">): SqlExecutor {
       sql,
       args: params.map((value) => {
         assert(
-          value === null || typeof value === "string" ||
-            typeof value === "number" || typeof value === "bigint" ||
-            typeof value === "boolean" || value instanceof Uint8Array ||
+          value === null ||
+            typeof value === "string" ||
+            typeof value === "number" ||
+            typeof value === "bigint" ||
+            typeof value === "boolean" ||
+            value instanceof Uint8Array ||
             value instanceof ArrayBuffer,
         );
         return value;
@@ -59,9 +66,9 @@ function sqlExecutor(database: Pick<Client, "execute">): SqlExecutor {
   };
 }
 
-Deno.test("SQLite commits and rolls back business writes with outbox records", async () => {
-  const dir = await Deno.makeTempDir();
-  const client = createClient({ url: toFileUrl(`${dir}/outbox.db`).href });
+test("SQLite commits and rolls back business writes with outbox records", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "trellis-outbox-"));
+  const client = createClient({ url: pathToFileURL(`${dir}/outbox.db`).href });
   try {
     await client.execute("CREATE TABLE orders (id TEXT PRIMARY KEY)");
     for (const statement of createSqliteOutboxSchema()) {
@@ -76,10 +83,7 @@ Deno.test("SQLite commits and rolls back business writes with outbox records", a
             sql: "INSERT INTO orders (id) VALUES (?)",
             args: [id],
           });
-          const outbox = new SqlOutboxRepository(
-            sqlExecutor(tx),
-            "sqlite",
-          );
+          const outbox = new SqlOutboxRepository(sqlExecutor(tx), "sqlite");
           await outbox.enqueue({
             id,
             kind: "event.publish",
@@ -104,50 +108,50 @@ Deno.test("SQLite commits and rolls back business writes with outbox records", a
         }
       })();
       if (commit) await transaction;
-      else await assertRejects(() => transaction);
-      assertEquals(
-        (await client.execute({
-          sql: "SELECT id FROM orders WHERE id = ?",
-          args: [id],
-        })).rows.length,
+      else await assert.rejects(() => transaction);
+      assert.deepEqual(
+        (
+          await client.execute({
+            sql: "SELECT id FROM orders WHERE id = ?",
+            args: [id],
+          })
+        ).rows.length,
         commit ? 1 : 0,
       );
-      const outbox = new SqlOutboxRepository(
-        sqlExecutor(client),
-        "sqlite",
-      );
-      assertEquals((await outbox.get(id))?.id, commit ? id : undefined);
+      const outbox = new SqlOutboxRepository(sqlExecutor(client), "sqlite");
+      assert.deepEqual((await outbox.get(id))?.id, commit ? id : undefined);
     }
   } finally {
     client.close();
-    await Deno.remove(dir, { recursive: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
-Deno.test("SQLite inbox accepts a concurrent message ID exactly once", async () => {
-  const dir = await Deno.makeTempDir();
+test("SQLite inbox accepts a concurrent message ID exactly once", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "trellis-outbox-"));
   const clients = [0, 1].map(() =>
-    createClient({ url: toFileUrl(`${dir}/inbox.db`).href })
+    createClient({ url: pathToFileURL(`${dir}/inbox.db`).href }),
   );
   try {
     for (const statement of createSqliteOutboxSchema()) {
       await clients[0].execute(statement);
     }
-    const inboxes = clients.map((client) =>
-      new SqlInboxRepository(sqlExecutor(client), "sqlite")
+    const inboxes = clients.map(
+      (client) => new SqlInboxRepository(sqlExecutor(client), "sqlite"),
     );
-    assertEquals(
-      (await Promise.all(inboxes.map((inbox) => inbox.record("same-message"))))
-        .sort(),
+    assert.deepEqual(
+      (
+        await Promise.all(inboxes.map((inbox) => inbox.record("same-message")))
+      ).sort(),
       [false, true],
     );
   } finally {
     for (const client of clients) client.close();
-    await Deno.remove(dir, { recursive: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
-Deno.test("outbox duplicate IDs preserve stored identity and state", async () => {
+test("outbox duplicate IDs preserve stored identity and state", async () => {
   const repository = new MemoryOutboxRepository();
   const record = {
     id: "same-id",
@@ -160,16 +164,18 @@ Deno.test("outbox duplicate IDs preserve stored identity and state", async () =>
   await repository.enqueue(record);
   const [claim] = await repository.claimDue(1, new Date());
   assert(claim);
-  assertEquals((await repository.enqueue(record)).state, "claimed");
-  await assertRejects(
+  assert.deepEqual((await repository.enqueue(record)).state, "claimed");
+  await assert.rejects(
     () => repository.enqueue({ ...record, payload: '{"different":true}' }),
     OutboxDuplicateIdentityError,
   );
 });
 
-Deno.test("SQLite outbox duplicate IDs return the winning stored row", async () => {
-  const dir = await Deno.makeTempDir();
-  const client = createClient({ url: toFileUrl(`${dir}/duplicates.db`).href });
+test("SQLite outbox duplicate IDs return the winning stored row", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "trellis-outbox-"));
+  const client = createClient({
+    url: pathToFileURL(`${dir}/duplicates.db`).href,
+  });
   try {
     for (const statement of createSqliteOutboxSchema()) {
       await client.execute(statement);
@@ -186,27 +192,27 @@ Deno.test("SQLite outbox duplicate IDs return the winning stored row", async () 
     await repository.enqueue(record);
     const [claim] = await repository.claimDue(1, new Date());
     assert(claim);
-    assertEquals((await repository.enqueue(record)).state, "claimed");
-    await assertRejects(
+    assert.deepEqual((await repository.enqueue(record)).state, "claimed");
+    await assert.rejects(
       () => repository.enqueue({ ...record, subject: "orders.changed" }),
       OutboxDuplicateIdentityError,
     );
   } finally {
     client.close();
-    await Deno.remove(dir, { recursive: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
-Deno.test("SQLite outbox recovers abandoned claims without accepting stale completion", async () => {
-  const dir = await Deno.makeTempDir();
-  const url = toFileUrl(`${dir}/outbox.db`).href;
+test("SQLite outbox recovers abandoned claims without accepting stale completion", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "trellis-outbox-"));
+  const url = pathToFileURL(`${dir}/outbox.db`).href;
   const clients = [createClient({ url }), createClient({ url })];
   try {
     for (const statement of createSqliteOutboxSchema()) {
       await clients[0].execute(statement);
     }
-    const repositories = clients.map((client) =>
-      new SqlOutboxRepository(sqlExecutor(client), "sqlite")
+    const repositories = clients.map(
+      (client) => new SqlOutboxRepository(sqlExecutor(client), "sqlite"),
     );
     await repositories[0].enqueue({
       id: "event",
@@ -217,26 +223,28 @@ Deno.test("SQLite outbox recovers abandoned claims without accepting stale compl
       headers: {},
     });
     const now = new Date();
-    const claims = (await Promise.all(repositories.map((repository) =>
-      repository.claimDue(1, now)
-    ))).flat();
-    assertEquals(claims.length, 1);
-    assertEquals(await repositories[1].claimDue(1, now), []);
+    const claims = (
+      await Promise.all(
+        repositories.map((repository) => repository.claimDue(1, now)),
+      )
+    ).flat();
+    assert.deepEqual(claims.length, 1);
+    assert.deepEqual(await repositories[1].claimDue(1, now), []);
     for (const client of clients) {
       client.close();
     }
     const reopened = createClient({ url });
     clients.push(reopened);
-    const repository = new SqlOutboxRepository(
-      sqlExecutor(reopened),
-      "sqlite",
-    );
+    const repository = new SqlOutboxRepository(sqlExecutor(reopened), "sqlite");
     assert(claims[0].nextAttemptAt);
     const expired = new Date(claims[0].nextAttemptAt);
     const [current] = await repository.claimDue(1, expired);
     assert(current);
-    assertEquals(await repository.markDispatched(claims[0], expired), false);
-    assertEquals(
+    assert.deepEqual(
+      await repository.markDispatched(claims[0], expired),
+      false,
+    );
+    assert.deepEqual(
       await repository.markFailed(claims[0], {
         error: "stale",
         now: expired,
@@ -244,11 +252,11 @@ Deno.test("SQLite outbox recovers abandoned claims without accepting stale compl
       }),
       false,
     );
-    assertEquals(await repository.claimDue(1, expired), []);
-    assertEquals(await repository.markDispatched(current, expired), true);
-    assertEquals((await repository.get("event"))?.state, "dispatched");
+    assert.deepEqual(await repository.claimDue(1, expired), []);
+    assert.deepEqual(await repository.markDispatched(current, expired), true);
+    assert.deepEqual((await repository.get("event"))?.state, "dispatched");
   } finally {
     for (const client of clients) client.close();
-    await Deno.remove(dir, { recursive: true });
+    await rm(dir, { recursive: true, force: true });
   }
 });

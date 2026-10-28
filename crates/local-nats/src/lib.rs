@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as _};
-use std::net::TcpListener;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -47,6 +46,108 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static DOWNLOAD_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 
+/// A loopback TCP port held for a listener another bind will open.
+///
+/// A port read from a `127.0.0.1:0` listener and then released comes from the
+/// kernel's ephemeral range, so a concurrent outbound connection or `:0` bind
+/// can take it before the intended listener binds. A reservation instead
+/// selects a port outside that range (and above Fetch's restricted ports) and
+/// holds a UDP socket on it, which other reservations skip.
+///
+/// The TCP side is a bound, never-listening `SO_REUSEADDR` socket: it proves
+/// the port free and lets the intended listener (which also sets
+/// `SO_REUSEADDR`) bind while the reservation is held. A listening reservation
+/// would not be safe: a process spawned concurrently inherits it until `exec`,
+/// so it could keep accepting connections after the reservation closed it.
+#[derive(Debug)]
+pub struct ReservedPort {
+    port: u16,
+    _tcp: socket2::Socket,
+    _ownership: std::net::UdpSocket,
+}
+
+impl ReservedPort {
+    /// Reserves a free `127.0.0.1` port outside the kernel's ephemeral range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ephemeral range cannot be read or no port is
+    /// free after repeated random choices.
+    pub fn reserve() -> io::Result<Self> {
+        Self::reserve_on(std::net::Ipv4Addr::LOCALHOST)
+    }
+
+    /// Reserves a free port on one loopback address, such as `127.0.0.2` for a
+    /// distinct test origin, outside the kernel's ephemeral range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ephemeral range cannot be read or no port is
+    /// free after repeated random choices.
+    pub fn reserve_on(address: std::net::Ipv4Addr) -> io::Result<Self> {
+        const MIN_AUTOMATIC_PORT: u32 = 10_240;
+        let range = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")?;
+        let bounds = range
+            .split_whitespace()
+            .map(str::parse::<u16>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let [first, last] = bounds[..] else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid ephemeral port range",
+            ));
+        };
+        let lower_count = u32::from(first).saturating_sub(MIN_AUTOMATIC_PORT);
+        let upper_start = (u32::from(last) + 1).max(MIN_AUTOMATIC_PORT);
+        let available = lower_count + 65_536 - upper_start;
+        if available == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "no listener ports outside the ephemeral range",
+            ));
+        }
+        for _ in 0..64 {
+            let mut bytes = [0; 4];
+            getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+            let offset = u32::from_ne_bytes(bytes) % available;
+            let port = u16::try_from(if offset < lower_count {
+                MIN_AUTOMATIC_PORT + offset
+            } else {
+                upper_start + offset - lower_count
+            })
+            .expect("selected port is below 65536");
+            let Ok(ownership) = std::net::UdpSocket::bind((address, port)) else {
+                continue;
+            };
+            let tcp = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)?;
+            tcp.set_reuse_address(true)?;
+            // Fails while anything listens on the port, even with SO_REUSEADDR.
+            if tcp
+                .bind(&std::net::SocketAddrV4::new(address, port).into())
+                .is_err()
+            {
+                continue;
+            }
+            return Ok(Self {
+                port,
+                _tcp: tcp,
+                _ownership: ownership,
+            });
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "no free listener port outside the ephemeral range",
+        ))
+    }
+
+    /// The reserved port.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
 /// Errors from managed local NATS operations.
 #[derive(Debug, Error)]
 pub enum LocalNatsError {
@@ -61,19 +162,28 @@ pub enum LocalNatsError {
         arch: String,
     },
     /// The pid file references a live nats-server process.
-    #[error("managed nats-server is already running (pid {pid}); stop it first or use plain trellis-server with configured external NATS")]
+    #[error(
+        "managed nats-server is already running (pid {pid}); stop it first or \
+        use plain trellis-server with configured external NATS"
+    )]
     AlreadyRunning {
         /// Process id read from the pid file.
         pid: i32,
     },
     /// A port needed by the managed server is already in use.
-    #[error("port {port} is already in use; stop the existing server or use plain trellis-server with configured external NATS")]
+    #[error(
+        "port {port} is already in use; stop the existing server or use plain \
+        trellis-server with configured external NATS"
+    )]
     PortInUse {
         /// Occupied port.
         port: u16,
     },
     /// The managed server did not listen on all ports in time.
-    #[error("managed nats-server did not listen on {ports:?} within {timeout:?}; check its dedicated child log")]
+    #[error(
+        "managed nats-server did not listen on {ports:?} within {timeout:?}; \
+        check its dedicated child log"
+    )]
     ReadinessTimeout {
         /// Ports that never accepted a TCP connection.
         ports: Vec<u16>,
@@ -87,7 +197,10 @@ pub enum LocalNatsError {
     SpawnFailed(String),
     /// The pid file exists but is not a regular file recording a pid; another owner may
     /// be mid-startup or the path may have been tampered with.
-    #[error("pid file {path} exists but is not a regular file recording a pid; inspect and remove it if no trellis-server process is running")]
+    #[error(
+        "pid file {path} exists but is not a regular file recording a pid; \
+        inspect and remove it if no trellis-server process is running"
+    )]
     PidFileUnparsable {
         /// Pid file path.
         path: PathBuf,
@@ -374,7 +487,9 @@ impl NatsServerBinary {
         }
         Err(LocalNatsError::InvalidBinaryPath {
             path: PathBuf::from("nats-server"),
-            reason: "not found on PATH; install nats-server, use --local-nats=<PATH>, or request --nats-download".to_string(),
+            reason: "not found on PATH; install nats-server, use --local-nats=<PATH>, \
+                or request --nats-download"
+                .to_string(),
         })
     }
 
@@ -661,15 +776,15 @@ impl LocalNatsBuilder {
         let (ports, reservations) = match self.ports {
             PortPolicy::Fixed(ports) => (ports, Vec::new()),
             PortPolicy::Ephemeral => {
-                let listeners = (0..3)
-                    .map(|_| TcpListener::bind(("127.0.0.1", 0)))
+                let reservations = (0..3)
+                    .map(|_| ReservedPort::reserve())
                     .collect::<io::Result<Vec<_>>>()?;
                 let ports = LocalNatsPorts {
-                    nats: listeners[0].local_addr()?.port(),
-                    monitor: listeners[1].local_addr()?.port(),
-                    websocket: listeners[2].local_addr()?.port(),
+                    nats: reservations[0].port(),
+                    monitor: reservations[1].port(),
+                    websocket: reservations[2].port(),
                 };
-                (ports, listeners)
+                (ports, reservations)
             }
             PortPolicy::Missing => {
                 return Err(LocalNatsError::InvalidPolicy(
@@ -694,6 +809,16 @@ impl LocalNatsBuilder {
                 &state.join("data/jwt").display().to_string(),
             ),
         )?;
+        // A bundle with broker certificates always serves TLS; the managed
+        // broker never downgrades it to plaintext.
+        let tls = source
+            .join("tls/nats.crt")
+            .is_file()
+            .then(|| trellis_bootstrap::NatsTlsFiles {
+                certificate: source.join("tls/nats.crt").display().to_string(),
+                private_key: source.join("tls/nats.key").display().to_string(),
+                websocket_behind_proxy: authored_config_websocket_plaintext(&authored_config),
+            });
         let config = state.join("nats.conf");
         fs::write(
             &config,
@@ -704,6 +829,7 @@ impl LocalNatsBuilder {
                 ports.nats,
                 ports.websocket,
                 ports.monitor,
+                tls.as_ref(),
             ),
         )?;
         let binary = NatsServerBinary::resolve(&binary_source, self.cache_dir.as_deref())?;
@@ -713,7 +839,6 @@ impl LocalNatsBuilder {
         let log_path = match &output {
             NatsOutput::Log { path, .. } => path.clone(),
         };
-        drop(reservations);
         let server = ManagedNatsServer::start(
             &binary,
             &config,
@@ -723,14 +848,28 @@ impl LocalNatsBuilder {
             &pid_file,
             &output,
         )?;
+        drop(reservations);
+        let (native, websocket) = match &tls {
+            Some(files) if files.websocket_behind_proxy => ("tls", "ws"),
+            Some(_) => ("tls", "wss"),
+            None => ("nats", "ws"),
+        };
         Ok(LocalNats {
             server,
-            nats_url: format!("nats://127.0.0.1:{}", ports.nats),
-            websocket_url: format!("ws://127.0.0.1:{}", ports.websocket),
+            nats_url: format!("{native}://127.0.0.1:{}", ports.nats),
+            websocket_url: format!("{websocket}://127.0.0.1:{}", ports.websocket),
             log_path,
             _temporary_state: temporary_state,
         })
     }
+}
+
+/// Whether the authored bundle serves its WebSocket listener as plaintext
+/// behind a TLS-terminating proxy while native NATS keeps TLS.
+fn authored_config_websocket_plaintext(config: &str) -> bool {
+    config
+        .split_once("websocket")
+        .is_some_and(|(_, websocket)| websocket.contains("no_tls: true"))
 }
 
 /// Returns `Ok(Some(path))` when the installed binary is a regular, executable file;

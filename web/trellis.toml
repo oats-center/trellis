@@ -1,12 +1,12 @@
 [package]
 name = "trellis-web-generated"
-version = "0.100.0"
+version = "0.100.0-rc.12"
 
 [sources]
 console = "contract.trellis"
 
 [dependencies]
-trellis = { package = "trellis", path = "../crates/runtime" }
+trellis = { package = "trellis", path = "../crates/builtin-contracts" }
 
 [generate.typescript]
 output = "trellis"

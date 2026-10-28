@@ -1,0 +1,17 @@
+model Value { value: string; }
+
+api echo@v1 {
+  title "Portable compiler";
+  description "A generated consumer built using only distribution artifacts.";
+  rpc Echo { input Value; output Value; }
+  capabilities {
+    capability echo.invoke {
+      title "Echo";
+      description "Invoke the portable fixture.";
+      grants "The caller may echo values.";
+      allows { rpc Echo; }
+    }
+  }
+}
+
+app Caller { use echo { required capability echo.invoke; } }

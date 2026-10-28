@@ -7,16 +7,17 @@
     completeNavigation,
     currentNavigationToken,
   } from "../browser_telemetry";
-  import {
-    getVisibleNavSections,
-    type NavSection,
-  } from "../control-panel.ts";
+  import { getVisibleNavSections, type NavSection } from "../control-panel.ts";
   import {
     ConsoleAuthority,
     provideConsoleAuthority,
   } from "../console/authority.svelte";
-  import { NotificationsController, setNotifications } from "../notifications.svelte";
+  import {
+    NotificationsController,
+    setNotifications,
+  } from "../notifications.svelte";
   import { getConnection, getTrellis, type ConnectionStatus } from "../trellis";
+  import { setChangeAccess } from "../console/change_access.ts";
   import AppShell from "./AppShell.svelte";
 
   type Props = {
@@ -36,7 +37,9 @@
   const authority = new ConsoleAuthority(trellis);
   provideConsoleAuthority(authority);
 
-  const connectionStatus = $derived<ConnectionStatus["phase"]>(connection.status.phase);
+  const connectionStatus = $derived<ConnectionStatus["phase"]>(
+    connection.status.phase,
+  );
   const snapshot = $derived(authority.snapshot);
   const navSections = $derived<NavSection[]>(
     getVisibleNavSections(snapshot.authority),
@@ -51,13 +54,43 @@
     });
   }
 
-  async function signOut(): Promise<void> {
+  // Ending this app session sends the user back through consent, where their
+  // earlier choices are preselected and can be changed.
+  setChangeAccess(async () => {
     try {
       await trellis.logout();
-    } finally {
-      authority.clear();
-      window.location.href = buildConsoleLoginUrl({ redirectTo: "/profile" });
+    } catch (error) {
+      notifications.error(
+        error instanceof Error ? error.message : "Could not end this session.",
+        "Change access failed",
+      );
+      return;
     }
+    authority.clear();
+    redirectToLogin();
+  });
+
+  // Signing out ends the Portal login too, so the next sign-in asks who is
+  // signing in: the Console is often used on shared computers.
+  async function signOut(): Promise<void> {
+    try {
+      await trellis.logout({
+        endPortalLogin: true,
+        returnTo: new URL(
+          buildConsoleLoginUrl({ redirectTo: "/console/profile" }),
+          window.location.href,
+        ).href,
+      });
+    } catch (error) {
+      notifications.error(
+        error instanceof Error
+          ? error.message
+          : "Could not revoke this app session.",
+        "Sign out failed",
+      );
+      return;
+    }
+    authority.clear();
   }
 
   function finishAuthorityLoad(
@@ -82,12 +115,16 @@
     if (wasConnected) return;
     wasConnected = true;
     const token = currentNavigationToken();
-    void authority.reload().then((result) => finishAuthorityLoad(token, result));
+    void authority
+      .reload()
+      .then((result) => finishAuthorityLoad(token, result));
   });
 
   function retryAuthority(): void {
     const token = currentNavigationToken();
-    void authority.reload().then((result) => finishAuthorityLoad(token, result));
+    void authority
+      .reload()
+      .then((result) => finishAuthorityLoad(token, result));
   }
 
   onDestroy(() => {
@@ -100,12 +137,14 @@
 <AppShell
   profile={snapshot.profile}
   authority={snapshot.authority}
-  profileLoaded={snapshot.state !== "checking"}
   {navSections}
   {connectionStatus}
-  authFailure={snapshot.state === "error"
-    ? snapshot.failure?.message ?? "Could not verify your session."
+  authFailure={snapshot.state === "error" &&
+  snapshot.failure?.code !== "not_allowed"
+    ? (snapshot.failure?.message ?? "Could not verify your session.")
     : null}
+  accountNotAllowed={snapshot.state === "error" &&
+    snapshot.failure?.code === "not_allowed"}
   onSignOut={signOut}
   onRetryAuthority={retryAuthority}
 >

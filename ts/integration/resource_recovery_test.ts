@@ -1,21 +1,85 @@
-import { assert, assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { codecs } from "@oatscenter/trellis/generated";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { credsAuthenticator } from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
-import { join } from "@std/path";
+import { join } from "node:path";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import {
-  processIsGone,
-  processMatchesIdentity,
-  recordProcessIdentity,
-} from "../packages/trellis-testkit/src/cleanup.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
+test("deployment disable and enable preserve KV data and queued work", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const contract = participants.Provider.participant;
+    const identity = await runtime.registerService({
+      name: "paused",
+      contract,
+    });
+    let service = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: contract,
+      seed: identity.seed,
+    }).orThrow();
+    let exit = service.wait().catch((error: unknown) => error);
+    try {
+      await service.kv.records
+        .put("retained", { value: "before disable" })
+        .orThrow();
+      const queued = await service.jobs.work
+        .create({ value: "queued before disable" })
+        .orThrow();
+      const current = await runtime.callAdminRpc("authDeploymentsGet", {
+        deploymentId: codecs.ulid.decode(identity.deploymentId),
+      });
+      const disabled = await runtime.callAdminRpc("authDeploymentsDisable", {
+        deploymentId: codecs.ulid.decode(identity.deploymentId),
+        expectedRevision: current.deployment.revision,
+        idempotencyKey: ulid(),
+      });
+      await service.stop();
+      await exit;
+      const denied = await TrellisService.connect({
+        trellisUrl: runtime.oauthIssuer,
+        participant: contract,
+        seed: identity.seed,
+      });
+      assert(denied.isErr());
+      await runtime.callAdminRpc("authDeploymentsEnable", {
+        deploymentId: codecs.ulid.decode(identity.deploymentId),
+        expectedRevision: disabled.deployment.revision,
+        idempotencyKey: ulid(),
+      });
+      service = await TrellisService.connect({
+        trellisUrl: runtime.oauthIssuer,
+        participant: contract,
+        seed: identity.seed,
+      }).orThrow();
+      let completed: string | undefined;
+      service.jobs.work.handle(({ job }) => {
+        if (job.ref.id === queued.id) completed = job.payload.value;
+        return Promise.resolve(Result.ok(job.payload));
+      });
+      exit = service.wait().catch((error: unknown) => error);
+      assert.deepEqual(await service.kv.records.get("retained").orThrow(), {
+        value: "before disable",
+      });
+      assert.equal(
+        await runtime.waitFor(() => completed, { timeoutMs: 20_000 }),
+        "queued before disable",
+      );
+    } finally {
+      await service.stop();
+      await exit;
+    }
+  });
+});
+
 for (const recovery of ["apply", "restart"] as const) {
-  Deno.test(`${recovery} repairs a deleted owned job consumer without resetting retained data`, async () => {
+  test(`${recovery} preserves data and fails closed when an owned job consumer is missing`, async () => {
     await withTrellisRuntime(async (runtime) => {
       const contract = participants.Provider.participant;
       const identity = await runtime.registerService({
@@ -23,7 +87,7 @@ for (const recovery of ["apply", "restart"] as const) {
         contract,
       });
       let service = await TrellisService.connect({
-        trellisUrl: runtime.trellisUrl,
+        trellisUrl: runtime.oauthIssuer,
         participant: contract,
         seed: identity.seed,
       }).orThrow();
@@ -31,7 +95,7 @@ for (const recovery of ["apply", "restart"] as const) {
       const nc = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             join(
               runtime.workdir,
               "config/trellis/nats/creds/trellis-auth.creds",
@@ -40,340 +104,70 @@ for (const recovery of ["apply", "restart"] as const) {
         ),
       });
       try {
-        await service.kv.records.put("retained", { value: "before repair" })
+        await service.kv.records
+          .put("retained", { value: "before repair" })
           .orThrow();
+        await service.jobs.work.create({ value: "must-not-run" }).orThrow();
         await service.stop();
         await exit;
-        const detail = await runtime.callAdminRpc("authDeploymentsGet", {
-          deploymentId: identity.deploymentId,
+        const resources = await runtime.callAdminRpc("authResourcesList", {
+          ownerKind: "deployment",
+          ownerId: codecs.ulid.decode(identity.deploymentId),
         });
-        const work = detail.resources.find((item) =>
-          item.localName === "work" && item.resourceKind === "jobQueue"
+        const work = resources.items.find(
+          (item) => item.localName === "work" && item.kind === "job",
         );
         assert(work);
         const manager = await jetstreamManager(nc);
         const consumers = await manager.consumers.list("JOBS_WORK").next();
         const consumer = consumers.find((item) =>
-          item.config.metadata?.["trellis.resource_id"] === work.bindingId
+          item.config.description?.startsWith(
+            `trellis.resource.v1:${work.resourceId}:`,
+          ),
         );
         assert(consumer);
         assert(await manager.consumers.delete("JOBS_WORK", consumer.name));
         if (recovery === "restart") await runtime.restart();
         else await runtime.contracts.apply({ contract });
-        await runtime.waitFor(async () => {
-          const current = await manager.consumers.list("JOBS_WORK").next();
-          return current.some((item) => item.name === consumer.name);
-        }, { timeoutMs: 20_000 });
         service = await TrellisService.connect({
-          trellisUrl: runtime.trellisUrl,
+          trellisUrl: runtime.oauthIssuer,
           participant: contract,
           seed: identity.seed,
         }).orThrow();
-        service.jobs.work.handle(({ job }) =>
-          Promise.resolve(Result.ok(job.payload))
-        );
-        exit = service.wait().catch((error: unknown) => error);
-        assertEquals(await service.kv.records.get("retained").orThrow(), {
+        assert.deepEqual(await service.kv.records.get("retained").orThrow(), {
           value: "before repair",
         });
-        const job = await service.jobs.work.create({ value: "after repair" })
-          .orThrow();
-        const terminal = await job.wait().orThrow();
-        assertEquals(terminal.state, "completed", terminal.lastError);
-        assertEquals(terminal.result, { value: "after repair" });
+        let executions = 0;
+        service.jobs.work.handle(({ job }) => {
+          executions++;
+          return Promise.resolve(Result.ok(job.payload));
+        });
+        exit = service.wait().catch((error: unknown) => error);
+        let failure: unknown = await runtime.waitFor(() => exit, {
+          timeoutMs: 20_000,
+        });
+        while (
+          failure instanceof Error &&
+          failure.name !== "JobsConsumerMissingError" &&
+          failure.cause !== undefined
+        ) {
+          failure = failure.cause;
+        }
+        assert(failure instanceof Error);
+        assert.equal(failure.name, "JobsConsumerMissingError");
+        assert.equal(executions, 0);
+        await assert.rejects(
+          manager.consumers.info("JOBS_WORK", consumer.name),
+          "startup must not recreate lost delivery state",
+        );
       } finally {
         await service.stop();
-        await exit;
-        await nc.close();
+        try {
+          await exit;
+        } finally {
+          await nc.close();
+        }
       }
     });
   });
 }
-
-Deno.test("resource reapproval progresses after broker restart with historical transport enforcement pending", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const contract = participants.Provider.participant;
-    const identity = await runtime.registerService({
-      name: "broker-repair",
-      contract,
-    });
-    const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: contract,
-      seed: identity.seed,
-    }).orThrow();
-    const exit = service.wait().catch((error: unknown) => error);
-    assert(service.kv.extras);
-    await service.kv.extras.put("retained", { value: "original" }).orThrow();
-    const selector = {
-      ownerKind: "deployment",
-      ownerId: identity.deploymentId,
-      participantId: contract.identity,
-    };
-    const { binding } = await runtime.callAdminRpc("authGrantsGet", selector);
-    assert(binding);
-    const before = await runtime.callAdminRpc("authConnectionsList", {});
-    const historical = before.items.filter((item) =>
-      item.participantId === contract.identity
-    );
-    assert(historical.length > 0);
-    const natsDir = join(runtime.workdir, "state", "trellis", "nats");
-    let replacement: Deno.ChildProcess | undefined;
-    let replacementOutput: Promise<Deno.CommandOutput> | undefined;
-    let repaired: typeof service | undefined;
-    // Capture the identity of the broker owned by this native host's pid file.
-    // SIGKILL prevents a broker disconnect event from erasing the real presence.
-    const pid = Number(
-      (await Deno.readTextFile(
-        join(runtime.workdir, "runtime", "trellis", "nats-server.pid"),
-      )).trim(),
-    );
-    assert(Number.isSafeInteger(pid) && pid > 0);
-    const broker = await recordProcessIdentity(
-      pid,
-      await Deno.readLink(`/proc/${pid}/exe`),
-    );
-    assert(broker);
-    assert(await processMatchesIdentity(broker));
-    const parent = Number(
-      (await Deno.readTextFile(`/proc/${broker.pid}/status`)).match(
-        /^PPid:\s+(\d+)$/m,
-      )?.[1],
-    );
-    assert(Number.isSafeInteger(parent) && parent > 0);
-    const host = await recordProcessIdentity(
-      parent,
-      await Deno.readLink(`/proc/${parent}/exe`),
-    );
-    assert(host);
-    try {
-      Deno.kill(broker.pid, "SIGKILL");
-      await runtime.waitFor(async () => {
-        const endpoint = new URL(runtime.natsUrl);
-        try {
-          const connection = await Deno.connect({
-            hostname: endpoint.hostname,
-            port: Number(endpoint.port),
-          });
-          connection.close();
-          return false;
-        } catch (error) {
-          if (error instanceof Deno.errors.ConnectionRefused) return true;
-          throw error;
-        }
-      });
-      await service.stop();
-      await exit;
-      replacement = new Deno.Command(broker.executable, {
-        args: ["-c", join(natsDir, "nats.conf")],
-        cwd: natsDir,
-        stdin: "null",
-        stdout: "piped",
-        stderr: "piped",
-      }).spawn();
-      replacementOutput = replacement.output();
-      // A normal admin RPC is the readiness barrier; no test-only runtime path.
-      await runtime.waitFor(async () => {
-        try {
-          return await runtime.callAdminRpc("authConnectionsList", {});
-        } catch {
-          return false;
-        }
-      }, { timeoutMs: 30_000 });
-      // The fixture's independently replaced broker must stay available until
-      // its original native host has released broker-backed ownership. Stop
-      // that exact host first, then reap the fixture broker before restarting
-      // the testkit's normally managed host/broker pair.
-      assert(await processMatchesIdentity(host));
-      Deno.kill(host.pid, "SIGTERM");
-      await runtime.waitFor(() => processIsGone(host.pid));
-      replacement.kill("SIGTERM");
-      await replacementOutput;
-      replacement = undefined;
-      await runtime.restart();
-      const present = await runtime.callAdminRpc("authConnectionsList", {});
-      assert(
-        historical.some((old) =>
-          present.items.some((item) => item.connectionId === old.connectionId)
-        ),
-      );
-      const reduced = await runtime.callAdminRpc("authGrantsSet", {
-        ...selector,
-        expectedRevision: binding.revision,
-        installedRevision: binding.installedRevision,
-        expiresAt: binding.expiresAt,
-        platformPrivileges: binding.platformPrivileges,
-        idempotencyKey: ulid(),
-        grants: {
-          ...binding.grants,
-          permissions: binding.grants.permissions.filter((atom) => {
-            const target: unknown = JSON.parse(
-              new TextDecoder().decode(atom.target),
-            );
-            return !(typeof target === "object" && target !== null &&
-              "kind" in target &&
-              target.kind === "participantResource" && "name" in target &&
-              target.name === "extras");
-          }),
-        },
-      });
-      assert(
-        reduced.binding.grants.permissions.length <
-          binding.grants.permissions.length,
-      );
-      await runtime.waitFor(() => {
-        const output = runtime.controlPlaneOutput().toLowerCase();
-        return output.includes("transportreevaluate") &&
-          output.includes("no responders");
-      }, { timeoutMs: 20_000 });
-      await runtime.callAdminRpc("authGrantsSet", {
-        ...selector,
-        expectedRevision: reduced.binding.revision,
-        installedRevision: binding.installedRevision,
-        expiresAt: binding.expiresAt,
-        platformPrivileges: binding.platformPrivileges,
-        idempotencyKey: ulid(),
-        grants: binding.grants,
-      });
-      await runtime.waitFor(async () => {
-        const detail = await runtime.callAdminRpc("authDeploymentsGet", {
-          deploymentId: identity.deploymentId,
-        });
-        return detail.resources.some((resource) =>
-          resource.localName === "extras" && resource.state === "available"
-        );
-      }, { timeoutMs: 20_000 });
-      // A failed disable kick must remain pending for the historical socket,
-      // without treating a later authorized attachment as part of that disable.
-      const active = await runtime.callAdminRpc("authDeploymentsGet", {
-        deploymentId: identity.deploymentId,
-      });
-      await runtime.callAdminRpc("authDeploymentsDisable", {
-        deploymentId: identity.deploymentId,
-        expectedVersion: active.deployment.version,
-        idempotencyKey: ulid(),
-        reason: null,
-      });
-      await runtime.waitFor(() => {
-        const output = runtime.controlPlaneOutput();
-        return output.includes('"action_kind":"Kick"') &&
-          output.includes("no responders");
-      }, { timeoutMs: 20_000 });
-      const disabled = await TrellisService.connect({
-        trellisUrl: runtime.trellisUrl,
-        participant: contract,
-        seed: identity.seed,
-      });
-      assert(disabled.isErr(), "disabled deployment must deny new bootstrap");
-      const inactive = await runtime.callAdminRpc("authDeploymentsGet", {
-        deploymentId: identity.deploymentId,
-      });
-      await runtime.callAdminRpc("authDeploymentsEnable", {
-        deploymentId: identity.deploymentId,
-        expectedVersion: inactive.deployment.version,
-        idempotencyKey: ulid(),
-        reason: null,
-      });
-      repaired = await TrellisService.connect({
-        trellisUrl: runtime.trellisUrl,
-        participant: contract,
-        seed: identity.seed,
-      }).orThrow();
-      assert(repaired.kv.extras);
-      assertEquals(await repaired.kv.extras.get("retained").orThrow(), {
-        value: "original",
-      });
-      const connected = await runtime.callAdminRpc("authConnectionsList", {});
-      const fresh = connected.items.find((item) =>
-        item.deploymentId === identity.deploymentId &&
-        !historical.some((old) => old.connectionId === item.connectionId)
-      );
-      assert(fresh, "re-enabled deployment must have a fresh attachment");
-      const retries =
-        runtime.controlPlaneOutput().split('"action_kind":"Kick"').length;
-      await runtime.waitFor(
-        () =>
-          runtime.controlPlaneOutput().split('"action_kind":"Kick"').length >
-            retries,
-        { timeoutMs: 20_000 },
-      );
-      const afterRetry = await runtime.callAdminRpc("authConnectionsList", {});
-      assert(
-        afterRetry.items.some((item) =>
-          item.connectionId === fresh.connectionId
-        ),
-        "historical disable retry must not kick a fresh authorized attachment",
-      );
-      assertEquals(await repaired.kv.extras.get("retained").orThrow(), {
-        value: "original",
-      });
-      repaired.jobs.work.handle(({ job }) =>
-        Promise.resolve(Result.ok(job.payload))
-      );
-      const repairedExit = repaired.wait().catch((error: unknown) => error);
-      try {
-        const job = await repaired.jobs.work.create({
-          value: "broker recovered",
-        }).orThrow();
-        assertEquals((await job.wait().orThrow()).state, "completed");
-        await runtime.restart();
-        assertEquals(await repaired.kv.extras.get("retained").orThrow(), {
-          value: "original",
-        });
-        await repaired.stop();
-        await repairedExit;
-        const current = await runtime.callAdminRpc("authGrantsGet", {
-          ownerKind: "deployment",
-          ownerId: identity.deploymentId,
-          participantId: contract.identity,
-        });
-        assert(current.binding);
-        await runtime.callAdminRpc("authGrantsRevoke", {
-          ownerKind: "deployment",
-          ownerId: identity.deploymentId,
-          participantId: contract.identity,
-          expectedRevision: current.binding.revision,
-          idempotencyKey: "revoke-after-broker-recovery",
-        });
-        await runtime.waitFor(() => {
-          const output = runtime.controlPlaneOutput().toLowerCase();
-          return output.includes("transportreevaluate") &&
-            output.includes("no responders");
-        }, { timeoutMs: 20_000 });
-        await runtime.restart();
-        const denied = await TrellisService.connect({
-          trellisUrl: runtime.trellisUrl,
-          participant: contract,
-          seed: identity.seed,
-        });
-        assert(
-          denied.isErr(),
-          "revoked provider must remain denied after startup",
-        );
-      } finally {
-        await repaired.stop();
-        await repairedExit;
-      }
-    } finally {
-      try {
-        const cleanup = await Promise.allSettled([
-          repaired?.stop(),
-          service.stop(),
-          exit,
-        ]);
-        const failures = cleanup.filter((result) =>
-          result.status === "rejected"
-        ).map((result) => result.reason);
-        if (failures.length) {
-          throw new AggregateError(
-            failures,
-            "service cleanup failed after broker recovery",
-          );
-        }
-      } finally {
-        if (replacement) replacement.kill("SIGTERM");
-        await replacementOutput;
-      }
-    }
-  });
-});

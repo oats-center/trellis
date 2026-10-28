@@ -7,7 +7,7 @@ app = "contract.trellis"
 
 [dependencies]
 service = { package = "demo-service", path = "../ts/service" }
-trellis = { package = "trellis", path = "../../crates/runtime" }
+trellis = { package = "trellis", path = "../../crates/builtin-contracts" }
 
 [generate.typescript]
 output = "trellis"

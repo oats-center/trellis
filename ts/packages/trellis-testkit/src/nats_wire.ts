@@ -25,19 +25,20 @@ export type NatsOp =
   | { kind: "sub"; subject: string; queue?: string; sid: string }
   | { kind: "unsub"; sid: string }
   | {
-    kind: "pub";
-    subject: string;
-    reply?: string;
-    headers?: Record<string, string>;
-  }
+      kind: "pub";
+      subject: string;
+      reply?: string;
+      headers?: Record<string, string>;
+    }
   | {
-    kind: "msg";
-    subject: string;
-    sid: string;
-    reply?: string;
-    /** Decoded message body: header block and trailing CRLF excluded. */
-    body: Uint8Array;
-  }
+      kind: "msg";
+      subject: string;
+      sid: string;
+      reply?: string;
+      headers?: Record<string, string>;
+      /** Decoded message body: header block and trailing CRLF excluded. */
+      body: Uint8Array;
+    }
   | { kind: "info" }
   | { kind: "ok" }
   | { kind: "err"; message: string }
@@ -96,8 +97,9 @@ export class NatsFrameParser {
       if (lineEnd < 0) break;
       const line = textDecoder.decode(this.#buffer.subarray(offset, lineEnd));
       const firstSpace = line.indexOf(" ");
-      const verb = (firstSpace < 0 ? line : line.slice(0, firstSpace))
-        .toUpperCase();
+      const verb = (
+        firstSpace < 0 ? line : line.slice(0, firstSpace)
+      ).toUpperCase();
       let bodyLength = 0;
       let headerLength = 0;
       let payload = false;
@@ -215,6 +217,7 @@ export class NatsFrameParser {
           subject: parts[1]!,
           sid: parts[2]!,
           reply: parts.length === 6 ? parts[3] : undefined,
+          headers: parseHeaders(payload.subarray(0, headerLength)),
           // `bodyLength` is the framed header+body size; the header block is
           // `headerLength` bytes at the front, so the body starts after it.
           body: payload.subarray(headerLength, bodyLength),

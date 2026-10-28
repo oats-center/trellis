@@ -47,8 +47,17 @@ pub(crate) fn init(verbose: bool, check: bool) -> miette::Result<TelemetryGuard>
         ))
     };
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(if verbose { "debug" } else { "info" }));
+    // Verbose detail is Trellis's own; a dependency's debug output (the NATS
+    // client logs every message it routes) needs an explicit RUST_LOG.
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(if verbose {
+            "info,trellis=debug,trellis_server=debug,trellis_runtime=debug,trellis_rs=debug,\
+            trellis_jobs_runtime=debug,trellis_events_runtime=debug,trellis_local_nats=debug,\
+            trellis_bootstrap=debug"
+        } else {
+            "info"
+        })
+    });
     let attached = if check {
         std::io::stderr().is_terminal()
     } else {

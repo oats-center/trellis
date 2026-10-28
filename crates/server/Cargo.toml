@@ -12,19 +12,20 @@ workspace = true
 
 [dependencies]
 clap.workspace = true
+ipnet.workspace = true
 miette.workspace = true
 libc = "0.2.186"
 serde_json.workspace = true
+time.workspace = true
 url.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-opentelemetry_sdk.workspace = true
 tracing-opentelemetry.workspace = true
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0" }
-trellis-local-nats = { path = "../local-nats", version = "0.100.0" }
-trellis-runtime = { path = "../runtime", version = "0.100.0" }
-trellis-rs = { path = "../trellis", version = "0.100.0", features = ["telemetry-otlp"] }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.12" }
+trellis-local-nats = { path = "../local-nats", version = "0.100.0-rc.12" }
+trellis-runtime = { path = "../runtime", version = "0.100.0-rc.12" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.12", features = ["telemetry-otlp"] }
 
 [dev-dependencies]
 tempfile.workspace = true

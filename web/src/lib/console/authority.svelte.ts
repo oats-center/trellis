@@ -2,13 +2,13 @@
  * Reactive console authority owned by the shell and shared with descendants.
  *
  * `authority.ts` owns the state machine; this module owns Svelte reactivity,
- * context publication, and the real `Sessions.Me` call. Descendant pages read
+ * context publication, the verified own-authority view and authenticated account call. Descendant pages read
  * the same object so a route can never observe a different authority than the
  * shell that authorized its mount.
  */
 
 import { createContext } from "svelte";
-import type { apis } from "trellis-web-generated";
+import { TransportError, type OwnAuthorityView } from "@oatscenter/trellis";
 
 import type { Authority } from "../control-panel.ts";
 import type { TrellisConsoleClient } from "../trellis-context.svelte.ts";
@@ -28,27 +28,6 @@ export type {
   AuthorityState,
 } from "./authority.ts";
 
-/** The real `Sessions.Me` call shape; the client is the typed console runtime. */
-async function callMe(trellis: TrellisConsoleClient) {
-  return await trellis.sessionsMe({}).orThrow();
-}
-
-function identityOf(
-  me: Awaited<ReturnType<typeof callMe>>,
-): AuthorityIdentity {
-  return {
-    principalId: me.connection.principalId,
-    loginSessionId: me.session?.sessionId ?? null,
-    connectionId: me.connection.connectionId,
-  };
-}
-
-function profileOf(
-  me: Awaited<ReturnType<typeof callMe>>,
-): AuthorityProfile | null {
-  return me.user;
-}
-
 /**
  * Classifies a failed validation without collapsing states together.
  *
@@ -67,7 +46,8 @@ function classifyFailure(error: unknown): {
   };
   const code = projected.code;
   if (
-    code === "session_not_found" || code === "session_expired" ||
+    code === "session_not_found" ||
+    code === "session_expired" ||
     code === "session_revoked"
   ) {
     return { state: "auth-required", failure };
@@ -89,41 +69,72 @@ function classifyFailure(error: unknown): {
 export class ConsoleAuthority {
   #core: ConsoleAuthorityCore;
   #snapshot = $state.raw<AuthoritySnapshot | null>(null);
+  #view: OwnAuthorityView;
+  #unsubscribe: () => void;
 
   constructor(trellis: TrellisConsoleClient) {
-    this.#core = new ConsoleAuthorityCore(
-      async () => {
-        try {
-          const me = await callMe(trellis);
-          const authority: Authority = {
-            platformPrivileges: me.connection.platformPrivileges,
-            grants: me.connection.grants,
-          };
-          return {
-            ok: true,
-            authority,
-            profile: profileOf(me),
-            identity: identityOf(me),
-          };
-        } catch (error) {
-          return {
-            ok: false,
-            error,
-            identity: {
-              principalId: null,
-              loginSessionId: null,
-              connectionId: null,
-            },
-          };
-        }
-      },
-      classifyFailure,
-    );
+    this.#view = trellis.ownAuthority;
+    this.#core = new ConsoleAuthorityCore(async () => {
+      try {
+        const verified = this.#view.current;
+        if (!verified)
+          throw new TransportError({
+            code: "Unavailable",
+            hint: "Retry after the connection has verified current authority.",
+            message: "Verified connection authority is unavailable",
+          });
+        const account = await trellis.usersResolve({}).orThrow();
+        if (
+          this.#view.current !== verified ||
+          account.user.principalId !== verified.principalId
+        )
+          throw new TransportError({
+            code: "Unavailable",
+            hint: "Retry after the authenticated account and connection have converged.",
+            message:
+              "Authenticated account and current authority no longer match",
+          });
+        return {
+          ok: true,
+          authority: verified,
+          profile: account.user,
+          identity: {
+            principalId: verified.principalId,
+            loginSessionId: verified.loginSessionId ?? null,
+            connectionId: verified.runtimeId,
+          },
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error,
+          identity: {
+            principalId: null,
+            loginSessionId: null,
+            connectionId: null,
+          },
+        };
+      }
+    }, classifyFailure);
+    let observed = this.#view.current;
+    this.#unsubscribe = this.#view.subscribe((snapshot) => {
+      if (snapshot === observed) return;
+      observed = snapshot;
+      this.invalidate();
+      if (snapshot) void this.reload();
+    });
   }
 
   /** Current snapshot; reactive when read in effects or markup. */
   get snapshot(): AuthoritySnapshot {
-    return this.#snapshot ?? this.#core.snapshot;
+    const snapshot = this.#snapshot ?? this.#core.snapshot;
+    if (
+      snapshot.state === "ready" &&
+      snapshot.authority?.authorityDigest !==
+        this.#view.current?.authorityDigest
+    )
+      return { ...snapshot, state: "checking", authority: null, profile: null };
+    return snapshot;
   }
 
   get state(): AuthoritySnapshot["state"] {
@@ -169,18 +180,18 @@ export class ConsoleAuthority {
 
   /** Ends pending work without dispatching more RPCs or redirects. */
   dispose(): void {
+    this.#unsubscribe();
     this.#core.dispose();
   }
 
   /** True when `operation` may still commit its outcome. */
   isCurrent(operation: number): boolean {
-    return this.#core.isCurrent(operation);
+    return this.#view.current !== undefined && this.#core.isCurrent(operation);
   }
 }
 
-const [readConsoleAuthority, writeConsoleAuthority] = createContext<
-  ConsoleAuthority
->();
+const [readConsoleAuthority, writeConsoleAuthority] =
+  createContext<ConsoleAuthority>();
 
 /**
  * Publishes the shell-owned authority to descendant pages.

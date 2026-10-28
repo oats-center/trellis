@@ -1,4 +1,4 @@
-//! Storage-neutral Transfer v2 wire values, exact subjects and compact proofs.
+//! Storage-neutral Transfer v1 wire values, exact subjects and compact proofs.
 //!
 //! DATA is raw bytes. Its descriptor travels in headers; EOF has an empty body
 //! and a signed terminal descriptor. Controls and signals are bounded strict JSON.
@@ -13,17 +13,23 @@ use sha2::{Digest as _, Sha256};
 use crate::{canonicalize_json, encode_subject_token, live, ProtocolError};
 
 /// Exact Transfer protocol discriminator.
-pub const TRANSFER_VERSION: &str = "trellis.transfer.v2";
+pub const TRANSFER_VERSION: &str = "trellis.transfer.v1";
 /// Compact caller frame digest domain, distinct from request-proof signing.
-pub const TRANSFER_FRAME_DOMAIN_V2: &str = "trellis.transfer-frame.v2";
+pub const TRANSFER_FRAME_DOMAIN_V1: &str = "trellis.transfer-frame.v1";
 /// Provider proof domain, deliberately distinct from Live.
-pub const TRANSFER_SERVER_PROOF_DOMAIN_V2: &str = "trellis.transfer-server-proof.v2";
+pub const TRANSFER_SERVER_PROOF_DOMAIN_V1: &str = "trellis.transfer-server-proof.v1";
 /// Maximum raw DATA body size.
 pub const MAX_TRANSFER_FRAME_BYTES: u64 = 1_048_576;
-/// Maximum outstanding DATA frames.
-pub const TRANSFER_WINDOW_FRAMES: u64 = 16;
-/// Maximum outstanding raw DATA bytes.
-pub const TRANSFER_WINDOW_BYTES: u64 = 4_194_304;
+/// Outstanding DATA frames a receiver offers one transfer by default.
+pub const TRANSFER_WINDOW_FRAMES: u64 = 64;
+/// Outstanding raw DATA bytes a receiver offers one transfer by default.
+pub const TRANSFER_WINDOW_BYTES: u64 = 16_777_216;
+/// Largest outstanding-frame window any grant or activation may declare.
+pub const TRANSFER_MAX_WINDOW_FRAMES: u64 = 1_024;
+/// Largest outstanding-byte window any grant or activation may declare.
+pub const TRANSFER_MAX_WINDOW_BYTES: u64 = 67_108_864;
+/// Receive capacity one process admits across all of its active transfers.
+pub const TRANSFER_PROCESS_RECEIVE_BYTES: u64 = 268_435_456;
 /// Coalesce credit until this many frames have been consumed.
 pub const TRANSFER_CREDIT_FRAME_STEP: u64 = 8;
 /// Coalesce credit until this many bytes have been consumed.
@@ -32,6 +38,11 @@ pub const TRANSFER_CREDIT_BYTE_STEP: u64 = 1_048_576;
 pub const TRANSFER_CREDIT_MAX_DELAY_MS: u64 = 25;
 /// NATS payload capacity reserved for proof and descriptor headers.
 pub const TRANSFER_HEADER_RESERVE: u64 = 4_096;
+/// Lifetime of an Operation upload grant. Its expiry ends the transfer, so it
+/// bounds activation and the whole upload in both SDKs.
+pub const TRANSFER_OPERATION_UPLOAD_LIFETIME_SECONDS: u64 = 900;
+/// Largest object an Operation upload grant admits in both SDKs.
+pub const TRANSFER_OPERATION_UPLOAD_MAX_BYTES: u64 = 536_870_912;
 /// Maximum JSON control, signal or terminal descriptor size.
 pub const MAX_TRANSFER_CONTROL_BYTES: usize = 8_192;
 /// Header carrying the canonical DATA sequence.
@@ -100,10 +111,10 @@ impl TransferSubjectKind {
     /// Exact family prefix, also used to compile transport permissions.
     pub const fn prefix(self) -> &'static str {
         match self {
-            Self::UploadData => "transfer.v2.upload.data",
-            Self::DownloadData => "transfer.v2.download.data",
-            Self::Control => "transfer.v2.control",
-            Self::Signal => "transfer.v2.signal",
+            Self::UploadData => "transfer.v1.upload.data",
+            Self::DownloadData => "transfer.v1.download.data",
+            Self::Control => "transfer.v1.control",
+            Self::Signal => "transfer.v1.signal",
         }
     }
 }
@@ -294,8 +305,36 @@ pub fn validate_transfer_subject(subject: &str) -> Result<TransferSubjectKind, P
     }
     Err(invalid(
         "subject",
-        "not an exact canonical Transfer v2 subject",
+        "not an exact canonical Transfer v1 subject",
     ))
+}
+
+/// Receive window to offer when `available` admission bytes remain.
+///
+/// Offers the default window, shrunk to what is left with proportionally
+/// fewer frames, or `None` when less than one `max_frame_bytes` frame fits.
+/// Both SDKs use this one policy; it never overcommits `available`.
+pub fn transfer_receive_window(available: u64, max_frame_bytes: u64) -> Option<(u64, u64)> {
+    let bytes = TRANSFER_WINDOW_BYTES.min(available);
+    if bytes == 0 || bytes < max_frame_bytes.min(TRANSFER_WINDOW_BYTES) {
+        return None;
+    }
+    let frames = (TRANSFER_WINDOW_FRAMES * bytes)
+        .div_ceil(TRANSFER_WINDOW_BYTES)
+        .max(1);
+    Some((frames, bytes))
+}
+
+fn validate_window(frames: u64, bytes: u64, frame: u64) -> Result<(), ProtocolError> {
+    if frames == 0
+        || bytes == 0
+        || frames > TRANSFER_MAX_WINDOW_FRAMES
+        || bytes > TRANSFER_MAX_WINDOW_BYTES
+        || frame > bytes
+    {
+        return Err(invalid("window", "window outside protocol bounds"));
+    }
+    Ok(())
 }
 
 /// Negotiate raw DATA capacity from both peers' actual NATS payload limits.
@@ -319,9 +358,9 @@ pub fn negotiate_transfer_max_frame_bytes(
 /// Exact format discriminant; unsupported versions fail deserialization.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TransferFormat {
-    /// Transfer v2.
-    #[serde(rename = "trellis.transfer.v2")]
-    V2,
+    /// Transfer v1.
+    #[serde(rename = "trellis.transfer.v1")]
+    V1,
 }
 
 /// Literal control discriminant.
@@ -358,6 +397,12 @@ pub enum TransferControl {
         consumed_seq: U64s,
         /// Consumer's usable raw frame capacity.
         receive_max_frame_bytes: u64,
+        /// Outstanding frames a receiving consumer admits; downloads only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receive_window_frames: Option<u64>,
+        /// Outstanding bytes a receiving consumer admits; downloads only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receive_window_bytes: Option<u64>,
     },
     /// Cumulative download consumption credit.
     Credit {
@@ -448,6 +493,8 @@ impl TransferControl {
                 received_seq,
                 consumed_seq,
                 receive_max_frame_bytes,
+                receive_window_frames,
+                receive_window_bytes,
                 ..
             } => {
                 if control_seq.get() != 1 || received_seq.get() != 0 || consumed_seq.get() != 0 {
@@ -457,6 +504,18 @@ impl TransferControl {
                     ));
                 }
                 validate_frame_limit(*receive_max_frame_bytes)?;
+                match (receive_window_frames, receive_window_bytes) {
+                    (None, None) => {}
+                    (Some(frames), Some(bytes)) => {
+                        validate_window(*frames, *bytes, (*receive_max_frame_bytes).min(*bytes))?
+                    }
+                    _ => {
+                        return Err(invalid(
+                            "activate",
+                            "a receive window declares both frames and bytes",
+                        ))
+                    }
+                }
             }
             Self::Credit {
                 received_seq,
@@ -666,7 +725,7 @@ pub struct TransferFileInfo {
     /// Optional media type.
     #[serde(
         default,
-        deserialize_with = "present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub content_type: Option<String>,
@@ -691,10 +750,22 @@ pub enum TransferGrantKind {
     TransferGrant,
 }
 
+/// Originating authorization coordinates retained by an established transfer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TransferOrigin {
+    /// API that authorized opening the transfer, not a storage backend name.
+    pub api_id: String,
+    /// Generated action whose caller and provider authority must remain usable.
+    pub action: crate::CatalogActionIdentity,
+}
+
 /// Caller-to-provider grant payload; direction is owned by [`TransferGrant`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TransferSendGrant {
+    /// Authenticated originating API/action retained across owner-directed frames.
+    pub origin: TransferOrigin,
     /// Exact protocol version.
     pub format: TransferFormat,
     /// Literal TransferGrant.
@@ -725,38 +796,32 @@ pub struct TransferSendGrant {
     /// Optional full-object size cap.
     #[serde(
         default,
-        deserialize_with = "present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub max_bytes: Option<u64>,
     /// Optional retained media type.
     #[serde(
         default,
-        deserialize_with = "present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub content_type: Option<String>,
     /// Optional application metadata; omitted is an empty set at runtime.
     #[serde(
         default,
-        deserialize_with = "present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub metadata: Option<std::collections::BTreeMap<String, String>>,
-}
-
-fn present_optional<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
 }
 
 /// Provider-to-caller grant payload; direction is owned by [`TransferGrant`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TransferReceiveGrant {
+    /// Authenticated originating API/action retained across owner-directed frames.
+    pub origin: TransferOrigin,
     /// Exact protocol version.
     pub format: TransferFormat,
     /// Literal TransferGrant.
@@ -788,7 +853,7 @@ pub struct TransferReceiveGrant {
     pub info: TransferFileInfo,
 }
 
-/// Direction-tagged public v2 grant, with no physical storage identity.
+/// Direction-tagged public v1 grant, with no physical storage identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "direction", rename_all = "lowercase")]
 pub enum TransferGrant {
@@ -801,6 +866,12 @@ pub enum TransferGrant {
 impl TransferGrant {
     /// Validate exact session coordinates and logical transfer bounds.
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        let origin = match self {
+            Self::Send(grant) => &grant.origin,
+            Self::Receive(grant) => &grant.origin,
+        };
+        crate::validate_api_id(&origin.api_id)?;
+        crate::identifiers::validate_logical_name(&origin.action.name)?;
         let (
             service,
             id,
@@ -858,12 +929,7 @@ impl TransferGrant {
                 .map_err(|_| invalid("sessionKey", "invalid Ed25519 public key"))?;
         }
         validate_frame_limit(frame)?;
-        if frames != TRANSFER_WINDOW_FRAMES || bytes != TRANSFER_WINDOW_BYTES || frame > bytes {
-            return Err(invalid(
-                "window",
-                "grant must use the protocol frame and byte windows",
-            ));
-        }
+        validate_window(frames, bytes, frame)?;
         for (kind, actual) in [
             (data_kind, data),
             (TransferSubjectKind::Control, control),
@@ -933,7 +999,7 @@ impl TransferFileInfo {
     }
 }
 
-/// Parse and validate a strict direction-specific public Transfer v2 grant.
+/// Parse and validate a strict direction-specific public Transfer v1 grant.
 ///
 /// This admission boundary performs no transport work. Current-time expiry and
 /// matching the consumer to the local authenticated identity remain runtime checks.
@@ -1009,10 +1075,7 @@ impl TransferSignal {
                 validate_frame_limit(*max_frame_bytes)?;
                 if control_seq.get() != 1
                     || request_id.is_empty()
-                    || *window_frames == 0
-                    || *window_frames > TRANSFER_WINDOW_FRAMES
-                    || *window_bytes < *max_frame_bytes
-                    || *window_bytes > TRANSFER_WINDOW_BYTES
+                    || validate_window(*window_frames, *window_bytes, *max_frame_bytes).is_err()
                 {
                     return Err(invalid(
                         "activated",
@@ -1208,7 +1271,7 @@ pub fn transfer_frame_digest(
     descriptor.validate(payload)?;
     let descriptor_bytes = canonicalize_json(&serde_json::to_value(descriptor)?)?;
     hash_components(&[
-        TRANSFER_FRAME_DOMAIN_V2.as_bytes(),
+        TRANSFER_FRAME_DOMAIN_V1.as_bytes(),
         descriptor_bytes.as_bytes(),
         &Sha256::digest(payload),
     ])
@@ -1248,7 +1311,7 @@ pub fn transfer_server_proof_digest(
     let context = decode_fixed::<32>(context_digest, "contextDigest")?;
     let frame_digest = transfer_frame_digest(descriptor, payload)?;
     hash_components(&[
-        TRANSFER_SERVER_PROOF_DOMAIN_V2.as_bytes(),
+        TRANSFER_SERVER_PROOF_DOMAIN_V1.as_bytes(),
         &context,
         subject.as_bytes(),
         &frame_digest,
@@ -1379,11 +1442,17 @@ mod tests {
         let consumer_key =
             URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[4; 32]).verifying_key().to_bytes());
         let mut send = json!({
+            "origin": {
+                "apiId":"trellis.files@v1",
+                "action": {"kind":"rpc", "name":"Upload", "direction":"call"}
+            },
             "format": TRANSFER_VERSION, "type": "TransferGrant", "direction": "send", "service": "files",
             "transferId": id(), "expiresAt": "2026-10-04T12:00:00Z",
             "provider": {"connectionId": "provider", "sessionKey": provider_key},
             "consumer": {"connectionId": "consumer", "sessionKey": consumer_key},
-            "dataSubject": subjects.upload_data_subject, "controlSubject": subjects.control_subject, "signalSubject": subjects.signal_subject,
+            "dataSubject": subjects.upload_data_subject,
+            "controlSubject": subjects.control_subject,
+            "signalSubject": subjects.signal_subject,
             "maxFrameBytes": 4096, "windowFrames": TRANSFER_WINDOW_FRAMES, "windowBytes": TRANSFER_WINDOW_BYTES,
         });
         let parsed = parse_transfer_grant(&serde_json::to_vec(&send).unwrap()).unwrap();
@@ -1395,7 +1464,13 @@ mod tests {
         send["metadata"] = json!({"label":"evidence"});
         let parsed = parse_transfer_grant(&serde_json::to_vec(&send).unwrap()).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), send);
-        let info = json!({"key":"logical/evidence", "size":8192, "updatedAt":"2026-10-04T11:00:00Z", "digest":object_digest(&vec![42;8192]), "metadata":{}});
+        let info = json!({
+            "key":"logical/evidence",
+            "size":8192,
+            "updatedAt":"2026-10-04T11:00:00Z",
+            "digest":object_digest(&vec![42;8192]),
+            "metadata": {}
+        });
         let mut receive = send.clone();
         for field in ["maxBytes", "contentType", "metadata"] {
             receive.as_object_mut().unwrap().remove(field);
@@ -1419,11 +1494,12 @@ mod tests {
                 )
                 .unwrap()),
             ),
-            ("controlSubject", json!("transfer.v2.control.*.*.*")),
+            ("controlSubject", json!("transfer.v1.control.*.*.*")),
             ("transferId", json!("not-a-random-session-id")),
             ("maxFrameBytes", json!(MAX_TRANSFER_FRAME_BYTES + 1)),
             ("windowFrames", json!(0)),
-            ("windowBytes", json!(TRANSFER_WINDOW_BYTES + 1)),
+            ("windowBytes", json!(TRANSFER_MAX_WINDOW_BYTES + 1)),
+            ("windowFrames", json!(TRANSFER_MAX_WINDOW_FRAMES + 1)),
             ("expiresAt", json!("invalid timestamp")),
             ("maxBytes", json!(9_007_199_254_740_992u64)),
             ("maxBytes", serde_json::Value::Null),
@@ -1645,7 +1721,7 @@ mod tests {
     #[test]
     fn controls_round_trip_and_reject_invalid_credit_and_ambiguous_json() {
         let control = TransferControl::Credit {
-            format: TransferFormat::V2,
+            format: TransferFormat::V1,
             kind: TransferControlKind::Control,
             transfer_id: id(),
             control_seq: U64s::new(2),
@@ -1666,22 +1742,68 @@ mod tests {
         value["storageBucket"] = json!("forbidden unknown field");
         assert!(parse_transfer_control(&serde_json::to_vec(&value).unwrap()).is_err());
         let duplicate = format!(
-            r#"{{"action":"credit","format":"trellis.transfer.v2","type":"control","transferId":"{}","controlSeq":"2","receivedSeq":"1","consumedSeq":"0","consumedSeq":"1","consumedBytes":"1"}}"#,
+            r#"{{"action":"credit","format":"trellis.transfer.v1","type":"control","transferId":"{}","controlSeq":"2","receivedSeq":"1","consumedSeq":"0","consumedSeq":"1","consumedBytes":"1"}}"#,
             id()
         );
         assert!(parse_transfer_control(duplicate.as_bytes()).is_err());
-        let activate = json!({"action":"activate","type":"control","format":TRANSFER_VERSION,"transferId":id(),"controlSeq":"1","receivedSeq":"0","consumedSeq":"0","receiveMaxFrameBytes":1024});
+        let activate = json!({
+            "action":"activate",
+            "type":"control",
+            "format":TRANSFER_VERSION,
+            "transferId":id(),
+            "controlSeq":"1",
+            "receivedSeq":"0",
+            "consumedSeq":"0",
+            "receiveMaxFrameBytes":1024
+        });
         parse_transfer_control(&serde_json::to_vec(&activate).unwrap()).unwrap();
-        let mut bad = activate;
+        let mut bad = activate.clone();
         bad["receivedSeq"] = json!("1");
         assert!(parse_transfer_control(&serde_json::to_vec(&bad).unwrap()).is_err());
+        // A receiving consumer declares both window bounds, within maxima.
+        let mut receiving = activate.clone();
+        receiving["receiveWindowFrames"] = json!(64);
+        receiving["receiveWindowBytes"] = json!(16 * 1024 * 1024);
+        parse_transfer_control(&serde_json::to_vec(&receiving).unwrap()).unwrap();
+        for (frames, bytes) in [
+            (json!(64), serde_json::Value::Null),
+            (json!(0), json!(1024)),
+            (json!(TRANSFER_MAX_WINDOW_FRAMES + 1), json!(1024)),
+            (json!(1), json!(TRANSFER_MAX_WINDOW_BYTES + 1)),
+            (json!(1), json!(0)),
+        ] {
+            let mut bad = activate.clone();
+            bad["receiveWindowFrames"] = frames;
+            if !bytes.is_null() {
+                bad["receiveWindowBytes"] = bytes;
+            }
+            assert!(parse_transfer_control(&serde_json::to_vec(&bad).unwrap()).is_err());
+        }
         assert!(parse_transfer_control(&vec![b' '; MAX_TRANSFER_CONTROL_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn receive_windows_shrink_with_admission_and_never_overcommit() {
+        let frame = 256 * 1024;
+        assert_eq!(
+            transfer_receive_window(u64::MAX, frame),
+            Some((TRANSFER_WINDOW_FRAMES, TRANSFER_WINDOW_BYTES))
+        );
+        let (frames, bytes) = transfer_receive_window(TRANSFER_WINDOW_BYTES / 4, frame).unwrap();
+        assert_eq!(bytes, TRANSFER_WINDOW_BYTES / 4);
+        assert!((1..=TRANSFER_WINDOW_FRAMES).contains(&frames));
+        assert_eq!(transfer_receive_window(frame - 1, frame), None);
+        assert_eq!(transfer_receive_window(0, frame), None);
+        for available in [frame, frame * 3, TRANSFER_WINDOW_BYTES - 1] {
+            let (_, bytes) = transfer_receive_window(available, frame).unwrap();
+            assert!(bytes <= available);
+        }
     }
 
     #[test]
     fn completion_and_end_ack_require_a_coherent_terminal_declaration() {
         let complete = TransferComplete {
-            format: TransferFormat::V2,
+            format: TransferFormat::V1,
             kind: TransferCompleteKind::Complete,
             transfer_id: id(),
             final_seq: U64s::new(2),
@@ -1700,7 +1822,17 @@ mod tests {
         transfer_frame_digest(&descriptor, &raw).unwrap();
         descriptor.sequence = U64s::new(3);
         assert!(transfer_frame_digest(&descriptor, &raw).is_err());
-        let ack = json!({"action":"end-ack","format":TRANSFER_VERSION,"type":"control","transferId":id(),"controlSeq":"3","receivedSeq":"2","consumedSeq":"2","consumedBytes":"4096","finalSeq":"2"});
+        let ack = json!({
+            "action":"end-ack",
+            "format":TRANSFER_VERSION,
+            "type":"control",
+            "transferId":id(),
+            "controlSeq":"3",
+            "receivedSeq":"2",
+            "consumedSeq":"2",
+            "consumedBytes":"4096",
+            "finalSeq":"2"
+        });
         parse_transfer_control(&serde_json::to_vec(&ack).unwrap()).unwrap();
         let mut missing_consumption = ack;
         missing_consumption["consumedSeq"] = json!("1");
@@ -1722,7 +1854,7 @@ mod tests {
         let subject =
             derive_transfer_subject(TransferSubjectKind::Signal, "P", "C", &id()).unwrap();
         let signal = TransferSignal::Activated {
-            format: TransferFormat::V2,
+            format: TransferFormat::V1,
             transfer_id: id(),
             control_seq: U64s::new(1),
             request_id: "request-a".into(),
@@ -1764,7 +1896,7 @@ mod tests {
         changed["controlSeq"] = json!("0");
         assert!(parse_transfer_signal(&serde_json::to_vec(&changed).unwrap()).is_err());
         let credit = TransferSignal::Credit {
-            format: TransferFormat::V2,
+            format: TransferFormat::V1,
             transfer_id: id(),
             received_seq: U64s::new(2),
             consumed_seq: U64s::new(1),
@@ -1773,7 +1905,7 @@ mod tests {
         let raw_credit = serde_json::to_vec(&credit).unwrap();
         assert_eq!(parse_transfer_signal(&raw_credit).unwrap(), credit);
         let commit = TransferSignal::Committed {
-            format: TransferFormat::V2,
+            format: TransferFormat::V1,
             transfer_id: id(),
             final_seq: U64s::new(2),
             info: TransferFileInfo {

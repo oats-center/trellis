@@ -329,6 +329,10 @@ pub enum TrellisClientError {
     #[error("protocol error: {0}")]
     Protocol(#[from] trellis_protocol::ProtocolError),
 
+    /// A message proof or its whole-capability authorization was rejected.
+    #[error(transparent)]
+    AuthorizationVerification(#[from] super::authorization::AuthorizationVerificationError),
+
     #[error(transparent)]
     Subject(#[from] super::subject::SubjectError),
 

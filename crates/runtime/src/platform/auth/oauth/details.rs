@@ -1,0 +1,102 @@
+//! Trellis RAR semantics layered over the engine's RFC 9396 validation.
+
+use std::collections::BTreeSet;
+
+use oauth_as::error::{ErrorCode, ErrorResponse};
+use serde::Deserialize;
+
+use super::super::CapabilitySelection;
+
+pub(crate) struct RequestedAuthority {
+    pub(crate) capabilities: CapabilitySelection,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum Detail {
+    #[serde(rename = "trellis_capabilities")]
+    Capabilities {
+        required: Vec<String>,
+        #[serde(default)]
+        optional: Vec<String>,
+    },
+}
+
+impl RequestedAuthority {
+    pub(crate) fn parse(raw: &str) -> Result<Self, ErrorResponse> {
+        let invalid = || ErrorResponse::new(ErrorCode::InvalidAuthorizationDetails);
+        if raw.len() > 16 * 1024 {
+            return Err(invalid());
+        }
+        let details = oauth_as::rar::AuthorizationDetails::parse(raw)?;
+        details.require_supported_types(Some(&["trellis_capabilities".into()]))?;
+        let details: Vec<Detail> = serde_json::from_str(raw).map_err(|_| invalid())?;
+        let mut capabilities = None;
+        for detail in details {
+            match detail {
+                Detail::Capabilities { required, optional } => {
+                    if capabilities.is_some() || required.len().saturating_add(optional.len()) > 128
+                    {
+                        return Err(invalid());
+                    }
+                    for name in required.iter().chain(&optional) {
+                        let (api, capability) =
+                            trellis_idl::split_capability_id(name).ok_or_else(invalid)?;
+                        if name.len() > 1024
+                            || trellis_protocol::validate_api_id(&api).is_err()
+                            || capability.is_empty()
+                            || !capability.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.'
+                            })
+                        {
+                            return Err(invalid());
+                        }
+                    }
+                    let required: BTreeSet<_> = required.into_iter().collect();
+                    let optional: BTreeSet<_> = optional
+                        .into_iter()
+                        .filter(|name| !required.contains(name))
+                        .collect();
+                    capabilities = Some(CapabilitySelection {
+                        required: required.into_iter().collect(),
+                        optional: optional.into_iter().collect(),
+                    });
+                }
+            }
+        }
+        let capabilities = capabilities.ok_or_else(invalid)?;
+        Ok(Self { capabilities })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_details_normalize_selection_and_fail_closed_on_ambiguous_requests() {
+        let request = RequestedAuthority::parse(r#"[{"type":"trellis_capabilities","required":["acme.documents.v1:documents.read","acme.documents.v1:documents.read","trellis.auth.v1:roles.manage"],"optional":["acme.documents.v1:documents.read","acme.documents.v1:documents.export","acme.documents.v1:documents.export"]}]"#).unwrap();
+        assert_eq!(
+            request.capabilities.required,
+            [
+                "acme.documents.v1:documents.read",
+                "trellis.auth.v1:roles.manage"
+            ]
+        );
+        assert_eq!(
+            request.capabilities.optional,
+            ["acme.documents.v1:documents.export"]
+        );
+        for raw in [
+            r#"[]"#,
+            r#"[{"type":"future_type","required":[]}]"#,
+            r#"[{"type":"trellis_capabilities","required":[],"required":["acme.documents.v1:write"]}]"#,
+            r#"[{"type":"trellis_capabilities","required":[]},{"type":"trellis_capabilities","required":[]}]"#,
+            r#"[{"type":"trellis_capabilities","required":["not-qualified"]}]"#,
+            r#"[{"type":"trellis_capabilities","required":["trellis.manage-roles"]}]"#,
+            r#"[{"type":"trellis_capabilities","required":[]},{"type":"trellis_platform_privileges","required":["roles.manage"]}]"#,
+        ] {
+            assert!(RequestedAuthority::parse(raw).is_err(), "{raw}");
+        }
+    }
+}

@@ -27,6 +27,14 @@ impl<H> RequestHandler for ServiceHost<H>
 where
     H: RequestHandler,
 {
+    fn reply_headers<'a>(
+        &'a self,
+        context: &'a RequestContext,
+        payload: &'a [u8],
+        reply: &'a super::request_loop::OutboundReply,
+    ) -> BoxFuture<'a, Result<async_nats::HeaderMap, ServerError>> {
+        self.handler.reply_headers(context, payload, reply)
+    }
     fn handler_service_name(&self) -> Option<&str> {
         Some(&self.service_name)
     }

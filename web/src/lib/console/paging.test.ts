@@ -1,4 +1,5 @@
 import { deepEqual, equal, rejects } from "node:assert/strict";
+import { test } from "node:test";
 
 import {
   CATALOG_PAGE_LIMIT,
@@ -10,7 +11,7 @@ import {
   traverseAll,
 } from "./paging.ts";
 
-Deno.test("U03 page builders emit nested page only and reset cursors", () => {
+test("U03 page builders emit nested page only and reset cursors", () => {
   deepEqual(tablePage(), { limit: TABLE_PAGE_LIMIT });
   deepEqual(tablePage("after-50"), {
     limit: TABLE_PAGE_LIMIT,
@@ -20,7 +21,7 @@ Deno.test("U03 page builders emit nested page only and reset cursors", () => {
   equal(CATALOG_PAGE_LIMIT, 100);
 });
 
-Deno.test("U03 the first page alone is never reported complete", async () => {
+test("U03 the first page alone is never reported complete", async () => {
   let call = 0;
   const first = await traverseAll<string>(() => {
     call += 1;
@@ -33,11 +34,11 @@ Deno.test("U03 the first page alone is never reported complete", async () => {
   equal(call, 2);
 });
 
-Deno.test("U04 traversal reaches a target beyond the first page", async () => {
+test("U04 traversal reaches a target beyond the first page", async () => {
   const pages: Record<string, { items: string[]; cursor?: string }> = {
     "": { items: ["a", "b"], cursor: "p2" },
-    "p2": { items: ["c", "d"], cursor: "p3" },
-    "p3": { items: ["target", "e"] },
+    p2: { items: ["c", "d"], cursor: "p3" },
+    p3: { items: ["target", "e"] },
   };
   const result = await resolveExact<string>(
     (page) => Promise.resolve(pages[page.cursor ?? ""]),
@@ -46,7 +47,7 @@ Deno.test("U04 traversal reaches a target beyond the first page", async () => {
   deepEqual(result, { item: "target", complete: true });
 });
 
-Deno.test("U04 a repeated cursor fails visibly instead of looping", async () => {
+test("U04 a repeated cursor fails visibly instead of looping", async () => {
   let calls = 0;
   const result = await traverseAll<string>(() => {
     calls += 1;
@@ -59,7 +60,7 @@ Deno.test("U04 a repeated cursor fails visibly instead of looping", async () => 
   equal(result.error instanceof CursorCycleError, true);
 });
 
-Deno.test("U04 a failed later page marks the catalog incomplete", async () => {
+test("U04 a failed later page marks the catalog incomplete", async () => {
   let call = 0;
   const result = await traverseAll<string>(() => {
     call += 1;
@@ -71,7 +72,7 @@ Deno.test("U04 a failed later page marks the catalog incomplete", async () => {
   equal(result.error instanceof Error, true);
 });
 
-Deno.test("U05 an absent exact target never returns the first row", async () => {
+test("U05 an absent exact target never returns the first row", async () => {
   const result = await resolveExact<string>(
     () => Promise.resolve({ items: ["other-a", "other-b"] }),
     (item) => item === "missing",
@@ -80,7 +81,7 @@ Deno.test("U05 an absent exact target never returns the first row", async () => 
   equal(result.complete, true);
 });
 
-Deno.test("U05 an unresolved traversal reports incompleteness, not a match", async () => {
+test("U05 an unresolved traversal reports incompleteness, not a match", async () => {
   const result = await resolveExact<string>(
     () => Promise.reject(new Error("denied")),
     () => true,
@@ -89,7 +90,7 @@ Deno.test("U05 an unresolved traversal reports incompleteness, not a match", asy
   equal(result.complete, false);
 });
 
-Deno.test("bounded concurrency never exceeds its limit and keeps order", async () => {
+test("bounded concurrency never exceeds its limit and keeps order", async () => {
   let active = 0;
   let peak = 0;
   const results = await mapWithConcurrency<number, number>(

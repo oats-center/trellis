@@ -2,7 +2,7 @@ use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 
-use super::local_validator::VerifiedCaller;
+use super::local_validator::AuthenticatedCaller;
 use super::request_loop::HandlerResponse;
 use super::{RequestContext, Router, ServerError};
 
@@ -13,7 +13,7 @@ pub struct RequestValidation {
     #[doc = concat!("The `", stringify!(allowed), "` value.")]
     pub allowed: bool,
     #[doc = concat!("The `", stringify!(caller), "` value.")]
-    pub caller: Option<VerifiedCaller>,
+    pub caller: Option<AuthenticatedCaller>,
     /// Server-authorized reply inbox prefix for this session.
     pub inbox_prefix: Option<String>,
 }
@@ -31,7 +31,7 @@ impl RequestValidation {
 
     /// Construct an allowed validation result with caller metadata.
     #[doc = concat!("Trellis API operation `", stringify!(allowed_caller), "`.")]
-    pub fn allowed_caller(caller: VerifiedCaller) -> Self {
+    pub fn allowed_caller(caller: AuthenticatedCaller) -> Self {
         Self {
             allowed: true,
             caller: Some(caller),
@@ -169,7 +169,13 @@ where
         }
 
         let context = self.context_with_required_capabilities(subject, &payload, context)?;
-        let validation = self.validator.validate(subject, &payload, &context).await?;
+        let validation = if context.handler_authorizes {
+            self.validator
+                .validate_possession(subject, &payload, &context)
+                .await?
+        } else {
+            self.validator.validate(subject, &payload, &context).await?
+        };
         if !validation.allowed {
             return Err(ServerError::RequestDenied {
                 subject: subject.to_string(),
@@ -188,7 +194,12 @@ where
             caller: validation.caller,
             ..context
         };
-        self.router.handle_request(subject, payload, context).await
+        let result = self
+            .router
+            .handle_request(subject, payload, context.clone())
+            .await;
+        require_authorized_opening(subject, &context)?;
+        result
     }
 
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(handle_request_frames), "`.")]
@@ -212,7 +223,13 @@ where
         }
 
         let context = self.context_with_required_capabilities(subject, &payload, context)?;
-        let validation = self.validator.validate(subject, &payload, &context).await?;
+        let validation = if context.handler_authorizes {
+            self.validator
+                .validate_possession(subject, &payload, &context)
+                .await?
+        } else {
+            self.validator.validate(subject, &payload, &context).await?
+        };
         if !validation.allowed {
             return Err(ServerError::RequestDenied {
                 subject: subject.to_string(),
@@ -231,9 +248,12 @@ where
             caller: validation.caller,
             ..context
         };
-        self.router
-            .handle_request_frames(subject, payload, context)
-            .await
+        let result = self
+            .router
+            .handle_request_frames(subject, payload, context.clone())
+            .await;
+        require_authorized_opening(subject, &context)?;
+        result
     }
 
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(handle_request_response), "`.")]
@@ -257,7 +277,13 @@ where
         }
 
         let context = self.context_with_required_capabilities(subject, &payload, context)?;
-        let validation = self.validator.validate(subject, &payload, &context).await?;
+        let validation = if context.handler_authorizes {
+            self.validator
+                .validate_possession(subject, &payload, &context)
+                .await?
+        } else {
+            self.validator.validate(subject, &payload, &context).await?
+        };
         if !validation.allowed {
             return Err(ServerError::RequestDenied {
                 subject: subject.to_string(),
@@ -276,9 +302,12 @@ where
             caller: validation.caller,
             ..context
         };
-        self.router
-            .handle_request_response(subject, payload, context)
-            .await
+        let result = self
+            .router
+            .handle_request_response(subject, payload, context.clone())
+            .await;
+        require_authorized_opening(subject, &context)?;
+        result
     }
 
     fn context_with_required_capabilities(
@@ -290,9 +319,23 @@ where
         Ok(RequestContext {
             required_capabilities: self.router.required_capabilities(subject, payload)?,
             required_permission: self.router.required_permission(subject, payload)?,
+            handler_authorizes: self.router.handler_authorizes(subject),
             ..context
         })
     }
+}
+
+fn require_authorized_opening(subject: &str, context: &RequestContext) -> Result<(), ServerError> {
+    if context
+        .verified_request()
+        .is_some_and(|verified| verified.authorized_action().is_some())
+    {
+        return Ok(());
+    }
+    Err(ServerError::RequestDenied {
+        subject: subject.to_owned(),
+        session_key: String::new(),
+    })
 }
 
 fn validate_reply_inbox(

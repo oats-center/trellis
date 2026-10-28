@@ -63,7 +63,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --user-group --uid 10001 --home-dir /var/lib/trellis trellis \
-    && install --directory --owner trellis --group trellis \
+    && install --directory --mode 0700 --owner trellis --group trellis \
       /var/lib/trellis /var/cache/trellis /var/log/trellis /run/trellis /etc/trellis
 
 COPY dist/native/${TARGETARCH}/trellis-server /usr/local/bin/trellis-server
@@ -73,7 +73,7 @@ COPY --from=nats /out/nats-server /usr/local/bin/nats-server
 USER trellis
 WORKDIR /var/lib/trellis
 
-EXPOSE 3000
+EXPOSE 3000 3001
 
 ENTRYPOINT ["trellis-server"]
 CMD ["--system", "all"]

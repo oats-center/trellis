@@ -66,7 +66,7 @@ boundary, the service instance can connect and serve traffic.
 ```sh
 trellis deploy create svc/demo.field-ops
 trellis --format json deploy provision svc/demo.field-ops
-deno task -c demos/ts/deno.json service http://localhost:3000 <instance-seed>
+npm --prefix demos/ts run start --workspace @trellis-demo/service -- http://localhost:3000 <instance-seed>
 ```
 
 Use Console **Admin → Services** as the primary review path for the service
@@ -85,7 +85,7 @@ secret.
 ```sh
 trellis deploy create dev/demo.field-device
 trellis --format json deploy provision dev/demo.field-device
-deno task -c demos/ts/deno.json device http://localhost:3000 <root-secret>
+npm --prefix demos/ts run start --workspace @trellis-demo/device -- http://localhost:3000 <root-secret>
 ```
 
 Use Console **Admin → Devices** to review pending device authority before
@@ -110,7 +110,7 @@ SDK aliases explicitly in `demos/app/svelte.config.js`; `vite.config.js` should
 not duplicate those local package mappings.
 
 ```sh
-deno task -c demos/app/deno.json dev
+npm --prefix demos/app run dev
 ```
 
 If you change the app participant's requested RPC, operation, event, or state
@@ -123,7 +123,7 @@ For ad hoc runs against a non-default Trellis URL, set the env var from the
 shell:
 
 ```sh
-PUBLIC_TRELLIS_URL=http://localhost:3000 deno task -c demos/app/deno.json dev
+PUBLIC_TRELLIS_URL=http://localhost:3000 npm --prefix demos/app run dev
 ```
 
 ## Field Desk Routes And Trellis Callouts

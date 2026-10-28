@@ -24,6 +24,39 @@ pub struct UploadTransferSession {
     hasher: Sha256,
     complete: bool,
     updated_at: String,
+    /// Bytes go to a handler-owned reader instead of a store write.
+    stream: bool,
+}
+
+/// Live upload bytes of a `stream` Operation, read by its running handler.
+///
+/// Reads are backpressured: consumption, not network arrival, earns the
+/// caller more credit. End of file is returned only after the caller's final
+/// sequence, size and SHA-256 digest were verified and the delivery was
+/// durably recorded. Any transfer failure, cancellation or ownership loss
+/// surfaces as an I/O error instead of end of file.
+pub struct OperationUploadStream {
+    inner: FrameReader,
+    /// Frames buffered for this reader remain admitted until it is dropped.
+    _reservation: std::sync::Arc<crate::data_plane::budget::ReceiveReservation>,
+}
+
+impl tokio::io::AsyncRead for OperationUploadStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl std::fmt::Debug for OperationUploadStream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OperationUploadStream")
+            .finish_non_exhaustive()
+    }
 }
 
 impl UploadTransferSession {
@@ -45,7 +78,32 @@ impl UploadTransferSession {
             hasher: Sha256::new(),
             complete: false,
             updated_at: updated_at.into(),
+            stream: false,
         }
+    }
+
+    /// Route this session's bytes to the returned handler-owned reader.
+    ///
+    /// Frames still arrive only after authenticated activation; the reader
+    /// simply exists before the handler starts.
+    pub(super) fn open_stream(
+        &mut self,
+        reservation: std::sync::Arc<crate::data_plane::budget::ReceiveReservation>,
+    ) -> OperationUploadStream {
+        let (sender, receiver) = mpsc::channel(self.plan.grant.window_frames as usize + 1);
+        let (consumed, progress) = watch::channel(Consumed::default());
+        self.consumed = progress;
+        self.sender = Some(sender);
+        self.stream = true;
+        OperationUploadStream {
+            inner: FrameReader::new(receiver, consumed),
+            _reservation: reservation,
+        }
+    }
+
+    /// Whether bytes stream to a handler instead of a store write.
+    pub(super) fn is_stream(&self) -> bool {
+        self.stream
     }
 
     /// Exact one-way DATA subject.
@@ -123,7 +181,7 @@ impl UploadTransferSession {
                 bytes: super::telemetry::Payload::new(
                     bytes,
                     trellis_protocol::transfer::TransferDirection::Send,
-                    "provider-rx",
+                    "provider",
                 ),
             })
             .map_err(|e| ServerError::Nats(format!("upload ingress closed/full: {e}")))?;
@@ -134,12 +192,57 @@ impl UploadTransferSession {
         Ok(())
     }
 
-    pub(super) async fn finish(
+    /// Verify a stream completion and wait until the handler consumed every
+    /// frame. End of file is withheld until [`Self::release_eof`], after the
+    /// delivery is durably recorded.
+    pub(super) async fn finish_stream(
         &mut self,
         final_seq: u64,
         size: u64,
         digest: &str,
     ) -> Result<FileTransferInfo, ServerError> {
+        let actual_digest = self.verify_completion(final_seq, size, digest)?;
+        while self.consumption().seq < final_seq {
+            self.consumed.changed().await.map_err(|_| {
+                ServerError::Nats("upload stream closed by its handler before completion".into())
+            })?;
+        }
+        let consumed = self.consumption();
+        self.received
+            .apply_credit(final_seq, consumed.seq, Some(consumed.bytes))
+            .map_err(|e| ServerError::Nats(format!("upload credit: {e:?}")))?;
+        self.received.validate_complete(final_seq).map_err(|e| {
+            ServerError::Nats(format!("upload incomplete stream consumption: {e:?}"))
+        })?;
+        self.complete = true;
+        Ok(FileTransferInfo {
+            key: self.plan.key.clone(),
+            size,
+            updated_at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|error| ServerError::Nats(error.to_string()))?,
+            digest: actual_digest,
+            content_type: self.plan.grant.content_type.clone(),
+            metadata: self.plan.grant.metadata.clone(),
+        })
+    }
+
+    /// Give the handler's stream its end of file once delivery is recorded.
+    pub(super) async fn release_eof(&mut self) -> Result<(), ServerError> {
+        if let Some(sender) = self.sender.take() {
+            // A handler that dropped its reader after consuming every frame
+            // needs no end of file; its delivery is already recorded.
+            let _ = sender.send(Ingress::Complete).await;
+        }
+        Ok(())
+    }
+
+    fn verify_completion(
+        &self,
+        final_seq: u64,
+        size: u64,
+        digest: &str,
+    ) -> Result<String, ServerError> {
         let actual_digest = format!(
             "SHA-256={}",
             URL_SAFE_NO_PAD.encode(self.hasher.clone().finalize())
@@ -151,7 +254,6 @@ impl UploadTransferSession {
             tracing::warn!(
                 sequence_matches = final_seq == self.received.highest_sent.load(Ordering::Acquire),
                 size_matches = size == self.transferred_bytes,
-                digest_matches = digest == actual_digest,
                 digest_bytes_match = transfer_digests_match(digest, &actual_digest),
                 "upload completion integrity mismatch"
             );
@@ -159,6 +261,16 @@ impl UploadTransferSession {
                 "upload completion sequence/size/digest mismatch".into(),
             ));
         }
+        Ok(actual_digest)
+    }
+
+    pub(super) async fn finish(
+        &mut self,
+        final_seq: u64,
+        size: u64,
+        digest: &str,
+    ) -> Result<FileTransferInfo, ServerError> {
+        let actual_digest = self.verify_completion(final_seq, size, digest)?;
         self.sender
             .as_ref()
             .ok_or_else(|| ServerError::Nats("upload ingress not activated".into()))?
@@ -212,6 +324,11 @@ impl UploadTransferSession {
     }
 
     pub(super) async fn early_backend_failure(&mut self) -> ServerError {
+        if self.stream {
+            return ServerError::Nats(
+                "upload stream closed by its handler before completion".into(),
+            );
+        }
         let result = match self.upload_future.as_mut() {
             Some(future) => future.await,
             None => return ServerError::Nats("upload backend missing".into()),
@@ -245,5 +362,77 @@ impl std::fmt::Debug for UploadTransferSession {
             .field("transferred_bytes", &self.transferred_bytes)
             .field("complete", &self.complete)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_plane::budget::ReceiveBudget;
+    use tokio::io::AsyncReadExt;
+
+    fn session(window_bytes: u64) -> UploadTransferSession {
+        let grant: super::super::protocol::UploadTransferGrant =
+            serde_json::from_value(serde_json::json!({
+                "format": "trellis.transfer.v2",
+                "type": "UploadTransferGrant",
+                "direction": "send",
+                "service": "fixture",
+                "origin": {
+                    "apiId": "fixture.api@v1",
+                    "action": { "kind": "operation", "name": "Upload", "direction": "call" }
+                },
+                "transferId": "transfer",
+                "expiresAt": "2099-01-01T00:00:00Z",
+                "provider": { "connectionId": "provider", "sessionKey": "provider-key" },
+                "consumer": { "connectionId": "consumer", "sessionKey": "consumer-key" },
+                "dataSubject": "data",
+                "controlSubject": "control",
+                "signalSubject": "signal",
+                "maxFrameBytes": window_bytes,
+                "windowFrames": 1,
+                "windowBytes": window_bytes,
+                "maxBytes": null,
+                "contentType": null,
+                "metadata": {}
+            }))
+            .expect("grant fixture");
+        UploadTransferSession::new(
+            UploadTransferGrantPlan {
+                admission: crate::service::RequestContext::default(),
+                grant,
+                store_alias: String::new(),
+                store: String::new(),
+                key: "key".into(),
+            },
+            "2026-01-01T00:00:00Z",
+        )
+    }
+
+    #[tokio::test]
+    async fn frames_the_handler_has_not_read_stay_admitted_after_the_endpoint_ends() {
+        static BUDGET: ReceiveBudget = ReceiveBudget::new(1024);
+        let reservation = std::sync::Arc::new(BUDGET.reserve(1024).expect("window fits"));
+        let mut endpoint = session(1024);
+        let mut stream = endpoint.open_stream(std::sync::Arc::clone(&reservation));
+        endpoint
+            .admit(1, Bytes::from_static(&[7; 1024]))
+            .expect("frame admitted");
+        // The endpoint ends (completion, abort, or expiry) while the frame is
+        // still buffered for the handler.
+        drop(endpoint);
+        drop(reservation);
+        assert!(
+            BUDGET.reserve(1).is_none(),
+            "an unread frame must keep its capacity admitted"
+        );
+        let mut frame = [0; 1024];
+        stream.read_exact(&mut frame).await.expect("buffered frame");
+        assert_eq!(frame, [7; 1024]);
+        drop(stream);
+        assert!(
+            BUDGET.reserve(1024).is_some(),
+            "capacity returns with the reader"
+        );
     }
 }

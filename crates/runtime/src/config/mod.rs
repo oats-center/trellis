@@ -29,6 +29,9 @@ pub struct RuntimeConfig {
     /// HTTP listener configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpConfig>,
+    /// Installation TLS metadata shared by every runtime listener.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TlsConfig>,
     /// NATS server and runtime identity configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nats: Option<NatsConfig>,
@@ -41,9 +44,6 @@ pub struct RuntimeConfig {
     /// Authentication configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthConfig>,
-    /// OAuth provider configuration.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth: Option<OAuthConfig>,
     /// Platform subsystem configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<SubsystemConfig>,
@@ -110,8 +110,7 @@ impl RuntimeConfig {
     ///
     pub fn validate_for_mode(&self, mode: RuntimeMode) -> Result<(), ConfigError> {
         self.validate_distinct_sqlite_paths()?;
-        self.validate_http_public_origin()?;
-        self.validate_oauth_provider_secrets()?;
+        self.validate_http_listener()?;
         self.resolve_nats_runtime()?;
         self.resolve_leases()?;
         if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
@@ -134,14 +133,121 @@ impl RuntimeConfig {
                 }
             }
         }
-        if matches!(
-            mode,
-            RuntimeMode::All | RuntimeMode::Platform | RuntimeMode::Jobs | RuntimeMode::Events
-        ) {
+        if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
+            self.resolve_oauth_listener()?;
+        }
+        if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
             self.resolve_authorization()?;
         }
 
         Ok(())
+    }
+
+    /// Resolves the dedicated authorization listener and checks installation identity.
+    pub fn resolve_oauth_listener(&self) -> Result<&OAuthListenerConfig, ConfigError> {
+        let auth = self
+            .auth
+            .as_ref()
+            .ok_or(ConfigError::MissingSection { section: "auth" })?;
+        let instance = auth
+            .instance_id
+            .as_deref()
+            .ok_or(ConfigError::MissingSection {
+                section: "auth.instance_id",
+            })?;
+        if ulid::Ulid::from_string(instance).is_err()
+            || instance.len() != 26
+            || instance != instance.to_ascii_uppercase()
+        {
+            return Err(invalid_authorization(
+                "instance_id",
+                "must be a canonical installation ULID provisioned at initialization",
+            ));
+        }
+        if auth
+            .oauth_storage_key_file
+            .as_ref()
+            .is_none_or(|path| path.as_os_str().is_empty())
+        {
+            return Err(invalid_authorization(
+                "oauth_storage_key_file",
+                "must identify the existing installation-owned OAuth key file",
+            ));
+        }
+        let oauth = auth.oauth.as_ref().ok_or(ConfigError::MissingSection {
+            section: "auth.oauth",
+        })?;
+        let origin = Url::parse(&oauth.origin)
+            .map_err(|_| invalid_authorization("oauth.origin", "must be an absolute origin"))?;
+        if origin.host().is_none()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || oauth.port == 0
+        {
+            return Err(invalid_authorization(
+                "oauth",
+                "requires a nonzero listener port and an origin without credentials, \
+                path, query, or fragment",
+            ));
+        }
+        validate_listener_transport(&origin, oauth.bind_address, &oauth.transport)
+            .map_err(|reason| invalid_authorization("oauth.transport", reason))?;
+        let console_origin = self.public_origin();
+        for other in std::iter::once(&console_origin).chain(
+            self.http
+                .iter()
+                .flat_map(|http| http.origins.iter().flatten()),
+        ) {
+            let other = Url::parse(other).map_err(|_| {
+                invalid_authorization(
+                    "oauth.origin",
+                    "configured application origins must be valid URLs",
+                )
+            })?;
+            if other.origin() == origin.origin() {
+                return Err(invalid_authorization(
+                    "oauth.origin",
+                    "must differ from every configured application origin",
+                ));
+            }
+            warn_oauth_cookie_isolation(&origin, &other);
+        }
+        if let Some(servers) = self.nats.as_ref().and_then(|nats| nats.servers.as_deref()) {
+            for server in servers.split(',') {
+                let endpoint = Url::parse(server.trim()).map_err(|_| {
+                    invalid_authorization("nats.servers", "must contain absolute NATS endpoints")
+                })?;
+                let loopback = match endpoint.host() {
+                    Some(Host::Domain(host)) => {
+                        host == "localhost"
+                            || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+                    }
+                    Some(Host::Ipv4(ip)) => ip.is_loopback(),
+                    Some(Host::Ipv6(ip)) => ip.is_loopback(),
+                    _ => false,
+                };
+                if endpoint.host_str().is_none()
+                    || !endpoint.username().is_empty()
+                    || endpoint.password().is_some()
+                    || !matches!(endpoint.path(), "" | "/")
+                    || endpoint.query().is_some()
+                    || endpoint.fragment().is_some()
+                    || !(matches!(endpoint.scheme(), "tls" | "wss")
+                        || (matches!(oauth.transport, ListenerTransport::LoopbackDevelopment)
+                            && loopback
+                            && matches!(endpoint.scheme(), "nats" | "ws")))
+                {
+                    return Err(invalid_authorization(
+                        "nats.servers",
+                        "requires TLS; plaintext is restricted to explicit loopback development",
+                    ));
+                }
+            }
+        }
+        Ok(oauth)
     }
 
     fn validate_distinct_sqlite_paths(&self) -> Result<(), ConfigError> {
@@ -239,13 +345,56 @@ impl RuntimeConfig {
             .unwrap_or(3000)
     }
 
-    /// Returns the configured HTTP bind address, or the unspecified IPv4 default.
+    /// Returns the configured HTTP bind address.
+    ///
+    /// An omitted address binds loopback for plaintext development and the
+    /// unspecified IPv4 address for TLS or proxy transport.
     #[must_use]
     pub fn http_bind_address(&self) -> IpAddr {
         self.http
             .as_ref()
             .and_then(|http| http.bind_address)
-            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            .unwrap_or(match self.http_transport() {
+                ListenerTransport::LoopbackDevelopment => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                _ => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            })
+    }
+
+    /// Returns the broker WebSocket listener the application listener relays
+    /// `/nats` upgrades to, when configured.
+    #[must_use]
+    pub fn nats_websocket_upstream(&self) -> Option<&str> {
+        self.http
+            .as_ref()
+            .and_then(|http| http.nats_websocket_upstream.as_deref())
+    }
+
+    /// The browser NATS WebSocket URL on the application origin, advertised
+    /// whenever the application listener relays the broker's WebSocket.
+    #[must_use]
+    pub fn same_origin_websocket_url(&self) -> Option<String> {
+        self.nats_websocket_upstream()?;
+        let origin = self.public_origin();
+        let scheme = if origin.starts_with("https://") {
+            "wss"
+        } else {
+            "ws"
+        };
+        let (_, authority) = origin.split_once("://")?;
+        Some(format!(
+            "{scheme}://{}{}",
+            authority.trim_end_matches('/'),
+            crate::nats_websocket::PATH
+        ))
+    }
+
+    /// Returns the application listener transport; omission selects loopback development.
+    #[must_use]
+    pub fn http_transport(&self) -> &ListenerTransport {
+        self.http
+            .as_ref()
+            .and_then(|http| http.transport.as_ref())
+            .unwrap_or(&ListenerTransport::LoopbackDevelopment)
     }
 
     /// Resolves the canonical public browser origin, defaulting to loopback HTTP.
@@ -260,33 +409,32 @@ impl RuntimeConfig {
             .unwrap_or_else(|| format!("http://localhost:{}", self.http_port()))
     }
 
-    /// Rejects a non-loopback plaintext public origin unless the operator authorized it.
-    fn validate_http_public_origin(&self) -> Result<(), ConfigError> {
-        let Some(http) = self.http.as_ref() else {
-            return Ok(());
-        };
+    /// Validates that the application and OAuth listener transports can protect
+    /// their public origins and that broker endpoints use TLS outside loopback
+    /// development, without reading any referenced file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] naming the listener or endpoint that is unsafe.
+    pub fn validate_listeners(&self) -> Result<(), ConfigError> {
+        self.validate_http_listener()?;
+        self.resolve_oauth_listener().map(|_| ())
+    }
+
+    /// Rejects an application listener whose transport cannot protect its public origin.
+    fn validate_http_listener(&self) -> Result<(), ConfigError> {
         let public_origin = self.public_origin();
-        let Some(origin) = CanonicalOrigin::parse(&public_origin) else {
-            return Err(ConfigError::InvalidPublicOrigin {
+        let origin = Url::parse(&public_origin)
+            .ok()
+            .filter(|url| CanonicalOrigin::parse(url.as_str()).is_some())
+            .ok_or_else(|| ConfigError::InvalidPublicOrigin {
+                origin: public_origin.clone(),
+            })?;
+        validate_listener_transport(&origin, self.http_bind_address(), self.http_transport())
+            .map_err(|reason| ConfigError::InvalidHttpTransport {
                 origin: public_origin,
-            });
-        };
-        if let Some(entries) = http.allow_insecure_origins.as_ref() {
-            for entry in entries {
-                if CanonicalOrigin::parse(entry).is_none() {
-                    return Err(ConfigError::InvalidInsecureOrigin {
-                        origin: entry.clone(),
-                    });
-                }
-            }
-        }
-        if origin.is_loopback() || origin.is_https() || http.allows_insecure_origin(&public_origin)
-        {
-            return Ok(());
-        }
-        Err(ConfigError::InsecurePublicOrigin {
-            origin: origin.to_string(),
-        })
+                reason,
+            })
     }
 
     /// Resolves validated storage for the platform subsystem.
@@ -389,24 +537,6 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    fn validate_oauth_provider_secrets(&self) -> Result<(), ConfigError> {
-        let Some(oauth) = &self.oauth else {
-            return Ok(());
-        };
-
-        for (provider_id, provider) in &oauth.providers {
-            if provider.client_secret.is_some() && provider.client_secret_file.is_some() {
-                return Err(ConfigError::InvalidSecretConfig {
-                    section: "oauth.providers",
-                    field: "client_secret",
-                    provider_id: provider_id.clone(),
-                });
-            }
-        }
-
-        Ok(())
-    }
-
     fn subsystem_storage_backend(
         &self,
         name: SubsystemName,
@@ -433,7 +563,11 @@ impl RuntimeConfig {
             resolve_path(base_dir, &mut seeds.jobs);
             resolve_path(base_dir, &mut seeds.events);
         }
+        if let Some(tls) = &mut self.tls {
+            resolve_path(base_dir, &mut tls.generated_ca_certificate);
+        }
         if let Some(nats) = &mut self.nats {
+            resolve_path(base_dir, &mut nats.ca_certificate);
             if let Some(runtime) = &mut nats.runtime {
                 resolve_path(base_dir, &mut runtime.auth_creds_path);
                 resolve_path(base_dir, &mut runtime.trellis_creds_path);
@@ -446,20 +580,14 @@ impl RuntimeConfig {
                 resolve_path(base_dir, &mut auth_callout.xkey_seed_file);
             }
         }
-        if let Some(http) = &mut self.http {
-            for source in [
-                &mut http.web_source,
-                &mut http.portal_source,
-                &mut http.console_source,
-            ] {
-                if let Some(WebSourceConfig::Directory(path)) = source {
-                    if path.is_relative() {
-                        *path = base_dir.join(&*path);
-                    }
-                }
-            }
+        if let Some(ListenerTransport::Tls {
+            certificate_chain,
+            private_key,
+        }) = self.http.as_mut().and_then(|http| http.transport.as_mut())
+        {
+            resolve_required_path(base_dir, certificate_chain);
+            resolve_required_path(base_dir, private_key);
         }
-
         for storage in [
             self.platform
                 .as_mut()
@@ -480,9 +608,19 @@ impl RuntimeConfig {
             resolve_path(base_dir, &mut storage.path);
         }
 
-        if let Some(oauth) = &mut self.oauth {
-            for provider in oauth.providers.values_mut() {
-                resolve_path(base_dir, &mut provider.client_secret_file);
+        if let Some(auth) = &mut self.auth {
+            resolve_path(base_dir, &mut auth.oauth_storage_key_file);
+            if let Some(OAuthListenerConfig {
+                transport:
+                    ListenerTransport::Tls {
+                        certificate_chain,
+                        private_key,
+                    },
+                ..
+            }) = &mut auth.oauth
+            {
+                resolve_required_path(base_dir, certificate_chain);
+                resolve_required_path(base_dir, private_key);
             }
         }
         if let Some(authorization) = self
@@ -538,6 +676,21 @@ impl RuntimeConfig {
     }
 }
 
+/// Origins isolate JavaScript, but cookies are hostname-scoped, not port-scoped.
+pub(crate) fn warn_oauth_cookie_isolation(oauth: &Url, application: &Url) {
+    if oauth.host_str() == application.host_str() && oauth.origin() != application.origin() {
+        tracing::warn!(
+            security_event = "oauth_cookie_isolation_at_risk",
+            oauth_origin = %oauth.origin().ascii_serialization(),
+            application_origin = %application.origin().ascii_serialization(),
+            "SECURITY WARNING: OAuth login cookies can be sent to application \
+            servers on this shared hostname. Different ports and HttpOnly do NOT \
+            isolate these cookies. A compromised application server could steal a \
+            portal session. Use a dedicated OAuth hostname."
+        );
+    }
+}
+
 /// Optional host path-root overrides from the `[paths]` config section.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimePathsConfig {
@@ -573,6 +726,77 @@ pub struct RuntimePathDefaults {
     pub logs: PathBuf,
 }
 
+impl RuntimePathDefaults {
+    /// Resolve Linux system/FHS mutable roots for server and offline administration.
+    ///
+    /// # Errors
+    /// Fails on platforms where the system host profile is unsupported.
+    pub fn system_profile() -> Result<Self, std::io::Error> {
+        #[cfg(not(target_os = "linux"))]
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "--system is supported only on Linux",
+        ));
+        #[cfg(target_os = "linux")]
+        Ok(Self {
+            data: "/var/lib/trellis".into(),
+            state: "/var/lib/trellis".into(),
+            cache: "/var/cache/trellis".into(),
+            runtime: "/run/trellis".into(),
+            logs: "/var/log/trellis".into(),
+        })
+    }
+
+    /// Resolve the ordinary user host's mutable roots for both server startup
+    /// and offline administration, using the same XDG environment policy.
+    ///
+    /// # Errors
+    /// Fails when neither HOME nor USERPROFILE identifies the user profile.
+    pub fn user_profile(
+        get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<Self, std::io::Error> {
+        let home = get("HOME")
+            .or_else(|| get("USERPROFILE"))
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "cannot resolve user profile: HOME is not set",
+                )
+            })?;
+        let root = |variable: &str, fallback: &str| {
+            get(variable)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(fallback))
+                .join("trellis")
+        };
+        let state = root("XDG_STATE_HOME", ".local/state");
+        let runtime = get("XDG_RUNTIME_DIR")
+            .map(|value| PathBuf::from(value).join("trellis"))
+            .unwrap_or_else(|| {
+                #[cfg(unix)]
+                // SAFETY: geteuid has no memory preconditions and reads only this process's
+                // identity.
+                let user = unsafe { libc::geteuid() }.to_string();
+                #[cfg(not(unix))]
+                let user = get("USERNAME")
+                    .unwrap_or_else(|| "user".into())
+                    .to_string_lossy()
+                    .into_owned();
+                std::env::temp_dir()
+                    .join(format!("trellis-runtime-{user}"))
+                    .join("trellis")
+            });
+        Ok(Self {
+            data: root("XDG_DATA_HOME", ".local/share"),
+            state: state.clone(),
+            cache: root("XDG_CACHE_HOME", ".cache"),
+            runtime,
+            logs: state.join("log"),
+        })
+    }
+}
+
 /// HTTP listener configuration for the runtime.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HttpConfig {
@@ -588,101 +812,31 @@ pub struct HttpConfig {
     /// Allowed browser origins.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origins: Option<Vec<String>>,
-    /// Insecure origins allowed for local development.
+    /// Listener transport. Absent selects loopback-only plaintext development.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allow_insecure_origins: Option<Vec<String>>,
-    /// Shared source for built-in web surfaces. Absent uses embedded assets.
+    pub transport: Option<ListenerTransport>,
+    /// `host:port` of the broker's plaintext WebSocket listener. When set, the
+    /// listener relays WebSocket upgrades on `/nats` to it, so browsers reach
+    /// NATS on this origin with this listener's certificate.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub web_source: Option<WebSourceConfig>,
-    /// Login Portal source overriding `web_source`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub portal_source: Option<WebSourceConfig>,
-    /// Console source overriding `web_source`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub console_source: Option<WebSourceConfig>,
-    /// Maximum requests per rate-limit window.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate_limit_max: Option<u32>,
-    /// Rate-limit window in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate_limit_window_ms: Option<u64>,
-}
-
-impl HttpConfig {
-    /// Returns true when `origin` is explicitly allow-listed as an insecure origin.
-    pub(crate) fn allows_insecure_origin(&self, origin: &str) -> bool {
-        let Some(candidate) = CanonicalOrigin::parse(origin) else {
-            return false;
-        };
-        self.allow_insecure_origins.as_ref().is_some_and(|origins| {
-            origins
-                .iter()
-                .any(|allowed| CanonicalOrigin::parse(allowed).as_ref() == Some(&candidate))
-        })
-    }
+    pub nats_websocket_upstream: Option<String>,
 }
 
 /// A canonical `scheme://host[:port]` browser origin.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CanonicalOrigin {
-    serialized: String,
-    loopback: bool,
-    https: bool,
-}
+struct CanonicalOrigin;
 
 impl CanonicalOrigin {
-    /// Parses and canonicalizes an HTTP(S) origin.
-    ///
-    /// Credentials, query, fragment, non-HTTP(S) schemes, and missing hosts are
-    /// rejected so an allow-list entry can only ever name an origin.
+    /// Accepts only an HTTP(S) origin without credentials, query, or fragment.
     fn parse(value: &str) -> Option<Self> {
         let url = Url::parse(value.trim()).ok()?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return None;
-        }
-        if !url.username().is_empty() || url.password().is_some() {
-            return None;
-        }
-        if url.query().is_some() || url.fragment().is_some() {
-            return None;
-        }
-        let loopback = match url.host()? {
-            Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
-            Host::Ipv4(address) => address.is_loopback(),
-            Host::Ipv6(address) => address.is_loopback(),
-        };
-        Some(Self {
-            serialized: url.origin().ascii_serialization(),
-            loopback,
-            https: url.scheme() == "https",
-        })
+        (matches!(url.scheme(), "http" | "https")
+            && url.host().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none())
+        .then_some(Self)
     }
-
-    /// Whether this origin names a loopback host.
-    fn is_loopback(&self) -> bool {
-        self.loopback
-    }
-
-    /// Whether this origin uses HTTPS.
-    fn is_https(&self) -> bool {
-        self.https
-    }
-}
-
-impl std::fmt::Display for CanonicalOrigin {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.serialized)
-    }
-}
-
-/// A filesystem or reverse-proxy source for a Trellis web surface.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WebSourceConfig {
-    /// Serve a static SvelteKit artifact directory.
-    Directory(PathBuf),
-    /// Reverse proxy requests to an HTTP or HTTPS upstream.
-    Proxy(String),
 }
 
 /// NATS configuration for runtime connections and auth callout material.
@@ -691,6 +845,12 @@ pub struct NatsConfig {
     /// NATS server URL or comma-separated URLs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub servers: Option<String>,
+    /// Additional PEM CA trusted for runtime NATS TLS connections.
+    ///
+    /// Required when the broker certificate chains to a private CA, including the
+    /// Trellis-generated installation CA. Publicly trusted brokers omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<PathBuf>,
     /// Generated runtime credential paths.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<NatsRuntimeConfig>,
@@ -738,6 +898,7 @@ impl NatsConfig {
 
         Ok(ResolvedRuntimeNatsConfig {
             servers: require_string("nats", "servers", self.servers.as_deref())?,
+            ca_certificate: self.ca_certificate.clone(),
             auth_creds_path: require_path(
                 "nats.runtime",
                 "auth_creds_path",
@@ -797,6 +958,8 @@ impl NatsConfig {
 pub struct ResolvedRuntimeNatsConfig {
     /// NATS server URL or comma-separated URLs.
     pub servers: String,
+    /// Additional PEM CA trusted for NATS TLS connections.
+    pub ca_certificate: Option<PathBuf>,
     /// Auth-account runtime user creds path.
     pub auth_creds_path: PathBuf,
     /// Trellis-account runtime user creds path.
@@ -902,12 +1065,167 @@ pub struct ResolvedLeasesConfig {
 /// Runtime authentication configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AuthConfig {
+    /// Optional external profile-image resolution policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<AvatarConfig>,
+    /// Stable installation ULID, provisioned once and retained across key rotations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+    /// Dedicated OAuth listener, distinct from application origins.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<OAuthListenerConfig>,
+    /// Installation-owned base64url 32-byte key sealing durable OAuth credentials.
+    /// Provision once; retain across restarts and issuer rotations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_storage_key_file: Option<PathBuf>,
     /// Local username/password identity configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_identity: Option<LocalIdentityConfig>,
     /// Authorization trust and short-lived context runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization: Option<AuthorizationConfig>,
+    /// Safeguards on delegating administrative capabilities to apps.
+    #[serde(default)]
+    pub administration: AdministrationConfig,
+}
+
+/// Safeguards on delegating `trellis.*` administrative capabilities to an app.
+/// Every safeguard is on unless the operator turns it off.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdministrationConfig {
+    /// Consent asks for a separate confirmation that the app may manage this
+    /// Trellis installation.
+    pub confirm_on_consent: bool,
+    /// Another holder of `trellis.auth.v1:platform.manage` must approve the delegation
+    /// before the app receives it.
+    pub require_peer_approval: bool,
+    /// Only OAuth clients an administrator registered may receive
+    /// administrative capabilities.
+    pub registered_clients_only: bool,
+}
+
+impl Default for AdministrationConfig {
+    fn default() -> Self {
+        Self {
+            confirm_on_consent: true,
+            require_peer_approval: true,
+            registered_clients_only: true,
+        }
+    }
+}
+
+/// External image policy. Disabling immediately prevents serving remote-derived
+/// images, including already cached ones. Local initials remain available.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvatarConfig {
+    /// Fetch public HTTPS OIDC, owner-override and verified-email Gravatar images.
+    pub external_fetch_enabled: bool,
+}
+
+/// Explicit dedicated OAuth listener configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthListenerConfig {
+    /// Public authorization origin, distinct from every application origin.
+    pub origin: String,
+    /// Dedicated authorization listener address.
+    pub bind_address: IpAddr,
+    /// Dedicated listener port.
+    pub port: u16,
+    /// TLS, reverse-proxy, or explicitly insecure loopback-only development transport.
+    pub transport: ListenerTransport,
+    /// Reverse-proxy addresses or CIDR ranges whose `X-Forwarded-For` header
+    /// identifies the client for request admission. Forwarding headers from
+    /// any other peer are ignored. Empty means the listener faces clients.
+    ///
+    /// A `proxy` transport already serves only its own trusted proxies and
+    /// presents the forwarded client; this list is for a proxy in front of a
+    /// TLS listener, such as one that re-encrypts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxies: Vec<ipnet::IpNet>,
+}
+
+/// Transport for a runtime HTTP listener; failed TLS never becomes plaintext.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ListenerTransport {
+    /// HTTPS using PEM certificate and key files, generated or operator-supplied.
+    ///
+    /// The runtime reloads replaced files without restarting.
+    Tls {
+        /// PEM leaf certificate followed by intermediates.
+        certificate_chain: PathBuf,
+        /// PEM private key matching the certificate.
+        private_key: PathBuf,
+    },
+    /// Plaintext behind an HTTPS-terminating reverse proxy.
+    ///
+    /// The public origin remains HTTPS. Only peers inside `trusted_proxies` are
+    /// served, and only their `X-Forwarded-For` entries identify the client.
+    Proxy {
+        /// Networks of the reverse proxies allowed to connect.
+        trusted_proxies: Vec<ipnet::IpNet>,
+    },
+    /// Explicitly insecure development mode restricted to loopback.
+    LoopbackDevelopment,
+}
+
+/// Checks that `transport` can protect `origin` when bound at `bind_address`.
+pub(crate) fn validate_listener_transport(
+    origin: &Url,
+    bind_address: IpAddr,
+    transport: &ListenerTransport,
+) -> Result<(), &'static str> {
+    match transport {
+        ListenerTransport::Tls {
+            certificate_chain,
+            private_key,
+        } => {
+            if origin.scheme() != "https"
+                || certificate_chain.as_os_str().is_empty()
+                || private_key.as_os_str().is_empty()
+            {
+                return Err("tls requires an HTTPS origin and certificate/key paths");
+            }
+        }
+        ListenerTransport::Proxy { trusted_proxies } => {
+            if origin.scheme() != "https" || trusted_proxies.is_empty() {
+                return Err(
+                    "proxy requires an HTTPS public origin and at least one trusted proxy network",
+                );
+            }
+        }
+        ListenerTransport::LoopbackDevelopment => {
+            let local = match origin.host() {
+                Some(Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(Host::Ipv6(ip)) => ip.is_loopback(),
+                Some(Host::Domain(host)) => host == "localhost",
+                None => false,
+            };
+            if origin.scheme() != "http" || !local || !bind_address.is_loopback() {
+                return Err(
+                    "plaintext is restricted to loopback development: use an HTTP loopback \
+                    origin and a loopback bind address, or select tls or proxy transport",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Installation TLS metadata.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Certificate of the Trellis-generated installation CA.
+    ///
+    /// Present only when Trellis generated the serving certificates. The runtime
+    /// then warns operators and every Console user, and reports the CA
+    /// fingerprint and leaf expiry so trust can be verified out of band.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_ca_certificate: Option<PathBuf>,
 }
 
 /// Native identity seed files for built-in live providers.
@@ -940,24 +1258,15 @@ pub struct AuthorizationConfig {
     pub issuer_signing_seed_file: PathBuf,
     /// Maximum newly issued context lifetime in seconds.
     pub context_lifetime_seconds: u64,
-    /// Refresh lead before context expiry in seconds.
-    pub refresh_lead_seconds: u64,
-    /// Maximum deterministic earlier-only refresh jitter in seconds.
-    pub refresh_jitter_seconds: u64,
-    /// Minimum useful context lease in seconds.
-    pub minimum_context_lifetime_seconds: u64,
-    /// Maximum lifetime of a deny-all bootstrap JWT in seconds.
-    pub maximum_bootstrap_jwt_lifetime_seconds: u64,
     /// Verification clock skew in seconds.
     pub allowed_clock_skew_seconds: u64,
-    /// Maximum canonical signed-context JSON size in UTF-8 bytes.
-    pub maximum_context_bytes: usize,
-    /// Maximum permission atoms allowed in one context.
-    pub maximum_permissions: usize,
-    /// Context/revocation registry KV bucket.
-    pub context_bucket: String,
-    /// Replica count for both registry buckets.
-    pub registry_replicas: usize,
+    /// Maximum signed OAuth admission lifetime in seconds.
+    #[serde(default = "default_oauth_admission_lifetime_seconds")]
+    pub oauth_admission_lifetime_seconds: u64,
+}
+
+fn default_oauth_admission_lifetime_seconds() -> u64 {
+    300
 }
 
 impl AuthorizationConfig {
@@ -974,127 +1283,33 @@ impl AuthorizationConfig {
                 "must be between 1 and 3600",
             ));
         }
-        let useful_context_lifetime = self
-            .context_lifetime_seconds
-            .saturating_sub(self.allowed_clock_skew_seconds);
-        if self.refresh_lead_seconds >= useful_context_lifetime {
-            return Err(invalid_authorization(
-                "refresh_lead_seconds",
-                "must be less than context_lifetime_seconds minus allowed_clock_skew_seconds",
-            ));
-        }
-        if self.refresh_jitter_seconds > 300
-            || self
-                .refresh_lead_seconds
-                .saturating_add(self.refresh_jitter_seconds)
-                >= useful_context_lifetime
+        if self.allowed_clock_skew_seconds > 300
+            || self.allowed_clock_skew_seconds >= self.context_lifetime_seconds
         {
-            return Err(invalid_authorization(
-                "refresh_jitter_seconds",
-                "must not exceed 300 and must leave a usable context window",
-            ));
-        }
-        if self.minimum_context_lifetime_seconds <= self.allowed_clock_skew_seconds
-            || self.minimum_context_lifetime_seconds > useful_context_lifetime
-            || self.minimum_context_lifetime_seconds
-                <= self
-                    .refresh_lead_seconds
-                    .saturating_add(self.refresh_jitter_seconds)
-        {
-            return Err(invalid_authorization(
-                "minimum_context_lifetime_seconds",
-                "must exceed clock skew and the complete refresh window without exceeding useful lifetime",
-            ));
-        }
-        if !(60..=86_400).contains(&self.maximum_bootstrap_jwt_lifetime_seconds) {
-            return Err(invalid_authorization(
-                "maximum_bootstrap_jwt_lifetime_seconds",
-                "must be between 60 and 86400",
-            ));
-        }
-        if self.allowed_clock_skew_seconds > 300 {
             return Err(invalid_authorization(
                 "allowed_clock_skew_seconds",
-                "must not exceed 300",
+                "must not exceed 300 and must be less than context_lifetime_seconds",
             ));
         }
-        if self.maximum_context_bytes == 0 || self.maximum_context_bytes > 1_048_576 {
+        if !(1..=300).contains(&self.oauth_admission_lifetime_seconds) {
             return Err(invalid_authorization(
-                "maximum_context_bytes",
-                "must be between 1 and 1048576",
-            ));
-        }
-        if self.maximum_permissions == 0 || self.maximum_permissions > 16_384 {
-            return Err(invalid_authorization(
-                "maximum_permissions",
-                "must be between 1 and 16384",
-            ));
-        }
-        if self.context_bucket.trim().is_empty() {
-            return Err(invalid_authorization("context_bucket", "must not be empty"));
-        }
-        if self.registry_replicas == 0 {
-            return Err(invalid_authorization(
-                "registry_replicas",
-                "must be positive",
+                "oauth_admission_lifetime_seconds",
+                "must be between 1 and 300",
             ));
         }
         Ok(())
     }
 }
 
-/// Local identity provider configuration.
+/// Local identity provider configuration. Whether local users and sign-up are
+/// allowed is Auth state set from the Console or CLI; an old `enabled` key is
+/// refused rather than ignored, so it cannot silently turn local sign-in back on.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalIdentityConfig {
-    /// Enables local identity authentication.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
     /// Minimum local password length.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_min_length: Option<u16>,
-}
-
-/// OAuth configuration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct OAuthConfig {
-    /// Base URL for OAuth redirect callbacks.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub redirect_base: Option<String>,
-    /// Forces display of the provider chooser when true.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub always_show_provider_chooser: Option<bool>,
-    /// OAuth providers keyed by provider identifier.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub providers: std::collections::BTreeMap<String, OAuthProviderConfig>,
-}
-
-/// OAuth provider configuration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct OAuthProviderConfig {
-    /// Provider type, currently expected to be `oidc`.
-    #[serde(rename = "type")]
-    pub provider_type: String,
-    /// OIDC issuer URL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-    /// OAuth client id.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
-    /// Inline OAuth client secret.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_secret: Option<String>,
-    /// File-backed OAuth client secret path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_secret_file: Option<PathBuf>,
-    /// Display name for UI surfaces.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    /// Requested OAuth scopes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scopes: Option<Vec<String>>,
-    /// JSON Pointers selecting provider role claims from the verified ID token.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub role_claims: Vec<String>,
 }
 
 /// Configuration for a built-in runtime subsystem.
@@ -1115,27 +1330,6 @@ pub struct SubsystemConfig {
     /// Events retention in days.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u32>,
-    /// Platform TTL settings in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl_ms: Option<PlatformTtlConfig>,
-}
-
-/// Platform TTL settings in milliseconds.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct PlatformTtlConfig {
-    /// Session TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sessions: Option<u64>,
-    /// OAuth flow TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth: Option<u64>,
-    /// Device flow TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_flow: Option<u64>,
-    /// Pending auth TTL in milliseconds (default 900000, maximum 86400000,
-    /// matching browser-flow record retention).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_auth: Option<u64>,
 }
 
 /// Storage configuration for a built-in runtime subsystem.
@@ -1258,7 +1452,10 @@ pub enum ConfigError {
         reason: &'static str,
     },
     /// Two subsystems were configured to write the same SQLite file.
-    #[error("runtime subsystems [{first}] and [{second}] must use separate SQLite files, but both use {path}")]
+    #[error(
+        "runtime subsystems [{first}] and [{second}] must use separate SQLite \
+        files, but both use {path}"
+    )]
     SharedSqlitePath {
         /// Duplicated SQLite path.
         path: PathBuf,
@@ -1274,16 +1471,6 @@ pub enum ConfigError {
         section: &'static str,
         /// Unsupported backend name.
         backend: &'static str,
-    },
-    /// Inline and file-backed secret fields were both provided.
-    #[error("invalid runtime config section [{section}.{provider_id}]: {field} and {field}_file are mutually exclusive")]
-    InvalidSecretConfig {
-        /// Section containing the invalid secret configuration.
-        section: &'static str,
-        /// Provider id containing the invalid secret configuration.
-        provider_id: String,
-        /// Inline secret field that conflicts with the file-backed form.
-        field: &'static str,
     },
     /// A required NATS path field is missing or empty.
     #[error("invalid runtime config section [{section}]: {field} {reason}")]
@@ -1314,22 +1501,21 @@ pub enum ConfigError {
         reason: &'static str,
     },
     /// The configured HTTP public origin is not a valid absolute HTTP(S) origin.
-    #[error("invalid runtime config [http] public_origin '{origin}': must be an absolute HTTP(S) origin")]
+    #[error(
+        "invalid runtime config [http] public_origin '{origin}': must be an \
+        absolute HTTP(S) origin"
+    )]
     InvalidPublicOrigin {
         /// Offending public origin value.
         origin: String,
     },
-    /// An `[http] allow_insecure_origins` entry is not a valid HTTP(S) origin.
-    #[error("invalid runtime config [http] allow_insecure_origins entry '{origin}': must be an absolute HTTP(S) origin without credentials, query, or fragment")]
-    InvalidInsecureOrigin {
-        /// Offending allow-list entry.
+    /// The application listener transport cannot protect its public origin.
+    #[error("invalid runtime config [http] transport for public origin '{origin}': {reason}")]
+    InvalidHttpTransport {
+        /// Configured public origin.
         origin: String,
-    },
-    /// The public origin serves plaintext HTTP from a non-loopback host without explicit authorization.
-    #[error("runtime refuses to serve plaintext HTTP from non-loopback public origin '{origin}'; add it to [http] allow_insecure_origins to permit plaintext operation")]
-    InsecurePublicOrigin {
-        /// Rejected public origin.
-        origin: String,
+        /// Why the transport was rejected.
+        reason: &'static str,
     },
 }
 

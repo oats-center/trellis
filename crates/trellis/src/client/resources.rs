@@ -292,13 +292,22 @@ pub trait StateResourceClient: Clone + fmt::Debug + Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), RawStateWriteError>> + Send;
 }
 
-#[derive(Clone)]
 #[doc(hidden)]
-pub struct BoundStateResourceClient {
+pub struct BoundStateResourceClient<D = ()> {
     client: Arc<super::TrellisClient>,
+    watch: std::marker::PhantomData<fn() -> D>,
 }
 
-impl fmt::Debug for BoundStateResourceClient {
+impl<D> Clone for BoundStateResourceClient<D> {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            watch: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<D> fmt::Debug for BoundStateResourceClient<D> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("BoundStateResourceClient")
@@ -306,9 +315,12 @@ impl fmt::Debug for BoundStateResourceClient {
     }
 }
 
-impl BoundStateResourceClient {
+impl<D> BoundStateResourceClient<D> {
     pub(crate) fn new(client: Arc<super::TrellisClient>) -> Self {
-        Self { client }
+        Self {
+            client,
+            watch: std::marker::PhantomData,
+        }
     }
 
     async fn call(
@@ -316,8 +328,19 @@ impl BoundStateResourceClient {
         action: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value, super::TrellisClientError> {
-        let subject = self.client.bound_api_subject("rpc", STATE_API_ID, action)?;
-        self.client.request_json_value(&subject, &body).await
+        let subject = trellis_protocol::derive_rpc_subject("v1", &format!("state.{action}"))?;
+        self.client
+            .request_json_value(
+                STATE_API_ID,
+                trellis_protocol::CatalogActionIdentity {
+                    kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                    name: action.to_owned(),
+                    direction: trellis_protocol::PermissionAction::Call,
+                },
+                &subject,
+                &body,
+            )
+            .await
     }
 }
 
@@ -380,7 +403,7 @@ fn state_conflict(
     )
 }
 
-impl StateResourceClient for BoundStateResourceClient {
+impl<D: 'static> StateResourceClient for BoundStateResourceClient<D> {
     async fn get(&self, resource_name: &str) -> Result<Option<RawStateValue>, String> {
         let response = self
             .call("Get", serde_json::json!({ "resourceName": resource_name }))
@@ -409,13 +432,16 @@ impl StateResourceClient for BoundStateResourceClient {
                 ("replace", Some(revision.into_backend().to_string()))
             }
         };
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "resourceName": resource_name,
             "value": base64::engine::general_purpose::STANDARD.encode(value),
             "representationVersion": representation_version,
             "mode": mode,
-            "revision": revision,
         });
+        // An optional field is absent, never null, on the contract wire.
+        if let Some(revision) = revision {
+            body["revision"] = revision.into();
+        }
         match self.call("Put", body).await {
             Ok(response) => response
                 .get("entry")
@@ -435,7 +461,10 @@ impl StateResourceClient for BoundStateResourceClient {
         resource_name: &str,
         revision: Option<ResourceRevision>,
     ) -> Result<(), RawStateWriteError> {
-        let body = serde_json::json!({ "resourceName": resource_name, "revision": revision.map(|value| value.into_backend().to_string()) });
+        let mut body = serde_json::json!({ "resourceName": resource_name });
+        if let Some(revision) = revision {
+            body["revision"] = revision.into_backend().to_string().into();
+        }
         match self.call("Delete", body).await {
             Ok(_) => Ok(()),
             Err(error) => match state_conflict(&error) {
@@ -448,7 +477,112 @@ impl StateResourceClient for BoundStateResourceClient {
 }
 
 #[doc(hidden)]
-pub type ConnectedStateHandle<T> = StateHandle<T, BoundStateResourceClient>;
+pub type ConnectedStateHandle<T, D = ()> = StateHandle<T, BoundStateResourceClient<D>>;
+
+/// An owned certified Live observation of typed State snapshots.
+/// `None` snapshots represent an unwritten or deleted value. Drop closes the observation.
+pub struct StateWatch<T, D: crate::generated::LiveDescriptor> {
+    handle: ConnectedStateHandle<T, D>,
+    subscription: crate::live::subscription::LiveSubscription<D::Event>,
+    ended: bool,
+}
+
+impl<T, D: crate::generated::LiveDescriptor> fmt::Debug for StateWatch<T, D> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StateWatch")
+            .field("resource_name", &self.handle.resource_name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T, D> StateWatch<T, D>
+where
+    T: Codec + Send + 'static,
+    D: crate::generated::LiveDescriptor + 'static,
+    D::Event: Codec + Send + 'static,
+{
+    /// Await the next snapshot, migrating historical representations only in memory.
+    pub async fn next(&mut self) -> Option<Result<Option<StateValue<T>>, StateReadError>> {
+        if self.ended {
+            return None;
+        }
+        if let Err(error) = self.handle.ensure_current() {
+            self.ended = true;
+            let _ = self.subscription.close().await;
+            return Some(Err(error));
+        }
+        let event = self.subscription.next().await?;
+        let value = match event {
+            Ok(event) => event
+                .encode()
+                .map_err(|error| StateReadError::Backend(error.to_string())),
+            Err(error) => Err(StateReadError::Backend(error.to_string())),
+        };
+        let result = async {
+            self.handle.ensure_current()?;
+            let raw = value?
+                .get("entry")
+                .cloned()
+                .filter(|entry| !entry.is_null())
+                .map(wire_state)
+                .transpose()
+                .map_err(StateReadError::Backend)?;
+            let projected = self
+                .handle
+                .project_optional(raw)
+                .await
+                .map_err(StateReadError::Codec)?;
+            self.handle.ensure_current()?;
+            Ok(projected)
+        }
+        .await;
+        if result.is_err() {
+            self.ended = true;
+            let _ = self.subscription.close().await;
+        }
+        Some(result)
+    }
+
+    /// Close this observation with the shared Live bounded close exchange.
+    pub async fn close(
+        &mut self,
+    ) -> Result<crate::live::types::LiveCloseReceipt, super::TrellisClientError> {
+        self.ended = true;
+        self.subscription.close().await
+    }
+
+    /// Wait for the shared Live terminal outcome.
+    pub async fn closed(&self) -> crate::live::types::LiveEnd {
+        self.subscription.closed().await
+    }
+}
+
+impl<T, D> StateHandle<T, BoundStateResourceClient<D>>
+where
+    T: Codec + Send + 'static,
+    D: crate::generated::LiveDescriptor + 'static,
+    D::Event: Codec + Send + 'static,
+{
+    /// Observe the initial snapshot and subsequent State changes through certified Live.
+    pub async fn watch(&self) -> Result<StateWatch<T, D>, StateReadError> {
+        self.ensure_current()?;
+        let input =
+            D::Input::decode(serde_json::json!({ "resourceName": self.resource_name.as_ref() }))
+                .map_err(|error| StateReadError::Backend(error.to_string()))?;
+        let subscription = self
+            .client
+            .client
+            .live::<D>(&input)
+            .await
+            .map_err(|error| StateReadError::Backend(error.to_string()))?;
+        Ok(StateWatch {
+            handle: self.clone(),
+            subscription,
+            ended: false,
+        })
+    }
+}
 
 /// Generated metadata for one declared durable event consumer.
 pub trait ConsumerDescriptor: Send + Sync + 'static {
@@ -695,6 +829,7 @@ pub struct StateHandle<T, C> {
     client: C,
     availability: tokio::sync::watch::Receiver<crate::generated::AvailabilitySnapshot>,
     generation: u64,
+    pub(crate) registered_app: bool,
 }
 
 impl<T, C: Clone> Clone for StateHandle<T, C> {
@@ -705,6 +840,7 @@ impl<T, C: Clone> Clone for StateHandle<T, C> {
             client: self.client.clone(),
             availability: self.availability.clone(),
             generation: self.generation,
+            registered_app: self.registered_app,
         }
     }
 }
@@ -733,6 +869,7 @@ where
             client,
             availability,
             generation,
+            registered_app: false,
         }
     }
 
@@ -832,11 +969,12 @@ where
     }
 
     fn ensure_current(&self) -> Result<(), StateReadError> {
-        if self
-            .availability
-            .borrow()
-            .resource_generation(crate::generated::ResourceKind::State, &self.resource_name)
-            == Some(self.generation)
+        if self.registered_app
+            || self
+                .availability
+                .borrow()
+                .resource_generation(crate::generated::ResourceKind::State, &self.resource_name)
+                == Some(self.generation)
         {
             Ok(())
         } else {

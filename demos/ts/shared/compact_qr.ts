@@ -1,19 +1,12 @@
-import { qrcode } from "@libs/qrcode";
+import QRCode from "qrcode";
 
 const QUIET_ZONE_MODULES = 4;
 
-function getQrCell(
-  matrix: boolean[][],
-  x: number,
-  y: number,
-): boolean {
+function getQrCell(matrix: boolean[][], x: number, y: number): boolean {
   return matrix[y]?.[x] ?? false;
 }
 
-function getQrCharacter(
-  top: boolean,
-  bottom: boolean,
-): string {
+function getQrCharacter(top: boolean, bottom: boolean): string {
   if (top && bottom) {
     return "█";
   }
@@ -33,7 +26,10 @@ function getQrCharacter(
  * Render a compact terminal QR code that packs two QR rows into one text row.
  */
 export function renderCompactQr(content: string | URL): void {
-  const matrix = qrcode(content, { output: "array" });
+  const { modules } = QRCode.create(String(content));
+  const matrix = Array.from({ length: modules.size }, (_, y) =>
+    Array.from({ length: modules.size }, (_, x) => Boolean(modules.get(y, x))),
+  );
   const width = matrix[0]?.length ?? 0;
   const height = matrix.length;
   const totalWidth = width + QUIET_ZONE_MODULES * 2;

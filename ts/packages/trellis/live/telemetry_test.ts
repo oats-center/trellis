@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { after, test } from "node:test";
 import { metrics } from "@opentelemetry/api";
 import {
   AggregationTemporality,
@@ -28,8 +29,8 @@ function startCapture() {
       if (metric.descriptor.name !== name) continue;
       for (const point of metric.dataPoints) {
         if (
-          Object.entries(subset).every(([key, value]) =>
-            point.attributes[key] === value
+          Object.entries(subset).every(
+            ([key, value]) => point.attributes[key] === value,
           )
         ) {
           sum += point.value as number;
@@ -39,6 +40,7 @@ function startCapture() {
     return sum;
   };
   return {
+    shutdown: () => provider.shutdown(),
     total,
     flush: async () => {
       await provider.forceFlush();
@@ -47,8 +49,9 @@ function startCapture() {
 }
 
 const capture = startCapture();
+after(() => capture.shutdown());
 
-Deno.test("prepared failure records one live end", async () => {
+test("prepared failure records one live end", async () => {
   const beforeLiveEnds = capture.total("trellis.live.ends");
   const owner = new LiveTelemetryOwner("standalone", "consumer");
   owner.prepared();
@@ -57,10 +60,10 @@ Deno.test("prepared failure records one live end", async () => {
   owner.end(new LiveEnd("complete"));
   owner.cleanupFinished();
   await capture.flush();
-  assertEquals(capture.total("trellis.live.ends") - beforeLiveEnds, 1);
+  assert.deepEqual(capture.total("trellis.live.ends") - beforeLiveEnds, 1);
 });
 
-Deno.test("active Live moves the session to active", async () => {
+test("active Live moves the session to active", async () => {
   const beforeSessions = capture.total("trellis.live.sessions", {
     "trellis.phase": "active",
   });
@@ -69,7 +72,7 @@ Deno.test("active Live moves the session to active", async () => {
   owner.activating();
   owner.active();
   await capture.flush();
-  assertEquals(
+  assert.deepEqual(
     capture.total("trellis.live.sessions", { "trellis.phase": "active" }) -
       beforeSessions,
     1,
@@ -79,9 +82,9 @@ Deno.test("active Live moves the session to active", async () => {
   await capture.flush();
 });
 
-Deno.test("Operation sessions report the operation kind", async () => {
+test("Operation sessions report the operation kind", async () => {
   const beforeLive = capture.total("trellis.live.sessions", {
-    "trellis.kind": "operation",
+    "trellis.kind": "operation_watch",
     "trellis.phase": "active",
   });
   const owner = new LiveTelemetryOwner("operation", "consumer");
@@ -89,9 +92,9 @@ Deno.test("Operation sessions report the operation kind", async () => {
   owner.activating();
   owner.active();
   await capture.flush();
-  assertEquals(
+  assert.deepEqual(
     capture.total("trellis.live.sessions", {
-      "trellis.kind": "operation",
+      "trellis.kind": "operation_watch",
       "trellis.phase": "active",
     }) - beforeLive,
     1,
@@ -100,7 +103,7 @@ Deno.test("Operation sessions report the operation kind", async () => {
   await capture.flush();
 });
 
-Deno.test("cleanup pending is a paired gauge with the live session", async () => {
+test("cleanup pending is a paired gauge with the live session", async () => {
   const owner = new LiveTelemetryOwner("standalone", "provider");
   owner.prepared();
   owner.cleanupExceededGrace();
@@ -108,10 +111,10 @@ Deno.test("cleanup pending is a paired gauge with the live session", async () =>
   const pending = capture.total("trellis.live.cleanup.pending", {
     "trellis.side": "provider",
   });
-  assertEquals(pending >= 1, true);
+  assert.deepEqual(pending >= 1, true);
   owner.cleanupFinished();
   await capture.flush();
-  assertEquals(
+  assert.deepEqual(
     capture.total("trellis.live.cleanup.pending", {
       "trellis.side": "provider",
     }),

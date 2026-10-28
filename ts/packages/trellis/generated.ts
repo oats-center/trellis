@@ -2,8 +2,11 @@
 export { TrellisError } from "./errors/TrellisError.ts";
 export {
   apiDescriptor,
+  type AppRequestDescriptor,
   type Codec,
   codecs,
+  type DeclaredErrorOptions,
+  type JsonValue,
   participantDescriptor,
   type SerializableErrorData,
 } from "./generated_support.ts";

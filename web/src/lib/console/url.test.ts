@@ -1,10 +1,11 @@
 import { equal } from "node:assert/strict";
+import { test } from "node:test";
 
 import { buildConsoleUrl, queryString } from "./url.ts";
 
 const BASE = "/console";
 
-Deno.test("U13 URL helper round-trips opaque IDs exactly once", () => {
+test("U13 URL helper round-trips opaque IDs exactly once", () => {
   const id = "participant@v1::with/slash and space";
   const url = buildConsoleUrl(BASE, "/admin/grants/new", {
     query: { portalId: "builtin", participantId: id },
@@ -15,7 +16,7 @@ Deno.test("U13 URL helper round-trips opaque IDs exactly once", () => {
   equal(url.includes("%253A"), false, "IDs are not double-encoded");
 });
 
-Deno.test("U13 path params and a configured base path are preserved", () => {
+test("U13 path params and a configured base path are preserved", () => {
   equal(
     buildConsoleUrl("/base/console", "/admin/services/[deploymentId]", {
       params: { deploymentId: "dep_1" },
@@ -28,12 +29,12 @@ Deno.test("U13 path params and a configured base path are preserved", () => {
   );
 });
 
-Deno.test("U13 query encoding drops absent fields and keeps exact bigints", () => {
+test("U13 query encoding drops absent fields and keeps exact bigints", () => {
   equal(queryString({ a: "1", b: undefined, c: null, d: 42n }), "a=1&d=42");
   equal(queryString({}), "");
 });
 
-Deno.test("U13 consoleUrl appends only a populated query string", () => {
+test("U13 consoleUrl appends only a populated query string", () => {
   equal(buildConsoleUrl(BASE, "/admin/users/edit").includes("?"), false);
   equal(
     buildConsoleUrl(BASE, "/admin/users/edit", {

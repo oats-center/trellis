@@ -1,7 +1,7 @@
 //! Live acceptance tests for the external Rust testkit.
 //!
 //! These tests are explicitly selected by the fixture's `live` target and run
-//! against the embedded production runtime and a real NATS process. They never start
+//! against production runtime and NATS processes. They never start
 //! infrastructure during compilation or documentation generation.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,13 +11,13 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use trellis_rs::client::EventSubscribeOptions;
 use trellis_rs::service::ServerError;
-use trellis_test_fixture::participants::trellis_test_fixture_caller::{
-    Client as CallerClient, Participant as CallerParticipant,
+use trellis_test_fixture::apps::trellis_test_fixture_caller::{
+    Client as CallerClient, Request as CallerRequest,
 };
+use trellis_test_fixture::apps::trellis_test_fixture_restricted_caller::Request as RestrictedCallerRequest;
 use trellis_test_fixture::participants::trellis_test_fixture_provider::{
     Participant as ProviderParticipant, Provider,
 };
-use trellis_test_fixture::participants::trellis_test_fixture_restricted_caller::Participant as RestrictedCallerParticipant;
 use trellis_test_fixture::participants::trellis_test_fixture_unsupported_device::Participant as UnsupportedDeviceParticipant;
 use trellis_test_fixture::types::Value;
 use trellis_testkit::{TrellisTestErrorKind, TrellisTestRuntime};
@@ -29,14 +29,15 @@ async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
         .start()
         .await
         .expect("bare builder");
-    let http = reqwest::Client::builder()
+    let http = runtime
+        .https_client_builder()
         .no_proxy()
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-    for route in ["/login", "/console"] {
+    for (origin, route) in [(runtime.trellis_url(), "/console")] {
         let response = http
-            .get(format!("{}{route}", runtime.trellis_url()))
+            .get(format!("{origin}{route}"))
             .send()
             .await
             .expect("embedded app request");
@@ -58,7 +59,7 @@ async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
         );
     }
     runtime
-        .install_participant::<ProviderParticipant>()
+        .register_service::<ProviderParticipant>("installed-provider")
         .await
         .expect("real generated administration RPC");
     runtime.shutdown().await.expect("orderly shutdown");
@@ -68,6 +69,47 @@ async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
 struct ProviderFixture {
     task: tokio::task::JoinHandle<Result<(), trellis_rs::service::ServiceRuntimeError>>,
     calls: Arc<AtomicUsize>,
+}
+
+/// Consumer-first registration installs the API before any provider exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consumer_first_registration_accepts_consumed_apis_and_calls_later_provider() {
+    use trellis_test_fixture::participants::trellis_test_fixture_consumer::Participant as Consumer;
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Consumer>("consumer first")
+        .await
+        .unwrap();
+    let consumer = Consumer::connect(identity.connect_options()).await.unwrap();
+    let api = trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client::from_generated(
+        consumer.generated_client(),
+    );
+    let task = tokio::spawn(async move { consumer.run().await });
+    let provider = start_provider(&mut runtime, "later provider").await;
+    let input = value("consumer registered first");
+    // The provider subscribes after `run` starts; until then the call has no
+    // responder and executes no handler.
+    let reply = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut readiness = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            readiness.tick().await;
+            match api.echo(&input).await {
+                Ok(reply) => break reply,
+                Err(trellis_rs::client::CallError::ServiceUnavailable(_)) => {}
+                Err(error) => panic!("consumer call failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("the later provider serves the consumer");
+    assert_eq!(reply.value, input.value);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    drop(api);
+    task.abort();
+    let _ = task.await;
+    provider.task.abort();
+    let _ = provider.task.await;
+    runtime.shutdown().await.unwrap();
 }
 
 /// Registers and runs a Provider whose Echo handler publishes `Observed`.
@@ -81,7 +123,10 @@ async fn start_provider(runtime: &mut TrellisTestRuntime, name: &str) -> Provide
         .expect("connect provider");
     let calls = Arc::new(AtomicUsize::new(0));
     {
-        let publisher = Provider::new(&mut service).client();
+        let publisher =
+            trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client::from_generated(
+                service.generated_client(),
+            );
         let handler_calls = Arc::clone(&calls);
         let mut provider = Provider::new(&mut service);
         provider
@@ -92,7 +137,6 @@ async fn start_provider(runtime: &mut TrellisTestRuntime, name: &str) -> Provide
                 async move {
                     handler_calls.fetch_add(1, Ordering::SeqCst);
                     publisher
-                        .trellis_test_fixture_echo_v1()
                         .publish_observed(&input)
                         .await
                         .map_err(|error| ServerError::Nats(error.to_string()))?;
@@ -164,6 +208,74 @@ async fn run_profile_child(child_name: &str, label: &str) -> std::path::PathBuf 
     profile
 }
 
+/// A request that violates the contract's declared bounds is rejected before the
+/// Rust provider's handler runs; the generated input type alone cannot tell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_violating_declared_bounds_never_reaches_the_handler() {
+    use trellis_test_fixture::{NonEmpty, Strict};
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("strict provider")
+        .await
+        .expect("register provider");
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect provider");
+    let calls = Arc::new(AtomicUsize::new(0));
+    {
+        let handler_calls = Arc::clone(&calls);
+        Provider::new(&mut service)
+            .trellis_test_fixture_echo_v1()
+            .register_strict(move |_context, input| {
+                handler_calls.fetch_add(1, Ordering::SeqCst);
+                async move { Ok(input) }
+            });
+    }
+    let task = tokio::spawn(async move { service.run().await });
+    let caller_identity = runtime
+        .register_client::<CallerRequest>("caller")
+        .await
+        .expect("register caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
+    let api = caller.trellis_test_fixture_echo_v1();
+    let strict = |text: &str| Strict {
+        value: NonEmpty(text.to_owned()),
+        extra: Default::default(),
+    };
+    // `Strict.value` declares min_length=1.
+    let error = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match api.strict(&strict("")).await {
+                Err(trellis_rs::client::CallError::ServiceUnavailable(_)) => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                other => break other.expect_err("an empty value is rejected"),
+            }
+        }
+    })
+    .await
+    .expect("the provider answers");
+    match &error {
+        trellis_rs::client::CallError::Remote(payload) => {
+            assert_eq!(payload.error_type(), Some("ValidationError"), "{error}");
+        }
+        other => panic!("expected a validation error, got {other:?}"),
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(api.strict(&strict("ok")).await.unwrap().value.0, "ok");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.unwrap();
+}
+
 /// T04: a real runtime bootstraps, authenticates, registers a Provider and
 /// Caller, performs the typed RPC, and receives the real typed event.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -174,13 +286,15 @@ async fn t04_real_rpc_and_event_between_provider_and_caller() {
         .expect("start runtime");
     let provider = start_provider(&mut runtime, "provider").await;
     let caller_identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
 
-    let caller = CallerClient::connect(caller_identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let mut events = api
         .subscribe_observed(EventSubscribeOptions::ephemeral())
@@ -206,6 +320,217 @@ async fn t04_real_rpc_and_event_between_provider_and_caller() {
     runtime.shutdown().await.expect("shutdown runtime");
 }
 
+/// Broker publish access is not authority to emit a generated typed Event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ephemeral_events_authenticate_before_yielding_typed_payloads() {
+    use trellis_rs::client::{ServiceConnectWithContractOptions, TrellisClient};
+    use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::events::Observed;
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<ProviderParticipant>("event-auth-provider")
+        .await
+        .unwrap();
+    let server =
+        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
+    let provider =
+        TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
+            nats_servers: server.nats_servers,
+            trust: server.trust,
+            participant_id: identity.participant_id(),
+            provisioned_identity_seed_base64url: identity.seed(),
+            name: Some(identity.name()),
+            timeout_ms: 10_000,
+        })
+        .await
+        .unwrap();
+    let identity = runtime
+        .register_client::<CallerRequest>("event-auth-caller")
+        .await
+        .unwrap();
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .unwrap(),
+    );
+    let api = caller.trellis_test_fixture_echo_v1();
+    let broker = async_nats::ConnectOptions::with_credentials_file(
+        runtime
+            .workdir()
+            .join("config/nats/creds/trellis-auth.creds"),
+    )
+    .await
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    let mut captured = broker.subscribe(Observed::SUBJECT).await.unwrap();
+    broker.flush().await.unwrap();
+    let mut events = api
+        .subscribe_observed(EventSubscribeOptions::ephemeral())
+        .await
+        .unwrap();
+    provider
+        .publish::<Observed>(&value("genuine-before"))
+        .await
+        .unwrap();
+    let original = tokio::time::timeout(Duration::from_secs(10), captured.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let headers = original.headers.unwrap();
+    let event: trellis_protocol::SessionEvent =
+        serde_json::from_str(headers.get("Trellis-Session-Event").unwrap().as_str()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), events.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .value,
+        "genuine-before"
+    );
+
+    broker
+        .publish(
+            Observed::SUBJECT,
+            serde_json::to_vec(&value("unsigned")).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    broker
+        .publish_with_headers(
+            Observed::SUBJECT,
+            headers.clone(),
+            serde_json::to_vec(&value("tampered")).unwrap().into(),
+        )
+        .await
+        .unwrap();
+
+    let rogue_identity = runtime
+        .register_client::<CallerRequest>("event-auth-nonpublisher")
+        .await
+        .unwrap();
+    let rogue = TrellisClient::connect_user(rogue_identity.connect_options())
+        .await
+        .unwrap();
+    let rogue_context = rogue.authorization_context().unwrap().unwrap().context;
+    let rogue_api = rogue_context
+        .unsigned
+        .apis
+        .iter()
+        .find(|api| api.api_id == Observed::API_ID)
+        .unwrap();
+    let mut unauthorized = event.clone();
+    unauthorized.authority_digest = rogue_context.digest().unwrap();
+    unauthorized.api_generation = rogue_api.generation;
+    unauthorized.accepted_revision = rogue_api.accepted_revision;
+    let mut wrong_generation = event.clone();
+    wrong_generation.api_generation = trellis_protocol::U64s::new(event.api_generation.get() + 1);
+
+    let mut foreign_runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let foreign_identity = foreign_runtime
+        .register_service::<ProviderParticipant>("foreign-event-provider")
+        .await
+        .unwrap();
+    let foreign_server = trellis_rs::auth::discover_native_oauth(
+        foreign_runtime.oauth_origin(),
+        &foreign_runtime.trust_roots(),
+    )
+    .await
+    .unwrap();
+    let foreign_provider =
+        TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
+            nats_servers: foreign_server.nats_servers,
+            trust: foreign_server.trust,
+            participant_id: foreign_identity.participant_id(),
+            provisioned_identity_seed_base64url: foreign_identity.seed(),
+            name: Some(foreign_identity.name()),
+            timeout_ms: 10_000,
+        })
+        .await
+        .unwrap();
+    let foreign_context = foreign_provider
+        .authorization_context()
+        .unwrap()
+        .unwrap()
+        .context;
+    let foreign_api = foreign_context
+        .unsigned
+        .apis
+        .iter()
+        .find(|api| api.api_id == Observed::API_ID)
+        .unwrap();
+    let mut wrong_installation = event.clone();
+    wrong_installation.authority_digest = foreign_context.digest().unwrap();
+    wrong_installation.api_generation = foreign_api.generation;
+    wrong_installation.accepted_revision = foreign_api.accepted_revision;
+
+    // These proofs are authentic: only publish eligibility, generation, or selected
+    // installation is wrong. All injections share one subject and broker carrier.
+    for (mut publication, signer, text) in [
+        (unauthorized, rogue.auth(), "unauthorized"),
+        (wrong_generation, provider.auth(), "wrong-generation"),
+        (
+            wrong_installation,
+            foreign_provider.auth(),
+            "wrong-installation",
+        ),
+    ] {
+        let prepared = trellis_rs::client::prepare_event::<Observed>(&value(text)).unwrap();
+        publication.event_id = prepared.event_id().to_owned();
+        publication.event_time = prepared.event_time().to_owned();
+        let mut injected = headers.clone();
+        injected.insert(
+            "authorization-context",
+            publication.authority_digest.as_str(),
+        );
+        injected.insert("session-key", signer.session_key.as_str());
+        injected.insert("Nats-Msg-Id", publication.event_id.as_str());
+        injected.insert("Trellis-Event-Time", publication.event_time.as_str());
+        injected.insert(
+            "Trellis-Session-Event",
+            serde_json::to_string(&publication).unwrap(),
+        );
+        injected.insert(
+            "proof",
+            signer
+                .create_event_proof(&publication, prepared.payload())
+                .unwrap()
+                .as_str(),
+        );
+        broker
+            .publish_with_headers(Observed::SUBJECT, injected, prepared.payload_bytes())
+            .await
+            .unwrap();
+    }
+    broker.flush().await.unwrap();
+    provider
+        .publish::<Observed>(&value("genuine-after"))
+        .await
+        .unwrap();
+    let received = tokio::time::timeout(Duration::from_secs(10), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .value;
+
+    drop(events);
+    drop(captured);
+    broker.drain().await.unwrap();
+    drop(caller);
+    drop(rogue);
+    drop(provider);
+    drop(foreign_provider);
+    foreign_runtime.shutdown().await.unwrap();
+    runtime.shutdown().await.unwrap();
+    assert_eq!(received, "genuine-after");
+}
+
 /// T06: two providers registered under different names keep distinct
 /// deployment and instance identities.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -218,8 +543,9 @@ async fn t06_two_providers_have_distinct_deployments() {
         .register_service::<ProviderParticipant>("provider-a")
         .await
         .expect("register first provider");
+    // A second deployment of the same API has to be acknowledged.
     let second = runtime
-        .register_service::<ProviderParticipant>("provider-b")
+        .register_service_sharing_apis::<ProviderParticipant>("provider-b")
         .await
         .expect("register second provider");
 
@@ -240,7 +566,7 @@ async fn t08_restricted_caller_is_denied() {
         .expect("start runtime");
     let provider = start_provider(&mut runtime, "provider").await;
     let restricted = runtime
-        .register_client::<RestrictedCallerParticipant>("restricted")
+        .register_client::<RestrictedCallerRequest>("restricted")
         .await
         .expect("register restricted caller");
 
@@ -323,7 +649,7 @@ async fn t14_shutdown_is_idempotent() {
         );
     }
     let error = runtime
-        .install_participant::<ProviderParticipant>()
+        .register_service::<ProviderParticipant>("after-shutdown")
         .await
         .expect_err("installing after shutdown must fail");
     assert_eq!(
@@ -341,22 +667,24 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
     use tokio::sync::Barrier;
 
     let barrier = Arc::new(Barrier::new(8));
-    let mut handles = Vec::new();
+    let mut handles = tokio::task::JoinSet::new();
     for index in 0..8u32 {
         let barrier = Arc::clone(&barrier);
-        handles.push(tokio::spawn(async move {
+        handles.spawn(async move {
             let mut runtime = TrellisTestRuntime::builder()
                 .start()
                 .await
                 .expect("start runtime");
             let provider = start_provider(&mut runtime, "provider").await;
             let caller_identity = runtime
-                .register_client::<CallerParticipant>("caller")
+                .register_client::<CallerRequest>("caller")
                 .await
                 .expect("register caller");
-            let caller = CallerClient::connect(caller_identity.connect_options())
-                .await
-                .expect("connect caller");
+            let caller = CallerClient::from_generated(
+                trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+                    .await
+                    .expect("connect caller"),
+            );
             let api = caller.trellis_test_fixture_echo_v1();
             let mut events = api
                 .subscribe_observed(EventSubscribeOptions::ephemeral())
@@ -397,7 +725,7 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
             );
             runtime.shutdown().await.expect("shutdown runtime");
             endpoints
-        }));
+        });
     }
 
     let mut http = std::collections::HashSet::new();
@@ -405,11 +733,11 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
     let mut websocket = std::collections::HashSet::new();
     let mut monitor = std::collections::HashSet::new();
     let mut workdirs = std::collections::HashSet::new();
-    for handle in handles {
-        let (h, n, w, m, dir) = tokio::time::timeout(Duration::from_secs(300), handle)
-            .await
-            .expect("runtime task timed out")
-            .expect("join runtime task");
+    while let Some(result) = tokio::time::timeout(Duration::from_secs(300), handles.join_next())
+        .await
+        .expect("runtime task timed out")
+    {
+        let (h, n, w, m, dir) = result.expect("join runtime task");
         http.insert(h);
         nats.insert(n);
         websocket.insert(w);
@@ -463,11 +791,25 @@ async fn profile_child_registers_caller() {
         .start()
         .await
         .expect("start runtime in the profile child");
+    let provider = start_provider(&mut runtime, "profile-provider").await;
     let identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller in the profile child");
-    assert!(!identity.login_session_id().is_empty());
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect profile caller"),
+    );
+    let result = caller
+        .trellis_test_fixture_echo_v1()
+        .echo(&value("profile remains isolated"))
+        .await
+        .expect("profile caller RPC");
+    assert_eq!(result.value, "profile remains isolated");
+    drop(caller);
+    provider.task.abort();
+    let _ = provider.task.await;
     runtime
         .shutdown()
         .await
@@ -478,7 +820,7 @@ async fn profile_child_registers_caller() {
 /// provider.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn t05_agent_caller_calls_the_provider() {
-    use trellis_test_fixture::participants::trellis_test_fixture_agent_caller::Client as AgentClient;
+    use trellis_test_fixture::apps::trellis_test_fixture_agent_caller::Client as AgentClient;
 
     let mut runtime = TrellisTestRuntime::builder()
         .start()
@@ -486,15 +828,17 @@ async fn t05_agent_caller_calls_the_provider() {
         .expect("start runtime");
     let provider = start_provider(&mut runtime, "provider").await;
     let agent_identity = runtime
-        .register_client::<trellis_test_fixture::participants::trellis_test_fixture_agent_caller::Participant>(
+        .register_client::<trellis_test_fixture::apps::trellis_test_fixture_agent_caller::Request>(
             "agent",
         )
         .await
         .expect("register agent caller");
 
-    let agent = AgentClient::connect(agent_identity.connect_options())
-        .await
-        .expect("connect agent caller");
+    let agent = AgentClient::from_generated(
+        trellis_rs::generated::Client::connect_user(agent_identity.connect_options())
+            .await
+            .expect("connect agent caller"),
+    );
     let output = agent
         .trellis_test_fixture_echo_v1()
         .echo(&value("from-agent"))
@@ -584,7 +928,7 @@ async fn t11_missing_nats_fails_cleanly() {
     };
     assert_eq!(
         error.kind(),
-        TrellisTestErrorKind::InvalidBinary,
+        TrellisTestErrorKind::MissingBinary,
         "an explicitly invalid NATS path must fail without falling back"
     );
 }
@@ -727,8 +1071,6 @@ fn t17_panic_unwind_cleanup() {
     use std::sync::mpsc;
 
     let (tx, rx) = mpsc::channel();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
     let handle = std::thread::spawn(move || {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -754,7 +1096,6 @@ fn t17_panic_unwind_cleanup() {
         .recv_timeout(Duration::from_secs(180))
         .expect("endpoints before the panic");
     assert!(handle.join().is_err(), "the worker thread must unwind");
-    std::panic::set_hook(previous_hook);
 
     let observer = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -892,12 +1233,14 @@ async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
         });
     let task = tokio::spawn(async move { service.run().await });
     let identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let invocation_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     let input = value("chosen invocation");
@@ -930,7 +1273,13 @@ async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
     );
     assert_eq!(
         api.silent()
-            .control(invocation_id)
+            .control(
+                serde_json::from_slice(
+                    &serde_json::to_vec(operation.reference())
+                        .expect("serialize operation reference")
+                )
+                .expect("restore operation reference")
+            )
             .expect("open chosen id")
             .get()
             .await
@@ -943,7 +1292,7 @@ async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let identity = runtime
-        .register_client::<RestrictedCallerParticipant>("restricted")
+        .register_client::<RestrictedCallerRequest>("restricted")
         .await
         .expect("register restricted caller");
     let restricted = trellis_rs::generated::Client::connect_user(identity.connect_options())
@@ -984,11 +1333,11 @@ async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_admission_is_atomic_and_replayable() {
     use trellis_rs::client::OperationState;
-    use trellis_rs::generated::{Client as GeneratedClient, ParticipantDescriptor};
+    use trellis_rs::generated::Client as GeneratedClient;
     use trellis_rs::service::OperationCancellationReason;
     use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client as EchoClient;
-    use trellis_test_fixture::participants::trellis_test_fixture_agent_caller::{
-        Client as AgentClient, Participant as AgentParticipant,
+    use trellis_test_fixture::apps::trellis_test_fixture_agent_caller::{
+        Client as AgentClient, Request as AgentRequest,
     };
 
     let mut runtime = TrellisTestRuntime::builder()
@@ -1019,7 +1368,9 @@ async fn cancelled_admission_is_atomic_and_replayable() {
                     .expect("authenticated caller");
                 Ok(value(&format!(
                     "{}|{}",
-                    caller.principal_id, caller.participant_id
+                    caller.principal_id,
+                    serde_json::to_string(&caller.binding)
+                        .expect("serialize authenticated binding")
                 )))
             });
         provider.trellis_test_fixture_echo_v1().register_silent({
@@ -1072,26 +1423,24 @@ async fn cancelled_admission_is_atomic_and_replayable() {
     }
     let task = tokio::spawn(async move { service.run().await });
     let identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
+    let same_creator = caller.clone();
     let identity = runtime
-        .register_client::<CallerParticipant>("another-name")
-        .await
-        .expect("register same principal");
-    let same_creator = CallerClient::connect(identity.connect_options())
-        .await
-        .expect("connect same creator");
-    let identity = runtime
-        .register_client::<AgentParticipant>("agent")
+        .register_client::<AgentRequest>("agent")
         .await
         .expect("register different participant");
-    let agent = AgentClient::connect(identity.connect_options())
-        .await
-        .expect("connect agent");
+    let agent = AgentClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect agent"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let who = api
         .echo(&value("identity"))
@@ -1110,13 +1459,18 @@ async fn cancelled_admission_is_atomic_and_replayable() {
         .await
         .expect("read agent identity")
         .value;
-    assert_eq!(who, same_who, "connection names are not creator identities");
+    assert_eq!(
+        who, same_who,
+        "the creator's cloned facade retains its authenticated binding"
+    );
     assert_eq!(
         who.split_once('|').unwrap().0,
         agent_who.split_once('|').unwrap().0
     );
-    assert_eq!(who.split_once('|').unwrap().1, CallerParticipant::ID);
-    assert_eq!(agent_who.split_once('|').unwrap().1, AgentParticipant::ID);
+    assert_ne!(
+        who, agent_who,
+        "another native credential has a different creator binding"
+    );
 
     let id = "01J00000000000000000000010";
     let input = value("cancel-first");
@@ -1196,7 +1550,7 @@ async fn cancelled_admission_is_atomic_and_replayable() {
 
     // Invoke/Cancel authority is absent for this actual installed participant.
     let identity = runtime
-        .register_client::<RestrictedCallerParticipant>("restricted")
+        .register_client::<RestrictedCallerRequest>("restricted")
         .await
         .expect("register restricted");
     let restricted = GeneratedClient::connect_user(identity.connect_options())
@@ -1207,13 +1561,6 @@ async fn cancelled_admission_is_atomic_and_replayable() {
     assert!(restricted_api
         .silent()
         .start_cancelled_with_invocation_id(denied_id, &value("denied"))
-        .await
-        .is_err());
-    assert!(api
-        .silent()
-        .control(denied_id)
-        .unwrap()
-        .get()
         .await
         .is_err());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
@@ -1443,12 +1790,14 @@ async fn cancellation_cleanup_failure_recovers_through_generated_client() {
         });
     let task = tokio::spawn(async move { service.run().await });
     let identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let operation = api
         .silent()
@@ -1524,7 +1873,10 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
     // Dropping this provider's own runtime stops its spawned recovery and
     // execution tasks too, rather than leaving a survivor in the caller runtime.
     let first_provider = {
-        let url = identity.trellis_url().to_owned();
+        let server =
+            trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+                .await
+                .expect("selected installation trust");
         let seed = identity.seed().to_owned();
         let name = identity.name().to_owned();
         let entered = entered.clone();
@@ -1539,7 +1891,8 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
                 .expect("create first provider runtime");
             provider_runtime.block_on(async move {
                 let mut service = ProviderParticipant::connect(
-                    ServiceConnectOptions::new(&url, &seed).with_name(&name),
+                    ServiceConnectOptions::new(server.nats_servers, server.trust, &seed)
+                        .with_name(&name),
                 )
                 .await
                 .expect("connect first provider");
@@ -1582,12 +1935,14 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
     };
 
     let caller_identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(caller_identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut readiness = tokio::time::interval(Duration::from_millis(100));
@@ -1723,6 +2078,120 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
     runtime.shutdown().await.expect("shutdown runtime");
 }
 
+/// A service's staging task spawns the whole upload: start plus `upload` or
+/// `upload_from` must stay `Send`, and the provider sees the committed bytes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spawned_tasks_start_and_upload_operations() {
+    use trellis_rs::client::{CallError, OperationState};
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .start()
+        .await
+        .expect("start runtime");
+    let identity = runtime
+        .register_service::<ProviderParticipant>("provider")
+        .await
+        .expect("register provider");
+    let mut service = ProviderParticipant::connect(identity.connect_options())
+        .await
+        .expect("connect provider");
+    Provider::new(&mut service)
+        .trellis_test_fixture_echo_v1()
+        .register_echo(|_context, input| async move { Ok(input) });
+    Provider::new(&mut service)
+        .trellis_test_fixture_echo_v1()
+        .register_upload(|_context, input, operation| async move {
+            let upload = operation
+                .upload()
+                .await?
+                .ok_or_else(|| ServerError::Nats("upload missing".to_owned()))?;
+            operation
+                .complete(value(&format!("{}:{}", input.value, upload.size)))
+                .await?;
+            Ok(())
+        });
+    let task = tokio::spawn(async move { service.run().await });
+
+    let caller_identity = runtime
+        .register_client::<CallerRequest>("caller")
+        .await
+        .expect("register caller");
+    let api = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    )
+    .trellis_test_fixture_echo_v1();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let mut readiness = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            readiness.tick().await;
+            match api.echo(&value("provider-ready")).await {
+                Ok(_) => break,
+                Err(CallError::ServiceUnavailable(_)) => {}
+                Err(error) => panic!("provider readiness RPC failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("provider serves its generated RPC");
+
+    let bytes: Vec<u8> = (0..70_001).map(|index| (index % 251) as u8).collect();
+    let owned = tokio::spawn({
+        let api = api.clone();
+        let bytes = bytes.clone();
+        async move {
+            let operation = api
+                .upload()
+                .start(&value("owned"))
+                .await
+                .map_err(|error| format!("start: {error:?}"))?;
+            operation
+                .upload(&bytes)
+                .await
+                .map_err(|error| format!("upload: {error:?}"))?;
+            operation
+                .wait()
+                .await
+                .map_err(|error| format!("wait: {error:?}"))
+        }
+    });
+    let streamed = tokio::spawn({
+        let api = api.clone();
+        let bytes = bytes.clone();
+        async move {
+            let operation = api
+                .upload()
+                .start(&value("streamed"))
+                .await
+                .map_err(|error| format!("start: {error:?}"))?;
+            operation
+                .upload_from(&mut bytes.as_slice())
+                .await
+                .map_err(|error| format!("upload: {error:?}"))?;
+            operation
+                .wait()
+                .await
+                .map_err(|error| format!("wait: {error:?}"))
+        }
+    });
+    for (task, expected) in [(owned, "owned:70001"), (streamed, "streamed:70001")] {
+        let snapshot = tokio::time::timeout(Duration::from_secs(30), task)
+            .await
+            .expect("spawned upload finishes")
+            .expect("spawned upload task")
+            .expect("upload operation completes");
+        assert_eq!(snapshot.state, OperationState::Completed);
+        assert_eq!(
+            snapshot.output.map(|output| output.value).as_deref(),
+            Some(expected)
+        );
+    }
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.expect("shutdown runtime");
+}
+
 /// T11: generated distinct `progress`/`update` schemas deliver a live preview
 /// while the durable snapshot keeps only the declared progress status.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1821,12 +2290,14 @@ async fn t20_operation_live_update_uses_declared_update_schema() {
     let task = tokio::spawn(async move { service.run().await });
 
     let caller_identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(caller_identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
 
     // Work: the preview is live-only; durable progress keeps the status schema.

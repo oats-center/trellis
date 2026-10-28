@@ -37,6 +37,27 @@ the receiving transport. Keyed lease renewal is a separate fence; failure
 cancels local work and prevents stale completion. Job execution and side effects
 are at least once.
 
+Ordinary service workers and job references reconstruct lifecycle history through
+the native `Jobs.History` RPC. The runtime derives the deployment from verified
+service authority, validates the current declared queue binding, and reads only
+that deployment's job subject from the existing `JOBS` stream. Requests never
+accept a deployment or namespace. Pages preserve original stream sequences and a
+fixed first-page upper watermark, with at most 128 entries per page; concurrent
+later publications are excluded from that reconstruction. This is an authorized
+read of the authoritative stream, not a projection or another history store.
+Users cannot use this service-private resource route. Shared broker endpoints
+`$JS.API.DIRECT.GET.JOBS` and `$JS.API.STREAM.MSG.GET.JOBS` remain denied to
+ordinary identities because their payload filters are not subject-level ACLs.
+Subject-addressed latest reads remain scoped to the deployment.
+
+Native queue publish/work subject tokens include the allocation incarnation.
+Detach and reattach preserve those subjects; explicit destruction followed by
+recreation assigns fresh ones. Delayed sourced work from a destroyed allocation
+cannot reach the replacement's durable consumer. Explicit detached-resource
+removal retains shared streams and the deployment's keyed bucket, purging only
+the selected queue's data through saved sequence cutoffs; delayed old purge
+requests cannot erase replacement keyed state.
+
 A keyed delivery that cannot acquire its active slot remains blocked before the
 handler starts. The worker maintains the broker delivery lease with progress
 ACKs, so capacity waiting neither consumes another delivery attempt nor causes
@@ -76,6 +97,20 @@ durable lifecycle remains authoritative. Confirmed JetStream publication is
 required before acknowledging source work. Both Rust and TypeScript lifecycle
 publishers await the broker acknowledgement; typed live updates use core NATS
 without requiring a durable stream.
+
+Keyed Created and Started lifecycle events carry concurrency metadata from the
+successful admission and slot-acquisition transitions. The Jobs projection uses
+that evidence to associate queued and active jobs with their key; `GetKey`
+requires the projection and coordinator membership to agree before returning.
+
+The projection trusts an event's subject, not its payload. NATS confines each
+deployment to its Auth-allocated `trellis.jobs.<namespace>.<queue>` prefix; the
+projector resolves that prefix through Auth resource evidence and projects only
+events whose service, queue, and job ID match it. Each event projects in its own
+savepoint: a permanently unprojectable event, such as one reusing another
+queue's job ID, is rejected and acknowledged alone, while a transient failure
+fails the batch unacknowledged so it redelivers in order. Timeline rows record
+their stream sequence, so redelivery after a lost acknowledgement is a no-op.
 
 Key paths compile to typed scalar accessors. Optional or nonscalar leaves are
 compile errors. Existing collision-safe key encoding and reject/coalesce/

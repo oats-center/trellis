@@ -1,0 +1,20 @@
+---
+title: "Trellis Concepts"
+description: "Deeper concepts behind Trellis, including platform boundaries, contract-driven authority, transport surfaces, resources, and generated APIs."
+---
+
+If you are new to Trellis, start with [What is Trellis?](/guides/overview).
+These concept pages go deeper on runtime authority, service boundaries, transport
+surfaces, resources, and generated APIs before you write a service, app, device,
+or CLI.
+
+- [Architecture](/guides/concepts/architecture): service categories, platform boundaries, and why APIs stay with the services that own them.
+- [Contracts](/guides/concepts/contracts): service and app contracts, contract identity, and generated artifacts.
+- [Participant grants](/guides/concepts/deployment-authority): installed participant revisions, deployments, effective authority, and runtime issuance.
+- [Communication](/guides/concepts/communication): RPCs, operations, events, live observations, and cross-contract dependencies.
+- [Authentication and authorization](/guides/concepts/authentication-and-authorization): principals, sessions, portals, approvals, and capabilities.
+- [Resources](/guides/concepts/resources): KV buckets, stores, public app state, and runtime streams.
+- [Files and transfers](/guides/concepts/files-and-transfers): public file APIs, service-owned stores, and operation-native byte transfer.
+- [Type system and errors](/guides/concepts/type-system-and-errors): schemas, validation, declared errors, `Result`, and expected failures.
+- [Devices and activation](/guides/concepts/devices-and-activation): preregistered devices, device deployments, activation portals, review policy, and online credentials.
+- [Jobs](/guides/concepts/jobs): service-private background execution and when to use operations instead.

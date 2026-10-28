@@ -14,7 +14,8 @@ frozen resolution metadata. Runtime JSON Schema is a validator projection only.
 
 - API identity is `<package>.<ApiName>@v<major>`.
 - Participant identity is `<package>.<lexical-path>`.
-- Capability identity is `<api-id>::<name>`.
+- Capability identity is `<package>.<ApiName>.v<major>:<area>.<action>`, for
+  example `trellis.auth.v1:users.edit`.
 - Resource identity is the owner binding, participant identity, kind, and local
   resource name.
 
@@ -37,10 +38,10 @@ wording. A capability declaration or approval does not itself confer runtime
 authority. The server derives and signs the exact selected permission atoms for
 the current revision and current policy ceiling.
 
-Capability approval is keyed by qualified capability ID and a consent digest of
-its description and consequence. Changing those words requires new approval;
-changing a title or the exact actions covered does not, provided newly selected
-actions remain within the approved capability and delegation ceiling. Public
+Capability approval is keyed by qualified capability ID, identity generation,
+and Auth's consent revision. Auth advances that revision when an accepted API
+changes the capability's `grants` text, which requires new approval. Changing
+its title or description, or the actions it allows, does not. Public
 actions remain selected exact actions, not anonymous wildcard grants.
 
 Live observations and Operation observation are declared through this same API/capability
@@ -52,10 +53,10 @@ not new IDL actions, capability atoms, or wire fields that an author selects,
 and a provider does not need its own caller Subscribe grant to implement a
 route.
 
-`GrantBinding` is the single current authority record. It stores exact grants,
-platform privileges, approval mode, approved capability fingerprints, approved
-resource commitments, and the delegation ceiling. Capability-mode approval and
-exact administrative grants remain distinct. Readiness reports missing required
+Authority is current Auth policy, not a stored per-participant record: user
+capabilities from roles, direct grants, and fresh OIDC mappings, intersected
+with an application's requested and approved capabilities, or a service or
+device deployment's selection. Readiness reports missing required
 capabilities/resources separately from temporary provider liveness.
 
 ## Participants and selection
@@ -64,8 +65,8 @@ Top-level participants are `service`, `device`, `app`, and `agent`. Only a
 device may contain one named optional or required `app` or `agent` companion.
 That companion is the device's lexical child, not an independently bootstrapped
 top-level participant. It is activated only through the parent device flow and
-uses a separate user-owned `GrantBinding`, ordinary login session, authorization
-context, resource bindings, and connection. Parent and child authority are never
+uses a separate user-owned OAuth grant, ordinary login session, session
+authority, resource bindings, and connection. Parent and child authority are never
 merged.
 
 Companion activation exposes server-computed child consent. The user submits a

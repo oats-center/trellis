@@ -141,6 +141,9 @@ fn map_query_error(error: JobsQueryError) -> ServerError {
                 ],
             ))
         }
-        other => ServerError::Nats(format!("jobs RPC query failed: {other}")),
+        other => {
+            tracing::error!(error = %other, "Jobs query failed");
+            ServerError::Nats(format!("jobs RPC query failed: {other}"))
+        }
     }
 }

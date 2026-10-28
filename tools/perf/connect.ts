@@ -8,13 +8,11 @@
 // Usage:
 //   TRELLIS_URL=http://127.0.0.1:3000 \
 //   TRELLIS_PROFILE_DIR=/path/to/already-signed-in/profile \
-//     deno run -A -c ts/deno.json tools/perf/connect.ts \
+//     node --experimental-transform-types tools/perf/connect.ts \
 //     --warmup 3 --runs 20 --asset-cache enabled \
 //     --output tools/perf/results/connect-current.json
+import { mkdir, writeFile } from "node:fs/promises";
 import { chromium, type Page, type Request, type Response } from "playwright";
-
-const REFRESH_PATH = "/auth/context/refresh";
-const READY_TEXT = "Connected: Trellis";
 
 type Options = {
   warmup: number;
@@ -23,7 +21,7 @@ type Options = {
   output: string;
 };
 
-type RefreshAttempt = {
+type TokenAttempt = {
   start: number;
   end: number | null;
   status: number | null;
@@ -35,8 +33,8 @@ type Sample = {
   run: number;
   warmup: boolean;
   navReadyMs: number | null;
-  contextRefreshMs: number | null;
-  refreshAttempts: number;
+  oauthTokenMs: number | null;
+  tokenAttempts: number;
   errors: string[];
 };
 
@@ -92,11 +90,12 @@ function percentile(values: number[], fraction: number): number | null {
   return sorted[Math.min(Math.max(rank - 1, 0), sorted.length - 1)];
 }
 
-async function collectRefreshAttempts(page: Page): Promise<RefreshAttempt[]> {
+async function collectTokenAttempts(page: Page): Promise<TokenAttempt[]> {
   return await page.evaluate(() => {
-    const state = (globalThis as { __connectAudit?: { refresh: RefreshAttempt[] } })
-      .__connectAudit;
-    return state?.refresh.map((attempt) => ({ ...attempt })) ?? [];
+    const state = (
+      globalThis as { __connectAudit?: { tokens: TokenAttempt[] } }
+    ).__connectAudit;
+    return state?.tokens.map((attempt) => ({ ...attempt })) ?? [];
   });
 }
 
@@ -107,9 +106,12 @@ async function measureSample(
   warmup: boolean,
 ): Promise<Sample> {
   const errors: string[] = [];
-  const onPageError = (error: Error) => errors.push(`pageerror: ${error.message}`);
+  const onPageError = (error: Error) =>
+    errors.push(`pageerror: ${error.message}`);
   const onRequestFailed = (request: Request) =>
-    errors.push(`requestfailed: ${request.url()} (${request.failure()?.errorText ?? "failed"})`);
+    errors.push(
+      `requestfailed: ${request.url()} (${request.failure()?.errorText ?? "failed"})`,
+    );
   const onResponse = (response: Response) => {
     if (response.status() >= 400) {
       errors.push(`http ${response.status()}: ${response.url()}`);
@@ -120,20 +122,13 @@ async function measureSample(
   page.on("response", onResponse);
   const started = performance.now();
   try {
-    await page.goto(consoleUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.waitForFunction(
-      (readyText) => {
-        const text = document.body ? document.body.innerText : "";
-        const overviewVisible = Array.from(document.querySelectorAll("a")).some((candidate) => {
-          const href = candidate.getAttribute("href") ?? "";
-          const label = (candidate.textContent ?? "").trim();
-          return label === "Overview" && href.endsWith("/admin") && candidate.getClientRects().length > 0;
-        });
-        return text.includes(readyText) && overviewVisible;
-      },
-      READY_TEXT,
-      { timeout: 60_000 },
-    );
+    await page.goto(consoleUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
+    await page
+      .locator('[data-testid="console-ready"]')
+      .waitFor({ state: "visible", timeout: 60_000 });
   } catch (error) {
     errors.push(`readiness: ${String(error)}`);
   }
@@ -142,34 +137,35 @@ async function measureSample(
   page.off("requestfailed", onRequestFailed);
   page.off("response", onResponse);
 
-  const attempts = await collectRefreshAttempts(page);
-  const successful = attempts.find((attempt) => attempt.ok && attempt.end !== null);
-  if (successful === undefined || successful.end === null) {
-    errors.push("refresh: no successful context refresh attempt observed");
-  }
+  const attempts = await collectTokenAttempts(page);
+  const successful = attempts.find(
+    (attempt) => attempt.ok && attempt.end !== null,
+  );
   return {
     run,
     warmup,
     navReadyMs,
-    contextRefreshMs:
+    oauthTokenMs:
       successful !== undefined && successful.end !== null
         ? successful.end - successful.start
         : null,
-    refreshAttempts: attempts.length,
+    tokenAttempts: attempts.length,
     errors,
   };
 }
 
-const options = parseArgs(Deno.args);
-const trellisUrl = Deno.env.get("TRELLIS_URL");
-const profileDir = Deno.env.get("TRELLIS_PROFILE_DIR");
+const options = parseArgs(process.argv.slice(2));
+const trellisUrl = process.env.TRELLIS_URL;
+const profileDir = process.env.TRELLIS_PROFILE_DIR;
 if (!trellisUrl) throw new Error("TRELLIS_URL is required");
 if (!profileDir) throw new Error("TRELLIS_PROFILE_DIR is required");
 const baseUrl = trellisUrl.replace(/\/$/, "");
 const consoleUrl = `${baseUrl}/console`;
 
 const samples: Sample[] = [];
-let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | null = null;
+let context: Awaited<
+  ReturnType<typeof chromium.launchPersistentContext>
+> | null = null;
 try {
   context = await chromium.launchPersistentContext(profileDir, {
     headless: false,
@@ -177,9 +173,9 @@ try {
   });
   const page = context.pages()[0] ?? (await context.newPage());
   await page.addInitScript(() => {
-    const state: { refresh: RefreshAttempt[] } = ((
-      globalThis as { __connectAudit?: { refresh: RefreshAttempt[] } }
-    ).__connectAudit = { refresh: [] });
+    const state: { tokens: TokenAttempt[] } = ((
+      globalThis as { __connectAudit?: { tokens: TokenAttempt[] } }
+    ).__connectAudit = { tokens: [] });
     const original = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
       const url =
@@ -188,11 +184,16 @@ try {
           : input instanceof Request
             ? input.url
             : String(input);
-      if (!url.includes("/auth/context/refresh")) {
+      if (!url.includes("/oauth/token")) {
         return await original(input, init);
       }
-      const attempt: RefreshAttempt = { start: performance.now(), end: null, status: null, ok: false };
-      state.refresh.push(attempt);
+      const attempt: TokenAttempt = {
+        start: performance.now(),
+        end: null,
+        status: null,
+        ok: false,
+      };
+      state.tokens.push(attempt);
       try {
         const response = await original(input, init);
         attempt.end = performance.now();
@@ -219,8 +220,8 @@ try {
     console.log(
       `run ${run + 1}/${total}${warmup ? " (warmup)" : ""}: ` +
         `nav_ready=${sample.navReadyMs?.toFixed(0) ?? "n/a"}ms ` +
-        `refresh=${sample.contextRefreshMs?.toFixed(0) ?? "n/a"}ms ` +
-        `attempts=${sample.refreshAttempts} ` +
+        `oauth_token=${sample.oauthTokenMs?.toFixed(0) ?? "n/a"}ms ` +
+        `attempts=${sample.tokenAttempts} ` +
         (sample.errors.length === 0 ? "ok" : `errors=${sample.errors.length}`),
     );
   }
@@ -230,17 +231,18 @@ try {
 
 const measured = samples.filter((sample) => !sample.warmup);
 const successfulMeasured = measured.filter(
-  (sample) =>
-    sample.errors.length === 0 &&
-    sample.navReadyMs !== null &&
-    sample.contextRefreshMs !== null,
+  (sample) => sample.errors.length === 0 && sample.navReadyMs !== null,
 );
-const navReadyValues = successfulMeasured.map((sample) => sample.navReadyMs as number);
-const refreshValues = successfulMeasured.map((sample) => sample.contextRefreshMs as number);
+const navReadyValues = successfulMeasured.map(
+  (sample) => sample.navReadyMs as number,
+);
+const tokenValues = successfulMeasured.flatMap((sample) =>
+  sample.oauthTokenMs === null ? [] : [sample.oauthTokenMs],
+);
 const report = {
   generatedAt: new Date().toISOString(),
   trellisUrl: baseUrl,
-  runtime: { os: Deno.build.os, arch: Deno.build.arch, deno: Deno.version.deno },
+  runtime: { os: process.platform, arch: process.arch, node: process.version },
   assetCache: options.assetCache,
   warmupRequested: options.warmup,
   runsRequested: options.runs,
@@ -250,24 +252,24 @@ const report = {
     p50Ms: percentile(navReadyValues, 0.5),
     p95Ms: percentile(navReadyValues, 0.95),
   },
-  contextRefresh: {
-    p50Ms: percentile(refreshValues, 0.5),
-    p95Ms: percentile(refreshValues, 0.95),
+  oauthToken: {
+    p50Ms: percentile(tokenValues, 0.5),
+    p95Ms: percentile(tokenValues, 0.95),
   },
   samples,
 };
 const output = options.output;
 const slash = output.lastIndexOf("/");
 if (slash > 0) {
-  await Deno.mkdir(output.slice(0, slash), { recursive: true });
+  await mkdir(output.slice(0, slash), { recursive: true });
 }
-await Deno.writeTextFile(output, JSON.stringify(report, null, 2));
+await writeFile(output, JSON.stringify(report, null, 2));
 console.log(`\nreport -> ${output}`);
 console.log(
   `nav_ready p50=${report.navReady.p50Ms?.toFixed(1) ?? "n/a"}ms ` +
     `p95=${report.navReady.p95Ms?.toFixed(1) ?? "n/a"}ms | ` +
-    `context_refresh p50=${report.contextRefresh.p50Ms?.toFixed(1) ?? "n/a"}ms ` +
-    `p95=${report.contextRefresh.p95Ms?.toFixed(1) ?? "n/a"}ms | ` +
+    `oauth_token p50=${report.oauthToken.p50Ms?.toFixed(1) ?? "n/a"}ms ` +
+    `p95=${report.oauthToken.p95Ms?.toFixed(1) ?? "n/a"}ms | ` +
     `measured ${report.measuredSucceeded}/${measured.length} valid`,
 );
-if (report.measuredFailed > 0) Deno.exit(1);
+if (report.measuredFailed > 0) process.exitCode = 1;

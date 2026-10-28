@@ -19,14 +19,18 @@ import {
   liveParseOffer,
   liveVerifyServerProof,
 } from "./protocol.ts";
-import type { PermissionAtom } from "../auth/protocol_wasm.ts";
-import type { AuthorizationProviderCache } from "../auth/authorization/provider_cache.ts";
+import type {
+  CatalogActionIdentity,
+  SessionRequest,
+} from "../auth/protocol_wasm.ts";
+import type { SessionAuthorityOwner } from "../auth/authority.ts";
 import type { LiveTelemetryOwner } from "./telemetry.ts";
 import {
   authorityLostEnd,
   authorityLostFrom,
   LiveAuthorityGuard,
   type LiveAuthorityLost,
+  type PinnedPeerIdentity,
 } from "./authority.ts";
 import {
   type LiveClock,
@@ -55,17 +59,20 @@ export type LiveProof = {
   iat: number;
   requestId: string;
   contextDigest: string;
+  request: SessionRequest;
+  requestProofDigest: string;
 };
 
 /** Independently resolved binding and identity for one live open. */
 export type LiveOpenAuthority = {
-  cache: AuthorizationProviderCache;
-  /** Selected provider deployment from the current installed binding. */
-  selectedProviderDeploymentId: string;
+  cache: SessionAuthorityOwner;
+  apiId: string;
   /** Exact descriptor-derived Subscribe or Observe permission atom. */
-  permission: PermissionAtom;
+  action: CatalogActionIdentity;
   /** Opener's actual current installed context digest. */
   localContextDigest: string;
+  /** For established Operation observation only; canonical new openings select no deployment. */
+  expectedDeploymentId?: string;
 };
 
 /** Host dependencies supplied by the owning connection. */
@@ -105,8 +112,11 @@ function proofHeaders(proof: LiveProof, sessionKey: string) {
   headers.set("proof", proof.proof);
   headers.set("iat", String(proof.iat));
   headers.set("request-id", proof.requestId);
+  headers.set("Trellis-Session-Request", JSON.stringify(proof.request));
   headers.set("authorization-context", proof.contextDigest);
   headers.set("session-key", sessionKey);
+  headers.set("Trellis-Api-Generation", proof.request.apiGeneration);
+  headers.set("Trellis-Accepted-Revision", proof.request.acceptedRevision);
   return headers;
 }
 
@@ -126,9 +136,8 @@ async function withTimeout<U>(
 ): Promise<U | undefined> {
   let clear: (() => void) | undefined;
   const timeout = new Promise<undefined>((resolve) => {
-    clear = clock.scheduleAt(
-      clock.nowMs() + timeoutMs,
-      () => resolve(undefined),
+    clear = clock.scheduleAt(clock.nowMs() + timeoutMs, () =>
+      resolve(undefined),
     );
   });
   try {
@@ -163,9 +172,9 @@ async function request(
     const received = await withTimeout(
       clock,
       Math.min(host.timeoutMs, remaining),
-      sub[Symbol.asyncIterator]().next().then((next) =>
-        next.done ? undefined : next.value
-      ),
+      sub[Symbol.asyncIterator]()
+        .next()
+        .then((next) => (next.done ? undefined : next.value)),
     );
     if (!received) {
       throw new LiveStreamError("setup_timeout", "live request timed out");
@@ -174,8 +183,7 @@ async function request(
       throw new TransportError({
         code: "trellis.request.unavailable",
         message: "Trellis could not reach the requested service.",
-        hint:
-          "Check that the target service is installed and reachable, then try again.",
+        hint: "Check that the target service is installed and reachable, then try again.",
         context: { subject, noResponders: true },
       });
     }
@@ -262,7 +270,11 @@ async function openLiveSession<T>(
     const retainedLocal = await LiveAuthorityGuard.retain(
       host.authority.cache,
       host.authority.localContextDigest,
-      { kind: "observer", permission: host.authority.permission },
+      {
+        kind: "observer",
+        apiId: host.authority.apiId,
+        action: host.authority.action,
+      },
     );
     localGuard = retainedLocal;
     const response = await request(host, requestSubject, body, deadline);
@@ -313,9 +325,12 @@ async function openLiveSession<T>(
     );
     permit.attach(() => {
       subscription.fence();
-      void subscription.close().orThrow().catch(() => {
-        // Connection teardown may prevent remote confirmation; cleanup is bounded.
-      });
+      void subscription
+        .close()
+        .orThrow()
+        .catch(() => {
+          // Connection teardown may prevent remote confirmation; cleanup is bounded.
+        });
     });
     void runPump(
       host,
@@ -327,18 +342,20 @@ async function openLiveSession<T>(
       deadline,
       retainedLocal,
       retainedProvider,
-    ).catch((error) => {
-      // Defensive: a pump rejection outside its own terminal paths must still
-      // commit one bounded end rather than surfacing as an unhandled promise.
-      core.commitEnd(
-        new LiveEnd(
-          "disconnected",
-          new LiveStreamError("disconnected", String(error)),
-        ),
-      );
-    }).finally(() => {
-      core.cleanupFinished();
-    });
+    )
+      .catch((error) => {
+        // Defensive: a pump rejection outside its own terminal paths must still
+        // commit one bounded end rather than surfacing as an unhandled promise.
+        core.commitEnd(
+          new LiveEnd(
+            "disconnected",
+            new LiveStreamError("disconnected", String(error)),
+          ),
+        );
+      })
+      .finally(() => {
+        core.cleanupFinished();
+      });
     return subscription;
   } catch (cause) {
     localGuard?.release();
@@ -351,22 +368,19 @@ async function openLiveSession<T>(
 /** Map one guard-retention failure into a bounded setup error. */
 function guardSetupError(lost: LiveAuthorityLost): LiveStreamError {
   const end = authorityLostEnd(lost);
-  return end.error ??
+  return (
+    end.error ??
     new LiveStreamError(
       lost === "expired"
         ? "authorization_expired"
         : "authorization_unavailable",
       `live authority is not usable: ${lost}`,
-    );
+    )
+  );
 }
 
 /** The opener's pinned local identity used to bind an offer's consumer tuple. */
-type OfferClaimLocal = {
-  connectionId: string;
-  sessionKey: string;
-  principalId: string;
-  participantId: string;
-};
+type OfferClaimLocal = PinnedPeerIdentity;
 
 /**
  * Verify the deployment and consumer claims of a parsed, proof-verified live
@@ -376,33 +390,23 @@ type OfferClaimLocal = {
  */
 export function verifyOfferClaims(args: {
   offer: LiveOfferWire;
-  selectedProviderDeploymentId: string | undefined;
   localContextDigest: string | undefined;
   local: OfferClaimLocal;
 }): void {
   const { offer, local } = args;
-  // The independently selected binding is the evidence that this deployment's
-  // participant implements the API; the offered provider deployment must be
-  // exactly that binding, never the offer's own claim.
-  if (
-    !args.selectedProviderDeploymentId ||
-    offer.provider.deploymentId !== args.selectedProviderDeploymentId
-  ) {
-    throw new LiveStreamError(
-      "protocol_error",
-      "offer provider is not the selected deployment for this API",
-    );
-  }
   // The offered consumer tuple must be the opener's actual current local
   // identity, resolved before the offer was accepted.
   if (
     !args.localContextDigest ||
-    offer.consumer.connectionId !== local.connectionId ||
-    offer.consumer.sessionKey !== encodeEventSubjectParameterToken(
-        local.sessionKey,
-      ) ||
+    offer.consumer.connectionId !== local.runtimeId ||
+    offer.consumer.sessionKey !==
+      encodeEventSubjectParameterToken(local.sessionPublicKey) ||
     offer.consumer.principalId !== local.principalId ||
-    offer.consumer.participantId !== local.participantId
+    Object.entries(local.binding).some(
+      ([key, value]) => Reflect.get(offer.consumer.binding, key) !== value,
+    ) ||
+    Object.keys(local.binding).length !==
+      Object.keys(offer.consumer.binding).length
   ) {
     throw new LiveStreamError(
       "protocol_error",
@@ -459,7 +463,7 @@ async function verifyOffer(
       "offer omitted or duplicated proof headers",
     );
   }
-  liveVerifyServerProof(
+  await liveVerifyServerProof(
     proof,
     contextDigest,
     response.subject,
@@ -478,28 +482,44 @@ async function verifyOffer(
   // Bind every advertised provider field to the verified signed context and
   // retain that evidence for the whole session.
   let providerGuard: LiveAuthorityGuard;
+  const provider = await authority.cache.peer(contextDigest);
   try {
+    const binding = provider.authority.binding;
+    if (
+      (binding.kind !== "service" && binding.kind !== "device") ||
+      binding.participantId !== offer.provider.participantId ||
+      binding.deploymentId !== offer.provider.deploymentId ||
+      (authority.expectedDeploymentId !== undefined &&
+        binding.deploymentId !== authority.expectedDeploymentId) ||
+      binding.instanceId !== offer.provider.instanceId
+    ) {
+      throw new LiveStreamError(
+        "protocol_error",
+        "offer provider binding mismatch",
+      );
+    }
     providerGuard = await LiveAuthorityGuard.retain(
       authority.cache,
       contextDigest,
       {
         kind: "peer-provider",
+        apiId: authority.apiId,
+        generation:
+          localGuard.apis.find((api) => api.apiId === authority.apiId)
+            ?.generation ?? "",
+        action: authority.action,
         expected: {
-          connectionId: offer.provider.connectionId,
-          sessionKey,
+          runtimeId: offer.provider.connectionId,
+          sessionPublicKey: sessionKey,
           principalId: offer.provider.principalId,
-          participantId: offer.provider.participantId,
-          ...(offer.provider.deploymentId
-            ? { deploymentId: offer.provider.deploymentId }
-            : {}),
-          ...(offer.provider.instanceId
-            ? { instanceId: offer.provider.instanceId }
-            : {}),
+          binding,
         },
       },
     );
   } catch (error) {
-    throw guardSetupError(authorityLostFrom(error) ?? "coverage_lost");
+    throw guardSetupError(authorityLostFrom(error) ?? "unavailable");
+  } finally {
+    provider.release();
   }
   try {
     const clock = host.clock ?? productionLiveClock;
@@ -509,12 +529,10 @@ async function verifyOffer(
         "live opening reservation elapsed",
       );
     }
-    // The provider deployment is the independently selected binding, never the
-    // offer's own claim. The offered consumer tuple must be the opener's actual
-    // local identity, resolved from the retained local authority.
+    // Any provider certified for this logical API may answer the opening.
+    // The established session then pins that authenticated owner's identity.
     verifyOfferClaims({
       offer,
-      selectedProviderDeploymentId: authority.selectedProviderDeploymentId,
       localContextDigest: authority.localContextDigest,
       local: localGuard.identity,
     });
@@ -581,7 +599,8 @@ async function verifyOffer(
       );
     }
     if (
-      !Number.isSafeInteger(advertised) || advertised <= 0 ||
+      !Number.isSafeInteger(advertised) ||
+      advertised <= 0 ||
       advertised > localCeiling
     ) {
       throw new LiveStreamError(
@@ -617,7 +636,8 @@ class MsgIngress {
   push(msg: Msg): boolean {
     if (this.#queue.length + 1 > C.windowFrames + 8) return false;
     if (
-      this.#bytes + msg.data.length > C.windowBytes + 8 * C.maxControlBodyBytes
+      this.#bytes + msg.data.length >
+      C.windowBytes + 8 * C.maxControlBodyBytes
     ) {
       return false;
     }
@@ -668,10 +688,10 @@ async function runPump<T>(
   let changeResolvers = Promise.withResolvers<void>();
   let controlContextDigest = localGuard.contextDigest;
   const unsubscribeLocal = localGuard.subscribeChanges(() =>
-    changeResolvers.resolve()
+    changeResolvers.resolve(),
   );
   const unsubscribePeer = providerGuard.subscribeChanges(() =>
-    changeResolvers.resolve()
+    changeResolvers.resolve(),
   );
   const ingress = new MsgIngress();
   let subscription: Subscription | undefined;
@@ -748,7 +768,8 @@ async function runPump<T>(
         providerGuard,
       );
       if (
-        response && response.kind === "ack" &&
+        response &&
+        response.kind === "ack" &&
         response.body.state !== "closed"
       ) {
         activated = true;
@@ -782,8 +803,7 @@ async function runPump<T>(
     // One logical credit control outstanding at a time: retries reuse its
     // identical body and sequence, and newer consumption is coalesced.
     let pendingCredit:
-      | { seq: string; received: string; consumed: string }
-      | undefined;
+      { seq: string; received: string; consumed: string } | undefined;
     while (true) {
       core.commitDrainIfComplete();
       if (core.committedEnd()) return;
@@ -879,7 +899,10 @@ async function runPump<T>(
         if (await authorityFence()) return;
         if (localGuard.contextDigest !== controlContextDigest) {
           controlContextDigest = localGuard.contextDigest;
-          if (!pendingCredit) {
+          // Credit is sent only once active. Taking a control sequence while
+          // activating would leave a gap the activation pulse cannot cross;
+          // that pulse is already signed under the new context.
+          if (!pendingCredit && core.phase === "active") {
             pendingCredit = {
               seq: nextSeq(session).toString(),
               received: core.receivedSeq().toString(),
@@ -1056,7 +1079,8 @@ async function runPump<T>(
           providerGuard,
         );
         if (
-          response && response.kind === "ack" &&
+          response &&
+          response.kind === "ack" &&
           response.body.state === "active"
         ) {
           if (core.phase === "activating") {
@@ -1095,12 +1119,12 @@ async function runPump<T>(
         );
         const end = frame.terminal.error
           ? new LiveEnd(
-            frame.terminal.reason,
-            new LiveStreamError(
-              frame.terminal.error.code,
-              frame.terminal.error.message,
-            ),
-          )
+              frame.terminal.reason,
+              new LiveStreamError(
+                frame.terminal.error.code,
+                frame.terminal.error.message,
+              ),
+            )
           : new LiveEnd(frame.terminal.reason);
         if (end.isComplete()) {
           core.setPendingEnd(end);
@@ -1168,10 +1192,10 @@ async function verifyProviderFrame(
   const sessionKey = singletonHeader(msg.headers, "session-key");
   const proof = singletonHeader(msg.headers, "trellis-live-proof");
   if (!proof || !contextDigest || !sessionKey) return false;
-  if (sessionKey !== providerGuard.identity.sessionKey) return false;
+  if (sessionKey !== providerGuard.identity.sessionPublicKey) return false;
   if (sessionId !== offer.sessionId) return false;
   try {
-    liveVerifyServerProof(
+    await liveVerifyServerProof(
       proof,
       contextDigest,
       msg.subject,
@@ -1224,9 +1248,10 @@ async function controlAttempt(
   // An explicit deadline bounds the opening/close budget. Post-activation
   // controls (credit, pulse, end-ack) pass no absolute deadline: the opening
   // reservation must not expire a session that is already active.
-  const remaining = deadlineMs === undefined
-    ? Number.POSITIVE_INFINITY
-    : deadlineMs - clock.nowMs();
+  const remaining =
+    deadlineMs === undefined
+      ? Number.POSITIVE_INFINITY
+      : deadlineMs - clock.nowMs();
   if (remaining <= 0) return failed("close_budget_elapsed");
   const sub = host.nats.subscribe(reply);
   try {
@@ -1238,9 +1263,9 @@ async function controlAttempt(
     const received = await withTimeout(
       clock,
       Math.min(host.timeoutMs, remaining),
-      sub[Symbol.asyncIterator]().next().then((next) =>
-        next.done ? undefined : next.value
-      ),
+      sub[Symbol.asyncIterator]()
+        .next()
+        .then((next) => (next.done ? undefined : next.value)),
     );
     if (!received) return failed("reply_timeout_or_subscription_ended");
     const contextDigest = singletonHeader(
@@ -1252,11 +1277,11 @@ async function controlAttempt(
     if (!contextDigest || !sessionKey || !proofHeader) {
       return failed("reply_missing_proof_headers");
     }
-    if (sessionKey !== providerGuard.identity.sessionKey) {
+    if (sessionKey !== providerGuard.identity.sessionPublicKey) {
       return failed("reply_provider_identity_mismatch");
     }
     try {
-      liveVerifyServerProof(
+      await liveVerifyServerProof(
         proofHeader,
         contextDigest,
         received.subject,
@@ -1351,24 +1376,29 @@ async function closeExchange<T>(
       },
     );
     if (response) {
-      lastFailure = response.kind === "error"
-        ? `owner_error_${response.body.code}`
-        : `owner_state_${response.body.state}`;
+      lastFailure =
+        response.kind === "error"
+          ? `owner_error_${response.body.code}`
+          : `owner_state_${response.body.state}`;
     }
     // Only a verified matching closed result establishes remote confirmation.
     if (
-      response && response.kind === "ack" && response.body.state === "closed"
+      response &&
+      response.kind === "ack" &&
+      response.body.state === "closed"
     ) {
-      cleanup = response.body.cleanup === "complete"
-        ? "complete"
-        : response.body.cleanup === "incomplete"
-        ? "incomplete"
-        : "unknown";
+      cleanup =
+        response.body.cleanup === "complete"
+          ? "complete"
+          : response.body.cleanup === "incomplete"
+            ? "incomplete"
+            : "unknown";
       remote = "confirmed";
       break;
     }
     if (
-      response && response.kind === "error" &&
+      response &&
+      response.kind === "error" &&
       response.body.code === "session_not_found"
     ) {
       break;

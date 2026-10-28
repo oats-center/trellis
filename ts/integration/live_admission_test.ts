@@ -10,36 +10,26 @@
 import { headers as natsHeaders, type Msg } from "@nats-io/nats-core";
 import { credsAuthenticator } from "@nats-io/nats-core";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
-import { assert } from "@std/assert";
-import { join } from "@std/path";
-import { TrellisClient } from "@oatscenter/trellis";
-import { participants as webParticipants } from "trellis-web-generated";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
+import { join } from "node:path";
+import type { SessionRequest } from "@oatscenter/trellis/auth";
+import { connectNativeClient } from "@oatscenter/trellis/native";
+import { ulid } from "ulid";
+import { apis as webApis } from "../../web/trellis/index.js";
+import { apps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { withTrellisRuntime } from "./_support/runtime.ts";
 import {
-  issueRawClientConnection,
-  observeClientConnection,
-  type RawClientConnection,
+  admitRawNativeClient,
+  type RawNativeConnection,
 } from "./_support/client_session.ts";
 
 const HEALTH_API = "trellis.health@v1";
-const HEALTH_DEPLOYMENT = "dep_trellis_health_runtime";
-const CONSOLE = webParticipants.Console.participant;
+const NATIVE_REQUEST = apps.Observer.request;
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
-
-function b64url(value: string): string {
-  return btoa(String.fromCharCode(...new TextEncoder().encode(value)))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/u, "");
-}
-
-function liveBaseSubject(): string {
-  return `live.v1.route.${b64url(HEALTH_API)}.${
-    b64url(HEALTH_DEPLOYMENT)
-  }.Watch`;
-}
 
 /**
  * A fresh destination outside the caller's inbox prefix. The health service
@@ -47,7 +37,7 @@ function liveBaseSubject(): string {
  * must use a quiet subject to distinguish reflection from ordinary traffic.
  */
 function foreignReplySubject(): string {
-  return `live.v1.data.p07.${crypto.randomUUID().replaceAll("-", "")}`;
+  return `live.v1.data.p07.${ulid()}`;
 }
 
 function nonce(): string {
@@ -59,26 +49,30 @@ function nonce(): string {
 }
 
 function openBody(): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({
-    format: "trellis.live.v1",
-    type: "open",
-    openId: nonce(),
-    receiveMaxPayloadBytes: 1_048_576,
-    input: {},
-  }));
+  return new TextEncoder().encode(
+    JSON.stringify({
+      format: "trellis.live.v1",
+      type: "open",
+      openId: nonce(),
+      receiveMaxPayloadBytes: 1_048_576,
+      input: {},
+    }),
+  );
 }
 
 function closeControlBody(sessionId: string): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify({
-    format: "trellis.live.v1",
-    type: "control",
-    sessionId,
-    controlSeq: "1",
-    action: "close",
-    reason: "cancelled",
-    receivedSeq: "0",
-    consumedSeq: "0",
-  }));
+  return new TextEncoder().encode(
+    JSON.stringify({
+      format: "trellis.live.v1",
+      type: "control",
+      sessionId,
+      controlSeq: "1",
+      action: "close",
+      reason: "cancelled",
+      receivedSeq: "0",
+      consumedSeq: "0",
+    }),
+  );
 }
 
 /** First message on a subscription iterator within a bounded wait, or undefined. */
@@ -87,38 +81,45 @@ function firstWithin(
   timeoutMs: number,
 ): Promise<Msg | undefined> {
   return Promise.race([
-    iterator.next().then((next) => next.done ? undefined : next.value),
+    iterator.next().then((next) => (next.done ? undefined : next.value)),
     new Promise<undefined>((resolve) =>
-      setTimeout(() => resolve(undefined), timeoutMs)
+      setTimeout(() => resolve(undefined), timeoutMs),
     ),
   ]);
 }
 
 /** Signs one live request body with the caller's ordinary issued proof. */
 async function signedHeaders(
-  session: RawClientConnection,
+  session: RawNativeConnection,
   subject: string,
   reply: string,
   body: Uint8Array,
 ) {
   const iat = session.auth.currentIat();
-  const requestId = crypto.randomUUID();
-  const payloadHash = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", Uint8Array.from(body)),
-  );
-  const proof = await session.auth.createProof(
+  const requestId = ulid();
+  const api = session.authority.apis.find((api) => api.apiId === HEALTH_API);
+  assert(api);
+  const request: SessionRequest = {
+    authorityDigest: session.contextDigest,
+    apiId: api.apiId,
+    apiGeneration: api.generation,
+    acceptedRevision: api.acceptedRevision,
+    action: "Watch",
     subject,
-    payloadHash,
-    reply,
+    replySubject: reply,
     requestId,
-    iat,
-  );
+    issuedAt: iat,
+  };
+  const { proof } = await session.auth.createProof(request, body);
   const headers = natsHeaders();
   headers.set("proof", proof);
   headers.set("iat", String(iat));
   headers.set("request-id", requestId);
   headers.set("authorization-context", session.contextDigest);
   headers.set("session-key", session.auth.sessionKey);
+  headers.set("Trellis-Session-Request", JSON.stringify(request));
+  headers.set("Trellis-Api-Generation", api.generation);
+  headers.set("Trellis-Accepted-Revision", api.acceptedRevision);
   return headers;
 }
 
@@ -152,59 +153,41 @@ async function firstLiveOfferWithin(
   }
 }
 
-/** Registers and connects one ordinary Console caller plus its issued session. */
-async function consoleCaller(runtime: Runtime, name: string) {
-  const key = await runtime.registerClient({ name, contract: CONSOLE });
-  const client = await TrellisClient.connect({
-    name,
-    trellisUrl: runtime.trellisUrl,
-    participant: CONSOLE,
-    ...runtime.clientAuth(key),
-  }).orThrow();
-  const observed = await observeClientConnection(runtime, key);
-  return { client, key, observed };
-}
-
 /** Opens a privileged ordinary connection for observation and injection. */
 async function platformConnection(runtime: Runtime): Promise<NatsConnection> {
   return await connect({
     servers: runtime.natsUrl,
     authenticator: credsAuthenticator(
-      await Deno.readFile(
+      await readFile(
         join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
       ),
     ),
   });
 }
 
-Deno.test("P07 a signed open with a foreign reply is dropped without reflection", async () => {
+test("P07 a signed open with a foreign reply is dropped without reflection", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const { client, key, observed } = await consoleCaller(
-      runtime,
-      "p07-caller",
-    );
-    const session = await issueRawClientConnection(
-      runtime,
-      key,
-      observed.loginSessionId,
+    const session = await admitRawNativeClient(
+      await runtime.registerClient({
+        name: "p07-caller",
+        contract: NATIVE_REQUEST,
+      }),
     );
 
     // The caller's own issued connection injects the request, so it is
     // admitted as the caller. A privileged ordinary connection observes the
     // foreign destination, which the caller's ACL cannot subscribe to.
-    const callerNats = await connect({
-      servers: runtime.natsUrl,
-      authenticator: session.authenticator,
-    });
+    const callerNats = session.nc;
     const observer = await platformConnection(runtime);
-    const base = liveBaseSubject();
+    const base = webApis.health.API.actions["live:Watch"].subject;
     const foreign = foreignReplySubject();
     try {
-      const foreignIterator = observer.subscribe(foreign)
+      const foreignIterator = observer
+        .subscribe(foreign)
         [Symbol.asyncIterator]();
-      const inboxIterator = observer.subscribe(
-        `${session.inboxPrefix}.p07`,
-      )[Symbol.asyncIterator]();
+      const inboxIterator = observer
+        .subscribe(`${session.inboxPrefix}.p07`)
+        [Symbol.asyncIterator]();
       await callerNats.flush();
       await observer.flush();
 
@@ -247,23 +230,33 @@ Deno.test("P07 a signed open with a foreign reply is dropped without reflection"
     } finally {
       await callerNats.close().catch(() => undefined);
       await observer.close().catch(() => undefined);
-      await client.connection.close().catch(() => undefined);
     }
   });
 });
 
-Deno.test("P08 a foreign principal's session control is denied and the owner continues", async () => {
+test("P08 another authenticated runtime cannot close the owner's observation", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const owner = await consoleCaller(runtime, "p08-owner");
+    const login = await runtime.registerClient({
+      name: "p08-owner",
+      contract: NATIVE_REQUEST,
+    });
+    const owner = await connectNativeClient({
+      ...login,
+      request: NATIVE_REQUEST,
+    }).orThrow();
+    const own = login.session.auth.authorityOwner?.own();
+    assert(own);
+    const inboxPrefix = own.authority.inboxPrefix;
+    own.release();
     const observer = await platformConnection(runtime);
-    const offerIterator = observer.subscribe(
-      `${owner.observed.inboxPrefix}.>`,
-    )[Symbol.asyncIterator]();
+    const offerIterator = observer
+      .subscribe(`${inboxPrefix}.>`)
+      [Symbol.asyncIterator]();
     await observer.flush();
 
     // The real owner opens the built-in Health feed; the observer captures the
     // offer to learn the session and control route.
-    const feed = await owner.client.healthWatch({}).orThrow();
+    const feed = await owner.healthWatch({}).orThrow();
     const offer = await firstLiveOfferWithin(offerIterator, 10_000);
     assert(offer, "the owner offer must be observable");
     assert(
@@ -275,22 +268,17 @@ Deno.test("P08 a foreign principal's session control is denied and the owner con
     // control: a prepared session is not an active observation.
     const ownerIterator = feed[Symbol.asyncIterator]();
     const firstFrame = await ownerIterator.next();
-    assert(
-      !firstFrame.done,
-      "the owner must receive a real activation frame",
-    );
+    assert(!firstFrame.done, "the owner must receive a real activation frame");
 
-    // A different Console principal signs a close control for the owner session.
-    const intruder = await consoleCaller(runtime, "p08-intruder");
-    const intruderSession = await issueRawClientConnection(
-      runtime,
-      intruder.key,
-      intruder.observed.loginSessionId,
+    // A different admitted runtime must not control this session, even when
+    // both ordinary logins belong to the same administrator.
+    const intruderSession = await admitRawNativeClient(
+      await runtime.registerClient({
+        name: "p08-intruder",
+        contract: NATIVE_REQUEST,
+      }),
     );
-    const intruderNats = await connect({
-      servers: runtime.natsUrl,
-      authenticator: intruderSession.authenticator,
-    });
+    const intruderNats = intruderSession.nc;
     try {
       const intruderInbox = `${intruderSession.inboxPrefix}.p08`;
       const control = closeControlBody(offer.sessionId);
@@ -307,12 +295,12 @@ Deno.test("P08 a foreign principal's session control is denied and the owner con
 
       // The owner's observation must survive the foreign control: an unrelated
       // RPC still succeeds and the session is not closed.
-      const unrelated = await owner.client.sessionsList({}).orThrow();
+      const unrelated = await owner.jobsSummary({}).orThrow();
       assert(unrelated !== undefined, "an unrelated RPC must still succeed");
       const settled = await Promise.race([
         feed.closed.then(() => "closed" as const),
         new Promise<"open">((resolve) =>
-          setTimeout(() => resolve("open"), 4_000)
+          setTimeout(() => resolve("open"), 4_000),
         ),
       ]);
       assert(
@@ -327,8 +315,7 @@ Deno.test("P08 a foreign principal's session control is denied and the owner con
       } catch {
         // The owner feed may already be settling after the assertion.
       }
-      await intruder.client.connection.close().catch(() => undefined);
-      await owner.client.connection.close().catch(() => undefined);
+      await owner.connection.close().catch(() => undefined);
     }
   });
 });

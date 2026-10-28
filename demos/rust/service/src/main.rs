@@ -1,3 +1,4 @@
+use service_trellis::participants::demo_rust_service_service::resources::RefreshSiteSummaryResult;
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
@@ -22,13 +23,17 @@ struct Args {
     #[arg(long)]
     contract: bool,
 
-    /// Trellis HTTP base URL for authenticated service bootstrap.
+    /// Selected Trellis OAuth origin for authenticated installation discovery.
     #[arg(long, env = "TRELLIS_URL")]
     trellis_url: Option<String>,
 
-    /// Base64url service instance seed for authenticated bootstrap.
+    /// Base64url provisioned service identity seed.
     #[arg(long, env = "TRELLIS_SEED")]
     seed: Option<String>,
+
+    /// Private installation CA to trust, such as a Trellis-generated CA.
+    #[arg(long, env = "TRELLIS_CA_CERTIFICATE")]
+    ca_certificate: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -59,8 +64,11 @@ async fn main() -> anyhow::Result<()> {
         _ => anyhow::bail!("--trellis-url and --seed must be provided together"),
     };
 
+    let server =
+        trellis_rs::auth::discover_native_oauth(&trellis_url, args.ca_certificate.as_slice())
+            .await?;
     let mut runtime = Participant::connect(
-        ServiceConnectOptions::new(&trellis_url, &seed)
+        ServiceConnectOptions::new(server.nats_servers, server.trust, &seed)
             .with_name("rust-field-ops-demo")
             .with_timeout_ms(REQUEST_TIMEOUT_MS),
     )
@@ -73,7 +81,9 @@ async fn main() -> anyhow::Result<()> {
 
     let assignments = Arc::new(sample_assignments());
     let reports = Arc::new(Mutex::new(Vec::<ReportRecord>::new()));
-    let api_client = client.demo_service_fieldops_v1();
+    let api_client = service_trellis::apis::demo_service_fieldops_v1::Client::from_generated(
+        runtime.generated_client(),
+    );
 
     {
         let mut provider = Provider::new(&mut runtime);
@@ -84,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
                     let sites = sites.clone();
                     async move {
                         let site = refresh_site(&sites, &job.payload().site_id).await?;
-                        Ok::<_, JobProcessError<String>>(service_trellis::participants::demo_rust_service_service::resources::RefreshSiteSummaryResult {
+                        Ok::<_, JobProcessError<String>>(RefreshSiteSummaryResult {
                             refresh_id: format!("refresh-{}", job.context().request_id),
                             site,
                             status: "completed".into(),

@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 use trellis_rs::{generated::Codec, jobs::types::Job};
 use trellis_runtime_apis::types::{
-    Bytes, JobsCancelResponsejob, JobsDismissDLQResponsejob, JobsInspectResponsejob,
-    JobsListDLQResponseentriesItem, JobsListServicesResponseentriesItemworkersItem,
-    JobsReplayDLQResponsejob, JobsRetryResponsejob,
+    Bytes, JobsCancelResponseJob, JobsDismissDLQResponseJob, JobsInspectResponseJob,
+    JobsListDLQResponseEntriesItem, JobsListServicesResponseEntriesItemWorkersItem,
+    JobsReplayDLQResponseJob, JobsRetryResponseJob,
 };
 
 use crate::storage::JobProjectionMetadata;
@@ -13,7 +13,7 @@ use super::JobsQueryError;
 
 pub(super) fn worker_presence_to_wire(
     worker: &WorkerPresenceRecord,
-) -> JobsListServicesResponseentriesItemworkersItem {
+) -> JobsListServicesResponseEntriesItemWorkersItem {
     decode_wire(
         json!({
             "concurrency": worker.concurrency,
@@ -41,32 +41,32 @@ macro_rules! job_mapper {
 
 job_mapper!(
     job_to_dlq_item,
-    JobsListDLQResponseentriesItem,
+    JobsListDLQResponseEntriesItem,
     "job dlq list item"
 );
 job_mapper!(
     job_to_inspect_item,
-    JobsInspectResponsejob,
+    JobsInspectResponseJob,
     "job inspect response"
 );
 job_mapper!(
     job_to_cancel_item,
-    JobsCancelResponsejob,
+    JobsCancelResponseJob,
     "job cancel response"
 );
 job_mapper!(
     job_to_retry_item,
-    JobsRetryResponsejob,
+    JobsRetryResponseJob,
     "job retry response"
 );
 job_mapper!(
     job_to_replay_item,
-    JobsReplayDLQResponsejob,
+    JobsReplayDLQResponseJob,
     "job replay dlq response"
 );
 job_mapper!(
     job_to_dismiss_item,
-    JobsDismissDLQResponsejob,
+    JobsDismissDLQResponseJob,
     "job dismiss dlq response"
 );
 

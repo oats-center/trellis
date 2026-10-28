@@ -56,8 +56,16 @@ Rules:
 - values are opaque bytes plus small metadata, not typed JSON records
 - services discover stores through normal resource bindings rather than through
   cloud-management credentials
-- deployment reconciliation creates, updates, or removes Trellis-owned stores
-  and records observed resource evidence used by context issuance
+- admitted Store writers may purge chunks only in their allocated Object Store
+  streams (including their deployment's Operation staging Store). This supports
+  ordinary object deletion and replacement, not stream/resource destruction;
+  it grants neither KV purge nor access to another owner's Store.
+- deployment reconciliation creates, updates, or detaches Trellis-owned stores
+  and records observed resource evidence used by context issuance; omission,
+  Disable, and deployment Remove retain allocations and data. Permanent deletion
+  requires an explicit administrator action against a detached allocation with
+  expected revision and verified provider ownership. The native owner implements
+  this manual removal for KV and Store allocations.
 
 An IDL `store` declaration is intended for service-local and service-owned
 binary data. It is not a shared public data plane and it does not change the

@@ -1,14 +1,18 @@
 // Shared console acceptance fixtures and assertions. Real runtime and real
 // generated client only: never inject authorization or fake an RPC response.
 
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import type { Page } from "playwright";
 import { TrellisService } from "@oatscenter/trellis/service";
+import { codecs } from "@oatscenter/trellis/generated";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { types } from "../packages/trellis-testkit/trellis/index.js";
 import { openConsole } from "./browser_test_support.ts";
+import { NatsResponseGate } from "./nats_response_gate.ts";
 /**
  * Opens the console as the harness-created administrator. Ensures the
  * first-administrator bootstrap through the real harness workflow first, so a
@@ -32,7 +36,7 @@ export function fixtureName(label: string): string {
 
 /** Identifiers returned by real seed operations, never guessed. */
 export type SeededService = {
-  deploymentId: string;
+  deploymentId: ReturnType<typeof codecs.ulid.decode>;
   displayName: string;
 };
 
@@ -41,25 +45,6 @@ export type SeededServiceWithResources = SeededService & {
   /** Stops the connected provider so its socket cannot outlive the runtime. */
   stop: () => Promise<void>;
 };
-
-/** Creates a service deployment profile with no installed participant. */
-export async function seedServiceWithoutParticipant(
-  runtime: TrellisTestRuntime,
-  label = "no-participant",
-): Promise<SeededService> {
-  const displayName = fixtureName(label);
-  const created = await runtime.callAdminRpc("authDeploymentsCreate", {
-    displayName,
-    expiresAt: null,
-    idempotencyKey: ulid(),
-    kind: "service",
-    participantId: null,
-    portalId: null,
-    requiresDeviceDelegation: false,
-    reviewMode: null,
-  });
-  return { deploymentId: created.deployment.deploymentId, displayName };
-}
 
 /**
  * Creates and applies a service deployment whose participant declares no
@@ -70,15 +55,22 @@ export async function seedServiceWithoutResources(
   label = "no-resources",
 ): Promise<SeededService> {
   const displayName = fixtureName(label);
-  await runtime.deployments.create({ id: displayName, kind: "service" });
-  const applied = await runtime.contracts.apply({
-    deployment: displayName,
-    contract: participants.OperationProvider.participant,
+  await runtime.contracts.install({
+    contract: participants.EchoProvider.participant,
   });
-  if (!applied.deploymentId) {
-    throw new Error("deployment apply returned no deployment ID");
-  }
-  return { deploymentId: applied.deploymentId, displayName };
+  const created = await runtime.callAdminRpc("authDeploymentsCreate", {
+    title: displayName,
+    kind: "service",
+    participantId: participants.EchoProvider.participant.identity,
+    packageEvidence: types.AuthPackageEvidenceCodec.decode(
+      participants.EchoProvider.participant.packageEvidence,
+    ),
+    // Console tests seed this beside the resource Provider, which serves the
+    // same API.
+    acknowledgeSharedApis: true,
+    idempotencyKey: ulid(),
+  });
+  return { deploymentId: created.deployment.deploymentId, displayName };
 }
 
 /**
@@ -91,27 +83,30 @@ export async function seedServiceWithoutResources(
   label = "resources",
 ): Promise<SeededServiceWithResources> {
   const displayName = fixtureName(label);
-  await runtime.deployments.create({ id: displayName, kind: "service" });
   const key = await runtime.registerService({
     name: displayName,
     contract: participants.Provider.participant,
     deployment: displayName,
+    acknowledgeSharedApis: true,
   });
   const service = await TrellisService.connect({
-    trellisUrl: runtime.trellisUrl,
+    trellisUrl: runtime.oauthIssuer,
     participant: participants.Provider.participant,
     name: displayName,
     seed: key.seed,
   }).orThrow();
   void service.wait().catch(() => {});
-  await runtime.waitFor(async () => {
-    const detail = await runtime.callAdminRpc("authDeploymentsGet", {
-      deploymentId: key.deploymentId,
-    });
-    return detail.resources.length > 0 ? true : undefined;
-  }, { timeoutMs: 30_000 });
+  await runtime.waitFor(
+    async () => {
+      const detail = await runtime.callAdminRpc("authResourcesList", {
+        ownerId: codecs.ulid.decode(key.deploymentId),
+      });
+      return detail.items.length > 0 ? true : undefined;
+    },
+    { timeoutMs: 30_000 },
+  );
   return {
-    deploymentId: key.deploymentId,
+    deploymentId: codecs.ulid.decode(key.deploymentId),
     displayName,
     // Browser tests must stop this before their context closes; otherwise the
     // live provider socket reconnects against a dead runtime and surfaces an
@@ -124,69 +119,104 @@ export async function seedServiceWithoutResources(
 export async function seedDeviceDeployment(
   runtime: TrellisTestRuntime,
   label = "device",
-  reviewMode: "none" | "required" = "none",
 ): Promise<SeededService> {
   const displayName = fixtureName(label);
+  await runtime.contracts.install({
+    contract: participants.ChildProvider.participant,
+  });
+  await runtime.contracts.install({
+    contract: participants.Device.participant,
+  });
   const created = await runtime.callAdminRpc("authDeploymentsCreate", {
-    displayName,
-    expiresAt: null,
+    title: displayName,
     idempotencyKey: ulid(),
     kind: "device",
-    participantId: null,
-    portalId: null,
-    requiresDeviceDelegation: false,
-    reviewMode: new TextEncoder().encode(JSON.stringify(reviewMode)),
+    participantId: participants.Device.participant.identity,
+    packageEvidence: types.AuthPackageEvidenceCodec.decode(
+      participants.Device.participant.packageEvidence,
+    ),
   });
   return { deploymentId: created.deployment.deploymentId, displayName };
 }
 
 /**
- * Creates and applies a device deployment with the fixture Device participant,
- * so it can actually be provisioned. Resolves the server-allocated deployment
- * ID through the runtime's own name-to-ID mapping and returns it.
+ * Captures browser errors except verified standard OAuth DPoP nonce challenges.
+ * Token responses pass through unchanged after inspecting the real server body,
+ * before automatic navigation can discard Chromium's response-body cache.
  */
-export async function seedProvisionableDeviceDeployment(
-  runtime: TrellisTestRuntime,
-  label = "device",
-  reviewMode: "none" | "required" = "none",
-): Promise<SeededService> {
-  const displayName = fixtureName(label);
-  await runtime.deployments.create({
-    id: displayName,
-    kind: "device",
-    reviewMode,
-  });
-  // The fixture Device participant has a companion, so the companion
-  // definition must be installed before the device can be applied.
-  await runtime.contracts.install({
-    contract: participants.Device.Companion.participant,
-  });
-  await runtime.contracts.apply({
-    deployment: displayName,
-    contract: participants.Device.participant,
-  });
-  // The runtime resolves the name; the response carries the allocated ID.
-  const provisioned = await runtime.devices.provision({
-    deploymentId: displayName,
-    idempotencyKey: ulid(),
-    identityPublicKey: null,
-    instanceId: null,
-    participantId: null,
-  });
-  return {
-    deploymentId: provisioned.device.deploymentId,
-    displayName,
-  };
-}
-
-/** Registers pageerror/unexpected console.error capture before navigation. */
-export function captureBrowserErrors(page: Page): string[] {
+export async function captureBrowserErrors(page: Page): Promise<{
+  errors: string[];
+  pending: Promise<void>[];
+}> {
   const errors: string[] = [];
+  const pending: Promise<void>[] = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
+    // HTTP responses are checked below, where the actual protocol response can
+    // distinguish a successful nonce challenge from an unexpected HTTP failure.
+    if (
+      message.type() === "error" &&
+      !/^Failed to load resource: the server responded with a status of \d{3}/.test(
+        message.text(),
+      )
+    ) {
+      const url = URL.parse(message.location().url);
+      errors.push(`${message.text()}${url ? ` (${url.pathname})` : ""}`);
+    }
   });
-  return errors;
+  await page.route(
+    (url) => url.pathname === "/token",
+    (route) => {
+      const work = (async () => {
+        const response = await route.fetch({ maxRedirects: 0 });
+        try {
+          if (response.status() < 400) return;
+          const path = new URL(response.url()).pathname;
+          if (
+            response.status() === 400 &&
+            path === "/token" &&
+            response.headers()["dpop-nonce"]
+          ) {
+            let readFailure: unknown;
+            const body: unknown = await response
+              .json()
+              .catch((cause: unknown) => {
+                readFailure = cause;
+                return undefined;
+              });
+            if (
+              body !== null &&
+              typeof body === "object" &&
+              "error" in body &&
+              body.error === "use_dpop_nonce"
+            )
+              return;
+            const code =
+              body !== null && typeof body === "object" && "error" in body
+                ? body.error
+                : undefined;
+            errors.push(
+              `HTTP 400 (${path}); nonce response error=${typeof code === "string" ? code : "unavailable"}; body read=${String(readFailure)}`,
+            );
+            return;
+          }
+          errors.push(`HTTP ${response.status()} (${path})`);
+        } finally {
+          await route.fulfill({ response });
+        }
+      })();
+      pending.push(work);
+      return work;
+    },
+  );
+  page.on("response", (response) => {
+    const path = new URL(response.url()).pathname;
+    // The real token response was classified before being forwarded above.
+    if (path !== "/token" && response.status() >= 400) {
+      errors.push(`HTTP ${response.status()} (${path})`);
+    }
+  });
+  return { errors, pending };
 }
 
 /** Waits for the shell marker emitted only after Me and route authorization. */
@@ -199,17 +229,67 @@ export async function waitForConsoleShell(
     .waitFor({ state: "visible", timeout: timeoutMs });
 }
 
-/** Waits for the route-owned marker after its real reads settle. */
-export async function waitForConsolePage(
-  page: Page,
-  timeoutMs = 60_000,
+/** Fails when a nominal journey produced a browser error. */
+export async function assertNoBrowserErrors(
+  captured: Awaited<ReturnType<typeof captureBrowserErrors>>,
 ): Promise<void> {
-  await page
-    .locator('[data-testid="console-page-ready"]')
-    .waitFor({ state: "visible", timeout: timeoutMs });
+  await Promise.all(captured.pending);
+  const { errors } = captured;
+  assert.deepEqual(
+    errors,
+    [],
+    `unexpected browser errors:\n${errors.join("\n")}`,
+  );
 }
 
-/** Fails when a nominal journey produced a browser error. */
-export function assertNoBrowserErrors(errors: readonly string[]): void {
-  assertEquals(errors, [], `unexpected browser errors:\n${errors.join("\n")}`);
+function toWsBytes(message: string | Buffer): Uint8Array {
+  return typeof message === "string"
+    ? new TextEncoder().encode(message)
+    : new Uint8Array(message);
+}
+
+function sendWs(
+  socket: { send: (message: string | Buffer) => void },
+  chunks: Uint8Array[],
+): void {
+  for (const chunk of chunks) socket.send(Buffer.from(chunk));
+}
+
+/**
+ * Routes the page's broker WebSockets through a {@link NatsResponseGate} that
+ * forwards real bytes and can hold chosen RPC replies.
+ */
+export async function wireNatsGate(page: Page): Promise<{
+  gate: NatsResponseGate;
+  releaseToPage: () => Uint8Array[];
+  resumeLiveToPage: () => void;
+}> {
+  const gate = new NatsResponseGate();
+  let pageSocket: { send: (message: string | Buffer) => void } | undefined;
+  await page.routeWebSocket(
+    (url) => url.protocol === "ws:" || url.protocol === "wss:",
+    (ws) => {
+      const server = ws.connectToServer();
+      pageSocket = ws;
+      ws.onMessage((message) => {
+        sendWs(server, gate.ingestClient(toWsBytes(message)));
+      });
+      server.onMessage((message) => {
+        sendWs(ws, gate.ingestServer(toWsBytes(message)));
+      });
+    },
+  );
+  return {
+    gate,
+    releaseToPage() {
+      if (!pageSocket) return [];
+      const chunks = gate.release();
+      sendWs(pageSocket, chunks);
+      return chunks;
+    },
+    resumeLiveToPage() {
+      const chunks = gate.resumeLive();
+      if (pageSocket) sendWs(pageSocket, chunks);
+    },
+  };
 }

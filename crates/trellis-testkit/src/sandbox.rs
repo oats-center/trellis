@@ -1,12 +1,13 @@
 //! Private sandbox directories, child environments, and automatic port leases.
 //!
-//! Port assignment is fully automatic: each startup attempt binds four
-//! `127.0.0.1:0` listeners and lets the kernel choose the ports, holds all four
-//! until immediately before the server spawn, and then closes them in one
-//! narrow step. No lock files, fixed ranges, PID-derived ports, or global
-//! mutex are used, so independent runtimes and processes never coordinate.
+//! Each startup reserves five loopback listeners outside Linux's automatic
+//! outbound port range, holds them until immediately before spawn, and closes
+//! them in one narrow step. Same-port UDP ownership survives that handoff so
+//! other Rust and Node harnesses cannot steal released TCP ports during startup.
+//! No lock files, PID-derived ports, or global mutex are used.
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::io::Read;
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::path::{Path, PathBuf};
 
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
@@ -43,11 +44,13 @@ pub(crate) fn ensure_supported_platform() -> Result<(), TrellisTestError> {
     }
 }
 
-/// The four loopback ports reserved for one startup attempt.
+/// The five loopback ports reserved for one startup attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PortSet {
     /// Trellis HTTP listener.
     pub http: u16,
+    /// Isolated OAuth listener.
+    pub oauth: u16,
     /// Managed NATS native listener.
     pub nats: u16,
     /// Managed NATS monitoring listener.
@@ -56,28 +59,104 @@ pub(crate) struct PortSet {
     pub websocket: u16,
 }
 
-/// Four live kernel-assigned loopback reservations.
+/// Five TCP reservations with same-port UDP handoff ownership.
+///
+/// Each TCP side is a bound, never-listening `SO_REUSEADDR` socket. A listening
+/// reservation would be inherited by a process another thread spawns, until it
+/// execs, and could keep accepting after the lease closed it.
 pub(crate) struct PortLease {
-    http: TcpListener,
-    nats: TcpListener,
-    monitor: TcpListener,
-    websocket: TcpListener,
+    http: (socket2::Socket, UdpSocket),
+    oauth: (socket2::Socket, UdpSocket),
+    nats: (socket2::Socket, UdpSocket),
+    monitor: (socket2::Socket, UdpSocket),
+    websocket: (socket2::Socket, UdpSocket),
 }
 
 impl PortLease {
-    /// Reserves four distinct loopback ports, holding every listener open.
+    /// Reserves distinct loopback ports, holding each until spawn.
     pub(crate) fn reserve() -> Result<Self, TrellisTestError> {
-        let bind = |role: &str| -> Result<TcpListener, TrellisTestError> {
-            TcpListener::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).map_err(|error| {
-                TrellisTestError::new(
-                    TrellisTestErrorKind::PortAllocation,
-                    TrellisTestStage::PortAllocation,
-                    format!("reserving the {role} loopback port: {error}"),
-                )
-            })
+        // HTTP/WSS clients reject Fetch's restricted low ports (through 10080).
+        const MIN_AUTOMATIC_PORT: u32 = 10_240;
+        let failure = |message: String| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::PortAllocation,
+                TrellisTestStage::PortAllocation,
+                message,
+            )
+        };
+        let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .map_err(|error| failure(format!("reading the automatic TCP port range: {error}")))?;
+        let bounds = range
+            .split_whitespace()
+            .map(str::parse::<u16>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| failure(format!("parsing the automatic TCP port range: {error}")))?;
+        let [first, last] = bounds.as_slice() else {
+            return Err(failure("invalid automatic TCP port range".into()));
+        };
+        if first > last {
+            return Err(failure("invalid automatic TCP port range".into()));
+        }
+        let lower_count = u32::from(*first).saturating_sub(MIN_AUTOMATIC_PORT);
+        let upper_start = (u32::from(*last) + 1).max(MIN_AUTOMATIC_PORT);
+        let available_count = lower_count + 65536 - upper_start;
+        if available_count == 0 {
+            return Err(failure(
+                "no nonprivileged listener ports outside the kernel ephemeral range".into(),
+            ));
+        }
+        let bind = |role: &str| -> Result<(socket2::Socket, UdpSocket), TrellisTestError> {
+            for _ in 0..32 {
+                let mut bytes = [0; 4];
+                std::fs::File::open("/dev/urandom")
+                    .and_then(|mut source| source.read_exact(&mut bytes))
+                    .map_err(|error| {
+                        failure(format!("selecting the {role} loopback port: {error}"))
+                    })?;
+                let offset = u32::from_ne_bytes(bytes) % available_count;
+                let selected = if offset < lower_count {
+                    MIN_AUTOMATIC_PORT + offset
+                } else {
+                    upper_start + offset - lower_count
+                };
+                let selected = u16::try_from(selected)
+                    .expect("selected port is within the validated nonprivileged range");
+                let ownership = match UdpSocket::bind((Ipv4Addr::LOCALHOST, selected)) {
+                    Ok(socket) => socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+                    Err(error) => {
+                        return Err(failure(format!(
+                            "reserving the {role} handoff ownership: {error}"
+                        )))
+                    }
+                };
+                let socket =
+                    socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+                        .and_then(|socket| {
+                            socket.set_reuse_address(true)?;
+                            Ok(socket)
+                        })
+                        .map_err(|error| {
+                            failure(format!("creating the {role} reservation: {error}"))
+                        })?;
+                // Fails while anything listens on the port, even with SO_REUSEADDR.
+                match socket.bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, selected).into()) {
+                    Ok(()) => return Ok((socket, ownership)),
+                    Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+                    Err(error) => {
+                        return Err(failure(format!(
+                            "reserving the {role} loopback port: {error}"
+                        )))
+                    }
+                }
+            }
+            Err(failure(format!(
+                "no available non-ephemeral {role} loopback port"
+            )))
         };
         Ok(Self {
             http: bind("HTTP")?,
+            oauth: bind("OAuth")?,
             nats: bind("NATS")?,
             monitor: bind("monitor")?,
             websocket: bind("WebSocket")?,
@@ -86,10 +165,14 @@ impl PortLease {
 
     /// The selected ports.
     pub(crate) fn ports(&self) -> Result<PortSet, TrellisTestError> {
-        let port_of = |listener: &TcpListener, role: &str| -> Result<u16, TrellisTestError> {
-            listener
+        let port_of = |socket: &socket2::Socket, role: &str| -> Result<u16, TrellisTestError> {
+            socket
                 .local_addr()
-                .map(|addr| addr.port())
+                .and_then(|addr| {
+                    addr.as_socket()
+                        .map(|addr| addr.port())
+                        .ok_or_else(|| std::io::Error::other("not an IP socket"))
+                })
                 .map_err(|error| {
                     TrellisTestError::new(
                         TrellisTestErrorKind::PortAllocation,
@@ -99,19 +182,28 @@ impl PortLease {
                 })
         };
         Ok(PortSet {
-            http: port_of(&self.http, "HTTP")?,
-            nats: port_of(&self.nats, "NATS")?,
-            monitor: port_of(&self.monitor, "monitor")?,
-            websocket: port_of(&self.websocket, "WebSocket")?,
+            http: port_of(&self.http.0, "HTTP")?,
+            oauth: port_of(&self.oauth.0, "OAuth")?,
+            nats: port_of(&self.nats.0, "NATS")?,
+            monitor: port_of(&self.monitor.0, "monitor")?,
+            websocket: port_of(&self.websocket.0, "WebSocket")?,
         })
     }
 
-    /// Closes every reservation in one narrow step just before broker startup.
-    pub(crate) fn release_for_spawn(self) {
-        drop(self.http);
-        drop(self.nats);
-        drop(self.monitor);
-        drop(self.websocket);
+    /// Closes the TCP reservations, retaining exclusive ownership through startup.
+    pub(crate) fn release_for_spawn(self) -> [UdpSocket; 5] {
+        drop(self.http.0);
+        drop(self.oauth.0);
+        drop(self.nats.0);
+        drop(self.monitor.0);
+        drop(self.websocket.0);
+        [
+            self.http.1,
+            self.oauth.1,
+            self.nats.1,
+            self.monitor.1,
+            self.websocket.1,
+        ]
     }
 }
 
@@ -215,7 +307,7 @@ impl Sandbox {
 /// test's sandbox; callers should still run it when no harness tests are active.
 ///
 /// This is the reclaim path for sandboxes a killed or aborted process could not
-/// remove; [`TrellisTestRuntime::shutdown`] is the per-runtime guarantee.
+/// remove; [`crate::TrellisTestRuntime::shutdown`] is the per-runtime guarantee.
 ///
 /// # Errors
 ///
@@ -302,6 +394,7 @@ pub(crate) fn require_utf8_path(path: &Path, role: &str) -> Result<String, Trell
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn remove_retained_workdirs_only_removes_stale_owned_dirs() {
@@ -357,20 +450,108 @@ mod tests {
     }
 
     #[test]
-    fn port_lease_holds_and_releases_its_loopback_listeners() {
-        let lease = PortLease::reserve().expect("reserve loopback ports");
-        let set = lease.ports().expect("read reserved ports");
-        let ports = [set.http, set.nats, set.monitor, set.websocket];
-        for port in ports {
-            assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+    fn released_ports_survive_automatic_outbound_allocation() {
+        // A sibling test's pre-exec child can inherit our listeners before
+        // CLOEXEC closes them. Probe allocation in its own process so release
+        // is not confused with an unrelated fork retaining the same socket.
+        const NAME: &str = "sandbox::tests::released_ports_survive_automatic_outbound_allocation";
+        if !std::env::args().any(|argument| argument == NAME) {
+            let status =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args(["--exact", NAME, "--nocapture"])
+                    .status()
+                    .expect("run isolated allocator probe");
+            assert!(
+                status.success(),
+                "isolated allocator probe failed: {status}"
+            );
+            return;
         }
-        lease.release_for_spawn();
-        let _listeners: Vec<_> = ports
-            .into_iter()
-            .map(|port| {
-                TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("released distinct listener")
+        // Exercise the host's real automatic allocation without requiring
+        // privileged namespaces or changing its network configuration.
+        let peer = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("outbound destination");
+        let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .expect("kernel automatic port range");
+        let bounds: Vec<u16> = range
+            .split_whitespace()
+            .map(|value| value.parse().expect("kernel port"))
+            .collect();
+        let automatic = bounds[0]..=bounds[1];
+        let lease = PortLease::reserve().expect("reserve listeners");
+        let set = lease.ports().expect("reserved ports");
+        for port in [set.http, set.oauth, set.nats, set.monitor, set.websocket] {
+            // A readiness probe must never mistake the reservation for a server.
+            assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
+            assert!(
+                !automatic.contains(&port),
+                "listener exposed to outbound reuse"
+            );
+        }
+        let _ownership = lease.release_for_spawn();
+        let _connections: Vec<_> = (0..8)
+            .map(|_| {
+                std::net::TcpStream::connect_timeout(
+                    &peer.local_addr().expect("outbound address"),
+                    std::time::Duration::from_secs(2),
+                )
+                .inspect(|connection| {
+                    assert!(automatic.contains(&connection.local_addr().unwrap().port()));
+                })
+                .expect("occupy an automatic outbound port")
             })
             .collect();
+        let _listeners: Vec<_> = [set.http, set.oauth, set.nats, set.monitor, set.websocket]
+            .into_iter()
+            .map(|port| {
+                TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                    .expect("released listener survives outbound allocation")
+            })
+            .collect();
+    }
+
+    #[test]
+    fn node_reservations_respect_rust_handoff_ownership() {
+        let lease = PortLease::reserve().expect("reserve listeners");
+        let port = lease.ports().expect("reserved ports").http;
+        let mut ownership = Some(lease.release_for_spawn());
+        let module = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ts/packages/trellis-testkit/src/ports.ts")
+            .canonicalize()
+            .expect("Node allocator source");
+        let script = format!(
+            r#"
+            import assert from "node:assert/strict";
+            import {{ reserveLocalPort }} from {};
+            if (process.argv[1] === "held") {{
+                await assert.rejects(() => reserveLocalPort({port}), {{ code: "EADDRINUSE" }});
+            }} else {{
+                const lease = await reserveLocalPort({port});
+                await lease.release();
+            }}
+            "#,
+            serde_json::to_string(&module).expect("module path")
+        );
+        for phase in ["held", "released"] {
+            if phase == "released" {
+                drop(ownership.take());
+            }
+            let output = std::process::Command::new("node")
+                .args([
+                    "--experimental-transform-types",
+                    "--input-type=module",
+                    "--eval",
+                    &script,
+                    phase,
+                ])
+                .output()
+                .expect("run the ordinary Node allocator");
+            assert!(
+                output.status.success(),
+                "{phase}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]

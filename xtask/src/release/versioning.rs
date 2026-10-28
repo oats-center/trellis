@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 
 use miette::{miette, IntoDiagnostic, Result, WrapErr};
 
-use super::RELEASE_JS_INTERNAL_NPM_VERSION_FILES;
-
 pub(super) fn check_versions(repo_root: &Path) -> Result<String> {
     let versions = collect_versions(repo_root)?;
     if versions.is_empty() {
@@ -34,14 +32,12 @@ pub(super) fn bump_versions(repo_root: &Path, from: &str, to: &str) -> Result<Ve
             .wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let updated = if is_json_manifest(&path) {
             let updated = rewrite_json_manifest_version(&original, from, to, &path)?;
-            rewrite_json_manifest_internal_jsr_dependency_versions(&updated, from, to, &path)?
+            rewrite_js_internal_npm_dependency_versions(&updated, Some(from), to, &path)?
         } else if path
             .file_name()
             .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
         {
             rewrite_cargo_manifest_versions(&original, from, to, &path)?
-        } else if is_release_js_internal_npm_version_file(repo_root, &path) {
-            rewrite_js_internal_npm_dependency_versions(&original, from, to, &path)?
         } else {
             original.clone()
         };
@@ -68,12 +64,7 @@ pub(super) fn prepare_release(repo_root: &Path, release: &ReleaseVersion) -> Res
                 &release.base_version,
                 &path,
             )?;
-            rewrite_json_manifest_internal_jsr_dependency_versions(
-                &updated,
-                &release.base_version,
-                &release.version,
-                &path,
-            )?
+            rewrite_js_internal_npm_dependency_versions(&updated, None, &release.version, &path)?
         } else if path
             .file_name()
             .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
@@ -82,13 +73,6 @@ pub(super) fn prepare_release(repo_root: &Path, release: &ReleaseVersion) -> Res
                 &original,
                 &release.version,
                 &release.base_version,
-                &path,
-            )?
-        } else if is_release_js_internal_npm_version_file(repo_root, &path) {
-            rewrite_js_internal_npm_dependency_versions(
-                &original,
-                &release.base_version,
-                &release.version,
                 &path,
             )?
         } else {
@@ -119,12 +103,7 @@ pub(super) fn collect_versions(repo_root: &Path) -> Result<Vec<VersionEntry>> {
                     ));
                 }
             }
-            collect_json_internal_jsr_dependency_versions(
-                repo_root,
-                &path,
-                &contents,
-                &mut versions,
-            );
+            collect_js_internal_npm_versions(repo_root, &path, &contents, &mut versions);
             continue;
         }
 
@@ -134,10 +113,6 @@ pub(super) fn collect_versions(repo_root: &Path) -> Result<Vec<VersionEntry>> {
         {
             collect_cargo_versions(repo_root, &path, &contents, &mut versions);
             continue;
-        }
-
-        if is_release_js_internal_npm_version_file(repo_root, &path) {
-            collect_js_internal_npm_versions(repo_root, &path, &contents, &mut versions);
         }
     }
     Ok(versions)
@@ -157,18 +132,26 @@ fn release_manifest_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
     // prerelease candidate resolves against the locally patched checkout.
     collect_manifest_paths(&repo_root.join("integration/fixtures/runtime"), &mut paths)?;
     collect_manifest_paths(&repo_root.join("demos/rust"), &mut paths)?;
+    for directory in [
+        "benchmarks/runtime/native",
+        "benchmarks/runtime/crates",
+        "benchmarks/runtime/packages",
+    ] {
+        collect_manifest_paths(&repo_root.join(directory), &mut paths)?;
+    }
     for relative_path in [
-        "crates/runtime/trellis.toml",
+        "crates/builtin-contracts/trellis.toml",
         "ts/packages/trellis-testkit/trellis.toml",
         "web/trellis.toml",
         "integration/fixtures/testkit/trellis.toml",
+        "benchmarks/runtime/trellis.toml",
+        "web/package.json",
+        "portal/package.json",
+        "docs/package.json",
+        "demos/ts/package.json",
+        "demos/app/package.json",
+        "docs/examples/orders/package.json",
     ] {
-        let path = repo_root.join(relative_path);
-        if path.exists() {
-            paths.push(path);
-        }
-    }
-    for relative_path in RELEASE_JS_INTERNAL_NPM_VERSION_FILES {
         let path = repo_root.join(relative_path);
         if path.exists() {
             paths.push(path);
@@ -176,14 +159,39 @@ fn release_manifest_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
     }
     paths.sort();
     paths.dedup();
+    // Generated packages are git-ignored build output that `cargo xtask
+    // install` regenerates from the prepared versions; only authored manifests
+    // carry release versions.
+    let mut check = std::process::Command::new("git")
+        .args(["check-ignore", "--stdin"])
+        .current_dir(repo_root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .into_diagnostic()?;
+    {
+        use std::io::Write;
+        let input = paths
+            .iter()
+            .map(|path| format!("{}\n", path.display()))
+            .collect::<String>();
+        let mut stdin = check.stdin.take().expect("piped stdin");
+        // Outside a git checkout git exits before reading; nothing is ignored.
+        match stdin.write_all(input.as_bytes()) {
+            Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+                return Err(error).into_diagnostic();
+            }
+            _ => {}
+        }
+    }
+    let ignored =
+        String::from_utf8(check.wait_with_output().into_diagnostic()?.stdout).into_diagnostic()?;
+    let ignored = ignored
+        .lines()
+        .map(PathBuf::from)
+        .collect::<std::collections::HashSet<_>>();
+    paths.retain(|path| !ignored.contains(path));
     Ok(paths)
-}
-
-fn is_release_js_internal_npm_version_file(repo_root: &Path, path: &Path) -> bool {
-    path.strip_prefix(repo_root)
-        .ok()
-        .and_then(Path::to_str)
-        .is_some_and(|relative| RELEASE_JS_INTERNAL_NPM_VERSION_FILES.contains(&relative))
 }
 
 fn collect_manifest_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
@@ -216,15 +224,19 @@ fn collect_manifest_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 fn is_json_manifest(path: &Path) -> bool {
-    path.file_name().is_some_and(|name| {
-        matches!(
-            name.to_string_lossy().as_ref(),
-            "deno.json" | "deno.npm.json" | "package.json"
-        )
-    })
+    path.file_name().is_some_and(|name| name == "package.json")
 }
 
 fn json_manifest_version(contents: &str) -> Option<String> {
+    // Native-IDL outputs retain their project's version independently of the SDK.
+    if serde_json::from_str::<serde_json::Value>(contents).is_ok_and(|manifest| {
+        manifest
+            .get("trellisGenerated")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    }) {
+        return None;
+    }
     for line in contents.lines() {
         if !line.contains("\"version\"") {
             continue;
@@ -316,9 +328,12 @@ fn collect_js_internal_npm_versions(
     }
 }
 
+/// Point internal npm dependencies at `to`. A bump requires each to be at
+/// `from`; a release (`from` is `None`) accepts any version on `to`'s base, such
+/// as the previous prerelease.
 pub(super) fn rewrite_js_internal_npm_dependency_versions(
     contents: &str,
-    from: &str,
+    from: Option<&str>,
     to: &str,
     path: &Path,
 ) -> Result<String> {
@@ -338,16 +353,25 @@ pub(super) fn rewrite_js_internal_npm_dependency_versions(
             lines.push(line.to_string());
             continue;
         };
-        if version != from {
-            if version == to {
-                lines.push(line.to_string());
-                continue;
+        if version == to {
+            lines.push(line.to_string());
+            continue;
+        }
+        match from {
+            Some(from) if version != from => {
+                return Err(miette!(
+                    "{} dependency {name} uses version {}, expected {from} or {to}",
+                    path.display(),
+                    version
+                ));
             }
-            return Err(miette!(
-                "{} dependency {name} uses version {}, expected {from} or {to}",
-                path.display(),
-                version
-            ));
+            None => require_version_base(
+                &version,
+                &version_base(to)?,
+                path,
+                &format!("dependency {name}"),
+            )?,
+            _ => {}
         }
 
         let replacement = replace_npm_dependency_spec_version(&spec, to);
@@ -358,105 +382,6 @@ pub(super) fn rewrite_js_internal_npm_dependency_versions(
         updated.push('\n');
     }
     Ok(updated)
-}
-
-fn collect_json_internal_jsr_dependency_versions(
-    repo_root: &Path,
-    path: &Path,
-    contents: &str,
-    versions: &mut Vec<VersionEntry>,
-) {
-    for line in contents.lines() {
-        let Some((_, spec)) = json_like_string_property(line.trim()) else {
-            continue;
-        };
-        let Some(dependency) = internal_jsr_dependency_spec(&spec) else {
-            continue;
-        };
-        versions.push(VersionEntry::new(
-            format!(
-                "{} dependency {}",
-                display_repo_path(repo_root, path),
-                dependency.name
-            ),
-            dependency.version,
-        ));
-    }
-}
-
-pub(super) fn rewrite_json_manifest_internal_jsr_dependency_versions(
-    contents: &str,
-    from: &str,
-    to: &str,
-    path: &Path,
-) -> Result<String> {
-    let mut lines = Vec::new();
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        let Some((_, spec)) = json_like_string_property(trimmed) else {
-            lines.push(line.to_string());
-            continue;
-        };
-        let Some(dependency) = internal_jsr_dependency_spec(&spec) else {
-            lines.push(line.to_string());
-            continue;
-        };
-
-        if dependency.version != from {
-            if dependency.version == to {
-                lines.push(line.to_string());
-                continue;
-            }
-            return Err(miette!(
-                "{} dependency {} uses version {}, expected {from} or {to}",
-                path.display(),
-                dependency.name,
-                dependency.version
-            ));
-        }
-
-        let replacement = replace_npm_dependency_spec_version(&dependency.version_spec, to);
-        lines.push(line.replacen(&dependency.version_spec, &replacement, 1));
-    }
-    let mut updated = lines.join("\n");
-    if contents.ends_with('\n') {
-        updated.push('\n');
-    }
-    Ok(updated)
-}
-
-fn internal_jsr_dependency_spec(spec: &str) -> Option<InternalJsrDependency> {
-    let spec = spec.strip_prefix("jsr:")?;
-    internal_js_package_names().iter().find_map(|name| {
-        let rest = spec.strip_prefix(name)?;
-        let version_and_path = rest.strip_prefix('@')?;
-        let version_spec = version_and_path
-            .split_once('/')
-            .map(|(version, _)| version)
-            .unwrap_or(version_and_path);
-        let version = npm_dependency_spec_version(version_spec)?;
-        Some(InternalJsrDependency {
-            name: (*name).to_string(),
-            version,
-            version_spec: version_spec.to_string(),
-        })
-    })
-}
-
-fn internal_js_package_names() -> &'static [&'static str] {
-    &[
-        "@oatscenter/result",
-        "@oatscenter/trellis",
-        "@oatscenter/trellis-svelte",
-        "@oatscenter/trellis-testkit",
-    ]
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct InternalJsrDependency {
-    name: String,
-    version: String,
-    version_spec: String,
 }
 
 fn json_like_string_property(trimmed: &str) -> Option<(String, String)> {
@@ -528,9 +453,7 @@ fn collect_cargo_versions(
             }
         }
         if matches!(section, CargoSection::Package)
-            && package_name
-                .as_deref()
-                .is_some_and(|name| is_release_managed_package(name, path))
+            && package_name.as_deref().is_some_and(is_internal_rust_crate)
         {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -576,9 +499,7 @@ pub(super) fn rewrite_cargo_manifest_versions(
 
         let should_update_package_version = matches!(section, CargoSection::WorkspacePackage)
             || (matches!(section, CargoSection::Package)
-                && package_name
-                    .as_deref()
-                    .is_some_and(|name| is_release_managed_package(name, path)));
+                && package_name.as_deref().is_some_and(is_internal_rust_crate));
         if should_update_package_version {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -660,9 +581,7 @@ pub(super) fn rewrite_cargo_manifest_versions_for_release(
 
         let should_update_package_version = matches!(section, CargoSection::WorkspacePackage)
             || (matches!(section, CargoSection::Package)
-                && package_name
-                    .as_deref()
-                    .is_some_and(|name| is_release_managed_package(name, path)));
+                && package_name.as_deref().is_some_and(is_internal_rust_crate));
         if should_update_package_version {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -721,7 +640,8 @@ fn require_version_base(
         Ok(())
     } else {
         Err(miette!(
-            "{} {label} uses version {version}, but release tag requires base version {expected_base_version}",
+            "{} {label} uses version {version}, but release tag requires base \
+            version {expected_base_version}",
             path.display()
         ))
     }
@@ -777,18 +697,91 @@ fn quoted_value_after_equals(value: &str) -> Option<String> {
 }
 
 fn is_internal_rust_crate(name: &str) -> bool {
-    name.starts_with("trellis-")
+    name.starts_with("trellis-") && !matches!(name, "trellis-protocol" | "trellis-models")
 }
 
-fn is_release_managed_package(name: &str, path: &Path) -> bool {
-    is_internal_rust_crate(name)
-        || (name == "trellis" && path.file_name().is_some_and(|file| file == "trellis.toml"))
+/// Change one independently versioned component and its actual dependency requirements.
+pub(super) fn prepare_component(
+    root: &Path,
+    name: &str,
+    manifest: &str,
+    version: &str,
+) -> Result<Vec<PathBuf>> {
+    let mut changed = Vec::new();
+    let component = root.join(manifest);
+    let mut paths = release_manifest_paths(root)?;
+    paths.push(component.clone());
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        if path
+            .file_name()
+            .is_none_or(|file| file != component.file_name().expect("component manifest"))
+        {
+            continue;
+        }
+        let source = fs::read_to_string(&path).into_diagnostic()?;
+        let mut document = source.parse::<toml_edit::DocumentMut>().into_diagnostic()?;
+        if path == component {
+            document["package"]["version"] = toml_edit::value(version);
+        }
+        let update = |dependencies: &mut toml_edit::Item| {
+            let Some(dependencies) = dependencies.as_table_like_mut() else {
+                return;
+            };
+            for (key, dependency) in dependencies.iter_mut() {
+                let actual = dependency
+                    .get("package")
+                    .and_then(toml_edit::Item::as_str)
+                    .unwrap_or(&key);
+                if actual != name {
+                    continue;
+                }
+                if dependency.is_str() {
+                    *dependency = toml_edit::value(version);
+                } else if dependency.get("version").is_some() {
+                    dependency["version"] = toml_edit::value(version);
+                }
+            }
+        };
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if let Some(dependencies) = document.get_mut(section) {
+                update(dependencies);
+            }
+        }
+        if let Some(workspace) = document.get_mut("workspace") {
+            if let Some(dependencies) = workspace.get_mut("dependencies") {
+                update(dependencies);
+            }
+        }
+        if let Some(targets) = document
+            .get_mut("target")
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            for (_, target) in targets.iter_mut() {
+                for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                    if let Some(dependencies) = target.get_mut(section) {
+                        update(dependencies);
+                    }
+                }
+            }
+        }
+        let output = document.to_string();
+        if output != source {
+            fs::write(&path, output).into_diagnostic()?;
+            changed.push(path);
+        }
+    }
+    Ok(changed)
 }
 
 fn is_internal_npm_package(name: &str) -> bool {
     matches!(
         name,
-        "@oatscenter/result" | "@oatscenter/trellis" | "@oatscenter/trellis-svelte"
+        "@oatscenter/result"
+            | "@oatscenter/trellis"
+            | "@oatscenter/trellis-svelte"
+            | "@oatscenter/trellis-testkit"
     )
 }
 

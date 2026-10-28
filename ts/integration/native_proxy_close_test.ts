@@ -18,8 +18,10 @@
 
 import type { NatsConnection } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { assert, assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
+import { join } from "node:path";
 
 import {
   brokerConnectionKey,
@@ -102,7 +104,7 @@ async function expectIdentityLeaves(
       if (!present) break;
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    assertEquals(
+    assert.deepEqual(
       present,
       false,
       `[${mode}] the broker must stop listing the closed connection ${key}`,
@@ -113,11 +115,10 @@ async function expectIdentityLeaves(
   }
 }
 
-Deno.test(
-  "a real NATS connection closed through the native proxy leaves the broker inventory",
-  async () => {
-    await withTrellisRuntime(async (runtime) => {
-      const systemCreds = await Deno.readFile(
+test("a real NATS connection closed through the native proxy leaves the broker inventory", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const systemCreds = await readFile(
         join(
           runtime.workdir,
           "config",
@@ -138,6 +139,7 @@ Deno.test(
       } finally {
         await system.close().catch(() => undefined);
       }
-    }, { interruptibleNativeProxy: true });
-  },
-);
+    },
+    { interruptibleNativeProxy: true },
+  );
+});

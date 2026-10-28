@@ -25,8 +25,8 @@ participants. It consumes generated demo service SDKs and can be used with the
 TypeScript or Rust service/device implementations.
 
 ```sh
-deno task -c demos/app/deno.json check
-deno task -c demos/app/deno.json dev
+npm --prefix demos/app run check
+npm --prefix demos/app run dev
 ```
 
 ## TypeScript Demo

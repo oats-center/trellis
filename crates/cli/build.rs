@@ -9,6 +9,26 @@ fn main() {
     let manifest_dir = Path::new(&manifest_dir);
     println!(
         "cargo:rerun-if-changed={}",
+        trellis_builtin_contracts::source_root().display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../models/Cargo.toml").display()
+    );
+    let builtin = trellis_builtin_contracts::compile().expect("compile built-in model snapshot");
+    let binding = trellis_codegen_rust::RustModelBinding::from_package_manifest(
+        &builtin,
+        include_str!("../models/Cargo.toml"),
+    )
+    .expect("bind built-in model package");
+    let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("build output"));
+    std::fs::write(
+        output.join("rust-model-bindings.json"),
+        serde_json::to_vec(&[binding]).expect("encode built-in model binding"),
+    )
+    .expect("write built-in model binding");
+    println!(
+        "cargo:rerun-if-changed={}",
         manifest_dir.join("../../.git/HEAD").display()
     );
 

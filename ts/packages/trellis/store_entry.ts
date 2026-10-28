@@ -23,56 +23,60 @@ export class TypedStoreEntry {
 
   /** Read with bounded demand-driven pulls; successful EOF verifies size and digest. */
   stream(): AsyncResult<ReadableStream<Uint8Array>, StoreError> {
-    return AsyncResult.from((async () => {
-      try {
-        const result = await this.#store.get(this.key);
-        if (result === null) {
+    return AsyncResult.from(
+      (async () => {
+        try {
+          const result = await this.#store.get(this.key);
+          if (result === null) {
+            return Result.err(
+              new StoreError({
+                operation: "stream",
+                context: { key: this.key, reason: "not_found" },
+              }),
+            );
+          }
+
+          return Result.ok(result);
+        } catch (cause) {
           return Result.err(
             new StoreError({
               operation: "stream",
-              context: { key: this.key, reason: "not_found" },
+              cause,
+              context: { key: this.key },
             }),
           );
         }
-
-        return Result.ok(result);
-      } catch (cause) {
-        return Result.err(
-          new StoreError({
-            operation: "stream",
-            cause,
-            context: { key: this.key },
-          }),
-        );
-      }
-    })());
+      })(),
+    );
   }
 
   /** Collect the same verified stream, intentionally retaining the whole object. */
   bytes(): AsyncResult<Uint8Array, StoreError> {
-    return AsyncResult.from((async () => {
-      try {
-        const stream = await this.#store.get(this.key);
-        if (stream === null) {
+    return AsyncResult.from(
+      (async () => {
+        try {
+          const stream = await this.#store.get(this.key);
+          if (stream === null) {
+            return Result.err(
+              new StoreError({
+                operation: "bytes",
+                context: { key: this.key, reason: "not_found" },
+              }),
+            );
+          }
+          return Result.ok(
+            new Uint8Array(await new Response(stream).arrayBuffer()),
+          );
+        } catch (cause) {
           return Result.err(
             new StoreError({
               operation: "bytes",
-              context: { key: this.key, reason: "not_found" },
+              cause,
+              context: { key: this.key },
             }),
           );
         }
-        return Result.ok(
-          new Uint8Array(await new Response(stream).arrayBuffer()),
-        );
-      } catch (cause) {
-        return Result.err(
-          new StoreError({
-            operation: "bytes",
-            cause,
-            context: { key: this.key },
-          }),
-        );
-      }
-    })());
+      })(),
+    );
   }
 }

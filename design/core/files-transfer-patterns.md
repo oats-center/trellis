@@ -101,14 +101,15 @@ Rules:
 When the caller sends bytes to the service, file bytes use an operation-native
 model:
 
-1. a contract-owned operation accepts JSON input and declares `upload` transfer
-   support
+1. a contract-owned operation accepts JSON input and declares `upload` (staged)
+   or `stream` (direct) transfer support
 2. the caller configures the operation input and sends bytes through the
    generated transfer-capable operation helper for that language
 3. callers do not start the same send-transfer operation first and attach bytes
    later
-4. the provider awaits the runtime's durable transfer completion signal and
-   continues with service-owned processing
+4. for `upload`, the provider awaits the runtime's durable transfer completion
+   signal and continues with service-owned processing; for `stream`, the
+   running handler reads the bytes as they arrive
 
 Example:
 
@@ -118,8 +119,10 @@ Rules:
 
 - send transfer is modeled as a capability of an operation; upload/file-ingest
   remains operation-native
-- the platform stages upload bytes independently of any participant-authored
-  Store mapping; typed operation input carries declared transfer metadata
+- for `upload`, the platform stages bytes independently of any
+  participant-authored Store mapping before the handler reads them; for
+  `stream`, nothing is staged and the handler decides where the bytes go
+- typed operation input carries declared transfer metadata
 - the actual byte movement still uses raw NATS chunk traffic rather than
   JSON/base64 RPC payloads
 - the transfer protocol is Trellis-owned runtime machinery, not a
@@ -174,7 +177,10 @@ rpc Documents.Files.Download {
 
 Rules:
 
-- `upload` marks an operation that accepts caller-sent bytes
+- `upload` marks an operation that accepts caller-sent bytes, durably staged
+  before its handler reads them
+- `stream` marks an operation that accepts caller-sent bytes delivered directly
+  to its running handler; it excludes `upload`
 - `download` marks an RPC whose response may carry a receive-transfer grant
 - upload staging is platform-owned and is not configured by mapping the
   participant-authored operation to a store alias
@@ -200,16 +206,23 @@ Rules:
 - all languages preserve the same consumed-byte progress semantics and
   Result-style expected failure model; durable Operation progress may be
   coalesced
-- providers that expose send-transfer operations MUST await the provider-side
+- providers that expose `upload` operations MUST await the provider-side
   durable transfer completion primitive before treating bytes as durably
   available; completion resolves only after the transfer endpoint has accepted
   EOF and durably staged the object, or fails with a transfer error if durable
   storage was not reached
+- providers that expose `stream` operations read the caller's bytes through a
+  backpressured stream handed to the running handler exactly once; bytes arrive
+  before the object is verified, so a handler must be able to abandon partial
+  work when its stream ends in an error
+- receive grants are served from a service store key or from any provider byte
+  source whose size and SHA-256 digest are declared up front; the grant binds
+  the declared metadata and a source that ends differently fails integrity
 
-### Transfer v2 Session And Wire Behavior
+### Transfer v1 Session And Wire Behavior
 
-Transfer uses `trellis.transfer.v2`, with no v1 serving, fallback, or
-negotiation. IDL `upload` and `download` declarations remain unchanged.
+Transfer uses the single `trellis.transfer.v1` wire format, with no fallback or
+version negotiation. IDL `upload` and `download` declarations remain unchanged.
 High-level generated helpers consume runtime-issued grants; applications do not
 construct subjects or resolve physical storage.
 
@@ -219,10 +232,10 @@ frame/byte limits. Receive grants additionally bind logical `FileInfo`. The
 subject families use the same canonical identity-token encoding as Live:
 
 ```text
-transfer.v2.upload.data.<b64(P)>.<b64(C)>.<T>
-transfer.v2.download.data.<b64(P)>.<b64(C)>.<T>
-transfer.v2.control.<b64(P)>.<b64(C)>.<T>
-transfer.v2.signal.<b64(P)>.<b64(C)>.<T>
+transfer.v1.upload.data.<b64(P)>.<b64(C)>.<T>
+transfer.v1.download.data.<b64(P)>.<b64(C)>.<T>
+transfer.v1.control.<b64(P)>.<b64(C)>.<T>
+transfer.v1.signal.<b64(P)>.<b64(C)>.<T>
 ```
 
 Rules:
@@ -236,7 +249,10 @@ Rules:
   authority growth does not migrate it, and physical disconnect ends it
 - DATA payloads are raw bytes, never JSON/base64; ordered sequences start at
   `1`, while cursor `0` means no DATA received or consumed
-- checked u64 wire counters use canonical decimal strings
+- sequence, control-sequence, and credit cursors are checked u64 values in
+  canonical decimal strings; object sizes (`size` in completion, EOF, and
+  logical `FileInfo`) are JSON integers bounded by 2^53 - 1, like every other
+  Trellis size field
 - upload frames carry session-bound request proofs over a compact digest binding
   transfer id, direction, sequence, control discriminator, and payload hash;
   there is no payload-sized proof copy or per-DATA request/reply
@@ -253,13 +269,58 @@ Rules:
 - credit is cumulative and coalesced, not a blocking exchange per frame; a
   verified sequence gap, impossible credit, or exceeded window ends the transfer
 
-The initial protocol policy caps frames at 1 MiB, outstanding frames at `16`,
-and outstanding bytes at 4 MiB. Effective frame size also accounts for both
-peers' NATS payload limits and a 4 KiB header reserve. The consumer reports its
-receive limit at activation. Credit is sent after eight newly consumed frames, 1
+Frames are capped at 1 MiB; effective frame size also accounts for both peers'
+NATS payload limits and a 4 KiB header reserve. Outstanding windows are chosen
+by the receiver, up to protocol maxima of 1,024 frames and 64 MiB. The default
+offer is 64 frames and 16 MiB, from a 256 MiB process budget:
+
+- the receiver admits its window from one process-wide receive budget before
+  any frame can arrive, and releases it when the transfer ends on any path;
+  admission shrinks an offer to what remains and refuses a transfer when less
+  than one frame fits, so a process never overcommits its budget
+- for an upload the provider receives: its grant carries the admitted window
+- for a download the consumer receives: its activation declares the admitted
+  window, and the provider sends within the smaller of it and the grant
+- `activated` echoes the effective window, never larger than the grant; the
+  sender obeys it
+- both SDKs share one offer policy, compiled from the protocol crate
+
+The consumer also reports its receive frame limit at activation. Credit is sent after eight newly consumed frames, 1
 MiB of newly consumed bytes, or 25 ms of pending consumption, with final credit
 during terminal handling. These are runtime protocol limits, not application
 knobs.
+
+When a frame's signed context digest matches the retained peer guard, reuse its
+verified immutable material rather than preparing the same replacement again.
+Every frame still verifies its signature/proof and checks current authority,
+expiry, revocation, coverage and issuer trust. A changed digest takes the full
+replacement path and commits only after successful frame authentication.
+
+### Proposed: One-Pass Frame Proofs (Not Implemented)
+
+Status: proposal for review; Transfer v1 currently binds each DATA proof to
+SHA-256 of that frame's payload.
+
+Every DATA byte is hashed twice at each endpoint: once for the compact frame
+digest its request or server proof signs, and once into the object's running
+SHA-256 that completion and EOF verify. Both SDKs now hash DATA natively, so
+the second pass is pure duplicate work: it roughly doubles per-byte hashing at
+each endpoint.
+
+Proposal: bind each frame's proof to the object's running digest after that
+frame instead of a separate payload hash. Both endpoints already maintain the
+running hash; finalizing a copy of its state costs one block, not a pass over
+the payload. Sequence validation already requires strictly ordered frames, so
+the receiver checks frame N against its own running state after N frames.
+
+- Integrity is unchanged: the final frame's proof covers the whole object, and
+  every earlier proof covers its exact prefix.
+- A frame cannot be verified out of order or in isolation; v1 already rejects
+  out-of-order DATA.
+- It changes the frame digest's definition, so it is a v1 wire change in both
+  SDKs and the pinned message-digest vectors.
+- TypeScript needs a running-hash copy: `node:crypto` `Hash.copy()` provides
+  it; the portable fallback needs an equivalent incremental state copy.
 
 ### Flow Control Is Not Durability
 
@@ -276,21 +337,68 @@ received -> consumed/credited -> backend committed -> Operation committed
 ```
 
 Credit is bounded network backpressure, never evidence of durable persistence.
-Cancellation acknowledged before the durable commit handoff aborts storage
-ingress and cannot expose a committed staged upload. Once that handoff begins,
-settle the in-flight commit rather than acknowledge an uncommitted cancellation;
-cancellation after durable commit cannot undo it. A lost commit response is not
-proof of rollback: retain staged bytes until reconciliation confirms commit or a
-newer uncommitted revision fences the uncertain write. Interrupted uploads
-restart from byte zero, without partial replay or resumption.
 
-A download streams through the runtime's store boundary, splitting arbitrary
-backend chunks into bounded frames while credit is available. Signed EOF follows
+A `stream` upload has no staging boundary. After verifying the completion, the
+provider waits until the handler has consumed every frame, records the verified
+delivery in the Operation (fenced, like the staged commit), and only then ends
+the handler's stream and sends signed `committed`. The handler therefore never
+observes end of file for bytes whose delivery is unrecorded, and the caller's
+success means the handler received every verified byte, not that anything was
+persisted. A transfer failure, cancellation or ownership loss ends the
+handler's stream with an error. An execution that loses its stream cannot be
+replayed: recovery fails the Operation, and the caller starts a new one.
+
+| Boundary                                                                         | Meaning                                       | Observed by                                       |
+| -------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------- |
+| delivered                                                                        | receiver accepted bytes through its stream    | provider handler (`stream`) or backend (`upload`) |
+| verified                                                                         | final sequence, size and digest checked       | both endpoints, via signed completion and EOF     |
+| application completed                                                            | handler finished, including any durable write | Operation output or RPC result                    |
+| Cancellation acknowledged before the durable commit handoff aborts storage       |
+| ingress and cannot expose a committed staged upload. Once that handoff begins,   |
+| settle the in-flight commit rather than acknowledge an uncommitted cancellation; |
+| cancellation after durable commit cannot undo it. A lost commit response is not  |
+| proof of rollback: retain staged bytes until reconciliation confirms commit or a |
+| newer uncommitted revision fences the uncertain write. Interrupted uploads       |
+| restart from byte zero, without partial replay or resumption.                    |
+
+A download streams through the runtime's store boundary or from a
+provider-supplied source, splitting arbitrary chunks into bounded frames while
+credit is available. A provider source is held to the size and digest its grant
+declared. Signed EOF follows
 all DATA on the same download subject. Both endpoints verify final logical
 size/digest, and the consumer sends final credit/end acknowledgement before
 releasing session ownership. No per-frame pull RPC remains.
 
+Senders in both SDKs form frames only from bytes that are already ready, up to
+the negotiated frame limit. Only the first read of a frame may wait: an
+available prefix is sent rather than waiting for a full frame or EOF, so slow
+producers still make progress, and source reads stay cancellation-safe inside
+the session. Source prefetch is bounded to about one formed frame. Streaming
+source blocks are snapshotted before advancing an iterator that may reuse its
+scratch buffer. Both SDKs fill ready frames up to the negotiated limit. Exact buffer and frame-formation sizes are private implementation
+policy, documented in source, not public tuning fields. Store-reader
+cancellation and teardown remain session-owned; an application's
+uninterruptible iterator cannot pin SDK cleanup. Producer-provided backing
+buffers are not an SDK allocation guarantee.
+
 ### Store Backing
+
+The Rust JetStream writer fills each chunk to 128 KiB across short reads (only
+the final chunk may be shorter) and pipelines at most eight of them (1 MiB of
+outstanding payload per writer). It preserves native Object Store
+metadata and SHA-256 and awaits every chunk ACK before publishing metadata.
+Source errors and pre-commit cancellation retain the admitting transport through
+owned partial-chunk cleanup. Once metadata publication can have escaped, chunks
+are retained and errors remain commit-indeterminate; confirmed commits with failed
+old-version cleanup remain distinguishable from failed writes. A chunk ACK is the
+configured JetStream durability boundary, not an additional fsync guarantee.
+
+Rust and TypeScript readers retain finite byte-capped batches, fetched on
+application demand. Paused readers must not drain the object or discard queued
+chunks on an SDK expiry timer. Consumer loss recreates from the last yielded
+stream sequence, not the broker's prefetched cursor. TypeScript queries consumer
+INFO only to reconcile a failed or empty pull. Independent overlapping fetch
+inboxes cannot be assumed to receive contiguous ranges from one consumer.
 
 Rules:
 
@@ -326,10 +434,13 @@ For caller-visible file-processing workflows, the recommended pattern is:
 
 Rules:
 
-- transfer success means `bytes stored`, not `workflow finished`
-- a durable transfer completion signal means final sequence/size/digest were
+- for `upload`, transfer success means `bytes stored`, not `workflow finished`;
+  a durable transfer completion signal means final sequence/size/digest were
   verified, platform staging completed, and the Operation transfer state was
   durably committed; only then may the handler begin processing
+- for `stream`, transfer success means every verified byte reached the running
+  handler and the delivery was recorded; durability is whatever the handler
+  does with the bytes
 - durable transfer progress is monotonic and coalesced from backend-consumed
   bytes; `chunkIndex` and `chunkBytes` describe the latest credited frame
   represented, not a promise of one watch event per frame; final persisted
@@ -354,13 +465,30 @@ Rules:
 
 ### Transfer Observability
 
-Both runtimes retain `trellis.transfer.duration` and
-`trellis.transfer.wire.bytes`, and record `trellis.transfer.frames`,
-`trellis.transfer.credit.controls`, and `trellis.transfer.buffered.bytes` from
-the endpoint that owns the actual work. Buffered bytes follow retained raw
-payload ownership and are released on consumption or cleanup. Labels are bounded
-logical direction/side/outcome values, never transfer ids, subjects, principals,
-object keys, or arbitrary errors. There are no per-frame spans.
+Both runtimes record the same transfer metrics with the same labels:
+`trellis.direction` is `upload` or `download` and `trellis.side` is `client` or
+`provider` (`store` for storage refill waits). Each endpoint records one
+`trellis.transfer.duration` per transfer and counts what it sends or verifies
+on receipt:
+
+- `trellis.transfer.frames` and `trellis.transfer.payload.bytes` for DATA
+  frames and their raw payload;
+- `trellis.transfer.wire.bytes` for serialized DATA messages, the NATS header
+  block (descriptor, proof and authority headers) plus payload;
+- `trellis.transfer.control.bytes` for every other serialized Transfer message:
+  controls, signals, EOF, activation, completion and cancellation;
+- `trellis.transfer.credit.controls` for cumulative credit messages.
+
+Protocol byte overhead is `(wire + control - payload) / payload`. Broker
+protocol lines and TCP framing are outside these counters.
+`trellis.transfer.buffered.bytes` follows retained raw payload ownership and is
+released on consumption or cleanup. Labels never include transfer ids,
+subjects, principals, object keys, or arbitrary errors. There are no per-frame
+spans.
+
+`trellis.transfer.wait.duration` separates blocked sender credit waits from
+streaming store refill waits. Refill measures awaiting the next backend message,
+including buffered delivery and local dispatch; it is not pure network RTT.
 
 ### Non-Goals
 

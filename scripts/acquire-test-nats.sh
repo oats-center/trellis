@@ -27,51 +27,29 @@ done
 }
 mkdir -p "$dest"
 
-python3 - crates/local-nats/nats-binaries.json "$dest" <<'PY'
-import hashlib, json, os, shutil, sys, tarfile, tempfile, urllib.request
-
-pin_path, dest = sys.argv[1], os.path.abspath(sys.argv[2])
-data = json.load(open(pin_path))["nats-server"]
-version = data["version"]
-
-osname = {"Linux": "linux", "Darwin": "darwin"}.get(os.uname().sysname)
-arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(os.uname().machine)
-if osname is None or arch is None:
-    raise SystemExit(f"unsupported host for pinned NATS: {os.uname().sysname}/{os.uname().machine}")
-asset = f"{osname}-{arch}"
-expected = data["sha256"].get(asset)
-if not expected:
-    raise SystemExit(f"no pinned sha256 for asset {asset}")
-
-url = (
-    f"https://github.com/nats-io/nats-server/releases/download/"
-    f"v{version}/nats-server-v{version}-{asset}.tar.gz"
-)
-with urllib.request.urlopen(url) as response:
-    blob = response.read()
-actual = hashlib.sha256(blob).hexdigest()
-if actual != expected:
-    raise SystemExit(f"checksum mismatch for {url}: expected {expected}, got {actual}")
-
-tmp = tempfile.mkdtemp(dir=dest)
-try:
-    archive = os.path.join(tmp, "nats.tar.gz")
-    with open(archive, "wb") as handle:
-        handle.write(blob)
-    with tarfile.open(archive) as tar:
-        member = next(
-            (m for m in tar.getmembers() if os.path.basename(m.name) == "nats-server"),
-            None,
-        )
-        if member is None:
-            raise SystemExit("nats-server binary not found in the pinned archive")
-        member.name = "nats-server"
-        tar.extract(member, tmp, filter="data")
-    target = os.path.join(dest, "nats-server")
-    shutil.move(os.path.join(tmp, "nats-server"), target)
-    os.chmod(target, 0o755)
-finally:
-    shutil.rmtree(tmp, ignore_errors=True)
-
-print(f"acquired nats-server {version} ({asset}) sha256={actual}")
-PY
+pins=crates/local-nats/nats-binaries.json
+version="$(jq -r '.["nats-server"].version' "$pins")"
+case "$(uname -s)" in Linux) os=linux ;; Darwin) os=darwin ;; *) os="" ;; esac
+case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64 | arm64) arch=arm64 ;; *) arch="" ;; esac
+[[ -n "$os" && -n "$arch" ]] || {
+  echo "unsupported host for pinned NATS: $(uname -s)/$(uname -m)" >&2
+  exit 1
+}
+asset="$os-$arch"
+expected="$(jq -r --arg asset "$asset" '.["nats-server"].sha256[$asset] // empty' "$pins")"
+[[ -n "$expected" ]] || { echo "no pinned sha256 for asset $asset" >&2; exit 1; }
+url="https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-$asset.tar.gz"
+dest="$(cd "$dest" && pwd)"
+work="$(mktemp -d "$dest/.nats.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+curl -fsSL --retry 3 --output "$work/nats.tar.gz" "$url"
+actual="$(sha256sum "$work/nats.tar.gz" | cut -d ' ' -f 1)"
+[[ "$actual" == "$expected" ]] || {
+  echo "checksum mismatch for $url: expected $expected, got $actual" >&2
+  exit 1
+}
+member="$(tar -tzf "$work/nats.tar.gz" | grep -E '(^|/)nats-server$' | head -n1)"
+[[ -n "$member" ]] || { echo "nats-server binary not found in the pinned archive" >&2; exit 1; }
+tar -xzf "$work/nats.tar.gz" -C "$work" "$member"
+install -m 0755 "$work/$member" "$dest/nats-server"
+echo "acquired nats-server $version ($asset) sha256=$actual"

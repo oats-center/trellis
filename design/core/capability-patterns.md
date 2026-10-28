@@ -5,10 +5,12 @@ description: Capability approval, exact grants, and deployment policy.
 
 # Capability Patterns
 
-Capabilities are API-owned explanation and approval groups. Their identity is
-`<api-id>::<name>`. Human consent fingerprints bind capability identity,
-description, and consequence. Titles are presentation; exact `allows` membership
-is machine semantics but not part of the consent fingerprint.
+Capabilities are API-owned explanation and approval units. Their identity is
+`<package>.<ApiName>.v<major>:<area>.<action>`; an API's groups bundle them
+under `<package>.<ApiName>.v<major>:<name>`. Approval binds capability identity and the `grants`
+statement the user read: Auth's consent revision advances only when that text
+changes. Title and description are presentation, and `allows` may grow within an
+API version; material changes need new `grants` text or a new major version.
 
 Approval does not grant a capability token. Trellis resolves selected actions,
 public membership, approved current-consent capabilities, and the principal's

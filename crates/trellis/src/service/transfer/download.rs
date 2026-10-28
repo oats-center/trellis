@@ -11,8 +11,16 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use sha2::{Digest as _, Sha256};
 use std::sync::{atomic::Ordering, Arc};
-use tokio::io::AsyncReadExt;
 use trellis_protocol::transfer::*;
+
+/// Bytes behind one download.
+pub enum DownloadSource<C> {
+    /// Read the grant's logical key from a service-owned store.
+    Store(C),
+    /// Read a provider-supplied byte source; the grant's declared size and
+    /// digest are authoritative and checked at end of file.
+    Reader(Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+}
 
 /// Stream a storage-neutral push download on its exact pinned attachment.
 pub async fn run_download_transfer_endpoint<C>(
@@ -20,42 +28,52 @@ pub async fn run_download_transfer_endpoint<C>(
     lease: TransportLease,
     mut control: async_nats::Subscriber,
     plan: DownloadTransferGrantPlan,
-    store: C,
+    source: DownloadSource<C>,
 ) -> Result<(), ServerError>
 where
     C: StoreResourceClient,
 {
     let grant = &plan.grant;
     let observation = super::telemetry::observation(TransferDirection::Receive, "provider");
-    let permission = plan
-        .admission
-        .required_permission
-        .as_ref()
-        .ok_or_else(|| error("download admission permission missing"))?
-        .permission_atom()
-        .map_err(error)?;
+    let origin = super::transfer_origin(&plan.admission)?;
+    if origin != grant.origin {
+        return Err(error("download grant admission mismatch"));
+    }
+    let action = crate::live::authority::LiveAction {
+        api_id: origin.api_id,
+        identity: origin.action,
+    };
     let peer = TransferPeer::retain(
-        client.authorization_provider(),
+        client.authorization_owner(),
+        lease.nats(),
         plan.admission
             .authorization_context
             .as_deref()
             .ok_or_else(|| error("download admission context missing"))?,
         &grant.consumer,
-        Some(permission),
+        &action,
+        false,
     )
     .await?;
     let local = TransferPeer::retain(
-        client.authorization_provider(),
-        &client.authorization_context_digest().map_err(error)?,
+        client.authorization_owner(),
+        lease.nats(),
+        client
+            .authorization_owner()
+            .own_authority()
+            .map_err(error)?
+            .digest(),
         &grant.provider,
-        None,
+        &action,
+        true,
     )
     .await?;
     let mut changes = peer.guard.subscribe_changes();
     let mut local_changes = local.guard.subscribe_changes();
     let expiry = tokio::time::sleep(super::transfer_expiry_delay(&grant.expires_at)?);
     tokio::pin!(expiry);
-    let mut store = Some(store);
+    let from_store = matches!(source, DownloadSource::Store(_));
+    let mut source = Some(source);
     let mut backend: Option<
         futures_util::future::BoxFuture<
             'static,
@@ -66,12 +84,12 @@ where
     let mut reader: Option<super::telemetry::Pipe> = None;
     let mut activated = false;
     let mut max_frame_bytes = grant.max_frame_bytes;
+    let mut effective = (grant.window_frames, grant.window_bytes);
     let mut window = SenderWindow::new(FlowLimits {
         max_frame_bytes,
-        window_frames: grant.window_frames,
-        window_bytes: grant.window_bytes,
+        window_frames: effective.0,
+        window_bytes: effective.1,
     });
-    let mut buffer = vec![0; max_frame_bytes as usize];
     let mut staged: Option<super::telemetry::Payload> = None;
     let mut transferred = 0u64;
     let mut hasher = Sha256::new();
@@ -79,100 +97,343 @@ where
     let mut control_seq = 0;
     let mut control_body = None;
     let mut activate_body = None;
+    let mut credit_wait = None;
     let result: Result<(), ServerError> = async {
         loop {
             if let Some(bytes) = staged.as_ref() {
-                if window.validate_frame_slot(bytes.len() as u64, max_frame_bytes).is_ok() {
-                    peer.guard.check_now().map_err(|e| error(format!("download authority: {e:?}")))?;
-                    let seq = window.next_frame_seq().map_err(|e| error(format!("download sequence: {e:?}")))?;
-                    let bytes = staged.take().ok_or_else(|| error("staged download frame missing"))?;
+                if window
+                    .validate_frame_slot(bytes.len() as u64, max_frame_bytes)
+                    .is_ok()
+                {
+                    if let Some(wait) = credit_wait.take() {
+                        crate::telemetry::lifecycle::Observation::finish(wait, "ok");
+                    }
+                    peer.guard
+                        .check_now()
+                        .map_err(|e| error(format!("download authority: {e:?}")))?;
+                    let seq = window
+                        .next_frame_seq()
+                        .map_err(|e| error(format!("download sequence: {e:?}")))?;
+                    let bytes = staged
+                        .take()
+                        .ok_or_else(|| error("staged download frame missing"))?;
                     let len = bytes.len() as u64;
                     hasher.update(&bytes);
-                    let next = transferred.checked_add(len).ok_or_else(|| error("download size overflow"))?;
-                    if next > grant.info.size || plan.max_object_bytes.is_some_and(|max| next > max) { return Err(error("download exceeds declared object size")); }
-                    wire::publish_provider(lease.nats(), client.auth(), &local.guard, &grant.data_subject, &TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Receive, sequence: U64s::new(seq), kind: TransferFrameKind::Data, terminal: None }, bytes.into_bytes()).await?;
+                    let next = transferred
+                        .checked_add(len)
+                        .ok_or_else(|| error("download size overflow"))?;
+                    if next > grant.info.size || plan.max_object_bytes.is_some_and(|max| next > max)
+                    {
+                        return Err(error("download exceeds declared object size"));
+                    }
+                    wire::publish_provider(
+                        lease.nats(),
+                        client.auth(),
+                        &local.guard,
+                        &grant.data_subject,
+                        &TransferFrameDescriptor {
+                            transfer_id: grant.transfer_id.clone(),
+                            direction: TransferDirection::Receive,
+                            sequence: U64s::new(seq),
+                            kind: TransferFrameKind::Data,
+                            terminal: None,
+                        },
+                        bytes.into_bytes(),
+                    )
+                    .await?;
                     // Single event owner: credit cannot be processed between handoff and commit.
-                    window.commit_frame(seq, len).map_err(|e| error(format!("download sender window: {e:?}")))?;
+                    window
+                        .commit_frame(seq, len)
+                        .map_err(|e| error(format!("download sender window: {e:?}")))?;
                     transferred = next;
                     continue;
                 }
+                credit_wait.get_or_insert_with(|| {
+                    super::telemetry::wait(TransferDirection::Receive, "provider", "credit")
+                });
             }
             tokio::select! {
                 _ = &mut expiry => return Err(error("download grant expired")),
                 _ = lease.wait_lost() => return Err(error("download pinned transport lost")),
                 failure = wire::authority_failure(&local, &peer) => return Err(failure),
-                _ = changes.recv() => { peer.guard.check_now().map_err(|e| error(format!("download authority: {e:?}")))?; },
-                _ = local_changes.recv() => { local.guard.reconcile().await.map_err(|e| error(format!("download local authority: {e:?}")))?; },
+                _ = changes.recv() => {
+                    peer.guard
+                        .check_now()
+                        .map_err(|e| error(format!("download authority: {e:?}")))?;
+                },
+                _ = local_changes.recv() => {
+                    local
+                        .guard
+                        .reconcile()
+                        .await
+                        .map_err(|e| error(format!("download local authority: {e:?}")))?;
+                },
                 message = control.next() => {
-                    let message = message.ok_or_else(|| error("download control subscription closed"))?;
-                    let descriptor = match wire::descriptor(&message, &grant.transfer_id, TransferDirection::Receive) { Ok(value) => value, Err(_) => continue };
-                    if descriptor.kind != TransferFrameKind::Control || peer.verify_caller(&message, &descriptor, &grant.provider.connection_id, &grant.signal_subject).await.is_err() { continue; }
+                    let message =
+                        message.ok_or_else(|| error("download control subscription closed"))?;
+                    let descriptor = match wire::descriptor(
+                        &message,
+                        &grant.transfer_id,
+                        TransferDirection::Receive,
+                    ) {
+                        Ok(value) => value,
+                        Err(_) => continue,
+                    };
+                    if descriptor.kind != TransferFrameKind::Control
+                        || peer
+                            .verify_caller(
+                                &message,
+                                &descriptor,
+                                &grant.provider.connection_id,
+                                &grant.signal_subject,
+                            )
+                            .await
+                            .is_err()
+                    {
+                        continue;
+                    }
                     let body = parse_transfer_control(&message.payload).map_err(error)?;
                     let seq = body.control_seq().get();
-                    let repeated_activate = activated && seq == 1 && matches!(body, TransferControl::Activate { .. });
+                    let repeated_activate =
+                        activated && seq == 1 && matches!(body, TransferControl::Activate { .. });
                     if repeated_activate {
-                        if activate_body.as_ref() != Some(&message.payload) { return Err(error("download activation conflict")); }
+                        if activate_body.as_ref() != Some(&message.payload) {
+                            return Err(error("download activation conflict"));
+                        }
                     } else if seq == control_seq {
-                        if control_body.as_ref() != Some(&message.payload) { return Err(error("download control conflict")); }
-                        if !matches!(body, TransferControl::Activate { .. }) { continue; }
-                    } else if seq != control_seq + 1 { return Err(error("download control gap")); }
-                    if !repeated_activate { control_seq = seq; control_body = Some(message.payload.clone()); }
+                        if control_body.as_ref() != Some(&message.payload) {
+                            return Err(error("download control conflict"));
+                        }
+                        if !matches!(body, TransferControl::Activate { .. }) {
+                            continue;
+                        }
+                    } else if seq != control_seq + 1 {
+                        return Err(error("download control gap"));
+                    }
+                    if !repeated_activate {
+                        control_seq = seq;
+                        control_body = Some(message.payload.clone());
+                    }
                     match body {
-                        TransferControl::Activate { receive_max_frame_bytes, .. } => {
-                             if !activated {
-                                 activate_body = Some(message.payload.clone());
-                                max_frame_bytes = max_frame_bytes.min(receive_max_frame_bytes);
-                                buffer.resize(max_frame_bytes as usize, 0);
-                                window = SenderWindow::new(FlowLimits { max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes });
-                            }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Activated { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
+                        TransferControl::Activate {
+                            receive_max_frame_bytes,
+                            receive_window_frames,
+                            receive_window_bytes,
+                            ..
+                        } => {
+                            // The receiving consumer declares what it admitted;
+                            // send within the smaller of that and the grant.
+                            let (Some(declared_frames), Some(declared_bytes)) =
+                                (receive_window_frames, receive_window_bytes)
+                            else {
+                                return Err(error(
+                                    "download activation must declare its receive window",
+                                ));
+                            };
                             if !activated {
-                                let (mut writer, pipe) = super::telemetry::pipe(max_frame_bytes as usize, TransferDirection::Receive, "provider-tx");
-                                let store = store.take().ok_or_else(|| error("download backend already started"))?;
+                                activate_body = Some(message.payload.clone());
+                                max_frame_bytes = max_frame_bytes.min(receive_max_frame_bytes);
+                                effective = (
+                                    grant.window_frames.min(declared_frames),
+                                    grant.window_bytes.min(declared_bytes),
+                                );
+                                max_frame_bytes = max_frame_bytes.min(effective.1);
+                                window = SenderWindow::new(FlowLimits {
+                                    max_frame_bytes,
+                                    window_frames: effective.0,
+                                    window_bytes: effective.1,
+                                });
+                            }
+                            publish_signal(
+                                lease.nats(),
+                                &client,
+                                &local.guard,
+                                &grant.signal_subject,
+                                TransferDirection::Receive,
+                                TransferSignal::Activated {
+                                    format: TransferFormat::V1,
+                                    transfer_id: grant.transfer_id.clone(),
+                                    control_seq: U64s::new(1),
+                                    request_id: wire::header(
+                                        message
+                                            .headers
+                                            .as_ref()
+                                            .ok_or_else(|| error("headers missing"))?,
+                                        "request-id",
+                                    )?,
+                                    max_frame_bytes,
+                                    window_frames: effective.0,
+                                    window_bytes: effective.1,
+                                },
+                            )
+                            .await?;
+                            if !activated {
+                                let (mut writer, pipe) = super::telemetry::pipe(
+                                    max_frame_bytes as usize,
+                                    TransferDirection::Receive,
+                                    "provider",
+                                );
                                 let key = grant.info.key.clone();
                                 reader = Some(pipe);
-                                backend = Some(Box::pin(async move { store.read_into(&key, &mut writer).await }));
+                                backend = Some(
+                                    match source
+                                        .take()
+                                        .ok_or_else(|| error("download backend already started"))?
+                                    {
+                                        DownloadSource::Store(store) => Box::pin(async move {
+                                            store.read_into(&key, &mut writer).await
+                                        }),
+                                        DownloadSource::Reader(mut bytes) => Box::pin(async move {
+                                            tokio::io::copy(&mut bytes, &mut writer)
+                                                .await
+                                                .map_err(error)?;
+                                            Ok(None)
+                                        }),
+                                    },
+                                );
                                 activated = true;
                             }
-                        },
-                        TransferControl::Credit { received_seq, consumed_seq, consumed_bytes, .. } => {
-                            if !activated || consumed_bytes.get() > transferred { return Err(error("invalid download credit bytes")); }
-                            window.apply_credit(received_seq.get(), consumed_seq.get(), Some(consumed_bytes.get())).map_err(|e| error(format!("download credit: {e:?}")))?;
-                        },
+                        }
+                        TransferControl::Credit {
+                            received_seq,
+                            consumed_seq,
+                            consumed_bytes,
+                            ..
+                        } => {
+                            if !activated || consumed_bytes.get() > transferred {
+                                return Err(error("invalid download credit bytes"));
+                            }
+                            window
+                                .apply_credit(
+                                    received_seq.get(),
+                                    consumed_seq.get(),
+                                    Some(consumed_bytes.get()),
+                                )
+                                .map_err(|e| error(format!("download credit: {e:?}")))?;
+                        }
                         TransferControl::Cancel { .. } => {
-                             backend.take();
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Cancelled { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone() }).await?;
+                            backend.take();
+                            publish_signal(
+                                lease.nats(),
+                                &client,
+                                &local.guard,
+                                &grant.signal_subject,
+                                TransferDirection::Receive,
+                                TransferSignal::Cancelled {
+                                    format: TransferFormat::V1,
+                                    transfer_id: grant.transfer_id.clone(),
+                                },
+                            )
+                            .await?;
                             return Ok(());
-                        },
-                        TransferControl::EndAck { final_seq, received_seq, consumed_seq, consumed_bytes, .. } => {
-                            if !eof || consumed_bytes.get() != transferred { return Err(error("invalid download EOF acknowledgement")); }
-                            window.apply_credit(received_seq.get(), consumed_seq.get(), Some(consumed_bytes.get())).map_err(|e| error(format!("download final credit: {e:?}")))?;
-                            window.validate_complete(final_seq.get()).map_err(|e| error(format!("download final sequence: {e:?}")))?;
+                        }
+                        TransferControl::EndAck {
+                            final_seq,
+                            received_seq,
+                            consumed_seq,
+                            consumed_bytes,
+                            ..
+                        } => {
+                            if !eof || consumed_bytes.get() != transferred {
+                                return Err(error("invalid download EOF acknowledgement"));
+                            }
+                            window
+                                .apply_credit(
+                                    received_seq.get(),
+                                    consumed_seq.get(),
+                                    Some(consumed_bytes.get()),
+                                )
+                                .map_err(|e| error(format!("download final credit: {e:?}")))?;
+                            window
+                                .validate_complete(final_seq.get())
+                                .map_err(|e| error(format!("download final sequence: {e:?}")))?;
                             return Ok(());
-                        },
+                        }
                     }
                 },
-                result = async { backend.as_mut().ok_or_else(|| error("download backend missing"))?.await }, if backend.is_some() => {
+                result = async {
+                    backend.as_mut().ok_or_else(|| error("download backend missing"))?.await
+                }, if backend.is_some() => {
                     backend.take();
-                    backend_result = Some(result?.ok_or_else(|| error("download object missing"))?);
+                    backend_result = Some(result?);
                 },
-                count = async { reader.as_mut().ok_or_else(|| error("download reader missing"))?.read(&mut buffer).await.map_err(error) }, if activated && !eof && staged.is_none() => {
-                    let count = count?;
-                    if count > 0 { let mut frame = std::mem::replace(&mut buffer, vec![0; max_frame_bytes as usize]); frame.truncate(count); staged = Some(super::telemetry::Payload::new(Bytes::from(frame.into_boxed_slice()), TransferDirection::Receive, "provider-tx")); continue; }
+                bytes = async {
+                    let reader = reader.as_mut().ok_or_else(|| error("download reader missing"))?;
+                    super::read_ready_frame(reader, max_frame_bytes as usize)
+                        .await
+                        .map_err(error)
+                }, if activated && !eof && staged.is_none() => {
+                    let bytes = bytes?;
+                    if !bytes.is_empty() {
+                        staged = Some(super::telemetry::Payload::new(
+                            bytes,
+                            TransferDirection::Receive,
+                            "provider",
+                        ));
+                        continue;
+                    }
                     let info = match backend_result.take() {
                         Some(info) => info,
-                        None => backend.as_mut().ok_or_else(|| error("download backend missing"))?.await?.ok_or_else(|| error("download object missing"))?,
+                        None => {
+                            backend
+                                .as_mut()
+                                .ok_or_else(|| error("download backend missing"))?
+                                .await?
+                        }
                     };
                     backend.take();
-                    let digest = format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize()));
-                    if info.key != grant.info.key || info.size != transferred || transferred != grant.info.size || !super::transfer_digests_match(&grant.info.digest, &digest) || !info.digest.as_deref().is_some_and(|value| super::transfer_digests_match(value, &digest)) { return Err(error("download backend metadata/digest mismatch")); }
+                    let digest = format!(
+                        "SHA-256={}",
+                        URL_SAFE_NO_PAD.encode(hasher.clone().finalize())
+                    );
+                    // A store must report matching metadata; a provider reader
+                    // is held to the grant's declared size and digest alone.
+                    if from_store {
+                        let info = info.ok_or_else(|| error("download object missing"))?;
+                        if info.key != grant.info.key
+                            || info.size != transferred
+                            || !info
+                                .digest
+                                .as_deref()
+                                .is_some_and(|value| super::transfer_digests_match(value, &digest))
+                        {
+                            return Err(error("download backend metadata/digest mismatch"));
+                        }
+                    }
+                    if transferred != grant.info.size
+                        || !super::transfer_digests_match(&grant.info.digest, &digest)
+                    {
+                        return Err(error(
+                            "download source size/digest does not match its grant",
+                        ));
+                    }
                     let final_seq = U64s::new(window.highest_sent.load(Ordering::Acquire));
-                    wire::publish_provider(lease.nats(), client.auth(), &local.guard, &grant.data_subject, &TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Receive, sequence: final_seq, kind: TransferFrameKind::Eof, terminal: Some(TransferTerminal { final_seq, size: transferred, digest: grant.info.digest.clone() }) }, Bytes::new()).await?;
+                    wire::publish_provider(
+                        lease.nats(),
+                        client.auth(),
+                        &local.guard,
+                        &grant.data_subject,
+                        &TransferFrameDescriptor {
+                            transfer_id: grant.transfer_id.clone(),
+                            direction: TransferDirection::Receive,
+                            sequence: final_seq,
+                            kind: TransferFrameKind::Eof,
+                            terminal: Some(TransferTerminal {
+                                final_seq,
+                                size: transferred,
+                                digest: grant.info.digest.clone(),
+                            }),
+                        },
+                        Bytes::new(),
+                    )
+                    .await?;
                     eof = true;
                 },
             }
         }
-    }.await;
+    }
+    .await;
+    drop(credit_wait);
     backend.take();
     if result.is_err() {
         if let Err(error) = &result {
@@ -185,7 +446,7 @@ where
             &grant.signal_subject,
             TransferDirection::Receive,
             TransferSignal::Error {
-                format: TransferFormat::V2,
+                format: TransferFormat::V1,
                 transfer_id: grant.transfer_id.clone(),
                 code: TransferErrorCode::StorageFailed,
             },

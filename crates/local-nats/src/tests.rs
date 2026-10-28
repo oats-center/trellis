@@ -1257,3 +1257,42 @@ fn fixture_pin(version: &str, archive_bytes: &[u8]) -> PinnedNatsServer {
         sha256: HashMap::from([(asset.to_string(), sha256_hex(archive_bytes))]),
     }
 }
+
+#[test]
+fn a_held_reservation_never_accepts_connections_and_admits_the_intended_listener() {
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    // Other threads spawn processes the whole time, as parallel tests do; each
+    // child inherits this process's sockets until it execs.
+    let stop = Arc::new(AtomicBool::new(false));
+    let spawners: Vec<_> = (0..4)
+        .map(|_| {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = Command::new("/bin/true").status();
+                }
+            })
+        })
+        .collect();
+    for _ in 0..200 {
+        let reservation = ReservedPort::reserve().unwrap();
+        let port = reservation.port();
+        // A readiness probe must never mistake the reservation for the server.
+        assert!(
+            TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "reserved port {port} accepted a connection"
+        );
+        // The real listener binds while the reservation still keeps others off.
+        let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+        assert!(TcpStream::connect(("127.0.0.1", port)).is_ok());
+        drop(listener);
+        drop(reservation);
+    }
+    stop.store(true, Ordering::Relaxed);
+    for spawner in spawners {
+        spawner.join().unwrap();
+    }
+}

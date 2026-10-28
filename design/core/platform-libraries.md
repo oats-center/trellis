@@ -33,9 +33,8 @@ connection walkthroughs, and exact public signatures belong in:
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
 | `@oatscenter/trellis`              | Canonical core Trellis runtime package: client/device helpers, Result helpers, transfers, and generated-contract support | Frontend apps, services, CLI tools  |
 | `@oatscenter/trellis/service`      | Service-side runtime facade, extracted handler types, and service-only helpers                                           | Backend services                    |
-| `@oatscenter/trellis/service`      | Shared Node-compatible native service runtime                                                                            | Node and Deno services              |
-| `@oatscenter/trellis/auth`         | Full auth helper and auth protocol surface, including browser bind helpers                                               | Apps, services, docs, tests         |
-| `@oatscenter/trellis/auth/browser` | Browser-only auth and portal-flow helper facade                                                                          | Browser apps, custom portals        |
+| `@oatscenter/trellis/auth`         | Shared authorization proofs, verification, and browser OAuth helpers                                                     | Apps, services, docs, tests         |
+| `@oatscenter/trellis/auth/browser` | Browser OAuth authorization, credential custody, and recovery helpers                                                    | Browser apps                        |
 | `@oatscenter/trellis/participant`  | Participant metadata and canonical runtime types                                                                         | Generated code and tooling          |
 | Configured local generated package | One ordinary ESM package with `apis` and `participants` namespaces                                                       | Apps and services that consume APIs |
 | `@oatscenter/trellis/telemetry`    | Specialized Trellis telemetry facade for tracing, propagation, and metrics                                               | Runtime libraries and services      |
@@ -76,9 +75,10 @@ connection walkthroughs, and exact public signatures belong in:
 
 ## Public Rust Packages
 
-The supported author-facing Rust crates are `trellis-rs` (the curated facade for
-clients and services), `trellis-protocol` (canonical protocol objects), and
-`trellis-testkit` (the external live-test harness).
+The supported Rust distribution consists of four crates: `trellis-rs` (the curated
+facade for clients and services), `trellis-protocol` (canonical protocol objects
+and native-IDL wire primitives), `trellis-models` (frozen transport-independent
+built-in models), and `trellis-testkit` (the external live-test harness).
 
 The default `trellis-rs` dependency boundary excludes SQL database drivers.
 Prepared events, memory stores, and common inbox/outbox interfaces remain in the
@@ -92,18 +92,44 @@ installed Rustls provider when present and otherwise select ring locally. They
 do not install a process-wide provider. Certificate verification uses platform
 trust, and OTLP retains its configured per-signal timeouts.
 
-`trellis-testkit` links the real production `trellis-runtime` and runs it as an
-owned task, using production bootstrap, direct administrator seeding, and the
-generated `trellis-runtime-apis` administration client. NATS remains a real
-managed child process. Neither Trellis executable is required by Rust tests.
+No server or compiler dependency tree is part of that registry distribution.
+Generated facades use one definition of each support type, with compile-time ABI
+checking. Models do not depend on the SDK, NATS, or compiler. Shared codecs,
+scalar wrappers and cursor data belong to the protocol layer, so different model
+snapshots do not acquire different SDK-owned primitive types.
 
-Cargo distribution also requires publishing `trellis-runtime-apis`,
-`trellis-idl`, `trellis-local-bootstrap`, `trellis-events-runtime`,
-`trellis-jobs-runtime`, `trellis-runtime`, `trellis-bootstrap`, and
-`trellis-local-nats` in lockstep. These are registry-distributed implementation
-crates, not supported authoring APIs. Normal services/apps must not depend on
-them directly; registry visibility does not change that boundary. Other private
-workspace crates remain unpublished.
+SDK archives include producer-generated, package-relative built-in bindings;
+downstream SDK builds do not compile IDL or generators. Matching native packages
+reuse a separately versioned model bundle through exact identity/version/digest
+bindings, checked against the compiled provider. Generated
+crates depend directly on their model bundle; they do not borrow the SDK's
+current snapshot. Old bundles can coexist with the SDK's newer models. Shared
+model metadata is not authority evidence and does not change runtime authorization.
+The CLI embeds its selected model bindings at build time; generation does not
+read the compiler producer's checkout at runtime.
+
+SDK-only release preparation preserves protocol, native-contract, and model
+versions. `release prepare` accepts explicit `--protocol-version`,
+`--models-version`, and `--contracts-version` component changes; contract changes
+require explicit model selection. A model snapshot change that alters generated
+Rust types is an incompatible Cargo change (`0.MINOR`, or `MAJOR` after 1.0),
+permitting old and new bundles to coexist; model serialization fixes can remain
+compatible patch releases. The release review chooses each component's bump, and
+Check runs `cargo-semver-checks` against each crate's latest stable release. Rust
+package versions remain distinct from wire protocol family versions.
+
+`trellis-testkit` owns ordinary production CLI/server and NATS processes instead
+of linking server/compiler implementations. Its administrative bindings are
+producer-frozen and package-relative, reusing the selected public model bundle.
+By default the testkits download the latest CLI/server release (newest stable,
+else newest prerelease, or `TRELLIS_TEST_VERSION`) and verify it against the
+checksum published with that release; pinned NATS archives are checksum-verified
+too, and both are cached privately. Explicit paths support offline use without
+fallback downloads. Testkits never build Trellis from source.
+Server-only restart preserves the separately owned NATS broker. Internal
+generators, runtime APIs, bootstrap, Jobs, Events, and runtime crates remain
+private and non-publishable. The registry boundary has exactly four package
+names: SDK, protocol, model bundles, and testkit.
 
 Jobs and Events package their canonical SQLite initialization migrations with
 their storage implementation. The production runtime reuses those refinery
@@ -114,14 +140,17 @@ validation.
 
 Canonical TypeScript entrypoint for contract-driven RPC, operation, event, and
 transfer-grant-driven file communication. The root package is browser-safe, does
-not eagerly load generated SDKs, exports the normal kind-specific contract
-builders plus health helpers, and keeps host-specific service helpers on
+not eagerly load generated SDKs, consumes generated native-IDL descriptors,
+and keeps host-specific service helpers on
 `@oatscenter/trellis/service*` subpaths.
 
 Rules:
 
-- browser auth uses a session key stored in IndexedDB plus a bind flow;
-  SvelteKit apps may layer on `@oatscenter/trellis-svelte`
+- browser auth uses `BrowserOAuthClient` for authorization-code/PKCE login and
+  `BrowserSessionStore` for IndexedDB custody of non-extractable DPoP keys,
+  refresh credentials, and authenticated issuer trust. Runtime/NATS keys are
+  ephemeral and owned by the connection, not the durable login. SvelteKit apps
+  may layer on `@oatscenter/trellis-svelte`
 - app, agent, device, service, and CLI code should communicate through
   contract-derived RPC, operation, event, live, state, and transfer facades
   rather than raw NATS subjects
@@ -200,12 +229,9 @@ Rules:
 - app-facing auth helpers should not require raw URL plumbing or placeholder
   positional arguments from app code; they should expose options-shaped APIs
   with sensible redirect defaults
-- app-facing auth helpers should accept opaque portal context so apps and custom
-  portals can coordinate runtime UX without hard-coding portal-specific
-  parameters
-- browser clients should route revoked or missing sessions (`session_not_found`)
-  through the auth-required path so Svelte apps can redirect to their login
-  route and preserve the current return URL
+- browser clients classify OAuth and connection recovery with
+  `classifyBrowserAuthError`; recoverable consent or login requirements return
+  through the app's auth-required path while preserving the current return URL
 - dynamic auth-instance selection remains a valid advanced case, but the default
   public browser-app API should optimize for the fixed-instance path rather than
   forcing every app through explicit auth-state construction
@@ -217,9 +243,12 @@ Rules:
 
 ## `@oatscenter/trellis/auth`
 
-Provides the full auth helper, schema, protocol, and browser bind surface. The
-browser-only portal/login helper facade also lives at
-`@oatscenter/trellis/auth/browser`. See:
+Provides shared authorization-proof and verification helpers plus browser OAuth
+exports. `@oatscenter/trellis/auth/browser` exposes `BrowserOAuthClient`,
+`BrowserSessionStore`, and browser recovery classification without native host
+custody. Node's `NativeOAuthClient` and application-provided custody belong on
+`@oatscenter/trellis/native`; provisioned services use `TrellisService.connect`
+with their identity seed rather than interactive login. See:
 
 - [../auth/trellis-auth.md](./../auth/trellis-auth.md)
 - [../auth/auth-api.md](./../auth/auth-api.md)

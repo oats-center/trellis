@@ -1,0 +1,17 @@
+[package]
+name = "trellis-models"
+version = "0.100.0-rc.12"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Frozen transport-independent models for Trellis native contracts."
+publish = ["crates-io"]
+include = ["Cargo.toml", "README.md", "src/**", "generated/**"]
+
+[lints]
+workspace = true
+
+[dependencies]
+trellis-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true

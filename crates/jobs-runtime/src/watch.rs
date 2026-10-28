@@ -7,7 +7,7 @@ use trellis_rs::service::{Router, ServerError};
 use trellis_runtime_apis::apis::trellis_jobs_v1::lives::Watch;
 use trellis_runtime_apis::types::{
     Bytes, JobsWatchFrame as JobsWatchEvent, JobsWatchRequest as JobsWatchInput,
-    JobsWatchRequestquery as JobsWatchInputQuery,
+    JobsWatchRequestQuery as JobsWatchInputQuery,
 };
 
 const JOBS_EVENTS_SUBJECT_WILDCARD: &str = "trellis.jobs.>";

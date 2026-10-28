@@ -157,11 +157,11 @@ export function startObservation(
   ): void => {
     if (finished) return;
     finished = true;
-    recordTrellisDuration(
-      metric,
-      performance.now() - startedAt,
-      { ...attributes, ...extra, outcome },
-    );
+    recordTrellisDuration(metric, performance.now() - startedAt, {
+      ...attributes,
+      ...extra,
+      outcome,
+    });
   };
   return {
     finish: (outcome, extra) => record(outcome, extra),

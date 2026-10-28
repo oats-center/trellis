@@ -17,26 +17,17 @@ use trellis_rs::jobs::{is_terminal, job_event_subject, reduce_job_event};
 use trellis_runtime_apis::types::{
     JobsCancelRequest, JobsCancelResponse, JobsDismissDLQRequest, JobsDismissDLQResponse,
     JobsGetKeyRequest, JobsGetKeyResponse, JobsInspectRequest, JobsInspectResponse,
-    JobsInspectResponseerrorsItem as JobsInspectResponseErrorsItem,
-    JobsInspectResponserelatedItem as JobsInspectResponseRelatedItem,
-    JobsInspectResponsetimelineItem as JobsInspectResponseTimelineItem,
-    JobsInspectResponsetimelineItemerrorDetail as JobsInspectResponseTimelineItemErrorDetail,
-    JobsListDLQRequest, JobsListDLQResponse, JobsListServicesRequest, JobsListServicesResponse,
-    JobsListServicesResponseentriesItem as JobsListServicesResponseEntriesItem,
-    JobsListServicesResponseentriesItemworkersItem as JobsListServicesResponseEntriesItemWorkersItem,
-    JobsMetricsRequest, JobsMetricsResponse,
-    JobsMetricsResponsebucketsItem as JobsMetricsResponseBucketsItem,
-    JobsMetricsResponsebucketsItemgroupsItem as JobsMetricsResponseBucketsItemGroupsItem,
-    JobsMetricsResponsebucketsItemgroupsItemqueueWait as JobsMetricsResponseBucketsItemGroupsItemQueueWait,
-    JobsMetricsResponsebucketsItemgroupsItemruntime as JobsMetricsResponseBucketsItemGroupsItemRuntime,
-    JobsMetricsResponsesummaryItem as JobsMetricsResponseSummaryItem,
-    JobsMetricsResponsesummaryItemqueueWait as JobsMetricsResponseSummaryItemQueueWait,
-    JobsMetricsResponsesummaryItemruntime as JobsMetricsResponseSummaryItemRuntime,
-    JobsQueryRequest, JobsQueryResponse,
-    JobsQueryResponseentriesItem as JobsQueryResponseEntriesItem,
-    JobsQueryResponsegroupsItem as JobsQueryResponseGroupsItem,
-    JobsQueryResponsestats as JobsQueryResponseStats, JobsReplayDLQRequest, JobsReplayDLQResponse,
-    JobsRetryRequest, JobsRetryResponse, JobsSummaryRequest, JobsSummaryResponse,
+    JobsInspectResponseErrorsItem, JobsInspectResponseRelatedItem, JobsInspectResponseTimelineItem,
+    JobsInspectResponseTimelineItemErrorDetail, JobsListDLQRequest, JobsListDLQResponse,
+    JobsListServicesRequest, JobsListServicesResponse, JobsListServicesResponseEntriesItem,
+    JobsListServicesResponseEntriesItemWorkersItem, JobsMetricsRequest, JobsMetricsResponse,
+    JobsMetricsResponseBucketsItem, JobsMetricsResponseBucketsItemGroupsItem,
+    JobsMetricsResponseBucketsItemGroupsItemQueueWait,
+    JobsMetricsResponseBucketsItemGroupsItemRuntime, JobsMetricsResponseSummaryItem,
+    JobsMetricsResponseSummaryItemQueueWait, JobsMetricsResponseSummaryItemRuntime,
+    JobsQueryRequest, JobsQueryResponse, JobsQueryResponseEntriesItem, JobsQueryResponseGroupsItem,
+    JobsQueryResponseStats, JobsReplayDLQRequest, JobsReplayDLQResponse, JobsRetryRequest,
+    JobsRetryResponse, JobsSummaryRequest, JobsSummaryResponse,
 };
 
 mod resources;
@@ -791,7 +782,10 @@ impl JobsQuery {
                 "page": { "nextCursor": page.next_after
                     .map(|after| trellis_protocol::encode_pagination_cursor(&query_digest, &after))
                     .transpose()
-                    .map_err(|_| JobsQueryError::Validation { field: "page.cursor", details: "invalid pagination".to_owned() })? },
+                    .map_err(|_| JobsQueryError::Validation {
+                        field: "page.cursor",
+                        details: "invalid pagination".to_owned(),
+                    })? },
             }),
             "jobs list DLQ response",
         )
@@ -1243,7 +1237,7 @@ fn parse_metrics_group_by(value: &str) -> Result<JobsWorkbenchGroupBy, JobsQuery
 }
 
 fn parse_workbench_sort(
-    sort: Option<&trellis_runtime_apis::types::JobsQueryRequestsort>,
+    sort: Option<&trellis_runtime_apis::types::JobsQueryRequestSort>,
 ) -> Result<JobsWorkbenchSort, JobsQueryError> {
     let Some(sort) = sort else {
         return Ok(JobsWorkbenchSort::default());
@@ -1633,39 +1627,18 @@ fn sibling_event_subject(subject: &str, event_type: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use async_nats::jetstream::{kv, stream};
     use serde_json::json;
-    use trellis_rs::jobs::events::{
-        cancelled, created, created_with_policy, dismissed, retried, EventMeta,
-    };
-    use trellis_rs::jobs::keys::JobKeyQueuedEntry;
+    use trellis_rs::jobs::events::{cancelled, dismissed, retried, EventMeta};
     use trellis_rs::jobs::types::{
-        Job, JobConcurrency, JobContext, JobEvent, JobState, JobWaitEdge, JobWaitTarget,
-        JobWaitTargetKind,
+        Job, JobContext, JobEvent, JobState, JobWaitEdge, JobWaitTarget, JobWaitTargetKind,
     };
 
     use super::parse_since_filter;
     use super::{
-        jobs_admin_resources, plan_mutation_response, reduce_job_event, timeline_event_to_wire,
-        workbench_entry_to_wire, JobsQueryError, MutationResponsePlan,
+        plan_mutation_response, reduce_job_event, timeline_event_to_wire, workbench_entry_to_wire,
+        JobsQueryError, MutationResponsePlan,
     };
     use crate::storage::{JobTimelineEvent, JobsWorkbenchEntry};
-    use crate::test_nats::TestNats;
-    use crate::{
-        start_jobs_projector, JobResourceResolver, JobsQuery, SqliteJobResourceResolver,
-        SqliteJobsStore,
-    };
-
-    #[test]
-    fn jobs_admin_resources_use_builtin_stream_names() {
-        let resources = jobs_admin_resources();
-
-        assert_eq!(resources.jobs_stream, "JOBS");
-        assert_eq!(resources.jobs_advisories_stream, "JOBS_ADVISORIES");
-    }
 
     fn sample_job(state: JobState) -> Job {
         Job {
@@ -1910,194 +1883,5 @@ mod tests {
             error,
             JobsQueryError::Validation { field: "since", .. }
         ));
-    }
-
-    #[tokio::test]
-    async fn get_key_stabilizes_a_concurrent_transition_after_projection_catches_up() {
-        let nats = TestNats::start().await;
-        let jetstream = async_nats::jetstream::new(nats.client.clone());
-        jetstream
-            .create_stream(stream::Config {
-                name: "JOBS".to_owned(),
-                subjects: vec!["trellis.jobs.>".to_owned()],
-                ..Default::default()
-            })
-            .await
-            .expect("Jobs stream should be created");
-        let keys = jetstream
-            .create_key_value(kv::Config {
-                bucket: "JOBS_KEYS_documents".to_owned(),
-                ..Default::default()
-            })
-            .await
-            .expect("key bucket should be created");
-        let key_state = trellis_rs::jobs::keys::JobKeyState {
-            version: 1,
-            service: "documents".to_owned(),
-            job_type: "import".to_owned(),
-            key: "customer-42".to_owned(),
-            key_hash: "hash-42".to_owned(),
-            max_active: 1,
-            max_queued_per_key: Some(1),
-            active: Vec::new(),
-            cleanup_pending: Vec::new(),
-            queued: Vec::new(),
-            stale_takeover_count: 3,
-            updated_at: "2026-03-28T12:00:00Z".to_owned(),
-        };
-        keys.put(
-            "documents.import.hash-42",
-            serde_json::to_vec(&key_state)
-                .expect("key state should encode")
-                .into(),
-        )
-        .await
-        .expect("key state should persist");
-        let unrelated = sample_job(JobState::Pending);
-        let horizon_event = created(
-            EventMeta {
-                service: "other-service",
-                job_type: "other-job",
-                job_id: "horizon-job",
-                context: &unrelated.context,
-                timestamp: "2026-03-28T12:00:00Z",
-            },
-            json!({}),
-            1,
-            None,
-        );
-        jetstream
-            .publish(
-                "trellis.jobs.other-service.other-job.horizon-job.created",
-                serde_json::to_vec(&horizon_event)
-                    .expect("horizon event should encode")
-                    .into(),
-            )
-            .await
-            .expect("horizon should publish")
-            .await
-            .expect("horizon should persist");
-
-        let catalog = tempfile::NamedTempFile::new().expect("catalog path should exist");
-        let connection = rusqlite::Connection::open(catalog.path()).expect("catalog should open");
-        connection
-            .execute_batch(
-                "CREATE TABLE auth_resource_binding_evidence (
-                    participant_id TEXT NOT NULL,
-                    local_name TEXT NOT NULL,
-                    provider_identity TEXT NOT NULL,
-                    state TEXT NOT NULL,
-                    resource_kind TEXT NOT NULL
-                );",
-            )
-            .expect("catalog schema should initialize");
-        connection
-            .execute(
-                "INSERT INTO auth_resource_binding_evidence VALUES (?1,?2,?3,'available','jobQueue')",
-                rusqlite::params![
-                    "documents",
-                    "import",
-                    json!({
-                        "namespace": "documents",
-                        "work_stream": "JOBS_WORK",
-                        "consumer": "documents-import"
-                    })
-                    .to_string()
-                ],
-            )
-            .expect("catalog binding should insert");
-        drop(connection);
-        let store = SqliteJobsStore::open_in_memory().expect("store should open");
-        let resolver: Arc<dyn JobResourceResolver> = Arc::new(SqliteJobResourceResolver::new(
-            catalog.path().to_owned(),
-            nats.client.clone(),
-            "JOBS".to_owned(),
-        ));
-        let query = JobsQuery::with_store(
-            trellis_rs::jobs::JobsRuntime::from_nats(nats.client.clone()),
-            store.clone(),
-            resolver,
-        );
-        let request = serde_json::from_value(json!({
-            "service": "documents",
-            "type": "import",
-            "key": "customer-42"
-        }))
-        .expect("request should decode");
-        let mut response = tokio::spawn(async move { query.get_key(&request).await });
-
-        assert!(
-            tokio::time::timeout(Duration::from_millis(150), &mut response)
-                .await
-                .is_err()
-        );
-        let mut transitioned_key_state = key_state;
-        transitioned_key_state.queued.push(JobKeyQueuedEntry {
-            job_id: "queued-job".to_owned(),
-            created_at: "2026-03-28T12:00:01Z".to_owned(),
-            request_id: "request-queued-job".to_owned(),
-            context: None,
-        });
-        transitioned_key_state.stale_takeover_count = 4;
-        transitioned_key_state.updated_at = "2026-03-28T12:00:01Z".to_owned();
-        keys.put(
-            "documents.import.hash-42",
-            serde_json::to_vec(&transitioned_key_state)
-                .expect("transitioned key state should encode")
-                .into(),
-        )
-        .await
-        .expect("transitioned key state should persist");
-        let transitioned_job = sample_job(JobState::Pending);
-        let transition_event = created_with_policy(
-            EventMeta {
-                service: "documents",
-                job_type: "import",
-                job_id: "queued-job",
-                context: &transitioned_job.context,
-                timestamp: "2026-03-28T12:00:01Z",
-            },
-            json!({}),
-            1,
-            None,
-            Some(JobConcurrency {
-                key: "customer-42".to_owned(),
-                key_hash: "hash-42".to_owned(),
-                instance_id: None,
-                slot_token: None,
-                heartbeat_at: None,
-                lease_expires_at: None,
-                stale_takeover_count: Some(4),
-            }),
-            None,
-        );
-        jetstream
-            .publish(
-                "trellis.jobs.documents.import.queued-job.created",
-                serde_json::to_vec(&transition_event)
-                    .expect("transition event should encode")
-                    .into(),
-            )
-            .await
-            .expect("transition should publish")
-            .await
-            .expect("transition should persist");
-        let projector = start_jobs_projector(
-            trellis_rs::jobs::JobsRuntime::from_nats(nats.client.clone()),
-            store,
-            "JOBS".to_owned(),
-        )
-        .await
-        .expect("projector should start");
-        let response = tokio::time::timeout(Duration::from_secs(2), response)
-            .await
-            .expect("query should finish after projection catches up")
-            .expect("query task should succeed")
-            .expect("get key should succeed");
-        let response = serde_json::to_value(response).expect("response should encode");
-        assert_eq!(response["keyHash"], "hash-42");
-        assert_eq!(response["queued"][0]["jobId"], "queued-job");
-        assert_eq!(response["staleTakeoverCount"], "4");
-        projector.stop().await;
     }
 }

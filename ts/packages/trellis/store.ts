@@ -3,6 +3,7 @@ import {
   type ObjectStore,
   type ObjectStoreStatus,
   Objm,
+  setSha256Backend,
 } from "@nats-io/obj";
 import type { NatsConnection } from "@nats-io/nats-core/internal";
 import {
@@ -21,6 +22,7 @@ import {
   encodePaginationCursor,
   paginationQueryDigest,
 } from "./auth/protocol_wasm.ts";
+import { nativeSha256 } from "./sha256.ts";
 import { TypedStoreEntry } from "./store_entry.ts";
 import { boundedObjectStream } from "./store_reader.ts";
 export { TypedStoreEntry } from "./store_entry.ts";
@@ -34,9 +36,7 @@ const DEFAULT_STORE_LIST_LIMIT = 100;
 const STORE_LIST_CURSOR_ENDPOINT = "trellis.store.list";
 
 export type StoreBody =
-  | Uint8Array
-  | ReadableStream<Uint8Array>
-  | AsyncIterable<Uint8Array>;
+  Uint8Array | ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>;
 
 export type StoreWaitOptions = {
   timeoutMs?: number;
@@ -286,17 +286,21 @@ async function openStore(
   name: string,
   options: StoreOpenOptions,
 ): Promise<ObjectStore> {
+  // Trellis owns its NATS connections and Object Store usage, so it selects
+  // the SDK's process-wide hash backend: native `node:crypto` where available
+  // (Node, Deno, Bun), the portable default in browsers. Digests are identical.
+  if (nativeSha256) setSha256Backend("native");
   const objm = new Objm(nats);
   const store = options.bindOnly
     ? await objm.open(name)
     : await objm.create(name, {
-      ...(options.ttlMs && options.ttlMs > 0
-        ? { ttl: options.ttlMs * 1_000_000 }
-        : {}),
-      ...(options.maxTotalBytes !== undefined
-        ? { max_bytes: options.maxTotalBytes }
-        : {}),
-    });
+        ...(options.ttlMs && options.ttlMs > 0
+          ? { ttl: options.ttlMs * 1_000_000 }
+          : {}),
+        ...(options.maxTotalBytes !== undefined
+          ? { max_bytes: options.maxTotalBytes }
+          : {}),
+      });
   await ensureExistingStoreOptions(store, name, options);
   return store;
 }
@@ -381,8 +385,10 @@ async function sleepWithSignal(
   signal?: AbortSignal,
 ): Promise<void> {
   if (signal?.aborted) {
-    throw signal.reason ??
-      new DOMException("The operation was aborted", "AbortError");
+    throw (
+      signal.reason ??
+      new DOMException("The operation was aborted", "AbortError")
+    );
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -488,8 +494,8 @@ export class TypedStore {
   ) {
     this.#transport = transport;
     this.#name = name;
-    this.#acquireTimeoutMs = options.acquireTimeoutMs ??
-      DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS;
+    this.#acquireTimeoutMs =
+      options.acquireTimeoutMs ?? DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS;
     this.#options = {
       ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
       ...(options.maxObjectBytes !== undefined
@@ -508,15 +514,17 @@ export class TypedStore {
     name: string,
     options: StoreOpenOptions = {},
   ): AsyncResult<TypedStore, StoreError> {
-    return AsyncResult.from((async () => {
-      const handle = new TypedStore(transport, name, options);
-      try {
-        await handle.#materialize();
-        return Result.ok(handle);
-      } catch (cause) {
-        return Result.err(storeOpenError(name, cause));
-      }
-    })());
+    return AsyncResult.from(
+      (async () => {
+        const handle = new TypedStore(transport, name, options);
+        try {
+          await handle.#materialize();
+          return Result.ok(handle);
+        } catch (cause) {
+          return Result.err(storeOpenError(name, cause));
+        }
+      })(),
+    );
   }
 
   /**
@@ -619,11 +627,11 @@ export class TypedStore {
   }
 
   get(key: string): AsyncResult<TypedStoreEntry, StoreOperationError> {
-    return AsyncResult.from((async (): Promise<
-      ResultType<TypedStoreEntry, StoreOperationError>
-    > => {
-      return await this.#getEntry(key, Date.now() + this.#acquireTimeoutMs);
-    })());
+    return AsyncResult.from(
+      (async (): Promise<ResultType<TypedStoreEntry, StoreOperationError>> => {
+        return await this.#getEntry(key, Date.now() + this.#acquireTimeoutMs);
+      })(),
+    );
   }
 
   /**
@@ -673,11 +681,12 @@ export class TypedStore {
     }
     try {
       const info = await unwrapObjectInfo(acquired.store, key);
-      return info.map((objectInfo) =>
-        new TypedStoreEntry(
-          this.#entryStore(),
-          storeInfoFromObjectInfo(objectInfo),
-        )
+      return info.map(
+        (objectInfo) =>
+          new TypedStoreEntry(
+            this.#entryStore(),
+            storeInfoFromObjectInfo(objectInfo),
+          ),
       );
     } finally {
       acquired.release();
@@ -728,179 +737,200 @@ export class TypedStore {
     key: string,
     options: StoreWaitOptions = {},
   ): AsyncResult<TypedStoreEntry, StoreOperationError> {
-    return AsyncResult.from((async (): Promise<
-      ResultType<TypedStoreEntry, StoreOperationError>
-    > => {
-      const startedAt = Date.now();
-      const pollIntervalMs = options.pollIntervalMs ??
-        DEFAULT_STORE_WAIT_POLL_INTERVAL_MS;
+    return AsyncResult.from(
+      (async (): Promise<ResultType<TypedStoreEntry, StoreOperationError>> => {
+        const startedAt = Date.now();
+        const pollIntervalMs =
+          options.pollIntervalMs ?? DEFAULT_STORE_WAIT_POLL_INTERVAL_MS;
 
-      while (true) {
-        if (options.signal?.aborted) {
-          return Result.err(
-            storeAbortedError("waitFor", key, options.signal.reason),
-          );
-        }
+        while (true) {
+          if (options.signal?.aborted) {
+            return Result.err(
+              storeAbortedError("waitFor", key, options.signal.reason),
+            );
+          }
 
-        // Transport acquisition counts against the caller's wait budget.
-        const deadlineMs = options.timeoutMs === undefined
-          ? Date.now() + this.#acquireTimeoutMs
-          : Math.min(
-            Date.now() + this.#acquireTimeoutMs,
-            startedAt + options.timeoutMs,
-          );
-        const entry = await this.#getEntry(key, deadlineMs, options.signal);
-        if (entry.isOk()) {
-          return entry;
-        }
-        if (
-          !isNotFoundStoreError(entry.error) || isTransportError(entry.error)
-        ) {
-          return entry;
-        }
+          // Transport acquisition counts against the caller's wait budget.
+          const deadlineMs =
+            options.timeoutMs === undefined
+              ? Date.now() + this.#acquireTimeoutMs
+              : Math.min(
+                  Date.now() + this.#acquireTimeoutMs,
+                  startedAt + options.timeoutMs,
+                );
+          const entry = await this.#getEntry(key, deadlineMs, options.signal);
+          if (entry.isOk()) {
+            return entry;
+          }
+          if (
+            !isNotFoundStoreError(entry.error) ||
+            isTransportError(entry.error)
+          ) {
+            return entry;
+          }
 
-        const remainingTimeoutMs = options.timeoutMs === undefined
-          ? undefined
-          : options.timeoutMs - (Date.now() - startedAt);
-        if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
-          return Result.err(
-            new StoreError({
-              operation: "waitFor",
-              context: { key, reason: "timeout", timeoutMs: options.timeoutMs },
-            }),
-          );
-        }
+          const remainingTimeoutMs =
+            options.timeoutMs === undefined
+              ? undefined
+              : options.timeoutMs - (Date.now() - startedAt);
+          if (remainingTimeoutMs !== undefined && remainingTimeoutMs <= 0) {
+            return Result.err(
+              new StoreError({
+                operation: "waitFor",
+                context: {
+                  key,
+                  reason: "timeout",
+                  timeoutMs: options.timeoutMs,
+                },
+              }),
+            );
+          }
 
-        try {
-          await sleepWithSignal(
-            remainingTimeoutMs === undefined
-              ? pollIntervalMs
-              : Math.min(pollIntervalMs, remainingTimeoutMs),
-            options.signal,
-          );
-        } catch (cause) {
-          return Result.err(storeAbortedError("waitFor", key, cause));
+          try {
+            await sleepWithSignal(
+              remainingTimeoutMs === undefined
+                ? pollIntervalMs
+                : Math.min(pollIntervalMs, remainingTimeoutMs),
+              options.signal,
+            );
+          } catch (cause) {
+            return Result.err(storeAbortedError("waitFor", key, cause));
+          }
         }
-      }
-    })());
+      })(),
+    );
   }
 
   delete(key: string): AsyncResult<void, StoreOperationError> {
-    return AsyncResult.from((async () => {
-      if (!this.#isCurrent()) return this.#stale("delete", key);
-      let acquired: { store: ObjectStore; release: () => void };
-      try {
-        acquired = await this.#acquire("write");
-      } catch (cause) {
-        return Result.err(
-          cause instanceof TransportError
-            ? cause
-            : new StoreError({ operation: "delete", cause, context: { key } }),
-        );
-      }
-      try {
-        await acquired.store.delete(key);
-        return Result.ok(undefined);
-      } catch (cause) {
-        return Result.err(
-          new StoreError({ operation: "delete", cause, context: { key } }),
-        );
-      } finally {
-        acquired.release();
-      }
-    })());
+    return AsyncResult.from(
+      (async () => {
+        if (!this.#isCurrent()) return this.#stale("delete", key);
+        let acquired: { store: ObjectStore; release: () => void };
+        try {
+          acquired = await this.#acquire("write");
+        } catch (cause) {
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : new StoreError({
+                  operation: "delete",
+                  cause,
+                  context: { key },
+                }),
+          );
+        }
+        try {
+          await acquired.store.delete(key);
+          return Result.ok(undefined);
+        } catch (cause) {
+          return Result.err(
+            new StoreError({ operation: "delete", cause, context: { key } }),
+          );
+        } finally {
+          acquired.release();
+        }
+      })(),
+    );
   }
 
   list(
     opts: StoreListOptions = {},
   ): AsyncResult<StoreListPage, StoreOperationError> {
-    return AsyncResult.from((async () => {
-      if (!this.#isCurrent()) return this.#stale("list");
-      const query = validateStoreListOptions(opts);
-      if (query.isErr()) return Result.err(query.error);
+    return AsyncResult.from(
+      (async () => {
+        if (!this.#isCurrent()) return this.#stale("list");
+        const query = validateStoreListOptions(opts);
+        if (query.isErr()) return Result.err(query.error);
 
-      const { prefix, cursor, limit } = query.unwrapOrElse(() => {
-        throw new Error("unreachable");
-      });
-      let acquired: { store: ObjectStore; release: () => void };
-      try {
-        acquired = await this.#acquire("read");
-      } catch (cause) {
-        return Result.err(
-          cause instanceof TransportError
-            ? cause
-            : new StoreError({ operation: "list", cause, context: { prefix } }),
-        );
-      }
-      try {
-        const queryDigest = await paginationQueryDigest(
-          STORE_LIST_CURSOR_ENDPOINT,
-          { prefix },
-        );
-        let after = "";
-        if (cursor) {
-          const decoded = await decodePaginationCursor<unknown>(
-            cursor,
-            queryDigest,
-          );
-          if (typeof decoded !== "string") {
-            throw new Error("invalid pagination cursor");
-          }
-          after = decoded;
-        }
-        const objects = await acquired.store.list();
-        const filtered = objects
-          .filter((info) => !info.deleted && info.name.startsWith(prefix))
-          .map(storeInfoFromObjectInfo)
-          .sort((left, right) => compareStoreKeys(left.key, right.key))
-          .filter((info) => compareStoreKeys(info.key, after) > 0);
-        const entries = filtered.slice(0, limit);
-
-        return Result.ok({
-          entries,
-          ...(filtered.length > limit
-            ? {
-              nextCursor: await encodePaginationCursor(
-                queryDigest,
-                entries.at(-1)?.key,
-              ),
-            }
-            : {}),
+        const { prefix, cursor, limit } = query.unwrapOrElse(() => {
+          throw new Error("unreachable");
         });
-      } catch (cause) {
-        return Result.err(
-          new StoreError({ operation: "list", cause, context: { prefix } }),
-        );
-      } finally {
-        acquired.release();
-      }
-    })());
+        let acquired: { store: ObjectStore; release: () => void };
+        try {
+          acquired = await this.#acquire("read");
+        } catch (cause) {
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : new StoreError({
+                  operation: "list",
+                  cause,
+                  context: { prefix },
+                }),
+          );
+        }
+        try {
+          const queryDigest = await paginationQueryDigest(
+            STORE_LIST_CURSOR_ENDPOINT,
+            { prefix },
+          );
+          let after = "";
+          if (cursor) {
+            const decoded = await decodePaginationCursor<unknown>(
+              cursor,
+              queryDigest,
+            );
+            if (typeof decoded !== "string") {
+              throw new Error("invalid pagination cursor");
+            }
+            after = decoded;
+          }
+          const objects = await acquired.store.list();
+          const filtered = objects
+            .filter((info) => !info.deleted && info.name.startsWith(prefix))
+            .map(storeInfoFromObjectInfo)
+            .sort((left, right) => compareStoreKeys(left.key, right.key))
+            .filter((info) => compareStoreKeys(info.key, after) > 0);
+          const entries = filtered.slice(0, limit);
+
+          return Result.ok({
+            entries,
+            ...(filtered.length > limit
+              ? {
+                  nextCursor: await encodePaginationCursor(
+                    queryDigest,
+                    entries.at(-1)?.key,
+                  ),
+                }
+              : {}),
+          });
+        } catch (cause) {
+          return Result.err(
+            new StoreError({ operation: "list", cause, context: { prefix } }),
+          );
+        } finally {
+          acquired.release();
+        }
+      })(),
+    );
   }
 
   status(): AsyncResult<StoreStatus, StoreOperationError> {
-    return AsyncResult.from((async () => {
-      if (!this.#isCurrent()) return this.#stale("status");
-      let acquired: { store: ObjectStore; release: () => void };
-      try {
-        acquired = await this.#acquire("read");
-      } catch (cause) {
-        return Result.err(
-          cause instanceof TransportError
-            ? cause
-            : new StoreError({ operation: "status", cause }),
-        );
-      }
-      try {
-        const status = await acquired.store.status();
-        return Result.ok(
-          storeStatusFromObjectStoreStatus(status, this.#options),
-        );
-      } catch (cause) {
-        return Result.err(new StoreError({ operation: "status", cause }));
-      } finally {
-        acquired.release();
-      }
-    })());
+    return AsyncResult.from(
+      (async () => {
+        if (!this.#isCurrent()) return this.#stale("status");
+        let acquired: { store: ObjectStore; release: () => void };
+        try {
+          acquired = await this.#acquire("read");
+        } catch (cause) {
+          return Result.err(
+            cause instanceof TransportError
+              ? cause
+              : new StoreError({ operation: "status", cause }),
+          );
+        }
+        try {
+          const status = await acquired.store.status();
+          return Result.ok(
+            storeStatusFromObjectStoreStatus(status, this.#options),
+          );
+        } catch (cause) {
+          return Result.err(new StoreError({ operation: "status", cause }));
+        } finally {
+          acquired.release();
+        }
+      })(),
+    );
   }
 
   async #putInternal(

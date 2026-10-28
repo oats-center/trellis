@@ -1,4 +1,5 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import {
   deriveJobKey,
   isJobKeyState,
@@ -18,7 +19,7 @@ const context: JobContext = {
   traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
 };
 
-Deno.test("same-job redelivery reclaims an expired keyed lease and fences its old owner", async () => {
+test("same-job redelivery reclaims an expired keyed lease and fences its old owner", async () => {
   const policy = normalizeJobKeyPolicy({
     keyConcurrency: {
       key: ["/documentId"],
@@ -56,7 +57,7 @@ Deno.test("same-job redelivery reclaims an expired keyed lease and fences its ol
     instanceId: "restarted-worker",
     now: "2026-10-01T00:00:04.000Z",
   };
-  assertEquals(
+  assert.deepEqual(
     reduceAcquireActiveSlot({
       state: first.state,
       derived,
@@ -75,7 +76,7 @@ Deno.test("same-job redelivery reclaims an expired keyed lease and fences its ol
     slotToken: "other-owner",
   });
   assert(other.kind === "blocked");
-  assertEquals(other.reason, "stale-blocked");
+  assert.deepEqual(other.reason, "stale-blocked");
   const recovered = reduceAcquireActiveSlot({
     state: first.state,
     derived,
@@ -84,12 +85,12 @@ Deno.test("same-job redelivery reclaims an expired keyed lease and fences its ol
     slotToken: "new-owner",
   });
   assert(recovered.kind === "acquired");
-  assertEquals(recovered.state.active.length, 1);
-  assertEquals(recovered.state.active[0].slotToken, "new-owner");
-  assertEquals(recovered.stale, []);
+  assert.deepEqual(recovered.state.active.length, 1);
+  assert.deepEqual(recovered.state.active[0].slotToken, "new-owner");
+  assert.deepEqual(recovered.stale, []);
 });
 
-Deno.test("deriveJobKey builds display key and stable hash from template", async () => {
+test("deriveJobKey builds display key and stable hash from template", async () => {
   const first = await deriveJobKey({
     service: "svc",
     jobType: "sync",
@@ -103,13 +104,13 @@ Deno.test("deriveJobKey builds display key and stable hash from template", async
     template: ["tenant", "/origin", "/ticket/id", "/urgent"],
   });
 
-  assertEquals(first.key, "tenant:zendesk:42:true");
-  assertEquals(first.keyHash, second.keyHash);
-  assertEquals(first.keyHash.length, 64);
-  assertEquals(first.kvKey, `svc.sync.${first.keyHash}`);
+  assert.deepEqual(first.key, "tenant:zendesk:42:true");
+  assert.deepEqual(first.keyHash, second.keyHash);
+  assert.deepEqual(first.keyHash.length, 64);
+  assert.deepEqual(first.kvKey, `svc.sync.${first.keyHash}`);
 });
 
-Deno.test("deriveJobKey hashes typed structured segments without display-key collisions", async () => {
+test("deriveJobKey hashes typed structured segments without display-key collisions", async () => {
   const first = await deriveJobKey({
     service: "svc",
     jobType: "sync",
@@ -123,13 +124,13 @@ Deno.test("deriveJobKey hashes typed structured segments without display-key col
     template: ["a:b", "/value"],
   });
 
-  assertEquals(first.key, "a:b:c");
-  assertEquals(second.key, "a:b:c");
-  assertEquals(first.keyHash === second.keyHash, false);
+  assert.deepEqual(first.key, "a:b:c");
+  assert.deepEqual(second.key, "a:b:c");
+  assert.deepEqual(first.keyHash === second.keyHash, false);
 });
 
-Deno.test("deriveJobKey rejects non-scalar pointer values", async () => {
-  await assertRejects(
+test("deriveJobKey rejects non-scalar pointer values", async () => {
+  await assert.rejects(
     () =>
       deriveJobKey({
         service: "svc",
@@ -137,14 +138,21 @@ Deno.test("deriveJobKey rejects non-scalar pointer values", async () => {
         payload: { nested: { id: "bad" } },
         template: ["tenant", "/nested"],
       }),
-    Error,
-    "did not resolve to a string, finite number, or boolean",
+    (error: unknown) =>
+      error instanceof Error &&
+      error.message.includes(
+        "did not resolve to a string, finite number, or boolean",
+      ),
   );
 });
 
-Deno.test("deriveJobKey rejects non-finite numeric pointer values", async () => {
-  for (const value of [NaN, Infinity, -Infinity]) {
-    await assertRejects(
+test("deriveJobKey rejects non-finite numeric pointer values", async () => {
+  for (const value of [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ]) {
+    await assert.rejects(
       () =>
         deriveJobKey({
           service: "svc",
@@ -152,13 +160,16 @@ Deno.test("deriveJobKey rejects non-finite numeric pointer values", async () => 
           payload: { value },
           template: ["tenant", "/value"],
         }),
-      Error,
-      "did not resolve to a string, finite number, or boolean",
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes(
+          "did not resolve to a string, finite number, or boolean",
+        ),
     );
   }
 });
 
-Deno.test("reduceAdmission applies default keyed queue reject policy", async () => {
+test("reduceAdmission applies default keyed queue reject policy", async () => {
   const policy = normalizeJobKeyPolicy({
     keyConcurrency: { key: ["/tenant"] },
   });
@@ -181,7 +192,7 @@ Deno.test("reduceAdmission applies default keyed queue reject policy", async () 
     },
     policy,
   });
-  assertEquals(accepted.kind, "accepted");
+  assert.deepEqual(accepted.kind, "accepted");
   if (accepted.kind !== "accepted") return;
 
   const rejected = reduceAdmission({
@@ -197,7 +208,7 @@ Deno.test("reduceAdmission applies default keyed queue reject policy", async () 
     },
     policy,
   });
-  assertEquals(rejected, {
+  assert.deepEqual(rejected, {
     kind: "rejected",
     key: "a",
     reason: "queue-depth",
@@ -207,7 +218,7 @@ Deno.test("reduceAdmission applies default keyed queue reject policy", async () 
   });
 });
 
-Deno.test("reduceAdmission supports coalesce and replace-oldest", async () => {
+test("reduceAdmission supports coalesce and replace-oldest", async () => {
   const derived = await deriveJobKey({
     service: "svc",
     jobType: "sync",
@@ -248,9 +259,9 @@ Deno.test("reduceAdmission supports coalesce and replace-oldest", async () => {
       queue: { whenFull: "coalesce" },
     }),
   });
-  assertEquals(coalesced.kind, "coalesced");
+  assert.deepEqual(coalesced.kind, "coalesced");
   if (coalesced.kind === "coalesced") {
-    assertEquals(coalesced.existing.id, "job-1");
+    assert.deepEqual(coalesced.existing.id, "job-1");
   }
 
   const replaced = reduceAdmission({
@@ -269,14 +280,17 @@ Deno.test("reduceAdmission supports coalesce and replace-oldest", async () => {
       queue: { whenFull: "replace-oldest" },
     }),
   });
-  assertEquals(replaced.kind, "replaced");
+  assert.deepEqual(replaced.kind, "replaced");
   if (replaced.kind === "replaced") {
-    assertEquals(replaced.replaced.id, "job-1");
-    assertEquals(replaced.state.queued.map((entry) => entry.jobId), ["job-3"]);
+    assert.deepEqual(replaced.replaced.id, "job-1");
+    assert.deepEqual(
+      replaced.state.queued.map((entry) => entry.jobId),
+      ["job-3"],
+    );
   }
 });
 
-Deno.test("reduceAdmission keeps create strict for coalesce and replace-oldest queues", async () => {
+test("reduceAdmission keeps create strict for coalesce and replace-oldest queues", async () => {
   const derived = await deriveJobKey({
     service: "svc",
     jobType: "sync",
@@ -317,11 +331,11 @@ Deno.test("reduceAdmission keeps create strict for coalesce and replace-oldest q
         queue: { whenFull },
       }),
     });
-    assertEquals(rejected.kind, "rejected");
+    assert.deepEqual(rejected.kind, "rejected");
   }
 });
 
-Deno.test("reduceAdmission remembers an accepted submission after its queue entry is removed", async () => {
+test("reduceAdmission remembers an accepted submission after its queue entry is removed", async () => {
   const derived = await deriveJobKey({
     service: "svc",
     jobType: "sync",
@@ -360,16 +374,16 @@ Deno.test("reduceAdmission remembers an accepted submission after its queue entr
     request,
     policy,
   });
-  assertEquals(replayed.kind, "accepted");
+  assert.deepEqual(replayed.kind, "accepted");
   if (replayed.kind === "accepted") {
-    assertEquals(replayed.state.queued, []);
-    assertEquals(replayed.state.acceptedBySubmissionId, {
+    assert.deepEqual(replayed.state.queued, []);
+    assert.deepEqual(replayed.state.acceptedBySubmissionId, {
       "submission-1": { jobId: "job-1" },
     });
   }
 });
 
-Deno.test("active slot reducers acquire renew release and detect stale completion", async () => {
+test("active slot reducers acquire renew release and detect stale completion", async () => {
   const policy = normalizeJobKeyPolicy({
     keyConcurrency: { key: ["/tenant"] },
   });
@@ -408,10 +422,10 @@ Deno.test("active slot reducers acquire renew release and detect stale completio
     policy,
     slotToken: "slot-1",
   });
-  assertEquals(acquired.kind, "acquired");
+  assert.deepEqual(acquired.kind, "acquired");
   if (acquired.kind !== "acquired") return;
-  assertEquals(acquired.state.active.length, 1);
-  assertEquals(acquired.state.queued.length, 0);
+  assert.deepEqual(acquired.state.active.length, 1);
+  assert.deepEqual(acquired.state.queued.length, 0);
 
   const renewed = reduceRenewHeartbeat({
     state: acquired.state,
@@ -420,10 +434,10 @@ Deno.test("active slot reducers acquire renew release and detect stale completio
     now: "2024-01-01T00:00:02.000Z",
     policy,
   });
-  assertEquals(renewed.kind, "renewed");
+  assert.deepEqual(renewed.kind, "renewed");
   if (renewed.kind !== "renewed") return;
 
-  assertEquals(
+  assert.deepEqual(
     reduceReleaseActiveSlot({
       state: renewed.state,
       jobId: "job-1",
@@ -432,7 +446,7 @@ Deno.test("active slot reducers acquire renew release and detect stale completio
     }).kind,
     "staleCompletion",
   );
-  assertEquals(
+  assert.deepEqual(
     reduceReleaseActiveSlot({
       state: renewed.state,
       jobId: "job-1",
@@ -443,7 +457,7 @@ Deno.test("active slot reducers acquire renew release and detect stale completio
   );
 });
 
-Deno.test("reduceAcquireActiveSlot blocks replaced queued work that is no longer queued", async () => {
+test("reduceAcquireActiveSlot blocks replaced queued work that is no longer queued", async () => {
   const policy = normalizeJobKeyPolicy({
     keyConcurrency: { key: ["/tenant"] },
     queue: { whenFull: "replace-oldest" },
@@ -500,13 +514,13 @@ Deno.test("reduceAcquireActiveSlot blocks replaced queued work that is no longer
     slotToken: "slot-1",
   });
 
-  assertEquals(acquired.kind, "blocked");
+  assert.deepEqual(acquired.kind, "blocked");
   if (acquired.kind === "blocked") {
-    assertEquals(acquired.reason, "not-queued");
+    assert.deepEqual(acquired.reason, "not-queued");
   }
 });
 
-Deno.test("reduceAcquireActiveSlot allows manual retried work without queued reservation", async () => {
+test("reduceAcquireActiveSlot allows manual retried work without queued reservation", async () => {
   const policy = normalizeJobKeyPolicy({
     keyConcurrency: { key: ["/tenant"] },
   });
@@ -535,13 +549,13 @@ Deno.test("reduceAcquireActiveSlot allows manual retried work without queued res
     slotToken: "slot-1",
   });
 
-  assertEquals(acquired.kind, "acquired");
+  assert.deepEqual(acquired.kind, "acquired");
   if (acquired.kind === "acquired") {
-    assertEquals(acquired.state.active[0]?.jobId, "job-retried");
+    assert.deepEqual(acquired.state.active[0]?.jobId, "job-retried");
   }
 });
 
-Deno.test("reduceAcquireActiveSlot allows active redelivery without queued reservation", async () => {
+test("reduceAcquireActiveSlot allows active redelivery without queued reservation", async () => {
   const policy = normalizeJobKeyPolicy({
     keyConcurrency: { key: ["/tenant"] },
   });
@@ -570,13 +584,13 @@ Deno.test("reduceAcquireActiveSlot allows active redelivery without queued reser
     slotToken: "slot-1",
   });
 
-  assertEquals(acquired.kind, "acquired");
+  assert.deepEqual(acquired.kind, "acquired");
   if (acquired.kind === "acquired") {
-    assertEquals(acquired.state.active[0]?.jobId, "job-active");
+    assert.deepEqual(acquired.state.active[0]?.jobId, "job-active");
   }
 });
 
-Deno.test("reduceRemoveQueuedJob releases pending keyed reservation", async () => {
+test("reduceRemoveQueuedJob releases pending keyed reservation", async () => {
   const policy = normalizeJobKeyPolicy({
     keyConcurrency: { key: ["/tenant"] },
   });
@@ -609,14 +623,14 @@ Deno.test("reduceRemoveQueuedJob releases pending keyed reservation", async () =
     submissionId: "submission-1",
   });
 
-  assertEquals(removed.kind, "removed");
+  assert.deepEqual(removed.kind, "removed");
   if (removed.kind === "removed") {
-    assertEquals(removed.state.queued, []);
-    assertEquals(removed.state.acceptedBySubmissionId, undefined);
+    assert.deepEqual(removed.state.queued, []);
+    assert.deepEqual(removed.state.acceptedBySubmissionId, undefined);
   }
 });
 
-Deno.test("reduceRestoreReplacedQueuedJob restores old queued work and removes replacement", async () => {
+test("reduceRestoreReplacedQueuedJob restores old queued work and removes replacement", async () => {
   const policy = normalizeJobKeyPolicy({
     keyConcurrency: { key: ["/tenant"] },
     queue: { whenFull: "replace-oldest" },
@@ -665,10 +679,13 @@ Deno.test("reduceRestoreReplacedQueuedJob restores old queued work and removes r
     policy,
   });
 
-  assertEquals(restored.state.queued.map((entry) => entry.jobId), ["job-old"]);
+  assert.deepEqual(
+    restored.state.queued.map((entry) => entry.jobId),
+    ["job-old"],
+  );
 });
 
-Deno.test("isJobKeyState rejects malformed capacity-blocking active and queued entries", () => {
+test("isJobKeyState rejects malformed capacity-blocking active and queued entries", () => {
   const validState = {
     version: 1,
     service: "svc",
@@ -677,36 +694,40 @@ Deno.test("isJobKeyState rejects malformed capacity-blocking active and queued e
     keyHash: "hash",
     maxActive: 1,
     maxQueuedPerKey: 1,
-    active: [{
-      jobId: "job-active",
-      slotToken: "slot-1",
-      instanceId: "worker-1",
-      startedAt: "2024-01-01T00:00:00.000Z",
-      heartbeatAt: "2024-01-01T00:00:01.000Z",
-      leaseExpiresAt: "2024-01-01T00:02:00.000Z",
-      tries: 1,
-      context,
-    }],
-    queued: [{
-      jobId: "job-queued",
-      createdAt: "2024-01-01T00:00:00.000Z",
-      requestId: context.requestId,
-      context,
-    }],
+    active: [
+      {
+        jobId: "job-active",
+        slotToken: "slot-1",
+        instanceId: "worker-1",
+        startedAt: "2024-01-01T00:00:00.000Z",
+        heartbeatAt: "2024-01-01T00:00:01.000Z",
+        leaseExpiresAt: "2024-01-01T00:02:00.000Z",
+        tries: 1,
+        context,
+      },
+    ],
+    queued: [
+      {
+        jobId: "job-queued",
+        createdAt: "2024-01-01T00:00:00.000Z",
+        requestId: context.requestId,
+        context,
+      },
+    ],
     cleanupPending: [],
     staleTakeoverCount: 0,
     updatedAt: "2024-01-01T00:00:01.000Z",
   };
 
-  assertEquals(isJobKeyState(validState), true);
-  assertEquals(
+  assert.deepEqual(isJobKeyState(validState), true);
+  assert.deepEqual(
     isJobKeyState({
       ...validState,
       active: [{ ...validState.active[0], slotToken: "" }],
     }),
     false,
   );
-  assertEquals(
+  assert.deepEqual(
     isJobKeyState({
       ...validState,
       queued: [{ ...validState.queued[0], createdAt: "not-a-date" }],

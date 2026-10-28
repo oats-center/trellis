@@ -11,7 +11,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::{RuntimeConfig, RuntimeMode};
+use crate::{ListenerTransport, RuntimeConfig, RuntimeMode};
 
 /// Version and process metadata returned by the readiness endpoint.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -37,6 +37,9 @@ pub enum ServerError {
         #[source]
         source: std::io::Error,
     },
+    /// The listener's TLS material could not be loaded; plaintext is never substituted.
+    #[error("failed to load runtime HTTP listener transport: {0}")]
+    Transport(#[source] std::io::Error),
     /// The HTTP server exited with an error.
     #[error(transparent)]
     Serve(#[from] std::io::Error),
@@ -79,6 +82,8 @@ struct HttpState {
 
 /// Serves `application_router` plus the readiness endpoints on a bound listener.
 ///
+/// `transport` selects TLS, trusted-proxy plaintext, or loopback development;
+/// a TLS certificate must name `origin`'s host.
 /// `/healthz` always answers process metadata. `/readyz` answers `503` until
 /// the supervisor marks startup complete and `200` afterwards, so a caller
 /// never begins work against a runtime whose routes and built-in live
@@ -86,14 +91,20 @@ struct HttpState {
 ///
 /// # Errors
 ///
-/// Returns [`ServerError::Serve`] when the HTTP server exits with an error.
+/// Returns [`ServerError::Transport`] when TLS material cannot be loaded and
+/// [`ServerError::Serve`] when the HTTP server exits with an error.
 pub async fn serve_http_listener(
     listener: tokio::net::TcpListener,
+    origin: &url::Url,
+    transport: &ListenerTransport,
     mode: RuntimeMode,
     application_router: Router,
     ready: Arc<AtomicBool>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
+    let listener = crate::listener::LoadedListener::load(listener, origin, transport)
+        .await
+        .map_err(ServerError::Transport)?;
     let state = HttpState {
         version: build_version_info(mode),
         ready,
@@ -104,13 +115,10 @@ pub async fn serve_http_listener(
         .with_state(state)
         .merge(application_router);
 
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await
-    .map_err(ServerError::Serve)
+    listener
+        .serve(router, shutdown)
+        .await
+        .map_err(ServerError::Serve)
 }
 
 /// Runs the runtime readiness HTTP server until `shutdown` resolves.
@@ -122,7 +130,22 @@ pub async fn run_http_server(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
     let listener = bind_http_listener(config).await?;
-    serve_http_listener(listener, mode, application_router, ready, shutdown).await
+    let origin = url::Url::parse(&config.public_origin()).map_err(|error| {
+        ServerError::Transport(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid public origin: {error}"),
+        ))
+    })?;
+    serve_http_listener(
+        listener,
+        &origin,
+        config.http_transport(),
+        mode,
+        application_router,
+        ready,
+        shutdown,
+    )
+    .await
 }
 
 /// Returns liveness metadata for the runtime process.

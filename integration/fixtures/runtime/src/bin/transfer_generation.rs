@@ -1,7 +1,11 @@
 use runtime_trellis::apis::runtime_trellis_runtime_v1::rpc::DownloadOutput;
-use runtime_trellis::participants::runtime_trellis_provider::{Participant, Provider};
+use runtime_trellis::participants::runtime_trellis_transfer_growth_provider::{
+    Participant, Provider,
+};
 use std::io::Write as _;
-use trellis_rs::service::{generate_transfer_id, FileTransferInfo, ServiceConnectOptions};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use trellis_rs::service::{generate_transfer_id, FileTransferInfo};
+use trellis_rs::telemetry::{init_from_env, TelemetryIdentity, TelemetryRole};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -10,9 +14,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
+    let telemetry = init_from_env(TelemetryIdentity::new(
+        "runtime-rust-transfer-provider",
+        TelemetryRole::Service,
+        env!("CARGO_PKG_VERSION"),
+    ));
     let url = std::env::var("TRELLIS_URL")?;
     let seed = std::env::var("TRELLIS_IDENTITY_SEED")?;
-    let mut service = Participant::connect(ServiceConnectOptions::new(&url, &seed)).await?;
+    let mut service =
+        Participant::connect(trellis_runtime_acceptance::service_options(&url, &seed).await?)
+            .await?;
     let files = Provider::new(&mut service)
         .files()
         .cloned()
@@ -97,8 +108,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             }
         });
+    let client = service.generated_client();
+    let serving = tokio::spawn(async move { service.run().await });
     println!("transfer provider ready");
     std::io::stdout().flush()?;
-    service.run().await?;
+    let mut commands = BufReader::new(tokio::io::stdin()).lines();
+    while let Some(command) = commands.next_line().await? {
+        match command.as_str() {
+            "REFRESH" => {
+                client.refresh_authorization_context().await?;
+                println!("transfer authority refreshed");
+                std::io::stdout().flush()?;
+            }
+            "EXIT" => break,
+            _ => return Err("unrecognized transfer command".into()),
+        }
+    }
+    serving.abort();
+    let _ = serving.await;
+    telemetry.shutdown().await;
     Ok(())
 }

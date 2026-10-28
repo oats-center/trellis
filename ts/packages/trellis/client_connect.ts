@@ -1,2017 +1,335 @@
 import {
-  type Authenticator,
-  type NatsConnection,
-  wsconnect,
-} from "@nats-io/nats-core";
-import {
   AsyncResult,
-  BaseError,
   Result,
   UnexpectedError,
+  isErr,
 } from "@oatscenter/result";
-import { type StaticDecode, Type } from "typebox";
-import { Value } from "typebox/value";
-import { ulid } from "ulid";
-
 import {
-  AuthorizationContextBundleSchema,
-  AuthorizationContextCache,
-  AuthorizationContextRefreshError,
-  AuthorizationProviderCache,
-  refreshAuthorizationContextWithMetadata,
-  startAuthorizationContextRefresh,
-} from "./auth/authorization_context.ts";
+  BrowserOAuthClient,
+  type BrowserOAuthAdmission,
+} from "./auth/browser/oauth.ts";
+import { connectAdmitted } from "./auth/connection.ts";
 import {
-  type AuthorizationCandidateSnapshot,
-  installAuthorizationRefresh,
-} from "./auth/authorization/install_refresh.ts";
-import {
-  TransportAuthorizationState,
-} from "./auth/authorization/transport_state.ts";
-import {
-  base64urlDecode,
-  base64urlEncode,
-  BrowserSessionStore,
-} from "./auth/browser.ts";
-import {
-  browserInstallationScope,
-  type BrowserSessionCredential,
-} from "./auth/browser/storage.ts";
-import {
-  decodeTrellisHttpError,
-  isRetriableAuthorizationCode,
-} from "./auth/http_error.ts";
-import {
-  transportAuthorizationDigestWasm,
-  type TransportAuthorizationV1,
+  initializeProtocolWasm,
+  verifyOAuthAdmissionWasm,
 } from "./auth/protocol_wasm.ts";
-import { createAuth, type TrellisAuth } from "./auth/session_auth.ts";
-import { estimateMidpointClockOffsetMs } from "./auth/time.ts";
-import { type CallerRuntime, createCallerRuntime } from "./caller.ts";
+import { utf8 } from "./auth/utils.ts";
+import type { RuntimeTransport } from "./runtime_transport.ts";
+import {
+  observeTrellisConnection,
+  transitionConnectionAvailability,
+} from "./connection.ts";
+import { getCallerRuntime } from "./participant_runtime/participant.ts";
+import type { AppRequestDescriptor } from "./generated_support.ts";
+import type { OwnAuthorityView } from "./own_authority.ts";
+import type { RuntimeApi } from "./participant_runtime/api.ts";
+import { createCallerRuntime, type CallerRuntime } from "./caller.ts";
 import type { ClientOpts } from "./client.ts";
 import {
-  installConnectionAvailability,
-  observeTrellisConnection,
-  startConnectionTelemetry,
-  transitionConnectionAvailability,
-  type TrellisConnection,
-} from "./connection.ts";
-import {
-  bindApiRoutes,
-  type GeneratedParticipant,
-  getParticipantRuntime,
-  participantAvailability,
-  refreshApiRoutes,
-  sameGrantAtom,
-} from "./participant_runtime/participant.ts";
-import type { ContractResourceBindings } from "./participant_runtime/schemas.ts";
-import type { RuntimeApi } from "./participant_runtime/api.ts";
-import { TransportError } from "./errors/index.ts";
-import { type ResourceMigrations, TypedKV } from "./kv.ts";
-import {
-  GENERATION_MAX_RECONNECT_ATTEMPTS,
-  type RuntimeTransport,
-} from "./runtime_transport.ts";
-import {
-  ResourceUnavailableError,
-  type RuntimeStateStores,
   Trellis,
+  type RuntimeStateStores,
   type TrellisOpts,
 } from "./session.ts";
-import { TypedStore } from "./store.ts";
-import {
-  TransportGenerationManager,
-  type TransportGenerationPrepared,
-  type TrellisTransportProvider,
-} from "./transport/generations.ts";
-import {
-  recordCatalogDuration,
-  recordTrellisDuration,
-} from "./telemetry/mod.ts";
+import type { ResourceMigrations } from "./kv.ts";
+import { AuthError } from "./errors/AuthError.ts";
+import { TransportError } from "./errors/TransportError.ts";
 
-type ClientContract = GeneratedParticipant;
-
-type ResourceMigrationsFor<
-  TContract extends ClientContract,
-  TKind extends "state" | "kv",
-> =
-  & Readonly<
-    Partial<
-      {
-        [
-          Name in keyof TContract[
-            "resources"
-          ] as TContract["resources"][Name] extends { kind: TKind } ? Name
-            : never
-        ]: TContract["resources"][Name] extends {
-          codec: { decode(value: unknown): infer TValue };
-        } ? ResourceMigrations<TValue>
-          : never;
-      }
-    >
-  >
-  & Readonly<Record<string, ResourceMigrations<unknown> | undefined>>;
-
-/** Direct State and KV migrations supplied by the application at connection time. */
+/** Ordinary app OAuth identity and callback; no caller-authored participant wire claims. */
+export type ClientAuthOptions = {
+  clientId: string;
+  /** Local multi-account slot; defaults to the registered client ID. */
+  credentialHandle?: string;
+  redirectTo: string;
+  loopbackDevelopment?: boolean;
+  currentUrl?: string;
+};
+/** Required authorization redirect, returned to the application's own navigation owner. */
+export type ClientAuthRequiredContext = { loginUrl: string; mode: "browser" };
+/** A caller may consume navigation without the SDK changing the page. */
+export type ClientAuthContinuation = { status: "handled" } | void;
+/** Resource migrations are local application configuration, never authorization claims. */
 export type ClientResourceMigrations<
-  TContract extends ClientContract = ClientContract,
-> = Readonly<{
-  state?: ResourceMigrationsFor<TContract, "state">;
-  kv?: ResourceMigrationsFor<TContract, "kv">;
-}>;
-
-type InstalledClientResources = Readonly<{
-  generation: number;
-  signature: string;
+  T extends AppRequestDescriptor = AppRequestDescriptor,
+> = {
+  state?: Partial<Record<keyof T["states"], ResourceMigrations<unknown>>>;
+};
+/** Browser app connection: HTTPS-selected OAuth issuer plus generated local descriptors. */
+export type TrellisClientConnectArgs<
+  T extends AppRequestDescriptor = AppRequestDescriptor,
+> = ClientOpts & {
+  trellisUrl: string;
+  request: T;
+  auth: ClientAuthOptions;
+  resourceMigrations?: ClientResourceMigrations<T>;
+  onAuthRequired?(
+    context: ClientAuthRequiredContext,
+  ): Promise<ClientAuthContinuation> | ClientAuthContinuation;
+};
+/** Options for ending a browser app's session. */
+export type ClientLogoutOptions = {
   /**
-   * Connection-wide suspension shared across generations. A coverage loss or
-   * recovery flips this without invalidating individual handles.
+   * Also end the Portal login on this browser, then navigate back to
+   * `returnTo`. The next sign-in asks for credentials, so a person can switch
+   * accounts, and nobody stays signed in to Trellis on a shared computer.
    */
-  active: { value: boolean };
-  /** Per-resource validity, so a changed/removed binding is invalidated alone. */
-  handles: Readonly<Record<string, { value: boolean }>>;
-  /** Exact bindings this installation was built from, for per-resource reuse. */
-  bindings: ContractResourceBindings;
-  kv: Readonly<Record<string, TypedKV<unknown> | undefined>>;
-  store: Readonly<Record<string, TypedStore | undefined>>;
-}>;
-
-type ClientResourceState = { current: InstalledClientResources };
-
-/** Connected caller whose logout confirms session revocation even if the RPC reply loses a race with transport closure. */
-export type ConnectedTrellisClient<TContract extends ClientContract> =
-  & CallerRuntime<TContract>
-  & {
-    /** Revoke this login session, confirm revocation, and clear its local credential. */
-    logout(): Promise<void>;
+  endPortalLogin?: boolean;
+  /**
+   * Where the Portal returns after ending its login; defaults to the current
+   * page. Its origin must be one the app registered a redirect URI on.
+   */
+  returnTo?: string;
+};
+/** Connected ordinary OAuth app. Durable credentials remain in the app's IndexedDB realm. */
+export type ConnectedTrellisClient<T extends AppRequestDescriptor> =
+  CallerRuntime<T> & {
+    readonly ownAuthority: OwnAuthorityView;
+    /**
+     * Revoke this application's OAuth family and close its connection. The
+     * Portal login stays unless `endPortalLogin` is set, in which case the
+     * browser navigates through the Portal's sign-out and back.
+     */
+    logout(options?: ClientLogoutOptions): Promise<void>;
   };
 
-function createConnectedClient(args: {
-  name: string;
-  nc: NatsConnection;
-  connection: TrellisConnection;
-  inboxPrefix: string;
-  sessionKey: string;
-  sign(data: Uint8Array): Promise<Uint8Array>;
-  contextDigest: string | (() => string);
-  authorizationProviderCache: AuthorizationProviderCache;
-  opts: {
-    log: ClientOpts["log"];
-    timeout: ClientOpts["timeout"];
-    stream: ClientOpts["stream"];
-    noResponderRetry: ClientOpts["noResponderRetry"];
-    api: RuntimeApi;
-    state: TrellisOpts<RuntimeApi>["state"];
-    stateMigrations: TrellisOpts<RuntimeApi>["stateMigrations"];
-    resourceGeneration: TrellisOpts<RuntimeApi>["resourceGeneration"];
-    resourceAvailability: TrellisOpts<RuntimeApi>["resourceAvailability"];
-    onSessionNotFound?: TrellisOpts<RuntimeApi>["onSessionNotFound"];
-    transport?: TrellisOpts<RuntimeApi>["transport"];
-  };
-}): Trellis<RuntimeApi, "client", RuntimeStateStores> {
-  const trellis = new Trellis<RuntimeApi, "client", RuntimeStateStores>(
-    args.name,
-    args.nc,
-    {
-      sessionKey: args.sessionKey,
-      sign: args.sign,
-      contextDigest: args.contextDigest,
-      authorizationProviderCache: args.authorizationProviderCache,
-    },
-    {
-      ...args.opts,
-      connection: args.connection,
-    },
-    args.inboxPrefix,
-  );
-
-  return trellis;
+/** Connect through PKCE/DPoP OAuth followed by signed ephemeral admission. */
+export function connectClient<T extends AppRequestDescriptor>(
+  args: TrellisClientConnectArgs<T>,
+) {
+  return connectClientWithDeps(args, {});
 }
 
-function clientConnectResult<T>(
-  promise: Promise<T>,
-  observation?: { startedAt: number },
-): AsyncResult<T, TransportError | UnexpectedError | ClientAuthHandledError> {
-  const finish = (outcome: "ok" | "error", value?: unknown): void => {
-    if (!observation) return;
-    recordCatalogDuration(
-      "trellis.connect.duration",
-      performance.now() - observation.startedAt,
-      {
-        "trellis.phase": "total",
-        ...(outcome === "ok"
-          ? { "trellis.participant.kind": connectParticipantKind(value) }
-          : {}),
-        "trellis.outcome": outcome,
-      },
-    );
-  };
+/** Internal transport injection; uses the unchanged production OAuth and admission path. */
+export function connectClientWithDeps<T extends AppRequestDescriptor>(
+  args: TrellisClientConnectArgs<T>,
+  deps: { transport?: RuntimeTransport },
+) {
   return AsyncResult.from(
-    promise.then(
-      (value): Result<
-        T,
-        TransportError | UnexpectedError | ClientAuthHandledError
-      > => {
-        finish("ok", value);
-        return Result.ok(value);
-      },
-      (
-        cause,
-      ): Result<
-        T,
-        TransportError | UnexpectedError | ClientAuthHandledError
-      > => {
-        finish("error");
+    (async (): Promise<
+      Result<
+        ConnectedTrellisClient<T>,
+        AuthError | TransportError | UnexpectedError
+      >
+    > => {
+      try {
+        if (args.request.kind !== "browser")
+          throw new AuthError({ reason: "InvalidCredential" });
+        await initializeProtocolWasm();
+        const opened = (
+          await BrowserOAuthClient.open({
+            issuer: args.trellisUrl,
+            clientId: args.auth.clientId,
+            credentialHandle: args.auth.credentialHandle ?? args.auth.clientId,
+            loopbackDevelopment: args.auth.loopbackDevelopment,
+          })
+        ).take();
+        if (isErr(opened)) return Result.err(opened.error);
+        const oauth = opened;
+        let connected: Awaited<ReturnType<typeof connectAdmitted>> | undefined;
+        const connectOAuth = async (admission: BrowserOAuthAdmission) => {
+          let credential = admission.admission;
+          const servers = admission.metadata.trellis.natsEndpoints.filter(
+            (endpoint) =>
+              endpoint.startsWith("ws://") || endpoint.startsWith("wss://"),
+          );
+          if (servers.length === 0)
+            throw new AuthError({ reason: "InvalidIssuerMetadata" });
+          const value = await connectAdmitted({
+            servers,
+            trellisInstanceId: admission.trust.instanceId,
+            audienceNatsAccount: admission.trust.account,
+            issuers: [admission.trust.issuer],
+            rotationSequence: admission.trust.rotationSequence,
+            auth: admission.auth,
+            runtimeId: admission.runtimeId,
+            kind: "user",
+            timeout: args.timeout,
+            signal: args.signal,
+            transport: deps.transport,
+            admission: async () => {
+              const verified = await verifyOAuthAdmissionWasm(
+                utf8(credential),
+                {
+                  issuer: (connected?.owner.trustSnapshot ?? admission.trust)
+                    .issuer,
+                  trellisInstanceId: admission.trust.instanceId,
+                  audienceNatsAccount: admission.trust.account,
+                  ephemeralNkey: admission.auth.sessionNkey,
+                  nowUnixSeconds: admission.auth.currentIat(),
+                  maximumLifetimeSeconds: 300,
+                },
+              );
+              if (verified.ok) return credential;
+              const next = (await oauth.resume()).take();
+              if (isErr(next)) throw next.error;
+              credential = next.admission;
+              return credential;
+            },
+          }).catch((cause: unknown) => {
+            // Name the endpoints so a failed dial can be traced to its address.
+            throw cause instanceof AuthError || cause instanceof TransportError
+              ? cause
+              : new UnexpectedError({ cause }).withContext({ servers });
+          });
+          try {
+            // The shared path matches signed OAuth identity before promotion.
+            // Persist only that owner's authenticated successor chain.
+            await oauth.bindOwner(value.owner);
+            connected = value;
+          } catch (error) {
+            await value.manager.close();
+            throw error;
+          }
+        };
+        let refreshToken: string | undefined;
+        const currentUrl = new URL(args.auth.currentUrl ?? location.href);
+        const callback =
+          currentUrl.searchParams.has("state") &&
+          (currentUrl.searchParams.has("code") ||
+            currentUrl.searchParams.has("error"));
+        const resumed = callback
+          ? (await oauth.complete(currentUrl.href)).take()
+          : (await oauth.resume(connectOAuth)).take();
+        if (isErr(resumed)) {
+          await connected?.manager.close();
+          if (resumed.error.reason !== "OAuthRecoveryRequired")
+            return Result.err(resumed.error);
+          const authorization = (
+            await oauth.authorize(args.auth.redirectTo, {
+              required: args.request.requiredCapabilities,
+              optional: args.request.optionalCapabilities,
+            })
+          ).take();
+          if (isErr(authorization)) return Result.err(authorization.error);
+          if (args.onAuthRequired)
+            await args.onAuthRequired({
+              loginUrl: authorization,
+              mode: "browser",
+            });
+          else location.assign(authorization);
+          return Result.err(
+            new AuthError({ reason: "OAuthAuthorizationRequired" }),
+          );
+        }
+        const admission = "value" in resumed ? resumed.value : resumed;
+        if ("refreshToken" in resumed) refreshToken = resumed.refreshToken;
+        if (!connected) await connectOAuth(admission);
+        if (!connected) throw new AuthError({ reason: "InvalidCredential" });
+        const activeConnection = connected;
+        try {
+          const lease = activeConnection.owner.own();
+          try {
+            if (
+              lease.authority.binding.kind !== "browser" ||
+              lease.authority.binding.clientId !== args.auth.clientId ||
+              lease.authority.binding.origin !== location.origin ||
+              lease.authority.principalId !==
+                admission.verifiedAdmission.credential.principalId ||
+              lease.authority.oauthGrantId !==
+                admission.verifiedAdmission.credential.oauthGrantId ||
+              lease.authority.loginSessionId !==
+                admission.verifiedAdmission.credential.loginSessionId
+            )
+              throw new AuthError({ reason: "InvalidCredential" });
+            if (refreshToken) {
+              if (
+                !lease.authority.oauthGrantId ||
+                !lease.authority.loginSessionId
+              )
+                throw new AuthError({ reason: "InvalidCredential" });
+              const remembered = (
+                await oauth.store.rememberGrant({
+                  principalId: lease.authority.principalId,
+                  oauthGrantId: lease.authority.oauthGrantId,
+                  loginSessionId: lease.authority.loginSessionId,
+                  refreshToken,
+                })
+              ).take();
+              if (isErr(remembered)) throw remembered.error;
+            }
+          } finally {
+            lease.release();
+          }
+          const runtime = getCallerRuntime(args.request);
+          const connection = observeTrellisConnection({
+            kind: "client",
+            transport: {
+              status: () => activeConnection.manager.status(),
+              closed: () => activeConnection.manager.closed(),
+              close: () => activeConnection.manager.close(),
+              isClosed: () => activeConnection.manager.isClosed(),
+              getServer: () =>
+                activeConnection.manager.currentNats().getServer(),
+            },
+            log: false,
+          });
+          transitionConnectionAvailability(connection, true, "connected");
+          const trellis = new Trellis<RuntimeApi, "client", RuntimeStateStores>(
+            args.name ?? args.request.id,
+            activeConnection.manager.currentNats(),
+            {
+              sessionKey: admission.auth.sessionKey,
+              sign: admission.auth.sign,
+              contextDigest: () => activeConnection.owner.ownDigest ?? "",
+              authorityOwner: activeConnection.owner,
+            },
+            {
+              api: runtime.usedApi as RuntimeApi,
+              connection,
+              transport: activeConnection.manager,
+              timeout: args.timeout,
+              log: args.log,
+              stream: args.stream,
+              state: runtime.state as TrellisOpts<RuntimeApi>["state"],
+              stateMigrations: args.resourceMigrations?.state,
+            },
+            activeConnection.inboxPrefix,
+          );
+          const ownAuthority = trellis.ownAuthority;
+          if (!ownAuthority) throw new AuthError({ reason: "Unavailable" });
+          await ownAuthority.refresh();
+          if (!ownAuthority.current)
+            throw new AuthError({ reason: "Unavailable" });
+          return Result.ok(
+            Object.assign(createCallerRuntime(trellis, args.request), {
+              ownAuthority,
+              async logout(options?: ClientLogoutOptions) {
+                const revoked = await oauth.revoke();
+                if (revoked.isErr()) throw revoked.error;
+                await activeConnection.manager.close();
+                if (!options?.endPortalLogin) return;
+                const signOut = new URL(oauth.metadata.end_session_endpoint);
+                signOut.searchParams.set("client_id", args.auth.clientId);
+                signOut.searchParams.set(
+                  "post_logout_redirect_uri",
+                  options.returnTo ?? location.href,
+                );
+                location.assign(signOut);
+              },
+            }),
+          );
+        } catch (error) {
+          await activeConnection.manager.close();
+          throw error;
+        }
+      } catch (cause) {
         return Result.err(
-          cause instanceof TransportError ||
-            cause instanceof ClientAuthHandledError
+          cause instanceof AuthError ||
+            cause instanceof TransportError ||
+            cause instanceof UnexpectedError
             ? cause
             : new UnexpectedError({ cause }),
         );
-      },
-    ),
+      }
+    })(),
   );
 }
 
-/** Bounded participant kind for one connected client, when it is known. */
-function connectParticipantKind(value: unknown): "user" | "service" | "device" {
-  const kind = (value as { session?: { principalKind?: unknown } } | undefined)
-    ?.session?.principalKind;
-  return kind === "user" || kind === "device" ? kind : "service";
-}
-
-type BrowserClientAuthOptions = {
-  mode?: "browser";
-  provider?: string;
-  redirectTo?: string | (() => string);
-  landingPath?: string;
-  context?: unknown;
-  currentUrl?: URL | string | (() => URL | string);
-  transactionId?: string;
-  persistence?: "remembered" | "temporary";
-};
-
-type SessionKeyClientAuthOptionsBase = {
-  mode: "session_key";
-  sessionKeySeed: string;
-  sessionId?: string;
-  provider?: string;
-  redirectTo: string;
-  currentUrl?: URL | string | (() => URL | string);
-  context?: unknown;
-  transactionId?: string;
-};
-
-type SessionKeyClientAuthOptions = SessionKeyClientAuthOptionsBase;
-
-export type ClientAuthOptions =
-  | BrowserClientAuthOptions
-  | SessionKeyClientAuthOptions;
-
-export type ClientAuthRequiredContext = {
-  loginUrl: string;
-  sessionKey: string;
-  mode: "browser" | "session_key";
-};
-
-export type ClientAuthContinuation =
-  | { status: "bound"; transactionId: string }
-  | { status: "handled" }
-  | void;
-
-export type ClientAuthHandledErrorData = {
-  id: string;
-  type: "ClientAuthHandledError";
-  message: string;
-  context?: Record<string, unknown>;
-  traceId?: string;
-};
-
-/**
- * Error raised when client authentication was delegated to caller-owned routing.
- */
-export class ClientAuthHandledError
-  extends BaseError<ClientAuthHandledErrorData> {
-  override readonly name = "ClientAuthHandledError" as const;
-
-  constructor() {
-    super("Client authentication was handled by the caller");
-  }
-
-  override toSerializable(): ClientAuthHandledErrorData {
-    return this.baseSerializable() as ClientAuthHandledErrorData;
-  }
-}
-
-type ClientConnectArgsFor<TContract extends ClientContract> =
-  & ClientOpts
-  & {
-    trellisUrl: string;
-    participant: TContract;
-    auth?: ClientAuthOptions;
-    resourceMigrations?: ClientResourceMigrations<TContract>;
-    onAuthRequired?: (
-      ctx: ClientAuthRequiredContext,
-    ) => Promise<ClientAuthContinuation> | ClientAuthContinuation;
-  };
-
-function resolveClientResources(args: {
-  /** Logical transport the handles acquire a generation from. */
-  transport: TrellisTransportProvider;
-  /** Budget for acquiring a generation on a finite resource operation. */
-  acquireTimeoutMs: number;
-  participant: ClientContract;
-  participantDigest: string;
-  bindings: ContractResourceBindings;
-  previous?: InstalledClientResources;
-  migrations?: ClientResourceMigrations;
-}): InstalledClientResources {
-  const signature = JSON.stringify({
-    participantDigest: args.participantDigest,
-    bindings: args.bindings,
-  });
-  if (args.previous?.signature === signature) return args.previous;
-
-  const generation = (args.previous?.generation ?? 0) + 1;
-  const active = args.previous?.active ?? { value: true };
-  const handles: Record<string, { value: boolean }> = {};
-  const kv: Record<string, TypedKV<unknown> | undefined> = {};
-  const store: Record<string, TypedStore | undefined> = {};
-  const unchanged = (
-    name: string,
-    binding: unknown,
-    kind: "kv" | "store",
-  ): boolean => {
-    if (!args.previous) return false;
-    const previousBinding =
-      (kind === "kv" ? args.previous.bindings.kv : args.previous.bindings.store)
-        ?.[name];
-    return JSON.stringify(previousBinding) === JSON.stringify(binding);
-  };
-  for (const [name, descriptor] of Object.entries(args.participant.resources)) {
-    if (descriptor.kind === "kv") {
-      const binding = args.bindings.kv?.[name];
-      if (!binding) {
-        if (descriptor.availability === "required") {
-          throw new Error(`Required KV resource '${name}' is unavailable`);
-        }
-        kv[name] = undefined;
-        continue;
-      }
-      const reusable = args.previous?.kv[name];
-      if (reusable && unchanged(name, binding, "kv")) {
-        // An unchanged binding keeps its handle and lifetime ownership; only a
-        // genuinely changed or added member creates a new handle.
-        handles[name] = args.previous!.handles[name]!;
-        kv[name] = reusable;
-        continue;
-      }
-      const handleActive = { value: true };
-      handles[name] = handleActive;
-      // Bound but not opened: the backing bucket is materialized on first
-      // operation, after the transport check admits it.
-      kv[name] = TypedKV.bind(args.transport, binding.bucket, descriptor, {
-        bindOnly: true,
-        history: binding.history,
-        ttl: binding.ttlMs,
-        maxValueBytes: binding.maxValueBytes,
-        migrations: args.migrations?.kv?.[name],
-        isCurrent: () => handleActive.value && active.value,
-        acquireTimeoutMs: args.acquireTimeoutMs,
-      });
-    } else if (descriptor.kind === "store") {
-      const binding = args.bindings.store?.[name];
-      if (!binding) {
-        if (descriptor.availability === "required") {
-          throw new Error(`Required Store resource '${name}' is unavailable`);
-        }
-        store[name] = undefined;
-        continue;
-      }
-      const reusable = args.previous?.store[name];
-      if (reusable && unchanged(name, binding, "store")) {
-        handles[name] = args.previous!.handles[name]!;
-        store[name] = reusable;
-        continue;
-      }
-      const handleActive = { value: true };
-      handles[name] = handleActive;
-      store[name] = TypedStore.bind(args.transport, binding.name, {
-        bindOnly: true,
-        ttlMs: binding.ttlMs,
-        maxObjectBytes: binding.maxObjectBytes,
-        maxTotalBytes: binding.maxTotalBytes,
-        isCurrent: () => handleActive.value && active.value,
-        acquireTimeoutMs: args.acquireTimeoutMs,
-      });
-    }
-  }
-  // Invalidate only the handles this installation did not carry forward.
-  for (const [name, flag] of Object.entries(args.previous?.handles ?? {})) {
-    if (handles[name] !== flag) flag.value = false;
-  }
-  return {
-    generation,
-    signature,
-    active,
-    handles,
-    bindings: args.bindings,
-    kv,
-    store,
-  };
-}
-
-function clientResourceFacades(state: ClientResourceState) {
-  const facade = (kind: "kv" | "store") => {
-    const result: Record<string, unknown> = {};
-    for (const name of Object.keys(state.current[kind])) {
-      Object.defineProperty(result, name, {
-        enumerable: true,
-        get: () => {
-          const handle = state.current[kind][name];
-          if (!handle) throw new ResourceUnavailableError(kind, name);
-          return handle;
-        },
-      });
-    }
-    return result;
-  };
-  return { kv: facade("kv"), store: facade("store") };
-}
-
-export type TrellisClientConnectArgs<
-  TContract extends ClientContract = ClientContract,
-> = ClientConnectArgsFor<TContract>;
-
-type ClientRuntimeIdentity = {
-  mode: "browser" | "session_key";
-  /** Durable credential that proves ownership of the login session over HTTP. */
-  installationAuth: TrellisAuth;
-  /** Credential that authenticates this runtime connection. */
-  runtimeAuth: TrellisAuth;
-  sessionNkey: string;
-  seed: Uint8Array;
-  sessionId?: string;
-  browserCredential?: BrowserSessionCredential;
-  sign(data: Uint8Array): Promise<Uint8Array>;
-};
-
-const ClientTransportEndpointsSchema = Type.Object({
-  natsServers: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-});
-
-const ClientTransportsSchema = Type.Object({
-  native: Type.Optional(ClientTransportEndpointsSchema),
-  websocket: Type.Optional(ClientTransportEndpointsSchema),
-});
-type RuntimeTransports = StaticDecode<typeof ClientTransportsSchema>;
-
-type ClientConnectDeps = {
-  loadTransport(): Promise<RuntimeTransport>;
-  now(): number;
-  initialBootstrap?: ClientBootstrapReady;
-};
-
-const ClientBootstrapReadySchema = Type.Object({
-  status: Type.Literal("ready"),
-  serverNow: Type.Integer(),
-  connectInfo: Type.Object({
-    connectionId: Type.Optional(Type.String({ minLength: 1 })),
-    sessionId: Type.String({ minLength: 1 }),
-    participantId: Type.String({ minLength: 1 }),
-    participantDigest: Type.String({ minLength: 1 }),
-    approvalMode: Type.Union([
-      Type.Literal("exact"),
-      Type.Literal("capabilities"),
-    ]),
-    approvedCapabilities: Type.Array(Type.Object({
-      id: Type.String({ minLength: 1 }),
-      consentDigest: Type.String({ minLength: 1 }),
-    })),
-    transports: ClientTransportsSchema,
-    transport: Type.Object({
-      inboxPrefix: Type.String({ minLength: 1 }),
-      jwt: Type.String({ minLength: 1 }),
-      jwtExpiresAt: Type.Integer({ minimum: 1 }),
-    }),
-    authorizationContext: AuthorizationContextBundleSchema,
-  }),
-}, { additionalProperties: false });
-
-type ClientBootstrapReady = StaticDecode<typeof ClientBootstrapReadySchema> & {
-  readonly serverClockOffsetMs?: number;
-  readonly apiBindings: Readonly<Record<string, unknown>>;
-  readonly resourceBindings: ContractResourceBindings;
-};
-type ClientBootstrapAuthRequired = {
-  status: "auth_required";
-  serverNow: number;
-};
-type ClientBootstrapNotReady = {
-  status: "not_ready";
-  reason: string;
-  serverNow: number;
-};
-type ClientBootstrapResponse =
-  | ClientBootstrapReady
-  | ClientBootstrapAuthRequired
-  | ClientBootstrapNotReady;
-type ClockOffsetState = { serverClockOffsetMs: number };
-type BrowserGlobalThis = typeof globalThis & {
-  document?: unknown;
-  window?: unknown;
-};
-
-function isBrowserRuntime(): boolean {
-  const browserGlobal = globalThis as BrowserGlobalThis;
-  return typeof browserGlobal.window !== "undefined" &&
-    typeof browserGlobal.document !== "undefined";
-}
-
-function selectClientRuntimeTransportServers(
-  transports: RuntimeTransports,
-): string[] {
-  if (isBrowserRuntime()) {
-    if (transports.websocket?.natsServers?.length) {
-      return transports.websocket.natsServers;
-    }
-    throw new Error(
-      "Browser authorization runtime has no WebSocket NATS endpoints",
-    );
-  }
-  if (transports.native?.natsServers?.length) {
-    return transports.native.natsServers;
-  }
-
-  throw new Error("Authorization runtime has no native NATS endpoints");
-}
-
-const defaultDeps: ClientConnectDeps = {
-  loadTransport: async () => {
-    if (isBrowserRuntime()) {
-      return { connect: wsconnect };
-    }
-
-    const mod = await import("./runtime_transport.ts");
-    return await mod.loadDefaultRuntimeTransport();
-  },
-  now: () => Date.now(),
-};
-
-function transportCauseContext(cause: unknown): Record<string, unknown> {
-  if (cause instanceof Error) {
-    return { causeName: cause.name, causeMessage: cause.message };
-  }
-
-  return { cause: String(cause) };
-}
-
-function createTransportError(args: {
-  code: string;
-  message: string;
-  hint: string;
-  context?: Record<string, unknown>;
-  cause?: unknown;
-}): TransportError {
-  return new TransportError({
-    code: args.code,
-    message: args.message,
-    hint: args.hint,
-    cause: args.cause,
-    context: {
-      ...(args.context ?? {}),
-      ...(args.cause === undefined ? {} : transportCauseContext(args.cause)),
-    },
-  });
-}
-
-const BindWireSchema = Type.Object({
-  serverNow: Type.Integer(),
-  intentId: Type.String({ minLength: 1 }),
-  session: Type.Object({
-    sessionId: Type.String({ minLength: 1 }),
-    principalId: Type.String({ minLength: 1 }),
-    participantId: Type.String({ minLength: 1 }),
-    sessionKey: Type.String({ minLength: 1 }),
-    expiresAt: Type.Union([Type.Integer(), Type.Null()]),
-  }),
-});
-
-type BrowserBindResult = {
-  intentId: string;
-  sessionId: string;
-  expiresAt: number | null;
-  serverNow: number;
-  serverClockOffsetMs: number;
-};
-
-async function readJsonResponse(
-  response: Response,
-  args: {
-    code: string;
-    message: string;
-    hint: string;
-    context?: Record<string, unknown>;
-  },
-): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch (cause) {
-    throw createTransportError({
-      ...args,
-      cause,
-    });
-  }
-}
-
-function normalizeTrellisUrl(trellisUrl: string): string {
-  return new URL(trellisUrl).toString().replace(/\/$/, "");
-}
-
-function resolveCurrentUrl(
-  auth?: { currentUrl?: URL | string | (() => URL | string) },
-): URL | null {
-  const currentUrl = typeof auth?.currentUrl === "function"
-    ? auth.currentUrl()
-    : auth?.currentUrl;
-  if (currentUrl instanceof URL) return currentUrl;
-  if (typeof currentUrl === "string") return new URL(currentUrl);
-  return typeof globalThis.location === "undefined"
-    ? null
-    : new URL(globalThis.location.href);
-}
-
-function resolveRedirectTo(
-  auth: BrowserClientAuthOptions,
-  currentUrl: URL,
-): string {
-  const redirectTo = typeof auth.redirectTo === "function"
-    ? auth.redirectTo()
-    : auth.redirectTo;
-  if (redirectTo) {
-    return new URL(redirectTo, currentUrl.origin).toString();
-  }
-
-  const queryRedirect = currentUrl.searchParams.get("redirectTo");
-  if (queryRedirect) {
-    return new URL(queryRedirect, currentUrl.origin).toString();
-  }
-
-  if (auth.landingPath) {
-    return new URL(auth.landingPath, currentUrl.origin).toString();
-  }
-
-  return currentUrl.toString();
-}
-
-function resolveConfiguredRedirectTo(
-  redirectTo: string | (() => string) | undefined,
-): string | undefined {
-  return typeof redirectTo === "function" ? redirectTo() : redirectTo;
-}
-
-async function createSessionKeyRuntimeIdentity(
-  sessionKeySeed: string,
-  sessionId?: string,
-  mode: "browser" | "session_key" = "session_key",
-  browserCredential?: BrowserSessionCredential,
-): Promise<ClientRuntimeIdentity> {
-  const seed = base64urlDecode(sessionKeySeed);
-  const installationAuth = await createAuth({ sessionKeySeed });
-  const runtimeAuth = await createAuth({
-    sessionKeySeed: base64urlEncode(crypto.getRandomValues(new Uint8Array(32))),
-  });
-  const sign = async (data: Uint8Array): Promise<Uint8Array> =>
-    await runtimeAuth.sign(data);
-
-  const identity: ClientRuntimeIdentity = {
-    mode,
-    installationAuth,
-    runtimeAuth,
-    sessionNkey: runtimeAuth.sessionNkey,
-    seed,
-    sessionId,
-    ...(browserCredential === undefined ? {} : { browserCredential }),
-    sign,
-  };
-  return identity;
-}
-
-async function resolveClientIdentity(
-  auth: ClientAuthOptions | undefined,
-  installation?: BrowserSessionStore,
-): Promise<ClientRuntimeIdentity> {
-  if (auth?.mode === "session_key") {
-    return await createSessionKeyRuntimeIdentity(
-      auth.sessionKeySeed,
-      auth.sessionId,
-    );
-  }
-
-  if (!installation) {
-    throw new Error("browser installation storage is unavailable");
-  }
-  const stored = await installation.readLogin() ??
-    await installation.getOrCreateCredential();
-  return await createSessionKeyRuntimeIdentity(
-    base64urlEncode(stored.seed),
-    stored.loginSessionId,
-    "browser",
-    stored,
-  );
-}
-
-async function clearBrowserLogin(
-  installation: BrowserSessionStore | undefined,
-  identity: ClientRuntimeIdentity,
-): Promise<boolean> {
-  if (!installation || !identity.browserCredential) return false;
-  return await installation.clearLogin({
-    generation: identity.browserCredential.generation,
-    sessionKey: identity.browserCredential.sessionKey,
-    ...(identity.sessionId === undefined
-      ? {}
-      : { loginSessionId: identity.sessionId }),
-  });
-}
-
-async function bindClientFlow(args: {
-  trellisUrl: string;
-  origin: string;
-  transactionId: string;
-  identity: ClientRuntimeIdentity;
-  participant: ClientConnectArgsFor<ClientContract>["participant"];
-}): Promise<BrowserBindResult> {
-  const startedAt = performance.now();
-  const requestStartedAtMs = Date.now();
-  const requestId = ulid();
-  const issuedAt = Date.now();
-  const unsigned = {
-    requestId,
-    issuedAt,
-  };
-  const url = `${args.trellisUrl}/auth/transactions/${
-    encodeURIComponent(args.transactionId)
-  }/bind`;
-  const init: RequestInit = {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Origin: args.origin,
-    },
-    body: JSON.stringify({
-      ...unsigned,
-      proof: await args.identity.installationAuth.signSessionProof({
-        purpose: "userAuthBind",
-        origin: args.trellisUrl,
-        transactionId: args.transactionId,
-        sessionPublicKey: args.identity.installationAuth.sessionKey,
-        unsignedRequest: unsigned,
-      }),
-    }),
-  };
-  let response = await fetch(url, init);
-  for (const delay of [100, 200, 400, 800]) {
-    if (response.status !== 503) break;
-    const error = await decodeTrellisHttpError(response.clone());
-    if (!isRetriableAuthorizationCode(error.code)) break;
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    response = await fetch(url, init);
-  }
-  if (!response.ok) {
-    const error = await decodeTrellisHttpError(response);
-    throw createTransportError({
-      code: error.code,
-      message: "Trellis could not finish the sign-in step.",
-      hint: "Start the sign-in flow again.",
-      cause: error,
-      context: { status: error.status, trellisUrl: args.trellisUrl },
-    });
-  }
-
-  const payload = await readJsonResponse(response, {
-    code: "bind_invalid_response",
-    message: "Trellis returned an invalid sign-in response.",
-    hint: "Start the sign-in flow again.",
-    context: { transactionId: args.transactionId },
-  });
-  let parsed: StaticDecode<typeof BindWireSchema>;
-  try {
-    parsed = Value.Parse(BindWireSchema, payload) as StaticDecode<
-      typeof BindWireSchema
-    >;
-  } catch (cause) {
-    throw createTransportError({
-      code: "bind_invalid_response",
-      message: "Trellis returned an invalid sign-in response.",
-      hint: "Start the sign-in flow again.",
-      cause,
-      context: { transactionId: args.transactionId },
-    });
-  }
-  if (
-    parsed.session.sessionKey !== args.identity.installationAuth.sessionKey ||
-    parsed.session.participantId !== args.participant.identity
-  ) {
-    throw new Error("Trellis returned a login for another installation");
-  }
-  const serverClockOffsetMs = estimateMidpointClockOffsetMs({
-    requestStartedAtMs,
-    responseReceivedAtMs: Date.now(),
-    serverNowSeconds: parsed.serverNow / 1_000,
-  });
-  recordTrellisDuration(
-    "trellis.connect.duration",
-    performance.now() - startedAt,
-    {
-      phase: "bootstrap",
-      participantKind: "client",
-      outcome: "ok",
-    },
-  );
-  return {
-    sessionId: parsed.session.sessionId,
-    intentId: parsed.intentId,
-    expiresAt: parsed.session.expiresAt,
-    // Verification consumes integer Unix seconds; the response is in
-    // milliseconds, so truncate rather than leave a fractional second.
-    serverNow: Math.floor(parsed.serverNow / 1_000),
-    serverClockOffsetMs,
-  };
-}
-
-async function recoverClientBootstrapWithRetry(args: {
-  trellisUrl: string;
-  identity: ClientRuntimeIdentity;
-  cache: AuthorizationContextCache;
-  deps: ClientConnectDeps;
-  offsetState: ClockOffsetState;
-  onTerminalSession?: () => Promise<void>;
-  participantDigest?: string;
-  bootstrapTimeoutMs?: number;
-  signal?: AbortSignal;
-}): Promise<ClientBootstrapResponse> {
-  if (!args.identity.sessionId) {
-    return {
-      status: "auth_required",
-      serverNow: args.deps.now() / 1_000,
-    };
-  }
-
-  let attempts = 0;
-  // The pending window is bounded by the connect budget; a service whose
-  // resources never materialize fails as the retryable pending error rather
-  // than looping forever or disguising itself as bad credentials.
-  const deadlineMs = performance.now() + (args.bootstrapTimeoutMs ?? 30_000);
-  while (true) {
-    if (args.signal?.aborted) {
-      throw createTransportError({
-        code: "trellis.bootstrap.aborted",
-        message: "Trellis client bootstrap was aborted.",
-        hint: "Retry the connection when the caller is ready.",
-        context: { trellisUrl: args.trellisUrl },
-      });
-    }
-    const attemptStartedAt = performance.now();
-    const requestStartedAtMs = args.deps.now();
-    try {
-      const result = await refreshAuthorizationContextWithMetadata({
-        trellisUrl: args.trellisUrl,
-        credential: {
-          loginSessionId: args.identity.sessionId!,
-          proofAuth: args.identity.installationAuth,
-        },
-        runtime: { auth: args.identity.runtimeAuth },
-        cache: args.cache,
-        requiredTransport: "websocket",
-        participantDigest: args.participantDigest,
-      });
-      const responseReceivedAtMs = args.deps.now();
-      const serverClockOffsetMs = estimateMidpointClockOffsetMs({
-        requestStartedAtMs,
-        responseReceivedAtMs,
-        serverNowSeconds: result.response.serverNow / 1_000,
-      });
-      args.offsetState.serverClockOffsetMs = serverClockOffsetMs;
-      const session = result.response.runtime;
-      const nats = result.response;
-      if (
-        !nats.transports.native && !nats.transports.websocket
-      ) {
-        throw createTransportError({
-          code: "trellis.bootstrap.invalid_response",
-          message: "Trellis returned incomplete client recovery metadata.",
-          hint: "Retry the connection. If it keeps happening, check Trellis.",
-          context: { trellisUrl: args.trellisUrl },
-        });
-      }
-      recordTrellisDuration(
-        "trellis.connect.duration",
-        performance.now() - attemptStartedAt,
-        {
-          phase: "bootstrap",
-          participantKind: "client",
-          outcome: "ok",
-        },
-      );
-      return {
-        status: "ready",
-        serverNow: Math.floor(result.response.serverNow / 1_000),
-        apiBindings: result.response.apiBindings,
-        resourceBindings: result.response.authorization.resourceRuntime,
-        connectInfo: {
-          sessionId: session.loginSessionId!,
-          participantId: session.participantId,
-          participantDigest: result.response.authorization.participantDigest,
-          approvalMode: result.response.authorization.approvalMode,
-          approvedCapabilities:
-            result.response.authorization.approvedCapabilities,
-          transports: nats.transports,
-          transport: {
-            inboxPrefix: session.inboxPrefix,
-            jwt: nats.routing.bootstrapJwt,
-            jwtExpiresAt: nats.routing.bootstrapJwtExpiresAt,
-          },
-          authorizationContext: result.response.authorizationContext,
-        },
-      };
-    } catch (error) {
-      if (
-        error instanceof AuthorizationContextRefreshError &&
-        error.terminal
-      ) {
-        if (error.code === "consent_required") {
-          return { status: "auth_required", serverNow: args.deps.now() / 1_000 };
-        }
-        if (!error.loginInvalid) throw error;
-        await args.onTerminalSession?.();
-        return {
-          status: "auth_required",
-          serverNow: args.deps.now() / 1_000,
-        };
-      }
-      if (
-        error instanceof AuthorizationContextRefreshError &&
-        isRetriableAuthorizationCode(error.code)
-      ) {
-        if (performance.now() >= deadlineMs) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        continue;
-      }
-      if (
-        error instanceof AuthorizationContextRefreshError &&
-        attempts < 9
-      ) {
-        attempts += 1;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        continue;
-      }
-      if (attempts === 0) {
-        attempts += 1;
-        continue;
-      }
-      throw error;
-    }
-  }
-}
-
-async function createRuntimeUserAuthenticator(args: {
-  identity: ClientRuntimeIdentity;
-  inboxPrefix: string;
-  contextDigest: string | (() => string);
-  jwt: string | (() => string);
-  authorizationUsable?: () => boolean;
-}): Promise<{ authenticators: Authenticator[]; stop: () => void }> {
-  const options = await args.identity.runtimeAuth.natsConnectOptions({
-    inboxPrefix: args.inboxPrefix,
-    contextDigest: args.contextDigest,
-    jwt: args.jwt,
-    authorizationUsable: args.authorizationUsable,
-  });
-  return {
-    authenticators: Array.isArray(options.authenticator)
-      ? options.authenticator
-      : [options.authenticator],
-    stop: () => {},
-  };
-}
-
-function cleanupBrowserCallbackUrl(currentUrl: URL): void {
-  if (!isBrowserRuntime()) return;
-  if (
-    !currentUrl.searchParams.has("transactionId") &&
-    !currentUrl.searchParams.has("authError")
-  ) {
-    return;
-  }
-
-  currentUrl.searchParams.delete("transactionId");
-  currentUrl.searchParams.delete("authError");
-  globalThis.history.replaceState(
-    {},
-    "",
-    currentUrl.pathname + currentUrl.search + currentUrl.hash,
-  );
-}
-
-function isExpiredBindError(error: unknown): boolean {
-  return error instanceof TransportError &&
-    error.code === "transaction_expired";
-}
-
-function needsReauth(
-  bootstrap: ClientBootstrapResponse,
-): bootstrap is
-  | Extract<ClientBootstrapResponse, { status: "auth_required" }>
-  | Extract<
-    ClientBootstrapResponse,
-    {
-      status: "not_ready";
-      reason: "contract_not_active" | "insufficient_permissions";
-    }
-  > {
-  return bootstrap.status === "auth_required" ||
-    (
-      bootstrap.status === "not_ready" &&
-      (bootstrap.reason === "insufficient_permissions" ||
-        bootstrap.reason === "contract_not_active")
-    );
-}
-
-function bootstrapTargetsRequestedContract<
-  TContract extends ClientContract,
->(
-  bootstrap: ClientBootstrapResponse,
-  args: ClientConnectArgsFor<TContract>,
-  cache: AuthorizationContextCache,
-): boolean {
-  return bootstrap.status === "ready" &&
-    bootstrap.connectInfo.participantId === args.participant.identity &&
-    (bootstrap.connectInfo.approvalMode === "exact" ||
-      args.participant.requiredCapabilities.every((capability) =>
-        bootstrap.connectInfo.approvedCapabilities.some((approved) =>
-          approved.id === capability.id &&
-          approved.consentDigest === capability.consentDigest
-        )
-      )) &&
-    (bootstrap.connectInfo.participantDigest === args.participant.digest ||
-      args.participant.requiredGrants.every((atom) =>
-        cache.current().context.grants.permissions.some((permission) =>
-          sameGrantAtom(permission, atom)
-        )
-      ));
-}
-
-async function buildSessionKeyLoginUrl(args: {
-  trellisUrl: string;
-  redirectTo: string;
-  identity: ClientRuntimeIdentity;
-  participant: ClientConnectArgsFor<ClientContract>["participant"];
-}): Promise<
-  { status: "auth_required"; intentId: string; loginUrl: string }
-> {
-  const startedAt = performance.now();
-  const requestId = ulid();
-  const issuedAt = Date.now();
-  const unsigned = {
-    requestId,
-    issuedAt,
-    sessionPublicKey: args.identity.installationAuth.sessionKey,
-    participantId: args.participant.identity,
-    redirectTarget: args.redirectTo,
-  };
-  const response = await fetch(`${args.trellisUrl}/auth/requests`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...unsigned,
-      proof: await args.identity.installationAuth.signSessionProof({
-        purpose: "userAuthRequest",
-        origin: args.trellisUrl,
-        unsignedRequest: unsigned,
-      }),
-    }),
-  });
-  if (!response.ok) {
-    const error = await decodeTrellisHttpError(response);
-    throw createTransportError({
-      code: error.code,
-      message: "Trellis could not start sign-in.",
-      hint:
-        "Retry sign-in. If it keeps failing, check Trellis availability and access.",
-      cause: error,
-      context: { status: error.status, trellisUrl: args.trellisUrl },
-    });
-  }
-
-  const payload = await readJsonResponse(response, {
-    code: "auth_request_invalid_response",
-    message: "Trellis returned an invalid sign-in response.",
-    hint: "Retry sign-in. If it keeps happening, start the sign-in flow again.",
-    context: { trellisUrl: args.trellisUrl },
-  });
-  const start = Value.Parse(
-    Type.Object({
-      intentId: Type.String({ minLength: 1 }),
-      intent: Type.String({ minLength: 1 }),
-      loginUrl: Type.String({ minLength: 1 }),
-    }, { additionalProperties: false }),
-    payload,
-  );
-  if (start) {
-    recordTrellisDuration(
-      "trellis.connect.duration",
-      performance.now() - startedAt,
-      {
-        phase: "bootstrap",
-        participantKind: "client",
-        outcome: "ok",
-      },
-    );
-    return {
-      status: "auth_required",
-      intentId: start.intentId,
-      loginUrl: start.loginUrl,
-    };
-  }
-  throw createTransportError({
-    code: "auth_request_invalid_response",
-    message: "Trellis returned an invalid sign-in response.",
-    hint: "Retry sign-in. If it keeps happening, start the sign-in flow again.",
-    context: { trellisUrl: args.trellisUrl },
-  });
-}
-
-export async function connectClientWithDeps<
-  TContract extends ClientContract,
->(
-  args: ClientConnectArgsFor<TContract>,
-  deps: ClientConnectDeps,
-): Promise<ConnectedTrellisClient<TContract>> {
-  const totalStartedAt = performance.now();
-  const trellisUrl = normalizeTrellisUrl(args.trellisUrl);
-  const trustScope = browserInstallationScope(
-    trellisUrl,
-    args.participant.identity,
-  );
-  const browserInstallation = args.auth?.mode === "session_key"
-    ? undefined
-    : new BrowserSessionStore(
-      trustScope,
-      args.auth?.persistence ?? "remembered",
-    );
-  let identity = await resolveClientIdentity(args.auth, browserInstallation);
-  const currentUrl = resolveCurrentUrl(args.auth);
-  const browserAuth = args.auth?.mode === "session_key" ? undefined : args.auth;
-  const callbackFlowId = args.auth?.mode === "session_key"
-    ? args.auth.transactionId
-    : browserAuth?.transactionId ??
-      currentUrl?.searchParams.get("transactionId") ??
-      undefined;
-  const callbackAuthError = args.auth?.mode === "session_key"
-    ? undefined
-    : currentUrl?.searchParams.get("authError") ?? undefined;
-  const offsetState: ClockOffsetState = { serverClockOffsetMs: 0 };
-
-  const authorizationContexts = new AuthorizationContextCache(
-    trellisUrl,
-    (input, init) => globalThis.fetch(input, init),
-    deps.now,
-  );
-
-  if (callbackAuthError) {
-    if (currentUrl) cleanupBrowserCallbackUrl(currentUrl);
-    throw createTransportError({
-      code: callbackAuthError,
-      message: "Trellis sign-in did not complete.",
-      hint: "Start sign-in again if you want to approve access.",
-      context: { reason: callbackAuthError, trellisUrl },
-    });
-  }
-
-  let callbackBootstrap: ClientBootstrapResponse | undefined;
-  if (callbackFlowId) {
-    try {
-      const bound = await bindClientFlow({
-        trellisUrl,
-        origin: currentUrl?.origin ?? new URL(trellisUrl).origin,
-        transactionId: callbackFlowId,
-        identity,
-        participant: args.participant,
-      });
-      if (browserInstallation) {
-        const current = identity.browserCredential;
-        if (
-          !current || !await browserInstallation.completeBind({
-            generation: current.generation,
-            sessionKey: current.sessionKey,
-            pendingIntentId: bound.intentId,
-          }, {
-            loginSessionId: bound.sessionId,
-            expiresAt: bound.expiresAt,
-          })
-        ) {
-          globalThis.location?.reload();
-          throw new Error("browser installation changed in another tab");
-        }
-        identity.browserCredential = {
-          generation: current.generation,
-          seed: current.seed,
-          sessionKey: current.sessionKey,
-          loginSessionId: bound.sessionId,
-          expiresAt: bound.expiresAt,
-        };
-      }
-      identity.sessionId = bound.sessionId;
-      offsetState.serverClockOffsetMs = bound.serverClockOffsetMs;
-      callbackBootstrap = await recoverClientBootstrapWithRetry({
-        participantDigest: args.participant.digest,
-        trellisUrl,
-        identity,
-        cache: authorizationContexts,
-        deps,
-        offsetState,
-        bootstrapTimeoutMs: args.timeout,
-        signal: args.signal,
-      });
-    } catch (error) {
-      if (currentUrl && isExpiredBindError(error)) {
-        cleanupBrowserCallbackUrl(currentUrl);
-      } else {
-        throw error;
-      }
-    }
-  }
-
-  const initialBootstrapStartedAt = performance.now();
-  const initialBootstrap = deps.initialBootstrap ?? callbackBootstrap ??
-    await recoverClientBootstrapWithRetry({
-      participantDigest: args.participant.digest,
-      trellisUrl,
-      identity,
-      cache: authorizationContexts,
-      deps,
-      offsetState,
-      bootstrapTimeoutMs: args.timeout,
-      signal: args.signal,
-      onTerminalSession: async () => {
-        if (
-          browserInstallation &&
-          !await clearBrowserLogin(browserInstallation, identity)
-        ) {
-          globalThis.location?.reload();
-          throw new Error("browser installation changed in another tab");
-        }
-      },
-    });
-  recordTrellisDuration(
-    "trellis.connect.duration",
-    performance.now() - initialBootstrapStartedAt,
-    {
-      phase: "bootstrap",
-      participantKind: "client",
-      outcome: "ok",
-    },
-  );
-
-  const authStartedAt = performance.now();
-  let bootstrap = initialBootstrap;
-  if (
-    needsReauth(initialBootstrap) ||
-    !bootstrapTargetsRequestedContract(
-      initialBootstrap,
-      args,
-      authorizationContexts,
-    )
-  ) {
-    if (browserInstallation) {
-      identity = await resolveClientIdentity(args.auth, browserInstallation);
-    }
-    bootstrap = await resolveAuthRequired(
-      args,
-      identity,
-      browserInstallation,
-      currentUrl,
-      authorizationContexts,
-      deps,
-      offsetState,
-    );
-  }
-  recordTrellisDuration(
-    "trellis.connect.duration",
-    performance.now() - authStartedAt,
-    {
-      phase: "auth_resolution",
-      participantKind: "client",
-      outcome: "ok",
-    },
-  );
-
-  if (bootstrap.status !== "ready") {
-    if (bootstrap.status === "not_ready") {
-      throw createTransportError({
-        code: "trellis.bootstrap.not_ready",
-        message: "Trellis is not ready to connect this client.",
-        hint:
-          "Wait for the requested app access to become available, then try again.",
-        context: { reason: bootstrap.reason },
-      });
-    }
-    throw createTransportError({
-      code: "trellis.bootstrap.auth_required",
-      message: "Trellis still requires sign-in before connecting this client.",
-      hint: "Complete sign-in, then try again.",
-    });
-  }
-
-  const transport = await deps.loadTransport();
-  identity.runtimeAuth.setServerClockOffsetMs(
-    (bootstrap.serverClockOffsetMs ?? offsetState.serverClockOffsetMs) +
-      deps.now() - Date.now(),
-  );
-  offsetState.serverClockOffsetMs = bootstrap.serverClockOffsetMs ??
-    offsetState.serverClockOffsetMs;
-  authorizationContexts.setServerClockOffsetMs(
-    offsetState.serverClockOffsetMs,
-  );
-  if (deps.initialBootstrap) {
-    await authorizationContexts.install(
-      bootstrap.connectInfo.authorizationContext,
-      {
-        bootstrapJwt: bootstrap.connectInfo.transport.jwt,
-        bootstrapJwtExpiresAt: bootstrap.connectInfo.transport.jwtExpiresAt,
-      },
-      bootstrap.serverNow,
-      undefined,
-      {
-        connectionId: bootstrap.connectInfo.connectionId!,
-        loginSessionId: bootstrap.connectInfo.sessionId,
-        participantId: bootstrap.connectInfo.participantId,
-        inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
-        transports: bootstrap.connectInfo.transports,
-      },
-    );
-  }
-  selectClientRuntimeTransportServers(bootstrap.connectInfo.transports);
-  identity.sessionId = bootstrap.connectInfo.sessionId;
-  if (callbackFlowId && currentUrl) cleanupBrowserCallbackUrl(currentUrl);
-  const runtimeState = {
-    participantDigest: bootstrap.connectInfo.participantDigest,
-    sessionId: bootstrap.connectInfo.sessionId,
-  };
-  let endingSession = false;
-  const handleSessionNotFound = identity.mode === "browser"
-    ? async () => {
-      if (endingSession) return;
-      if (!await clearBrowserLogin(browserInstallation, identity)) {
-        if (nc && !nc.isClosed()) await nc.close();
-        globalThis.location?.reload();
-        return;
-      }
-      const replacementIdentity = await resolveClientIdentity(
-        browserAuth,
-        browserInstallation,
-      );
-      const latestCurrentUrl = resolveCurrentUrl(browserAuth);
-      try {
-        await resolveAuthRequired(
-          args,
-          replacementIdentity,
-          browserInstallation,
-          latestCurrentUrl,
-          authorizationContexts,
-          deps,
-          offsetState,
-        );
-      } catch (error) {
-        if (error instanceof ClientAuthHandledError) {
-          return;
-        }
-        throw error;
-      }
-    }
-    : undefined;
-  let nc: NatsConnection | undefined;
-  let authorizationProviderCache: AuthorizationProviderCache | undefined;
-  let generationManager: TransportGenerationManager | undefined;
-  const connectionTelemetry = startConnectionTelemetry("client");
-
-  /** Newest installed desired application transport policy. */
-  const currentDesiredPolicy = (): TransportAuthorizationV1 | undefined => {
-    try {
-      return authorizationContexts.current().context.transportAuthorization;
-    } catch {
-      return undefined;
-    }
-  };
-
-  /**
-   * Newest installed transport policy that is still usable as the application's
-   * own authority.
-   *
-   * While the provider cache reports the installed own authorization unusable
-   * (revoked or suspended), the signed installed policy is known-unusable and
-   * must not drive generation reconciliation or be prepared as a normal default
-   * connection. The manager keeps its existing healthy carrier and accepted work
-   * while a private refresh candidate is verified and promoted; promotion
-   * schedules adoption immediately through `authorizationPromoted`. Candidate
-   * material stays private to the provider cache and never routes data.
-   */
-  const managedDesiredPolicy = (): TransportAuthorizationV1 | undefined => {
-    if (!authorizationProviderCache?.ownUsable()) return undefined;
-    return currentDesiredPolicy();
-  };
-
-  // The admitted-transport gate remains the boundary for surfaces not yet
-  // routed through generation leases (Live, KV/store). It tracks the current
-  // generation's exact admission rather than one fixed physical socket.
-  const transportState = new TransportAuthorizationState();
-  const syncTransportGate = async (): Promise<void> => {
-    const active = generationManager;
-    if (!active) return;
-    const generation = active.currentGeneration();
-    if (!generation || !generation.ready) {
-      transportState.markDisconnected();
-      return;
-    }
-    await transportState.recordAdmission({
-      contextDigest: generation.contextDigest,
-      policy: generation.admittedPolicy,
-      allowed: currentDesiredPolicy(),
-      nowUnixSeconds: authorizationContexts.correctedNowSeconds(),
-    });
-  };
-
-  /**
-   * Capture immutable CONNECT material for the newest installed authorization
-   * context.
-   *
-   * The initial connection and every automatic generation use this one path, so
-   * a candidate can only CONNECT with the exact context it later reports.
-   */
-  const prepareConnect = async (
-    verified: AuthorizationCandidateSnapshot["verified"],
-    runtime: AuthorizationCandidateSnapshot["runtime"],
-    routingJwt: string,
-  ): Promise<TransportGenerationPrepared> => {
-    if (!runtime) {
-      throw new Error("authorization runtime metadata is unavailable");
-    }
-    const policy = verified.context.transportAuthorization;
-    const servers = selectClientRuntimeTransportServers(runtime.transports);
-    const policyDigest = await transportAuthorizationDigestWasm(policy);
-    const authenticator = await createRuntimeUserAuthenticator({
-      identity,
-      inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
-      contextDigest: verified.contextDigest,
-      jwt: routingJwt,
-      authorizationUsable: () =>
-        authorizationProviderCache?.transportUsable() ?? true,
-    });
-    return {
-      contextDigest: verified.contextDigest,
-      policy,
-      policyDigest,
-      connect: {
-        servers,
-        authenticators: authenticator.authenticators,
-        inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
-        maxReconnectAttempts: GENERATION_MAX_RECONNECT_ATTEMPTS,
-        timeoutMs: args.timeout ?? 30_000,
-      },
-    };
-  };
-
-  const prepareGeneration = (): Promise<
-    TransportGenerationPrepared | undefined
-  > => {
-    try {
-      return prepareConnect(
-        authorizationContexts.current(),
-        authorizationContexts.runtimeBinding(),
-        authorizationContexts.routingJwt(),
-      );
-    } catch {
-      authorizationContexts.requestRefresh();
-      return Promise.resolve(undefined);
-    }
-  };
-
-  try {
-    const natsStartedAt = performance.now();
-    const initialPrepared = await prepareGeneration();
-    if (!initialPrepared) {
-      throw new Error("no current authorization context to connect with");
-    }
-    nc = await transport.connect({
-      servers: initialPrepared.connect.servers,
-      maxReconnectAttempts: initialPrepared.connect.maxReconnectAttempts ??
-        GENERATION_MAX_RECONNECT_ATTEMPTS,
-      ignoreAuthErrorAbort: true,
-      timeout: args.timeout ?? 30_000,
-      inboxPrefix: initialPrepared.connect.inboxPrefix,
-      authenticator: initialPrepared.connect.authenticators,
-    });
-    const connectedNats = nc;
-    authorizationProviderCache = await AuthorizationProviderCache.attach(
-      connectedNats,
-      authorizationContexts.bundle().authorizationRegistry,
-      bootstrap.connectInfo.transport.inboxPrefix,
-      authorizationContexts,
-    );
-    authorizationProviderCache.start();
-    await authorizationProviderCache.waitReady();
-    await authorizationProviderCache.retainOwnContext();
-    generationManager = new TransportGenerationManager({
-      kind: "user",
-      nowSeconds: () => authorizationContexts.correctedNowSeconds(),
-      desiredPolicy: managedDesiredPolicy,
-      prepare: prepareGeneration,
-      onEvent: (event) => {
-        if (
-          event.type === "transport_generation.activated" ||
-          event.type === "transport_generation.closed"
-        ) {
-          void syncTransportGate().catch(() => undefined);
-        }
-      },
-      open: (connect) =>
-        transport.connect({
-          servers: connect.servers,
-          maxReconnectAttempts: connect.maxReconnectAttempts ??
-            GENERATION_MAX_RECONNECT_ATTEMPTS,
-          ignoreAuthErrorAbort: true,
-          timeout: connect.timeoutMs ?? args.timeout ?? 30_000,
-          inboxPrefix: connect.inboxPrefix,
-          authenticator: connect.authenticators,
-        }),
-      ...(args.log ? { log: args.log } : {}),
-    });
-    await generationManager.initialize(connectedNats, initialPrepared);
-    // Bind the logical cache to the manager's published current transport only
-    // after the initial generation is adopted: its first retained publication
-    // pins existing fixed-mode coverage to that exact generation. The initial
-    // watch had no generation pin before this point, so reconciling is required
-    // even though the socket identity is unchanged.
-    authorizationProviderCache.followTransport(generationManager);
-    recordTrellisDuration(
-      "trellis.connect.duration",
-      performance.now() - natsStartedAt,
-      {
-        phase: "nats_connect",
-        participantKind: "client",
-        outcome: "ok",
-      },
-    );
-  } catch (error) {
-    connectionTelemetry.dispose();
-    authorizationProviderCache?.stop();
-    if (nc && !nc.isClosed()) await nc.close();
-    throw createTransportError({
-      code: "trellis.runtime.connect_failed",
-      message: "Trellis could not open the runtime connection.",
-      hint:
-        "Retry the connection. If it keeps failing, check Trellis transport availability.",
-      cause: error,
-      context: { trellisUrl },
-    });
-  }
-  if (!nc || !authorizationProviderCache || !generationManager) {
-    throw new Error("Trellis client runtime connection was not established");
-  }
-  const manager = generationManager;
-  // The provider cache is a logical-connection resource, not a property of the
-  // first physical generation. It is stopped only on the logical close, so the
-  // authenticator stays usable across a generation replacement; it follows the
-  // manager's published current transport through `followTransport`.
-  void manager.closed().then(
-    () => authorizationProviderCache.stop(),
-    () => authorizationProviderCache.stop(),
-  );
-  const clientOpts: ClientOpts = {
-    ...(typeof args.name === "string" ? { name: args.name } : {}),
-    ...(args.log ? { log: args.log } : {}),
-    ...(typeof args.timeout === "number" ? { timeout: args.timeout } : {}),
-    ...(typeof args.stream === "string" ? { stream: args.stream } : {}),
-    ...(args.noResponderRetry
-      ? { noResponderRetry: args.noResponderRetry }
-      : {}),
-  };
-  // Observe the manager's logical lifecycle, never one physical generation, so
-  // retiring the initial generation for a reduction does not close the logical
-  // owner and a planned rollover emits no disconnect.
-  const connection = observeTrellisConnection({
-    kind: "client",
-    transport: {
-      status: () => manager.status(),
-      closed: () => manager.closed(),
-      close: () => manager.close(),
-      isClosed: () => manager.isClosed(),
-      getServer: () => manager.currentGeneration()?.nc.getServer?.(),
-    },
-    log: false,
-    telemetry: connectionTelemetry,
-    availability: participantAvailability(
-      args.participant,
-      bootstrap.apiBindings,
-      bootstrap.resourceBindings,
-      authorizationContexts.current().context.grants.permissions,
-    ),
-    onTransportEvent: (event) => {
-      authorizationProviderCache?.observeTransportEvent(event);
-      const type = (event as { type?: unknown } | null)?.type;
-      if (
-        type === "disconnect" || type === "disconnected" ||
-        type === "reconnecting" || type === "forceReconnect"
-      ) {
-        transportState.markDisconnected();
-      } else if (type === "reconnect") {
-        void syncTransportGate().catch(() => undefined);
-        // A logical reconnect is a new physical attachment; confirm a fresh
-        // authorization context (and re-resolve resources on it) promptly
-        // instead of waiting out the refresh scheduler's transient backoff.
-        authorizationContexts.requestRefresh();
-      }
-    },
-    ...(args.log
-      ? {
-        lifecycleLog: {
-          log: args.log,
-          context: { client: clientOpts.name ?? "client" },
-        },
-      }
-      : {}),
-  });
-  await syncTransportGate();
-  const api = bindApiRoutes(
-    getParticipantRuntime(args.participant).usedApi,
-    bootstrap.apiBindings,
-  ) as RuntimeApi;
-  const resourceState: ClientResourceState = {
-    current: await resolveClientResources({
-      transport: manager,
-      acquireTimeoutMs: args.timeout ?? 30_000,
-      participant: args.participant,
-      participantDigest: runtimeState.participantDigest,
-      bindings: bootstrap.resourceBindings,
-      migrations: args.resourceMigrations,
-    }),
-  };
-  const resourceFacades = clientResourceFacades(resourceState);
-  let installedAvailability = participantAvailability(
-    args.participant,
-    bootstrap.apiBindings,
-    bootstrap.resourceBindings,
-    authorizationContexts.current().context.grants.permissions,
-  );
-  authorizationProviderCache.onOwnInvalidated((reason) => {
-    transitionConnectionAvailability(connection, false, reason);
-    resourceState.current.active.value = false;
-    installConnectionAvailability(
-      connection,
-      participantAvailability(args.participant, {}, {}, []),
-    );
-  });
-  authorizationProviderCache.onOwnResumed(() => {
-    if (connection.status.phase === "connected") {
-      transitionConnectionAvailability(connection, true, "resumed");
-    }
-    resourceState.current.active.value = true;
-    installConnectionAvailability(connection, installedAvailability);
-  });
-  if (
-    authorizationProviderCache.ownUsable() &&
-    connection.status.phase === "connected"
-  ) {
-    transitionConnectionAvailability(connection, true, "connected");
-  }
-  const stopContextRefresh = startAuthorizationContextRefresh({
-    trellisUrl: args.trellisUrl,
-    credential: {
-      loginSessionId: runtimeState.sessionId,
-      proofAuth: identity.installationAuth,
-    },
-    runtime: { auth: identity.runtimeAuth },
-    cache: authorizationContexts,
-    refresh: async (shouldInstall) => {
-      const result = await refreshAuthorizationContextWithMetadata({
-        trellisUrl: args.trellisUrl,
-        credential: {
-          loginSessionId: runtimeState.sessionId,
-          proofAuth: identity.installationAuth,
-        },
-        runtime: { auth: identity.runtimeAuth },
-        cache: authorizationContexts,
-        shouldInstall,
-        prepareOnly: true,
-        prepareInstall: async (response) => {
-          const nextResources = await resolveClientResources({
-            transport: manager,
-            acquireTimeoutMs: args.timeout ?? 30_000,
-            participant: args.participant,
-            participantDigest: response.authorization.participantDigest,
-            bindings: response.authorization.resourceRuntime,
-            previous: resourceState.current,
-            migrations: args.resourceMigrations,
-          });
-          return (verified) => {
-            if (nextResources !== resourceState.current) {
-              // Unchanged handles were carried forward and only changed or
-              // removed ones were invalidated, so the generation is not
-              // suspended wholesale.
-              resourceState.current = nextResources;
-            } else {
-              resourceState.current.active.value = true;
-            }
-            installedAvailability = participantAvailability(
-              args.participant,
-              response.apiBindings,
-              response.authorization.resourceRuntime,
-              verified.context.grants.permissions,
-            );
-            installConnectionAvailability(connection, installedAvailability);
-            refreshApiRoutes(api, response.apiBindings);
-          };
-        },
-      });
-      return result.context;
-    },
-    onRefresh: async (context) => {
-      await installAuthorizationRefresh({
-        provider: authorizationProviderCache,
-        origin: context,
-        prepareConnect: (snapshot) =>
-          prepareConnect(
-            snapshot.verified,
-            snapshot.runtime,
-            snapshot.routing.bootstrapJwt,
-          ),
-        onPromoted: () => manager.authorizationPromoted(),
-      });
-      await syncTransportGate();
-    },
-    onTerminalFailure: async (error) => {
-      await manager.terminate(
-        error instanceof Error ? error : new Error(String(error)),
-      ).catch(() => undefined);
-      // A revoked or expired authority context is not a durable login failure.
-      if (
-        error instanceof AuthorizationContextRefreshError && !error.loginInvalid
-      ) return;
-      await handleSessionNotFound?.();
-    },
-  });
-  // The provider cache is a logical-connection resource that follows the
-  // manager's published current generation; stopping it on generation-1 loss
-  // would make every later authenticator refuse and block recovery.
-  void manager.closed().then(
-    () => {
-      stopContextRefresh();
-    },
-    () => {
-      stopContextRefresh();
-    },
-  );
-
-  const state = getParticipantRuntime(args.participant).state as TrellisOpts<
-    RuntimeApi
-  >["state"];
-
-  const client = createConnectedClient({
-    name: clientOpts.name ?? "client",
-    nc,
-    connection,
-    inboxPrefix: bootstrap.connectInfo.transport.inboxPrefix,
-    sessionKey: identity.runtimeAuth.sessionKey,
-    sign: identity.sign,
-    contextDigest: () => authorizationContexts.current().contextDigest,
-    authorizationProviderCache,
-    opts: {
-      log: clientOpts.log,
-      timeout: clientOpts.timeout,
-      stream: clientOpts.stream,
-      noResponderRetry: clientOpts.noResponderRetry,
-      api,
-      state,
-      stateMigrations: args.resourceMigrations?.state,
-      resourceGeneration: () => resourceState.current.generation,
-      resourceAvailability: (name) =>
-        connection.availability().resources[name] ?? true,
-      onSessionNotFound: handleSessionNotFound,
-      transport: manager,
-    },
-  });
-  recordTrellisDuration(
-    "trellis.connect.duration",
-    performance.now() - totalStartedAt,
-    {
-      phase: "total",
-      participantKind: "client",
-      outcome: "ok",
-    },
-  );
-  const caller = createCallerRuntime(client, args.participant, resourceFacades);
-  return Object.assign(caller, {
-    logout: async () => {
-      endingSession = true;
-      try {
-        const logout = Reflect.get(caller, "sessionsLogout");
-        if (typeof logout !== "function") {
-          throw new Error(
-            "the participant contract must use Auth.Sessions.Logout",
-          );
-        }
-        const result = Reflect.apply(logout, caller, [{}]);
-        if (!(result instanceof AsyncResult)) {
-          throw new Error("Auth.Sessions.Logout returned an invalid result");
-        }
-        const operationCompleted = await Promise.race([
-          result.orThrow().then(() => true, () => false),
-          manager.closed().then(() => false),
-        ]);
-        if (!operationCompleted) {
-          try {
-            await refreshAuthorizationContextWithMetadata({
-              trellisUrl,
-              credential: {
-                loginSessionId: identity.sessionId!,
-                proofAuth: identity.installationAuth,
-              },
-              runtime: { auth: identity.runtimeAuth },
-              cache: authorizationContexts,
-              prepareOnly: true,
-            });
-            throw new Error("logout did not revoke the current session");
-          } catch (error) {
-            if (
-              !(error instanceof AuthorizationContextRefreshError) ||
-              error.code !== "session_revoked"
-            ) {
-              throw error;
-            }
-          }
-        }
-      } finally {
-        try {
-          await clearBrowserLogin(browserInstallation, identity);
-        } finally {
-          try {
-            if (!nc.isClosed()) await nc.close();
-          } finally {
-            endingSession = false;
-          }
-        }
-      }
-    },
-  });
-}
-
-async function resolveAuthRequired<
-  TContract extends ClientContract,
->(
-  args: ClientConnectArgsFor<TContract>,
-  identity: ClientRuntimeIdentity,
-  browserInstallation: BrowserSessionStore | undefined,
-  currentUrl: URL | null,
-  cache: AuthorizationContextCache,
-  deps: ClientConnectDeps,
-  offsetState: ClockOffsetState,
-): Promise<ClientBootstrapResponse> {
-  const browserAuth: BrowserClientAuthOptions =
-    args.auth?.mode === "session_key" ? {} : args.auth ?? {};
-  const redirectTo = args.auth?.mode === "session_key"
-    ? args.auth.redirectTo
-    : currentUrl
-    ? resolveRedirectTo(browserAuth, currentUrl)
-    : resolveConfiguredRedirectTo(browserAuth.redirectTo);
-  if (!redirectTo) {
-    throw new Error("Client authentication requires a redirectTo URL");
-  }
-
-  const authStart = await buildSessionKeyLoginUrl({
-    trellisUrl: normalizeTrellisUrl(args.trellisUrl),
-    redirectTo,
-    identity,
-    participant: args.participant,
-  });
-  if (browserInstallation) {
-    const current = identity.browserCredential;
-    if (
-      !current || !await browserInstallation.rememberIntent({
-        generation: current.generation,
-        sessionKey: current.sessionKey,
-      }, authStart.intentId)
-    ) {
-      globalThis.location?.reload();
-      throw new Error("browser installation changed in another tab");
-    }
-    identity.browserCredential = {
-      ...current,
-      pendingIntentId: authStart.intentId,
-    };
-  }
-
-  const loginUrl = authStart.loginUrl;
-
-  const continuationStartedAt = performance.now();
-  const continuation = await args.onAuthRequired?.({
-    loginUrl,
-    sessionKey: identity.installationAuth.sessionKey,
-    mode: identity.mode,
-  });
-  recordTrellisDuration(
-    "trellis.connect.duration",
-    performance.now() - continuationStartedAt,
-    {
-      phase: "bootstrap",
-      participantKind: "client",
-      outcome: "ok",
-    },
-  );
-  if (continuation && continuation.status === "handled") {
-    throw new ClientAuthHandledError();
-  }
-
-  if (continuation && continuation.status === "bound") {
-    const bindStartedAt = performance.now();
-    const bound = await bindClientFlow({
-      trellisUrl: normalizeTrellisUrl(args.trellisUrl),
-      origin: new URL(redirectTo).origin,
-      transactionId: continuation.transactionId,
-      identity,
-      participant: args.participant,
-    });
-    if (browserInstallation) {
-      const current = identity.browserCredential;
-      if (
-        !current || !await browserInstallation.completeBind({
-          generation: current.generation,
-          sessionKey: current.sessionKey,
-          pendingIntentId: bound.intentId,
-        }, {
-          loginSessionId: bound.sessionId,
-          expiresAt: bound.expiresAt,
-        })
-      ) {
-        throw new Error("browser installation changed in another tab");
-      }
-      identity.browserCredential = {
-        generation: current.generation,
-        seed: current.seed,
-        sessionKey: current.sessionKey,
-        loginSessionId: bound.sessionId,
-        expiresAt: bound.expiresAt,
-      };
-    }
-    identity.sessionId = bound.sessionId;
-    recordTrellisDuration(
-      "trellis.connect.duration",
-      performance.now() - bindStartedAt,
-      {
-        phase: "bootstrap",
-        participantKind: "client",
-        outcome: "ok",
-      },
-    );
-    return recoverClientBootstrapWithRetry({
-      trellisUrl: normalizeTrellisUrl(args.trellisUrl),
-      identity,
-      cache,
-      deps,
-      offsetState,
-      bootstrapTimeoutMs: args.timeout,
-      signal: args.signal,
-    });
-  }
-
-  if (isBrowserRuntime()) {
-    globalThis.location.href = loginUrl;
-    throw new ClientAuthHandledError();
-  }
-
-  throw new Error(
-    "Client authentication required and no auth continuation was provided",
-  );
-}
-
-/** Connects user-facing participants to the Trellis caller runtime. */
+/** Public OAuth app connector. Requests choose local surfaces; signed admission owns authority. */
 export class TrellisClient {
-  static connect<
-    TContract extends ClientContract,
-  >(
-    args: ClientConnectArgsFor<TContract>,
-  ): AsyncResult<
-    ConnectedTrellisClient<TContract>,
-    TransportError | UnexpectedError | ClientAuthHandledError
-  >;
-  static connect(
-    args: TrellisClientConnectArgs,
-  ): AsyncResult<
-    unknown,
-    TransportError | UnexpectedError | ClientAuthHandledError
-  > {
-    return clientConnectResult(connectClientWithDeps(args, defaultDeps), {
-      startedAt: performance.now(),
-    });
+  /** Open a registered browser application using its generated request descriptor. */
+  static connect<const T extends AppRequestDescriptor>(
+    args: TrellisClientConnectArgs<T>,
+  ) {
+    return connectClient(args);
   }
 }

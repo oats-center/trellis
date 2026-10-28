@@ -1,591 +1,545 @@
 <script lang="ts">
-  import { ulid } from "ulid";
-  import { isErr } from "@oatscenter/result";
-  import { type apis } from "trellis-web-generated";
-  import { resolve } from "$lib/console_paths";
-  import { page } from "$app/state";
+  import type { apis } from "trellis-web-generated";
   import { onMount } from "svelte";
-  import { consoleUrl } from "$lib/console_paths";
-  import { TABLE_PAGE_LIMIT, tablePage } from "$lib/console/paging.ts";
-  import { captureIntent, classifyMutationError, isIntentCurrent, type MutationIntent } from "$lib/console/mutation.ts";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
+  import { ulid } from "ulid";
   import { SvelteSet } from "svelte/reactivity";
-  import {
-    describeSessionPrincipal,
-    formatShortKey,
-    participantKindBadgeClass,
-    participantKindLabel,
-    type ConnectionRecord,
-    type SessionRecord,
-  } from "$lib/auth_display.ts";
-  import { errorMessage, formatDate } from "$lib/format";
+  import { getTrellis } from "$lib/trellis";
+  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
+  import { canPerform } from "$lib/console/operations.ts";
+  import { traverseAll } from "$lib/console/paging.ts";
+  import { RequestScope } from "$lib/console/request_scope.ts";
+  import { projectConsoleError } from "$lib/console/display_value.ts";
+  import { classifyMutationError } from "$lib/console/mutation.ts";
+  import { runBulk } from "$lib/bulk.ts";
+  import { formatDate, humanizeName } from "$lib/format";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
+  import EmptyState from "$lib/components/EmptyState.svelte";
+  import Icon from "$lib/components/Icon.svelte";
   import BulkActionBar from "$lib/components/BulkActionBar.svelte";
   import BulkResult from "$lib/components/BulkResult.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
-  import Term from "$lib/components/Term.svelte";
   import DataTable from "$lib/components/DataTable.svelte";
-  import EmptyState from "$lib/components/EmptyState.svelte";
-  import Icon from "$lib/components/Icon.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
-  import Panel from "$lib/components/Panel.svelte";
-  import { getTrellis } from "$lib/trellis";
-  import { bulkExpectedCount, bulkTargetDetails, runBulk, toggleAll, toggleId } from "$lib/bulk.ts";
 
+  type Session = apis.auth.AuthorizationSessionsListOutput["items"][number];
+  type Attachment = apis.auth.ConnectionsListOutput["items"][number];
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
+  const sessionScope = new RequestScope("authorization-sessions");
+  const attachmentScope = new RequestScope("attachments");
+  let sessions = $state.raw<Session[]>([]);
+  let attachments = $state.raw<Attachment[]>([]);
+  let loading = $state(true);
+  let error = $state<string | null>(null);
+  let attachmentError = $state<string | null>(null);
+  let tab = $state<"sessions" | "connections">("sessions");
+  let filter = $state<"active" | "ended">("active");
+  let search = $state("");
+  // Names are optional context; IDs are the fallback when a read isn't allowed.
+  let userNames = $state.raw<Map<string, string>>(new Map());
+  let deploymentNames = $state.raw<Map<string, string>>(new Map());
 
-  let activeTab = $state<"sessions" | "connections">(page.url.searchParams.get("tab") === "connections" ? "connections" : "sessions");
+  const liveBySession = $derived.by(() => {
+    const counts = new Map<string, Attachment[]>();
+    for (const attachment of attachments)
+      if (attachment.state === "admitted")
+        counts.set(attachment.authorizationSessionId, [
+          ...(counts.get(attachment.authorizationSessionId) ?? []),
+          attachment,
+        ]);
+    return counts;
+  });
+  const visibleSessions = $derived(
+    sessions
+      .filter((session) =>
+        filter === "active"
+          ? session.state === "active"
+          : session.state !== "active",
+      )
+      .filter((session) =>
+        `${who(session)} ${using(session)}`
+          .toLowerCase()
+          .includes(search.trim().toLowerCase()),
+      )
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+  );
 
-  // Sessions and connections are independent views with their own loading,
-  // error, page state, and selection.
-  let sessions = $state.raw<SessionRecord[]>([]);
-  let sessionsLoading = $state(true);
-  let sessionsError = $state<string | null>(null);
-  let sessionFilterUser = $state("");
-  let sessionCursor = $state<string | undefined>(undefined);
+  // One row per person (or service) and app, so repeat sign-ins don't flood
+  // the list; actions apply to every sign-in in the row.
+  type Group = { key: string; latest: Session; sessions: Session[] };
+  const groups = $derived.by((): Group[] => {
+    const byKey = new Map<string, Group>();
+    for (const session of visibleSessions) {
+      const key = `${session.principalId}:${
+        session.binding.clientId ??
+        session.binding.deploymentId ??
+        session.binding.instanceId ??
+        ""
+      }`;
+      const group = byKey.get(key);
+      if (group) group.sessions.push(session);
+      else byKey.set(key, { key, latest: session, sessions: [session] });
+    }
+    return [...byKey.values()];
+  });
 
-  let connections = $state.raw<ConnectionRecord[]>([]);
-  let connectionsLoading = $state(true);
-  let connectionsError = $state<string | null>(null);
-  let connFilterSessionId = $state("");
-  let connCursor = $state<string | undefined>(undefined);
+  function liveIn(group: Group): Attachment[] {
+    return group.sessions.flatMap(
+      (session) => liveBySession.get(session.authorizationSessionId) ?? [],
+    );
+  }
 
-  const selectedSessions = new SvelteSet<string>();
-  const selectedConnections = new SvelteSet<string>();
-  let bulkBusy = $state(false);
-  let sessionResult = $state<{ succeeded: number; failed: string[] } | null>(null);
-  let connectionResult = $state<{ succeeded: number; failed: string[] } | null>(null);
-  let confirmationModal: ConfirmationModal | undefined = $state();
+  function who(session: Session): string {
+    if (session.principalKind === "user")
+      return userNames.get(session.principalId) ?? "Unknown user";
+    const deployment = session.binding.deploymentId
+      ? deploymentNames.get(session.binding.deploymentId)
+      : undefined;
+    if (session.principalKind === "device")
+      return `Device ${(session.binding.instanceId ?? session.principalId).slice(-6)}`;
+    return (
+      deployment ?? humanizeName(session.binding.participantId ?? "Service")
+    );
+  }
+
+  function using(session: Session): string {
+    if (session.binding.clientId) return humanizeName(session.binding.clientId);
+    if (session.binding.deploymentId)
+      return deploymentNames.get(session.binding.deploymentId) ?? "—";
+    return "—";
+  }
+
+  function ago(iso: string): string {
+    const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    if (!Number.isFinite(minutes)) return "—";
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    return hours < 24 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
+  }
+
+  async function loadNames(): Promise<void> {
+    const [users, deployments] = await Promise.all([
+      traverseAll(async (page) => {
+        const response = await trellis.usersList({ page }).orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      }),
+      traverseAll(async (page) => {
+        const response = await trellis.deploymentsList({ page }).orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      }),
+    ]);
+    userNames = new Map(
+      users.items.map((user) => [user.principalId, user.displayName]),
+    );
+    deploymentNames = new Map(
+      deployments.items.map((item) => [
+        item.deploymentId,
+        humanizeName(item.title),
+      ]),
+    );
+  }
+
+  async function disconnect(group: Group): Promise<void> {
+    const live = liveIn(group);
+    if (busy || !live.length) return;
+    const confirmed = await confirmationModal?.confirm({
+      title: `Disconnect ${who(group.latest)}?`,
+      message:
+        "Their live connections close. They stay signed in and may reconnect.",
+      confirmLabel: "Disconnect",
+      targetLabel: "Who",
+      targetName: `${who(group.latest)} · ${using(group.latest)}`,
+    });
+    if (!confirmed || sessionScope.disposed) return;
+    await run(
+      live.map((item) => item.attachmentId),
+      (id, key) =>
+        trellis
+          .connectionsKick({ attachmentId: id, idempotencyKey: key })
+          .orThrow(),
+    );
+  }
+
+  async function signOut(group: Group): Promise<void> {
+    const active = group.sessions.filter(
+      (session) => session.state === "active",
+    );
+    if (busy || !active.length) return;
+    const confirmed = await confirmationModal?.confirm({
+      title: `Sign out ${who(group.latest)}?`,
+      message:
+        active.length === 1
+          ? "They'll need to sign in again."
+          : `All ${active.length} of their sign-ins in ${using(group.latest)} end. They'll need to sign in again.`,
+      confirmLabel: "Sign out",
+      targetLabel: "Who",
+      targetName: `${who(group.latest)} · ${using(group.latest)}`,
+    });
+    if (!confirmed || sessionScope.disposed) return;
+    await run(
+      active.map((session) => session.authorizationSessionId),
+      (id, key) =>
+        trellis
+          .authorizationSessionsRevoke({
+            authorizationSessionId: id,
+            idempotencyKey: key,
+          })
+          .orThrow(),
+    );
+  }
+
+  async function run<Id>(
+    ids: Id[],
+    send: (id: Id, key: string) => Promise<unknown>,
+  ): Promise<void> {
+    busy = true;
+    const outcome = await runBulk(
+      ids.map((id) => ({ id, key: ulid() })),
+      async (target) => {
+        await send(target.id, target.key);
+      },
+      (cause) =>
+        classifyMutationError(cause).kind === "unknown" ? "unknown" : "failed",
+    );
+    if (sessionScope.disposed) return;
+    result = {
+      succeeded: outcome.succeeded,
+      failed: outcome.failed.map((item) => item.reason),
+    };
+    uncertain = outcome.unknown.length > 0;
+    busy = false;
+    await load();
+  }
+  const selected = new SvelteSet<string>();
+  let busy = $state(false);
   let uncertain = $state(false);
-  let unknownLabels = $state<string[]>([]);
-  let disposed = false;
+  let result = $state<{ succeeded: number; failed: string[] } | null>(null);
+  let confirmationModal: ConfirmationModal | undefined = $state();
 
-  type SessionsRevokeIntent = MutationIntent<apis.auth.SessionsRevokeInput>;
-  type ConnectionsKickIntent = MutationIntent<apis.auth.ConnectionsKickInput>;
-
-  const loading = $derived(
-    activeTab === "sessions" ? sessionsLoading : connectionsLoading,
-  );
-  const error = $derived(
-    activeTab === "sessions" ? sessionsError : connectionsError,
-  );
-  // A session may exist without a current connection; the current session is
-  // identified by ID, never by row order or a legacy key field.
-  const revocableSessions = $derived(
-    sessions.filter((session) => !isCurrentSession(session)),
-  );
-  const selectableSessionIds = $derived(
-    revocableSessions.map((session) => session.sessionId),
-  );
-  // A connection kick does not revoke the session and the client may reconnect,
-  // so the current connection is excluded from generic bulk kick.
-  const kickableConnections = $derived(
-    connections.filter((connection) => connection.connectionId !== authority.identity.connectionId),
-  );
-  const selectableConnectionIds = $derived(
-    kickableConnections.map((connection) => connection.connectionId),
-  );
-
-  async function loadSessions() {
-    sessionsLoading = true;
-    sessionsError = null;
-    try {
-      const response = await trellis.sessionsList({
-        ...(sessionFilterUser.trim() === ""
-          ? {}
-          : { principalId: sessionFilterUser.trim() }),
-        page: tablePage(sessionCursor),
-      }).take();
-      if (isErr(response)) {
-        sessionsError = errorMessage(response);
-        return;
-      }
-      sessions = response.items ?? [];
-      sessionCursor = response.page.nextCursor;
-      // Selection only ever holds IDs still present in the current page.
-      for (const id of [...selectedSessions]) {
-        if (!sessions.some((session) => session.sessionId === id)) {
-          selectedSessions.delete(id);
-        }
-      }
-    } catch (e) {
-      sessionsError = errorMessage(e);
-    } finally {
-      sessionsLoading = false;
+  async function load(): Promise<void> {
+    const st = sessionScope.begin();
+    const at = attachmentScope.begin();
+    loading = true;
+    const [sessionResult, attachmentResult] = await Promise.all([
+      traverseAll(async (page) => {
+        const response = await trellis
+          .authorizationSessionsList({ page })
+          .orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      }),
+      traverseAll(async (page) => {
+        const response = await trellis.connectionsList({ page }).orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      }),
+    ]);
+    if (sessionScope.settle(st)) {
+      sessions = [...sessionResult.items];
+      error = sessionResult.complete
+        ? null
+        : projectConsoleError(sessionResult.error).message;
+      loading = false;
+    }
+    if (attachmentScope.settle(at)) {
+      attachments = [...attachmentResult.items];
+      attachmentError = attachmentResult.complete
+        ? null
+        : projectConsoleError(attachmentResult.error).message;
     }
   }
 
-  async function loadConnections() {
-    connectionsLoading = true;
-    connectionsError = null;
-    try {
-      const response = await trellis.connectionsList({
-        ...(connFilterSessionId.trim() === ""
-          ? {}
-          : { sessionId: connFilterSessionId.trim() }),
-        page: tablePage(connCursor),
-      }).take();
-      if (isErr(response)) {
-        connectionsError = errorMessage(response);
-        return;
-      }
-      connections = response.items ?? [];
-      connCursor = response.page.nextCursor;
-      for (const id of [...selectedConnections]) {
-        if (!connections.some((connection) => connection.connectionId === id)) {
-          selectedConnections.delete(id);
-        }
-      }
-    } catch (e) {
-      connectionsError = errorMessage(e);
-    } finally {
-      connectionsLoading = false;
-    }
-  }
-
-  function applySessionFilter(): void {
-    sessionCursor = undefined;
-    selectedSessions.clear();
-    void loadSessions();
-  }
-
-  function applyConnectionFilter(): void {
-    connCursor = undefined;
-    selectedConnections.clear();
-    void loadConnections();
-  }
-
-  function loadActive() {
-    if (activeTab === "sessions") void loadSessions();
-    else void loadConnections();
-  }
-
-  function isCurrentSession(session: SessionRecord): boolean {
-    return session.sessionId === authority.identity.loginSessionId;
-  }
-
-  async function revokeSessions(intents: SessionsRevokeIntent[]) {
-    bulkBusy = true;
-    sessionResult = null;
-    const outcome = await runBulk(intents, async (intent) => {
-      if (
-        disposed || !isIntentCurrent(intent, {
-
-          routeKey: "/admin/sessions",
-        }) || !sessions.some((session) =>
-
-          session.sessionId === intent.targetId && session.version === intent.input.expectedVersion
-
-        )
-      ) {
-        throw new Error("Target or authority changed before dispatch; no revoke sent.");
-      }
-      await trellis.sessionsRevoke(intent.input).orThrow();
-    }, (cause) => classifyMutationError(cause).kind === "unknown" ? "unknown" : "failed");
-    if (disposed) { bulkBusy = false; return; }
-    for (const intent of intents) selectedSessions.delete(intent.targetId);
-    sessionResult = {
-      succeeded: outcome.succeeded,
-      failed: outcome.failed.map((failure) => `${failure.target.label}: ${failure.reason}`),
-    };
-    if (outcome.unknown.length > 0) {
-      uncertain = true;
-      unknownLabels = outcome.unknown.map((item) => item.target.label);
-    }
-    bulkBusy = false;
-    void loadSessions();
-  }
-
-  async function requestBulkRevoke() {
-    if (bulkBusy || uncertain) return;
-    const targets = revocableSessions.filter((session) => selectedSessions.has(session.sessionId));
-    if (targets.length === 0) return;
-    const intents = targets.map((session) => {
-      const idempotencyKey = ulid();
-      return captureIntent<apis.auth.SessionsRevokeInput>({
-        operation: "sessionsRevoke",
-        input: {
-          expectedVersion: session.version,
-          idempotencyKey,
-          reason: null,
-          sessionId: session.sessionId,
-        },
-        label: describeSessionPrincipal(session).title,
-        targetId: session.sessionId,
-        scope: {
-          routeKey: "/admin/sessions",
-        },
-        idempotencyKey,
-      });
-    });
+  async function bulkAction(): Promise<void> {
+    const operation = tab;
+    if (
+      busy ||
+      uncertain ||
+      !canPerform(
+        authority.authority,
+        operation === "sessions"
+          ? "authorizationSessionsRevoke"
+          : "connectionsKick",
+      )
+    )
+      return;
+    const targets =
+      operation === "sessions"
+        ? sessions
+            .filter(
+              (item) =>
+                selected.has(item.authorizationSessionId) &&
+                item.state === "active",
+            )
+            .map((item) => ({ id: item.authorizationSessionId, key: ulid() }))
+        : attachments
+            .filter(
+              (item) =>
+                selected.has(item.attachmentId) && item.state === "admitted",
+            )
+            .map((item) => ({ id: item.attachmentId, key: ulid() }));
+    if (!targets.length) return;
     const confirmed = await confirmationModal?.confirm({
-      title: `Revoke ${targets.length} session${targets.length === 1 ? "" : "s"}?`,
-      message: "Each session loses its credentials and active connections immediately.",
-      confirmLabel: `Revoke ${targets.length}`,
+      title:
+        operation === "sessions"
+          ? `Sign out ${targets.length} session${targets.length === 1 ? "" : "s"}?`
+          : "Disconnect selected?",
+      message:
+        operation === "sessions"
+          ? "They're signed out and disconnected. They'll need to sign in again."
+          : "Live connections close. They stay signed in and may reconnect.",
+      confirmLabel: operation === "sessions" ? "Sign out" : "Disconnect",
       targetLabel: "Sessions",
-      targetName: `${targets.length} sessions`,
-      expectedValue: bulkExpectedCount(targets.length),
-      details: bulkTargetDetails(intents.map((intent) => intent.label)),
+      targetName: `${targets.length} sign-in${targets.length === 1 ? "" : "s"}`,
     });
-    if (
-      !confirmed || disposed || uncertain || intents.some((intent) =>
-
-        !isIntentCurrent(intent, {
-          routeKey: "/admin/sessions",
-        })
-      )
-    ) return;
-    await revokeSessions(intents);
-  }
-
-  async function kickConnections(intents: ConnectionsKickIntent[]) {
-    bulkBusy = true;
-    connectionResult = null;
-    const outcome = await runBulk(intents, async (intent) => {
-      if (
-        disposed || !isIntentCurrent(intent, {
-
-          routeKey: "/admin/sessions",
-        }) || intent.targetId === authority.identity.connectionId ||
-
-        !connections.some((connection) => connection.connectionId === intent.targetId)
-      ) {
-        throw new Error("Target or authority changed before dispatch; no disconnect sent.");
-      }
-      await trellis.connectionsKick(intent.input).orThrow();
-    }, (cause) => classifyMutationError(cause).kind === "unknown" ? "unknown" : "failed");
-    if (disposed) { bulkBusy = false; return; }
-    for (const intent of intents) selectedConnections.delete(intent.targetId);
-    connectionResult = {
+    if (!confirmed || tab !== operation || sessionScope.disposed) return;
+    busy = true;
+    const outcome = await runBulk(
+      targets,
+      async (target) => {
+        if (sessionScope.disposed || tab !== operation)
+          throw new Error("Page target changed before dispatch.");
+        if (operation === "sessions")
+          await trellis
+            .authorizationSessionsRevoke({
+              authorizationSessionId: target.id,
+              idempotencyKey: target.key,
+            })
+            .orThrow();
+        else
+          await trellis
+            .connectionsKick({
+              attachmentId: target.id,
+              idempotencyKey: target.key,
+            })
+            .orThrow();
+      },
+      (cause) =>
+        classifyMutationError(cause).kind === "unknown" ? "unknown" : "failed",
+    );
+    if (sessionScope.disposed) return;
+    result = {
       succeeded: outcome.succeeded,
-      failed: outcome.failed.map((failure) => `${failure.target.label}: ${failure.reason}`),
+      failed: outcome.failed.map((item) => `${item.target.id}: ${item.reason}`),
     };
-    if (outcome.unknown.length > 0) {
-      uncertain = true;
-      unknownLabels = outcome.unknown.map((item) => item.target.label);
-    }
-    bulkBusy = false;
-    void loadConnections();
+    uncertain = outcome.unknown.length > 0;
+    busy = false;
+    selected.clear();
+    await load();
   }
-
-  async function requestBulkKick() {
-    if (bulkBusy || uncertain) return;
-    const targets = kickableConnections.filter((connection) => selectedConnections.has(connection.connectionId));
-    if (targets.length === 0) return;
-    const intents = targets.map((connection) => {
-      const idempotencyKey = ulid();
-      return captureIntent<apis.auth.ConnectionsKickInput>({
-        operation: "connectionsKick",
-        input: {
-          connectionId: connection.connectionId,
-          idempotencyKey,
-          reason: null,
-        },
-        label: describeSessionPrincipal(connection).title,
-        targetId: connection.connectionId,
-        scope: {
-          routeKey: "/admin/sessions",
-        },
-        idempotencyKey,
-      });
-    });
-    const confirmed = await confirmationModal?.confirm({
-      title: `Disconnect ${targets.length} connection${targets.length === 1 ? "" : "s"}?`,
-      message: "Each live NATS connection is dropped. Sessions stay valid until they reconnect.",
-      confirmLabel: `Disconnect ${targets.length}`,
-      targetLabel: "Connections",
-      targetName: `${targets.length} connections`,
-      expectedValue: bulkExpectedCount(targets.length),
-      details: bulkTargetDetails(intents.map((intent) => intent.label)),
-    });
-    if (
-      !confirmed || disposed || uncertain || intents.some((intent) =>
-
-        !isIntentCurrent(intent, {
-          routeKey: "/admin/sessions",
-        })
-      )
-    ) return;
-    await kickConnections(intents);
-  }
-
   onMount(() => {
-    loadActive();
-    return () => { disposed = true; };
+    void load();
+    void loadNames().catch(() => {});
+    return () => {
+      sessionScope.dispose();
+      attachmentScope.dispose();
+    };
   });
 </script>
 
-<section class="space-y-4">
-  <PageToolbar title="Sessions" description="Inspect active sessions and connections and disconnect compromised principals.">
-    {#snippet actions()}
-      <button class="btn btn-ghost btn-sm" onclick={loadActive} disabled={loading}>Refresh</button>
-      <ActionMenu buttonBaseClass="btn btn-outline btn-sm" menuClass="z-10" widthClass="w-56">
-        {#snippet summary()}
-          Actions <Icon name="chevronDown" size={14} />
-        {/snippet}
-        <li><a href={resolve("/admin/sessions/revoke")}>Revoke a session</a></li>
-        <li><a href={resolve("/admin/sessions/kick")}>Kick a connection</a></li>
-      </ActionMenu>
-    {/snippet}
-  </PageToolbar>
+<section class="space-y-5">
+  <PageToolbar
+    title="Sessions"
+    description="Who is signed in, and what is connected right now."
+  />
+  {#if error}<Notice variant="error">{error}</Notice>{/if}
+  {#if attachmentError}<Notice variant="warning"
+      >Live connection status may be incomplete: {attachmentError}</Notice
+    >{/if}
+  {#if uncertain}<Notice variant="warning"
+      >We couldn't confirm every result. Check the list before trying again.</Notice
+    >{/if}
+  {#if result}<BulkResult
+      succeeded={result.succeeded}
+      failed={result.failed}
+      pastTense="done"
+      onDismiss={() => {
+        result = null;
+      }}
+    />{/if}
 
-  <div class="flex items-center justify-between">
-    <div role="tablist" class="tabs tabs-bordered">
-      <button
-        role="tab"
-        class={["tab", activeTab === "sessions" && "tab-active"]}
-        onclick={() => { activeTab = "sessions"; void loadSessions(); }}
-      >Sessions</button>
-      <button
-        role="tab"
-        class={["tab", activeTab === "connections" && "tab-active"]}
-        onclick={() => { activeTab = "connections"; void loadConnections(); }}
-      >Connections</button>
+  <div class="trellis-section">
+    <div class="flex flex-wrap items-center gap-3 p-4">
+      <div class="trellis-segment" role="group" aria-label="Filter sessions">
+        <button
+          type="button"
+          class={{ active: filter === "active" }}
+          aria-pressed={filter === "active"}
+          onclick={() => {
+            filter = "active";
+            selected.clear();
+          }}>Signed in</button
+        >
+        <button
+          type="button"
+          class={{ active: filter === "ended" }}
+          aria-pressed={filter === "ended"}
+          onclick={() => {
+            filter = "ended";
+            selected.clear();
+          }}>Ended</button
+        >
+      </div>
+      <label
+        class="input flex w-full max-w-md items-center gap-2 bg-base-100 sm:w-auto sm:flex-1"
+      >
+        <Icon name="search" size={16} class="text-base-content/50" />
+        <input
+          class="grow"
+          bind:value={search}
+          placeholder="Search by person, service, or app"
+          aria-label="Search sessions"
+        />
+      </label>
     </div>
-  </div>
 
-  {#if error}
-    <Notice variant="error">{error}</Notice>
-  {/if}
-
-  {#if unknownLabels.length > 0}
-    <Notice variant="warning">
-      Outcome unknown for {unknownLabels.join(", ")}. The target may already be revoked or disconnected. Inspect the table and reload before any further action.
-    </Notice>
-  {/if}
-
-  {#if activeTab === "sessions"}
-    <form class="flex items-end gap-2" onsubmit={(e) => { e.preventDefault(); applySessionFilter(); }}>
-      <input
-        class="input input-bordered input-sm w-60 trellis-identifier"
-        placeholder="Filter by principal ID"
-        aria-label="Filter by principal ID"
-        bind:value={sessionFilterUser}
-      />
-      <button type="submit" class="btn btn-outline btn-sm" disabled={sessionsLoading}>Apply</button>
-      {#if sessionFilterUser.trim()}
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          onclick={() => { sessionFilterUser = ""; applySessionFilter(); }}
-        >Clear</button>
-      {/if}
-    </form>
+    {#if selected.size}<div class="px-4">
+        <BulkActionBar
+          count={selected.size}
+          noun="sign-in"
+          onClear={() => selected.clear()}
+          >{#snippet actions()}<button
+              class="btn btn-error btn-outline btn-sm"
+              disabled={busy || uncertain}
+              onclick={() => void bulkAction()}>Sign out</button
+            >{/snippet}</BulkActionBar
+        >
+      </div>{/if}
 
     {#if loading}
-      <Panel><LoadingState label="Loading sessions" /></Panel>
-    {:else if sessions.length === 0}
-      <EmptyState title="No sessions" description="No sessions match the current filter." />
-    {:else}
-      <Panel title="Sessions" eyebrow="Primary table">
-        {#if sessionResult}
-          <BulkResult
-            succeeded={sessionResult.succeeded}
-            failed={sessionResult.failed}
-            pastTense="sessions revoked"
-            onDismiss={() => { sessionResult = null; }}
-          />
-        {:else if selectedSessions.size > 0}
-          <BulkActionBar count={selectedSessions.size} noun="session" onClear={() => selectedSessions.clear()}>
-            {#snippet actions()}
-              <button class="btn btn-error btn-outline btn-sm" disabled={bulkBusy || uncertain} onclick={() => void requestBulkRevoke()}>
-                {bulkBusy ? "Revoking…" : "Revoke selected"}
-              </button>
-            {/snippet}
-          </BulkActionBar>
-        {/if}
-        <DataTable fixed tableClass="w-full">
-          <colgroup>
-            <col class="w-10" />
-            <col class="w-[40%]" />
-            <col class="w-28" />
-            <col class="w-36" />
-            <col class="w-52" />
-            <col class="w-28" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>
-                <span class="sr-only">Select all sessions</span>
-                <input
-                  type="checkbox"
-                  class="checkbox checkbox-xs"
-                  aria-label="Select all sessions"
-                  disabled={bulkBusy || selectableSessionIds.length === 0}
-                  checked={selectableSessionIds.length > 0 && selectableSessionIds.every((id) => selectedSessions.has(id))}
-                  indeterminate={selectableSessionIds.some((id) => selectedSessions.has(id)) && !selectableSessionIds.every((id) => selectedSessions.has(id))}
-                  onchange={() => toggleAll(selectedSessions, selectableSessionIds)}
-                />
-              </th>
-              <th>Principal</th>
-              <th>Kind</th>
-              <th><Term term="session key" /></th>
-              <th>Activity</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each sessions as session (session.sessionId)}
-              {@const summary = describeSessionPrincipal(session)}
-              <tr>
-                <td>
-                  {#if !isCurrentSession(session)}
-                    <input
-                      type="checkbox"
-                      class="checkbox checkbox-xs"
-                      aria-label={`Select {summary.title}`}
-                      disabled={bulkBusy}
-                      checked={selectedSessions.has(session.sessionId)}
-                      onchange={() => toggleId(selectedSessions, session.sessionId)}
-                    />
-                  {/if}
-                </td>
-                <td class="min-w-0">
-                  <div class="truncate font-medium" title={summary.title}>{summary.title}</div>
-                  {#if summary.details}
-                    <div class="truncate text-xs text-base-content/60" title={summary.details}>{summary.details}</div>
-                  {/if}
-                </td>
-                <td>
-                  <span class={["badge badge-sm", participantKindBadgeClass(session.participantKind)]}>
-                    {participantKindLabel(session.participantKind)}
-                  </span>
-                </td>
-                <td class="trellis-identifier text-base-content/60">{formatShortKey(session.sessionKeyId)}</td>
-                <td class="text-xs text-base-content/60">
-                  <div>Last auth {formatDate(session.lastAuthenticatedAt)}</div>
-                  <div>Created {formatDate(session.createdAt)}</div>
-                </td>
-                <td class="text-right">
-                  <div class="flex items-center justify-end gap-2">
-                    {#if isCurrentSession(session)}
-                      <span class="badge badge-info badge-sm">Current</span>
-                    {/if}
-                    <ActionMenu menuClass="z-10" widthClass="w-48">
-                      <li><a class="text-error" href={consoleUrl("/admin/sessions/revoke", { query: { sessionId: session.sessionId } })}>Revoke</a></li>
-                    </ActionMenu>
-                  </div>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </DataTable>
-      <p class="text-xs text-base-content/50">{sessions.length} session{sessions.length !== 1 ? "s" : ""} on this page</p>
-      </Panel>
-    {/if}
-
-  {:else}
-    <form class="flex items-end gap-2" onsubmit={(e) => { e.preventDefault(); applyConnectionFilter(); }}>
-      <input
-        class="input input-bordered input-sm w-56 trellis-identifier"
-        placeholder="Filter by session ID"
-        aria-label="Filter by session ID"
-        bind:value={connFilterSessionId}
+      <LoadingState label="Loading sessions" />
+    {:else if !visibleSessions.length}
+      <EmptyState
+        class="m-4"
+        title={filter === "active"
+          ? "Nobody is signed in"
+          : "No ended sessions"}
+        description={search ? "Try a different search." : undefined}
       />
-      <button type="submit" class="btn btn-outline btn-sm" disabled={connectionsLoading}>Apply</button>
-      {#if connFilterSessionId.trim()}
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          onclick={() => { connFilterSessionId = ""; applyConnectionFilter(); }}
-        >Clear</button>
-      {/if}
-    </form>
-
-    {#if loading}
-      <Panel><LoadingState label="Loading connections" /></Panel>
-    {:else if connections.length === 0}
-      <EmptyState title="No connections" description="No active connections match the current filter." />
     {:else}
-      <Panel title="Connections" eyebrow="Primary table">
-        {#if connectionResult}
-          <BulkResult
-            succeeded={connectionResult.succeeded}
-            failed={connectionResult.failed}
-            pastTense="connections disconnected"
-            onDismiss={() => { connectionResult = null; }}
-          />
-        {:else if selectedConnections.size > 0}
-          <BulkActionBar count={selectedConnections.size} noun="connection" onClear={() => selectedConnections.clear()}>
-            {#snippet actions()}
-              <button class="btn btn-error btn-outline btn-sm" disabled={bulkBusy || uncertain} onclick={() => void requestBulkKick()}>
-                {bulkBusy ? "Disconnecting…" : "Disconnect selected"}
-              </button>
-            {/snippet}
-          </BulkActionBar>
-        {/if}
       <DataTable>
-          <thead>
+        <thead>
+          <tr>
+            <th class="w-10"><span class="sr-only">Select</span></th>
+            <th>Who</th>
+            <th>Using</th>
+            <th>Signed in</th>
+            <th>Connected</th>
+            <th>Expires</th>
+            <th><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each groups as group (group.key)}
+            {@const session = group.latest}
+            {@const live = liveIn(group).length}
+            {@const ids = group.sessions
+              .filter((item) => item.state === "active")
+              .map((item) => item.authorizationSessionId)}
             <tr>
-              <th>
-                <span class="sr-only">Select all connections</span>
+              <td>
                 <input
+                  class="checkbox checkbox-sm"
                   type="checkbox"
-                  class="checkbox checkbox-xs"
-                  aria-label="Select all connections"
-                  disabled={bulkBusy || selectableConnectionIds.length === 0}
-                  checked={selectableConnectionIds.length > 0 && selectableConnectionIds.every((id) => selectedConnections.has(id))}
-                  indeterminate={selectableConnectionIds.some((id) => selectedConnections.has(id)) && !selectableConnectionIds.every((id) => selectedConnections.has(id))}
-                  onchange={() => toggleAll(selectedConnections, selectableConnectionIds)}
+                  checked={ids.length > 0 &&
+                    ids.every((id) => selected.has(id))}
+                  aria-label={`Select ${who(session)}`}
+                  disabled={busy || !ids.length}
+                  onchange={(event) => {
+                    for (const id of ids)
+                      if (event.currentTarget.checked) selected.add(id);
+                      else selected.delete(id);
+                  }}
                 />
-              </th>
-              <th>Principal</th>
-              <th>Kind</th>
-              <th>Session Key</th>
-              <th>User NKey</th>
-              <th>Server</th>
-              <th>Connected</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each connections as connection (connection.connectionId)}
-              {@const summary = describeSessionPrincipal(connection)}
-              <tr>
-                <td>
-                  {#if connection.connectionId !== authority.identity.connectionId}
-                    <input
-                      type="checkbox"
-                      class="checkbox checkbox-xs"
-                      aria-label={`Select {summary.title}`}
-                      disabled={bulkBusy}
-                      checked={selectedConnections.has(connection.connectionId)}
-                      onchange={() => toggleId(selectedConnections, connection.connectionId)}
-                    />
-                  {/if}
-                </td>
-                <td>
-                  <div class="font-medium">{summary.title}</div>
-                  {#if summary.details}
-                    <div class="text-xs text-base-content/60">{summary.details}</div>
-                  {/if}
-                </td>
-                <td>
-                  <span class="badge badge-sm">Connection</span>
-                </td>
-                <td class="trellis-identifier text-base-content/60">{formatShortKey(connection.loginSessionId ?? "native")}</td>
-                <td class="trellis-identifier text-base-content/60">{formatShortKey(connection.connectionId)}</td>
-                <td>
-                  <span class="text-sm">{connection.serverId}</span>
-                  <span class="text-xs text-base-content/50 block">client {connection.clientId}</span>
-                </td>
-                <td class="text-base-content/60">{formatDate(connection.connectedAt)}</td>
-                <td class="text-right">
-                  <ActionMenu menuClass="z-10" widthClass="w-48">
-                      <li><a class="text-error" href={consoleUrl("/admin/sessions/kick", { query: { connectionId: connection.connectionId } })}>Kick</a></li>
+              </td>
+              <td>
+                <div class="flex items-center gap-3">
+                  <span
+                    class="grid h-9 w-9 place-items-center rounded-full bg-base-200 text-base-content/70"
+                    ><Icon
+                      name={session.principalKind === "user"
+                        ? "user"
+                        : session.principalKind === "device"
+                          ? "laptop"
+                          : "box"}
+                      size={17}
+                    /></span
+                  >
+                  <span>
+                    <span class="block font-medium">{who(session)}</span>
+                    <span class="block text-xs text-base-content/60"
+                      >{session.principalKind === "user"
+                        ? "Person"
+                        : session.principalKind === "device"
+                          ? "Device"
+                          : "Service"}{group.sessions.length > 1
+                        ? ` · ${group.sessions.length} sign-ins`
+                        : ""}</span
+                    >
+                  </span>
+                </div>
+              </td>
+              <td class="text-base-content/80">{using(session)}</td>
+              <td class="text-base-content/75">{ago(session.createdAt)}</td>
+              <td>
+                {#if live}
+                  <span class="inline-flex items-center gap-2"
+                    ><span class="h-2 w-2 rounded-full bg-success"
+                    ></span>{live === 1 ? "Yes" : `${live} connections`}</span
+                  >
+                {:else}
+                  <span class="text-base-content/55">No</span>
+                {/if}
+              </td>
+              <td class="text-base-content/75"
+                >{session.state !== "active"
+                  ? session.state === "revoked"
+                    ? "Signed out"
+                    : "Replaced"
+                  : session.notAfter
+                    ? formatDate(session.notAfter)
+                    : "—"}</td
+              >
+              <td class="text-right">
+                {#if ids.length}
+                  <ActionMenu
+                    widthClass="w-44"
+                    ariaLabel={`Actions for ${who(session)}`}
+                  >
+                    {#if live}
+                      <li>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onclick={() => void disconnect(group)}
+                          >Disconnect</button
+                        >
+                      </li>
+                    {/if}
+                    <li>
+                      <button
+                        type="button"
+                        class="text-error"
+                        disabled={busy}
+                        onclick={() => void signOut(group)}>Sign out</button
+                      >
+                    </li>
                   </ActionMenu>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
       </DataTable>
-      <p class="text-xs text-base-content/50">{connections.length} connection{connections.length !== 1 ? "s" : ""}</p>
-      </Panel>
+      <div
+        class="border-t border-base-300 px-4 py-3 text-sm text-base-content/60"
+      >
+        Showing {groups.length} of {visibleSessions.length} sign-in{visibleSessions.length ===
+        1
+          ? ""
+          : "s"}
+      </div>
     {/if}
-  {/if}
+  </div>
 </section>
-
 <ConfirmationModal bind:this={confirmationModal} />

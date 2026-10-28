@@ -1,23 +1,27 @@
 /**
  * P09 component proof at the production offer-verification boundary.
  *
- * The consumer rejects an offer whose provider deployment is not the
- * independently selected binding, and any offer whose consumer tuple does not
- * match the opener's pinned local identity. The verifier is called directly,
+ * The consumer rejects offers whose consumer tuple does not match the opener's
+ * pinned runtime and authenticated binding. The verifier is called directly,
  * not through a toy equality helper.
  */
 
-import { assertThrows } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 import { encodeEventSubjectParameterToken } from "../helpers.ts";
 import type { LiveOfferWire } from "../auth/protocol_wasm.ts";
 import { verifyOfferClaims } from "./client_open.ts";
 
 const LOCAL = {
-  connectionId: "C",
-  sessionKey: "consumer",
+  runtimeId: "C",
+  sessionPublicKey: "consumer",
   principalId: "pru",
-  participantId: "pau",
+  binding: {
+    kind: "browser" as const,
+    clientId: "console",
+    origin: "https://console.example",
+  },
 };
 
 function offer(): LiveOfferWire {
@@ -28,9 +32,9 @@ function offer(): LiveOfferWire {
     openId: "open",
     requestId: "req",
     sessionId: "session",
-    baseSubject: "live.v1.route.Watch",
+    baseSubject: "live.v1.route.YXBpQHYx.Watch",
     dataSubject: "live.v1.data.A.B.C",
-    controlSubject: "live.v1.route.Watch.observe.A.C",
+    controlSubject: "live.v1.route.YXBpQHYx.Watch.observe.A.C",
     provider: {
       connectionId: "P",
       sessionKey: "K",
@@ -43,7 +47,11 @@ function offer(): LiveOfferWire {
       connectionId: "C",
       sessionKey: encodeEventSubjectParameterToken("consumer"),
       principalId: "pru",
-      participantId: "pau",
+      binding: {
+        kind: "browser",
+        clientId: "console",
+        origin: "https://console.example",
+      },
     },
     limits: {
       maxDataBodyBytes: 1024,
@@ -57,54 +65,41 @@ function offer(): LiveOfferWire {
   };
 }
 
-Deno.test("P09 an offer from a non-selected deployment is rejected", () => {
-  assertThrows(
-    () =>
-      verifyOfferClaims({
-        offer: offer(),
-        selectedProviderDeploymentId: "dep-other",
-        localContextDigest: "digest",
-        local: LOCAL,
-      }),
-    Error,
-    "selected deployment",
-  );
-});
-
-Deno.test("P09 an offer with a mutated consumer tuple is rejected", () => {
+test("P09 an offer with a mutated consumer tuple is rejected", () => {
   const mutated = offer();
-  mutated.consumer.participantId = "other";
-  assertThrows(
+  mutated.consumer.binding = {
+    kind: "browser",
+    clientId: "console",
+    origin: "https://other.example",
+  };
+  assert.throws(
     () =>
       verifyOfferClaims({
         offer: mutated,
-        selectedProviderDeploymentId: "dep",
         localContextDigest: "digest",
         local: LOCAL,
       }),
-    Error,
-    "opening caller",
+    (error: unknown) =>
+      error instanceof Error && error.message.includes("opening caller"),
   );
 });
 
-Deno.test("P09 an offer without a pinned local context is rejected", () => {
-  assertThrows(
+test("P09 an offer without a pinned local context is rejected", () => {
+  assert.throws(
     () =>
       verifyOfferClaims({
         offer: offer(),
-        selectedProviderDeploymentId: "dep",
         localContextDigest: undefined,
         local: LOCAL,
       }),
-    Error,
-    "opening caller",
+    (error: unknown) =>
+      error instanceof Error && error.message.includes("opening caller"),
   );
 });
 
-Deno.test("P09 the selected deployment and complete tuple are accepted", () => {
+test("P09 the opening runtime and complete browser binding are accepted", () => {
   verifyOfferClaims({
     offer: offer(),
-    selectedProviderDeploymentId: "dep",
     localContextDigest: "digest",
     local: LOCAL,
   });

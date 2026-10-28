@@ -4,8 +4,8 @@ root = "acme-orders"
 [[packages]]
 name = "acme-orders"
 version = "1.0.0"
-digest = "nLPCs5RNqC3-CfZtXptXFQ5tqIw5zcD_Vp-O6SvRNOY"
-distribution-digest = "sha256:be5e05e983bae320e4ce16600ad3f9a9a0847edc96aee826895602aa50a2ae6c"
+digest = "AAy7usJhL7d1rMvPvUFjZ3xJXUj-Onue-1kpPrMclOw"
+distribution-digest = "sha256:d36928ea6cf2e5b301b65ac33fee4d900d41444e7e5b24e186dfc075449a6cb6"
 dependencies = []
 
 [packages.source]

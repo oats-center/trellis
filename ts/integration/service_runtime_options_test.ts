@@ -1,11 +1,12 @@
-import { assertEquals, assertGreater } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import type { LoggerLike } from "../packages/trellis/globals.ts";
 import { connectTrellisServiceWithRuntimeDeps } from "../packages/trellis/service/runtime/service.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("service connect honors telemetry opt-out and runtime logger", async () => {
+test("service connect honors telemetry opt-out and runtime logger", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "runtime-options",
@@ -26,21 +27,26 @@ Deno.test("service connect honors telemetry opt-out and runtime logger", async (
       error: noop,
     };
 
-    const service = (await connectTrellisServiceWithRuntimeDeps({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Provider.participant,
-      seed: identity.seed,
-      telemetry: false,
-      runtime: { log: logger },
-    }, {
-      initTelemetry: () => {
-        telemetryInitialized = true;
-      },
-    })).orThrow();
+    const service = (
+      await connectTrellisServiceWithRuntimeDeps(
+        {
+          trellisUrl: runtime.oauthIssuer,
+          participant: participants.Provider.participant,
+          seed: identity.seed,
+          telemetry: false,
+          runtime: { log: logger },
+        },
+        {
+          initTelemetry: () => {
+            telemetryInitialized = true;
+          },
+        },
+      )
+    ).orThrow();
 
     try {
-      assertEquals(telemetryInitialized, false);
-      assertGreater(childLoggerCalls, 0);
+      assert.deepEqual(telemetryInitialized, false);
+      assert(childLoggerCalls > 0);
     } finally {
       await service.stop();
     }

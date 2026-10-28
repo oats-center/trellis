@@ -1,13 +1,11 @@
-use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use trellis_runtime::{OAuthProviderConfig, PlatformTtlConfig, WebSourceConfig};
 
 use crate::{
     DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
-    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OPERATOR_NAME,
-    DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT, DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME,
-    DEFAULT_TRELLIS_PORT,
+    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OAUTH_ORIGIN,
+    DEFAULT_OAUTH_PORT, DEFAULT_OPERATOR_NAME, DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT,
+    DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME, DEFAULT_TRELLIS_PORT,
 };
 
 /// Shared NATS bootstrap names.
@@ -98,6 +96,25 @@ impl NatsBootstrapOptions {
 /// Runtime-facing Trellis bootstrap configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TrellisRuntimeBootstrapConfig {
+    /// Installation ULID generated once for this bootstrap bundle.
+    pub instance_id: String,
+    /// Public origin of the dedicated authorization listener, distinct from the application origin.
+    pub oauth_origin: String,
+    /// Dedicated authorization listener port.
+    pub oauth_port: u16,
+    /// Certificate source for every TLS listener in the bundle.
+    pub tls: BootstrapTls,
+    /// Reverse-proxy networks; non-empty serves Console and OAuth as plaintext
+    /// behind an HTTPS-terminating proxy at those addresses.
+    pub trusted_proxies: Vec<ipnet::IpNet>,
+    /// Serve browser WebSockets as plaintext behind an HTTPS-terminating proxy.
+    /// Native NATS always terminates its own TLS.
+    pub nats_websocket_behind_proxy: bool,
+    /// Relay browser WebSockets through the application listener at
+    /// `<public origin>/nats`, so browsers need one host and one certificate.
+    /// The broker's WebSocket listener then serves plaintext for the runtime,
+    /// and `nats_websocket_url` is not used.
+    pub nats_websocket_via_runtime: bool,
     /// Human-readable Trellis name written to runtime config.
     pub name: String,
     /// Trellis HTTP port written to `config.toml`.
@@ -108,34 +125,28 @@ pub struct TrellisRuntimeBootstrapConfig {
     pub nats_websocket_url: String,
     /// Public HTTP origin for OAuth redirects.
     pub public_origin: String,
-    /// Additional origins accepted by the runtime, for callers served elsewhere.
-    ///
-    /// Every entry is added to both the accepted request origins and the insecure-origin
-    /// allow-list, so a browser app on its own development origin can complete a portal login.
+    /// Additional browser origins accepted by the runtime, for callers served elsewhere.
     pub extra_origins: Vec<String>,
     /// Optional HTTP listener address; omission retains the production default.
     pub bind_address: Option<IpAddr>,
-    /// Maximum requests per rate-limit window; zero disables limiting.
-    pub rate_limit_max: u32,
-    /// Duration of the rate-limit window in milliseconds.
-    pub rate_limit_window_ms: u64,
-    /// Shared filesystem or reverse-proxy web source.
-    pub web_source: Option<WebSourceConfig>,
-    /// Login portal source overriding the shared web source.
-    pub portal_source: Option<WebSourceConfig>,
-    /// Console source overriding the shared web source.
-    pub console_source: Option<WebSourceConfig>,
-    /// Platform flow TTL overrides; omitted values retain bootstrap defaults.
-    pub ttl_ms: PlatformTtlConfig,
     /// Authorization timing without access to generated signing material.
     pub authorization: BootstrapAuthorizationPolicy,
-    /// OAuth providers consumed by the production runtime.
-    pub oauth_providers: BTreeMap<String, OAuthProviderConfig>,
+    /// Write `[paths]` that keep data, state, cache, runtime files and logs in
+    /// folders inside the bundle. Off leaves them to the server's host profile,
+    /// as for a read-only bundle served with `--system`.
+    pub bundle_paths: bool,
 }
 
 impl Default for TrellisRuntimeBootstrapConfig {
     fn default() -> Self {
         Self {
+            instance_id: ulid::Ulid::new().to_string(),
+            oauth_origin: DEFAULT_OAUTH_ORIGIN.to_string(),
+            oauth_port: DEFAULT_OAUTH_PORT,
+            tls: BootstrapTls::Generated { ca_directory: None },
+            trusted_proxies: Vec::new(),
+            nats_websocket_behind_proxy: false,
+            nats_websocket_via_runtime: false,
             name: DEFAULT_TRELLIS_NAME.to_string(),
             trellis_port: DEFAULT_TRELLIS_PORT,
             nats_server_url: DEFAULT_NATS_SERVER_URL.to_string(),
@@ -143,21 +154,42 @@ impl Default for TrellisRuntimeBootstrapConfig {
             public_origin: DEFAULT_PUBLIC_ORIGIN.to_string(),
             extra_origins: Vec::new(),
             bind_address: None,
-            rate_limit_max: 60,
-            rate_limit_window_ms: 60_000,
-            web_source: None,
-            portal_source: None,
-            console_source: None,
-            ttl_ms: PlatformTtlConfig {
-                sessions: None,
-                oauth: None,
-                device_flow: None,
-                pending_auth: None,
-            },
             authorization: BootstrapAuthorizationPolicy::default(),
-            oauth_providers: BTreeMap::new(),
+            bundle_paths: true,
         }
     }
+}
+
+/// Certificate source for a bundle's TLS listeners.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BootstrapTls {
+    /// Generate an installation CA and short-lived leaf certificates.
+    ///
+    /// `ca_directory` receives the CA private key and must stay outside every
+    /// role's mount; `None` selects `<out>-tls-ca` beside the bundle.
+    Generated {
+        /// Directory for the CA private key.
+        ca_directory: Option<PathBuf>,
+    },
+    /// Copy operator-supplied PEM files into the bundle.
+    Supplied(SuppliedTls),
+    /// Plaintext restricted to loopback origins and listeners.
+    LoopbackDevelopment,
+}
+
+/// Operator-supplied PEM certificate files.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuppliedTls {
+    /// Certificate chain naming the Console and OAuth hosts.
+    pub certificate_chain: PathBuf,
+    /// Private key for `certificate_chain`.
+    pub private_key: PathBuf,
+    /// Certificate chain naming the native NATS and WebSocket hosts.
+    pub nats_certificate_chain: PathBuf,
+    /// Private key for `nats_certificate_chain`.
+    pub nats_private_key: PathBuf,
+    /// Private CA the runtime trusts for NATS; omit for publicly trusted certificates.
+    pub ca_certificate: Option<PathBuf>,
 }
 
 /// Bootstrap-owned authorization timing policy; secret paths remain generated.
@@ -165,12 +197,10 @@ impl Default for TrellisRuntimeBootstrapConfig {
 pub struct BootstrapAuthorizationPolicy {
     /// Signed context lifetime in seconds.
     pub context_lifetime_seconds: Option<u64>,
-    /// Seconds before expiry at which refresh begins.
-    pub refresh_lead_seconds: Option<u64>,
-    /// Maximum earlier-only refresh jitter in seconds.
-    pub refresh_jitter_seconds: Option<u64>,
-    /// Minimum acceptable context lifetime in seconds.
-    pub minimum_context_lifetime_seconds: Option<u64>,
+    /// Signed OAuth admission lifetime in seconds (production default: 300).
+    pub oauth_admission_lifetime_seconds: Option<u64>,
+    /// Authorization clock-skew allowance in seconds (production default: 30).
+    pub allowed_clock_skew_seconds: Option<u64>,
 }
 
 /// Options for generating a complete Trellis bootstrap bundle.

@@ -20,7 +20,7 @@ import {
 } from "../telemetry/metrics.ts";
 import type { LiveEnd } from "./types.ts";
 
-/** Live observation session kind as it appears in metric dimensions. */
+/** Live observation session kind; the session API's own vocabulary. */
 export type LiveTelemetryKind = "standalone" | "operation";
 
 /** Endpoint side dimension for every live family. */
@@ -40,15 +40,11 @@ export type LiveTelemetryFrameClass = "data" | "control";
 export type LiveTelemetryDirection = "send" | "receive";
 
 type LiveTelemetryPhase =
-  | "prepared"
-  | "activating"
-  | "active"
-  | "draining"
-  | "closing";
+  "prepared" | "activating" | "active" | "draining" | "closing";
 
 /** Local state owner for one endpoint's live telemetry. */
 export class LiveTelemetryOwner {
-  readonly #kind: "standalone" | "operation";
+  readonly #kind: "live" | "operation_watch";
   readonly #side: LiveTelemetrySide;
   #phase: LiveTelemetryPhase | undefined;
   #handshakeStarted: number | undefined;
@@ -58,7 +54,8 @@ export class LiveTelemetryOwner {
   #cleanupPending = false;
 
   constructor(kind: LiveTelemetryKind, side: LiveTelemetrySide) {
-    this.#kind = kind === "standalone" ? "standalone" : "operation";
+    // Metric dimensions use the shared catalog values, matching Rust.
+    this.#kind = kind === "standalone" ? "live" : "operation_watch";
     this.#side = side;
   }
 

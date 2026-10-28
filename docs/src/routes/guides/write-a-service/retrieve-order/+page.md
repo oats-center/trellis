@@ -1,0 +1,31 @@
+---
+title: "Retrieving an order with service errors"
+description: "Add a declared domain error to the Orders Get RPC and a typed read handler."
+---
+
+# Declare service errors
+
+Errors are named wire declarations in the API and are selected by surfaces that may return them.
+
+```trellis
+model OrderNotFoundData { orderId: string; }
+
+api orders@v1 {
+  // ...
+  error OrderNotFound(OrderNotFoundData);
+  rpc Get { input GetOrderRequest; output GetOrderResponse; errors [OrderNotFound]; }
+}
+```
+
+Generated SDKs expose the typed error class. Expected RPC failures remain `Result` values rather than thrown transport exceptions.
+
+Add these declarations to the existing Orders API. When the repository lookup
+finds no order, return `Result.err(new OrderNotFound({ orderId }))` using the
+generated class. A found order returns `Result.ok(...)` with the declared
+response. Do not translate every database error into `OrderNotFound`: unexpected
+storage failures are a different outcome and must not be reported as absence.
+
+Callers should inspect the generated error when they can recover, for example
+by showing an unavailable order. Reserve `.orThrow()` for boundaries that
+intentionally propagate failures. Tests should assert the declared error type
+and relevant order ID, not the complete serialized stack or message wording.

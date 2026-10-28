@@ -8,7 +8,7 @@
 //! harness can prove an accepted execution is neither restarted nor duplicated
 //! across transport cutover and that a start after cutover is accepted.
 //!
-//! The service also hosts the `held` job worker: an initial job is submitted
+//! The service also hosts the `retained` job worker: an initial job is submitted
 //! before the connection accepts traffic and parks inside its handler. A real
 //! transport cutover happens while that job is held; releasing it must complete
 //! exactly once. Calling the grown `Extend` operation afterwards submits a fresh
@@ -18,7 +18,8 @@
 use futures_util::StreamExt as _;
 use runtime_trellis::apis::runtime_trellis_transport_growth_v1::events::Tick;
 use runtime_trellis::participants::runtime_trellis_transport_growth_operation_provider::{
-    resources::Held, Participant as ProviderParticipant, Provider as OperationProvider,
+    resources::{Held, Retained},
+    Participant as ProviderParticipant, Provider as OperationProvider,
 };
 use runtime_trellis::types::{Empty, Update, UpdateDetail, Value};
 use runtime_trellis::Int64;
@@ -27,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use trellis_rs::generated::Codec;
 use trellis_rs::jobs::JobProcessError;
-use trellis_rs::service::{ServiceConnectOptions, ServiceEventListenOptions};
+use trellis_rs::service::ServiceEventListenOptions;
 
 /// Number of `Hold` handler invocations observed for the process lifetime.
 static EXECUTIONS: AtomicU64 = AtomicU64::new(0);
@@ -35,7 +36,7 @@ static EXECUTIONS: AtomicU64 = AtomicU64::new(0);
 /// Number of `Park` RPC handler invocations observed for the process lifetime.
 static PARKS: AtomicU64 = AtomicU64::new(0);
 
-/// Number of `held` job handler invocations observed for the process lifetime.
+/// Number of retained job handler invocations observed for the process lifetime.
 static JOB_EXECUTIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Number of durable `Tick` deliveries observed for the process lifetime.
@@ -70,6 +71,13 @@ async fn hold_tick(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
     match run().await {
         Ok(()) => Ok(()),
         Err(error) => {
@@ -82,7 +90,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("TRELLIS_URL")?;
     let seed = std::env::var("TRELLIS_IDENTITY_SEED")?;
-    let mut runtime = ProviderParticipant::connect(ServiceConnectOptions::new(&url, &seed)).await?;
+    let mut options = trellis_runtime_acceptance::service_options(&url, &seed).await?;
+    if let Ok(interval) = std::env::var("TRELLIS_TEST_HEALTH_HEARTBEAT_MS") {
+        options = options.with_health_heartbeat_interval_ms(interval.parse()?);
+    }
+    let mut runtime = ProviderParticipant::connect(options).await?;
+    if std::env::args().any(|argument| argument == "--jobs-preflight") {
+        let (release, held) = tokio::sync::watch::channel(false);
+        runtime
+            .register_generated_job_worker_with_concurrency::<Held, _, _, String>(
+                move |_job| {
+                    let mut held = held.clone();
+                    async move {
+                        emit("JOB_STARTED 1 initial");
+                        while !*held.borrow() {
+                            if held.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                        emit("JOB_DONE 1 initial");
+                        Ok::<Value, JobProcessError<String>>(Value {
+                            value: "held-1".to_owned(),
+                            extra: Default::default(),
+                        })
+                    }
+                },
+                2,
+            )
+            .await?;
+        let job = OperationProvider::new(&mut runtime)
+            .submit_held(Value {
+                value: "initial".to_owned(),
+                extra: Default::default(),
+            })
+            .await?;
+        emit("JOB_SUBMITTED initial");
+        emit("OPERATION_PROVIDER_READY");
+        let commands = async move {
+            let mut lines = BufReader::new(tokio::io::stdin()).lines();
+            while let Some(command) = lines.next_line().await? {
+                match command.trim() {
+                    "JOB_RELEASE initial" => {
+                        release.send_replace(true);
+                    }
+                    "JOB_STATUS initial" => {
+                        let snapshot = job.get().await?;
+                        emit(&format!(
+                            "JOB_STATUS initial {:?} {} {}",
+                            snapshot.state,
+                            snapshot.tries,
+                            snapshot.result.map(|value| value.value).unwrap_or_default()
+                        ));
+                    }
+                    "EXIT" => {
+                        emit("OPERATION_PROVIDER_DONE");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        };
+        tokio::select! {
+            result = runtime.run() => { result?; }
+            result = commands => { result?; }
+        }
+        return Ok(());
+    }
     // Held RPC callbacks and the held job park until the harness releases them,
     // so a real transport cutover happens while they are in flight.
     let (release_tx, release_rx) = tokio::sync::watch::channel(false);
@@ -166,11 +240,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
     };
     {
-        // The `held` job worker parks until released, counting each execution
+        // The retained job worker has no business deadline: authorization renewal
+        // must not race an unrelated deadline while the harness holds execution.
+        // It parks until released, counting each execution
         // exactly once so the harness can prove no restart or duplication.
         let job_release = release_rx.clone();
         runtime
-            .register_generated_job_worker_with_concurrency::<Held, _, _, String>(
+            .register_generated_job_worker_with_concurrency::<Retained, _, _, String>(
                 move |job| {
                     let mut release = job_release.clone();
                     let mut individual = job_release_rx.clone();
@@ -209,13 +285,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         api.register_nudge(|context, _input| async move {
             // A fresh job submitted after cutover must be accepted on the new
             // generation by the same logical worker host.
-            let _ = context
+            context
                 .handle()
-                .generated_submit_job::<Held>(Value {
+                .generated_submit_job::<Retained>(Value {
                     value: "extended".to_owned(),
                     extra: Default::default(),
                 })
-                .await;
+                .await
+                .map_err(|error| trellis_rs::service::ServerError::Nats(error.to_string()))?;
             Ok(Empty {
                 extra: Default::default(),
             })
@@ -274,7 +351,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // in its handler until the harness releases it after cutover.
         let provider = OperationProvider::new(&mut runtime);
         match provider
-            .submit_held(Value {
+            .submit_retained(Value {
                 value: "initial".to_owned(),
                 extra: Default::default(),
             })
@@ -308,7 +385,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(value) = command.strip_prefix("JOB_SUBMIT ") {
                 match job_submit
-                    .generated_submit_job::<Held>(Value {
+                    .generated_submit_job::<Retained>(Value {
                         value: value.to_owned(),
                         extra: Default::default(),
                     })
@@ -391,7 +468,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         job_submit
                             .generated_client()
                             .availability()
-                            .has_resource(trellis_rs::generated::ResourceKind::Job, "held")
+                            .has_resource(trellis_rs::generated::ResourceKind::Job, "retained")
                     ));
                 }
                 "COUNT" => {

@@ -162,7 +162,7 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
     let mut options = trellis_options(temp.path());
     options.runtime.name = "Acme Trellis".to_string();
     options.runtime.trellis_port = 4242;
-    options.runtime.nats_server_url = "nats://nats.example.test:4222".to_string();
+    options.runtime.nats_server_url = "tls://nats.example.test:4222".to_string();
     options.runtime.nats_websocket_url = "wss://nats.example.test/ws".to_string();
     options.runtime.public_origin = "https://trellis.example.test/".to_string();
     options.runtime.extra_origins = vec!["http://localhost:5174".to_string()];
@@ -184,23 +184,26 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
             .and_then(|client| client.ws_nats_servers.as_ref()),
         Some(&vec!["wss://nats.example.test/ws".to_string()])
     );
-    assert_eq!(
-        parsed
-            .oauth
-            .as_ref()
-            .and_then(|oauth| oauth.redirect_base.as_deref()),
-        Some("https://trellis.example.test/auth/callback")
-    );
     assert!(matches!(
         parsed.platform_storage_backend().expect("platform storage"),
         StorageBackend::Sqlite(storage)
-            if storage.path == temp.path().join("platform.sqlite")
+            if storage.path == temp.path().join("data/platform.sqlite")
     ));
 }
 
 #[test]
 fn nats_config_render_round_trips_custom_ports() {
-    let config = render_nats_config("trellis", 4322, 8322, 8180);
+    let config = render_nats_config(
+        "trellis",
+        4322,
+        8322,
+        8180,
+        Some(&NatsTlsFiles {
+            certificate: "/etc/nats/tls/nats.crt".into(),
+            private_key: "/etc/nats/tls/nats.key".into(),
+            websocket_behind_proxy: false,
+        }),
+    );
 
     assert_eq!(
         parse_config(&config).expect("parse rendered config"),
@@ -221,6 +224,11 @@ fn local_nats_config_render_round_trips_custom_ports() {
         4322,
         8180,
         8322,
+        Some(&NatsTlsFiles {
+            certificate: "/tmp/trellis/nats/tls/nats.crt".into(),
+            private_key: "/tmp/trellis/nats/tls/nats.key".into(),
+            websocket_behind_proxy: true,
+        }),
     );
 
     assert_eq!(
@@ -306,8 +314,11 @@ tls {
 
 #[test]
 fn managed_listener_parser_rejects_duplicate_listeners() {
-    let error = parse_config("listen: 127.0.0.1:4222\nlisten: 127.0.0.1:4322\nhttp: 127.0.0.1:8222\nwebsocket {\nlisten: 127.0.0.1:8080\n}\n")
-        .expect_err("duplicate native listener must fail");
+    let error = parse_config(
+        "listen: 127.0.0.1:4222\nlisten: 127.0.0.1:4322\nhttp: \
+        127.0.0.1:8222\nwebsocket {\nlisten: 127.0.0.1:8080\n}\n",
+    )
+    .expect_err("duplicate native listener must fail");
     assert!(matches!(
         error,
         NatsConfigError::DuplicateListener {
@@ -341,7 +352,10 @@ fn managed_listener_parser_requires_every_listener() {
     ] {
         let error = parse_config(config).expect_err("missing listener must fail");
         assert!(
-            matches!(error, NatsConfigError::MissingListener { listener: actual, .. } if actual == listener),
+            matches!(
+                error,
+                NatsConfigError::MissingListener { listener: actual, .. } if actual == listener
+            ),
             "expected missing {listener}, got {error}"
         );
     }
@@ -523,10 +537,11 @@ fn generated_session_and_authorization_seeds_are_decodable_and_private() {
     use base64::Engine as _;
 
     let temp = tempfile::tempdir().expect("temp dir");
-    generate_trellis_bootstrap(&trellis_options(temp.path())).expect("generate Trellis");
+    let out = temp.path().join("bundle");
+    generate_trellis_bootstrap(&trellis_options(&out)).expect("generate Trellis");
 
     for name in ["session.seed", "auth/authorization-issuer.seed"] {
-        let seed_path = temp.path().join(name);
+        let seed_path = out.join(name);
         let contents = fs::read_to_string(&seed_path).expect("read generated seed");
         let decoded = URL_SAFE_NO_PAD
             .decode(contents.trim())
@@ -573,10 +588,195 @@ fn local_nats_config_quotes_host_paths_with_spaces() {
         4222,
         8080,
         8222,
+        None,
     );
     assert!(config.contains("store_dir: \"/tmp/trellis data/store dir\""));
     assert!(config.contains("include \"/tmp/trellis data/jwt config.conf\""));
 
     let rendered = render_local_jwt_config("dir: ./resolver\n", "a\"b\\c");
     assert_eq!(rendered, r#"dir: "a\"b\\c""#);
+}
+
+/// Verifies `certificate` for `host` with only the bundle CA trusted.
+fn verify_with_installation_ca(
+    ca: &std::path::Path,
+    certificate: &[u8],
+    host: &str,
+) -> Result<(), rustls::Error> {
+    use rustls::client::danger::ServerCertVerifier as _;
+    use rustls::pki_types::{pem::PemObject as _, CertificateDer, ServerName, UnixTime};
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from_pem_file(ca).expect("read CA"))
+        .expect("add CA");
+    let verifier =
+        rustls::client::WebPkiServerVerifier::builder_with_provider(roots.into(), provider)
+            .build()
+            .expect("build verifier");
+    verifier
+        .verify_server_cert(
+            &CertificateDer::from_pem_slice(certificate).expect("parse leaf"),
+            &[],
+            &ServerName::try_from(host.to_owned()).expect("server name"),
+            &[],
+            UnixTime::now(),
+        )
+        .map(|_| ())
+}
+
+#[test]
+fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trust() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let out = temp.path().join("bundle");
+    let ca_directory = temp.path().join("ca");
+    let mut options = trellis_options(&out);
+    options.runtime.public_origin = "https://eta.oats:3000".into();
+    options.runtime.oauth_origin = "https://auth.eta.oats:3001".into();
+    options.runtime.nats_server_url = "tls://192.0.2.10:4222".into();
+    options.runtime.nats_websocket_url = "wss://nats.eta.oats:8080".into();
+    options.runtime.tls = BootstrapTls::Generated {
+        ca_directory: Some(ca_directory.clone()),
+    };
+    let summary = generate_trellis_bootstrap(&options)
+        .expect("generate bundle")
+        .expect("generated TLS summary");
+    let ca = out.join("tls/ca.crt");
+    let runtime_leaf = fs::read(out.join("tls/runtime.crt")).expect("runtime leaf");
+    let nats_leaf = fs::read(out.join("nats/tls/nats.crt")).expect("NATS leaf");
+
+    // Every role-mounted path lacks the CA private key; only the CA directory has it.
+    assert!(ca_directory.join("ca.key").is_file());
+    for entry in walk(&out) {
+        assert!(
+            !fs::read_to_string(&entry)
+                .unwrap_or_default()
+                .contains("PRIVATE KEY")
+                || entry.ends_with("tls/runtime.key")
+                || entry.ends_with("nats/tls/nats.key"),
+            "{} must not hold the CA key",
+            entry.display()
+        );
+    }
+    assert_eq!(
+        trellis_runtime::tls::inspect_certificate(&ca)
+            .expect("inspect CA")
+            .sha256_fingerprint,
+        summary.ca_sha256_fingerprint
+    );
+    verify_with_installation_ca(&ca, &runtime_leaf, "eta.oats").expect("Console host");
+    verify_with_installation_ca(&ca, &runtime_leaf, "auth.eta.oats").expect("OAuth host");
+    verify_with_installation_ca(&ca, &nats_leaf, "nats.eta.oats").expect("WebSocket host");
+    verify_with_installation_ca(&ca, &nats_leaf, "192.0.2.10").expect("native broker IP");
+    verify_with_installation_ca(&ca, &runtime_leaf, "other.example")
+        .expect_err("a leaf must not be accepted for another host");
+
+    // Name constraints stop even the CA key from minting a trusted certificate elsewhere.
+    let ca_key =
+        rcgen::KeyPair::from_pem(&fs::read_to_string(ca_directory.join("ca.key")).expect("CA key"))
+            .expect("parse CA key");
+    let issuer = rcgen::Issuer::from_ca_cert_pem(&fs::read_to_string(&ca).unwrap(), ca_key)
+        .expect("CA issuer");
+    let rogue_key = rcgen::KeyPair::generate().unwrap();
+    let rogue = rcgen::CertificateParams::new(vec!["bank.example".to_owned()])
+        .unwrap()
+        .signed_by(&rogue_key, &issuer)
+        .unwrap();
+    verify_with_installation_ca(&ca, rogue.pem().as_bytes(), "bank.example")
+        .expect_err("the installation CA must not be trusted outside its hosts");
+
+    let renewed = renew_generated_certificates(&out, &ca_directory).expect("renew");
+    assert_eq!(renewed.len(), 2);
+    let renewed_leaf = fs::read(out.join("tls/runtime.crt")).expect("renewed leaf");
+    assert_ne!(renewed_leaf, runtime_leaf, "renewal must replace the leaf");
+    verify_with_installation_ca(&ca, &renewed_leaf, "auth.eta.oats")
+        .expect("renewed leaf keeps its names under the unchanged CA");
+    assert_eq!(
+        fs::read(&ca).unwrap(),
+        fs::read(ca_directory.join("ca.crt")).unwrap()
+    );
+
+    let other = temp.path().join("other-ca");
+    let mut unrelated = trellis_options(temp.path().join("unrelated"));
+    unrelated.runtime.tls = BootstrapTls::Generated {
+        ca_directory: Some(other.clone()),
+    };
+    generate_trellis_bootstrap(&unrelated).expect("unrelated bundle");
+    assert!(matches!(
+        renew_generated_certificates(&out, &other),
+        Err(BootstrapError::InvalidTls(_))
+    ));
+}
+
+#[test]
+fn generated_ca_directory_must_not_overlap_the_bundle() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let bundle = temp.path().join("bundle");
+    fs::create_dir(&bundle).expect("empty bundle directory");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&bundle, temp.path().join("link")).expect("symlink");
+    let mut cases = vec![
+        (bundle.clone(), bundle.join("ca")),
+        (bundle.clone(), bundle.clone()),
+        (bundle.clone(), temp.path().join("elsewhere/../bundle/tls")),
+        (temp.path().join("ca/bundle"), temp.path().join("ca")),
+    ];
+    #[cfg(unix)]
+    cases.push((bundle.clone(), temp.path().join("link/ca")));
+    for (out, ca_directory) in cases {
+        let mut options = trellis_options(&out);
+        options.runtime.tls = BootstrapTls::Generated {
+            ca_directory: Some(ca_directory.clone()),
+        };
+        let result = generate_trellis_bootstrap(&options);
+        assert!(
+            matches!(&result, Err(BootstrapError::InvalidTls(message)) if message.contains("overlap")),
+            "{} with CA {}: {result:?}",
+            out.display(),
+            ca_directory.display()
+        );
+        for directory in [&out, &ca_directory] {
+            assert!(
+                !directory.exists() || fs::read_dir(directory).unwrap().next().is_none(),
+                "{} must stay empty",
+                directory.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn bundle_tls_modes_reject_endpoints_they_cannot_protect() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mut plaintext_broker = trellis_options(temp.path().join("plaintext-broker"));
+    plaintext_broker.runtime.nats_server_url = "nats://localhost:4222".into();
+    assert!(matches!(
+        generate_trellis_bootstrap(&plaintext_broker),
+        Err(BootstrapError::InvalidTls(_))
+    ));
+
+    let mut remote_loopback = trellis_options(temp.path().join("remote-loopback"));
+    remote_loopback.runtime.tls = BootstrapTls::LoopbackDevelopment;
+    remote_loopback.runtime.public_origin = "http://eta.oats:3000".into();
+    remote_loopback.runtime.oauth_origin = "http://localhost:3001".into();
+    remote_loopback.runtime.nats_server_url = "nats://localhost:4222".into();
+    remote_loopback.runtime.nats_websocket_url = "ws://localhost:8080".into();
+    assert!(matches!(
+        generate_trellis_bootstrap(&remote_loopback),
+        Err(BootstrapError::InvalidTls(_))
+    ));
+    assert!(!temp.path().join("remote-loopback").exists());
+}
+
+fn walk(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(root).expect("read dir") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            files.extend(walk(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
 }

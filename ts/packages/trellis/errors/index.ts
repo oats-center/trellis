@@ -10,14 +10,8 @@ import { ValidationError } from "./ValidationError.ts";
 import type { ValidationErrorData } from "./ValidationError.ts";
 import { ValidationErrorDataSchema } from "./ValidationError.ts";
 import { SchemaValidationError } from "./SchemaValidationError.ts";
-import type {
-  SchemaValidationErrorData,
-  SchemaValidationIssue,
-} from "./SchemaValidationError.ts";
-import {
-  SchemaValidationErrorDataSchema,
-  SchemaValidationIssueSchema,
-} from "./SchemaValidationError.ts";
+import type { SchemaValidationErrorData } from "./SchemaValidationError.ts";
+import { SchemaValidationErrorDataSchema } from "./SchemaValidationError.ts";
 import { RemoteError } from "./RemoteError.ts";
 import { KVError } from "./KVError.ts";
 import type { KVErrorData } from "./KVError.ts";

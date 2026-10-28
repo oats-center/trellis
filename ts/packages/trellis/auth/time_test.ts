@@ -1,9 +1,10 @@
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 import { correctedIatSeconds, estimateMidpointClockOffsetMs } from "./time.ts";
 
-Deno.test("estimateMidpointClockOffsetMs uses the request midpoint", () => {
-  assertEquals(
+test("estimateMidpointClockOffsetMs uses the request midpoint", () => {
+  assert.deepEqual(
     estimateMidpointClockOffsetMs({
       requestStartedAtMs: 1_000,
       responseReceivedAtMs: 1_400,
@@ -13,6 +14,6 @@ Deno.test("estimateMidpointClockOffsetMs uses the request midpoint", () => {
   );
 });
 
-Deno.test("correctedIatSeconds applies the estimated offset", () => {
-  assertEquals(correctedIatSeconds(1_700_000_000_250, 900), 1_700_000_001);
+test("correctedIatSeconds applies the estimated offset", () => {
+  assert.deepEqual(correctedIatSeconds(1_700_000_000_250, 900), 1_700_000_001);
 });

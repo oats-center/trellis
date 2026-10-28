@@ -1,1864 +1,993 @@
-use std::collections::HashMap;
-use std::time::Duration;
+//! Startup materialization of installed native resource declarations.
 
-use async_nats::jetstream::{self, consumer, consumer::FromConsumer, stream};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use trellis_protocol::ParticipantResourceKind;
-
-use super::domain::{
-    ApprovedResource, AuthorizationResourceKind, AuthorizationStateError, GrantOwnerKind,
+use async_nats::jetstream::{context::GetStreamErrorKind, ErrorCode};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
 };
-use super::evidence::{ParticipantRuntimeProjection, ResourceRuntimeProjection};
-use super::sqlite::SqliteAuthorizationStore;
 
-const OPERATION_STORE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
-const OPERATION_STORE_MAX_VALUE_SIZE: i32 = 1024 * 1024;
+use rusqlite::{params, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use trellis_idl::{compile_evidence, PackageEvidence, ResourceDefinition};
+use trellis_rs::service::{
+    EventConsumerResourceBinding, KvResourceBinding, ServiceResourceBindings, StoreResourceBinding,
+};
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ResourceCatalogState {
-    Detached,
-    Pending,
-    Ready,
-    Failed,
-    Destroying,
-}
+use super::sqlite::{decode, digest, json, AuthError, SqliteAuthorizationStore};
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ResourceCatalogRecord {
-    pub resource_id: String,
-    pub owner_kind: GrantOwnerKind,
-    pub owner_id: String,
-    pub participant_id: String,
-    pub resource_kind: ParticipantResourceKind,
-    pub local_name: String,
-    pub physical_id: String,
-    pub commitment: super::domain::ResourceCommitment,
-    pub actual: Option<ResourceActual>,
-    pub state: ResourceCatalogState,
-    pub readiness_reason: Option<String>,
-    pub revision: u64,
-    pub binding_revision: u64,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-/// Intrinsic materialization facts for a Trellis-owned builtin resource.
-///
-/// Builtin resources already exist under stable runtime-owned physical names, so
-/// their catalog rows cannot be produced by a provider reconcile. A builtin
-/// records the same authoritative `auth_resources` facts here, preserving its
-/// intrinsic physical identity so every participant uses one projection path.
-#[derive(Clone, Debug)]
-pub(crate) struct BuiltinResourceMaterialization {
-    /// Resource family.
-    pub kind: AuthorizationResourceKind,
-    /// Participant-local resource name.
-    pub local_name: String,
-    /// Declaration-derived commitment recorded in the catalog.
-    pub commitment: super::domain::ResourceCommitment,
-    /// Fixed physical identity owned by the runtime.
-    pub physical_id: String,
-    /// Effective provider configuration actually in use.
-    pub actual: ResourceActual,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub(crate) enum ResourceActual {
-    State,
-    Kv {
-        history: u64,
-        ttl_ms: u64,
-        max_value_bytes: Option<u64>,
-    },
-    Store {
-        ttl_ms: u64,
-        max_object_bytes: Option<u64>,
-        max_total_bytes: Option<u64>,
-    },
-    Job,
-    Consumer,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ReconcileResourcePayload {
-    pub resource_id: String,
-    pub binding_revision: u64,
-    pub catalog_revision: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct DestroyResourcePayload {
-    pub resource_id: String,
-    pub catalog_revision: u64,
-}
-
-pub(crate) struct ResourceReconcileRequest {
-    pub catalog: ResourceCatalogRecord,
-    pub participant: ParticipantRuntimeProjection,
-    pub approved: ApprovedResource,
-}
-
-/// Deterministic logical identity over the complete resource identity tuple.
-pub(crate) fn resource_id(
-    owner_kind: GrantOwnerKind,
-    owner_id: &str,
-    participant_id: &str,
-    kind: ParticipantResourceKind,
-    local_name: &str,
-) -> String {
-    let mut digest = Sha256::new();
-    for part in [
-        owner_kind_atom(owner_kind).as_bytes(),
-        owner_id.as_bytes(),
-        participant_id.as_bytes(),
-        resource_kind_atom(kind).as_bytes(),
-        local_name.as_bytes(),
-    ] {
-        digest.update((part.len() as u32).to_be_bytes());
-        digest.update(part);
-    }
-    URL_SAFE_NO_PAD.encode(digest.finalize())
-}
-
-pub(crate) fn physical_id(kind: ParticipantResourceKind, resource_id: &str) -> String {
-    if kind == ParticipantResourceKind::State {
-        return resource_id.to_owned();
-    }
-    let prefix = match kind {
-        ParticipantResourceKind::Kv => "tr_kv_",
-        ParticipantResourceKind::Store => "tr_store_",
-        ParticipantResourceKind::JobQueue => "tr_job_",
-        ParticipantResourceKind::EventConsumer => "tr_cons_",
-        ParticipantResourceKind::State => unreachable!(),
-    };
-    format!(
-        "{prefix}{}",
-        &URL_SAFE_NO_PAD.encode(Sha256::digest(resource_id))[..32]
-    )
-}
-
-pub(crate) fn job_namespace(resource: &ResourceCatalogRecord) -> String {
-    let mut digest = Sha256::new();
-    for part in [
-        resource.owner_id.as_bytes(),
-        resource.participant_id.as_bytes(),
-    ] {
-        digest.update((part.len() as u32).to_be_bytes());
-        digest.update(part);
-    }
-    format!(
-        "tr_jobs_{}",
-        &URL_SAFE_NO_PAD.encode(digest.finalize())[..32]
-    )
-}
-
-pub(crate) fn resource_kind_atom(kind: ParticipantResourceKind) -> &'static str {
-    match kind {
-        ParticipantResourceKind::State => "state",
-        ParticipantResourceKind::Kv => "kv",
-        ParticipantResourceKind::Store => "store",
-        ParticipantResourceKind::JobQueue => "job",
-        ParticipantResourceKind::EventConsumer => "consumer",
-    }
-}
-
-fn owner_kind_atom(kind: GrantOwnerKind) -> &'static str {
-    match kind {
-        GrantOwnerKind::Deployment => "deployment",
-        GrantOwnerKind::User => "user",
-    }
-}
-
-pub(crate) async fn reconcile_resource(
-    client: &async_nats::Client,
-    repository: &SqliteAuthorizationStore,
-    payload: ReconcileResourcePayload,
+/// Detach omitted allocations without deleting any provider data.
+pub(super) fn detach_deployment_resources(
+    connection: &crate::platform::auth::sqlite::Connection,
+    deployment: &str,
+    keep: &BTreeSet<(String, String)>,
     now: i64,
-) -> Result<(), AuthorizationStateError> {
-    let Some(request) = repository
-        .load_resource_reconcile_request(payload.clone())
-        .await?
-    else {
-        return Ok(());
-    };
-    let declaration = request
-        .participant
-        .resources
-        .get(&request.catalog.local_name)
-        .filter(|declaration| declaration.kind == request.catalog.resource_kind)
-        .ok_or_else(|| {
-            AuthorizationStateError::InvalidRecord("approved resource is not declared".to_owned())
-        })?;
-    validate_commitment(declaration, &request.approved)?;
-
-    match reconcile_provider(client, &request).await {
-        Ok(actual) => repository.attach_resource(payload, actual, now).await,
-        Err(ProvisionError::Incompatible(error)) => {
-            repository
-                .mark_resource_unavailable(payload, error, now)
-                .await
-        }
-        Err(ProvisionError::Retry(error)) => Err(error),
-    }
-}
-
-pub(crate) async fn ensure_operation_store(
-    client: &async_nats::Client,
-    deployment_id: &str,
-) -> Result<(), AuthorizationStateError> {
-    let bucket = format!("trellis_operations_{deployment_id}");
-    let jetstream = async_nats::jetstream::new(client.clone());
-    // Opening an existing Trellis-owned store is not a compatibility check: the
-    // bucket is created once and reused. Value-size and retention limits are
-    // enforced by the store itself at the operation boundary.
-    if jetstream.get_key_value(&bucket).await.is_err() {
-        jetstream
-            .create_key_value(async_nats::jetstream::kv::Config {
-                bucket,
-                description: "Trellis deployment operation records".to_owned(),
-                history: 10,
-                storage: async_nats::jetstream::stream::StorageType::File,
-                max_age: OPERATION_STORE_MAX_AGE,
-                max_value_size: OPERATION_STORE_MAX_VALUE_SIZE,
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-    }
-    let staging = format!("trellis_operation_staging_{deployment_id}");
-    if jetstream.get_object_store(&staging).await.is_err() {
-        jetstream
-            .create_object_store(async_nats::jetstream::object_store::Config {
-                bucket: staging,
-                description: Some("Trellis operation upload staging".to_owned()),
-                storage: async_nats::jetstream::stream::StorageType::File,
-                max_age: std::time::Duration::from_secs(7 * 24 * 60 * 60),
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-    }
-    Ok(())
-}
-
-pub(crate) async fn destroy_resource(
-    client: &async_nats::Client,
-    repository: &SqliteAuthorizationStore,
-    payload: DestroyResourcePayload,
-) -> Result<(), AuthorizationStateError> {
-    let Some(resource) = repository.load_detached_resource(payload.clone()).await? else {
-        return Ok(());
-    };
-    let jetstream = jetstream::new(client.clone());
-    let result = match resource.resource_kind {
-        ParticipantResourceKind::State => {
-            if resource.physical_id == resource.resource_id {
-                purge_state(&jetstream, &resource.physical_id)
-                    .await
-                    .map_err(provision_error)
-            } else {
-                Err(AuthorizationStateError::InvalidRecord(
-                    "State physical identity does not match its catalog resource".to_owned(),
-                ))
-            }
-        }
-        ParticipantResourceKind::Kv => delete_owned_stream_if_present(
-            &jetstream,
-            &format!("KV_{}", resource.physical_id),
-            &format!("Trellis auth resource {}", resource.resource_id),
-        )
-        .await
-        .map_err(provision_error),
-        ParticipantResourceKind::Store => delete_owned_stream_if_present(
-            &jetstream,
-            &format!("OBJ_{}", resource.physical_id),
-            &format!("Trellis auth resource {}", resource.resource_id),
-        )
-        .await
-        .map_err(provision_error),
-        ParticipantResourceKind::JobQueue => {
-            validate_owned_consumer_if_present(
-                &jetstream,
-                "JOBS_WORK",
-                &resource.physical_id,
-                &resource.resource_id,
-            )
-            .await?;
-            let namespace = job_namespace(&resource);
-            let keys_stream = format!("KV_JOBS_KEYS_{namespace}");
-            let marker = format!("Trellis auth jobs {}", resource.participant_id);
-            validate_owned_stream_if_present(&jetstream, &keys_stream, &marker)
-                .await
-                .map_err(provision_error)?;
-            delete_consumer_if_present(&jetstream, "JOBS_WORK", &resource.physical_id).await?;
-            if repository
-                .job_namespace_has_other_resources(
-                    resource.resource_id.clone(),
-                    resource.owner_kind,
-                    resource.owner_id.clone(),
-                    resource.participant_id.clone(),
-                )
-                .await?
-            {
-                if let Some(stream) = get_stream_if_present(&jetstream, &keys_stream)
-                    .await
-                    .map_err(provision_error)?
-                {
-                    stream
-                        .purge()
-                        .filter(format!(
-                            "$KV.JOBS_KEYS_{namespace}.{namespace}.{}.>",
-                            resource.local_name
-                        ))
-                        .await
-                        .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                }
-            } else {
-                delete_stream_if_present(&jetstream, &keys_stream).await?;
-            }
-            Ok(())
-        }
-        ParticipantResourceKind::EventConsumer => {
-            let replay_consumer = format!("{}_replay", resource.physical_id);
-            validate_owned_consumer_if_present(
-                &jetstream,
-                "trellis",
-                &resource.physical_id,
-                &resource.resource_id,
-            )
-            .await?;
-            validate_owned_consumer_if_present(
-                &jetstream,
-                trellis_events_runtime::REPLAY_STREAM,
-                &replay_consumer,
-                &resource.resource_id,
-            )
-            .await?;
-            delete_consumer_if_present(&jetstream, "trellis", &resource.physical_id).await?;
-            delete_consumer_if_present(
-                &jetstream,
-                trellis_events_runtime::REPLAY_STREAM,
-                &replay_consumer,
-            )
-            .await
-        }
-    };
-    result?;
-    repository.finish_resource_destroy(payload).await
-}
-
-async fn purge_state(
-    jetstream: &jetstream::Context,
-    physical_id: &str,
-) -> Result<(), ProvisionError> {
-    let Some(mut stream) = get_stream_if_present(jetstream, "KV_trellis_state").await? else {
-        return Ok(());
-    };
-    let config = stream
-        .info()
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .config
-        .clone();
-    if config.description.as_deref() != Some(crate::platform::state::OWNERSHIP_MARKER) {
-        return Err(ProvisionError::Incompatible(
-            "State provider identity is not Trellis-owned".to_owned(),
-        ));
-    }
-    let store = jetstream
-        .get_key_value("trellis_state")
-        .await
-        .map_err(|error| storage(error.to_string()))?;
-    store
-        .purge(physical_id)
-        .await
-        .map_err(|error| storage(error.to_string()))
-}
-
-#[derive(Debug)]
-enum ProvisionError {
-    Incompatible(String),
-    Retry(AuthorizationStateError),
-}
-
-impl From<AuthorizationStateError> for ProvisionError {
-    fn from(error: AuthorizationStateError) -> Self {
-        Self::Retry(error)
-    }
-}
-
-async fn reconcile_provider(
-    client: &async_nats::Client,
-    request: &ResourceReconcileRequest,
-) -> Result<ResourceActual, ProvisionError> {
-    let jetstream = jetstream::new(client.clone());
-    let commitment = &request.approved.commitment;
-    match request.approved.kind {
-        AuthorizationResourceKind::State => Ok(ResourceActual::State),
-        AuthorizationResourceKind::Kv => {
-            reconcile_kv(
-                &jetstream,
-                &request.catalog,
-                commitment.history.unwrap_or(1),
-                commitment.ttl_ms.unwrap_or(0),
-            )
-            .await
-        }
-        AuthorizationResourceKind::Store => {
-            reconcile_store(&jetstream, &request.catalog, commitment.ttl_ms.unwrap_or(0)).await
-        }
-        AuthorizationResourceKind::Job => {
-            let declaration = request
-                .participant
-                .resources
-                .get(&request.catalog.local_name)
-                .ok_or_else(|| {
-                    ProvisionError::Incompatible("job declaration is missing".to_owned())
-                })?;
-            reconcile_job(
-                client,
-                &request.catalog,
-                declaration.retry_attempts,
-                &declaration.retry_backoff_ms,
-            )
-            .await?;
-            Ok(ResourceActual::Job)
-        }
-        AuthorizationResourceKind::Consumer => {
-            let declaration = request
-                .participant
-                .resources
-                .get(&request.catalog.local_name)
-                .ok_or_else(|| {
-                    ProvisionError::Incompatible("consumer declaration is missing".to_owned())
-                })?;
-            reconcile_consumer(
-                &jetstream,
-                &request.catalog,
-                &request.participant,
-                declaration,
-            )
-            .await?;
-            Ok(ResourceActual::Consumer)
-        }
-    }
-}
-
-async fn reconcile_kv(
-    jetstream: &jetstream::Context,
-    catalog: &ResourceCatalogRecord,
-    history: u64,
-    ttl_ms: u64,
-) -> Result<ResourceActual, ProvisionError> {
-    if !(1..=64).contains(&history) {
-        return Err(ProvisionError::Incompatible(
-            "KV history must be between 1 and 64".to_owned(),
-        ));
-    }
-    let stream_name = format!("KV_{}", catalog.physical_id);
-    let marker = format!("Trellis auth resource {}", catalog.resource_id);
-    let mut stream = match get_stream_if_present(jetstream, &stream_name).await? {
-        Some(stream) => stream,
-        None => {
-            jetstream
-                .create_key_value(jetstream::kv::Config {
-                    bucket: catalog.physical_id.clone(),
-                    description: marker.clone(),
-                    history: history as i64,
-                    max_age: Duration::from_millis(ttl_ms),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|error| storage(error.to_string()))?;
-            get_required_stream(jetstream, &stream_name).await?
-        }
-    };
-    let mut config = stream
-        .info()
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .config
-        .clone();
-    if config.description.as_deref() != Some(&marker) {
-        return Err(ProvisionError::Incompatible(
-            "KV provider identity is not Trellis-owned".to_owned(),
-        ));
-    }
-    let original = config.clone();
-    let actual_history = u64::try_from(config.max_messages_per_subject).unwrap_or(0);
-    if actual_history > 64 {
-        return Err(ProvisionError::Incompatible(
-            "KV provider history exceeds 64".to_owned(),
-        ));
-    }
-    if actual_history < history {
-        config.max_messages_per_subject = history as i64;
-    } else if actual_history > history {
-        return Err(ProvisionError::Incompatible(
-            "resource_change_requires_admin: KV history reduction is destructive".to_owned(),
-        ));
-    }
-    let requested_ttl = Duration::from_millis(ttl_ms);
-    if config.max_age != requested_ttl {
-        if config.max_age != Duration::ZERO
-            && (requested_ttl == Duration::ZERO || requested_ttl > config.max_age)
-        {
-            config.max_age = requested_ttl;
-        } else {
-            return Err(ProvisionError::Incompatible(
-                "resource_change_requires_admin: KV TTL would weaken retention".to_owned(),
-            ));
-        }
-    }
-    if config != original {
-        jetstream
-            .update_stream(config)
-            .await
-            .map_err(|error| storage(error.to_string()))?;
-    }
-    let mut stream = get_required_stream(jetstream, &stream_name).await?;
-    let config = stream
-        .info()
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .config
-        .clone();
-    Ok(ResourceActual::Kv {
-        history: u64::try_from(config.max_messages_per_subject).unwrap_or(0),
-        ttl_ms: duration_ms(config.max_age)?,
-        max_value_bytes: actual_i32(config.max_message_size),
-    })
-}
-
-async fn reconcile_store(
-    jetstream: &jetstream::Context,
-    catalog: &ResourceCatalogRecord,
-    ttl_ms: u64,
-) -> Result<ResourceActual, ProvisionError> {
-    let stream_name = format!("OBJ_{}", catalog.physical_id);
-    let marker = format!("Trellis auth resource {}", catalog.resource_id);
-    let mut stream = match get_stream_if_present(jetstream, &stream_name).await? {
-        Some(stream) => stream,
-        None => {
-            jetstream
-                .create_object_store(jetstream::object_store::Config {
-                    bucket: catalog.physical_id.clone(),
-                    description: Some(marker.clone()),
-                    max_age: Duration::from_millis(ttl_ms),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|error| storage(error.to_string()))?;
-            get_required_stream(jetstream, &stream_name).await?
-        }
-    };
-    let mut config = stream
-        .info()
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .config
-        .clone();
-    if config.description.as_deref() != Some(&marker) {
-        return Err(ProvisionError::Incompatible(
-            "Store provider identity is not Trellis-owned".to_owned(),
-        ));
-    }
-    let original = config.clone();
-    let requested_ttl = Duration::from_millis(ttl_ms);
-    if config.max_age != requested_ttl {
-        if config.max_age != Duration::ZERO
-            && (requested_ttl == Duration::ZERO || requested_ttl > config.max_age)
-        {
-            config.max_age = requested_ttl;
-        } else {
-            return Err(ProvisionError::Incompatible(
-                "resource_change_requires_admin: Store TTL would weaken retention".to_owned(),
-            ));
-        }
-    }
-    if config != original {
-        jetstream
-            .update_stream(config)
-            .await
-            .map_err(|error| storage(error.to_string()))?;
-    }
-    let mut stream = get_required_stream(jetstream, &stream_name).await?;
-    let config = stream
-        .info()
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .config
-        .clone();
-    Ok(ResourceActual::Store {
-        ttl_ms: duration_ms(config.max_age)?,
-        max_object_bytes: None,
-        max_total_bytes: actual_i64(config.max_bytes),
-    })
-}
-
-async fn reconcile_job(
-    client: &async_nats::Client,
-    catalog: &ResourceCatalogRecord,
-    retry_attempts: Option<u32>,
-    retry_backoff_ms: &[u64],
-) -> Result<(), ProvisionError> {
-    let jetstream = jetstream::new(client.clone());
-    let namespace = job_namespace(catalog);
-    let keys_bucket = format!("JOBS_KEYS_{namespace}");
-    let keys_stream = format!("KV_{keys_bucket}");
-    let marker = format!("Trellis auth jobs {}", catalog.participant_id);
-    let mut stream = match get_stream_if_present(&jetstream, &keys_stream).await? {
-        Some(stream) => stream,
-        None => {
-            jetstream
-                .create_key_value(jetstream::kv::Config {
-                    bucket: keys_bucket,
-                    description: marker.clone(),
-                    history: 1,
-                    ..Default::default()
-                })
-                .await
-                .map_err(|error| storage(error.to_string()))?;
-            get_required_stream(&jetstream, &keys_stream).await?
-        }
-    };
-    let description = stream
-        .info()
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .config
-        .description
-        .clone();
-    if description.as_deref() != Some(&marker) {
-        return Err(ProvisionError::Incompatible(
-            "job key provider identity is not Trellis-owned".to_owned(),
-        ));
-    }
-    let stream = get_required_stream(&jetstream, "JOBS_WORK").await?;
-    let backoff = if retry_attempts.is_none() {
-        vec![5_000, 30_000, 120_000, 600_000]
-    } else {
-        retry_backoff_ms.to_vec()
-    }
-    .into_iter()
-    .map(Duration::from_millis)
-    .collect::<Vec<_>>();
-    ensure_pull_consumer(
-        &stream,
-        &catalog.physical_id,
-        consumer::pull::Config {
-            durable_name: Some(catalog.physical_id.clone()),
-            filter_subject: format!("trellis.work.{}.{}", namespace, catalog.local_name),
-            ack_policy: consumer::AckPolicy::Explicit,
-            ack_wait: backoff.first().copied().unwrap_or(Duration::from_secs(30)),
-            // Attempts are bounded by the worker, not broker redeliveries:
-            // reconciliation must survive repeated worker crashes.
-            max_deliver: -1,
-            backoff: backoff.clone(),
-            metadata: HashMap::from([(
-                "trellis.resource_id".to_owned(),
-                catalog.resource_id.clone(),
-            )]),
-            ..Default::default()
-        },
-    )
-    .await
-}
-
-async fn reconcile_consumer(
-    jetstream: &jetstream::Context,
-    catalog: &ResourceCatalogRecord,
-    participant: &ParticipantRuntimeProjection,
-    declaration: &ResourceRuntimeProjection,
-) -> Result<(), ProvisionError> {
-    let mut filters = Vec::new();
-    for (api_id, events) in &declaration.consumer_events {
-        let api = participant.referenced_apis.get(api_id).ok_or_else(|| {
-            ProvisionError::Incompatible(format!("consumer API {api_id} is missing"))
-        })?;
-        for event in events {
-            let action = api.actions.get(&format!("event:{event}")).ok_or_else(|| {
-                ProvisionError::Incompatible(format!("consumer event {event} is missing"))
-            })?;
-            filters.push(
-                trellis_protocol::derive_event_wildcard_subject(
-                    api_id,
-                    event,
-                    action.event_parameter_count,
-                )
-                .map_err(|error| ProvisionError::Incompatible(error.to_string()))?,
-            );
-        }
-    }
-    filters.sort();
-    filters.dedup();
-    if filters.is_empty() {
-        return Err(ProvisionError::Incompatible(
-            "consumer has no verified event filters".to_owned(),
-        ));
-    }
-    let filter_subject = if filters.len() == 1 {
-        filters.remove(0)
-    } else {
-        String::new()
-    };
-    let stream = get_required_stream(jetstream, "trellis").await?;
-    let max_deliver = i64::from(declaration.retry_attempts.unwrap_or(6));
-    let backoff_ms = if declaration.retry_backoff_ms.is_empty() {
-        [5_000, 30_000, 120_000, 600_000, 1_800_000]
-            .into_iter()
-            .take(max_deliver.saturating_sub(1) as usize)
-            .collect::<Vec<_>>()
-    } else {
-        declaration.retry_backoff_ms.clone()
-    };
-    let backoff = backoff_ms
-        .into_iter()
-        .map(Duration::from_millis)
-        .collect::<Vec<_>>();
-    ensure_pull_consumer(
-        &stream,
-        &catalog.physical_id,
-        consumer::pull::Config {
-            durable_name: Some(catalog.physical_id.clone()),
-            filter_subject,
-            filter_subjects: filters,
-            deliver_policy: if declaration.consumer_replay_all {
-                consumer::DeliverPolicy::All
-            } else {
-                consumer::DeliverPolicy::New
-            },
-            ack_policy: consumer::AckPolicy::Explicit,
-            ack_wait: backoff
-                .first()
-                .copied()
-                .unwrap_or(Duration::from_millis(30_000)),
-            max_deliver,
-            backoff: backoff.clone(),
-            max_ack_pending: i64::from(declaration.consumer_concurrency.unwrap_or(1).max(1_000)),
-            metadata: HashMap::from([(
-                "trellis.resource_id".to_owned(),
-                catalog.resource_id.clone(),
-            )]),
-            ..Default::default()
-        },
-    )
-    .await?;
-
-    let replay_stream =
-        get_required_stream(jetstream, trellis_events_runtime::REPLAY_STREAM).await?;
-    let replay_consumer = format!("{}_replay", catalog.physical_id);
-    ensure_pull_consumer(
-        &replay_stream,
-        &replay_consumer,
-        consumer::pull::Config {
-            durable_name: Some(replay_consumer.clone()),
-            filter_subject: trellis_events_runtime::dead_letters::replay_filter_subject(
-                &catalog.resource_id,
-            ),
-            ack_policy: consumer::AckPolicy::Explicit,
-            ack_wait: backoff
-                .first()
-                .copied()
-                .unwrap_or(Duration::from_millis(30_000)),
-            max_deliver,
-            backoff: backoff.clone(),
-            max_ack_pending: i64::from(declaration.consumer_concurrency.unwrap_or(1).max(1_000)),
-            metadata: HashMap::from([(
-                "trellis.resource_id".to_owned(),
-                catalog.resource_id.clone(),
-            )]),
-            ..Default::default()
-        },
-    )
-    .await
-}
-
-async fn ensure_pull_consumer(
-    stream: &stream::Stream,
-    name: &str,
-    desired: consumer::pull::Config,
-) -> Result<(), ProvisionError> {
-    match stream.consumer_info(name).await {
-        Ok(info) => {
-            let actual = consumer::pull::Config::try_from_consumer_config(info.config)
-                .map_err(|error| ProvisionError::Incompatible(error.to_string()))?;
-            if actual.metadata.get("trellis.resource_id")
-                != desired.metadata.get("trellis.resource_id")
-            {
-                return Err(ProvisionError::Incompatible(
-                    "consumer provider identity is not Trellis-owned".to_owned(),
-                ));
-            }
-            if actual.filter_subject != desired.filter_subject
-                || actual.filter_subjects != desired.filter_subjects
-                || actual.deliver_policy != desired.deliver_policy
-                || actual.ack_policy != desired.ack_policy
-                || actual.ack_wait != desired.ack_wait
-                || actual.max_deliver != desired.max_deliver
-                || actual.backoff != desired.backoff
-                || (desired.max_ack_pending > 0
-                    && actual.max_ack_pending != desired.max_ack_pending)
-            {
-                return Err(ProvisionError::Incompatible(
-                    "resource_change_requires_admin: retained consumer configuration differs from the approved configuration".to_owned(),
-                ));
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == jetstream::context::ConsumerInfoErrorKind::NotFound => {
-            stream
-                .create_consumer(desired)
-                .await
-                .map_err(|error| storage(error.to_string()))?;
-            Ok(())
-        }
-        Err(error) => Err(storage(error.to_string())),
-    }
-}
-
-async fn get_stream_if_present(
-    jetstream: &jetstream::Context,
-    name: &str,
-) -> Result<Option<stream::Stream>, ProvisionError> {
-    match jetstream.get_stream(name).await {
-        Ok(stream) => Ok(Some(stream)),
-        Err(error)
-            if matches!(
-                error.kind(),
-                jetstream::context::GetStreamErrorKind::JetStream(ref error)
-                    if error.error_code().0 == 10059
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(storage(error.to_string())),
-    }
-}
-
-async fn get_required_stream(
-    jetstream: &jetstream::Context,
-    name: &str,
-) -> Result<stream::Stream, ProvisionError> {
-    get_stream_if_present(jetstream, name)
-        .await?
-        .ok_or_else(|| storage(format!("required stream {name} is missing")))
-}
-
-async fn delete_stream_if_present(
-    jetstream: &jetstream::Context,
-    name: &str,
-) -> Result<(), AuthorizationStateError> {
-    if get_stream_if_present(jetstream, name)
-        .await
-        .map_err(|error| match error {
-            ProvisionError::Incompatible(error) => AuthorizationStateError::InvalidRecord(error),
-            ProvisionError::Retry(error) => error,
+) -> Result<(), AuthError> {
+    let mut statement = connection.prepare(
+        "SELECT resource_id,kind,local_name,state \
+        FROM auth_resources \
+        WHERE owner_kind='deployment' \
+        AND owner_id=?1",
+    )?;
+    let resources = statement
+        .query_map([deployment], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
         })?
-        .is_none()
-    {
-        return Ok(());
-    }
-    jetstream
-        .delete_stream(name)
-        .await
-        .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-    Ok(())
-}
-
-async fn delete_owned_stream_if_present(
-    jetstream: &jetstream::Context,
-    name: &str,
-    ownership_marker: &str,
-) -> Result<(), ProvisionError> {
-    let Some(mut stream) = get_stream_if_present(jetstream, name).await? else {
-        return Ok(());
-    };
-    let config = stream
-        .info()
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .config
-        .clone();
-    if config.description.as_deref() != Some(ownership_marker) {
-        return Err(ProvisionError::Incompatible(
-            "provider identity is not Trellis-owned".to_owned(),
-        ));
-    }
-    delete_stream_if_present(jetstream, name)
-        .await
-        .map_err(|error| storage(error.to_string()))
-}
-
-async fn validate_owned_stream_if_present(
-    jetstream: &jetstream::Context,
-    name: &str,
-    ownership_marker: &str,
-) -> Result<(), ProvisionError> {
-    let Some(mut stream) = get_stream_if_present(jetstream, name).await? else {
-        return Ok(());
-    };
-    if stream
-        .info()
-        .await
-        .map_err(|error| storage(error.to_string()))?
-        .config
-        .description
-        .as_deref()
-        != Some(ownership_marker)
-    {
-        return Err(ProvisionError::Incompatible(
-            "provider identity is not Trellis-owned".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-async fn validate_owned_consumer_if_present(
-    jetstream: &jetstream::Context,
-    stream_name: &str,
-    consumer_name: &str,
-    resource_id: &str,
-) -> Result<(), AuthorizationStateError> {
-    let Some(stream) = get_stream_if_present(jetstream, stream_name)
-        .await
-        .map_err(provision_error)?
-    else {
-        return Ok(());
-    };
-    match stream.consumer_info(consumer_name).await {
-        Ok(info) => {
-            let actual = consumer::pull::Config::try_from_consumer_config(info.config)
-                .map_err(|error| AuthorizationStateError::InvalidRecord(error.to_string()))?;
-            if actual
-                .metadata
-                .get("trellis.resource_id")
-                .map(String::as_str)
-                != Some(resource_id)
-            {
-                return Err(AuthorizationStateError::InvalidRecord(
-                    "consumer provider identity is not Trellis-owned".to_owned(),
-                ));
-            }
-            Ok(())
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (resource, kind, name, state) in resources {
+        if keep.contains(&(kind, name)) || state == "detached" || state == "destroying" {
+            continue;
         }
-        Err(error) if error.kind() == jetstream::context::ConsumerInfoErrorKind::NotFound => Ok(()),
-        Err(error) => Err(AuthorizationStateError::Storage(error.to_string())),
-    }
-}
-
-async fn delete_consumer_if_present(
-    jetstream: &jetstream::Context,
-    stream_name: &str,
-    consumer_name: &str,
-) -> Result<(), AuthorizationStateError> {
-    let Some(stream) = get_stream_if_present(jetstream, stream_name)
-        .await
-        .map_err(provision_error)?
-    else {
-        return Ok(());
-    };
-    match stream.delete_consumer(consumer_name).await {
-        Ok(_) => Ok(()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                stream::ConsumerErrorKind::JetStream(error)
-                    if error.error_code().0 == 10014
-            ) =>
-        {
-            Ok(())
+        // A provider allocation in flight must finish before deployment changes.
+        if state == "pending" {
+            return Err(AuthError::Conflict);
         }
-        Err(error) => Err(AuthorizationStateError::Storage(error.to_string())),
-    }
-}
-
-fn provision_error(error: ProvisionError) -> AuthorizationStateError {
-    match error {
-        ProvisionError::Incompatible(error) => AuthorizationStateError::InvalidRecord(error),
-        ProvisionError::Retry(error) => error,
-    }
-}
-
-fn validate_commitment(
-    declaration: &ResourceRuntimeProjection,
-    approved: &ApprovedResource,
-) -> Result<(), AuthorizationStateError> {
-    if AuthorizationResourceKind::from(declaration.kind) != approved.kind {
-        return Err(AuthorizationStateError::InvalidRecord(
-            "resource commitment kind differs from declaration".to_owned(),
-        ));
-    }
-    let commitment = &approved.commitment;
-    if commitment.history != declaration.history || commitment.ttl_ms != declaration.ttl_ms {
-        return Err(AuthorizationStateError::InvalidRecord(
-            "resource commitment differs from declaration".to_owned(),
-        ));
+        connection.execute(
+            "UPDATE auth_resources \
+            SET state='detached',revision=revision+1,updated_at=?2 \
+            WHERE resource_id=?1",
+            params![resource, now],
+        )?;
+        connection.execute(
+            "UPDATE auth_resource_binding_evidence \
+            SET state='unavailable',materialized_at=?2 \
+            WHERE binding_id=?1",
+            params![resource, now],
+        )?;
+        connection.execute(
+            "INSERT INTO auth_resource_history SELECT resource_id,revision,\
+            commitment_json,actual_json,state,?2 \
+            FROM auth_resources \
+            WHERE resource_id=?1",
+            params![resource, now],
+        )?;
     }
     Ok(())
 }
 
-fn actual_i32(value: i32) -> Option<u64> {
-    u64::try_from(value).ok()
+#[derive(Clone, Serialize, Deserialize)]
+struct NativeAllocation {
+    kind: String,
+    resource_id: String,
+    allocation_id: String,
+    history: i64,
+    ttl_ms: i64,
+    consumer: Option<EventConsumerResourceBinding>,
+    job: Option<trellis_rs::service::JobsQueueResourceBinding>,
+    state: Option<super::state::StateDeclaration>,
 }
 
-fn actual_i64(value: i64) -> Option<u64> {
-    u64::try_from(value).ok()
-}
-
-fn duration_ms(value: Duration) -> Result<u64, ProvisionError> {
-    u64::try_from(value.as_millis())
-        .map_err(|_| ProvisionError::Incompatible("provider TTL exceeds protocol range".to_owned()))
-}
-
-fn storage(error: String) -> ProvisionError {
-    ProvisionError::Retry(AuthorizationStateError::Storage(error))
-}
-
-pub(crate) fn reconcile_action_payload(
-    resource_id: &str,
+#[derive(Serialize, Deserialize)]
+struct ResourcePlan {
+    principal: String,
+    deployment: String,
+    participant: String,
+    installed_revision: u64,
     binding_revision: u64,
-    catalog_revision: u64,
-) -> Value {
-    json!({
-        "resourceId": resource_id,
-        "bindingRevision": binding_revision,
-        "catalogRevision": catalog_revision,
-    })
+    kv: BTreeMap<String, NativeAllocation>,
+    materialized: BTreeSet<String>,
+    key_bucket_materialized: bool,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::process::{Child, Command, Stdio};
-    use tokio::io::AsyncReadExt;
-
-    #[test]
-    fn resource_id_is_length_framed_and_stable() {
-        let first = resource_id(
-            GrantOwnerKind::Deployment,
-            "ab",
-            "c",
-            ParticipantResourceKind::Kv,
-            "items",
+/// Materialize installed declarations using the operational connection, then
+/// commit actual bindings before any native provider is admitted. This is a
+/// startup-owner operation, not a caller authorization or allocation API.
+pub(crate) async fn materialize_native_kv(
+    store: &Arc<SqliteAuthorizationStore>,
+    operational: &async_nats::Client,
+    deployment: &str,
+    now: i64,
+) -> Result<ServiceResourceBindings, AuthError> {
+    let selected = deployment.to_owned();
+    let plan = store
+        .transaction_blocking(move |connection| {
+            let deployment = selected.as_str();
+            let (principal, participant, installed_revision, binding_revision, evidence): (
+                String,
+                String,
+                u64,
+                u64,
+                String,
+            ) = connection.query_row(
+                "SELECT i.principal_id,d.participant_id,b.installed_revision,b.revision,\
+            p.projection_json \
+            FROM auth_deployments d \
+            JOIN auth_deployment_bindings b USING(deployment_id) \
+            JOIN auth_installed_participants p ON \
+            p.participant_id=d.participant_id \
+            AND p.revision=b.installed_revision \
+            JOIN auth_instances i ON i.deployment_id=d.deployment_id \
+            JOIN auth_principals a ON a.principal_id=i.principal_id \
+            WHERE d.deployment_id=?1 \
+            AND d.state='active' \
+            AND i.state='active' \
+            AND a.state='active'",
+                [deployment],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            let evidence: PackageEvidence = decode(&evidence)?;
+            let graph = compile_evidence(evidence)
+                .map_err(|error| AuthError::Invalid(error.to_string()))?;
+            let definition = graph
+                .root_package()
+                .participants()
+                .values()
+                .find(|definition| definition.identity().as_str() == participant)
+                .ok_or(AuthError::NotFound)?;
+            let mut kv = BTreeMap::new();
+            for (name, declaration) in definition.resources() {
+                let (kind, history, ttl_ms) = match declaration {
+                    ResourceDefinition::Kv {
+                        history, ttl_ms, ..
+                    } => ("kv", *history, *ttl_ms),
+                    ResourceDefinition::Store { ttl_ms, .. } => ("store", 0, *ttl_ms),
+                    ResourceDefinition::Consumer { .. } => ("consumer", 0, 0),
+                    ResourceDefinition::Job { .. } => ("job", 0, 0),
+                    ResourceDefinition::State { .. } => ("state", 0, 0),
+                };
+                let name = name.to_string();
+                let resource_id = digest(&("deployment", deployment, &participant, kind, &name))?;
+                let state = if let ResourceDefinition::State {
+                    schema,
+                    version,
+                    accepts,
+                    ..
+                } = declaration
+                {
+                    Some(super::state::StateDeclaration {
+                        resource_id: resource_id.clone(),
+                        resource_name: name.clone(),
+                        schema: trellis_idl::json_schema(&graph, schema)
+                            .map_err(|error| AuthError::Invalid(error.to_string()))?,
+                        representation_version: *version,
+                        accepted_versions: accepts
+                            .iter()
+                            .map(|old| {
+                                Ok((
+                                    old.version,
+                                    trellis_idl::json_schema(&graph, &old.ty)
+                                        .map_err(|error| AuthError::Invalid(error.to_string()))?,
+                                ))
+                            })
+                            .collect::<Result<_, AuthError>>()?,
+                    })
+                } else {
+                    None
+                };
+                let consumer = if let ResourceDefinition::Consumer {
+                    events,
+                    concurrency,
+                    replay,
+                    retry,
+                    ..
+                } = declaration
+                {
+                    Some(EventConsumerResourceBinding {
+                        resource_id: resource_id.clone(),
+                        stream: crate::resources::EVENT_STREAM.into(),
+                        consumer_name: String::new(),
+                        // A parameterized event publishes on its subject plus one
+                        // token per parameter, so the filter needs one wildcard each.
+                        filter_subjects: events
+                            .iter()
+                            .map(|(api, event)| {
+                                let action = trellis_idl::ActionId {
+                                    kind: trellis_idl::ActionKind::Event,
+                                    name: event.clone(),
+                                };
+                                let parameters = match graph.api(api).and_then(|api| {
+                                    match api.definition().actions().get(&action) {
+                                        Some(trellis_idl::ActionDefinition::Event {
+                                            parameters,
+                                            ..
+                                        }) => Some(parameters.len()),
+                                        _ => None,
+                                    }
+                                }) {
+                                    Some(parameters) => parameters,
+                                    None => {
+                                        return Err(AuthError::Invalid(format!(
+                                            "consumer event {}.{event} is not declared",
+                                            api.as_str()
+                                        )))
+                                    }
+                                };
+                                trellis_protocol::derive_event_wildcard_subject(
+                                    api.as_str(),
+                                    event,
+                                    parameters,
+                                )
+                                .map_err(|error| AuthError::Invalid(error.to_string()))
+                            })
+                            .collect::<Result<_, _>>()?,
+                        concurrency: *concurrency,
+                        replay: match replay {
+                            trellis_idl::Replay::New => {
+                                trellis_rs::service::EventConsumerReplay::New
+                            }
+                            trellis_idl::Replay::All => {
+                                trellis_rs::service::EventConsumerReplay::All
+                            }
+                        },
+                        ack_wait_ms: 30_000,
+                        max_deliver: retry.as_ref().map_or(5, |retry| i64::from(retry.attempts)),
+                        backoff_ms: retry
+                            .as_ref()
+                            .map(|retry| {
+                                retry
+                                    .backoff_ms
+                                    .iter()
+                                    .map(|value| {
+                                        i64::try_from(*value).map_err(|_| AuthError::Denied)
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()
+                            })
+                            .transpose()?
+                            .unwrap_or_else(|| vec![5_000, 30_000, 120_000, 600_000]),
+                        replay_binding: trellis_rs::service::EventConsumerReplayBinding {
+                            stream: trellis_events_runtime::REPLAY_STREAM.into(),
+                            consumer_name: String::new(),
+                        },
+                    })
+                } else {
+                    None
+                };
+                let job = if let ResourceDefinition::Job {
+                    payload,
+                    result,
+                    update,
+                    deadline_ms,
+                    retry,
+                    key_concurrency,
+                    ..
+                } = declaration
+                {
+                    use trellis_rs::jobs::bindings::{
+                        JobKeyConcurrencyBinding, JobKeyStalePolicy, JobQueueDepthBinding,
+                        JobQueueWhenFull,
+                    };
+                    let namespace = digest(&("jobs", deployment))?;
+                    Some(trellis_rs::service::JobsQueueResourceBinding {
+                        queue_type: name.clone(),
+                        publish_prefix: format!("trellis.jobs.{namespace}.{name}"),
+                        updates_prefix: update
+                            .as_ref()
+                            .map(|_| format!("trellis.jobs_updates.{namespace}.{name}")),
+                        work_subject: format!("trellis.work.{namespace}.{name}"),
+                        consumer_name: String::new(),
+                        payload: trellis_rs::service::JobsSchemaRef {
+                            schema: payload.id.to_string(),
+                        },
+                        result: result
+                            .as_ref()
+                            .map(|ty| trellis_rs::service::JobsSchemaRef {
+                                schema: ty.id.to_string(),
+                            }),
+                        update: update
+                            .as_ref()
+                            .map(|ty| trellis_rs::service::JobsSchemaRef {
+                                schema: ty.id.to_string(),
+                            }),
+                        max_deliver: retry.as_ref().map_or(5, |retry| i64::from(retry.attempts)),
+                        backoff_ms: retry
+                            .as_ref()
+                            .map(|retry| {
+                                retry
+                                    .backoff_ms
+                                    .iter()
+                                    .map(|value| {
+                                        i64::try_from(*value).map_err(|_| AuthError::Denied)
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()
+                            })
+                            .transpose()?
+                            .unwrap_or_else(|| vec![5_000, 30_000, 120_000, 600_000]),
+                        ack_wait_ms: 30_000,
+                        default_deadline_ms: deadline_ms
+                            .map(|value| i64::try_from(value).map_err(|_| AuthError::Denied))
+                            .transpose()?,
+                        key_concurrency: key_concurrency.as_ref().map(|key| {
+                            JobKeyConcurrencyBinding {
+                                key: vec![format!("/{}", key.path.join("/"))],
+                                max_active: 1,
+                                heartbeat_interval_ms: 10_000,
+                                heartbeat_ttl_ms: 30_000,
+                                stale_policy: JobKeyStalePolicy::Block,
+                            }
+                        }),
+                        queue: key_concurrency.as_ref().map(|key| JobQueueDepthBinding {
+                            max_queued_per_key: match key.policy {
+                                trellis_idl::KeyConcurrencyPolicy::Queue => u64::from(u32::MAX),
+                                trellis_idl::KeyConcurrencyPolicy::Reject => 0,
+                                trellis_idl::KeyConcurrencyPolicy::Supersede => 1,
+                            },
+                            when_full: match key.policy {
+                                trellis_idl::KeyConcurrencyPolicy::Supersede => {
+                                    JobQueueWhenFull::ReplaceOldest
+                                }
+                                _ => JobQueueWhenFull::Reject,
+                            },
+                        }),
+                    })
+                } else {
+                    None
+                };
+                kv.insert(
+                    name.clone(),
+                    NativeAllocation {
+                        kind: kind.into(),
+                        resource_id,
+                        allocation_id: super::sqlite::id(),
+                        history: i64::try_from(history).map_err(|_| AuthError::Denied)?,
+                        ttl_ms: i64::try_from(ttl_ms).map_err(|_| AuthError::Denied)?,
+                        consumer,
+                        job,
+                        state,
+                    },
+                );
+            }
+            let mut materialized = BTreeSet::new();
+            let mut previous_jobs = connection.prepare(
+                "SELECT actual_json FROM auth_resource_binding_evidence \
+            WHERE owner_kind='deployment' \
+            AND owner_id=?1 AND resource_kind='jobQueue'",
+            )?;
+            let mut key_bucket_materialized = false;
+            for binding in previous_jobs.query_map([deployment], |row| row.get::<_, String>(0))? {
+                let binding: trellis_rs::service::JobsQueueResourceBinding = decode(&binding?)?;
+                key_bucket_materialized |= binding.key_concurrency.is_some();
+            }
+            for (name, allocation) in &mut kv {
+                if let Some(declaration) = &allocation.state {
+                    let mut history = connection.prepare(
+                        "SELECT commitment_json FROM auth_resource_history WHERE resource_id=?1",
+                    )?;
+                    for previous in history
+                        .query_map([&allocation.resource_id], |row| row.get::<_, String>(0))?
+                    {
+                        let previous: super::state::StateDeclaration = decode(&previous?)?;
+                        for (version, schema) in std::iter::once((
+                            &declaration.representation_version,
+                            &declaration.schema,
+                        ))
+                        .chain(&declaration.accepted_versions)
+                        {
+                            let old = if *version == previous.representation_version {
+                                Some(&previous.schema)
+                            } else {
+                                previous.accepted_versions.get(version)
+                            };
+                            if old.is_some_and(|old| old != schema) {
+                                return Err(AuthError::Invalid(
+                                    "State representation versions are immutable".into(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                let current: Option<(String, String, bool)> = connection
+                    .query_row(
+                        "SELECT state,allocation_id,actual_json IS NOT NULL \
+                    FROM auth_resources \
+                    WHERE resource_id=?1",
+                        [&allocation.resource_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?;
+                if let Some((state, incarnation, previously_materialized)) = current {
+                    if state == "destroying" {
+                        return Err(AuthError::Conflict);
+                    }
+                    allocation.allocation_id = incarnation;
+                    if previously_materialized {
+                        materialized.insert(allocation.resource_id.clone());
+                    }
+                }
+                if let Some(consumer) = &mut allocation.consumer {
+                    consumer.consumer_name = format!(
+                        "TRELLIS_RESOURCE_{}_{}",
+                        allocation.resource_id, allocation.allocation_id
+                    );
+                    consumer.replay_binding.consumer_name =
+                        format!("{}_replay", consumer.consumer_name);
+                }
+                if let Some(job) = &mut allocation.job {
+                    job.consumer_name = format!(
+                        "TRELLIS_RESOURCE_{}_{}",
+                        allocation.resource_id, allocation.allocation_id
+                    );
+                    let namespace = digest(&("jobs", deployment))?;
+                    let queue_token = format!("{name}_{}", allocation.allocation_id);
+                    job.publish_prefix = format!("trellis.jobs.{namespace}.{queue_token}");
+                    job.work_subject = format!("trellis.work.{namespace}.{queue_token}");
+                    if job.updates_prefix.is_some() {
+                        job.updates_prefix =
+                            Some(format!("trellis.jobs_updates.{namespace}.{queue_token}"));
+                    }
+                }
+                connection.execute(
+                    "INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,\
+                owner_id,participant_id,kind,local_name,commitment_json,state,\
+                binding_revision,revision,created_at,updated_at,physical_id) \
+                VALUES(?1,?9,'deployment',?2,?3,?10,?4,?5,'pending',?6,1,?7,?7,?8) \
+                ON CONFLICT(resource_id) \
+                DO UPDATE SET state='pending',updated_at=excluded.updated_at",
+                    params![
+                        allocation.resource_id,
+                        deployment,
+                        participant,
+                        name,
+                        json(allocation)?,
+                        binding_revision,
+                        now,
+                        format!(
+                            "TRELLIS_RESOURCE_{}_{}",
+                            allocation.resource_id, allocation.allocation_id
+                        ),
+                        allocation.allocation_id,
+                        allocation.kind
+                    ],
+                )?;
+            }
+            Ok(ResourcePlan {
+                principal,
+                deployment: deployment.into(),
+                participant,
+                installed_revision,
+                binding_revision,
+                kv,
+                materialized,
+                key_bucket_materialized,
+            })
+        })
+        .await?;
+    let jetstream = async_nats::jetstream::new(operational.clone());
+    // Empty projections are valid only after inspecting the installed declaration set.
+    let mut bindings = ServiceResourceBindings::default();
+    let allocation_result: Result<(),AuthError> = async {
+    super::framework_storage::materialize_operations(store, operational, deployment, now).await?;
+    for (name, allocation) in &plan.kv {
+        if allocation.state.is_some() {
+            bindings
+                .state
+                .insert(name.clone(), allocation.resource_id.clone());
+            continue;
+        }
+        let bucket = format!(
+            "TRELLIS_RESOURCE_{}_{}",
+            allocation.resource_id, allocation.allocation_id
         );
-        let second = resource_id(
-            GrantOwnerKind::Deployment,
-            "a",
-            "bc",
-            ParticipantResourceKind::Kv,
-            "items",
+        let marker = format!(
+            "trellis.resource.v1:{}:{}",
+            allocation.resource_id, allocation.allocation_id
         );
-        assert_eq!(first.len(), 43);
-        assert_eq!(first, "BcPQNNuCV5jCdFGiGwA2p8liZQ9VUZTO7mT57jAF9_Q");
-        assert_ne!(first, second);
-        let identities = [
-            resource_id(
-                GrantOwnerKind::User,
-                "owner-a",
-                "example.app",
-                ParticipantResourceKind::State,
-                "settings",
-            ),
-            resource_id(
-                GrantOwnerKind::User,
-                "owner-b",
-                "example.app",
-                ParticipantResourceKind::State,
-                "settings",
-            ),
-            resource_id(
-                GrantOwnerKind::User,
-                "owner-a",
-                "example.agent",
-                ParticipantResourceKind::State,
-                "settings",
-            ),
-            resource_id(
-                GrantOwnerKind::User,
-                "owner-a",
-                "example.device",
-                ParticipantResourceKind::State,
-                "settings",
-            ),
-            resource_id(
-                GrantOwnerKind::User,
-                "owner-a",
-                "example.app",
-                ParticipantResourceKind::State,
-                "other",
-            ),
-        ];
-        assert_eq!(
-            identities
+        if let Some(binding) = &allocation.job {
+            let namespace = digest(&("jobs", deployment))?;
+            let stream = jetstream
+                .get_stream(crate::resources::JOBS_WORK_STREAM)
+                .await
+                .map_err(|error| AuthError::Broker(error.to_string()))?;
+            let backoff: Vec<_> = binding
+                .backoff_ms
                 .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            5
-        );
-        assert_eq!(
-            first,
-            resource_id(
-                GrantOwnerKind::Deployment,
-                "ab",
-                "c",
-                ParticipantResourceKind::Kv,
-                "items"
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn providers_are_created_updated_without_data_loss_and_never_adopted() {
-        struct Server(Child);
-        impl Drop for Server {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let directory = tempfile::tempdir().unwrap();
-        let cache = std::env::var_os("TRELLIS_CACHE_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| directory.path().join("cache"));
-        let binary = trellis_local_nats::NatsServerBinary::resolve(
-            &trellis_local_nats::NatsBinarySource::DownloadPinned,
-            Some(&cache),
-        )
-        .unwrap();
-        let _server = Server(
-            Command::new(binary)
-                .args(["-a", "127.0.0.1", "-p", &port.to_string(), "-js"])
-                .arg("-sd")
-                .arg(directory.path().join("data"))
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .unwrap(),
-        );
-        let url = format!("nats://127.0.0.1:{port}");
-        let mut client = None;
-        for _ in 0..100 {
-            match async_nats::connect(&url).await {
-                Ok(connected) => {
-                    client = Some(connected);
-                    break;
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(25)).await,
-            }
-        }
-        let client = client.expect("NATS did not start");
-        let jetstream = jetstream::new(client.clone());
-
-        let state = jetstream
-            .create_key_value(jetstream::kv::Config {
-                bucket: "trellis_state".to_owned(),
-                description: crate::platform::state::OWNERSHIP_MARKER.to_owned(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let state_resource_id = "S".repeat(43);
-        let foreign_state_id = "F".repeat(43);
-        state
-            .put(&state_resource_id, "retained".into())
-            .await
-            .unwrap();
-        state
-            .put(&foreign_state_id, "foreign state".into())
-            .await
-            .unwrap();
-        let repository = SqliteAuthorizationStore::open_in_memory().unwrap();
-        let catalog_resource_id = state_resource_id.clone();
-        repository
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "INSERT INTO auth_package_evidence (package_digest, platform_trusted, accepted_at) VALUES (?1, 0, 1)",
-                        ["B".repeat(43)],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                connection
-                    .execute(
-                        "INSERT INTO auth_package_evidence_documents (evidence_digest, package_digest, evidence_json, created_at) VALUES (?1, ?2, '{}', 1)",
-                        rusqlite::params!["E".repeat(43), "B".repeat(43)],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                connection
-                    .execute(
-                        "INSERT INTO auth_installed_participants (participant_id, revision, participant_kind, participant_digest, needs_digest, package_digest, evidence_digest, participant_path, companion_required, projection_json, installed_at) VALUES ('participant-1', 1, 'service', ?1, ?2, ?3, ?4, 'Service', 0, '{}', 1)",
-                        rusqlite::params!["C".repeat(43), "D".repeat(43), "B".repeat(43), "E".repeat(43)],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                connection
-                    .execute(
-                        "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, participant_id, kind, local_name, commitment_json, physical_id, actual_json, state, readiness_reason, binding_revision, revision, created_at, updated_at) VALUES (?1, 'deployment', 'deployment-1', 'participant-1', 'state', 'saved', '{}', ?1, '{\"kind\":\"state\"}', 'destroying', NULL, 1, 2, 1, 2)",
-                        [&catalog_resource_id],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        assert!(state.get(&state_resource_id).await.unwrap().is_some());
-        destroy_resource(
-            &client,
-            &repository,
-            DestroyResourcePayload {
-                resource_id: state_resource_id.clone(),
-                catalog_revision: 2,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(state.get(&state_resource_id).await.unwrap().is_none());
-        assert_eq!(
-            state.get(&foreign_state_id).await.unwrap().unwrap(),
-            bytes::Bytes::from_static(b"foreign state")
-        );
-        assert!(matches!(
-            repository.inspect_resource(state_resource_id).await,
-            Err(AuthorizationStateError::NotFound)
-        ));
-        let unowned_state_id = "U".repeat(43);
-        state
-            .put(&unowned_state_id, "unowned state".into())
-            .await
-            .unwrap();
-        let mut state_stream = get_required_stream(&jetstream, "KV_trellis_state")
-            .await
-            .unwrap();
-        let mut state_config = state_stream.info().await.unwrap().config.clone();
-        state_config.description = Some("foreign shared State storage".to_owned());
-        jetstream.update_stream(state_config).await.unwrap();
-        let catalog_unowned_state_id = unowned_state_id.clone();
-        repository
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, participant_id, kind, local_name, commitment_json, physical_id, actual_json, state, readiness_reason, binding_revision, revision, created_at, updated_at) VALUES (?1, 'deployment', 'deployment-1', 'participant-1', 'state', 'unowned', '{}', ?1, '{\"kind\":\"state\"}', 'destroying', NULL, 1, 2, 1, 2)",
-                        [&catalog_unowned_state_id],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                connection
-                    .execute(
-                        "INSERT INTO auth_resource_history (resource_id, revision, commitment_json, actual_json, state, changed_at) VALUES (?1, 2, '{}', '{\"kind\":\"state\"}', 'destroying', 2)",
-                        [&catalog_unowned_state_id],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        assert!(matches!(
-            destroy_resource(
-                &client,
-                &repository,
-                DestroyResourcePayload {
-                    resource_id: unowned_state_id.clone(),
-                    catalog_revision: 2,
-                },
-            )
-            .await,
-            Err(AuthorizationStateError::InvalidRecord(_))
-        ));
-        assert_eq!(
-            state.get(&unowned_state_id).await.unwrap().unwrap(),
-            bytes::Bytes::from_static(b"unowned state")
-        );
-        assert_eq!(
-            repository
-                .inspect_resource(unowned_state_id.clone())
-                .await
-                .unwrap()["state"],
-            "destroying"
-        );
-        assert_eq!(
-            repository
-                .run_read({
-                    let unowned_state_id = unowned_state_id.clone();
-                    move |connection| {
-                        connection
-                            .query_row(
-                                "SELECT COUNT(*) FROM auth_resource_history WHERE resource_id = ?1",
-                                [unowned_state_id],
-                                |row| row.get::<_, u64>(0),
-                            )
-                            .map_err(|error| AuthorizationStateError::Storage(error.to_string()))
+                .map(|ms| Duration::from_millis(*ms as u64))
+                .collect();
+            let ack_wait = backoff
+                .first()
+                .copied()
+                .unwrap_or(Duration::from_millis(binding.ack_wait_ms as u64));
+            match stream.consumer_info(&binding.consumer_name).await {
+                Ok(info) => {
+                    let config = &info.config;
+                    if config.description.as_deref() != Some(marker.as_str())
+                        || config.filter_subject != binding.work_subject
+                        || config.ack_policy != async_nats::jetstream::consumer::AckPolicy::Explicit
+                        || config.max_deliver != -1
+                        || config.ack_wait != ack_wait
+                        || config.backoff != backoff
+                    {
+                        return Err(AuthError::Conflict);
                     }
-                })
-                .await
-                .unwrap(),
-            1
-        );
-        let catalog = ResourceCatalogRecord {
-            resource_id: "A".repeat(43),
-            owner_kind: GrantOwnerKind::Deployment,
-            owner_id: "deployment-1".to_owned(),
-            participant_id: "participant-1".to_owned(),
-            resource_kind: ParticipantResourceKind::Kv,
-            local_name: "cache".to_owned(),
-            physical_id: "tr_kv_provider_test".to_owned(),
-            commitment: Default::default(),
-            actual: None,
-            state: ResourceCatalogState::Pending,
-            readiness_reason: Some("reconciling".to_owned()),
-            revision: 1,
-            binding_revision: 1,
-            created_at: 1,
-            updated_at: 1,
-        };
-        assert!(matches!(
-            reconcile_kv(&jetstream, &catalog, 65, 0).await,
-            Err(ProvisionError::Incompatible(_))
-        ));
-        assert!(matches!(
-            reconcile_kv(&jetstream, &catalog, 2, 0).await.unwrap(),
-            ResourceActual::Kv {
-                history: 2,
-                max_value_bytes: None,
-                ..
-            }
-        ));
-        let kv = jetstream.get_key_value(&catalog.physical_id).await.unwrap();
-        kv.put("retained", "before increase".into()).await.unwrap();
-        let mut kv_stream = get_required_stream(&jetstream, &format!("KV_{}", catalog.physical_id))
-            .await
-            .unwrap();
-        let mut kv_config = kv_stream.info().await.unwrap().config.clone();
-        kv_config.max_message_size = 512;
-        jetstream.update_stream(kv_config).await.unwrap();
-        assert!(matches!(
-            reconcile_kv(&jetstream, &catalog, 64, 0).await.unwrap(),
-            ResourceActual::Kv {
-                history: 64,
-                max_value_bytes: Some(512),
-                ..
-            }
-        ));
-        assert_eq!(
-            kv.get("retained").await.unwrap().unwrap(),
-            bytes::Bytes::from_static(b"before increase")
-        );
-        assert!(matches!(
-            reconcile_kv(&jetstream, &catalog, 2, 0).await,
-            Err(ProvisionError::Incompatible(_))
-        ));
-        reconcile_kv(&jetstream, &catalog, 64, 0).await.unwrap();
-        assert!(kv.get("retained").await.unwrap().is_some());
-        assert!(matches!(
-            reconcile_kv(&jetstream, &catalog, 2, 0).await,
-            Err(ProvisionError::Incompatible(_))
-        ));
-
-        let mut finite_ttl = catalog.clone();
-        finite_ttl.physical_id = "tr_kv_finite_ttl_test".to_owned();
-        reconcile_kv(&jetstream, &finite_ttl, 1, 1_000)
-            .await
-            .unwrap();
-        reconcile_kv(&jetstream, &finite_ttl, 1, 2_000)
-            .await
-            .unwrap();
-        reconcile_kv(&jetstream, &finite_ttl, 1, 0).await.unwrap();
-        assert!(matches!(
-            reconcile_kv(&jetstream, &catalog, 2, 1_000).await,
-            Err(ProvisionError::Incompatible(_))
-        ));
-
-        let mut foreign = catalog.clone();
-        foreign.physical_id = "tr_kv_foreign_test".to_owned();
-        let foreign_kv = jetstream
-            .create_key_value(jetstream::kv::Config {
-                bucket: foreign.physical_id.clone(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        foreign_kv
-            .put("retained", "foreign KV bytes".into())
-            .await
-            .unwrap();
-        assert!(matches!(
-            reconcile_kv(&jetstream, &foreign, 1, 0).await,
-            Err(ProvisionError::Incompatible(_))
-        ));
-        let foreign_kv_id = foreign.resource_id.clone();
-        let foreign_kv_physical_id = foreign.physical_id.clone();
-        repository
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, participant_id, kind, local_name, commitment_json, physical_id, actual_json, state, readiness_reason, binding_revision, revision, created_at, updated_at) VALUES (?1, 'deployment', 'deployment-1', 'participant-1', 'kv', 'foreign-kv', '{}', ?2, NULL, 'detached', 'detached', 1, 1, 1, 1)",
-                        rusqlite::params![foreign_kv_id, foreign_kv_physical_id],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        repository
-            .begin_resource_destroy(
-                foreign.resource_id.clone(),
-                1,
-                foreign.physical_id.clone(),
-                2,
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            destroy_resource(
-                &client,
-                &repository,
-                DestroyResourcePayload {
-                    resource_id: foreign.resource_id.clone(),
-                    catalog_revision: 2,
-                },
-            )
-            .await,
-            Err(AuthorizationStateError::InvalidRecord(_))
-        ));
-        assert_eq!(
-            foreign_kv.get("retained").await.unwrap().unwrap(),
-            bytes::Bytes::from_static(b"foreign KV bytes")
-        );
-        assert_eq!(
-            repository
-                .inspect_resource(foreign.resource_id.clone())
-                .await
-                .unwrap()["state"],
-            "destroying"
-        );
-        assert_eq!(
-            repository
-                .run_read({
-                    let foreign_resource_id = foreign.resource_id.clone();
-                    move |connection| {
-                        connection
-                            .query_row(
-                                "SELECT COUNT(*) FROM auth_resource_history WHERE resource_id = ?1",
-                                [foreign_resource_id],
-                                |row| row.get::<_, u64>(0),
-                            )
-                            .map_err(|error| AuthorizationStateError::Storage(error.to_string()))
-                    }
-                })
-                .await
-                .unwrap(),
-            1
-        );
-
-        let mut store = catalog;
-        store.resource_kind = ParticipantResourceKind::Store;
-        store.physical_id = "tr_store_provider_test".to_owned();
-        assert!(matches!(
-            reconcile_store(&jetstream, &store, 0).await.unwrap(),
-            ResourceActual::Store {
-                max_object_bytes: None,
-                max_total_bytes: None,
-                ..
-            }
-        ));
-        let mut store_stream =
-            get_required_stream(&jetstream, &format!("OBJ_{}", store.physical_id))
-                .await
-                .unwrap();
-        let mut store_config = store_stream.info().await.unwrap().config.clone();
-        store_config.max_bytes = 1_048_576;
-        jetstream.update_stream(store_config).await.unwrap();
-        assert!(matches!(
-            reconcile_store(&jetstream, &store, 0).await.unwrap(),
-            ResourceActual::Store {
-                max_object_bytes: None,
-                max_total_bytes: Some(1_048_576),
-                ..
-            }
-        ));
-        let object_store = jetstream
-            .get_object_store(&store.physical_id)
-            .await
-            .unwrap();
-        let mut object = &b"before increase"[..];
-        object_store.put("retained", &mut object).await.unwrap();
-        assert!(matches!(
-            reconcile_store(&jetstream, &store, 0).await.unwrap(),
-            ResourceActual::Store {
-                max_object_bytes: None,
-                max_total_bytes: Some(1_048_576),
-                ..
-            }
-        ));
-        assert_eq!(object_store.info("retained").await.unwrap().size, 15);
-        assert!(matches!(
-            reconcile_store(&jetstream, &store, 0).await,
-            Ok(ResourceActual::Store { .. })
-        ));
-        let mut unlimited_store = store.clone();
-        unlimited_store.physical_id = "tr_store_unlimited_test".to_owned();
-        reconcile_store(&jetstream, &unlimited_store, 0)
-            .await
-            .unwrap();
-        assert!(matches!(
-            reconcile_store(&jetstream, &unlimited_store, 0).await,
-            Ok(ResourceActual::Store { .. })
-        ));
-
-        let mut foreign_store = store;
-        foreign_store.resource_id = "O".repeat(43);
-        foreign_store.physical_id = "tr_store_foreign_test".to_owned();
-        let foreign_object_store = jetstream
-            .create_object_store(jetstream::object_store::Config {
-                bucket: foreign_store.physical_id.clone(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let mut foreign_object = &b"foreign Object Store bytes"[..];
-        foreign_object_store
-            .put("retained", &mut foreign_object)
-            .await
-            .unwrap();
-        assert!(matches!(
-            reconcile_store(&jetstream, &foreign_store, 0).await,
-            Err(ProvisionError::Incompatible(_))
-        ));
-        let foreign_store_id = foreign_store.resource_id.clone();
-        let foreign_store_physical_id = foreign_store.physical_id.clone();
-        repository
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, participant_id, kind, local_name, commitment_json, physical_id, actual_json, state, readiness_reason, binding_revision, revision, created_at, updated_at) VALUES (?1, 'deployment', 'deployment-1', 'participant-1', 'store', 'foreign-store', '{}', ?2, NULL, 'detached', 'detached', 1, 1, 1, 1)",
-                        rusqlite::params![foreign_store_id, foreign_store_physical_id],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        repository
-            .begin_resource_destroy(
-                foreign_store.resource_id.clone(),
-                1,
-                foreign_store.physical_id.clone(),
-                2,
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            destroy_resource(
-                &client,
-                &repository,
-                DestroyResourcePayload {
-                    resource_id: foreign_store.resource_id.clone(),
-                    catalog_revision: 2,
-                },
-            )
-            .await,
-            Err(AuthorizationStateError::InvalidRecord(_))
-        ));
-        let mut retained_object = foreign_object_store.get("retained").await.unwrap();
-        let mut retained_bytes = Vec::new();
-        retained_object
-            .read_to_end(&mut retained_bytes)
-            .await
-            .unwrap();
-        assert_eq!(retained_bytes, b"foreign Object Store bytes");
-        assert_eq!(
-            repository
-                .inspect_resource(foreign_store.resource_id.clone())
-                .await
-                .unwrap()["state"],
-            "destroying"
-        );
-
-        let jobs_stream = jetstream
-            .create_stream(stream::Config {
-                name: "JOBS_WORK".to_owned(),
-                subjects: vec!["trellis.work.>".to_owned()],
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let job_resource_id = "J".repeat(43);
-        let other_job_resource_id = "K".repeat(43);
-        let job = ResourceCatalogRecord {
-            resource_id: job_resource_id.clone(),
-            owner_kind: GrantOwnerKind::Deployment,
-            owner_id: "deployment-1".to_owned(),
-            participant_id: "participant-1".to_owned(),
-            resource_kind: ParticipantResourceKind::JobQueue,
-            local_name: "email".to_owned(),
-            physical_id: "tr_job_destroy_test".to_owned(),
-            commitment: Default::default(),
-            actual: Some(ResourceActual::Job),
-            state: ResourceCatalogState::Destroying,
-            readiness_reason: None,
-            revision: 2,
-            binding_revision: 1,
-            created_at: 1,
-            updated_at: 2,
-        };
-        reconcile_job(&client, &job, None, &[]).await.unwrap();
-        let namespace = job_namespace(&job);
-        let job_keys = jetstream
-            .get_key_value(format!("JOBS_KEYS_{namespace}"))
-            .await
-            .unwrap();
-        let target_key = format!("{namespace}.email.target");
-        let retained_key = format!("{namespace}.other.retained");
-        job_keys.put(&target_key, "target".into()).await.unwrap();
-        job_keys
-            .put(&retained_key, "retained".into())
-            .await
-            .unwrap();
-        let job_id = job_resource_id.clone();
-        let other_job_id = other_job_resource_id.clone();
-        repository
-            .run(move |connection| {
-                for (resource_id, local_name, physical_id) in [
-                    (job_id, "email", "tr_job_destroy_test"),
-                    (other_job_id, "other", "tr_job_other_test"),
-                ] {
-                    connection
-                        .execute(
-                            "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, participant_id, kind, local_name, commitment_json, physical_id, actual_json, state, readiness_reason, binding_revision, revision, created_at, updated_at) VALUES (?1, 'deployment', 'deployment-1', 'participant-1', 'job', ?2, '{}', ?3, '{\"kind\":\"job\"}', 'destroying', NULL, 1, 2, 1, 2)",
-                            rusqlite::params![resource_id, local_name, physical_id],
-                        )
-                        .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
                 }
-                Ok(())
-            })
-            .await
-            .unwrap();
-        destroy_resource(
-            &client,
-            &repository,
-            DestroyResourcePayload {
-                resource_id: job_resource_id,
-                catalog_revision: 2,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(matches!(
-            jobs_stream.consumer_info("tr_job_destroy_test").await,
-            Err(error) if error.kind() == jetstream::context::ConsumerInfoErrorKind::NotFound
-        ));
-        assert!(job_keys.get(&target_key).await.unwrap().is_none());
-        assert_eq!(
-            job_keys.get(&retained_key).await.unwrap().unwrap(),
-            bytes::Bytes::from_static(b"retained")
-        );
-        destroy_resource(
-            &client,
-            &repository,
-            DestroyResourcePayload {
-                resource_id: other_job_resource_id,
-                catalog_revision: 2,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(
-            get_stream_if_present(&jetstream, &format!("KV_JOBS_KEYS_{namespace}"))
-                .await
-                .unwrap()
-                .is_none()
-        );
-
-        let event_stream = jetstream
-            .create_stream(stream::Config {
-                name: "trellis".to_owned(),
-                subjects: vec!["trellis.events.>".to_owned()],
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let replay_stream = jetstream
-            .create_stream(stream::Config {
-                name: trellis_events_runtime::REPLAY_STREAM.to_owned(),
-                subjects: vec!["trellis.replay.>".to_owned()],
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let event_resource_id = "E".repeat(43);
-        for (stream, name) in [
-            (&event_stream, "tr_cons_destroy_test"),
-            (&replay_stream, "tr_cons_destroy_test_replay"),
-        ] {
-            stream
-                .create_consumer(consumer::pull::Config {
-                    durable_name: Some(name.to_owned()),
-                    metadata: HashMap::from([(
-                        "trellis.resource_id".to_owned(),
-                        event_resource_id.clone(),
-                    )]),
-                    ..Default::default()
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        async_nats::jetstream::context::ConsumerInfoErrorKind::NotFound
+                    ) =>
+                {
+                    if plan.materialized.contains(&allocation.resource_id) {
+                        return Err(AuthError::Broker(format!(
+                            "previously materialized Job consumer '{}' is missing",
+                            binding.consumer_name
+                        )));
+                    }
+                    stream
+                        .create_consumer_strict(async_nats::jetstream::consumer::pull::Config {
+                            durable_name: Some(binding.consumer_name.clone()),
+                            description: Some(marker.clone()),
+                            filter_subject: binding.work_subject.clone(),
+                            ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                            ack_wait,
+                            max_deliver: -1,
+                            backoff,
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|error| AuthError::Broker(error.to_string()))?;
+                }
+                Err(error) => return Err(AuthError::Broker(error.to_string())),
+            }
+            if binding.key_concurrency.is_some() {
+                let key_bucket = format!("JOBS_KEYS_{namespace}");
+                let key_marker = format!("trellis.jobs.keys.v1:{deployment}");
+                let stream_name = format!("KV_{key_bucket}");
+                match jetstream.get_stream(&stream_name).await {
+                    Ok(mut stream) => {
+                        let config = &stream
+                            .info()
+                            .await
+                            .map_err(|error| AuthError::Broker(error.to_string()))?
+                            .config;
+                        if config.description.as_deref() != Some(key_marker.as_str())
+                            || config.storage != async_nats::jetstream::stream::StorageType::File
+                            || config.max_age != Duration::ZERO
+                            || config.subjects != vec![format!("$KV.{key_bucket}.>")]
+                        {
+                            return Err(AuthError::Conflict);
+                        }
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            GetStreamErrorKind::JetStream(error)
+                                if error.error_code()==ErrorCode::STREAM_NOT_FOUND
+                        ) =>
+                    {
+                        if plan.key_bucket_materialized {
+                            return Err(AuthError::Broker(format!(
+                                "previously materialized Job key bucket '{key_bucket}' is missing"
+                            )));
+                        }
+                        jetstream
+                            .create_key_value(async_nats::jetstream::kv::Config {
+                                bucket: key_bucket,
+                                description: key_marker,
+                                history: 1,
+                                storage: async_nats::jetstream::stream::StorageType::File,
+                                ..Default::default()
+                            })
+                            .await
+                            .map_err(|error| AuthError::Broker(error.to_string()))?;
+                    }
+                    Err(error) => return Err(AuthError::Broker(error.to_string())),
+                }
+            }
+            bindings
+                .jobs
+                .get_or_insert_with(|| trellis_rs::service::JobsResourceBinding {
+                    service_name: plan.participant.clone(),
+                    namespace,
+                    work_stream: Some(crate::resources::JOBS_WORK_STREAM.into()),
+                    queues: BTreeMap::new(),
                 })
-                .await
-                .unwrap();
+                .queues
+                .insert(name.clone(), binding.clone());
+            continue;
         }
-        let catalog_event_id = event_resource_id.clone();
-        repository
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, participant_id, kind, local_name, commitment_json, physical_id, actual_json, state, readiness_reason, binding_revision, revision, created_at, updated_at) VALUES (?1, 'deployment', 'deployment-1', 'participant-1', 'consumer', 'events', '{}', 'tr_cons_destroy_test', '{\"kind\":\"consumer\"}', 'destroying', NULL, 1, 2, 1, 2)",
-                        [catalog_event_id],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        destroy_resource(
-            &client,
-            &repository,
-            DestroyResourcePayload {
-                resource_id: event_resource_id.clone(),
-                catalog_revision: 2,
-            },
-        )
-        .await
-        .unwrap();
-        for (stream, name) in [
-            (&event_stream, "tr_cons_destroy_test"),
-            (&replay_stream, "tr_cons_destroy_test_replay"),
-        ] {
-            assert!(matches!(
-                stream.consumer_info(name).await,
-                Err(error) if error.kind() == jetstream::context::ConsumerInfoErrorKind::NotFound
-            ));
+        if let Some(binding) = &allocation.consumer {
+            for (stream_name, consumer_name, filters, replay) in [
+                (
+                    &binding.stream,
+                    &binding.consumer_name,
+                    binding.filter_subjects.clone(),
+                    match binding.replay {
+                        trellis_rs::service::EventConsumerReplay::New => {
+                            async_nats::jetstream::consumer::DeliverPolicy::New
+                        }
+                        _ => async_nats::jetstream::consumer::DeliverPolicy::All,
+                    },
+                ),
+                (
+                    &binding.replay_binding.stream,
+                    &binding.replay_binding.consumer_name,
+                    vec![trellis_events_runtime::dead_letters::replay_filter_subject(
+                        &allocation.resource_id,
+                    )],
+                    async_nats::jetstream::consumer::DeliverPolicy::All,
+                ),
+            ] {
+                let stream = jetstream
+                    .get_stream(stream_name)
+                    .await
+                    .map_err(|error| AuthError::Broker(error.to_string()))?;
+                match stream.consumer_info(consumer_name).await {
+                    Ok(info) => {
+                        let config = &info.config;
+                        // Existing delivery position and unacknowledged messages belong
+                        // to this allocation. Never recreate or widen it on reapply.
+                        if config.description.as_deref() != Some(marker.as_str())
+                            || config.filter_subjects.iter().collect::<BTreeSet<_>>()
+                                != filters.iter().collect()
+                            || config.deliver_policy != replay
+                            || config.ack_policy
+                                != async_nats::jetstream::consumer::AckPolicy::Explicit
+                            || config.max_deliver != binding.max_deliver
+                        {
+                            return Err(AuthError::Conflict);
+                        }
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            async_nats::jetstream::context::ConsumerInfoErrorKind::NotFound
+                        ) =>
+                    {
+                        if plan.materialized.contains(&allocation.resource_id) {
+                            return Err(AuthError::Broker(format!("previously materialized Event consumer '{consumer_name}' is missing")));
+                        }
+                        stream
+                            .create_consumer_strict(async_nats::jetstream::consumer::pull::Config {
+                                durable_name: Some(consumer_name.clone()),
+                                description: Some(marker.clone()),
+                                filter_subjects: filters,
+                                deliver_policy: replay,
+                                ack_policy: async_nats::jetstream::consumer::AckPolicy::Explicit,
+                                ack_wait: Duration::from_millis(binding.ack_wait_ms as u64),
+                                max_deliver: binding.max_deliver,
+                                ..Default::default()
+                            })
+                            .await
+                            .map_err(|error| AuthError::Broker(error.to_string()))?;
+                    }
+                    Err(error) => return Err(AuthError::Broker(error.to_string())),
+                }
+            }
+            bindings
+                .event_consumers
+                .insert(name.clone(), binding.clone());
+            continue;
         }
-        destroy_resource(
-            &client,
-            &repository,
-            DestroyResourcePayload {
-                resource_id: event_resource_id,
-                catalog_revision: 2,
-            },
-        )
-        .await
-        .unwrap();
-
-        let foreign_event_resource_id = "Q".repeat(43);
-        event_stream
-            .create_consumer(consumer::pull::Config {
-                durable_name: Some("tr_cons_foreign_destroy_test".to_owned()),
-                metadata: HashMap::from([(
-                    "trellis.resource_id".to_owned(),
-                    "foreign-resource".to_owned(),
-                )]),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let catalog_foreign_event_id = foreign_event_resource_id.clone();
-        repository
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "INSERT INTO auth_resources (resource_id, owner_kind, owner_id, participant_id, kind, local_name, commitment_json, physical_id, actual_json, state, readiness_reason, binding_revision, revision, created_at, updated_at) VALUES (?1, 'deployment', 'deployment-1', 'participant-1', 'consumer', 'foreign-events', '{}', 'tr_cons_foreign_destroy_test', '{\"kind\":\"consumer\"}', 'destroying', NULL, 1, 2, 1, 2)",
-                        [catalog_foreign_event_id],
-                    )
-                    .map_err(|error| AuthorizationStateError::Storage(error.to_string()))?;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        assert!(matches!(
-            destroy_resource(
-                &client,
-                &repository,
-                DestroyResourcePayload {
-                    resource_id: foreign_event_resource_id.clone(),
-                    catalog_revision: 2,
-                },
-            )
-            .await,
-            Err(AuthorizationStateError::InvalidRecord(_))
-        ));
-        assert!(event_stream
-            .consumer_info("tr_cons_foreign_destroy_test")
-            .await
-            .is_ok());
-        assert_eq!(
-            repository
-                .inspect_resource(foreign_event_resource_id)
+        if allocation.kind == "store" {
+            let stream_name = format!("OBJ_{bucket}");
+            match jetstream.get_stream(&stream_name).await {
+                Ok(_) => (),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        GetStreamErrorKind::JetStream(error)
+                            if error.error_code()==ErrorCode::STREAM_NOT_FOUND
+                    ) =>
+                {
+                    if plan.materialized.contains(&allocation.resource_id) {
+                        return Err(AuthError::Broker(format!(
+                            "previously materialized object store '{bucket}' is missing"
+                        )));
+                    }
+                    jetstream
+                        .create_object_store(async_nats::jetstream::object_store::Config {
+                            bucket: bucket.clone(),
+                            description: Some(marker.clone()),
+                            max_age: Duration::from_millis(allocation.ttl_ms as u64),
+                            storage: async_nats::jetstream::stream::StorageType::File,
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|error| AuthError::Broker(error.to_string()))?;
+                }
+                Err(error) => return Err(AuthError::Broker(error.to_string())),
+            }
+            let mut stream = jetstream
+                .get_stream(&stream_name)
                 .await
-                .unwrap()["state"],
-            "destroying"
-        );
-
-        let consumer_stream = jetstream
-            .create_stream(stream::Config {
-                name: "RESOURCE_PROVIDER_TEST".to_owned(),
-                subjects: vec!["resource.provider.test".to_owned()],
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let consumer_config = consumer::pull::Config {
-            durable_name: Some("tr_cons_provider_test".to_owned()),
-            filter_subject: "resource.provider.test".to_owned(),
-            ack_policy: consumer::AckPolicy::Explicit,
-            ack_wait: Duration::from_secs(5),
-            max_deliver: 6,
-            backoff: vec![Duration::from_secs(5)],
-            max_ack_pending: 1_000,
-            metadata: HashMap::from([("trellis.resource_id".to_owned(), "A".repeat(43))]),
-            ..Default::default()
-        };
-        ensure_pull_consumer(
-            &consumer_stream,
-            "tr_cons_provider_test",
-            consumer_config.clone(),
-        )
-        .await
-        .unwrap();
-        let mut expanded_consumer = consumer_config;
-        expanded_consumer.max_ack_pending = 1_500;
-        assert!(matches!(
-            ensure_pull_consumer(&consumer_stream, "tr_cons_provider_test", expanded_consumer)
-                .await,
-            Err(ProvisionError::Incompatible(_))
-        ));
-        assert_eq!(
-            consumer_stream
-                .consumer_info("tr_cons_provider_test")
+                .map_err(|error| AuthError::Broker(error.to_string()))?;
+            let mut config = stream
+                .info()
                 .await
-                .unwrap()
+                .map_err(|error| AuthError::Broker(error.to_string()))?
                 .config
-                .max_ack_pending,
-            1_000
-        );
-
-        for stream in [
-            "KV_tr_kv_provider_test",
-            "KV_tr_kv_finite_ttl_test",
-            "OBJ_tr_store_provider_test",
-            "OBJ_tr_store_unlimited_test",
-            "RESOURCE_PROVIDER_TEST",
-        ] {
-            delete_stream_if_present(&jetstream, stream).await.unwrap();
-            delete_stream_if_present(&jetstream, stream).await.unwrap();
-            assert!(get_stream_if_present(&jetstream, stream)
-                .await
-                .unwrap()
-                .is_none());
+                .clone();
+            if config.description.as_deref() != Some(marker.as_str())
+                || config.storage != async_nats::jetstream::stream::StorageType::File
+                || config.subjects.iter().collect::<BTreeSet<_>>()
+                    != [format!("$O.{bucket}.C.>"), format!("$O.{bucket}.M.>")]
+                        .iter()
+                        .collect()
+            {
+                return Err(AuthError::Conflict);
+            }
+            let ttl = Duration::from_millis(allocation.ttl_ms as u64);
+            if ttl != Duration::ZERO && (config.max_age == Duration::ZERO || ttl < config.max_age) {
+                return Err(AuthError::Invalid("potential_data_loss".into()));
+            }
+            if ttl != config.max_age {
+                config.max_age = ttl;
+                jetstream
+                    .update_stream(config)
+                    .await
+                    .map_err(|error| AuthError::Broker(error.to_string()))?;
+                config = stream
+                    .info()
+                    .await
+                    .map_err(|error| AuthError::Broker(error.to_string()))?
+                    .config
+                    .clone();
+            }
+            bindings.store.insert(
+                name.clone(),
+                StoreResourceBinding {
+                    name: bucket,
+                    ttl_ms: i64::try_from(config.max_age.as_millis())
+                        .map_err(|_| AuthError::Unavailable)?,
+                    max_total_bytes: (config.max_bytes > 0).then_some(config.max_bytes),
+                    max_object_bytes: None,
+                },
+            );
+            continue;
         }
+        let resource = match jetstream.get_stream(format!("KV_{bucket}")).await {
+            Ok(_) => jetstream
+                .get_key_value(&bucket)
+                .await
+                .map_err(|error| AuthError::Broker(error.to_string()))?,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    GetStreamErrorKind::JetStream(error)
+                        if error.error_code()==ErrorCode::STREAM_NOT_FOUND
+                ) =>
+            {
+                if plan.materialized.contains(&allocation.resource_id) {
+                    return Err(AuthError::Broker(format!(
+                        "previously materialized KV bucket '{bucket}' is missing"
+                    )));
+                }
+                jetstream
+                    .create_key_value(async_nats::jetstream::kv::Config {
+                        bucket: bucket.clone(),
+                        description: marker.clone(),
+                        history: allocation.history,
+                        max_age: Duration::from_millis(allocation.ttl_ms as u64),
+                        storage: async_nats::jetstream::stream::StorageType::File,
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|error| AuthError::Broker(error.to_string()))?
+            }
+            Err(error) => return Err(AuthError::Broker(error.to_string())),
+        };
+        let mut status = resource
+            .status()
+            .await
+            .map_err(|error| AuthError::Broker(error.to_string()))?;
+        if status.info.config.description.as_deref() != Some(marker.as_str())
+            || status.info.config.storage != async_nats::jetstream::stream::StorageType::File
+            || status.info.config.subjects != vec![format!("$KV.{bucket}.>")]
+        {
+            return Err(AuthError::Conflict);
+        }
+        let desired_ttl = Duration::from_millis(allocation.ttl_ms as u64);
+        if allocation.history < status.history()
+            || (desired_ttl != Duration::ZERO
+                && (status.max_age() == Duration::ZERO || desired_ttl < status.max_age()))
+        {
+            return Err(AuthError::Invalid("potential_data_loss".into()));
+        }
+        if allocation.history != status.history() || desired_ttl != status.max_age() {
+            let mut config = status.info.config.clone();
+            config.max_messages_per_subject = allocation.history;
+            config.max_age = desired_ttl;
+            jetstream
+                .update_stream(config)
+                .await
+                .map_err(|error| AuthError::Broker(error.to_string()))?;
+            status = resource
+                .status()
+                .await
+                .map_err(|error| AuthError::Broker(error.to_string()))?;
+        }
+        bindings.kv.insert(
+            name.clone(),
+            KvResourceBinding {
+                bucket,
+                history: status.history(),
+                ttl_ms: allocation.ttl_ms,
+                // Capacity desires are not hard limits. Report the broker's actual limit.
+                max_value_bytes: (status.info.config.max_message_size > 0)
+                    .then_some(status.info.config.max_message_size as i64),
+            },
+        );
     }
+    Ok(())
+    }.await;
+    if let Err(error) = allocation_result {
+        store
+            .transaction_blocking(move |connection| {
+                let mut failed = false;
+                for allocation in plan.kv.values() {
+                    if connection.execute(
+                        "UPDATE auth_resources \
+                    SET state='failed',revision=revision+1,updated_at=?3 \
+                    WHERE resource_id=?1 \
+                    AND allocation_id=?2 \
+                    AND state='pending'",
+                        params![allocation.resource_id, allocation.allocation_id, now],
+                    )? == 1
+                    {
+                        failed = true;
+                        connection.execute(
+                            "UPDATE auth_resource_binding_evidence \
+                        SET state='unavailable' \
+                        WHERE binding_id=?1",
+                            params![allocation.resource_id],
+                        )?;
+                    }
+                }
+                if failed {
+                    SqliteAuthorizationStore::policy_changed(
+                        connection,
+                        &super::EnforcementScope::Deployment(plan.deployment.clone()),
+                        now,
+                    )?;
+                }
+                Ok(())
+            })
+            .await?;
+        return Err(error);
+    }
+    store.transaction_blocking(move |connection| {
+        let current: Option<(u64, u64)> = connection
+            .query_row(
+                "SELECT b.installed_revision,b.revision \
+                FROM auth_deployment_bindings b \
+                JOIN auth_deployments d USING(deployment_id) \
+                JOIN auth_principals p ON p.principal_id=?2 \
+                WHERE b.deployment_id=?1 \
+                AND d.state='active' \
+                AND p.state='active'",
+                params![plan.deployment, plan.principal],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if current != Some((plan.installed_revision, plan.binding_revision)) {
+            return Err(AuthError::Conflict);
+        }
+        for (name, allocation) in &plan.kv {
+            let (physical, actual, evidence_kind) = if let Some(declaration) = &allocation.state {
+                (
+                    format!("{}.{}", allocation.resource_id, allocation.allocation_id),
+                    json(declaration)?,
+                    "state",
+                )
+            } else if let Some(binding) = &allocation.job {
+                (
+                    json(&serde_json::json!({
+                        "namespace":bindings.jobs.as_ref().ok_or(AuthError::Unavailable)?.namespace,
+                        "work_stream":crate::resources::JOBS_WORK_STREAM,
+                        "consumer":binding.consumer_name,
+                        "publish_prefix":binding.publish_prefix,
+                        "work_subject":binding.work_subject
+                    }))?,
+                    json(binding)?,
+                    "jobQueue",
+                )
+            } else if let Some(binding) = &allocation.consumer {
+                (
+                    json(&serde_json::json!({
+                        "stream":binding.stream,
+                        "consumer":binding.consumer_name,
+                        "filter_subjects":binding.filter_subjects,
+                        "replay_consumer":binding.replay_binding.consumer_name
+                    }))?,
+                    json(binding)?,
+                    "eventConsumer",
+                )
+            } else if allocation.kind == "store" {
+                let binding = &bindings.store[name];
+                (binding.name.clone(), json(binding)?, "store")
+            } else {
+                let binding = &bindings.kv[name];
+                (binding.bucket.clone(), json(binding)?, "kv")
+            };
+            let commitment = if let Some(declaration) = &allocation.state {
+                json(declaration)?
+            } else {
+                json(allocation)?
+            };
+            if connection.execute(
+                "UPDATE auth_resources \
+                SET commitment_json=?2,physical_id=?3,actual_json=?4,state='ready',\
+                binding_revision=?5,revision=revision+1,updated_at=?6 \
+                WHERE resource_id=?1 \
+                AND allocation_id=?7 \
+                AND state='pending'",
+                params![
+                    allocation.resource_id,
+                    commitment,
+                    physical,
+                    actual,
+                    plan.binding_revision,
+                    now,
+                    allocation.allocation_id
+                ],
+            )? != 1
+            {
+                return Err(AuthError::Conflict);
+            }
+            connection.execute(
+                "INSERT INTO auth_resource_history SELECT resource_id,revision,\
+                commitment_json,actual_json,state,?2 \
+                FROM auth_resources \
+                WHERE resource_id=?1",
+                params![allocation.resource_id, now],
+            )?;
+            connection.execute(
+                "UPDATE auth_resource_binding_evidence \
+                SET state='unavailable' \
+                WHERE binding_id=?1",
+                [&allocation.resource_id],
+            )?;
+            connection.execute(
+                "INSERT INTO auth_resource_binding_evidence(owner_kind,owner_id,\
+                participant_id,installed_revision,resource_kind,local_name,binding_id,\
+                provider_identity,actual_json,state,materialized_at) \
+                VALUES('deployment',?1,?2,?3,?9,?4,?5,?6,?7,'available',?8) \
+                ON CONFLICT(owner_kind,owner_id,participant_id,installed_revision,\
+                resource_kind,local_name) \
+                DO UPDATE SET provider_identity=excluded.provider_identity,\
+                actual_json=excluded.actual_json,state='available',\
+                materialized_at=excluded.materialized_at",
+                params![
+                    plan.deployment,
+                    plan.participant,
+                    plan.installed_revision,
+                    name,
+                    allocation.resource_id,
+                    physical,
+                    actual,
+                    now,
+                    evidence_kind
+                ],
+            )?;
+        }
+        connection.execute(
+            "UPDATE auth_deployment_bindings \
+            SET resource_commitments_json=?1 \
+            WHERE deployment_id=?2",
+            params![json(&bindings)?, plan.deployment],
+        )?;
+        Ok(bindings.clone())
+    }).await
 }

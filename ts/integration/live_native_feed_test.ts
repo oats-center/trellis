@@ -1,80 +1,82 @@
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { assert, assertEquals } from "@std/assert";
-import { fromFileUrl, join } from "@std/path";
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+import { TextDecoderStream } from "node:stream/web";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { request as cliRequest } from "../packages/trellis-testkit/trellis/apps/cli/mod.js";
+import { spawnTracked } from "./_support/process.ts";
+import {
+  authorizeRustNativeLogin,
+  rustFixtureArgv,
+  withTrellisRuntime,
+} from "./_support/runtime.ts";
 
 async function completeRustLogin(
-  runtime: {
-    trellisUrl: string;
-    workdir: string;
-    completeClientAuth: (opts: {
-      loginUrl: string;
-      sessionKey: string;
-      mode: "session_key";
-    }) => Promise<unknown>;
-  },
+  runtime: TrellisTestRuntime,
   argv: string[],
   configDir: string,
-  loginMarker: string,
   doneMarker: string,
 ): Promise<void> {
-  const child = new Deno.Command(argv[0], {
-    args: argv.slice(1),
+  const child = spawnTracked(argv[0], argv.slice(1), {
     env: {
-      TRELLIS_URL: runtime.trellisUrl,
+      ...process.env,
+      TRELLIS_URL: runtime.oauthIssuer,
+      TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
-      CARGO_TARGET_DIR: fromFileUrl(
-        new URL("../../target", import.meta.url),
-      ),
+      CARGO_TARGET_DIR: fileURLToPath(new URL("../../target", import.meta.url)),
     },
-    stdout: "piped",
-    stderr: "inherit",
-  }).spawn();
-  const reader = child.stdout.pipeThrough(new TextDecoderStream()).getReader();
+  });
+  child.stderr.pipe(process.stderr);
+  const reader = Readable.toWeb(child.stdout)
+    .pipeThrough(new TextDecoderStream())
+    .getReader();
   let output = "";
-  while (!output.includes(loginMarker)) {
+  while (!/^NATIVE_LOGIN .+\n/m.test(output)) {
     const chunk = await reader.read();
     assert(!chunk.done, output);
     output += chunk.value;
   }
-  const loginUrl = output.split(loginMarker)[1]?.trim().split(/\s/)[0];
-  assert(loginUrl, output);
-  await runtime.completeClientAuth({
-    loginUrl,
-    sessionKey: "completed-by-rust",
-    mode: "session_key",
-  });
+  await authorizeRustNativeLogin(runtime, output, apps.Caller.request);
   while (!output.includes(doneMarker)) {
     const chunk = await reader.read();
     assert(!chunk.done, output);
     output += chunk.value;
   }
-  assert((await child.status).success, output);
+  assert.equal((await child.exited).code, 0, output);
 }
 
-Deno.test("NX01 rust caller receives Watch frames from rust provider", async () => {
+test("NX01 rust caller receives Watch frames from rust provider", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "rust",
       contract: participants.OperationProvider.participant,
     });
-    const process = new Deno.Command("setsid", {
-      args: rustFixtureArgv("trellis-runtime-acceptance"),
-      env: {
-        TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_IDENTITY_SEED: identity.seed,
-        CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../target", import.meta.url),
-        ),
+    const providerProcess = spawnTracked(
+      "setsid",
+      rustFixtureArgv("trellis-runtime-acceptance"),
+      {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: identity.seed,
+          CARGO_TARGET_DIR: fileURLToPath(
+            new URL("../../target", import.meta.url),
+          ),
+        },
       },
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
+    );
     let providerOutput = "";
     const decoder = new TextDecoder();
-    const capture = async (stream: ReadableStream<Uint8Array>) => {
+    const capture = async (stream: Readable) => {
       for await (const chunk of stream) {
         providerOutput = (providerOutput + decoder.decode(chunk)).slice(
           -16_384,
@@ -82,165 +84,195 @@ Deno.test("NX01 rust caller receives Watch frames from rust provider", async () 
       }
     };
     const drain = Promise.all([
-      capture(process.stdout),
-      capture(process.stderr),
+      capture(providerProcess.stdout),
+      capture(providerProcess.stderr),
     ]);
     let exited = false;
-    const status = process.status.then((value) => {
+    const status = providerProcess.exited.then((value) => {
       exited = true;
       return value;
     });
     try {
       const client = await runtime.connectClient({
         name: "nx01-echo",
-        contract: participants.Caller.participant,
+        contract: apps.Caller.request,
       });
-      await runtime.waitFor(async () => {
-        if (exited) {
-          throw new Error(
-            `Rust provider exited: ${JSON.stringify(await status)}\n${
-              providerOutput.trimEnd() || "<no provider output>"
-            }`,
+      await runtime.waitFor(
+        async () => {
+          if (exited) {
+            throw new Error(
+              `Rust provider exited: ${JSON.stringify(await status)}\n${
+                providerOutput.trimEnd() || "<no provider output>"
+              }`,
+            );
+          }
+          const result = await client.echo(
+            { value: "from TypeScript" },
+            {
+              timeout: 1000,
+            },
           );
-        }
-        const result = await client.echo({ value: "from TypeScript" }, {
-          timeout: 1000,
-        });
-        return result.isOk();
-      }, { timeoutMs: 120_000 });
+          return result.isOk();
+        },
+        { timeoutMs: 120_000 },
+      );
 
       await completeRustLogin(
         runtime,
         rustFixtureArgv("caller"),
         "rust-caller-config",
-        "rust login ",
         "rust caller complete",
       );
     } finally {
-      if (!exited) Deno.kill(-process.pid, "SIGTERM");
+      if (!exited && providerProcess.pid !== undefined)
+        process.kill(-providerProcess.pid, "SIGTERM");
       await status;
       await drain;
     }
   });
 });
 
-Deno.test("NX03 empty finite Watch completes with no frames", async () => {
+test("NX03 empty finite Watch completes with no frames", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "rust",
       contract: participants.OperationProvider.participant,
     });
-    const process = new Deno.Command("setsid", {
-      args: rustFixtureArgv("trellis-runtime-acceptance"),
-      env: {
-        TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_IDENTITY_SEED: identity.seed,
-        TRELLIS_FEED_EMPTY: "1",
-        CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../target", import.meta.url),
-        ),
+    const providerProcess = spawnTracked(
+      "setsid",
+      rustFixtureArgv("trellis-runtime-acceptance"),
+      {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: identity.seed,
+          TRELLIS_FEED_EMPTY: "1",
+          CARGO_TARGET_DIR: fileURLToPath(
+            new URL("../../target", import.meta.url),
+          ),
+        },
       },
-      stdout: "inherit",
-      stderr: "inherit",
-    }).spawn();
+    );
+    providerProcess.stdout.pipe(process.stdout);
+    providerProcess.stderr.pipe(process.stderr);
     let exited = false;
-    const status = process.status.then((value) => {
+    const status = providerProcess.exited.then((value) => {
       exited = true;
       return value;
     });
     try {
       const client = await runtime.connectClient({
         name: "nx03-echo",
-        contract: participants.Caller.participant,
+        contract: apps.Caller.request,
       });
-      await runtime.waitFor(async () => {
-        if (exited) {
-          throw new Error(
-            `Rust provider exited: ${JSON.stringify(await status)}`,
+      await runtime.waitFor(
+        async () => {
+          if (exited) {
+            throw new Error(
+              `Rust provider exited: ${JSON.stringify(await status)}`,
+            );
+          }
+          const result = await client.echo(
+            { value: "from TypeScript" },
+            {
+              timeout: 1000,
+            },
           );
-        }
-        const result = await client.echo({ value: "from TypeScript" }, {
-          timeout: 1000,
-        });
-        return result.isOk();
-      }, { timeoutMs: 120_000 });
+          return result.isOk();
+        },
+        { timeoutMs: 120_000 },
+      );
       await completeRustLogin(
         runtime,
         rustFixtureArgv("empty_watch"),
         "empty-watch-config",
-        "empty login ",
         "empty watch complete",
       );
     } finally {
-      if (!exited) Deno.kill(-process.pid, "SIGTERM");
+      if (!exited && providerProcess.pid !== undefined)
+        process.kill(-providerProcess.pid, "SIGTERM");
       await status;
     }
   });
 });
 
-Deno.test("L2 TypeScript caller receives rust Watch over live open", async () => {
+test("L2 TypeScript caller receives rust Watch over live open", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "rust",
       contract: participants.OperationProvider.participant,
     });
-    const process = new Deno.Command("setsid", {
-      args: rustFixtureArgv("trellis-runtime-acceptance"),
-      env: {
-        TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_IDENTITY_SEED: identity.seed,
-        CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../target", import.meta.url),
-        ),
+    const providerProcess = spawnTracked(
+      "setsid",
+      rustFixtureArgv("trellis-runtime-acceptance"),
+      {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: identity.seed,
+          CARGO_TARGET_DIR: fileURLToPath(
+            new URL("../../target", import.meta.url),
+          ),
+        },
       },
-      stdout: "inherit",
-      stderr: "inherit",
-    }).spawn();
+    );
+    providerProcess.stdout.pipe(process.stdout);
+    providerProcess.stderr.pipe(process.stderr);
     let exited = false;
-    const status = process.status.then((value) => {
+    const status = providerProcess.exited.then((value) => {
       exited = true;
       return value;
     });
     try {
       const client = await runtime.connectClient({
         name: "l2-ts-caller",
-        contract: participants.Caller.participant,
+        contract: apps.Caller.request,
       });
-      await runtime.waitFor(async () => {
-        if (exited) {
-          throw new Error(
-            `Rust provider exited: ${JSON.stringify(await status)}`,
+      await runtime.waitFor(
+        async () => {
+          if (exited) {
+            throw new Error(
+              `Rust provider exited: ${JSON.stringify(await status)}`,
+            );
+          }
+          const result = await client.echo(
+            { value: "from TypeScript" },
+            {
+              timeout: 1000,
+            },
           );
-        }
-        const result = await client.echo({ value: "from TypeScript" }, {
-          timeout: 1000,
-        });
-        return result.isOk();
-      }, { timeoutMs: 120_000 });
-      const feed = await client.watch({}).orThrow();
+          return result.isOk();
+        },
+        { timeoutMs: 120_000 },
+      );
+      const feed = await client.runtimeWatch({}).orThrow();
       const iterator = feed[Symbol.asyncIterator]();
       const first = await iterator.next();
       assert(
-        String((first.value as { value?: string } | undefined)?.value ?? "")
-          .includes("rust-feed"),
+        String(
+          (first.value as { value?: string } | undefined)?.value ?? "",
+        ).includes("rust-feed"),
         `unexpected first frame: ${JSON.stringify(first)}`,
       );
       await iterator.return?.();
     } finally {
-      if (!exited) Deno.kill(-process.pid, "SIGTERM");
+      if (!exited && providerProcess.pid !== undefined)
+        process.kill(-providerProcess.pid, "SIGTERM");
       await status;
     }
   });
 });
 
-Deno.test("L3 TypeScript provider serves Watch over live open", async () => {
+test("L3 TypeScript provider serves Watch over live open", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "ts-feed-provider",
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -258,9 +290,9 @@ Deno.test("L3 TypeScript provider serves Watch over live open", async () => {
     try {
       const caller = await runtime.connectClient({
         name: "l3-ts-caller",
-        contract: participants.Caller.participant,
+        contract: apps.Caller.request,
       });
-      const feed = await caller.watch({}).orThrow();
+      const feed = await caller.runtimeWatch({}).orThrow();
       const first = await feed[Symbol.asyncIterator]().next();
       assert(
         (first.value as { value?: string } | undefined)?.value === "ts-feed-1",
@@ -275,34 +307,56 @@ Deno.test("L3 TypeScript provider serves Watch over live open", async () => {
   });
 });
 
-Deno.test("NX02 rust console client receives Health Watch", async () => {
+test("NX02 rust console client receives Health Watch", async () => {
   await withTrellisRuntime(async (runtime) => {
-    await completeRustLogin(
-      runtime,
-      [
-        Deno.env.get("TRELLIS_TEST_HEALTH_WATCH_BIN") ??
-          fromFileUrl(
-            new URL(
-              "../../target/debug/examples/health_watch",
-              import.meta.url,
-            ),
-          ),
-      ],
-      "health-caller-config",
-      "health login ",
-      "health watch complete",
+    const child = spawnTracked(
+      process.env.TRELLIS_TEST_HEALTH_WATCH_BIN ??
+        fileURLToPath(
+          new URL("../../target/debug/examples/health_watch", import.meta.url),
+        ),
+      [],
+      {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        },
+      },
     );
+    child.stderr.pipe(process.stderr);
+    const reader = Readable.toWeb(child.stdout)
+      .pipeThrough(new TextDecoderStream())
+      .getReader();
+    let output = "";
+    let code = output.match(/enter code (\S+)\. Approve/);
+    while (!code) {
+      const chunk = await reader.read();
+      assert(!chunk.done, output);
+      output += chunk.value;
+      code = output.match(/enter code (\S+)\. Approve/);
+    }
+    await runtime.authorizeNativeUserCode({
+      clientId: "trellis.cli",
+      userCode: code[1],
+      contract: cliRequest,
+    });
+    while (!output.includes("health watch complete")) {
+      const chunk = await reader.read();
+      assert(!chunk.done, output);
+      output += chunk.value;
+    }
+    assert.equal((await child.exited).code, 0, output);
   });
 });
 
-Deno.test("NX05 two TypeScript callers abort one other continues", async () => {
+test("NX05 two TypeScript callers abort one other continues", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "nx05-feed-provider",
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -320,20 +374,25 @@ Deno.test("NX05 two TypeScript callers abort one other continues", async () => {
     const serviceExit = service.wait();
     const firstCaller = await runtime.connectClient({
       name: "nx05-caller-a",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     const secondCaller = await runtime.connectClient({
       name: "nx05-caller-b",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     const firstAbort = new AbortController();
     const secondAbort = new AbortController();
     try {
-      const first = await firstCaller.watch({}, { signal: firstAbort.signal })
+      const first = await firstCaller
+        .runtimeWatch({}, { signal: firstAbort.signal })
         .orThrow();
-      const second = await secondCaller.watch({}, {
-        signal: secondAbort.signal,
-      })
+      const second = await secondCaller
+        .runtimeWatch(
+          {},
+          {
+            signal: secondAbort.signal,
+          },
+        )
         .orThrow();
       const firstIterator = first[Symbol.asyncIterator]();
       const secondIterator = second[Symbol.asyncIterator]();
@@ -344,7 +403,7 @@ Deno.test("NX05 two TypeScript callers abort one other continues", async () => {
       await firstCaller.connection.close();
       await runtime.waitFor(() => cancelled === 1);
       assert((await secondIterator.next()).value?.value.startsWith("feed-"));
-      assertEquals(cancelled, 1);
+      assert.deepEqual(cancelled, 1);
     } finally {
       firstAbort.abort();
       secondAbort.abort();
@@ -356,14 +415,14 @@ Deno.test("NX05 two TypeScript callers abort one other continues", async () => {
   });
 });
 
-Deno.test("NX06 source starts once per session", async () => {
+test("NX06 source starts once per session", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "nx06-feed-provider",
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -382,14 +441,14 @@ Deno.test("NX06 source starts once per session", async () => {
     const serviceExit = service.wait();
     const caller = await runtime.connectClient({
       name: "nx06-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
-      const first = await caller.watch({}).orThrow();
-      const second = await caller.watch({}).orThrow();
+      const first = await caller.runtimeWatch({}).orThrow();
+      const second = await caller.runtimeWatch({}).orThrow();
       await first[Symbol.asyncIterator]().next();
       await second[Symbol.asyncIterator]().next();
-      assertEquals(starts, 2);
+      assert.deepEqual(starts, 2);
       await first[Symbol.asyncIterator]().return?.();
       await second[Symbol.asyncIterator]().return?.();
     } finally {
@@ -400,14 +459,14 @@ Deno.test("NX06 source starts once per session", async () => {
   });
 });
 
-Deno.test("NX09 reconnect opens a new Watch without reviving the old session", async () => {
+test("NX09 reconnect opens a new Watch without reviving the old session", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "nx09-feed-provider",
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -426,28 +485,28 @@ Deno.test("NX09 reconnect opens a new Watch without reviving the old session", a
     const serviceExit = service.wait();
     const firstCaller = await runtime.connectClient({
       name: "nx09-caller-a",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
-      const first = await firstCaller.watch({}).orThrow();
+      const first = await firstCaller.runtimeWatch({}).orThrow();
       const firstIterator = first[Symbol.asyncIterator]();
-      assertEquals((await firstIterator.next()).value?.value, "gen-1");
+      assert.deepEqual((await firstIterator.next()).value?.value, "gen-1");
       await firstCaller.connection.close();
       const leftover = await Promise.race([
         firstIterator.next().then((item) => item.done === true),
         new Promise<boolean>((resolve) =>
-          setTimeout(() => resolve(false), 2_000)
+          setTimeout(() => resolve(false), 2_000),
         ),
       ]);
       assert(leftover, "closed connection must end the old iterator");
       const secondCaller = await runtime.connectClient({
         name: "nx09-caller-b",
-        contract: participants.Caller.participant,
+        contract: apps.Caller.request,
       });
       try {
-        const second = await secondCaller.watch({}).orThrow();
+        const second = await secondCaller.runtimeWatch({}).orThrow();
         const secondIterator = second[Symbol.asyncIterator]();
-        assertEquals((await secondIterator.next()).value?.value, "gen-2");
+        assert.deepEqual((await secondIterator.next()).value?.value, "gen-2");
         await secondIterator.return?.();
       } finally {
         await secondCaller.connection.close();
@@ -460,30 +519,30 @@ Deno.test("NX09 reconnect opens a new Watch without reviving the old session", a
   });
 });
 
-Deno.test("NX10 setup timeout releases consumer admission", async () => {
+test("NX10 setup timeout releases consumer admission", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "nx10-feed-provider",
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
     const serviceExit = service.wait();
     const caller = await runtime.connectClient({
       name: "nx10-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
-      const missing = await caller.watch({});
+      const missing = await caller.runtimeWatch({});
       assert(missing.isErr(), "watch without a handler must fail setup");
       await service.handleWatch(async ({ emit }) => {
         await emit({ value: "nx10" }).orThrow();
       });
-      const feed = await caller.watch({}).orThrow();
-      assertEquals(
+      const feed = await caller.runtimeWatch({}).orThrow();
+      assert.deepEqual(
         (await feed[Symbol.asyncIterator]().next()).value?.value,
         "nx10",
       );
@@ -496,14 +555,14 @@ Deno.test("NX10 setup timeout releases consumer admission", async () => {
   });
 });
 
-Deno.test("NX08 consumer drop does not throw", async () => {
+test("NX08 consumer drop does not throw", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "nx08-feed-provider",
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -520,10 +579,10 @@ Deno.test("NX08 consumer drop does not throw", async () => {
     const serviceExit = service.wait();
     const caller = await runtime.connectClient({
       name: "nx08-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
-      const feed = await caller.watch({}).orThrow();
+      const feed = await caller.runtimeWatch({}).orThrow();
       const iterator = feed[Symbol.asyncIterator]();
       await iterator.next();
       await iterator.return?.();

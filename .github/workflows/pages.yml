@@ -19,15 +19,15 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v4
         with:
-          deno-version: v2.x
+          node-version: 24.19.0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/trellis/pages-generator
-          key: pages-generator-${{ runner.os }}-${{ hashFiles('ts/packages/trellis/deno.json') }}
+          key: pages-generator-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             pages-generator-${{ runner.os }}-
 
@@ -90,12 +90,15 @@ jobs:
 
             (
               cd "${repo_root}"
-              deno install --frozen --config ts/deno.json
-              deno task -c web/deno.json build:embedded
+              npm ci
+              npm run browser:embedded
               cd "${repo_root}/docs"
-              deno install --allow-scripts=npm:esbuild,npm:sharp
-              deno task docs:api
-              SITE_BASE_PATH="${base_path}" deno run -A vite build
+              # Releases before the Sveltepress site render design docs in place.
+              if grep -q '"docs:design"' package.json; then
+                npm run docs:design
+              fi
+              npm run docs:api
+              SITE_BASE_PATH="${base_path}" npm exec -- vite build
               mkdir -p "${out_dir}"
               cp -R build/. "${out_dir}/"
             )
@@ -108,7 +111,7 @@ jobs:
 
             (
               cd "${repo_root}/web"
-              SITE_BASE_PATH="${base_path}" deno run -A vite build
+              SITE_BASE_PATH="${base_path}" npm exec -- vite build
               mkdir -p "${out_dir}/assets/web" "${out_dir}/console"
               cp -R build/assets/web/. "${out_dir}/assets/web/"
               cp build/200.html "${out_dir}/console/index.html"
@@ -146,8 +149,9 @@ jobs:
 
           ensure_protocol_wasm() {
             local repo_root="$1"
-            local output="${repo_root}/ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm.js"
-            if [ -s "${output}" ]; then
+            local output="${repo_root}/ts/packages/trellis/auth/protocol_wasm"
+            # Release checkouts may predate the client/provider split.
+            if [ -s "${output}/client/trellis_protocol_wasm.js" ] || [ -s "${output}/trellis_protocol_wasm.js" ]; then
               return 0
             fi
             cargo run --manifest-path "${repo_root}/xtask/Cargo.toml" -- protocol-wasm
@@ -214,7 +218,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

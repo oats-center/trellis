@@ -4,8 +4,7 @@ use runtime_trellis::participants::runtime_trellis_provider::{
 };
 use std::io::Write as _;
 use std::time::{Duration, Instant};
-use trellis_rs::client::{UserConnectOptions, UserSessionCredentials};
-use trellis_rs::service::{KvResourceReadError, ServiceConnectOptions, StoreListOptions};
+use trellis_rs::service::{KvResourceReadError, StoreListOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +19,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let url = std::env::var("TRELLIS_URL")?;
     let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
-    let mut runtime = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
+    let mut runtime =
+        Participant::connect(trellis_runtime_acceptance::service_options(&url, &identity).await?)
+            .await?;
     let client = Provider::new(&mut runtime).client();
 
     let kv = client.records().await?;
@@ -179,34 +180,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
-    use runtime_trellis::participants::runtime_trellis_state_caller::{
-        types::ResourceValue, Client,
-    };
-    use trellis_rs::auth::{load_admin_session, start_agent_login, StartAgentLoginOpts};
+    use runtime_trellis::apps::runtime_trellis_native_state_caller::types::ResourceValue;
+    use runtime_trellis::apps::runtime_trellis_native_state_caller::{Client, Request};
     use trellis_rs::client::StateWriteError;
 
-    let url = std::env::var("TRELLIS_URL")?;
-    let challenge = start_agent_login(&StartAgentLoginOpts {
-        trellis_url: &url,
-        participant_id: "runtime-trellis.StateCaller",
-    })
-    .await?;
-    println!("rust login {}", challenge.login_url());
-    std::io::stdout().flush()?;
-    let outcome = challenge.complete_without_persistence(&url).await?;
-    trellis_rs::auth::save_admin_session(&outcome.state)?;
-    let session = load_admin_session()?;
-    let client = Client::connect(UserConnectOptions::new(
-        &url,
-        5_000,
-        UserSessionCredentials {
-            login_session_id: &session.login_session_id,
-            session_key_seed_base64url: &session.session_seed,
-        },
-        "runtime-trellis.StateCaller",
-    ))
-    .await?;
-    let state = client.saved_resource()?;
+    let client = Client::from_generated(
+        trellis_rs::generated::Client::connect_user(
+            trellis_runtime_acceptance::user_options::<Request>(5_000).await?,
+        )
+        .await?,
+    );
+    let (state, _) = client
+        .saved_resource("0", ulid::Ulid::new().to_string().parse()?)
+        .await?;
     let created = state
         .create(&ResourceValue {
             value: "one".into(),
@@ -268,7 +254,9 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
 async fn resource_growth() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("TRELLIS_URL")?;
     let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
-    let mut runtime = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
+    let mut runtime =
+        Participant::connect(trellis_runtime_acceptance::service_options(&url, &identity).await?)
+            .await?;
     let client = Provider::new(&mut runtime).client();
 
     let records = client.records().await?;

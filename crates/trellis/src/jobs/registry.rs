@@ -218,7 +218,9 @@ pub async fn start_worker_heartbeat_loop(
 ) -> Result<WorkerHeartbeatHandle, ServiceRegistryError> {
     start_heartbeat_loop(options, move |subject_service, heartbeat| {
         let nats = nats.clone();
-        async move { publish_worker_heartbeat_for_subject(nats, &subject_service, &heartbeat).await }
+        async move {
+            publish_worker_heartbeat_for_subject(nats, &subject_service, &heartbeat).await
+        }
     })
     .await
 }

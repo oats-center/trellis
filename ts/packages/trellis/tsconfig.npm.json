@@ -23,6 +23,7 @@
     "generated.ts",
     "auth.ts",
     "auth/browser.ts",
+    "native.ts",
     "device.ts",
     "errors/index.ts",
     "service/mod.ts",

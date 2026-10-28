@@ -1,45 +1,32 @@
 /**
- * T16 component proof: an ordinary RPC permission denial is surfaced as a
- * request-level error and never classified as a connection failure, so an
- * active Live session on the same connection is unaffected.
+ * Classification of actual NATS SDK request errors.
  */
 
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+  NoRespondersError,
+  PermissionViolationError,
+} from "@nats-io/nats-core";
 
 import { classifyRequestTransportFailure } from "./session.ts";
 
-function permissionViolation(): Error {
-  const error = new Error(
-    "permissions violation for publish to rpc.v1.example",
-  );
-  error.name = "PermissionViolationError";
-  return error;
-}
-
-Deno.test("T16 an RPC permission denial is a request error", () => {
+test("T16 an RPC permission denial is a request error", () => {
   const error = classifyRequestTransportFailure({
     subject: "rpc.v1.example",
-    cause: permissionViolation(),
+    cause: new PermissionViolationError(
+      "Publish denied",
+      "publish",
+      "rpc.v1.example",
+    ),
   });
-  assertEquals(error.code, "trellis.request.denied");
+  assert.deepEqual(error.code, "trellis.request.denied");
 });
 
-Deno.test("T16 a no-responders failure is unavailable, not denied", () => {
+test("T16 a no-responders failure is unavailable, not denied", () => {
   const error = classifyRequestTransportFailure({
     subject: "rpc.v1.example",
-    cause: new Error("no responders"),
+    cause: new NoRespondersError("rpc.v1.example"),
   });
-  assertEquals(error.code, "trellis.request.unavailable");
-});
-
-Deno.test("T16 a denial is never a connection-failure classification", () => {
-  const error = classifyRequestTransportFailure({
-    subject: "rpc.v1.example",
-    cause: permissionViolation(),
-  });
-  assertEquals(
-    error.code.startsWith("trellis.connection"),
-    false,
-    "a denial must not be treated as connection loss",
-  );
+  assert.deepEqual(error.code, "trellis.request.unavailable");
 });

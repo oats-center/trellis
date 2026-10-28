@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_nats::header::HeaderMap;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use futures_util::{Stream, StreamExt};
@@ -72,7 +73,7 @@ struct SharedDurableEventListener {
 struct EventRegistration {
     event_api_id: String,
     event_name: String,
-    descriptor_identity: String,
+    publish_action: trellis_protocol::CatalogActionIdentity,
     handlers: BTreeMap<u64, SharedEventHandler>,
 }
 
@@ -130,11 +131,13 @@ impl crate::generated::RpcDescriptor for ConsumerReportDelivery {
     type Error = serde_json::Value;
 
     const API_ID: &'static str = "trellis.events@v1";
-    const DESCRIPTOR_NAME: &'static str = "rpc:Consumers.ReportDelivery";
-    const SUBJECT: &'static str = "";
+    const DESCRIPTOR_NAME: &'static str = "rpc.Consumers.ReportDelivery";
+    const SUBJECT: &'static str = "rpc.v1.events.Consumers.ReportDelivery";
     const KEY: &'static str = "events.Consumers.ReportDelivery";
     const CALLER_CAPABILITIES: &'static [&'static str] = &[];
     const DOWNLOAD: bool = false;
+    // Only called through, never served here; the events service validates.
+    const INPUT_SCHEMA_JSON: &'static str = "{}";
 
     fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error> {
         Ok(Some(value))
@@ -147,11 +150,13 @@ impl crate::generated::RpcDescriptor for ConsumerDeadLetterInspect {
     type Error = serde_json::Value;
 
     const API_ID: &'static str = "trellis.events@v1";
-    const DESCRIPTOR_NAME: &'static str = "rpc:DeadLetters.Inspect";
-    const SUBJECT: &'static str = "";
+    const DESCRIPTOR_NAME: &'static str = "rpc.DeadLetters.Inspect";
+    const SUBJECT: &'static str = "rpc.v1.events.DeadLetters.Inspect";
     const KEY: &'static str = "events.DeadLetters.Inspect";
     const CALLER_CAPABILITIES: &'static [&'static str] = &[];
     const DOWNLOAD: bool = false;
+    // Only called through, never served here; the events service validates.
+    const INPUT_SCHEMA_JSON: &'static str = "{}";
 
     fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error> {
         Ok(Some(value))
@@ -188,24 +193,34 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 /// High-level options for connecting a generated Rust service runtime.
 #[derive(Clone)]
 pub struct ServiceConnectOptions<'a> {
-    /// Base Trellis runtime URL used for HTTP bootstrap.
-    trellis_url: &'a str,
+    /// Broker endpoints supplied by provisioning.
+    nats_servers: Vec<String>,
+    /// Installation, account, and issuer pin supplied by provisioning.
+    trust: crate::client::RuntimeAuthorizationTrust,
     /// Optional display metadata; never an assignment or authorization identity.
     name: Option<&'a str>,
     /// Base64url-encoded provisioned service identity seed.
     provisioned_identity_seed_base64url: &'a str,
     /// Request/connect timeout in milliseconds.
     timeout_ms: u64,
+    /// Health heartbeat interval override; absence preserves the production default.
+    health_heartbeat_interval_ms: Option<u64>,
 }
 
 impl<'a> ServiceConnectOptions<'a> {
     /// Create service connect options with ergonomic default timeouts.
-    pub fn new(trellis_url: &'a str, provisioned_identity_seed_base64url: &'a str) -> Self {
+    pub fn new(
+        nats_servers: Vec<String>,
+        trust: crate::client::RuntimeAuthorizationTrust,
+        provisioned_identity_seed_base64url: &'a str,
+    ) -> Self {
         Self {
-            trellis_url,
+            nats_servers,
+            trust,
             name: None,
             provisioned_identity_seed_base64url,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            health_heartbeat_interval_ms: None,
         }
     }
 
@@ -218,6 +233,13 @@ impl<'a> ServiceConnectOptions<'a> {
     /// Set the request/connect timeout in milliseconds.
     pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Set the interval for genuine signed health heartbeats (1000–600000 ms).
+    /// The default remains 30 seconds when this method is not called.
+    pub const fn with_health_heartbeat_interval_ms(mut self, interval_ms: u64) -> Self {
+        self.health_heartbeat_interval_ms = Some(interval_ms);
         self
     }
 }
@@ -245,6 +267,13 @@ pub enum ServiceRuntimeError {
     /// The service bootstrap response did not include a resource binding.
     #[error("service bootstrap response did not include a binding")]
     MissingBootstrapBinding,
+
+    /// An administrator rejected this build's participant update.
+    #[error("an administrator rejected this build's update ({review_url})")]
+    UpdateRejected {
+        /// Console page of the rejected update.
+        review_url: String,
+    },
 
     /// The service bootstrap binding could not be parsed as a core binding.
     #[error("invalid service bootstrap binding: {0}")]
@@ -274,7 +303,8 @@ pub enum ServiceRuntimeError {
 
     /// More than one durable event consumer group matched the requested event subject.
     #[error(
-        "event subject '{subject}' is declared in multiple event consumer groups: {}; specify a group",
+        "event subject '{subject}' is declared in multiple event consumer \
+        groups: {}; specify a group",
         groups.join(", ")
     )]
     AmbiguousEventConsumerGroup {
@@ -302,7 +332,8 @@ pub enum ServiceRuntimeError {
 
     /// A bound durable listener count must be at least one.
     #[error(
-        "event consumer group '{group}' has invalid listener concurrency {concurrency}; expected >= 1"
+        "event consumer group '{group}' has invalid listener concurrency \
+        {concurrency}; expected >= 1"
     )]
     InvalidEventListenerConcurrency {
         /// Event consumer group name.
@@ -313,7 +344,8 @@ pub enum ServiceRuntimeError {
 
     /// Registrations sharing one durable consumer must use the same local count.
     #[error(
-        "event consumer group '{group}' already uses listener concurrency {existing}; requested {requested}"
+        "event consumer group '{group}' already uses listener concurrency \
+        {existing}; requested {requested}"
     )]
     EventListenerConcurrencyMismatch {
         /// Event consumer group name.
@@ -594,25 +626,35 @@ impl ServiceHandle {
             })?;
         let lease = self
             .client()
-            .transport_generations()
-            .acquire_application_published()
+            .acquire_transport(&[], &[], self.client().transport_deadline())
+            .await
             .map_err(|error| JobsError::Message {
                 message: error.to_string(),
             })?;
-        let key_coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
-            lease.nats().clone(),
-            &binding.jobs.namespace,
-        )
-        .await
-        .map_err(|error| JobsError::Message {
-            message: error.to_string(),
-        })?;
-        let manager = JobManager::new_with_key_coordinator(
-            TrellisJobEventPublisher::new(lease.nats().clone()),
-            binding.jobs,
-            TrellisJobMetaSource,
-            Arc::new(key_coordinator),
-        );
+        let publisher = TrellisJobEventPublisher::new(lease.nats().clone());
+        let manager = if binding
+            .jobs
+            .queues
+            .get(D::QUEUE_TYPE)
+            .is_some_and(|queue| queue.key_concurrency.is_some())
+        {
+            let coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
+                lease.nats().clone(),
+                &binding.jobs.namespace,
+            )
+            .await
+            .map_err(|error| JobsError::Message {
+                message: error.to_string(),
+            })?;
+            JobManager::new_with_key_coordinator(
+                publisher,
+                binding.jobs,
+                TrellisJobMetaSource,
+                Arc::new(coordinator),
+            )
+        } else {
+            JobManager::new(publisher, binding.jobs, TrellisJobMetaSource)
+        };
         let job = manager
             .create(D::QUEUE_TYPE, payload)
             .await
@@ -629,7 +671,7 @@ impl ServiceHandle {
             })?;
         Ok(JobRef::from_runtime(
             job,
-            self.client().transport_generations(),
+            self.client().clone(),
             manager.bindings().clone(),
             queue,
         ))
@@ -774,6 +816,37 @@ impl ServiceHandle {
         self.transfer_tasks.own(task).await?;
         Ok(())
     }
+
+    /// Run a download whose bytes come from `reader`, on the request's
+    /// accepting generation, retaining it until completion, cancellation, or
+    /// expiry. Plan it with
+    /// [`ServiceHandlerContext::plan_stream_download_transfer`].
+    pub async fn spawn_stream_download_endpoint<R>(
+        &self,
+        plan: DownloadTransferGrantPlan,
+        reader: R,
+    ) -> Result<(), ServerError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        let lease = match self.transport.lease() {
+            Some(lease) => lease.clone(),
+            None => self
+                .client()
+                .acquire_transport(&[], &[], self.client().transport_deadline())
+                .await
+                .map_err(|error| ServerError::Nats(error.to_string()))?,
+        };
+        let task = super::transfer::spawn_stream_download_endpoint(
+            Arc::clone(&self.client),
+            plan,
+            reader,
+            lease,
+        )
+        .await?;
+        self.transfer_tasks.own(task).await?;
+        Ok(())
+    }
 }
 
 /// High-level context for one verified live Live handler invocation.
@@ -826,6 +899,30 @@ impl ServiceHandlerContext {
         expires_at: &str,
         info: super::FileTransferInfo,
     ) -> Result<DownloadTransferGrantPlan, ServerError> {
+        self.plan_download(Some(store), transfer_id, expires_at, info)
+    }
+
+    /// Plan a download whose bytes come from a provider reader, not a store.
+    ///
+    /// `info` must declare the exact size and SHA-256 digest the reader will
+    /// produce; the grant binds them, and different bytes fail the transfer.
+    /// Serve the plan with [`ServiceHandle::spawn_stream_download_endpoint`].
+    pub fn plan_stream_download_transfer(
+        &self,
+        transfer_id: &str,
+        expires_at: &str,
+        info: super::FileTransferInfo,
+    ) -> Result<DownloadTransferGrantPlan, ServerError> {
+        self.plan_download(None, transfer_id, expires_at, info)
+    }
+
+    fn plan_download(
+        &self,
+        store: Option<&str>,
+        transfer_id: &str,
+        expires_at: &str,
+        info: super::FileTransferInfo,
+    ) -> Result<DownloadTransferGrantPlan, ServerError> {
         if !self.download_allowed {
             return Err(ServerError::Nats(
                 "RPC descriptor does not declare a download transfer".to_owned(),
@@ -835,7 +932,7 @@ impl ServiceHandlerContext {
             .request
             .caller
             .as_ref()
-            .map(|caller| caller.session_key.as_str())
+            .map(|caller| caller.session_public_key.as_str())
             .ok_or_else(|| ServerError::MissingSessionKey {
                 subject: self.request.subject.clone(),
             })?;
@@ -856,7 +953,7 @@ impl ServiceHandlerContext {
                 .ok_or_else(|| ServerError::MissingSessionKey {
                     subject: self.request.subject.clone(),
                 })?
-                .connection_id,
+                .runtime_id,
             resources: self.handle.resources(),
             store,
             transfer_id,
@@ -925,8 +1022,11 @@ impl<C> ConnectedServiceRuntime<C> {
         let (event_failures, event_failure_receiver) = mpsc::unbounded_channel();
         let api_id = api_id.into();
         let auth =
-            LocalAuthVerifier::new(client.authorization_context_cache().ok(), api_id.clone());
+            LocalAuthVerifier::new(client.authorization_owner().clone(), client.nats(), api_id);
         let mut router = Router::new();
+        router.set_live_owner(super::live_router::LiveProviderOwner::new(Arc::clone(
+            &client,
+        )));
         let provider_deployment_id = client
             .own_deployment_id()
             .expect("connected services always have a deployment assignment");
@@ -967,29 +1067,6 @@ impl<C> ConnectedServiceRuntime<C> {
     /// Return the internal Trellis client owned by this runtime.
     pub(crate) fn client(&self) -> &Arc<TrellisClient> {
         &self.client
-    }
-
-    fn descriptor_subject(&self, family: &str, api_id: &str, action: &str) -> String {
-        let action = action.split_once('.').map_or(action, |(_, name)| name);
-        let subject = match family {
-            "rpc" => trellis_protocol::derive_bound_rpc_subject(
-                api_id,
-                &self.provider_deployment_id,
-                action,
-            ),
-            "operation" => trellis_protocol::derive_bound_operation_subject(
-                api_id,
-                &self.provider_deployment_id,
-                action,
-            ),
-            "live" => trellis_protocol::derive_bound_live_subject(
-                api_id,
-                &self.provider_deployment_id,
-                action,
-            ),
-            _ => unreachable!("only request route families are deployment-bound"),
-        };
-        subject.expect("generated route metadata must form a valid bound subject")
     }
 
     /// Return the authenticated transport consumed by generated facades.
@@ -1285,8 +1362,7 @@ impl<C> ConnectedServiceRuntime<C> {
             context.download_allowed = D::DOWNLOAD;
             handler(context, input)
         });
-        self.registered_subjects
-            .insert(self.descriptor_subject("rpc", D::API_ID, D::KEY));
+        self.registered_subjects.insert(D::SUBJECT.to_owned());
     }
 
     /// Register one descriptor-backed live Live handler and record its subject.
@@ -1310,18 +1386,14 @@ impl<C> ConnectedServiceRuntime<C> {
                 input,
             )
         });
-        let subject = self.descriptor_subject("live", D::API_ID, D::KEY);
-        self.registered_subjects.insert(subject.clone());
-        self.router
-            .set_live_owner(super::live_router::LiveProviderOwner::new(
-                std::sync::Arc::clone(&self.client),
-            ));
+        let subject = D::SUBJECT.to_owned();
+        self.registered_subjects.insert(subject);
     }
 
     /// Register one operation business handler and record its runtime-owned lifecycle routes.
     ///
-    /// An operation control route is a Live route, so this installs the
-    /// connection's live provider owner exactly as [`Self::register_live`] does.
+    /// Starts accept canonical and explicitly deployment-bound subjects; controls retain their
+    /// owner.
     pub fn register_operation_handler<D, F, Fut>(&mut self, handler: F)
     where
         D: OperationDescriptor + 'static,
@@ -1359,13 +1431,21 @@ impl<C> ConnectedServiceRuntime<C> {
                 Some(Arc::clone(&self.client)),
             ),
         );
-        let subject = self.descriptor_subject("operation", D::API_ID, D::KEY);
-        self.registered_subjects.insert(subject.clone());
-        self.registered_subjects.insert(control_subject(&subject));
-        self.router
-            .set_live_owner(super::live_router::LiveProviderOwner::new(
-                std::sync::Arc::clone(&self.client),
-            ));
+        self.registered_subjects.insert(D::SUBJECT.to_owned());
+        // Explicit starts and established controls share the same deployment repository.
+        let action = D::KEY
+            .split_once(":operation:")
+            .expect("generated canonical Operation identity")
+            .1;
+        let owner_subject = trellis_protocol::derive_bound_operation_subject(
+            D::API_ID,
+            &self.provider_deployment_id,
+            action,
+        )
+        .expect("generated operation metadata must form a valid owner subject");
+        self.registered_subjects.insert(owner_subject.clone());
+        self.registered_subjects
+            .insert(control_subject(&owner_subject));
     }
 
     /// Run registered subjects using the default NATS request loop.
@@ -1442,25 +1522,37 @@ impl<C> ConnectedServiceRuntime<C> {
 
 impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
     /// Connect with generated participant evidence and parse the returned bootstrap binding.
+    ///
+    /// When this build's participant differs from the revision its instance
+    /// runs, the service submits its IDL to Auth and connects again once the
+    /// update is installed. An update that asks for new access waits for an
+    /// administrator; meanwhile the review link is logged and printed as a QR
+    /// code on standard error.
     pub async fn connect(options: ServiceConnectOptions<'_>) -> Result<Self, ServiceRuntimeError> {
-        let client =
-            TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
-                trellis_url: options.trellis_url,
-                participant_id: C::ID,
-                participant_path: C::PATH,
-                package_evidence: C::package_evidence(),
-                name: options.name,
-                provisioned_identity_seed_base64url: options.provisioned_identity_seed_base64url,
-                timeout_ms: options.timeout_ms,
-            })
+        let (client, binding) = loop {
+            let client = TrellisClient::connect_service_with_contract_with_health_interval(
+                ServiceConnectWithContractOptions {
+                    nats_servers: options.nats_servers.clone(),
+                    trust: options.trust.clone(),
+                    participant_id: C::ID,
+                    name: options.name,
+                    provisioned_identity_seed_base64url: options
+                        .provisioned_identity_seed_base64url,
+                    timeout_ms: options.timeout_ms,
+                },
+                options.health_heartbeat_interval_ms,
+            )
             .await?;
-        let binding = parse_bootstrap_binding(&client)?;
-        let api_id = C::IMPLEMENTED_API_IDS.first().copied().ok_or_else(|| {
-            TrellisClientError::Bootstrap(format!(
-                "generated service participant `{}` implements no API",
-                C::ID
-            ))
-        })?;
+            let binding = parse_bootstrap_binding(&client)?;
+            if BootstrapBindingInfo::bootstrap_binding(&binding).digest == C::DIGEST {
+                break (client, binding);
+            }
+            await_service_update::<C>(&client).await?;
+            client.shutdown_native_runtime().await?;
+        };
+        // Resource-only services have no default inbound API. Explicit generated
+        // routes still supply their real API identity to the shared verifier.
+        let api_id = C::IMPLEMENTED_API_IDS.first().copied().unwrap_or_default();
         let mut runtime = Self::from_parts(
             options.name.unwrap_or(C::ID),
             Arc::new(client),
@@ -1468,32 +1560,123 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             api_id,
         );
         runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
-        runtime.operation_repository = Some(runtime.operation_repository().await?);
-        let staging_bucket = format!(
-            "trellis_operation_staging_{}",
-            runtime.provider_deployment_id
-        );
-        // Validate the runtime-provisioned staging bucket on the initial
-        // generation, then acquire a suitable generation per staging call so
-        // staging follows cutover instead of pinning one.
-        async_nats::jetstream::new(runtime.client.nats().clone())
-            .get_object_store(&staging_bucket)
-            .await
-            .map_err(|error| {
-                ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
-            })?;
-        runtime.operation_staging = Some(
-            super::resources::backend::BoundStoreResourceClient::managed_current(
-                runtime.client.transport_generations(),
-                staging_bucket,
-                runtime.client.timeout_ms(),
-            ),
-        );
+        let owner = runtime.client.authorization_owner();
+        let authority = owner.own_authority()?;
+        let mut implements_operations = false;
+        for api_id in C::IMPLEMENTED_API_IDS {
+            let certificate = owner
+                .provider_certificate(&runtime.client.nats(), &authority, api_id)
+                .await?;
+            implements_operations |= certificate
+                .implemented_actions
+                .iter()
+                .any(|action| action.kind == trellis_protocol::ApiSurfaceKind::Operation);
+        }
+        if implements_operations {
+            runtime.operation_repository = Some(runtime.operation_repository().await?);
+            let staging_bucket = format!(
+                "trellis_operation_staging_{}",
+                runtime.provider_deployment_id
+            );
+            // Validate the runtime-provisioned staging bucket on the initial
+            // generation, then acquire a suitable generation per staging call so
+            // staging follows cutover instead of pinning one.
+            async_nats::jetstream::new(runtime.client.nats().clone())
+                .get_object_store(&staging_bucket)
+                .await
+                .map_err(|error| {
+                    ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
+                })?;
+            runtime.operation_staging = Some(
+                super::resources::backend::BoundStoreResourceClient::managed_current(
+                    runtime.client.transport_generations(),
+                    staging_bucket,
+                    runtime.client.timeout_ms(),
+                ),
+            );
+        }
         for name in runtime.resources.store.keys().cloned().collect::<Vec<_>>() {
             let handle = runtime.store_client(&name).await?;
             runtime.store_handles.insert(name, handle);
         }
         Ok(runtime)
+    }
+}
+
+/// Submit this build's IDL and wait until Auth installs it for this instance.
+async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
+    client: &TrellisClient,
+) -> Result<(), ServiceRuntimeError> {
+    const API: &str = "trellis.auth@v1";
+    let action = |name: &str| trellis_protocol::CatalogActionIdentity {
+        kind: trellis_protocol::ApiSurfaceKind::Rpc,
+        name: name.into(),
+        direction: trellis_protocol::PermissionAction::Call,
+    };
+    let evidence = serde_json::to_value(C::package_evidence()).map_err(|error| {
+        ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
+    })?;
+    let body = serde_json::json!({ "packageEvidence": evidence });
+    let submit = || {
+        client.request_json_value(
+            API,
+            action("ServiceUpdates.Submit"),
+            "rpc.v1.auth.ServiceUpdates.Submit",
+            &body,
+        )
+    };
+    let mut update = submit().await?["update"].take();
+    let mut shown = None;
+    let mut delay = std::time::Duration::from_secs(1);
+    loop {
+        let review_url = update["reviewUrl"].as_str().unwrap_or_default().to_owned();
+        match update["state"].as_str() {
+            Some("applied") => return Ok(()),
+            Some("rejected") => return Err(ServiceRuntimeError::UpdateRejected { review_url }),
+            Some("superseded") => {
+                update = submit().await?["update"].take();
+                continue;
+            }
+            _ => {}
+        }
+        if shown.as_deref() != Some(review_url.as_str()) {
+            tracing::warn!(
+                participant = C::ID,
+                review_url,
+                "This build asks for new access; waiting for an administrator to approve it"
+            );
+            let qr = qrcode::QrCode::new(review_url.as_bytes())
+                .map(|code| {
+                    code.render::<qrcode::render::unicode::Dense1x2>()
+                        .quiet_zone(true)
+                        .build()
+                })
+                .unwrap_or_default();
+            eprintln!(
+                "\n{} needs an administrator to approve its update.\nOpen {review_url}\nor scan:\n{qr}",
+                C::ID
+            );
+            shown = Some(review_url);
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(std::time::Duration::from_secs(15));
+        update = match client
+            .request_json_value(
+                API,
+                action("ServiceUpdates.Status"),
+                "rpc.v1.auth.ServiceUpdates.Status",
+                &serde_json::json!({ "updateId": update["updateId"] }),
+            )
+            .await
+        {
+            Ok(mut response) => response["update"].take(),
+            // Approval retires this session. Connecting again shows whether
+            // the update installed; if not, Submit returns the same update.
+            Err(TrellisClientError::TransportUnavailable(_) | TrellisClientError::Timeout) => {
+                return Ok(())
+            }
+            Err(error) => return Err(error.into()),
+        };
     }
 }
 
@@ -1560,8 +1743,11 @@ where
         .split_once('.')
         .map_or(D::KEY, |(_, name)| name)
         .to_owned();
-    let descriptor_identity = D::descriptor_identity()
-        .map_err(|error| ServiceRuntimeError::Client(TrellisClientError::Subject(error)))?;
+    let publish_action = trellis_protocol::CatalogActionIdentity {
+        kind: trellis_protocol::ApiSurfaceKind::Event,
+        name: event_name.clone(),
+        direction: trellis_protocol::PermissionAction::Publish,
+    };
     let route = crate::telemetry::instruments::route_token(
         crate::telemetry::instruments::RouteFamily::Consumer,
         &event_name,
@@ -1573,7 +1759,8 @@ where
         if !ephemeral_event_authorized(service.event_subscribe_needs, &event_name) {
             return Err(ServiceRuntimeError::Client(
                 TrellisClientError::EventSubscriptionProtocol(format!(
-                    "ephemeral event delivery for '{event_name}' requires an Event Subscribe authority; a declared consumer grants durable delivery only"
+                    "ephemeral event delivery for '{event_name}' requires an Event \
+                    Subscribe authority; a declared consumer grants durable delivery only"
                 )),
             ));
         }
@@ -1588,7 +1775,7 @@ where
             .await
             .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
         let event_auth = auth.clone();
-        let descriptor_identity = descriptor_identity.clone();
+        let publish_action = publish_action.clone();
         let task = tokio::spawn(async move {
             let result = async {
                 while let Some(message) = events.next().await {
@@ -1602,7 +1789,9 @@ where
                             message.subject.as_ref(),
                             &message.payload,
                             message.headers.as_ref(),
-                            &descriptor_identity,
+                            &event_api_id,
+                            &publish_action,
+                            None,
                         )
                         .await
                     {
@@ -1637,17 +1826,23 @@ where
                     };
                     let attempt_span = tracing::info_span!(parent: None, "trellis.event.attempt.start", "trellis.route" = route);
                     if let Some(headers) = message.headers.as_ref() {
-                        let pairs: Vec<_> = headers.iter().flat_map(|(name, values)| {
-                            values.iter().map(move |value| (name.to_string(), value.as_str().to_owned()))
-                        }).collect();
+                        let pairs: Vec<_> = headers
+                            .iter()
+                            .flat_map(|(name, values)| {
+                                values
+                                    .iter()
+                                    .map(move |value| (name.to_string(), value.as_str().to_owned()))
+                            })
+                            .collect();
                         let carrier = crate::telemetry::propagation::extract_context(&pairs);
                         let linked = carrier.span().span_context().clone();
                         if linked.is_valid() {
                             attempt_span.add_link(linked);
                         }
                     }
-                    let attempt_context = opentelemetry::Context::new()
-                        .with_remote_span_context(attempt_span.context().span().span_context().clone());
+                    let attempt_context = opentelemetry::Context::new().with_remote_span_context(
+                        attempt_span.context().span().span_context().clone(),
+                    );
                     drop(attempt_span);
                     if let Err(source) = async { handler(event, context.clone()).await }
                         .with_context(attempt_context)
@@ -1720,7 +1915,7 @@ where
                 && (pattern != &subject
                     || registration.event_api_id != event_api_id
                     || registration.event_name != event_name
-                    || registration.descriptor_identity != descriptor_identity)
+                    || registration.publish_action != publish_action)
             {
                 return Err(TrellisClientError::EventSubscriptionProtocol(format!(
                     "event registration '{subject}' overlaps '{pattern}'"
@@ -1734,7 +1929,7 @@ where
             .or_insert_with(|| EventRegistration {
                 event_api_id: event_api_id.clone(),
                 event_name: event_name.clone(),
-                descriptor_identity: descriptor_identity.clone(),
+                publish_action: publish_action.clone(),
                 handlers: BTreeMap::new(),
             })
             .handlers
@@ -1799,7 +1994,7 @@ where
                 EventRegistration {
                     event_api_id,
                     event_name,
-                    descriptor_identity,
+                    publish_action,
                     handlers: BTreeMap::from([(handler_id, handler)]),
                 },
             )]),
@@ -1914,17 +2109,30 @@ async fn run_durable_event_pull_loop(
     loop {
         let is_replay = replay;
         replay = !replay;
-        let messages = match client
-            .event_messages::<serde_json::Value>(
-                if is_replay {
-                    config.replay_subscribe_options.clone()
-                } else {
-                    config.subscribe_options.clone()
-                },
-                None,
-                Some(1),
-            )
-            .await
+        let (messages, auth) = match async {
+            let lease = client
+                .acquire_transport(&[], &[], client.transport_deadline())
+                .await?;
+            let verifier = LocalAuthVerifier::new(
+                client.authorization_owner().clone(),
+                lease.nats().clone(),
+                auth.api_id(),
+            );
+            let messages = client
+                .event_messages_with_transport::<serde_json::Value>(
+                    lease,
+                    if is_replay {
+                        config.replay_subscribe_options.clone()
+                    } else {
+                        config.subscribe_options.clone()
+                    },
+                    None,
+                    Some(1),
+                )
+                .await?;
+            Ok::<_, TrellisClientError>((messages, verifier))
+        }
+        .await
         {
             Ok(messages) => messages,
             Err(error)
@@ -1987,7 +2195,7 @@ async fn run_durable_event_pull_loop(
                 }
                 Err(error) => return Err(error.into()),
             };
-            let replay_envelope = if is_replay {
+            let mut replay_envelope = if is_replay {
                 Some(
                     serde_json::from_slice::<ConsumerReplayEnvelope>(message.payload()).map_err(
                         |error| TrellisClientError::EventSubscriptionProtocol(error.to_string()),
@@ -1996,13 +2204,37 @@ async fn run_durable_event_pull_loop(
             } else {
                 None
             };
-            if let Some(envelope) = &replay_envelope {
+            let mut trusted_replay_publication = None;
+            if let Some(envelope) = &mut replay_envelope {
                 if envelope.resource_id != config.resource_id
                     || envelope.original_record_sequence == 0
                 {
-                    settle!('batch, message.term().await);
+                    settle!('batch, message.nak_after(Duration::ZERO).await);
                     continue;
                 }
+                let generation = envelope.generation;
+                let reject_replay = async |reason: &str| {
+                    crate::generated::Client::from_client(Arc::clone(&client))
+                        .call::<ConsumerReportDelivery>(&ConsumerDeliveryReport {
+                            resource_id: config.resource_id.clone(),
+                            source_stream: config
+                                .replay_subscribe_options
+                                .stream
+                                .clone()
+                                .unwrap_or_default(),
+                            source_sequence: message.stream_sequence()?.to_string(),
+                            delivery_count: message.delivery_count(),
+                            delivery_proof: message.delivery_proof()?,
+                            replay_generation: Some(generation),
+                            outcome: "unreplayable".into(),
+                            error: Some(reason.into()),
+                        })
+                        .await
+                        .map_err(|error| {
+                            TrellisClientError::EventSubscriptionProtocol(error.to_string())
+                        })?;
+                    message.term().await
+                };
                 let inspected = match crate::generated::Client::from_client(Arc::clone(&client))
                     .call::<ConsumerDeadLetterInspect>(&ConsumerDeadLetterInspectInput {
                         resource_id: config.resource_id.clone(),
@@ -2026,6 +2258,20 @@ async fn run_durable_event_pull_loop(
                 };
                 let detail = inspected.get("deadLetter").unwrap_or(&inspected);
                 let dead_letter = detail.get("deadLetter").unwrap_or(detail);
+                trusted_replay_publication = detail
+                    .get("originalPublishedAt")
+                    .and_then(serde_json::Value::as_str)
+                    .zip(dead_letter.get("originalSequence"))
+                    .and_then(|(published_at, sequence)| {
+                        serde_json::from_value::<trellis_protocol::U64s>(sequence.clone())
+                            .ok()
+                            .map(
+                                |stream_sequence| trellis_protocol::OriginalEventPublication {
+                                    published_at: published_at.to_owned(),
+                                    stream_sequence,
+                                },
+                            )
+                    });
                 let projected_generation = dead_letter.get("generation").and_then(|value| {
                     value
                         .as_u64()
@@ -2049,6 +2295,40 @@ async fn run_durable_event_pull_loop(
                     settle!('batch, message.ack().await);
                     continue;
                 }
+                // The signed inspection binds provenance to the retained bytes. A replay
+                // envelope alone cannot substitute another event under this timestamp.
+                let retained = detail
+                    .get("originalSubject")
+                    .and_then(serde_json::Value::as_str)
+                    .zip(
+                        detail
+                            .get("originalPayload")
+                            .and_then(serde_json::Value::as_str),
+                    )
+                    .zip(detail.get("originalHeaders").cloned());
+                let Some(((subject, payload), headers)) = retained else {
+                    if let Err(error) = reject_replay("retained event fields unavailable").await {
+                        tracing::warn!(%error, "Replay terminal report unavailable");
+                        settle!('batch, message.nak_after(Duration::from_secs(5)).await);
+                    }
+                    continue;
+                };
+                let (Ok(payload), Ok(headers)) = (
+                    STANDARD.decode(payload),
+                    serde_json::from_value::<BTreeMap<String, String>>(headers),
+                ) else {
+                    if let Err(error) = reject_replay("retained event encoding invalid").await {
+                        tracing::warn!(%error, "Replay terminal report unavailable");
+                        settle!('batch, message.nak_after(Duration::from_secs(5)).await);
+                    }
+                    continue;
+                };
+                envelope.original_subject = subject.to_owned();
+                envelope.original_payload_bytes = payload;
+                envelope.original_headers = headers
+                    .into_iter()
+                    .map(|(name, value)| (name, vec![value]))
+                    .collect();
             }
             let effective_subject = replay_envelope.as_ref().map_or_else(
                 || message.subject(),
@@ -2098,14 +2378,30 @@ async fn run_durable_event_pull_loop(
                     )
                 })
                 .collect();
-            let publisher = match auth
-                .verify_event(
+            let publisher = match async {
+                let original_publication = if replay_envelope.is_some() {
+                    trusted_replay_publication.ok_or_else(|| {
+                        super::EventVerificationFailure::retryable(
+                            "original broker publication metadata unavailable",
+                        )
+                    })?
+                } else {
+                    message.original_publication().map_err(|error| {
+                        super::EventVerificationFailure::retryable(error.to_string())
+                    })?
+                };
+                let status = auth.historical_status(effective_headers).await?;
+                auth.verify_event(
                     effective_subject,
                     effective_payload,
                     effective_headers,
-                    &registration.descriptor_identity,
+                    &registration.event_api_id,
+                    &registration.publish_action,
+                    Some((&original_publication, &status)),
                 )
                 .await
+            }
+            .await
             {
                 Ok(publisher) => publisher,
                 Err(error) => {
@@ -2249,54 +2545,15 @@ async fn run_durable_event_pull_loop(
                     }
                 };
                 if result.is_err() {
-                    let error = result.err().map(|error| error.to_string());
                     if delivery >= config.max_deliver {
-                        settle!('batch, message.ack_progress().await);
-                        let report = ConsumerDeliveryReport {
-                            resource_id: config.resource_id.clone(),
-                            source_stream: if is_replay {
-                                config
-                                    .replay_subscribe_options
-                                    .stream
-                                    .clone()
-                                    .unwrap_or_default()
-                            } else {
-                                config.subscribe_options.stream.clone().unwrap_or_default()
-                            },
-                            source_sequence: message.stream_sequence()?.to_string(),
-                            delivery_count: delivery,
-                            delivery_proof: message.delivery_proof()?,
-                            replay_generation: replay_envelope
-                                .as_ref()
-                                .map(|envelope| envelope.generation),
-                            outcome: "exhausted".to_owned(),
-                            error,
-                        };
-                        let report_result =
-                            crate::generated::Client::from_client(Arc::clone(&client))
-                                .call::<ConsumerReportDelivery>(&report)
-                                .await;
-                        let reported = report_result.is_ok();
-                        if reported {
-                            let ack = message.ack().await;
-                            if let Err(error) = ack {
-                                for earlier in completed.drain(..) {
-                                    earlier.finish("ok");
-                                }
-                                observation.finish("error");
-                                if durable_event_transport_error_is_retryable(&error) {
-                                    settle_failure = true;
-                                    break 'batch;
-                                }
-                                return Err(error.into());
-                            }
-                        } else if let Err(error) = report_result {
-                            tracing::warn!(%error, group = ?config.context.group, "Delivery report unavailable");
-                        }
+                        // Exhaustion belongs to the broker advisory path; never ACK a failed
+                        // delivery.
+                        let result = message.nak_after(Duration::ZERO).await;
                         for earlier in completed.drain(..) {
                             earlier.finish("ok");
                         }
-                        observation.finish(if reported { "exhausted" } else { "error" });
+                        observation.finish(if result.is_ok() { "exhausted" } else { "error" });
+                        settle!('batch, result);
                         handled = false;
                         break;
                     }
@@ -2500,6 +2757,7 @@ mod tests {
                 digest: "sha256:test".to_string(),
             },
             ServiceResourceBindings {
+                state: BTreeMap::new(),
                 event_consumers: BTreeMap::from([(
                     "projection".to_string(),
                     EventConsumerResourceBinding {

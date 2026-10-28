@@ -62,18 +62,20 @@ export function selectRuntimeTransportServers(
 
 function isBrowserRuntime(): boolean {
   const browserGlobal = globalThis as NativeGlobalThis;
-  return typeof browserGlobal.window !== "undefined" &&
-    typeof browserGlobal.document !== "undefined";
+  return (
+    typeof browserGlobal.window !== "undefined" &&
+    typeof browserGlobal.document !== "undefined"
+  );
 }
 
 function usesWebSocketTransport(servers: string | string[]): boolean {
   const values = Array.isArray(servers) ? servers : [servers];
-  return values.some((server) =>
-    server.startsWith("ws://") || server.startsWith("wss://")
+  return values.some(
+    (server) => server.startsWith("ws://") || server.startsWith("wss://"),
   );
 }
 
-/** Loads WebSocket transport in browsers and native Node transport in Node/Deno. */
+/** Loads WebSocket transport in browsers and native Node transport in Node. */
 export async function loadDefaultRuntimeTransport(): Promise<RuntimeTransport> {
   if (isBrowserRuntime()) {
     return {

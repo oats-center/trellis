@@ -27,7 +27,10 @@ container="trellis-smoke-${suffix}"
 bundle_volume="trellis-bundle-${suffix}"
 state_volume="trellis-state-${suffix}"
 
+work="$(mktemp -d)"
+
 cleanup() {
+  rm -rf "${work}"
   docker rm -f "${container}" >/dev/null 2>&1 || true
   docker volume rm "${bundle_volume}" >/dev/null 2>&1 || true
   docker volume rm "${state_volume}" >/dev/null 2>&1 || true
@@ -55,9 +58,9 @@ docker volume create "${bundle_volume}" >/dev/null
 docker volume create "${state_volume}" >/dev/null
 docker run --rm --user root --entrypoint chown -v "${state_volume}":/var/lib/trellis \
   "${image}" -R 10001:10001 /var/lib/trellis
-docker run --rm --user 10001:10001 --entrypoint trellis \
+docker run --rm --user 10001:10001 --entrypoint trellis-server \
   -v "${state_volume}":/var/lib/trellis "${image}" \
-  init config --out /var/lib/trellis/bundle
+  --system init --out /var/lib/trellis/bundle
 docker run --rm --user root --entrypoint cp \
   -v "${state_volume}":/from:ro -v "${bundle_volume}":/to "${image}" \
   -a /from/bundle/. /to/
@@ -67,6 +70,10 @@ docker run --rm --user root --entrypoint cp \
 docker run --rm --user root --entrypoint chown \
   -v "${bundle_volume}":/to "${image}" \
   -R 10001:10001 /to
+# The default bundle serves Trellis-generated TLS for localhost; probes trust
+# exactly that installation CA instead of disabling verification.
+docker run --rm --entrypoint cat -v "${bundle_volume}":/etc/trellis:ro "${image}" \
+  /etc/trellis/tls/ca.crt > "${work}/ca.crt"
 
 # 3. Managed-mode run: non-root user, read-only rootfs, read-only bundle volume,
 #    writable state volume. All mutable NATS files go to /var/lib/trellis/nats
@@ -81,17 +88,33 @@ docker run --detach --name "${container}" --read-only --tmpfs /tmp \
   --volume "${bundle_volume}":/etc/trellis:ro,Z \
   --volume "${state_volume}":/var/lib/trellis:rw,Z \
   --entrypoint sh "${image}" -c \
-    'mkdir -m 0700 /run/trellis /var/log/trellis; exec trellis-server --system all --local-nats=/usr/local/bin/nats-server'
+    'set -eu
+     for directory in /run/trellis /var/log/trellis; do
+       if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+         mkdir -m 0700 "$directory"
+       fi
+       if [ -L "$directory" ] || [ ! -d "$directory" ] ||
+          [ "$(stat -c %u:%a "$directory")" != "$(id -u):700" ]; then
+         echo "unsafe private directory: $directory (requires current uid and mode 0700)" >&2
+         exit 1
+       fi
+     done
+     exec trellis-server --system all --local-nats=/usr/local/bin/nats-server'
 
 # 4. Wait for runtime readiness on the published port.
 runtime_port="$(docker port "${container}" 3000/tcp | cut -d: -f2)"
+probe() {
+  curl --fail --silent --cacert "${work}/ca.crt" \
+    --resolve "localhost:${runtime_port}:127.0.0.1" \
+    "https://localhost:${runtime_port}$1" >/dev/null
+}
 ready=""
 for _ in $(seq 1 90); do
-  if curl --fail --silent "http://127.0.0.1:${runtime_port}/readyz" >/dev/null 2>&1; then
+  if probe /readyz 2>/dev/null; then
     ready=1
     break
   fi
-  if ! docker inspect "${container}" >/dev/null 2>&1; then
+  if [ "$(docker inspect --format '{{.State.Running}}' "${container}")" != "true" ]; then
     echo "${container} exited during startup" >&2
     docker logs "${container}" >&2 || true
     exit 1
@@ -104,6 +127,15 @@ if [ -z "${ready}" ]; then
   exit 1
 fi
 
+# Startup/write diagnostics belong to startup, not deliberate broker teardown.
+startup_logs="$(docker logs "${container}" 2>&1)"
+if grep -Ei 'read-only|readonly|permission denied|failed to (write|create|open)' <<<"${startup_logs}"; then
+  echo "unexpected write/startup error before readiness" >&2
+  printf '%s\n' "${startup_logs}" >&2
+  exit 1
+fi
+probe /healthz
+
 # 5. Graceful stop: SIGTERM, wait up to 30s, then check the exit code.
 docker stop --time 30 "${container}" >/dev/null
 exit_code="$(docker wait "${container}")"
@@ -113,10 +145,26 @@ if [ "${exit_code}" != "0" ]; then
   exit 1
 fi
 
-# 6. No startup or write errors in the logs.
+# 6. No logical recovery after the host reports that ownership has stopped.
+# Use the runtime's structured diagnostics: a shutdown connection refusal must
+# not be mislabeled as a startup write failure, but a new generation after
+# terminal ownership is a real lifecycle defect even if the process exits zero.
 logs="$(docker logs "${container}" 2>&1)"
-if grep -Ei 'read-only|readonly|permission denied|failed to (write|create|open)' <<<"${logs}"; then
-  echo "unexpected write/startup error in the smoke logs" >&2
+if grep -Ei 'read-only|readonly|permission denied|failed to (write|create)' <<<"${logs}"; then
+  echo "unexpected filesystem/write error during runtime operation or shutdown" >&2
+  printf '%s\n' "${logs}" >&2
+  exit 1
+fi
+if ! jq -Rse '
+  split("\n") | map(fromjson? | select(type == "object")) |
+  (map(select(.fields.message == "runtime ownership shutdown finished; flushing NATS")) | first | .timestamp) as $stopped |
+  $stopped != null and
+  all(.[]; .timestamp <= $stopped or
+    (.fields.event != "transport_generation.opening" and
+     .fields.event != "transport_generation.open_failed" and
+     .fields.message != "transport generation reconciliation failed"))
+' <<<"${logs}" >/dev/null; then
+  echo "runtime ownership did not stop before broker teardown" >&2
   printf '%s\n' "${logs}" >&2
   exit 1
 fi

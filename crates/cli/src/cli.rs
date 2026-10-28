@@ -4,15 +4,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 mod auth;
-mod bootstrap;
 mod deploy;
 mod events;
 mod resources;
 mod self_cmd;
 
 pub use auth::*;
-#[cfg(feature = "runtime")]
-pub use bootstrap::*;
 pub use deploy::*;
 pub use events::*;
 pub use resources::*;
@@ -58,22 +55,30 @@ pub enum TopLevelCommand {
     Generate(GenerateArgs),
     /// Publish every project-owned canonical API to OCI.
     Publish(PublishArgs),
-    /// Start a detached portal login against a Trellis auth service.
+    /// Authorize the native CLI through the selected server's device flow.
     Login(LoginArgs),
-    /// Revoke the current admin session and clear local session state.
+    /// Revoke the current login and clear the selected local credential.
     Logout,
-    /// Show the currently logged-in Trellis admin session.
+    /// Show the authenticated principal and login.
     Whoami,
-    /// Manage participant-scoped identity grants.
-    Identity(IdentityCommand),
-    /// Install participant definitions without granting authority.
-    Participants(ParticipantsCommand),
     /// Manage authorization signing issuers.
     Issuers(IssuersCommand),
     /// Manage Trellis users.
     Users(UsersCommand),
-    /// Inspect and manage login portals.
-    Portals(PortalsCommand),
+    /// Manage roles, including the roles new users get.
+    Roles(RolesCommand),
+    /// Register public OAuth clients, including loopback development clients.
+    #[command(subcommand)]
+    Clients(ClientsCommand),
+    /// Review and accept API catalog definitions.
+    #[command(subcommand)]
+    Apis(ApisCommand),
+    /// Brand the login Portal for the installation or one app.
+    #[command(subcommand)]
+    Theme(ThemeCommand),
+    /// Choose how people sign in to this Trellis.
+    #[command(subcommand)]
+    SignIn(SignInCommand),
     /// Manage service deployments.
     Svc(SvcCommand),
     /// Manage device deployments.
@@ -84,9 +89,6 @@ pub enum TopLevelCommand {
     /// Query and administer Events.
     #[command(subcommand)]
     Events(EventsCommand),
-    /// Run one-time initialization workflows.
-    #[cfg(feature = "runtime")]
-    Init(InitCommand),
     /// Generate or derive Trellis keys.
     Keys(KeysCommand),
     /// Check for or install CLI updates.
@@ -113,17 +115,17 @@ impl TopLevelCommand {
             Self::Login(_) => "login",
             Self::Logout => "logout",
             Self::Whoami => "whoami",
-            Self::Identity(_) => "identity",
-            Self::Participants(_) => "participants",
             Self::Issuers(_) => "issuers",
             Self::Users(_) => "users",
-            Self::Portals(_) => "portals",
+            Self::Roles(_) => "roles",
+            Self::Clients(_) => "clients",
+            Self::Apis(_) => "apis",
+            Self::Theme(_) => "theme",
+            Self::SignIn(_) => "sign-in",
             Self::Svc(_) => "svc",
             Self::Dev(_) => "dev",
             Self::Resources(_) => "resources",
             Self::Events(_) => "events",
-            #[cfg(feature = "runtime")]
-            Self::Init(_) => "init",
             Self::Keys(_) => "keys",
             Self::Upgrade(_) => "upgrade",
             Self::Version | Self::Completion { .. } => return None,

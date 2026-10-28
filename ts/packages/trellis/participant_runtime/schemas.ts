@@ -29,15 +29,16 @@ const ContractSchemaRefSchema = Type.Object({
 export const ContractEventConsumersSchema = Type.Record(
   Type.String({ minLength: 1 }),
   Type.Object({
-    uses: Type.Optional(Type.Record(
-      Type.String({ minLength: 1 }),
-      Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-    )),
+    uses: Type.Optional(
+      Type.Record(
+        Type.String({ minLength: 1 }),
+        Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+      ),
+    ),
     self: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-    replay: Type.Optional(Type.Union([
-      Type.Literal("new"),
-      Type.Literal("all"),
-    ])),
+    replay: Type.Optional(
+      Type.Union([Type.Literal("new"), Type.Literal("all")]),
+    ),
     concurrency: Type.Optional(Type.Integer({ minimum: 1 })),
   }),
 );
@@ -69,10 +70,7 @@ export const JobsQueueKeyConcurrencyBindingSchema = Type.Object({
   maxActive: Type.Integer({ minimum: 1 }),
   heartbeatIntervalMs: Type.Integer({ minimum: 1 }),
   heartbeatTtlMs: Type.Integer({ minimum: 1 }),
-  stalePolicy: Type.Union([
-    Type.Literal("fail-stale"),
-    Type.Literal("block"),
-  ]),
+  stalePolicy: Type.Union([Type.Literal("fail-stale"), Type.Literal("block")]),
 });
 
 export type JobsQueueKeyConcurrencyBinding = Static<
@@ -88,9 +86,7 @@ export const JobsQueueDepthBindingSchema = Type.Object({
   ]),
 });
 
-export type JobsQueueDepthBinding = Static<
-  typeof JobsQueueDepthBindingSchema
->;
+export type JobsQueueDepthBinding = Static<typeof JobsQueueDepthBindingSchema>;
 
 export const JobsQueueBindingSchema = Type.Object({
   queueType: Type.String({ minLength: 1 }),
@@ -141,6 +137,9 @@ export type EventConsumerResourceBinding = Static<
 >;
 
 export const ContractResourceBindingsSchema = Type.Object({
+  state: Type.Optional(
+    Type.Record(Type.String({ minLength: 1 }), Type.String({ minLength: 1 })),
+  ),
   kv: Type.Optional(
     Type.Record(Type.String({ minLength: 1 }), KvResourceBindingSchema),
   ),
@@ -170,9 +169,7 @@ export type InstalledGeneratedServiceParticipant = Static<
   typeof InstalledGeneratedServiceParticipantSchema
 >;
 
-export const IsoDateSchema = Type.Codec(
-  Type.String({ format: "date-time" }),
-)
+export const IsoDateSchema = Type.Codec(Type.String({ format: "date-time" }))
   .Decode((value: string) => parseIsoDate(value))
   .Encode((value: Date) => formatIsoDate(value));
 
@@ -248,9 +245,8 @@ export function buildPageResponse<T>(
     count: totalCount,
     offset,
     limit,
-    nextOffset: limit <= 0 || offset + limit >= totalCount
-      ? undefined
-      : offset + limit,
+    nextOffset:
+      limit <= 0 || offset + limit >= totalCount ? undefined : offset + limit,
   };
 }
 

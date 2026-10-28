@@ -239,12 +239,12 @@ impl DeadLetterJournal {
         self.append(&next, expected_subject_sequence).await
     }
 
-    /// Record replay success or fresh generation exhaustion.
+    /// Record replay success, permanent rejection, or fresh generation exhaustion.
     pub async fn report_replay_outcome(
         &self,
         id: &str,
         generation: u64,
-        succeeded: bool,
+        outcome: super::DeliveryOutcome,
         deliveries: u64,
         last_error: Option<String>,
     ) -> Result<(DeadLetterTransition, u64), JournalError> {
@@ -265,15 +265,15 @@ impl DeadLetterJournal {
         let next = successor(
             &current,
             sequence,
-            if succeeded {
+            if outcome == super::DeliveryOutcome::Succeeded {
                 DeadLetterState::Resolved
             } else {
                 DeadLetterState::Dead
             },
-            if succeeded {
-                DeadLetterCause::ReplaySucceeded
-            } else {
-                DeadLetterCause::Exhausted
+            match outcome {
+                super::DeliveryOutcome::Succeeded => DeadLetterCause::ReplaySucceeded,
+                super::DeliveryOutcome::Unreplayable => DeadLetterCause::ReplayUnreplayable,
+                super::DeliveryOutcome::Exhausted => DeadLetterCause::Exhausted,
             },
             None,
             None,

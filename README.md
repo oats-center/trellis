@@ -74,20 +74,27 @@ Current TypeScript runtime entrypoints:
 Install locked API dependencies and regenerate project-local artifacts with:
 
 - `cargo xtask install`
-- `cd ts && deno task install`
+- `npm ci` (Node 24 LTS and npm 11)
+- `npm run install:contracts`
 - `cargo xtask build`
 - `cargo xtask release check-versions`
 - `cargo xtask release prepare --tag v0.100.0-rc.1`
 
 Each contract project owns `trellis.toml`, commits `trellis.lock`, and consumes
 its private generated SDK through the configured TypeScript or Rust output.
+Generated implementations are ignored build artifacts, not committed source.
+`cargo xtask install` prepares the built-in bindings the Rust SDK, testkit, and
+runtime include before repository compilation and rebuilds the TypeScript SDK's protocol WASM, which needs the
+`wasm32-unknown-unknown` Rust target. Pass `--skip-protocol-wasm` only where the
+WASM is built separately, as CI does. Published SDK archives include those generated sources; downstream
+Cargo builds need neither the Trellis CLI nor compiler/generator build dependencies.
 `cargo xtask build` installs the fixed repository project DAG before building
 the Rust workspace. Live client-library integration coverage is language-owned.
 Run these peer suites when you need that coverage:
 
 ```sh
-deno task -c ts/deno.json test:integration
-cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
+npm run test:integration
+cargo test --manifest-path Cargo.toml -p trellis-rs --test integration -- --nocapture
 ```
 
 Both suites use ordinary Rust and Deno discovery. Build the server and CLI once

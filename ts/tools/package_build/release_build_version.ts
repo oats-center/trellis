@@ -67,14 +67,14 @@ function replaceDependencyVersionSpec(
 }
 
 export function resolvePackageBuildVersion(checkedInVersion: string): string {
-  const releaseVersion = Deno.env.get("TRELLIS_RELEASE_VERSION")?.trim();
+  const releaseVersion = process.env.TRELLIS_RELEASE_VERSION?.trim();
   if (!releaseVersion) {
     return checkedInVersion;
   }
 
   const parsedReleaseVersion = parseReleaseVersion(releaseVersion);
   const expectedBaseVersion =
-    Deno.env.get("TRELLIS_RELEASE_BASE_VERSION")?.trim() ||
+    process.env.TRELLIS_RELEASE_BASE_VERSION?.trim() ||
     parsedReleaseVersion.baseVersion;
   validateVersionBase(checkedInVersion, expectedBaseVersion, "package version");
   return releaseVersion;
@@ -84,15 +84,15 @@ export function resolveInternalNpmDependenciesForBuild(
   dependencies: Record<string, string> | undefined,
   buildVersion?: string,
 ): Record<string, string> | undefined {
-  const releaseVersion = Deno.env.get("TRELLIS_RELEASE_VERSION")?.trim() ||
-    buildVersion?.trim();
+  const releaseVersion =
+    process.env.TRELLIS_RELEASE_VERSION?.trim() || buildVersion?.trim();
   if (!releaseVersion || !dependencies) {
     return dependencies;
   }
 
   const parsedReleaseVersion = parseReleaseVersion(releaseVersion);
   const expectedBaseVersion =
-    Deno.env.get("TRELLIS_RELEASE_BASE_VERSION")?.trim() ||
+    process.env.TRELLIS_RELEASE_BASE_VERSION?.trim() ||
     parsedReleaseVersion.baseVersion;
   return Object.fromEntries(
     Object.entries(dependencies).map(([packageName, spec]) => {

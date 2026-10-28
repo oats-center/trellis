@@ -5,11 +5,8 @@ version = "0.100.0"
 [sources]
 runtime = "contract.trellis"
 
-[generate.rust]
-output = "crates/runtime-trellis"
-
 [generate.typescript]
 output = "packages/runtime-trellis"
 
 [dependencies]
-trellis = { package = "trellis", path = "../../../crates/runtime" }
+trellis = { package = "trellis", path = "../../../crates/builtin-contracts" }

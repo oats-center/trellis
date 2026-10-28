@@ -29,13 +29,16 @@ export const RemoteErrorDataSchema = Type.Object({
 });
 export type RemoteErrorData = Static<typeof RemoteErrorDataSchema>;
 
-export const TrellisErrorDataSchema = Type.Object({
-  id: Type.String(),
-  type: Type.String(),
-  message: Type.String(),
-  context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-  traceId: Type.Optional(Type.String()),
-}, { additionalProperties: true });
+export const TrellisErrorDataSchema = Type.Object(
+  {
+    id: Type.String(),
+    type: Type.String(),
+    message: Type.String(),
+    context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    traceId: Type.Optional(Type.String()),
+  },
+  { additionalProperties: true },
+);
 export type TrellisErrorData = Static<typeof TrellisErrorDataSchema>;
 
 export type TransportableTrellisErrorData =
@@ -94,28 +97,29 @@ export class RemoteError extends TrellisError<RemoteErrorData> {
   static parse(
     data: unknown,
   ): Result<TransportableTrellisErrorData, ValidationError | UnexpectedError> {
-    return Result.try(() => typeof data === "string" ? JSON.parse(data) : data)
-      .andThen(
-        (
-          obj: unknown,
-        ): Result<
-          TransportableTrellisErrorData,
-          ValidationError | UnexpectedError
-        > => {
-          const parseResult = Result.try(() =>
-            Value.Parse(TrellisErrorDataSchema, obj)
-          );
-          if (parseResult.isErr()) {
-            const cause = parseResult.error.cause;
-            if (cause instanceof ParseError) {
-              const errors = Value.Errors(TrellisErrorDataSchema, obj);
-              return Result.err(new ValidationError({ errors, cause }));
-            }
-            return Result.err(parseResult.error);
+    return Result.try(() =>
+      typeof data === "string" ? JSON.parse(data) : data,
+    ).andThen(
+      (
+        obj: unknown,
+      ): Result<
+        TransportableTrellisErrorData,
+        ValidationError | UnexpectedError
+      > => {
+        const parseResult = Result.try(() =>
+          Value.Parse(TrellisErrorDataSchema, obj),
+        );
+        if (parseResult.isErr()) {
+          const cause = parseResult.error.cause;
+          if (cause instanceof ParseError) {
+            const errors = Value.Errors(TrellisErrorDataSchema, obj);
+            return Result.err(new ValidationError({ errors, cause }));
           }
-          return Result.ok(parseResult.take() as TransportableTrellisErrorData);
-        },
-      );
+          return Result.err(parseResult.error);
+        }
+        return Result.ok(parseResult.take() as TransportableTrellisErrorData);
+      },
+    );
   }
 
   /**

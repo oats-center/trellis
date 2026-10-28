@@ -7,8 +7,8 @@ use trellis_protocol::*;
 
 use super::{ServerError, TransferIdentity};
 use crate::{
-    client::{AuthorizationProviderCache, SessionAuth, TrellisClient},
-    live::authority::{LiveAuthorityGuard, LiveGuardRequirement},
+    client::{AuthorizationOwner, SessionAuth, TrellisClient},
+    live::authority::{LiveAction, LiveAuthorityGuard, LiveGuardRequirement, PinnedPeerIdentity},
 };
 
 pub(crate) fn error(value: impl std::fmt::Display) -> ServerError {
@@ -98,15 +98,51 @@ pub(crate) fn frame_headers(
 
 pub(crate) fn caller_headers(
     client: &TrellisClient,
+    action: &LiveAction,
     subject: &str,
     signal: &str,
     descriptor: &TransferFrameDescriptor,
     payload: &[u8],
 ) -> Result<HeaderMap, ServerError> {
     let compact = transfer_frame_digest(descriptor, payload).map_err(error)?;
-    let mut headers = client
-        .signed_headers(subject, signal, &compact)
+    let owner = client.authorization_owner();
+    let authority = owner.own_authority().map_err(error)?;
+    owner.assert_current(&authority).map_err(error)?;
+    let api = authority
+        .authority()
+        .apis
+        .iter()
+        .find(|api| api.api_id == action.api_id)
+        .ok_or_else(|| error("transfer origin API unavailable"))?;
+    let request = SessionRequest {
+        authority_digest: authority.digest().to_owned(),
+        api_id: action.api_id.clone(),
+        api_generation: api.generation,
+        accepted_revision: api.accepted_revision,
+        action: action.identity.name.clone(),
+        subject: subject.to_owned(),
+        reply_subject: Some(signal.to_owned()),
+        request_id: crate::client::new_request_id(),
+        issued_at: crate::client::now_iat_seconds() as i64,
+    };
+    let auth = client.auth_handle();
+    let (proof, _) = auth
+        .create_request_proof(&request, &compact)
         .map_err(error)?;
+    let mut headers = HeaderMap::new();
+    headers.insert("authorization-context", request.authority_digest.as_str());
+    headers.insert("session-key", auth.session_key.as_str());
+    headers.insert("proof", proof.as_str());
+    headers.insert("request-id", request.request_id.as_str());
+    headers.insert("iat", request.issued_at.to_string().as_str());
+    headers.insert(
+        "Trellis-Api-Generation",
+        request.api_generation.get().to_string().as_str(),
+    );
+    headers.insert(
+        "Trellis-Accepted-Revision",
+        request.accepted_revision.get().to_string().as_str(),
+    );
     for (name, values) in frame_headers(descriptor)?.iter() {
         for value in values {
             headers.append(name.clone(), value.clone());
@@ -115,26 +151,38 @@ pub(crate) fn caller_headers(
     Ok(headers)
 }
 
-/// Covered peer evidence with immutable logical identity and exact originating permission.
+/// Retained peer evidence with immutable identity and authenticated originating action.
 pub(crate) struct TransferPeer {
     pub(crate) guard: LiveAuthorityGuard,
-    cache: AuthorizationProviderCache,
+    owner: AuthorizationOwner,
+    transport: async_nats::Client,
     expected: TransferIdentity,
-    required: Vec<PermissionAtom>,
+    action: LiveAction,
 }
 
 impl TransferPeer {
     pub(crate) async fn retain(
-        cache: &AuthorizationProviderCache,
+        owner: &AuthorizationOwner,
+        transport: &async_nats::Client,
         digest: &str,
         expected: &TransferIdentity,
-        permission: Option<PermissionAtom>,
+        action: &LiveAction,
+        provider: bool,
     ) -> Result<Self, ServerError> {
-        let requirement = permission.clone().map_or(
-            LiveGuardRequirement::LocalProvider,
-            LiveGuardRequirement::Observer,
-        );
-        let guard = LiveAuthorityGuard::retain(cache, digest, requirement)
+        let authority = owner
+            .resolve_authority(transport, digest)
+            .await
+            .map_err(error)?;
+        let identity = PinnedPeerIdentity::from_authority(&authority);
+        let requirement = if provider {
+            LiveGuardRequirement::PeerProvider {
+                expected: identity,
+                action: action.clone(),
+            }
+        } else {
+            LiveGuardRequirement::Observer(action.clone())
+        };
+        let guard = LiveAuthorityGuard::retain(owner, transport, digest, requirement)
             .await
             .map_err(|e| error(format!("transfer authority: {e:?}")))?;
         if guard.identity().connection_id != expected.connection_id
@@ -144,9 +192,10 @@ impl TransferPeer {
         }
         Ok(Self {
             guard,
-            cache: cache.clone(),
+            owner: owner.clone(),
+            transport: transport.clone(),
             expected: expected.clone(),
-            required: permission.into_iter().collect(),
+            action: action.clone(),
         })
     }
 
@@ -157,58 +206,116 @@ impl TransferPeer {
         provider_id: &str,
         signal_subject: &str,
     ) -> Result<(), ServerError> {
-        let _charge = super::telemetry::Charge::new(
-            message.payload.len(),
-            descriptor.direction,
-            "provider-rx",
-        );
+        let _charge =
+            super::telemetry::Charge::new(message.payload.len(), descriptor.direction, "provider");
         let headers = message
             .headers
             .as_ref()
             .ok_or_else(|| error("transfer headers missing"))?;
+        let subject_kind = match descriptor.kind {
+            TransferFrameKind::Control => TransferSubjectKind::Control,
+            TransferFrameKind::Data | TransferFrameKind::Complete
+                if descriptor.direction == TransferDirection::Send =>
+            {
+                TransferSubjectKind::UploadData
+            }
+            _ => return Err(error("invalid caller transfer frame kind")),
+        };
+        let expected_subject = derive_transfer_subject(
+            subject_kind,
+            provider_id,
+            &self.expected.connection_id,
+            &descriptor.transfer_id,
+        )
+        .map_err(error)?;
+        let expected_signal = derive_transfer_subject(
+            TransferSubjectKind::Signal,
+            provider_id,
+            &self.expected.connection_id,
+            &descriptor.transfer_id,
+        )
+        .map_err(error)?;
+        if message.subject.as_str() != expected_subject || signal_subject != expected_signal {
+            return Err(error("transfer caller subject mismatch"));
+        }
         if message.reply.as_deref() != Some(signal_subject)
             || header(headers, "session-key")? != self.expected.session_key
         {
             return Err(error("transfer caller boundary mismatch"));
         }
         let digest = header(headers, "authorization-context")?;
-        let candidate = self
-            .guard
-            .prepare_replacement(&digest)
-            .await
-            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
-        let policy = self.cache.policy().map_err(error)?;
-        let context = self
-            .cache
-            .resolve_context(&digest, policy.now_unix_seconds)
+        // Immutable retained material needs replacement validation only when
+        // its signed content address changes. Current coverage, revocation,
+        // expiry and issuer trust are still checked before and after the proof.
+        let candidate = if self.guard.context_digest() == digest {
+            self.guard
+                .check_now()
+                .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+            None
+        } else {
+            Some(
+                self.guard
+                    .prepare_replacement(&digest)
+                    .await
+                    .map_err(|e| error(format!("transfer authority: {e:?}")))?,
+            )
+        };
+        let authority = self
+            .owner
+            .resolve_authority(&self.transport, &digest)
             .await
             .map_err(error)?;
+        let api = authority
+            .authority()
+            .apis
+            .iter()
+            .find(|api| api.api_id == self.action.api_id)
+            .ok_or_else(|| error("transfer origin API unavailable"))?;
         let compact = transfer_frame_digest(descriptor, &message.payload).map_err(error)?;
-        let proof = AuthorizationRequestProof::parse(header(headers, "proof")?).map_err(error)?;
+        let proof = SessionRequestProof::parse(header(headers, "proof")?).map_err(error)?;
         let request_id = header(headers, "request-id")?;
-        verify_transfer_authorization_request(
-            AuthorizationRequestVerificationInput {
-                context: &context,
-                subject: message.subject.as_str(),
-                reply_subject: Some(signal_subject),
-                raw_payload: &compact,
-                iat: header(headers, "iat")?.parse().map_err(error)?,
-                request_id: &request_id,
-                proof: &proof,
-                policy: &policy,
-                required_permissions: &self.required,
-            },
-            provider_id,
-            &self.expected.connection_id,
-            &descriptor.transfer_id,
-        )
-        .map_err(error)?;
-        self.guard
-            .commit_replacement(candidate)
-            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        let request = SessionRequest {
+            authority_digest: digest,
+            api_id: self.action.api_id.clone(),
+            api_generation: api.generation,
+            accepted_revision: api.accepted_revision,
+            action: self.action.identity.name.clone(),
+            subject: message.subject.to_string(),
+            reply_subject: Some(signal_subject.to_owned()),
+            issued_at: header(headers, "iat")?.parse().map_err(error)?,
+            request_id,
+        };
+        let verified = self
+            .owner
+            .verify_request(
+                &self.transport,
+                &request,
+                &compact,
+                &proof,
+                &self.action.identity,
+            )
+            .await
+            .map_err(error)?;
+        if verified.caller().runtime_id != self.expected.connection_id
+            || verified.caller().session_public_key != self.expected.session_key
+        {
+            return Err(error("transfer caller identity mismatch"));
+        }
+        if let Some(candidate) = candidate {
+            self.guard
+                .commit_replacement(candidate)
+                .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        }
         self.guard
             .check_now()
-            .map_err(|e| error(format!("transfer authority: {e:?}")))
+            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        super::telemetry::frame(
+            descriptor,
+            super::telemetry::header_bytes(headers),
+            &message.payload,
+            "provider",
+        );
+        Ok(())
     }
 
     pub(crate) async fn verify_provider(
@@ -217,7 +324,7 @@ impl TransferPeer {
         descriptor: &TransferFrameDescriptor,
     ) -> Result<(), ServerError> {
         let _charge =
-            super::telemetry::Charge::new(message.payload.len(), descriptor.direction, "client-rx");
+            super::telemetry::Charge::new(message.payload.len(), descriptor.direction, "client");
         let headers = message
             .headers
             .as_ref()
@@ -226,11 +333,19 @@ impl TransferPeer {
             return Err(error("transfer provider identity mismatch"));
         }
         let digest = header(headers, "authorization-context")?;
-        let candidate = self
-            .guard
-            .prepare_replacement(&digest)
-            .await
-            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        let candidate = if self.guard.context_digest() == digest {
+            self.guard
+                .check_now()
+                .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+            None
+        } else {
+            Some(
+                self.guard
+                    .prepare_replacement(&digest)
+                    .await
+                    .map_err(|e| error(format!("transfer authority: {e:?}")))?,
+            )
+        };
         let proof =
             TransferServerProof::parse(header(headers, TRANSFER_PROOF_HEADER)?).map_err(error)?;
         verify_transfer_server_proof_encoded(
@@ -242,12 +357,21 @@ impl TransferPeer {
             &self.expected.session_key,
         )
         .map_err(error)?;
-        self.guard
-            .commit_replacement(candidate)
-            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        if let Some(candidate) = candidate {
+            self.guard
+                .commit_replacement(candidate)
+                .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        }
         self.guard
             .check_now()
-            .map_err(|e| error(format!("transfer authority: {e:?}")))
+            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        super::telemetry::frame(
+            descriptor,
+            super::telemetry::header_bytes(headers),
+            &message.payload,
+            "client",
+        );
+        Ok(())
     }
 }
 
@@ -276,9 +400,13 @@ pub(crate) async fn publish_provider(
     headers.insert("authorization-context", digest.as_str());
     headers.insert("session-key", auth.session_key.as_str());
     headers.insert(TRANSFER_PROOF_HEADER, proof.as_str());
+    let counted = payload.clone();
+    let header_bytes = super::telemetry::header_bytes(&headers);
     nats.publish_with_headers(subject.to_owned(), headers, payload)
         .await
-        .map_err(error)
+        .map_err(error)?;
+    super::telemetry::frame(descriptor, header_bytes, &counted, "provider");
+    Ok(())
 }
 
 pub(crate) async fn publish_signal(

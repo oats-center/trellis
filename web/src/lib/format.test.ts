@@ -1,12 +1,9 @@
 import { equal } from "node:assert/strict";
+import { test } from "node:test";
 
 import { compactDuration, errorMessage } from "./format.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void): void;
-};
-
-Deno.test("compactDuration preserves millisecond resolution", () => {
+test("compactDuration preserves millisecond resolution", () => {
   equal(compactDuration(0), "0ms");
   equal(compactDuration(243.4), "243ms");
   equal(compactDuration(2_184), "2.184s");
@@ -14,7 +11,7 @@ Deno.test("compactDuration preserves millisecond resolution", () => {
   equal(compactDuration(3_723_006), "1h 2m 3.006s");
 });
 
-Deno.test("errorMessage prefers explicit server messages", () => {
+test("errorMessage prefers explicit server messages", () => {
   equal(
     errorMessage({
       getContext: () => ({ message: "Current password is incorrect." }),
@@ -25,7 +22,7 @@ Deno.test("errorMessage prefers explicit server messages", () => {
   );
 });
 
-Deno.test("errorMessage prefers validation issues over generic invalid_request copy", () => {
+test("errorMessage prefers validation issues over generic invalid_request copy", () => {
   equal(
     errorMessage({
       getContext: () => ({ reason: "invalid_request" }),
@@ -39,7 +36,7 @@ Deno.test("errorMessage prefers validation issues over generic invalid_request c
   );
 });
 
-Deno.test("errorMessage renders auth reasons as actionable copy", () => {
+test("errorMessage renders auth reasons as actionable copy", () => {
   equal(
     errorMessage({ reason: "insufficient_permissions" }),
     "This Console session is missing permission for that action. Sign out and connect the Console again to accept the updated access.",

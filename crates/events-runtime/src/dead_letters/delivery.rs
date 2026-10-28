@@ -82,7 +82,7 @@ pub struct DeliveryReport {
     pub source_sequence: u64,
     /// Broker delivery count.
     pub delivery_count: u64,
-    /// Broker-issued JetStream acknowledgement subject for this exact delivery.
+    /// JetStream delivery address for correlation, not a credential or pending proof.
     pub delivery_proof: Option<String>,
     /// Replay generation, present only for targeted replay.
     pub replay_generation: Option<u64>,
@@ -159,6 +159,16 @@ impl DeliveryReporter {
         if authorized_resource_id != report.resource_id {
             return Err(DeliveryReportError::Validation(
                 "report is not authorized for this Consumer".to_owned(),
+            ));
+        }
+        if report.source_stream != REPLAY_STREAM
+            || !matches!(
+                report.outcome,
+                DeliveryOutcome::Succeeded | DeliveryOutcome::Unreplayable
+            )
+        {
+            return Err(DeliveryReportError::Validation(
+                "only terminal replay outcomes may be reported; exhaustion is broker-owned".into(),
             ));
         }
         let binding = self
@@ -250,6 +260,7 @@ impl DeliveryReporter {
             || proof.stream_sequence != report.source_sequence
             || proof.delivery_count != report.delivery_count
             || report.delivery_count == 0
+            || report.source_sequence > info.delivered.stream_sequence
             || (info.config.max_deliver > 0
                 && report.delivery_count > info.config.max_deliver as u64)
             || (report.outcome == DeliveryOutcome::Exhausted
@@ -260,18 +271,9 @@ impl DeliveryReporter {
                 "report does not match the current Consumer delivery".to_owned(),
             ));
         }
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            self.client
-                .request(delivery_proof.to_owned(), AckKind::Progress.into()),
-        )
-        .await
-        .map_err(|_| {
-            DeliveryReportError::Validation(
-                "delivery proof is no longer pending at the broker".to_owned(),
-            )
-        })?
-        .map_err(|error| DeliveryReportError::Validation(error.to_string()))?;
+        // A +WPI reply does not prove pending delivery (NATS replies even when
+        // the sequence is absent). Authorization is the exact resource binding;
+        // the address only correlates the caller's outcome with retained work.
         Ok(())
     }
 
@@ -315,6 +317,26 @@ impl DeliveryReporter {
             .await
             .map_err(delivery_journal_error)?
         {
+            if current.resource_id != binding.resource_id {
+                return Err(DeliveryReportError::Validation(
+                    "replay belongs to another Consumer".into(),
+                ));
+            }
+            let original = self
+                .journal
+                .original(&current)
+                .await
+                .map_err(delivery_journal_error)?
+                .ok_or_else(|| DeliveryReportError::NotFound(current.id.clone()))?;
+            if !binding
+                .filter_subjects
+                .iter()
+                .any(|filter| subject_matches(filter, &original.subject))
+            {
+                return Err(DeliveryReportError::Validation(
+                    "replay event is not selected by the Consumer".into(),
+                ));
+            }
             if current.generation > envelope.generation
                 || (current.generation == envelope.generation
                     && matches!(
@@ -334,7 +356,7 @@ impl DeliveryReporter {
             .report_replay_outcome(
                 &envelope.dead_letter_id,
                 envelope.generation,
-                report.outcome == DeliveryOutcome::Succeeded,
+                report.outcome,
                 report.delivery_count,
                 bounded_error(report.error),
             )
@@ -392,23 +414,18 @@ impl DeliveryReporter {
             header("Trellis-Event-Time"),
             header("Trellis-Event-Descriptor"),
         ) {
-            (
-                Some(session_key),
-                Some(proof),
-                Some(context),
-                Some(event_id),
-                Some(event_time),
-                Some(descriptor_identity),
-            ) => {
+            (Some(_), Some(_), Some(_), Some(_), Some(_), Some(_)) => {
                 match (self.verifier)(EventAuthorizationInput {
                     subject: raw.subject.to_string(),
-                    descriptor_identity,
                     payload: raw.payload.to_vec(),
-                    session_key,
-                    proof,
-                    authorization_context: context,
-                    event_id,
-                    event_time,
+                    headers: Some(raw.headers.clone()),
+                    original_publication: trellis_protocol::OriginalEventPublication {
+                        published_at: raw
+                            .time
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .map_err(|error| DeliveryReportError::Unavailable(error.to_string()))?,
+                        stream_sequence: trellis_protocol::U64s::new(raw.sequence),
+                    },
                 })
                 .await
                 {
@@ -425,6 +442,10 @@ impl DeliveryReporter {
         Ok(OriginalEvent {
             stream: stream_name.to_owned(),
             sequence,
+            published_at: raw
+                .time
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|error| DeliveryReportError::Unavailable(error.to_string()))?,
             event_id: header("Nats-Msg-Id"),
             subject: raw.subject.to_string(),
             payload_bytes: raw.payload.to_vec(),

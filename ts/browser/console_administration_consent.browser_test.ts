@@ -1,0 +1,208 @@
+import { strictEqual } from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
+
+import { withTrellisRuntime } from "../integration/_support/runtime.ts";
+import { browserRuntimeOptions } from "./browser_test_support.ts";
+
+// Uses the initialized production host and registered Console, never a fake issuer.
+for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
+  test(`Console consent promotes only selected administration (${selected ?? "none"})`, async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const username = runtime.adminUsername;
+      const password = runtime.adminPassword;
+      const origin = new URL(runtime.trellisUrl).origin;
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      const page = await browser.newPage();
+      const diagnostics: string[] = [];
+      page.on("console", (message) =>
+        diagnostics.push(`console ${message.type()}: ${message.text()}`),
+      );
+      page.on("pageerror", (error) =>
+        diagnostics.push(`pageerror: ${error.message}`),
+      );
+      page.on("request", (request) =>
+        diagnostics.push(
+          `${request.method()} ${new URL(request.url()).origin}${new URL(request.url()).pathname}`,
+        ),
+      );
+      page.on("response", (response) =>
+        diagnostics.push(
+          `${response.status()} ${new URL(response.url()).origin}${new URL(response.url()).pathname}`,
+        ),
+      );
+      page.on("requestfailed", (request) =>
+        diagnostics.push(
+          `failed ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`,
+        ),
+      );
+      page.on("websocket", (socket) => {
+        diagnostics.push(
+          `websocket ${new URL(socket.url()).origin}${new URL(socket.url()).pathname}`,
+        );
+        socket.on("socketerror", (error) =>
+          diagnostics.push(`websocket error: ${error}`),
+        );
+        socket.on("close", () => diagnostics.push("websocket closed"));
+      });
+      try {
+        page.setDefaultTimeout(10000);
+        page.setDefaultNavigationTimeout(10000);
+        await page.goto(new URL("/console/profile", origin).href);
+        await page
+          .getByRole("heading", { name: "Sign in", exact: true })
+          .waitFor();
+        await page.getByLabel("Username", { exact: true }).fill(username);
+        await page.getByLabel("Password", { exact: true }).fill(password);
+        await page
+          .getByRole("button", { name: "Sign in", exact: true })
+          .click();
+        await page
+          .getByRole("heading", { name: /wants to use your account/ })
+          .waitFor();
+
+        // Each group's checkbox selects all of its optional access.
+        const access = page.getByRole("checkbox", { name: /^Allow all: / });
+        const administration = page
+          .getByRole("group", { name: "Manage this Trellis", exact: true })
+          .getByRole("checkbox", { name: /^Allow all: / });
+        // Consent is opt-in: optional access starts unselected.
+        for (const choice of await access.all()) {
+          if (await choice.isEnabled())
+            strictEqual(await choice.isChecked(), false);
+        }
+        await page
+          .getByRole("button", { name: "Select all", exact: true })
+          .click();
+        // Bulk selection never includes administration.
+        const administrativeLabel =
+          await administration.getAttribute("aria-label");
+        for (const choice of await access.all()) {
+          if (await choice.isEnabled())
+            strictEqual(
+              await choice.isChecked(),
+              (await choice.getAttribute("aria-label")) !== administrativeLabel,
+            );
+        }
+        await page
+          .getByRole("button", { name: "Clear all", exact: true })
+          .click();
+        for (const choice of await access.all()) {
+          if (await choice.isEnabled())
+            strictEqual(await choice.isChecked(), false);
+        }
+        // Accept ordinary capabilities but decline the separate administrative choices.
+        for (const choice of await page.getByRole("checkbox").all())
+          if (await choice.isEnabled()) await choice.check();
+        await administration.uncheck();
+        if (selected) {
+          await page
+            .getByRole("group", { name: "Manage this Trellis", exact: true })
+            .getByRole("button")
+            .click();
+        }
+        if (selected)
+          await page
+            .getByRole("checkbox", { name: /Manage users and services/ })
+            .check();
+        await page.getByRole("button", { name: "Allow", exact: true }).click();
+        if (selected) {
+          // Administration takes a separate confirmation step.
+          await page
+            .getByRole("heading", { name: /Let .* manage this Trellis\?/ })
+            .waitFor();
+          await page
+            .getByRole("checkbox", { name: /I understand this app/ })
+            .check();
+          await page
+            .getByRole("button", { name: "Allow management", exact: true })
+            .click();
+        }
+        await page.waitForURL(
+          (url) => url.origin === origin && url.pathname === "/console/profile",
+        );
+        await page
+          .locator("main")
+          .getByText(username, { exact: true })
+          .first()
+          .waitFor();
+        await page
+          .getByText(
+            selected
+              ? "1 administrator power allowed."
+              : "No administrator powers allowed.",
+            { exact: true },
+          )
+          .waitFor();
+        // Reload must resume the same consented grant, not silently acquire other administration.
+        await page.reload();
+        await page
+          .locator("main")
+          .getByText(username, { exact: true })
+          .first()
+          .waitFor();
+        await page
+          .getByText(
+            selected
+              ? "1 administrator power allowed."
+              : "No administrator powers allowed.",
+            { exact: true },
+          )
+          .waitFor();
+        if (selected) {
+          await page.goto(new URL("/console/admin/users", origin).href);
+          await page
+            .getByRole("cell", { name: username, exact: true })
+            .first()
+            .waitFor();
+          // Managing users covers company sign-in providers, but not the
+          // installation's sign-in methods.
+          await page
+            .getByRole("link", { name: "Sign-in methods", exact: true })
+            .click();
+          await page
+            .getByRole("heading", {
+              name: "Company sign-in providers",
+              exact: true,
+            })
+            .waitFor();
+          strictEqual(
+            await page
+              .getByText("Username and password", { exact: true })
+              .count(),
+            0,
+          );
+        } else {
+          strictEqual(
+            await page
+              .getByRole("link", { name: "Sign-in methods", exact: true })
+              .count(),
+            0,
+          );
+        }
+        strictEqual(new URL(page.url()).origin, origin);
+      } catch (error) {
+        const results = fileURLToPath(
+          new URL("./test-results/", import.meta.url),
+        );
+        await mkdir(results, { recursive: true });
+        const prefix = `${results}console-consent-${selected ?? "none"}`;
+        // Callback URLs contain one-time credentials; capture the rendered page and
+        // request paths, never query strings or transport/token bodies.
+        await page.screenshot({ path: `${prefix}.png`, fullPage: true });
+        await writeFile(`${prefix}.html`, await page.content());
+        await writeFile(`${prefix}.log`, diagnostics.join("\n"));
+        console.error(await page.locator("body").innerText());
+        throw error;
+      } finally {
+        await browser.close();
+      }
+    }, browserRuntimeOptions());
+  });
+}

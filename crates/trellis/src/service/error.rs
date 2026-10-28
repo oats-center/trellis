@@ -189,7 +189,8 @@ pub enum ServerError {
     },
 
     #[error(
-        "reply inbox '{reply_to}' does not match authorized prefix '{expected_prefix}' for session '{session_key}' on subject '{subject}'"
+        "reply inbox '{reply_to}' does not match authorized prefix \
+        '{expected_prefix}' for session '{session_key}' on subject '{subject}'"
     )]
     #[doc(hidden)]
     ReplyInboxMismatch {
@@ -225,7 +226,9 @@ pub enum ServerError {
     OperationInvalidId { operation_id: String },
 
     #[error(
-        "operation '{operation_id}' belongs to service '{actual_service}' operation '{actual_operation}', expected service '{expected_service}' operation '{expected_operation}'"
+        "operation '{operation_id}' belongs to service '{actual_service}' \
+        operation '{actual_operation}', expected service '{expected_service}' \
+        operation '{expected_operation}'"
     )]
     #[doc(hidden)]
     OperationMismatch {
@@ -255,7 +258,8 @@ pub enum ServerError {
     },
 
     #[error(
-        "service '{service_name}' has invalid {resource_kind} resource binding '{resource_name}': {reason}"
+        "service '{service_name}' has invalid {resource_kind} resource binding \
+        '{resource_name}': {reason}"
     )]
     #[doc(hidden)]
     InvalidResourceBinding {
@@ -276,7 +280,8 @@ pub enum ServerError {
 
     /// Waiting for an object-store key exceeded the configured timeout.
     #[error(
-        "service '{service_name}' timed out waiting {timeout_ms}ms for store '{store}' object '{key}'"
+        "service '{service_name}' timed out waiting {timeout_ms}ms for store \
+        '{store}' object '{key}'"
     )]
     #[doc(hidden)]
     StoreWaitTimeout {
@@ -296,7 +301,8 @@ pub enum ServerError {
     },
 
     #[error(
-        "service '{service_name}' transfer object '{key}' in store '{store}' is {size} bytes, exceeding max object size {max_bytes}"
+        "service '{service_name}' transfer object '{key}' in store '{store}' is \
+        {size} bytes, exceeding max object size {max_bytes}"
     )]
     #[doc(hidden)]
     TransferObjectTooLarge {
@@ -308,7 +314,10 @@ pub enum ServerError {
     },
 
     /// A bound object-store upload exceeded its configured maximum.
-    #[error("store object exceeds configured maximum: attempted {attempted_bytes} bytes, max {max_bytes} bytes")]
+    #[error(
+        "store object exceeds configured maximum: attempted {attempted_bytes} \
+        bytes, max {max_bytes} bytes"
+    )]
     StoreObjectTooLarge {
         /// First size known to exceed the limit.
         attempted_bytes: u64,
@@ -421,7 +430,8 @@ pub enum ServerError {
     InvalidTransferHeader { header: &'static str, value: String },
 
     #[error(
-        "transfer object '{key}' in store '{store}' is {actual_size} bytes, but grant expected {expected_size} bytes"
+        "transfer object '{key}' in store '{store}' is {actual_size} bytes, \
+        but grant expected {expected_size} bytes"
     )]
     #[doc(hidden)]
     TransferObjectSizeMismatch {

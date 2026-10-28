@@ -4,24 +4,21 @@ mod query;
 mod store;
 
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
+use trellis_rs::__internal::RuntimeOwner as _;
 
 use async_nats::jetstream::{self, consumer, AckKind};
-use async_nats::HeaderMap;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
 use bytes::Bytes;
 use futures_util::{stream as futures_stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
-use trellis_rs::client::SessionAuth;
-use trellis_rs::service::{
-    internal::run_builtin_authenticated_router, DeclaredRpcError, Router, ServerError,
-};
+use trellis_rs::__internal::run_builtin_authenticated_router;
+use trellis_rs::client::{EventDescriptor, PreparedTrellisEvent};
+use trellis_rs::service::{DeclaredRpcError, Router, ServerError};
 use trellis_runtime_apis::__types::trellis::HealthHeartbeatSample;
+use trellis_runtime_apis::apis::trellis_health_v1::events::Heartbeat;
 use trellis_runtime_apis::apis::trellis_health_v1::events::StatusChanged as HealthStatusChangedEvent;
 use trellis_runtime_apis::apis::trellis_health_v1::lives::Watch as HealthWatchLiveDescriptor;
 use trellis_runtime_apis::apis::trellis_health_v1::rpc::{
@@ -42,19 +39,11 @@ use crate::SubsystemName;
 use self::store::{HealthStore, HeartbeatIdentity, ProjectionCommit};
 
 pub(crate) const HEALTH_STREAM: &str = "TRELLIS_HEALTH";
-pub(crate) const HEALTH_SUBJECT: &str = "health.v1.heartbeat.>";
+pub(crate) const HEALTH_SUBJECT: &str = Heartbeat::SUBJECT;
 const INVALIDATION_PREFIX: &str = "health.v1.invalidation";
-const EVENT_TIME_HEADER: &str = "Trellis-Event-Time";
 pub(crate) const DEFAULT_TRANSPORT_RETENTION_HOURS: u64 = 24;
 pub(crate) const DEFAULT_TRANSPORT_MAX_BYTES: i64 = 1_073_741_824;
 const DEFAULT_HISTORY_RETENTION_DAYS: i64 = 30;
-const RPC_SUBJECTS: &[&str] = &[
-    "rpc.v1.Health.Query",
-    "rpc.v1.Health.Inspect",
-    "rpc.v1.Health.Metrics",
-    "rpc.v1.Health.Summary",
-    "live.v1.route.Health.Watch",
-];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,8 +98,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let router = build_router(store.clone(), invalidation_tx.clone());
     let stop = StopHandle::new();
     let task_stop = stop.clone();
-    let mut validator_join =
-        crate::platform::auth::verifier::ensure_read_only(context, task_stop.clone()).await?;
     let nats = context.trellis_nats.clone();
     let history_days = context
         .config
@@ -119,35 +106,37 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .and_then(|health| health.history_retention_days)
         .map(i64::from)
         .unwrap_or(DEFAULT_HISTORY_RETENTION_DAYS);
-    let (event_auth, event_context_digest) = load_event_auth(&context.config)?;
-    let event_auth = (Arc::new(event_auth), event_context_digest);
-    let verifier: std::sync::Arc<dyn trellis_rs::service::RequestValidator> =
-        match context.platform_verifier.get() {
-            Some(verifier) => std::sync::Arc::new(verifier.clone()),
-            None => std::sync::Arc::new(crate::platform::auth::verifier::DenyAllValidator),
-        };
     let live_owner = context
         .live_providers
         .receiver(crate::platform::LiveProviderRole::Health);
+    let mut event_owner = live_owner.clone();
     let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let invalidation_loop = run_invalidation_subscriber(
             nats.clone(),
             invalidation_subject.clone(),
             invalidation_tx,
         );
-        let owner_loop = run_owner(
-            nats.clone(),
-            jetstream,
-            owner,
-            store,
-            OwnerConfig {
-                projection_id,
-                invalidation_subject,
-                history_days,
-            },
-            event_auth,
-            task_stop.clone(),
-        );
+        let owner_loop = async {
+            let Some(event_owner) =
+                crate::platform::await_live_owner(&mut event_owner, &task_stop).await
+            else {
+                return Ok(());
+            };
+            run_owner(
+                nats.clone(),
+                jetstream,
+                owner,
+                store,
+                OwnerConfig {
+                    projection_id,
+                    invalidation_subject,
+                    history_days,
+                },
+                event_owner,
+                task_stop.clone(),
+            )
+            .await
+        };
         let api_stop = task_stop.clone();
         let api_loop = async move {
             let mut live_owner = live_owner;
@@ -157,44 +146,20 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             };
             let mut router = router;
             router.set_live_owner(owner.clone());
-            run_builtin_authenticated_router(
-                owner,
-                "trellis.health@v1",
-                RPC_SUBJECTS,
-                router,
-                verifier,
-            )
-            .await
+            let verifier = owner.runtime_validator("trellis.health@v1");
+            run_builtin_authenticated_router(owner, router, verifier).await
         };
         tokio::pin!(invalidation_loop, owner_loop, api_loop);
         let result = {
-            let validator_exit = async {
-                match validator_join.as_mut() {
-                    Some(join) => match join.await {
-                        Ok(Ok(())) => Err(RuntimeError::Platform(
-                            "authorization validator cache exited unexpectedly".to_owned(),
-                        )),
-                        Ok(Err(error)) => Err(error),
-                        Err(error) => Err(RuntimeError::Platform(format!(
-                            "authorization validator cache task failed: {error}"
-                        ))),
-                    },
-                    None => std::future::pending().await,
-                }
-            };
-            tokio::pin!(validator_exit);
             tokio::select! {
                 result = &mut invalidation_loop => result,
                 result = &mut owner_loop => result,
-                result = &mut api_loop => result.map_err(|error| RuntimeError::Health(error.to_string())),
-                result = &mut validator_exit => result,
+                result = &mut api_loop =>
+                    result.map_err(|error| RuntimeError::Health(error.to_string())),
                 () = task_stop.stopped() => Ok(()),
             }
         };
         task_stop.stop();
-        if let Some(join) = validator_join {
-            let _ = join.await;
-        }
         result
     }));
 
@@ -207,7 +172,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
 
 fn build_router(store: HealthStore, invalidations: broadcast::Sender<Invalidation>) -> Router {
     let mut router = Router::new();
-    router.set_provider_deployment_id("dep_trellis_health_runtime");
     let query_store = store.clone();
     router.register_rpc::<HealthQueryRpc, _, _>(move |_context, input| {
         let store = query_store.clone();
@@ -318,7 +282,7 @@ async fn run_owner(
     owner: crate::ownership::OwnerContext,
     store: HealthStore,
     config: OwnerConfig,
-    event_auth: (Arc<SessionAuth>, String),
+    event_owner: trellis_rs::__internal::LiveProviderOwner,
     stop: StopHandle,
 ) -> Result<(), RuntimeError> {
     tracing::debug!(
@@ -365,10 +329,19 @@ async fn run_owner(
         tokio::select! {
             message = messages.next() => {
                 let Some(message) = message else {
-                    return Err(RuntimeError::Health("health projector consumer ended".to_string()));
+                    return Err(RuntimeError::Health(
+                        "health projector consumer ended".to_string(),
+                    ));
                 };
                 let message = message.map_err(|error| RuntimeError::Health(error.to_string()))?;
-                project_message(&nats, &store, &config.invalidation_subject, message).await?;
+                project_message(
+                    &nats,
+                    &store,
+                    &config.invalidation_subject,
+                    &event_owner,
+                    message,
+                )
+                .await?;
             }
             _ = deadlines.tick() => {
                 if let Some(commit) = store.expire_due(now_ns()).map_err(map_runtime_store_error)? {
@@ -376,10 +349,8 @@ async fn run_owner(
                 }
             }
             _ = outbox.tick() => publish_outbox(
-                &nats,
                 &store,
-                &event_auth.0,
-                &event_auth.1,
+                &event_owner,
             )
             .await?,
             _ = retention.tick() => {
@@ -402,6 +373,7 @@ async fn project_message(
     nats: &async_nats::Client,
     store: &HealthStore,
     invalidation_subject: &str,
+    verifier: &trellis_rs::__internal::LiveProviderOwner,
     message: jetstream::Message,
 ) -> Result<(), RuntimeError> {
     let info = message
@@ -411,7 +383,80 @@ async fn project_message(
         RuntimeError::Health("health message timestamp is out of range".to_string())
     })?;
     let stream_sequence = info.stream_sequence;
-    let result = parse_heartbeat(message.subject.as_str(), &message.payload);
+    let original = trellis_protocol::OriginalEventPublication {
+        published_at: info
+            .published
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|error| RuntimeError::Health(error.to_string()))?,
+        stream_sequence: trellis_protocol::U64s::new(stream_sequence),
+    };
+    let owner = verifier.runtime_authorization_owner();
+    let transport = verifier.runtime_nats();
+    let verified = async {
+        let header = |name: &str| {
+            message
+                .headers
+                .as_ref()
+                .and_then(|headers| headers.get(name))
+                .map(|value| value.as_str())
+                .ok_or_else(|| {
+                    trellis_rs::client::TrellisClientError::Bootstrap(
+                        "missing health event proof".into(),
+                    )
+                })
+        };
+        let event: trellis_protocol::SessionEvent =
+            serde_json::from_str(header("Trellis-Session-Event")?)?;
+        let proof =
+            trellis_protocol::SessionEventProof::parse(header("proof")?).map_err(|error| {
+                trellis_rs::client::TrellisClientError::Bootstrap(error.to_string())
+            })?;
+        if event.subject != message.subject.as_str()
+            || event.api_id != Heartbeat::API_ID
+            || event.action != "Heartbeat"
+        {
+            return Err(trellis_rs::client::TrellisClientError::Bootstrap(
+                "health event descriptor mismatch".into(),
+            ));
+        }
+        let action = trellis_protocol::CatalogActionIdentity {
+            kind: trellis_protocol::ApiSurfaceKind::Event,
+            name: "Heartbeat".into(),
+            direction: trellis_protocol::PermissionAction::Publish,
+        };
+        let status = owner
+            .historical_status(&transport, &event.authority_digest)
+            .await?;
+        owner
+            .verify_historical_event(
+                &transport,
+                trellis_rs::client::HistoricalEventVerificationInput {
+                    event: &event,
+                    payload: &message.payload,
+                    proof: &proof,
+                    action: &action,
+                    original_publication: &original,
+                    status: &status,
+                },
+            )
+            .await
+    }
+    .await;
+    let result = match verified {
+        Ok(verified) => parse_heartbeat(verified.authority().authority(), &message.payload),
+        Err(
+            trellis_rs::client::TrellisClientError::AuthorizationUnavailable(_)
+            | trellis_rs::client::TrellisClientError::Timeout
+            | trellis_rs::client::TrellisClientError::NatsRequest(_),
+        ) => {
+            message
+                .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
+                .await
+                .map_err(|error| RuntimeError::Health(error.to_string()))?;
+            return Ok(());
+        }
+        Err(_) => Err("health publication authentication rejected".into()),
+    };
     let (identity, sample) = match result {
         Ok(value) => value,
         Err(reason) => {
@@ -450,23 +495,45 @@ async fn project_message(
 }
 
 fn parse_heartbeat(
-    subject: &str,
+    authority: &trellis_protocol::UnsignedSessionAuthority,
     payload: &[u8],
 ) -> Result<(HeartbeatIdentity, HealthHeartbeatSample), String> {
     if payload.len() > 65_536 {
         return Err("payload exceeds 64 KiB".to_string());
     }
-    let parts = subject.split('.').collect::<Vec<_>>();
-    if parts.len() != 9 || parts[..3] != ["health", "v1", "heartbeat"] {
-        return Err("subject does not match health protocol".to_string());
-    }
+    let (kind, participant_id, deployment_id, instance_id) = match &authority.binding {
+        trellis_protocol::SessionBinding::Service {
+            participant_id,
+            deployment_id,
+            instance_id,
+        } if authority.principal_kind == trellis_protocol::PrincipalKind::Service => {
+            ("service", participant_id, deployment_id, instance_id)
+        }
+        trellis_protocol::SessionBinding::Device {
+            participant_id,
+            deployment_id,
+            instance_id,
+        } if authority.principal_kind == trellis_protocol::PrincipalKind::Device => {
+            ("device", participant_id, deployment_id, instance_id)
+        }
+        _ => return Err("health publisher is not a provisioned native identity".into()),
+    };
+    let metadata = authority
+        .extensions
+        .get("trellis.nativeParticipant.v1")
+        .filter(|metadata| metadata["participantId"].as_str() == Some(participant_id.as_str()))
+        .ok_or("missing signed native participant identity")?;
+    let digest = metadata["participantDigest"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("missing signed participant digest")?;
     let identity = HeartbeatIdentity {
-        participant_kind: parts[3].to_string(),
-        contract_id: decode_token(parts[4])?,
-        contract_digest: decode_token(parts[5])?,
-        deployment_id: decode_token(parts[6])?,
-        instance_id: decode_token(parts[7])?,
-        session_key: parts[8].to_string(),
+        participant_kind: kind.into(),
+        contract_id: participant_id.clone(),
+        contract_digest: digest.into(),
+        deployment_id: deployment_id.clone(),
+        instance_id: instance_id.clone(),
+        session_key: authority.session_public_key.clone(),
     };
     if !matches!(identity.participant_kind.as_str(), "service" | "device")
         || identity.session_key.is_empty()
@@ -529,90 +596,32 @@ fn validate_sample(
 }
 
 async fn publish_outbox(
-    nats: &async_nats::Client,
     store: &HealthStore,
-    auth: &SessionAuth,
-    context_digest: &str,
+    owner: &trellis_rs::__internal::LiveProviderOwner,
 ) -> Result<(), RuntimeError> {
-    let jetstream = jetstream::new(nats.clone());
     for transition in store
         .pending_transitions(100)
         .map_err(map_runtime_store_error)?
     {
-        let headers = transition_headers(auth, context_digest, &transition)?;
-        match jetstream
-            .publish_with_headers(
-                HealthStatusChangedEvent::SUBJECT.to_string(),
-                headers,
-                Bytes::from(transition.payload),
-            )
-            .await
-        {
-            Ok(ack) => match ack.await {
-                Ok(_) => store
-                    .mark_transition_published(&transition.event_id, now_ns())
-                    .map_err(map_runtime_store_error)?,
-                Err(error) => store
-                    .mark_transition_failed(&transition.event_id, &error.to_string())
-                    .map_err(map_runtime_store_error)?,
-            },
+        let event = PreparedTrellisEvent::restore(
+            HealthStatusChangedEvent::SUBJECT.to_string(),
+            Bytes::from(transition.payload),
+            HealthStatusChangedEvent::descriptor_identity()
+                .map_err(|error| RuntimeError::Health(error.to_string()))?,
+            transition.event_id.clone(),
+            store::rfc3339(transition.created_at_ns).map_err(map_runtime_store_error)?,
+        )
+        .map_err(|error| RuntimeError::Health(error.to_string()))?;
+        match owner.publish_prepared(&event).await {
+            Ok(()) => store
+                .mark_transition_published(&transition.event_id, now_ns())
+                .map_err(map_runtime_store_error)?,
             Err(error) => store
                 .mark_transition_failed(&transition.event_id, &error.to_string())
                 .map_err(map_runtime_store_error)?,
         }
     }
     Ok(())
-}
-
-fn transition_headers(
-    auth: &SessionAuth,
-    context_digest: &str,
-    transition: &store::PendingTransition,
-) -> Result<HeaderMap, RuntimeError> {
-    let event_time = store::rfc3339(transition.created_at_ns).map_err(map_runtime_store_error)?;
-    let mut headers = HeaderMap::new();
-    headers.insert("Nats-Msg-Id", transition.event_id.as_str());
-    headers.insert(EVENT_TIME_HEADER, event_time.as_str());
-    let descriptor_identity =
-        <HealthStatusChangedEvent as trellis_rs::client::EventDescriptor>::descriptor_identity()
-            .map_err(|error| RuntimeError::Health(error.to_string()))?;
-    headers.insert("Trellis-Event-Descriptor", descriptor_identity.as_str());
-    headers.insert("authorization-context", context_digest);
-    headers.insert(
-        "proof",
-        auth.create_event_proof(
-            context_digest,
-            &descriptor_identity,
-            HealthStatusChangedEvent::SUBJECT,
-            &transition.payload,
-            &transition.event_id,
-            &event_time,
-        )
-        .map_err(|error| RuntimeError::Health(format!("invalid event proof: {error}")))?
-        .as_str(),
-    );
-    Ok(headers)
-}
-
-fn load_event_auth(config: &crate::RuntimeConfig) -> Result<(SessionAuth, String), RuntimeError> {
-    let path = config.event_session_seed_file.as_ref().ok_or_else(|| {
-        RuntimeError::Health("event_session_seed_file is required for health mode".to_string())
-    })?;
-    let seed = std::fs::read_to_string(path).map_err(|error| {
-        RuntimeError::Health(format!("failed to read '{}': {error}", path.display()))
-    })?;
-    let auth = SessionAuth::from_seed_base64url(seed.trim())
-        .map_err(|error| RuntimeError::Health(format!("invalid event session seed: {error}")))?;
-    let digest_path = config.event_context_digest_file.as_ref().ok_or_else(|| {
-        RuntimeError::Health("event_context_digest_file is required for health mode".to_string())
-    })?;
-    let context_digest = std::fs::read_to_string(digest_path).map_err(|error| {
-        RuntimeError::Health(format!(
-            "failed to read '{}': {error}",
-            digest_path.display()
-        ))
-    })?;
-    Ok((auth, context_digest.trim().to_owned()))
 }
 
 async fn publish_invalidation(
@@ -660,13 +669,6 @@ fn health_watch_frame(value: Value) -> Result<HealthWatchFrame, ServerError> {
     Ok(HealthWatchFrame(WireBytes(serde_json::to_vec(&value)?)))
 }
 
-fn decode_token(token: &str) -> Result<String, String> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(token)
-        .map_err(|_| "subject identity token is not base64url".to_string())?;
-    String::from_utf8(bytes).map_err(|_| "subject identity token is not UTF-8".to_string())
-}
-
 fn current_revision(store: &HealthStore) -> Result<i64, RuntimeError> {
     let response = store
         .summary(
@@ -702,76 +704,4 @@ fn map_runtime_store_error(error: store::HealthStoreError) -> RuntimeError {
 
 fn now_ns() -> i64 {
     i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos()).unwrap_or(i64::MAX)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use trellis_rs::client::{verify_event_proof, VerifyEventProofInput};
-
-    #[test]
-    fn heartbeat_subject_identity_is_authoritative() {
-        let payload = serde_json::to_vec(&json!({
-            "sample": {"id": "01J00000000000000000000000", "time": "2026-01-01T00:00:00Z"},
-            "participant": {
-                "name": "Jobs",
-                "kind": "service",
-                "instanceId": "rust-1",
-                "contractId": "trellis.jobs@v1",
-                "contractDigest": "digest-alpha",
-                "startedAt": "2026-01-01T00:00:00Z",
-                "publishIntervalMs": "30000",
-                "runtime": "rust"
-            },
-            "reportedStatus": "healthy",
-            "checks": [{"name": "nats", "status": "ok", "latencyMs": 0}]
-        }))
-        .expect("serialize sample");
-        let (identity, _) = parse_heartbeat(
-            "health.v1.heartbeat.service.dHJlbGxpcy5qb2JzQHYx.ZGlnZXN0LWFscGhh.am9icy5kZWZhdWx0.cnVzdC0x.session_key",
-            &payload,
-        )
-        .expect("parse heartbeat");
-        assert_eq!(identity.contract_id, "trellis.jobs@v1");
-        assert_eq!(identity.deployment_id, "jobs.default");
-        assert_eq!(identity.instance_id, "rust-1");
-    }
-
-    #[test]
-    fn status_transition_headers_are_signed() {
-        let auth = SessionAuth::from_seed_base64url("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-            .expect("session auth");
-        let context_digest = "byhVYTUxr4iVywgon-utTJesrl5WZVm1MC0PXqCU06c";
-        let transition = store::PendingTransition {
-            event_id: "01J00000000000000000000000".to_string(),
-            created_at_ns: 1_767_225_600_000_000_000,
-            payload: br#"{"status":"offline"}"#.to_vec(),
-        };
-        let headers =
-            transition_headers(&auth, context_digest, &transition).expect("signed headers");
-        assert_eq!(
-            headers
-                .get("authorization-context")
-                .expect("authorization-context")
-                .as_str(),
-            context_digest
-        );
-        let event_time = headers.get(EVENT_TIME_HEADER).expect("event time").as_str();
-        let proof = headers.get("proof").expect("proof").as_str();
-
-        assert!(verify_event_proof(VerifyEventProofInput {
-            public_session_key: &auth.session_key,
-            context_digest,
-            descriptor_identity: headers
-                .get("Trellis-Event-Descriptor")
-                .expect("event descriptor")
-                .as_str(),
-            subject: HealthStatusChangedEvent::SUBJECT,
-            payload: &transition.payload,
-            event_id: &transition.event_id,
-            event_time,
-            proof_base64url: proof,
-        })
-        .expect("verify event proof"));
-    }
 }
