@@ -209,7 +209,10 @@ Plain `trellis-server` uses the installation in `~/.config/trellis` (or
 hostnames, ports and certificates) and prints the matching `init` command;
 `--init` creates a localhost development installation (plain HTTP on loopback)
 without asking, and without a terminal it fails with a message instead. `trellis-server init` creates one with chosen
-hostnames and ports. With no `--out`, data goes to the profile's XDG (or FHS)
+hostnames and ports. `init --dev --host <name>` creates a development
+installation other machines can use: one TLS port carries the Console,
+sign-in (issuer `https://<name>:3000/auth`) and browsers' NATS (`/nats`), so a
+browser accepts one generated certificate. It is never a production setup. With no `--out`, data goes to the profile's XDG (or FHS)
 folders. `init --out <dir>` writes a self-contained bundle whose `[paths]` keep
 data, state, cache, runtime files and logs inside it; start it with
 `trellis-server --config <dir>/config.toml`. Several bundles can share a host.
@@ -1629,7 +1632,9 @@ let mut service = connect(
 When the installation serves a private CA, such as the Trellis-generated
 installation CA, set `runtime_trust.root_certificates = vec![ca_path]` from
 provisioning. Native OAuth discovery takes the same roots:
-`discover_native_oauth(origin, &[ca_path])`, and the returned trust carries them
+`discover_native_oauth(issuer, &[ca_path])` (the sign-in origin, or
+`https://<host>:<port>/auth` for a development installation), and the returned
+trust carries them
 into the broker connection. Non-empty roots replace the platform trust store for
 that installation; an empty list uses the platform store. Never disable
 certificate verification.

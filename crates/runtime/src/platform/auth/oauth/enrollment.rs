@@ -713,7 +713,7 @@ fn enroll(store: &SqliteAuthorizationStore, mut body: Value, now: i64) -> Result
     let make = |request| {
         trellis_protocol::SessionProofInput::device_enrollment(
             trellis_protocol::DeviceEnrollmentSessionProofInput {
-                origin: store.settings.oauth_origin.clone(),
+                origin: store.settings.oauth_issuer.clone(),
                 unsigned_request: request,
             },
         )
@@ -914,7 +914,7 @@ fn enroll(store: &SqliteAuthorizationStore, mut body: Value, now: i64) -> Result
                 "principalId":principal,
                 "deploymentId":deployment,
                 "instanceId":instance,
-                "activationUrl":format!("{}/device-enrollment?reviewId={review}",store.settings.oauth_origin),
+                "activationUrl":format!("{}/device-enrollment?reviewId={review}",store.settings.oauth_issuer),
                 "expiresAt":expiry*1000,
                 "retryAfterMs":1000
                     }

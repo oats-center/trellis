@@ -217,7 +217,14 @@ impl NativeCredentialLease {
                 Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
                 _ => false,
             };
-            if issuer.origin().ascii_serialization() != scope.issuer
+            // The issuer is an origin, or in development mode an origin plus
+            // the path sign-in is served under, in exactly one spelling.
+            let canonical = format!(
+                "{}{}",
+                issuer.origin().ascii_serialization(),
+                issuer.path().trim_end_matches('/')
+            );
+            if canonical != scope.issuer
                 || !(issuer.scheme() == "https" || (issuer.scheme() == "http" && loopback))
                 || [&scope.instance_id, &scope.account, &scope.client_id]
                     .iter()

@@ -102,6 +102,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                     .unwrap_or_else(|| "127.0.0.1".into());
                 format!("{host}:{}", options.nats.websocket_port)
             }),
+            development: options.runtime.development,
         }),
         nats: Some(NatsConfig {
             managed: options.runtime.managed_nats,

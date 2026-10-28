@@ -29,7 +29,7 @@ pub(super) use details::RequestedAuthority;
 pub(crate) use engine::OAuthEngine;
 #[cfg(test)]
 pub(crate) use engine::{TokenError, TrellisTokenResponse};
-pub(crate) use http::router;
+pub(crate) use http::{router, under_development_path};
 pub(super) use portal::ConsentPresentation;
 pub(crate) use storage::OAuthStorage;
 pub(crate) use transport::OAuthListener;

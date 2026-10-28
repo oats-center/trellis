@@ -332,7 +332,7 @@ staticPasswords:
         .to_owned();
 
     let mut f = fixture();
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     Arc::get_mut(&mut f.store)
         .unwrap()
         .settings

@@ -186,7 +186,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
             .await
             .unwrap();
     });
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

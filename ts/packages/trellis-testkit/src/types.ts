@@ -70,6 +70,12 @@ export type TrellisTestRuntimeStartOptions = {
    */
   sameOriginWebsocket?: boolean;
   /**
+   * Create a development installation (`trellis-server init --dev`): the
+   * Console's port also serves sign-in under `/auth` and browsers' NATS, so
+   * one certificate covers everything a browser reaches.
+   */
+  development?: boolean;
+  /**
    * Advertise an interruptible TCP proxy as the native NATS transport so tests
    * can drop and restore the real physical path for native clients.
    */

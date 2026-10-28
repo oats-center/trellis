@@ -88,7 +88,7 @@ pub(super) fn avatar_url(
         .mint(principal, profile.revision)?;
     Some(format!(
         "{}/profile/avatars/{token}",
-        store.settings.oauth_origin
+        store.settings.oauth_issuer
     ))
 }
 

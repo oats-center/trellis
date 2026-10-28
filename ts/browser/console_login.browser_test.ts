@@ -71,6 +71,38 @@ test("Console reaches NATS on its own origin when the runtime relays WebSockets"
   );
 });
 
+test("a development installation signs the Console in through /auth on its one port", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        const console = new URL(runtime.trellisUrl);
+        const signIn: URL[] = [];
+        page.on("framenavigated", (frame) => {
+          const url = new URL(frame.url());
+          if (url.pathname.startsWith("/auth/")) signIn.push(url);
+        });
+        const sockets: URL[] = [];
+        page.on("websocket", (socket) => sockets.push(new URL(socket.url())));
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+          waitUntil: "domcontentloaded",
+        });
+        // Listed users arrive over an authenticated NATS RPC.
+        await page.locator(".users-row").first().waitFor({ state: "visible" });
+        assert(signIn.length > 0, "sign-in ran under /auth");
+        for (const url of [...signIn, ...sockets])
+          assert.equal(url.host, console.host, url.href);
+        assert(sockets.length > 0, "the Console opened a broker WebSocket");
+      } finally {
+        await context.close();
+      }
+    },
+    browserRuntimeOptions({ development: true }),
+  );
+});
+
 test("browser carrier interruption resumes a fresh authenticated RPC without reloading", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);

@@ -19,8 +19,16 @@ a new installation. A production install usually has three:
 - NATS, for example `tls://nats.example.com:4222` for services and
   `wss://nats.example.com` for browsers
 
-[Reach Trellis from other machines](/guides/running-trellis/other-machines#the-settings-you-can-choose)
-lists the `init` flags that set each one.
+These `init` flags set them; `--host` changes the hostname in every default at
+once:
+
+| Flag                                            | Default                     | Sets                                                                     |
+| ----------------------------------------------- | --------------------------- | ------------------------------------------------------------------------ |
+| `--public-origin https://console.example.com`   | `https://<host>:3000`       | The Console's address                                                    |
+| `--oauth-origin https://auth.example.com`       | `https://<host>:3001`       | The sign-in page's address                                               |
+| `--nats-server-url tls://nats.example.com:4222` | `tls://<host>:4222`         | Where services connect to NATS                                           |
+| `--nats-websocket-url wss://nats.example.com`   | relayed through the Console | Where browsers connect to NATS directly (with `--nats-websocket direct`) |
+| `--trellis-port`, `--oauth-port`                | `3000`, `3001`              | The Console's and sign-in's ports                                        |
 
 ## Where an installation keeps its files
 

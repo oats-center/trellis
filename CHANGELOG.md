@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Development mode for other machines: `trellis-server init --dev --host
+eta.oats` (or the first-start wizard's "From other machines, for
+  development") serves the Console, sign-in under `/auth` and browsers' NATS
+  on one port with one generated certificate, which a browser accepts once.
+  The config records it as `[http] development = true`. The Rust and
+  TypeScript clients accept an issuer with a path such as
+  `https://eta.oats:3000/auth`, and the testkits take `development: true`.
+- `trellis-server init --host` sets the hostname every default address uses.
+
 ### Changed
 
 - A first `trellis-server` with no installation runs a short setup wizard: who

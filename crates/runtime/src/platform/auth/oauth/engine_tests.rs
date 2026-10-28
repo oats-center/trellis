@@ -51,7 +51,7 @@ async fn managed_client_updates_select_flows_and_redeem_native_and_browser_codes
         .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let authority = f.store;
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
@@ -403,7 +403,7 @@ async fn provisional_client_capacity_recovers_without_breaking_an_approved_refre
         .unwrap();
     let token_uri = format!(
         "{}/token",
-        engine.server.store().authority.settings.oauth_origin
+        engine.server.store().authority.settings.oauth_issuer
     );
     let runtime = URL_SAFE_NO_PAD.encode([21; 16]);
     let ephemeral = nkeys::KeyPair::new_user();
@@ -555,7 +555,7 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
     let mut f = fixture();
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", socket.local_addr().unwrap());
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
     let listener = super::super::oauth::OAuthListener::load(
@@ -632,7 +632,7 @@ async fn portal_sign_out_returns_only_to_an_origin_the_client_registered() {
     let mut f = fixture();
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", socket.local_addr().unwrap());
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
     let listener = super::super::oauth::OAuthListener::load(
@@ -699,7 +699,7 @@ async fn trusted_proxy_clients_without_origin_have_independent_budgets() {
     let mut f = fixture();
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", socket.local_addr().unwrap());
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
     let listener = super::super::oauth::OAuthListener::load(
@@ -747,7 +747,7 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     let mut f = fixture();
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", socket.local_addr().unwrap());
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -950,7 +950,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1332,7 +1332,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let token_uri = format!("{origin}/token");
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1662,7 +1662,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     drop(engine);
     drop(authority);
     let mut reopened = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
-    reopened.settings.oauth_origin = origin.clone();
+    reopened.settings.oauth_issuer = origin.clone();
     let authority = Arc::new(reopened);
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
@@ -2017,7 +2017,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let authority = f.store;
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
@@ -2419,7 +2419,7 @@ async fn people_create_their_own_account_only_where_the_installation_and_the_app
             .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+        Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
         if installation {
             let open = AuthSignInSettingsUpdateRequest {
                 local_users: true,

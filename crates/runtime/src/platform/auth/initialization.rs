@@ -132,12 +132,11 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<String, AuthError> {
         let registration = console_registration(origin)?;
-        if url::Url::parse(&registration.redirect_uris[0])
+        let callback_origin = url::Url::parse(&registration.redirect_uris[0])
             .map_err(|_| AuthError::Denied)?
             .origin()
-            .ascii_serialization()
-            == self.settings.oauth_origin
-        {
+            .ascii_serialization();
+        if self.settings.reserves_origin(&callback_origin) {
             return Err(AuthError::Invalid("reserved_oauth_origin".into()));
         }
         self.initialize_administrator(
@@ -328,12 +327,11 @@ impl super::OAuthStorage {
         now: i64,
     ) -> Result<(String, Option<String>), AuthError> {
         let registration = console_registration(origin)?;
-        if url::Url::parse(origin)
+        let console_origin = url::Url::parse(origin)
             .map_err(|_| AuthError::Denied)?
             .origin()
-            .ascii_serialization()
-            == self.authority.settings.oauth_origin
-        {
+            .ascii_serialization();
+        if self.authority.settings.reserves_origin(&console_origin) {
             return Err(AuthError::Invalid("reserved_oauth_origin".into()));
         }
         let initialized = self.authority.initialize_administrator(
@@ -352,7 +350,7 @@ impl super::OAuthStorage {
                     .map_err(|_| AuthError::Unavailable)?;
                 Ok::<_, AuthError>(format!(
                     "{}/account/reset?token={token}",
-                    self.authority.settings.oauth_origin
+                    self.authority.settings.oauth_issuer
                 ))
             })
             .transpose()?;
@@ -412,7 +410,7 @@ impl super::OAuthStorage {
                 .map_err(|_| AuthError::Unavailable)?;
             Ok(Some(format!(
                 "{}/account/reset?token={token}",
-                self.authority.settings.oauth_origin
+                self.authority.settings.oauth_issuer
             )))
         })
     }

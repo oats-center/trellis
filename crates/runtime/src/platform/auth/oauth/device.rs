@@ -218,7 +218,7 @@ impl OAuthEngine {
         .map_err(|_| ErrorResponse::new(ErrorCode::InvalidRequest))?;
         let uri = format!(
             "{}/device_authorization",
-            self.server.store().authority.settings.oauth_origin
+            self.server.store().authority.settings.oauth_issuer
         );
         let binding = TokenBinding::verify(
             &self.verifiers,

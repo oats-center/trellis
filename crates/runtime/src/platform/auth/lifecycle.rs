@@ -209,7 +209,10 @@ impl SqliteAuthorizationStore {
                         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
                         _ => false,
                     };
-                    if uri.origin().ascii_serialization() == self.settings.oauth_origin {
+                    if self
+                        .settings
+                        .reserves_origin(&uri.origin().ascii_serialization())
+                    {
                         return Err(AuthError::Invalid("reserved_oauth_origin".into()));
                     }
                     // A plaintext loopback browser callback is development-only;
@@ -229,11 +232,13 @@ impl SqliteAuthorizationStore {
                     {
                         return Err(AuthError::Invalid("unsafe redirect".into()));
                     }
-                    super::warn_oauth_cookie_isolation(
-                        &url::Url::parse(&self.settings.oauth_origin)
-                            .map_err(|_| AuthError::Denied)?,
-                        &uri,
-                    );
+                    if !self.settings.development {
+                        super::warn_oauth_cookie_isolation(
+                            &url::Url::parse(&self.settings.oauth_issuer)
+                                .map_err(|_| AuthError::Denied)?,
+                            &uri,
+                        );
+                    }
                 }
                 for name in &registration.implied_capabilities {
                     capability(connection, name)?;

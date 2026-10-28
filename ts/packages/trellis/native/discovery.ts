@@ -55,7 +55,6 @@ export async function discoverNativeOAuth(
       host === "::1" ||
       (isIP(host) === 4 && host.startsWith("127."));
     if (
-      url.pathname !== "/" ||
       url.username ||
       url.password ||
       url.search ||
@@ -63,8 +62,11 @@ export async function discoverNativeOAuth(
       (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
     )
       throw new AuthError({ reason: "InvalidIssuer" });
+    // A development installation's issuer carries a path (`/auth`) on the
+    // Console's origin; metadata lives under the issuer either way.
+    const issuer = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
     const response = await fetch(
-      `${url.origin}/.well-known/oauth-authorization-server`,
+      `${issuer}/.well-known/oauth-authorization-server`,
       {
         redirect: "error",
         credentials: "omit",
@@ -78,7 +80,7 @@ export async function discoverNativeOAuth(
     if (!response.ok) throw new AuthError({ reason: "OAuthUnavailable" });
     const dpopNonce = usableNonce(response.headers.get("DPoP-Nonce"));
     const metadata = metadataSchema.parse(await boundedJson(response));
-    if (metadata.issuer !== url.origin)
+    if (metadata.issuer !== issuer)
       throw new AuthError({ reason: "InvalidIssuer" });
     codecs.ulid.decode(metadata.trellis.trellisInstanceId);
     if (
@@ -128,7 +130,7 @@ export async function discoverNativeOAuth(
     if (nativeServers.length === 0)
       throw new AuthError({ reason: "InvalidIssuer" });
     return ok({
-      issuer: url.origin,
+      issuer,
       natsServers: nativeServers,
       trust: {
         instanceId: metadata.trellis.trellisInstanceId,

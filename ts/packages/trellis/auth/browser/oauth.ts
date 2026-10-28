@@ -124,7 +124,6 @@ export class BrowserOAuthClient {
         issuer.password ||
         issuer.hash ||
         issuer.search ||
-        issuer.pathname !== "/" ||
         (issuer.protocol !== "https:" &&
           !(
             options.loopbackDevelopment &&
@@ -134,7 +133,7 @@ export class BrowserOAuthClient {
       )
         return err(new AuthError({ reason: "InvalidIssuer" }));
       const response = await fetch(
-        new URL("/.well-known/oauth-authorization-server", issuer),
+        `${issuer.href.replace(/\/+$/, "")}/.well-known/oauth-authorization-server`,
         {
           redirect: "error",
           credentials: "omit",
@@ -351,7 +350,7 @@ export class BrowserOAuthClient {
   async #prepareTrust(metadata?: BrowserOAuthMetadata): Promise<void> {
     if (!metadata) {
       const response = await fetch(
-        new URL("/.well-known/oauth-authorization-server", this.scope.issuer),
+        `${this.scope.issuer.replace(/\/+$/, "")}/.well-known/oauth-authorization-server`,
         {
           redirect: "error",
           credentials: "omit",
@@ -365,10 +364,7 @@ export class BrowserOAuthClient {
     const active = metadata.trellis.issuers.filter(
       (key) => key.state === "active",
     );
-    if (
-      new URL(metadata.issuer).origin !== this.scope.issuer ||
-      active.length !== 1
-    )
+    if (metadata.issuer !== this.scope.issuer || active.length !== 1)
       throw new AuthError({ reason: "OAuthTrustUnavailable" });
     const owner = await authenticateIssuerChain(
       this.scope.issuer,

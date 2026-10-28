@@ -97,7 +97,11 @@ pub(crate) struct AuthSettings {
     pub(crate) administration: crate::config::AdministrationConfig,
     pub(crate) instance_id: String,
     pub(crate) account: String,
-    pub(crate) oauth_origin: String,
+    /// Sign-in's issuer: its own origin, or the Console origin plus
+    /// [`crate::config::DEVELOPMENT_SIGN_IN_PATH`] in development mode.
+    pub(crate) oauth_issuer: String,
+    /// Development mode serves sign-in on the Console's origin.
+    pub(crate) development: bool,
     /// Origin that serves the Console, for links administrators open.
     pub(crate) console_origin: String,
     pub(crate) upstream_tls_roots_pem: Vec<String>,
@@ -106,6 +110,41 @@ pub(crate) struct AuthSettings {
     pub(crate) oauth_admission_lifetime_seconds: u32,
     pub(crate) login_lifetime_seconds: u32,
     pub(crate) enforcement_page_size: usize,
+}
+
+impl AuthSettings {
+    /// The origin sign-in's cookies and pages belong to.
+    pub(crate) fn oauth_origin(&self) -> String {
+        url::Url::parse(&self.oauth_issuer)
+            .map(|issuer| issuer.origin().ascii_serialization())
+            .unwrap_or_default()
+    }
+
+    /// The path sign-in is served under: empty on its own origin, `/auth` in
+    /// development mode.
+    pub(crate) fn oauth_path(&self) -> &str {
+        &self.oauth_issuer[self.oauth_origin().len().min(self.oauth_issuer.len())..]
+    }
+
+    /// Whether the issuer is exactly an origin, or in development mode that
+    /// origin plus the sign-in path, with nothing a client could read
+    /// differently.
+    pub(crate) fn canonical_issuer(&self) -> bool {
+        let origin = self.oauth_origin();
+        !origin.is_empty()
+            && !origin.ends_with("://null")
+            && (self.oauth_issuer == origin
+                || (self.development
+                    && self.oauth_issuer
+                        == format!("{origin}{}", crate::config::DEVELOPMENT_SIGN_IN_PATH)))
+    }
+
+    /// Whether `origin` is sign-in's own and so can't hold an application's
+    /// callback. Development mode serves sign-in on the Console's origin on
+    /// purpose, so nothing is reserved there.
+    pub(crate) fn reserves_origin(&self, origin: &str) -> bool {
+        !self.development && origin == self.oauth_origin()
+    }
 }
 
 /// Auth's existing platform database owns all policy and effect transactions.
@@ -415,7 +454,8 @@ impl SqliteAuthorizationStore {
                 .unwrap_or_default(),
             instance_id,
             account: account.into(),
-            oauth_origin: oauth.origin.clone(),
+            oauth_issuer: oauth.origin.clone(),
+            development: config.development(),
             console_origin: config.public_origin(),
             upstream_tls_roots_pem: Vec::new(),
             authority_lifetime_seconds: u32::try_from(authorization.context_lifetime_seconds)
@@ -478,15 +518,10 @@ impl SqliteAuthorizationStore {
         settings: AuthSettings,
         custody_directory: PathBuf,
     ) -> Result<Self, AuthError> {
-        let origin = url::Url::parse(&settings.oauth_origin)
+        let origin = url::Url::parse(&settings.oauth_issuer)
             .map_err(|_| AuthError::Invalid("invalid OAuth origin".into()))?;
         let loopback = matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-        if origin.origin().ascii_serialization() != settings.oauth_origin
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-            || origin.path() != "/"
+        if !settings.canonical_issuer()
             || (origin.scheme() != "https" && !(origin.scheme() == "http" && loopback))
         {
             return Err(AuthError::Invalid("unsafe OAuth origin".into()));

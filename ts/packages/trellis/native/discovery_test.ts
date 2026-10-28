@@ -6,7 +6,6 @@ test("native discovery rejects insecure non-loopback issuers and URLs carrying c
   for (const origin of [
     "http://example.com",
     "https://user:password@example.com",
-    "https://example.com/issuer",
   ]) {
     const result = await discoverNativeOAuth(origin);
     assert.equal(result.error?.reason, "InvalidIssuer");

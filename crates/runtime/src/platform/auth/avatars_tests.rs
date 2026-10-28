@@ -58,7 +58,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
     let mut store = open(&directory, SigningKey::from_bytes(&[37; 32]));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
-    store.settings.oauth_origin = origin.clone();
+    store.settings.oauth_issuer = origin.clone();
     store.initialize_issuer(now).unwrap();
     let principal = store
         .initialize_administrator("admin", None, None, None, now)

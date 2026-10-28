@@ -54,7 +54,7 @@ async fn sdk_rotation(mode: &str) {
         .await
         .unwrap();
     let backend_origin = format!("http://{backend_address}");
-    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     for (client_id, kind, redirect_uris) in [
         ("trellis.cli", "native", Vec::new()),
         (

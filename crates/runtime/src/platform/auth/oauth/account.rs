@@ -311,7 +311,7 @@ pub(crate) fn create_link(
             let response = AuthIdentityLinkCreateResponse {
                 authorization_url: format!(
                     "{}/account/link?token={token}",
-                    storage.authority.settings.oauth_origin
+                    storage.authority.settings.oauth_issuer
                 ),
                 expires_at: super::super::sqlite::timestamp(now + 300)?,
                 extra: Default::default(),
@@ -1418,7 +1418,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert(
                 axum::http::header::ORIGIN,
-                authority.settings.oauth_origin.parse().unwrap(),
+                authority.settings.oauth_issuer.parse().unwrap(),
             );
             headers.insert(
                 axum::http::header::COOKIE,

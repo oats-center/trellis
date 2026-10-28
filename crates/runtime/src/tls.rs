@@ -140,9 +140,9 @@ impl GeneratedTlsNotice {
             security_event = "generated_tls_in_use",
             ca_sha256_fingerprint = %self.ca.sha256_fingerprint,
             leaf_not_after = leaf_expires.as_deref().unwrap_or("not served by this listener"),
-            "Trellis is serving certificates from its generated installation CA. \
-            Browsers and native clients must trust that CA explicitly; verify the \
-            fingerprint out of band before trusting it, and renew leaf \
+            "Trellis is serving certificates it generated itself, which suit \
+            development only. Browsers and clients ask before accepting them; \
+            accept only if the issuing CA has this fingerprint, and renew leaf \
             certificates before they expire with `trellis-server tls renew`."
         );
     }

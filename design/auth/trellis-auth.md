@@ -228,6 +228,18 @@ differ from all configured application origins. A shared hostname is allowed but
 requires a prominent cookie-scope warning, because cookies are not port-scoped.
 Console assets and application routers are never mounted on the OAuth listener.
 
+Development mode (`[http] development = true`, from `trellis-server init
+--dev`) is the one exception, made so a browser on another machine accepts a
+single certificate. The Console listener also serves the OAuth routes under
+`/auth`; the issuer is `<console origin>/auth` on the Console's port, and no
+separate OAuth listener binds. Sign-in then shares the Console's origin, so
+nothing reserves that origin from application callbacks and no cookie-scope
+warning is logged. Handlers keep writing root-relative links; on the way out
+the runtime prefixes redirects and HTML attributes with `/auth` and tells the
+Portal app its base. Clients fetch metadata at `<issuer>/.well-known/...` and
+accept an issuer with a path when it is canonical. Production configuration
+never takes this path.
+
 Request admission budgets each client address, and additionally each browser
 `Origin` when the header is present. Requests without `Origin` (native token
 clients, navigations, asset loads) share no common budget. Expired budget

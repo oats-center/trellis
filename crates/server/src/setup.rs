@@ -56,6 +56,16 @@ pub(crate) struct InitConfigArgs {
     /// having trellis-server start one.
     pub(crate) external_nats: bool,
 
+    #[arg(long, conflicts_with_all = ["oauth_origin", "oauth_port"])]
+    /// Development mode: the Console's port and its one certificate also carry
+    /// sign-in (under /auth) and browsers' NATS, so a browser on another
+    /// machine accepts a single certificate. Not for production.
+    pub(crate) dev: bool,
+
+    #[arg(long, default_value = "localhost")]
+    /// Hostname the default Console, sign-in and NATS addresses use.
+    pub(crate) host: String,
+
     #[arg(long)]
     /// Replace an existing non-empty output directory.
     pub(crate) force: bool,
@@ -129,8 +139,8 @@ pub(crate) struct InitConfigArgs {
     pub(crate) oauth_port: u16,
 
     #[arg(long, value_enum, default_value_t = InitTlsMode::Generated)]
-    /// Certificate source. Generated TLS creates an installation CA that
-    /// browsers and native clients must trust explicitly.
+    /// Certificate source. Generated certificates suit development: browsers
+    /// and clients accept them by their CA's fingerprint.
     pub(crate) tls: InitTlsMode,
 
     #[arg(long)]
@@ -242,6 +252,17 @@ pub(crate) fn init_config(
     options.runtime.name = args.name.clone();
     options.runtime.trellis_port = args.trellis_port;
     let loopback = args.tls == InitTlsMode::LoopbackDevelopment;
+    if args.dev
+        && (loopback
+            || args.nats_websocket == Some(InitWebsocketMode::Direct)
+            || args.nats_websocket_url.is_some())
+    {
+        return Err(miette!(
+            "--dev serves everything over TLS on the Console's port; it can't be combined \
+            with --tls loopback-development, --nats-websocket direct or --nats-websocket-url"
+        ));
+    }
+    let host = &args.host;
     let (http, native, websocket) = if loopback {
         ("http", "nats", "ws")
     } else {
@@ -250,15 +271,15 @@ pub(crate) fn init_config(
     options.runtime.nats_server_url = args
         .nats_server_url
         .clone()
-        .unwrap_or_else(|| format!("{native}://localhost:{}", args.nats_port));
+        .unwrap_or_else(|| format!("{native}://{host}:{}", args.nats_port));
     options.runtime.nats_websocket_url = args
         .nats_websocket_url
         .clone()
-        .unwrap_or_else(|| format!("{websocket}://localhost:{}", args.nats_ws_port));
+        .unwrap_or_else(|| format!("{websocket}://{host}:{}", args.nats_ws_port));
     options.runtime.public_origin = args
         .public_origin
         .clone()
-        .unwrap_or_else(|| format!("{http}://localhost:{}", args.trellis_port));
+        .unwrap_or_else(|| format!("{http}://{host}:{}", args.trellis_port));
     let relay = match args.nats_websocket {
         Some(InitWebsocketMode::Relay) => {
             if args.nats_websocket_url.is_some() || args.nats_websocket_behind_proxy {
@@ -273,9 +294,10 @@ pub(crate) fn init_config(
         // Out of the box, a browser trusting the generated CA for the Console
         // also reaches NATS; a separate WebSocket port would need its own trust.
         None => {
-            args.tls == InitTlsMode::Generated
-                && args.nats_websocket_url.is_none()
-                && !args.nats_websocket_behind_proxy
+            args.dev
+                || (args.tls == InitTlsMode::Generated
+                    && args.nats_websocket_url.is_none()
+                    && !args.nats_websocket_behind_proxy)
         }
     };
     if relay {
@@ -290,11 +312,21 @@ pub(crate) fn init_config(
             trellis_runtime::nats_websocket::PATH
         );
     }
-    options.runtime.oauth_origin = args
-        .oauth_origin
-        .clone()
-        .unwrap_or_else(|| format!("{http}://localhost:{}", args.oauth_port));
-    options.runtime.oauth_port = args.oauth_port;
+    if args.dev {
+        options.runtime.oauth_origin = format!(
+            "{}{}",
+            options.runtime.public_origin.trim_end_matches('/'),
+            trellis_runtime::config::DEVELOPMENT_SIGN_IN_PATH
+        );
+        options.runtime.oauth_port = args.trellis_port;
+    } else {
+        options.runtime.oauth_origin = args
+            .oauth_origin
+            .clone()
+            .unwrap_or_else(|| format!("{http}://{host}:{}", args.oauth_port));
+        options.runtime.oauth_port = args.oauth_port;
+    }
+    options.runtime.development = args.dev;
     options.runtime.tls = match args.tls {
         // A system installation is the one roles mount, so its CA stays beside it.
         InitTlsMode::Generated => BootstrapTls::Generated {
@@ -470,9 +502,9 @@ fn warn_generated_tls(
     leaf_not_after: time::OffsetDateTime,
 ) {
     eprintln!(
-        "warning: this installation uses Trellis-generated TLS from its own private \
-        CA.\n  Browsers and native clients must trust {} explicitly.\n  Verify \
-        this SHA-256 fingerprint out of band before trusting it:\n  \
+        "warning: this installation uses certificates Trellis generated itself, which \
+        suit development only.\n  Browsers warn the first time and `trellis login` asks; \
+        accept only if the issuing CA ({}) has this SHA-256 fingerprint:\n  \
         {fingerprint}\n  Leaf certificates expire {}; renew them with `trellis-server \
         tls renew`.",
         ca.display(),

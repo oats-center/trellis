@@ -761,7 +761,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
       }
       const trellisUrl = `https://localhost:${port}`;
       const publicOrigin = trellisUrl;
-      const oauthIssuer = `https://localhost:${oauthPort}`;
+      const oauthIssuer = options.development
+        ? `${trellisUrl}/auth`
+        : `https://localhost:${oauthPort}`;
       const initArgs = [
         "init",
         "--format",
@@ -778,15 +780,16 @@ export class TrellisTestRuntime implements AsyncDisposable {
         String(websocketPort),
         "--nats-server-url",
         natsUrl,
-        ...(options.sameOriginWebsocket
-          ? ["--nats-websocket", "relay"]
-          : ["--nats-websocket-url", websocketUrl]),
+        ...(options.development
+          ? ["--dev"]
+          : options.sameOriginWebsocket
+            ? ["--nats-websocket", "relay"]
+            : ["--nats-websocket-url", websocketUrl]),
         "--public-origin",
         publicOrigin,
-        "--oauth-origin",
-        oauthIssuer,
-        "--oauth-port",
-        String(oauthPort),
+        ...(options.development
+          ? []
+          : ["--oauth-origin", oauthIssuer, "--oauth-port", String(oauthPort)]),
         "--bind-address",
         "127.0.0.1",
       ];

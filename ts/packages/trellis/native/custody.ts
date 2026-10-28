@@ -93,8 +93,10 @@ export function validateNativeScope(scope: NativeCredentialScope): void {
     host === "localhost" ||
     host === "::1" ||
     (isIP(host) === 4 && host.startsWith("127."));
+  // The issuer is an origin, or in development mode an origin plus the path
+  // sign-in is served under, in exactly one spelling.
   if (
-    origin.origin !== scope.issuer ||
+    `${origin.origin}${origin.pathname.replace(/\/+$/, "")}` !== scope.issuer ||
     (origin.protocol !== "https:" && !(origin.protocol === "http:" && loopback))
   )
     throw new AuthError({ reason: "InvalidCredential" });

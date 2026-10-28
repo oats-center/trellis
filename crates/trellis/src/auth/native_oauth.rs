@@ -76,13 +76,18 @@ pub async fn discover_native_oauth(
     if !(origin.scheme() == "https" || (origin.scheme() == "http" && loopback))
         || !origin.username().is_empty()
         || origin.password().is_some()
-        || origin.path() != "/"
         || origin.query().is_some()
         || origin.fragment().is_some()
     {
         return Err(NativeOAuthError::InvalidResponse);
     }
-    let issuer = origin.origin().ascii_serialization();
+    // A development installation's issuer carries a path (`/auth`) on the
+    // Console's origin; metadata lives under the issuer either way.
+    let issuer = format!(
+        "{}{}",
+        origin.origin().ascii_serialization(),
+        origin.path().trim_end_matches('/')
+    );
     let http = oauth_http_client(root_certificates)?;
     let mut response = http
         .get(format!("{issuer}/.well-known/oauth-authorization-server"))
@@ -436,11 +441,12 @@ impl NativeOAuthClient {
             .scope()
             .issuer
             .clone();
-        // Both links must lead to the selected issuer; the complete link
+        // Both links must lead under the selected issuer; the complete link
         // must carry exactly the code the user compares on the page.
         let on_issuer = |value: &str| {
             url::Url::parse(value).ok().filter(|uri| {
-                uri.origin().ascii_serialization() == issuer
+                format!("{}{}", uri.origin().ascii_serialization(), uri.path())
+                    .starts_with(&format!("{issuer}/"))
                     && uri.username().is_empty()
                     && uri.password().is_none()
             })

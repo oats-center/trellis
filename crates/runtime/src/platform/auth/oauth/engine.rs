@@ -399,7 +399,7 @@ impl OAuthEngine {
     }
 
     pub(crate) fn new(storage: OAuthStorage) -> Result<Self, AuthError> {
-        let origin = url::Url::parse(&storage.authority.settings.oauth_origin)
+        let origin = url::Url::parse(&storage.authority.settings.oauth_issuer)
             .map_err(|_| AuthError::Denied)?;
         let loopback = match origin.host() {
             Some(url::Host::Domain("localhost")) => true,
@@ -407,10 +407,10 @@ impl OAuthEngine {
             Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
             _ => false,
         };
-        // Reservation and browser binding use this same origin identity. A URL
-        // prefix or noncanonical representation could otherwise let an ordinary
+        // Reservation and browser binding use this same origin identity. A
+        // noncanonical representation could otherwise let an ordinary
         // application register a callback on the cookie-bearing origin.
-        if origin.origin().ascii_serialization() != storage.authority.settings.oauth_origin
+        if !storage.authority.settings.canonical_issuer()
             || !(origin.scheme() == "https" || (origin.scheme() == "http" && loopback))
         {
             return Err(AuthError::Denied);
@@ -426,11 +426,13 @@ impl OAuthEngine {
             for callbacks in clients.query_map([], |row| row.get::<_, String>(0))? {
                 for callback in serde_json::from_str::<Vec<String>>(&callbacks?)? {
                     let callback = url::Url::parse(&callback).map_err(|_| AuthError::Denied)?;
-                    super::super::warn_oauth_cookie_isolation(&origin, &callback);
+                    if !storage.authority.settings.development {
+                        super::super::warn_oauth_cookie_isolation(&origin, &callback);
+                    }
                 }
             }
         }
-        let origin = storage.authority.settings.oauth_origin.clone();
+        let origin = storage.authority.settings.oauth_issuer.clone();
         let documents = super::ClientDocuments::new(origin.clone())?;
         let avatars = super::super::avatars::Avatars::new(storage.authority.clone())?;
         let upstream_http =
@@ -598,7 +600,7 @@ impl OAuthEngine {
         }
         let uri = format!(
             "{}/token",
-            self.server.store().authority.settings.oauth_origin
+            self.server.store().authority.settings.oauth_issuer
         );
         let binding = TokenBinding::verify(
             &self.verifiers,

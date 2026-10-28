@@ -217,7 +217,7 @@ pub(super) async fn start(
     };
     let client = match snapshot.client(
         secret,
-        format!("{}/portal/oidc/callback", authority.settings.oauth_origin),
+        format!("{}/portal/oidc/callback", authority.settings.oauth_issuer),
     ) {
         Ok(client) => client,
         Err(_) => return error(ErrorCode::ServerError),
@@ -379,7 +379,7 @@ pub(super) async fn callback(
     };
     let client = match snapshot.client(
         secret,
-        format!("{}/portal/oidc/callback", authority.settings.oauth_origin),
+        format!("{}/portal/oidc/callback", authority.settings.oauth_issuer),
     ) {
         Ok(client) => client,
         Err(_) => return error(ErrorCode::ServerError),

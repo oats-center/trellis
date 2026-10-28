@@ -8,6 +8,7 @@ use trellis_rs::client::{TrellisClientError, UserConnectOptions};
 async fn start_runtime(
     config: &crate::RuntimeConfig,
     origin: &str,
+    roots: &[PathBuf],
 ) -> (
     crate::shutdown::StopHandle,
     AbortOnDropHandle<Result<(), crate::RuntimeError>>,
@@ -22,7 +23,13 @@ async fn start_runtime(
         },
         Some(stop.clone()),
     )));
-    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let mut http = reqwest::Client::builder().no_proxy();
+    for root in roots {
+        http = http.add_root_certificate(
+            reqwest::Certificate::from_pem(&std::fs::read(root).unwrap()).unwrap(),
+        );
+    }
+    let http = http.build().unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             tokio::select! {
@@ -37,6 +44,40 @@ async fn start_runtime(
         }
     }).await.expect("production readiness deadline");
     (stop, runtime)
+}
+
+/// Starts the installation's NATS broker the way a managed server would.
+async fn start_broker(
+    root: &std::path::Path,
+    config_dir: &std::path::Path,
+    [nats, monitor, websocket]: [u16; 3],
+) -> trellis_local_nats::LocalNats {
+    std::fs::create_dir_all(root.join("runtime")).unwrap();
+    let nats_root = root.to_owned();
+    let nats_config = config_dir.join("nats");
+    tokio::task::spawn_blocking(move || {
+        let source = std::env::var_os("TRELLIS_NATS_SERVER_BIN")
+            .map(|path| trellis_local_nats::NatsBinarySource::Path(path.into()))
+            .unwrap_or(trellis_local_nats::NatsBinarySource::PathLookup);
+        trellis_local_nats::LocalNats::builder()
+            .binary(source)
+            .source(nats_config)
+            .state(nats_root.join("state/nats"))
+            .pid_file(nats_root.join("runtime/nats-server.pid"))
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: nats_root.join("logs/nats.log"),
+                mirror: false,
+            })
+            .ports(trellis_local_nats::LocalNatsPorts {
+                nats,
+                monitor,
+                websocket,
+            })
+            .start()
+            .unwrap()
+    })
+    .await
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -106,33 +147,8 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     crate::platform::seed_admin_credentials(&config, "admin", "a strong bootstrap password")
         .await
         .unwrap();
-    std::fs::create_dir_all(root.join("runtime")).unwrap();
-    let nats_root = root.to_owned();
-    let nats_config = config_dir.join("nats");
-    let mut broker = tokio::task::spawn_blocking(move || {
-        let source = std::env::var_os("TRELLIS_NATS_SERVER_BIN")
-            .map(|path| trellis_local_nats::NatsBinarySource::Path(path.into()))
-            .unwrap_or(trellis_local_nats::NatsBinarySource::PathLookup);
-        trellis_local_nats::LocalNats::builder()
-            .binary(source)
-            .source(nats_config)
-            .state(nats_root.join("state/nats"))
-            .pid_file(nats_root.join("runtime/nats-server.pid"))
-            .output(trellis_local_nats::NatsOutput::Log {
-                path: nats_root.join("logs/nats.log"),
-                mirror: false,
-            })
-            .ports(trellis_local_nats::LocalNatsPorts {
-                nats: ports[2],
-                monitor: ports[3],
-                websocket: ports[4],
-            })
-            .start()
-            .unwrap()
-    })
-    .await
-    .unwrap();
-    let (mut stop, mut runtime) = start_runtime(&config, &origin).await;
+    let mut broker = start_broker(root, &config_dir, [ports[2], ports[3], ports[4]]).await;
+    let (mut stop, mut runtime) = start_runtime(&config, &origin, &[]).await;
     let discovered = discover_native_oauth(&oauth_origin, &[])
         .await
         .unwrap_or_else(|error| panic!("native discovery at {oauth_origin} failed: {error:?}"));
@@ -415,7 +431,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         })
         .await
         .unwrap();
-        (stop, runtime) = start_runtime(&config, &origin).await;
+        (stop, runtime) = start_runtime(&config, &origin, &[]).await;
         warm.refresh_authorization_context().await.unwrap();
         let warm_renewed = tokio::time::timeout(Duration::from_secs(30), async {
             let mut readiness = tokio::time::interval(Duration::from_millis(100));
@@ -442,4 +458,217 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     tokio::task::spawn_blocking(move || broker.stop().unwrap())
         .await
         .unwrap();
+}
+
+/// A development installation serves sign-in under `/auth` on the Console's
+/// one TLS port: a native client discovers it there, the Portal signs the
+/// administrator in and approves a device login through it, and that login
+/// connects and calls Trellis.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn development_mode_signs_in_through_the_console_port() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let server = std::env::var_os("TRELLIS_TEST_SERVER_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.join("target/release/trellis-server"));
+    let reserved: Vec<_> = (0..4)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    let config_dir = root.join("config");
+    let generated = tokio::process::Command::new(&server)
+        .args(["init", "--out"])
+        .arg(&config_dir)
+        .args(["--external-nats", "--dev"])
+        .args(["--trellis-port", &ports[0].to_string()])
+        .args(["--nats-port", &ports[1].to_string()])
+        .args(["--nats-monitor-port", &ports[2].to_string()])
+        .args(["--nats-ws-port", &ports[3].to_string()])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "bootstrap failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let (config, _) = crate::RuntimeConfig::load_from_path_with_defaults(
+        config_dir.join("config.toml"),
+        crate::RuntimePathDefaults {
+            data: root.join("data"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+            runtime: root.join("runtime"),
+            logs: root.join("logs"),
+        },
+    )
+    .unwrap();
+    crate::platform::seed_admin_credentials(&config, "admin", "a strong bootstrap password")
+        .await
+        .unwrap();
+    let mut broker = start_broker(root, &config_dir, [ports[1], ports[2], ports[3]]).await;
+    let ca = config_dir.join("tls/ca.crt");
+    let origin = format!("https://localhost:{}", ports[0]);
+    let issuer = format!("{origin}/auth");
+    let (stop, mut runtime) = start_runtime(&config, &origin, std::slice::from_ref(&ca)).await;
+
+    let discovered = discover_native_oauth(&issuer, std::slice::from_ref(&ca))
+        .await
+        .unwrap_or_else(|error| panic!("native discovery at {issuer} failed: {error:?}"));
+    assert_eq!(discovered.issuer, issuer);
+    let native = NativeOAuthClient::open(
+        root.join("custody"),
+        NativeCredentialScope {
+            issuer: discovered.issuer.clone(),
+            instance_id: discovered.trust.instance_id.clone(),
+            account: discovered.trust.account.clone(),
+            client_id: "trellis.cli".into(),
+            credential_handle: ulid::Ulid::new(),
+        },
+        discovered.trust.clone(),
+    )
+    .await
+    .unwrap();
+    let device = native
+        .start_device(&serde_json::json!([
+        {"type":"trellis_capabilities","required":["trellis.auth.v1:account.read"],"optional":[]}
+        ]))
+        .await
+        .unwrap();
+
+    // The Portal, as a browser drives it, on the Console's origin.
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(&ca).unwrap()).unwrap())
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let cookies = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .map(|header| {
+                header
+                    .to_str()
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let response = http
+        .post(format!("{issuer}/portal/session"))
+        .header("Origin", &origin)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    let session_cookies = cookies(&response);
+    let csrf = session_cookies
+        .iter()
+        .find_map(|cookie| cookie.strip_prefix("__Host-trellis-portal-csrf="))
+        .unwrap()
+        .to_owned();
+    let response = http
+        .post(format!("{issuer}/portal/login"))
+        .header("Origin", &origin)
+        .header("Cookie", session_cookies.join("; "))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "a strong bootstrap password"),
+            ("request_id", &ulid::Ulid::new().to_string()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    let cookie = cookies(&response).join("; ");
+    let response = http
+        .post(format!("{issuer}/portal/device"))
+        .header("Origin", &origin)
+        .header("Cookie", &cookie)
+        .form(&[("csrf", csrf.as_str()), ("user_code", device.user_code())])
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_redirection(), "{}", response.status());
+    // Its redirect stays under the sign-in path.
+    let location = url::Url::parse(&issuer)
+        .unwrap()
+        .join(response.headers()["location"].to_str().unwrap())
+        .unwrap();
+    assert!(location.path().starts_with("/auth/"), "{location}");
+    let transaction = location
+        .query_pairs()
+        .find(|(key, _)| key == "transaction")
+        .unwrap()
+        .1
+        .into_owned();
+    let view: serde_json::Value = http
+        .get(format!("{issuer}/portal/authorization/{transaction}"))
+        .header("Cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let response = http
+        .post(format!("{issuer}/portal/approve"))
+        .header("Origin", &origin)
+        .header("Cookie", &cookie)
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("transaction", transaction.as_str()),
+            ("presentation", view["presentationId"].as_str().unwrap()),
+            ("decision", "approve"),
+            ("approved", "trellis.auth.v1:account.read"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_redirection(), "{}", response.status());
+
+    let session = device.complete().await.unwrap();
+    let principal = session.admission.credential.principal_id.clone();
+    let client = trellis_rs::client::TrellisClient::connect_user(UserConnectOptions::new(
+        discovered.nats_servers.clone(),
+        30_000,
+        session,
+    ))
+    .await
+    .unwrap();
+    let me = client
+        .request_json_value(
+            trellis_runtime_apis::apis::trellis_auth_v1::rpc::SessionsMe::API_ID,
+            trellis_protocol::CatalogActionIdentity {
+                kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                name: "Sessions.Me".into(),
+                direction: trellis_protocol::PermissionAction::Call,
+            },
+            trellis_runtime_apis::apis::trellis_auth_v1::rpc::SessionsMe::SUBJECT,
+            &serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    assert!(me.to_string().contains(&principal), "{me}");
+
+    drop(client);
+    stop.stop();
+    tokio::time::timeout(Duration::from_secs(30), &mut runtime)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::task::spawn_blocking(move || broker.stop().unwrap())
+        .await
+        .unwrap();
+    drop(reserved);
 }

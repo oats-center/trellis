@@ -93,15 +93,22 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .config
         .resolve_oauth_listener()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let socket = tokio::net::TcpListener::bind((oauth.bind_address, oauth.port))
-        .await
-        .map_err(|error| {
-            RuntimeError::Platform(format!("bind isolated OAuth listener: {error}"))
-        })?;
-    let listener = auth::OAuthListener::load(socket, &oauth.origin, &oauth.transport)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?
-        .forwarded_by(&oauth.trusted_proxies);
+    // Development mode serves sign-in on the Console's listener instead.
+    let listener = if context.config.development() {
+        None
+    } else {
+        let socket = tokio::net::TcpListener::bind((oauth.bind_address, oauth.port))
+            .await
+            .map_err(|error| {
+                RuntimeError::Platform(format!("bind isolated OAuth listener: {error}"))
+            })?;
+        Some(
+            auth::OAuthListener::load(socket, &oauth.origin, &oauth.transport)
+                .await
+                .map_err(|error| RuntimeError::Platform(error.to_string()))?
+                .forwarded_by(&oauth.trusted_proxies),
+        )
+    };
     let (native, websocket) =
         advertised_endpoints(&context.config, &nats, context.nats_override.as_ref());
     // Every Login Portal page shows the generated-CA notice for the
@@ -193,6 +200,16 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             RuntimeError::Platform("Platform authorization store is already installed".into())
         })?;
     context.register_http_router(console::router(&context.config)?)?;
+    let listener = match listener {
+        Some(listener) => Some((listener, router)),
+        None => {
+            context.register_http_router(axum::Router::new().nest(
+                crate::config::DEVELOPMENT_SIGN_IN_PATH,
+                router.layer(axum::middleware::map_response(auth::under_development_path)),
+            ))?;
+            None
+        }
+    };
     let stop = StopHandle::new();
     let task_stop = stop.clone();
     let provider_store = store.clone();
@@ -206,13 +223,15 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut tasks = tokio::task::JoinSet::new();
-        let listener_cancel = cancel.clone();
-        tasks.spawn(async move {
-            listener
-                .run(router, listener_cancel)
-                .await
-                .map_err(|error| RuntimeError::Platform(error.to_string()))
-        });
+        if let Some((listener, router)) = listener {
+            let listener_cancel = cancel.clone();
+            tasks.spawn(async move {
+                listener
+                    .run(router, listener_cancel)
+                    .await
+                    .map_err(|error| RuntimeError::Platform(error.to_string()))
+            });
+        }
         let callout_stop = task_stop.clone();
         tasks.spawn(async move { callout.run(callout_stop).await });
         let own_stop = task_stop.clone();

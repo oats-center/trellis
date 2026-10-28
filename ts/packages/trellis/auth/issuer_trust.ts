@@ -7,7 +7,7 @@ import {
 
 /** Authenticate a discovery hint from the credential's existing pin, without consuming OAuth credentials. */
 export async function authenticateIssuerChain(
-  origin: string,
+  issuer: string,
   anchor: RuntimeAuthorizationTrust,
   target: RuntimeAuthorizationTrust,
   signal?: AbortSignal,
@@ -29,7 +29,9 @@ export async function authenticateIssuerChain(
     )
       throw new Error("issuer scope or sequence mismatch");
     if (anchor.issuer.keyId !== target.issuer.keyId) {
-      const url = new URL("/.well-known/trellis/issuer-chain", origin);
+      const url = new URL(
+        `${issuer.replace(/\/+$/, "")}/.well-known/trellis/issuer-chain`,
+      );
       url.search = new URLSearchParams({
         pinnedKeyId: anchor.issuer.keyId,
         targetKeyId: target.issuer.keyId,

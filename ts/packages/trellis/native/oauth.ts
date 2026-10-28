@@ -164,7 +164,9 @@ export class NativeOAuthClient {
       // carry exactly the code the user compares on the page.
       const onIssuer = (value: string) => {
         const uri = new URL(value);
-        return uri.origin === this.scope.issuer &&
+        return `${uri.origin}${uri.pathname}`.startsWith(
+          `${this.scope.issuer}/`,
+        ) &&
           !uri.username &&
           !uri.password
           ? uri

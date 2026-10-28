@@ -36,15 +36,20 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
     }
 
     const LOCALHOST: &str = "Only on this machine: localhost development over plain HTTP";
-    let localhost = Select::new(
+    const DEVELOPMENT: &str =
+        "From other machines, for development: one port, accept one certificate in the browser";
+    let place = Select::new(
         "Where will people and services use it?",
-        vec![LOCALHOST, "From other machines"],
+        vec![
+            LOCALHOST,
+            DEVELOPMENT,
+            "From other machines, in production: your own certificates or a proxy",
+        ],
     )
     .prompt()
-    .map_err(cancelled)?
-        == LOCALHOST;
+    .map_err(cancelled)?;
 
-    if localhost {
+    if place == LOCALHOST {
         args.extend(["--tls".into(), "loopback-development".into()]);
         if external_nats {
             let url = url_prompt("Your NATS server's URL", "nats://localhost:4222")?;
@@ -52,33 +57,31 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
         }
         return Ok(args);
     }
+    let development = place == DEVELOPMENT;
 
-    let ports = if Confirm::new("Use the default ports (3000, 3001, 4222, 8222, 8080)?")
+    // Development mode carries sign-in on the Console's port.
+    let all_ports = [
+        ("--trellis-port", "Console port", 3000),
+        ("--oauth-port", "Sign-in port", 3001),
+        ("--nats-port", "NATS port for services", 4222),
+        ("--nats-monitor-port", "NATS monitoring port", 8222),
+        ("--nats-ws-port", "NATS WebSocket port", 8080),
+    ];
+    let asked: Vec<_> = all_ports
+        .into_iter()
+        .filter(|(flag, _, _)| !(development && *flag == "--oauth-port"))
+        .collect();
+    let defaults: Vec<String> = asked.iter().map(|(_, _, port)| port.to_string()).collect();
+    let mut ports = std::collections::HashMap::new();
+    if Confirm::new(&format!("Use the default ports ({})?", defaults.join(", ")))
         .with_default(true)
         .prompt()
         .map_err(cancelled)?
     {
-        [3000, 3001, 4222, 8222, 8080]
+        ports.extend(asked.iter().map(|(flag, _, port)| (*flag, *port)));
     } else {
-        let mut ports = [0; 5];
-        for ((port, flag), (label, default)) in ports
-            .iter_mut()
-            .zip([
-                "--trellis-port",
-                "--oauth-port",
-                "--nats-port",
-                "--nats-monitor-port",
-                "--nats-ws-port",
-            ])
-            .zip([
-                ("Console port", 3000),
-                ("Sign-in port", 3001),
-                ("NATS port for services", 4222),
-                ("NATS monitoring port", 8222),
-                ("NATS WebSocket port", 8080),
-            ])
-        {
-            *port = CustomType::<u16>::new(label)
+        for (flag, label, default) in asked {
+            let port = CustomType::<u16>::new(label)
                 .with_default(default)
                 .with_error_message("Enter a port from 1 to 65535")
                 .with_validator(|port: &u16| {
@@ -91,15 +94,23 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
                 .prompt()
                 .map_err(cancelled)?;
             args.extend([flag.to_string(), port.to_string()]);
+            ports.insert(flag, port);
         }
-        ports
-    };
-    let [console_port, oauth_port, nats_port, _, _] = ports;
+    }
 
     let host = Text::new("Hostname other machines use to reach this one")
         .with_default(&machine_hostname())
         .prompt()
         .map_err(cancelled)?;
+    if development {
+        args.extend(["--dev".into(), "--host".into(), host]);
+        return Ok(args);
+    }
+    let (console_port, oauth_port, nats_port) = (
+        ports["--trellis-port"],
+        ports["--oauth-port"],
+        ports["--nats-port"],
+    );
     let console = url_prompt("Console address", &format!("https://{host}:{console_port}"))?;
     let oauth = url_prompt(
         "Sign-in address (its own origin, ideally its own hostname)",
@@ -120,11 +131,10 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
         nats,
     ]);
 
-    const GENERATED: &str = "Trellis generates them";
-    const SUPPLIED: &str = "I have certificate files";
+    const SUPPLIED: &str = "I have certificate files browsers already trust";
     let certificates = Select::new(
         "Certificates",
-        vec![GENERATED, SUPPLIED, "A proxy in front terminates HTTPS"],
+        vec![SUPPLIED, "A proxy in front terminates HTTPS"],
     )
     .prompt()
     .map_err(cancelled)?;
@@ -147,7 +157,7 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
         if !issuer.trim().is_empty() {
             args.extend(["--tls-ca-certificate".into(), issuer.trim().into()]);
         }
-    } else if certificates != GENERATED {
+    } else {
         let network = CustomType::<ipnet::IpNet>::new("The proxy's network")
             .with_help_message("For example 10.0.0.2/32")
             .with_error_message("Enter a network such as 10.0.0.2/32")

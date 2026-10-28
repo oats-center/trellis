@@ -179,7 +179,20 @@ impl RuntimeConfig {
         })?;
         let origin = Url::parse(&oauth.origin)
             .map_err(|_| invalid_authorization("oauth.origin", "must be an absolute origin"))?;
-        if origin.host().is_none()
+        let console_origin = self.public_origin();
+        if self.development() {
+            // One listener serves both, so sign-in's issuer is the Console's
+            // origin plus its path, on the Console's port.
+            if oauth.origin != format!("{console_origin}{DEVELOPMENT_SIGN_IN_PATH}")
+                || oauth.port != self.http_port()
+            {
+                return Err(invalid_authorization(
+                    "oauth",
+                    "in development mode must be the Console origin followed by /auth, \
+                    on the Console's port",
+                ));
+            }
+        } else if origin.host().is_none()
             || !origin.username().is_empty()
             || origin.password().is_some()
             || origin.path() != "/"
@@ -195,12 +208,19 @@ impl RuntimeConfig {
         }
         validate_listener_transport(&origin, oauth.bind_address, &oauth.transport)
             .map_err(|reason| invalid_authorization("oauth.transport", reason))?;
-        let console_origin = self.public_origin();
-        for other in std::iter::once(&console_origin).chain(
-            self.http
-                .iter()
-                .flat_map(|http| http.origins.iter().flatten()),
-        ) {
+        // Development mode shares the Console's origin on purpose.
+        let applications = if self.development() {
+            Vec::new()
+        } else {
+            std::iter::once(console_origin.clone())
+                .chain(
+                    self.http
+                        .iter()
+                        .flat_map(|http| http.origins.iter().flatten().cloned()),
+                )
+                .collect()
+        };
+        for other in &applications {
             let other = Url::parse(other).map_err(|_| {
                 invalid_authorization(
                     "oauth.origin",
@@ -347,6 +367,13 @@ impl RuntimeConfig {
 
     /// Returns the configured HTTP bind address.
     ///
+    /// Whether this is a development installation serving sign-in on the
+    /// Console's listener.
+    #[must_use]
+    pub fn development(&self) -> bool {
+        self.http.as_ref().is_some_and(|http| http.development)
+    }
+
     /// An omitted address binds loopback for plaintext development and the
     /// unspecified IPv4 address for TLS or proxy transport.
     #[must_use]
@@ -847,7 +874,16 @@ pub struct HttpConfig {
     /// NATS on this origin with this listener's certificate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nats_websocket_upstream: Option<String>,
+    /// Development mode: this one listener and its one certificate also serve
+    /// sign-in under [`DEVELOPMENT_SIGN_IN_PATH`], so a browser accepts a
+    /// single certificate. Sign-in then shares the Console's origin, which a
+    /// production installation never allows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub development: bool,
 }
+
+/// Where development mode serves sign-in on the Console's origin.
+pub const DEVELOPMENT_SIGN_IN_PATH: &str = "/auth";
 
 /// A canonical `scheme://host[:port]` browser origin.
 struct CanonicalOrigin;
