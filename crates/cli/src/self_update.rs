@@ -1,8 +1,8 @@
 use miette::IntoDiagnostic;
-use self_update::backends::github::{ReleaseList, Update};
-use self_update::get_target;
+use self_update::backends::github::ReleaseList;
 use self_update::update::Release;
 use self_update::version::bump_is_greater;
+use self_update::{get_target, ArchiveKind, Compression, Download, Extract};
 use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,35 +121,67 @@ pub fn install_update(
     Err(last_error.expect("update attempted at least once"))
 }
 
+/// Download the release's archive and checksum file, refuse the archive
+/// unless the checksum names it and matches, then replace this executable with
+/// the binary inside.
 fn install_update_for_tag(
     target: SelfUpdateTarget,
     target_tag: &str,
 ) -> miette::Result<UpdateResult> {
-    let mut builder = Update::configure();
-    builder
-        .repo_owner(target.repo_owner())
-        .repo_name(target.repo_name())
-        .identifier(&asset_identifier(target, target_tag))
-        .bin_name(target.bin_name())
-        .show_download_progress(true)
-        .no_confirm(true)
-        .target_version_tag(target_tag)
-        .current_version(target.current_version());
-
-    let status = builder
-        .build()
-        .into_diagnostic()?
-        .update()
+    let version = normalize_release_version(target_tag);
+    let platform = get_target();
+    let bin = target.bin_name();
+    let archive_name = format!("{bin}-{version}-{platform}.tar.gz");
+    let base = format!(
+        "https://github.com/{}/{}/releases/download/{target_tag}",
+        target.repo_owner(),
+        target.repo_name()
+    );
+    let mut checksum = Vec::new();
+    Download::from_url(&format!(
+        "{base}/checksum-{version}-{platform}-{bin}.sha256"
+    ))
+    .download_to(&mut checksum)
+    .into_diagnostic()?;
+    let work = self_update::TempDir::new().into_diagnostic()?;
+    let archive = work.path().join(&archive_name);
+    Download::from_url(&format!("{base}/{archive_name}"))
+        .show_progress(true)
+        .download_to(std::fs::File::create(&archive).into_diagnostic()?)
         .into_diagnostic()?;
-    Ok(if status.updated() {
-        UpdateResult::Updated {
-            version: status.version().to_string(),
-        }
-    } else {
-        UpdateResult::UpToDate {
-            version: status.version().to_string(),
-        }
-    })
+    verify_checksum(
+        &String::from_utf8_lossy(&checksum),
+        &archive_name,
+        &std::fs::read(&archive).into_diagnostic()?,
+    )?;
+    Extract::from_source(&archive)
+        .archive(ArchiveKind::Tar(Some(Compression::Gz)))
+        .extract_file(work.path(), bin)
+        .into_diagnostic()?;
+    self_update::self_replace::self_replace(work.path().join(bin)).into_diagnostic()?;
+    Ok(UpdateResult::Updated { version })
+}
+
+/// Accept `archive` only when the release's `sha256sum` listing names
+/// `archive_name` with the archive's exact SHA-256.
+fn verify_checksum(listing: &str, archive_name: &str, archive: &[u8]) -> miette::Result<()> {
+    use sha2::Digest as _;
+
+    let actual = format!("{:x}", sha2::Sha256::digest(archive));
+    let listed = listing.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let digest = fields.next()?;
+        (fields.next()?.trim_start_matches('*') == archive_name).then_some(digest)
+    });
+    match listed {
+        Some(expected) if expected.eq_ignore_ascii_case(&actual) => Ok(()),
+        Some(_) => Err(miette::miette!(
+            "{archive_name} does not match its release checksum; nothing was installed"
+        )),
+        None => Err(miette::miette!(
+            "the release checksum file does not list {archive_name}; nothing was installed"
+        )),
+    }
 }
 
 fn latest_version(target: SelfUpdateTarget, channel: ReleaseChannel) -> miette::Result<String> {
@@ -178,10 +210,6 @@ fn release_has_target_binary_asset(release: &Release, target: SelfUpdateTarget) 
         .assets
         .iter()
         .any(|asset| asset.name.contains(get_target()) && asset_matches_binary(&asset.name, target))
-}
-
-fn asset_identifier(target: SelfUpdateTarget, target_tag: &str) -> String {
-    format!("{}-{}-", target.bin_name(), target_tag)
 }
 
 fn asset_matches_binary(asset_name: &str, target: SelfUpdateTarget) -> bool {
@@ -378,9 +406,19 @@ mod tests {
     }
 
     #[test]
-    fn asset_identifier_includes_binary_name_and_tag() {
-        let target = SelfUpdateTarget::new("oats-center", "trellis", "trellis", "0.7.0");
-        assert_eq!(asset_identifier(target, "v0.8.0"), "trellis-v0.8.0-");
+    fn an_archive_installs_only_when_its_listed_checksum_matches() {
+        let archive = b"trellis-server release bytes";
+        let digest = {
+            use sha2::Digest as _;
+            format!("{:x}", sha2::Sha256::digest(archive))
+        };
+        let name = "trellis-server-0.8.0-x86_64-unknown-linux-gnu.tar.gz";
+        let listing = format!("{digest}  {name}\n");
+        assert!(verify_checksum(&listing, name, archive).is_ok());
+        assert!(verify_checksum(&listing, name, b"tampered bytes").is_err());
+        // A matching digest listed for a different file is not this archive's.
+        assert!(verify_checksum(&format!("{digest}  other.tar.gz\n"), name, archive).is_err());
+        assert!(verify_checksum("", name, archive).is_err());
     }
 
     #[test]
