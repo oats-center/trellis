@@ -45,11 +45,27 @@ struct Args {
     #[arg(long)]
     reset_admin: bool,
     /// Runtime mode to run: all, platform, jobs, health, or events.
-    #[arg(default_value = "all")]
+    #[arg(default_value = "all", value_parser = parse_mode)]
     mode: RuntimeMode,
     /// How a first-run installation reports its result.
     #[arg(long, value_enum, default_value_t)]
     format: setup::OutputFormat,
+}
+
+/// Parses the runtime mode. A subcommand name lands here when options came
+/// before it, so say where they go instead of listing the modes.
+fn parse_mode(value: &str) -> Result<RuntimeMode, String> {
+    use clap::CommandFactory as _;
+
+    value
+        .parse()
+        .map_err(|error: trellis_runtime::RuntimeModeParseError| {
+            if Args::command().find_subcommand(value).is_some() {
+                format!("options go after the subcommand: trellis-server {value} [OPTIONS]")
+            } else {
+                error.to_string()
+            }
+        })
 }
 
 #[derive(Debug, Subcommand)]
