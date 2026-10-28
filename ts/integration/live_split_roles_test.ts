@@ -104,6 +104,9 @@ async function startSplitRole(
       return join(configDir, String(value));
     };
     nats.ca_certificate = bundlePath(nats.ca_certificate);
+    // The split role joins the running installation's broker; it does not run
+    // one of its own.
+    delete nats.managed;
     const tls = config.tls;
     assert(tls && typeof tls === "object" && "generated_ca_certificate" in tls);
     tls.generated_ca_certificate = bundlePath(tls.generated_ca_certificate);

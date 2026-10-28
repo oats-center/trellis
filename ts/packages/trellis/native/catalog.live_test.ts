@@ -131,6 +131,19 @@ test(
         close.push(() => admin.connection.close());
         const provider = participants.EchoProvider.participant;
         const apiId = provider.implements[0].identity;
+        const { deployment } = await admin
+          .deploymentsCreate({
+            title: "Catalog renewal provider",
+            kind: provider.kind,
+            participantId: provider.identity,
+            packageEvidence: types.AuthPackageEvidenceCodec.decode(
+              provider.packageEvidence,
+            ),
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+        // Creating the deployment accepted the provider's own definition. The
+        // catalog then narrows to a baseline whose capability leaves Echo out.
         const { review: initialReview } = await admin
           .apisReview({ apiId, packageEvidence: evidence[0] })
           .orThrow();
@@ -143,17 +156,6 @@ test(
               initialReview.currentAcceptedRevision ?? 0n,
             mappingEdits: [],
             roleEdits: [],
-            idempotencyKey: ulid(),
-          })
-          .orThrow();
-        const { deployment } = await admin
-          .deploymentsCreate({
-            title: "Catalog renewal provider",
-            kind: provider.kind,
-            participantId: provider.identity,
-            packageEvidence: types.AuthPackageEvidenceCodec.decode(
-              provider.packageEvidence,
-            ),
             idempotencyKey: ulid(),
           })
           .orThrow();
