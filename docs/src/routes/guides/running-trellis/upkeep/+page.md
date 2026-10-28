@@ -65,6 +65,6 @@ rm -rf ~/.config/trellis \
   ~/.local/share/trellis ~/.local/state/trellis ~/.cache/trellis
 ```
 
-The next `trellis-server` offers to create a fresh one. An installation made
+The next `trellis-server` asks how to set up a fresh one. An installation made
 with `--out` is one folder. A `--system` installation also has its CA in
 `<folder>-tls-ca` next to it.

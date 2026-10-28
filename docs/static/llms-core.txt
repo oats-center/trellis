@@ -198,9 +198,11 @@ themselves: `trellis upgrade` and `trellis-server upgrade`
 ### Installation and first start
 
 Plain `trellis-server` uses the installation in `~/.config/trellis` (or
-`/etc/trellis` with `--system`). When none exists it asks before creating a
-localhost one; `--init` creates it without asking, and without a terminal it
-fails with a message instead. `trellis-server init` creates one with chosen
+`/etc/trellis` with `--system`). When none exists it asks the questions
+`init` would (who runs NATS, localhost development or other machines, then
+hostnames, ports and certificates) and prints the matching `init` command;
+`--init` creates a localhost development installation (plain HTTP on loopback)
+without asking, and without a terminal it fails with a message instead. `trellis-server init` creates one with chosen
 hostnames and ports. With no `--out`, data goes to the profile's XDG (or FHS)
 folders. `init --out <dir>` writes a self-contained bundle whose `[paths]` keep
 data, state, cache, runtime files and logs inside it; start it with

@@ -208,9 +208,12 @@ default (`~/.config/trellis`, or `/etc/trellis` with `--system`) and omits
 `[paths]`. The server itself has no bundle-relative default: an omitted root
 falls back to the user (XDG) or `--system` (FHS) profile.
 
-A first plain `trellis-server` in the user profile, with no `--config`, offers
-to create that default localhost bundle; `--init` creates it without asking,
-and with no terminal the server stops with the flag to use. The bundle decides
+A first plain `trellis-server` in the user profile, with no `--config`, asks
+what `init` would (who runs NATS, localhost development or other machines,
+then hostnames, ports and certificates), creates that bundle and prints the
+equivalent `init` command. `--init` creates a localhost development bundle
+(`--tls loopback-development`) without asking, and with no terminal the server
+stops with the flag to use. The bundle decides
 who runs NATS: `[nats] managed = true`, which `init` writes unless given
 `--external-nats`, makes the server start and stop the broker described by
 `nats/nats.conf`, using `nats-server` from `PATH` or, once the operator agrees

@@ -16,6 +16,7 @@ use trellis_runtime::{
 
 mod setup;
 mod telemetry;
+mod wizard;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -574,26 +575,27 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             ));
         }
         let folder = &policy.paths.config_root;
-        let create = policy.init_missing
-            || confirm(&format!(
-                "There is no Trellis installation in {} yet. Create one for this machine (localhost)?",
-                folder.display()
-            ))?;
-        if !create {
+        let init = if policy.init_missing {
+            wizard::localhost_development()
+        } else if interactive() {
+            let init = wizard::ask(folder)?;
+            eprintln!("\nSame as: {}\n", wizard::command_line(&init));
+            init
+        } else {
             return Err(miette!(
-                "no Trellis installation in {}; create one with `trellis-server init` \
-                (it takes hostnames for other machines), pass --init to create a \
-                localhost one without asking, or name one with --config",
+                "no Trellis installation in {}; run `trellis-server` in a terminal to set \
+                one up, pass --init for a localhost development one, create one with \
+                `trellis-server init`, or name one with --config",
                 folder.display()
             ));
-        }
+        };
         #[derive(Parser)]
-        struct DefaultInit {
+        struct Init {
             #[command(flatten)]
             args: setup::InitConfigArgs,
         }
-        let defaults = DefaultInit::parse_from(["init"]).args;
-        setup::init_config(policy.format, &defaults, false, folder.clone())?;
+        let init = Init::try_parse_from(&init).into_diagnostic()?.args;
+        setup::init_config(policy.format, &init, false, folder.clone())?;
     }
     let (mut config, paths) = load_runtime_config(&policy)?;
 
@@ -936,12 +938,19 @@ fn upgrade(args: &UpgradeArgs) -> miette::Result<()> {
     Ok(())
 }
 
+/// Whether there's a terminal to ask questions on.
+fn interactive() -> bool {
+    use std::io::IsTerminal as _;
+
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
 /// Asks a yes-or-no question on the terminal, defaulting to yes. Without a
 /// terminal to ask on, the answer is no.
 fn confirm(question: &str) -> miette::Result<bool> {
-    use std::io::{IsTerminal as _, Write as _};
+    use std::io::Write as _;
 
-    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+    if !interactive() {
         return Ok(false);
     }
     eprint!("{question} [Y/n] ");

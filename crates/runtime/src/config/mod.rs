@@ -677,13 +677,24 @@ impl RuntimeConfig {
 }
 
 /// Origins isolate JavaScript, but cookies are hostname-scoped, not port-scoped.
+/// A loopback host is a development installation where every server on it is
+/// the operator's own, so sharing it is expected and not reported.
 ///
 /// Config validation and every client registration check the same pairs, so
 /// each pair is reported once per process.
 pub(crate) fn warn_oauth_cookie_isolation(oauth: &Url, application: &Url) {
     static WARNED: std::sync::Mutex<std::collections::BTreeSet<(String, String)>> =
         std::sync::Mutex::new(std::collections::BTreeSet::new());
-    if oauth.host_str() != application.host_str() || oauth.origin() == application.origin() {
+    let loopback = match oauth.host() {
+        Some(Host::Domain(host)) => host == "localhost",
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    };
+    if loopback
+        || oauth.host_str() != application.host_str()
+        || oauth.origin() == application.origin()
+    {
         return;
     }
     let pair = (

@@ -3,9 +3,10 @@ title: "Reach Trellis from other machines"
 description: "Create an installation for the hostnames other people and services will use, such as a Tailscale name."
 ---
 
-The installation `trellis-server` offers to create is for `localhost`, and its
-certificates name only `localhost`. For anyone else to connect, create the
-installation yourself with the hostnames they'll use, before the first start.
+A localhost development installation only listens on `localhost`. For anyone
+else to connect, the installation needs the hostnames they'll use, chosen
+before the first start: answer "From other machines" when the first
+`trellis-server` asks, or create it with `trellis-server init`.
 
 On a Tailscale tailnet where the machine is `eta.oats`, that looks like:
 
@@ -28,9 +29,12 @@ Already started once for `localhost`? Then there's an installation in the way.
 new one somewhere else with `--out <folder>` and start it with
 `trellis-server --config <folder>/config.toml`.
 
-Once it's running, other machines need to trust the installation's CA, exactly
-as in [Start Trellis](/guides/starting-trellis#trust-trelliss-certificate),
-and the CLI logs in with `trellis login https://eta.oats:3001`.
+Once it's running, browsers on other machines need the installation's CA,
+`tls/ca.crt` in the installation folder, imported as a trusted authority. The
+CLI shows the CA's fingerprint at `trellis login https://eta.oats:3001`, asks
+whether to trust it and remembers the answer. Node services start with
+`NODE_EXTRA_CA_CERTS` pointing at the CA; Rust services put its path in
+`RuntimeAuthorizationTrust.root_certificates`.
 
 ## The settings you can choose
 

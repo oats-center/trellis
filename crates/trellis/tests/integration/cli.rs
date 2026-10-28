@@ -902,8 +902,8 @@ async fn cli_server_managed_nats() {
 }
 
 /// A first plain start with no installation and no terminal to ask on creates
-/// nothing; `--init` creates the default localhost installation, which every
-/// later plain start then finds. Without nats-server on PATH the managed start
+/// nothing; `--init` creates a localhost development installation over plain
+/// HTTP, which every later plain start then finds. Without nats-server on PATH the managed start
 /// stops before binding any of the installation's fixed default ports.
 #[test]
 fn first_start_creates_the_default_installation_only_when_asked() {
@@ -934,6 +934,12 @@ fn first_start_creates_the_default_installation_only_when_asked() {
     assert!(
         installation.join("config.toml").is_file(),
         "--init did not create the default installation: {created}"
+    );
+    let config = fs::read_to_string(installation.join("config.toml")).unwrap();
+    assert!(
+        config.contains("public_origin = \"http://localhost:3000\"")
+            && !installation.join("tls").exists(),
+        "--init did not create a plain-HTTP localhost installation:\n{config}"
     );
     for stderr in [created, start(&[])] {
         assert!(

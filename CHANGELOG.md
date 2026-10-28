@@ -10,6 +10,13 @@ and this project adheres to
 
 ### Changed
 
+- A first `trellis-server` with no installation runs a short setup wizard: who
+  runs NATS, localhost development or other machines, then the hostnames,
+  ports and certificates `init` would ask for. It prints the equivalent
+  `trellis-server init` command. `--init` now creates a localhost development
+  installation over plain HTTP, with no certificates to trust, and a loopback
+  installation no longer logs the shared-hostname cookie warning.
+
 - `trellis-server init --bind-address` takes a hostname as well as an IP and
   listens on the address of this machine it resolves to. An address that isn't
   this machine's is refused.

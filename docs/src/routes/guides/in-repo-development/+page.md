@@ -30,21 +30,20 @@ npm run browser:embedded
 cargo run -p trellis-server
 ```
 
-The first run asks to create an installation in `~/.config/trellis` and, if
-`nats-server` isn't on your `PATH`, to download NATS. Pass
-`cargo run -p trellis-server -- --init --nats-download` to answer yes to both.
+The first run asks a few questions to set up an installation in
+`~/.config/trellis` and, if `nats-server` isn't on your `PATH`, offers to
+download NATS. `cargo run -p trellis-server -- --init --nats-download` skips
+the questions and creates a localhost development installation over plain
+HTTP.
 If that folder already holds an installation from a released Trellis, keep
 them apart: `cargo run -p trellis-server -- init --out ~/trellis-dev` once,
 then `cargo run -p trellis-server -- --config ~/trellis-dev/config.toml`.
 
-Once it's up, Console is at `https://localhost:3000/console`, and the
-certificate steps in
-[Start Trellis](/guides/starting-trellis#trust-trelliss-certificate) apply
-unchanged. To check on it:
+Once it's up, Console is at `http://localhost:3000/console`. To check on it:
 
 ```sh
-curl --cacert ~/.config/trellis/tls/ca.crt https://localhost:3000/healthz
-curl --cacert ~/.config/trellis/tls/ca.crt https://localhost:3000/readyz
+curl http://localhost:3000/healthz
+curl http://localhost:3000/readyz
 curl http://127.0.0.1:8222/healthz
 ```
 
