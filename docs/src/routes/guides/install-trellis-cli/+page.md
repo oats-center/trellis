@@ -7,7 +7,18 @@ The `trellis` CLI handles runtime and operator tasks such as service deployments
 
 ## Option A: Download a prebuilt binary
 
-Prebuilt binaries are published as [GitHub Releases](https://github.com/oats-center/trellis/releases) for every tagged version.
+On Linux x86_64, this installs the newest release into `~/.local/bin`:
+
+```sh
+curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis
+```
+
+After that the CLI updates itself: `trellis upgrade check` tells you whether a
+newer release exists, and `trellis upgrade install` replaces the binary with
+it. [Install Trellis](/guides/install-trellis#download-the-server) explains the
+script's settings.
+
+To install by hand instead: prebuilt binaries are published as [GitHub Releases](https://github.com/oats-center/trellis/releases) for every tagged version.
 
 Each release publishes one archive per binary, with a checksum file for each:
 

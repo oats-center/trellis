@@ -16,11 +16,25 @@ This page gets the program onto your machine. Once it's there,
 
 ## Download the server
 
-Linux on x86_64 is the only platform with a ready-made download today. Each
+Linux on x86_64 is the only platform with a ready-made download today. This
+installs the newest release into `~/.local/bin`:
+
+```sh
+curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis-server
+```
+
+The script picks the newest stable release, or the newest prerelease while
+there's no stable one yet, and checks the download against the release's
+checksum before installing it. Set `TRELLIS_VERSION=0.100.0-rc.12` for a
+particular release, or `TRELLIS_INSTALL_DIR` for another folder. Put the
+variable after the pipe, as in `| TRELLIS_VERSION=0.100.0-rc.12 sh -s trellis-server`,
+so `sh` sees it. To upgrade, run the same line again; the server has no
+update command of its own.
+
+To do the same by hand: each
 [GitHub release](https://github.com/oats-center/trellis/releases) carries a
 `trellis-server` archive and a checksum file for it. Set `version` to the
-release you want (the example uses `0.100.0-rc.12`), then download, check and
-unpack:
+release you want, then download, check and unpack:
 
 ```sh
 version=0.100.0-rc.12
@@ -42,8 +56,14 @@ trellis-server --version
 
 You'll want the `trellis` command-line tool as well, for logging in and
 managing the installation from a terminal.
-[Install the Trellis CLI](/guides/install-trellis-cli) covers it; it ships the
-same way.
+It installs the same way:
+
+```sh
+curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis
+```
+
+[Install the Trellis CLI](/guides/install-trellis-cli) has the other ways to
+get it.
 
 ## Get NATS (or let Trellis fetch it)
 
@@ -146,9 +166,9 @@ installation's identity or private files.
 
 A few things about the units:
 
-- `trellis.container` runs the image `localhost/trellis:revision7`. Build that
-  from source, or change `Image=` to a published
-  `ghcr.io/oats-center/trellis-server` tag you've verified.
+- `trellis.container` runs `ghcr.io/oats-center/trellis-server:latest`, the
+  newest release. For a server that only changes when you decide, set
+  `Image=` to a version tag such as `v0.100.0-rc.12`.
 - In `trellis-nats.container`, replace `nats.example.com` in `NetworkAlias`
   with your NATS hostname, so Trellis checks the same broker certificate from
   inside the network as clients do from outside. That container only mounts

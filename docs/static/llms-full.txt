@@ -192,6 +192,15 @@ are not consumer dependencies.
 
 ### Running Trellis
 
+#### Installing the binaries
+
+On Linux x86_64, `curl -fsSL https://oats-center.github.io/trellis/install.sh |
+sh -s trellis` installs the CLI and `... | sh -s trellis-server` the server,
+from the newest release into `~/.local/bin` after checking the release
+checksum (`TRELLIS_VERSION` and `TRELLIS_INSTALL_DIR` override). The CLI
+updates itself with `trellis upgrade install`; rerun the script to upgrade the
+server. The server is also published as `ghcr.io/oats-center/trellis-server`.
+
 #### Installation bundle
 
 `trellis-server init --out <dir>` writes a bundle whose `config.toml` sets
