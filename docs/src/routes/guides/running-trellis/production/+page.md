@@ -1,6 +1,6 @@
 ---
 title: "Run Trellis in production"
-description: "Hostnames, file locations, Podman and systemd, a single container, reverse proxies, your own certificates, NATS clusters and backups."
+description: "Hostnames, certificates, file locations, Podman and systemd, a single container, reverse proxies, NATS clusters and backups."
 ---
 
 [Start Trellis](/guides/starting-trellis) runs everything on one machine for
@@ -9,9 +9,9 @@ them have to be made before you create it.
 
 ## Pick your hostnames first
 
-Trellis serves everything over TLS, and the certificates it generates name
-exactly the hostnames you give `trellis-server init`. Changing them later means
-a new installation. A production install usually has three:
+Trellis serves everything over TLS, and its certificates have to name the
+hostnames you give `trellis-server init`. Changing them later means a new
+installation. A production install usually has three:
 
 - the Console, for example `https://console.example.com`
 - the sign-in (OAuth) page, on a hostname of its own such as
@@ -29,6 +29,42 @@ once:
 | `--nats-server-url tls://nats.example.com:4222` | `tls://<host>:4222`         | Where services connect to NATS                                           |
 | `--nats-websocket-url wss://nats.example.com`   | relayed through the Console | Where browsers connect to NATS directly (with `--nats-websocket direct`) |
 | `--trellis-port`, `--oauth-port`                | `3000`, `3001`              | The Console's and sign-in's ports                                        |
+
+## Bring certificates people already trust
+
+A production installation serves certificates every browser and service
+already trusts: from a public CA such as Let's Encrypt, or from your
+organization's own CA. Get one for the Console and sign-in hostnames and one
+for the NATS hostnames, then give them to `init`:
+
+```sh
+trellis-server init --tls supplied \
+  --tls-certificate-chain console.crt --tls-private-key console.key \
+  --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
+  --public-origin https://console.example.com \
+  --oauth-origin https://auth.example.com \
+  --nats-server-url tls://nats.example.com:4222
+```
+
+If your organization runs the CA, add `--tls-ca-certificate <its certificate>`
+so Trellis trusts it when it connects to NATS. Behind a proxy that terminates
+HTTPS, leave out the Console pair; see
+[Behind your own HTTPS proxy](#behind-your-own-https-proxy).
+
+For a lab or test installation that nobody else depends on, `--tls generated`
+makes Trellis create its own CA instead. Browsers and services then accept it
+by its fingerprint, as in
+[development mode](/guides/running-trellis/other-machines). The CA lives in
+the installation's `tls-ca` folder. With `--system` it goes next to the
+installation instead, in `<folder>-tls-ca`, so its private key stays out of
+anything mounted into a container. `--tls-ca-dir <folder>` puts it anywhere
+else outside the installation.
+
+To test the production layout without a real CA,
+`trellis-server tls issue --out <folder> --host <name>` writes a certificate
+for those hosts (`server.crt`, `server.key`) and the CA that issued it
+(`ca.crt`), ready for `--tls supplied`. Trust that `ca.crt` wherever the test
+runs.
 
 ## Where an installation keeps its files
 
@@ -57,11 +93,6 @@ Relative paths resolve from the folder holding `config.toml`. Leave a line out
 and the server uses the profile's folder for it. Database files you don't name
 explicitly get fixed names under the data folder.
 
-The installation's CA lives in its `tls-ca` folder. With `--system` it goes
-next to the installation instead, in `<folder>-tls-ca`, so the CA's private key
-stays out of anything mounted into a container. `--tls-ca-dir <folder>` puts it
-anywhere else outside the installation.
-
 ## Who runs NATS
 
 By default `trellis-server` starts the NATS server described by `nats/nats.conf`
@@ -79,12 +110,15 @@ it can see enough JetStream servers to hold three copies.
 
 The repository's `deploy/quadlet` folder has Podman Quadlet units that run
 NATS and Trellis as two rootless containers managed by systemd. Create a
-private installation first, with your real hostnames:
+private installation first, with your real hostnames and
+[certificates](#bring-certificates-people-already-trust):
 
 ```sh
 install -d -m 0700 "$HOME/trellis" "$HOME/trellis/data"
 trellis-server init --out "$HOME/trellis/config" --external-nats \
-  --tls-ca-dir "$HOME/trellis/tls-ca" \
+  --tls supplied \
+  --tls-certificate-chain auth.crt --tls-private-key auth.key \
+  --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
   --public-origin https://console.example.com \
   --oauth-origin https://auth.example.com \
   --nats-server-url tls://nats.example.com:4222 \
@@ -105,7 +139,7 @@ A few things about the units:
 - In `trellis-nats.container`, replace `nats.example.com` in `NetworkAlias`
   with your NATS hostname, so Trellis checks the same broker certificate from
   inside the network as clients do from outside. That container only mounts
-  `nats/tls/`, never the sign-in keys or the CA's private key.
+  `nats/tls/`, never the sign-in keys.
 - They expect rootless Podman with `keep-id`, mapping your user to the
   runtime's UID 10001. Keep private folders readable by you alone. Trellis
   refuses to start on unsafe permissions, and loosening a folder with `chmod`
@@ -140,15 +174,21 @@ the runtime's own provider keys.
 ## A single container
 
 The image can also run NATS inside the same container. Keep the installation
-on a read-only volume and the changing state on a writable one:
+on a read-only volume and the changing state on a writable one. The
+[certificates](#bring-certificates-people-already-trust) go in a folder,
+`certs` here, holding `trellis.crt` and `trellis.key` for every hostname:
 
 ```sh
 docker volume create trellis-bundle
 docker volume create trellis-state
 # Create the installation once, as the image's non-root user:
 docker run --rm --user 10001:10001 --entrypoint trellis-server \
-  --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis-server:latest \
-  init --system --out /var/lib/trellis/bundle
+  --volume trellis-state:/var/lib/trellis --volume "$PWD/certs":/certs:ro \
+  ghcr.io/oats-center/trellis-server:latest \
+  init --system --out /var/lib/trellis/bundle --tls supplied \
+  --tls-certificate-chain /certs/trellis.crt --tls-private-key /certs/trellis.key \
+  --nats-tls-certificate-chain /certs/trellis.crt \
+  --nats-tls-private-key /certs/trellis.key
 # Give the image's user ownership of the state volume:
 docker run --rm --user root --entrypoint sh \
   --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis-server:latest \
@@ -176,14 +216,15 @@ Trellis reads its config, keys and certificates from `/etc/trellis` and runs
 the image's own `nats-server`. Everything that changes lands in
 `/var/lib/trellis`: the NATS config it renders, NATS's own data, and Trellis's
 SQLite databases. The `init` above uses `localhost` names; add the hostname
-flags from [Pick your hostnames first](#pick-your-hostnames-first) before you
-rely on it.
+flags from [Pick your hostnames first](#pick-your-hostnames-first) for the
+names your certificates carry.
 
 ## Behind your own HTTPS proxy
 
 Console and the sign-in page can also run as plain HTTP behind a proxy that
 terminates TLS. Create the installation with `--trusted-proxy 10.0.0.2/32` (the
-proxy's network), or set it in `config.toml`:
+proxy's network) and `--tls supplied` with only the NATS certificate, or set it
+in `config.toml`:
 
 ```toml
 [http.transport]
@@ -201,11 +242,7 @@ HTTPS in a browser, so something has to terminate TLS. NATS's native port
 always serves its own TLS and can't sit behind a TLS-terminating proxy; only
 its WebSocket port can (`--nats-websocket-behind-proxy`).
 
-To bring your own certificates instead of the generated ones, create the
-installation with `--tls supplied` and pass `--tls-certificate-chain`,
-`--tls-private-key`, `--nats-tls-certificate-chain` and
-`--nats-tls-private-key`, plus `--tls-ca-certificate` when your issuer is
-private. A listener with its own certificate looks like this in `config.toml`:
+A listener that serves its own certificate looks like this in `config.toml`:
 
 ```toml
 [http]
@@ -233,9 +270,9 @@ restore them together:
 - the NATS JetStream data
 - the installation folder: `config.toml`, `session.seed`, `auth/`,
   `live-providers/`, `nats/` and `tls/`
-- the CA folder (`tls-ca/`, or `<name>-tls-ca/` next to a `--system`
-  installation), kept separately
-  and never mounted into a container
+- with `--tls generated`, the CA folder (`tls-ca/`, or `<name>-tls-ca/` next
+  to a `--system` installation), kept separately and never mounted into a
+  container
 
 If a signing key in `platform.issuer-keys/` goes missing, restore it from a
 backup; Trellis won't make a new one in its place. Recreating NATS streams or

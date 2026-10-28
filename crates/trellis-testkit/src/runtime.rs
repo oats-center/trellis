@@ -290,8 +290,8 @@ async fn start_once(
         let distribution = crate::distribution::resolve(native, &source).await?;
         let lease = PortLease::reserve()?;
         let ports = lease.ports()?;
-        // Live tests run on the generated installation TLS that ordinary
-        // initialization produces; clients trust only this runtime's CA.
+        // A runtime serves certificates from its own test CA, as a production
+        // installation serves ones browsers trust; clients trust only that CA.
         let public_origin = format!("https://127.0.0.1:{}", ports.http);
         let oauth_origin = format!("https://127.0.0.1:{}", ports.oauth);
         let nats_url = format!("tls://127.0.0.1:{}", ports.nats);
@@ -303,11 +303,31 @@ async fn start_once(
             .config_dir();
         let config_path = config_dir.join("config.toml");
         std::fs::create_dir_all(workdir.join("logs"))?;
+        let certificates = workdir.join("certificates");
+        crate::process::run(
+            Command::new(&distribution.server)
+                .args(["tls", "issue", "--out"])
+                .arg(&certificates)
+                .args(["--host", "127.0.0.1", "--host", "localhost"]),
+            &workdir.join("logs/certificates.log"),
+            None,
+            TrellisTestStage::ConfigGeneration,
+        )
+        .await?;
         let mut command = Command::new(&distribution.server);
         command
             .args(["init", "--out"])
             .arg(&config_dir)
             .arg("--external-nats")
+            .args(["--tls", "supplied", "--tls-ca-certificate"])
+            .arg(certificates.join("ca.crt"));
+        for flag in ["--tls-certificate-chain", "--nats-tls-certificate-chain"] {
+            command.arg(flag).arg(certificates.join("server.crt"));
+        }
+        for flag in ["--tls-private-key", "--nats-tls-private-key"] {
+            command.arg(flag).arg(certificates.join("server.key"));
+        }
+        command
             .args([
                 "--trellis-port",
                 &ports.http.to_string(),

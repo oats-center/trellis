@@ -744,8 +744,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
       }
       const [port, nativePort, monitorPort, websocketPort, oauthPort] =
         portLeases.map((lease) => lease.port);
-      // Runtimes serve the default generated installation TLS; this process
-      // trusts each runtime's CA explicitly once it is generated.
+      // A runtime serves certificates from its own test CA, as a production
+      // installation serves ones browsers trust; this process trusts that CA
+      // explicitly. Development mode generates its own instead.
       const natsUrl = `tls://127.0.0.1:${nativePort}`;
       const websocketUrl = `wss://127.0.0.1:${websocketPort}`;
       if (options.rotatableWebsocketProxy) {
@@ -764,6 +765,24 @@ export class TrellisTestRuntime implements AsyncDisposable {
       const oauthIssuer = options.development
         ? `${trellisUrl}/auth`
         : `https://localhost:${oauthPort}`;
+      const certificates = join(workdir, "certificates");
+      if (!options.development) {
+        await runBootstrapCommand(
+          native.server,
+          [
+            "tls",
+            "issue",
+            "--out",
+            certificates,
+            "--host",
+            "localhost",
+            "--host",
+            "127.0.0.1",
+          ],
+          environment,
+          timeouts.startupMs,
+        );
+      }
       const initArgs = [
         "init",
         "--format",
@@ -782,9 +801,23 @@ export class TrellisTestRuntime implements AsyncDisposable {
         natsUrl,
         ...(options.development
           ? ["--dev"]
-          : options.sameOriginWebsocket
-            ? ["--nats-websocket", "relay"]
-            : ["--nats-websocket-url", websocketUrl]),
+          : [
+              "--tls",
+              "supplied",
+              "--tls-ca-certificate",
+              join(certificates, "ca.crt"),
+              "--tls-certificate-chain",
+              join(certificates, "server.crt"),
+              "--tls-private-key",
+              join(certificates, "server.key"),
+              "--nats-tls-certificate-chain",
+              join(certificates, "server.crt"),
+              "--nats-tls-private-key",
+              join(certificates, "server.key"),
+              ...(options.sameOriginWebsocket
+                ? ["--nats-websocket", "relay"]
+                : ["--nats-websocket-url", websocketUrl]),
+            ]),
         "--public-origin",
         publicOrigin,
         ...(options.development

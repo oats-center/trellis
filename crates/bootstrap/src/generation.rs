@@ -84,9 +84,18 @@ pub fn generate_trellis_bootstrap(
         }
     }
     if let BootstrapTls::Supplied(supplied) = &options.runtime.tls {
+        if options.runtime.trusted_proxies.is_empty()
+            && (supplied.certificate_chain.is_none() || supplied.private_key.is_none())
+        {
+            return Err(BootstrapError::InvalidTls(
+                "supplied TLS needs the Console's certificate chain and private key unless a \
+                trusted proxy serves HTTPS"
+                    .into(),
+            ));
+        }
         for path in [
-            Some(&supplied.certificate_chain),
-            Some(&supplied.private_key),
+            supplied.certificate_chain.as_ref(),
+            supplied.private_key.as_ref(),
             Some(&supplied.nats_certificate_chain),
             Some(&supplied.nats_private_key),
             supplied.ca_certificate.as_ref(),
@@ -169,11 +178,20 @@ pub fn generate_trellis_bootstrap(
                 }
             }
             for (source, target, private) in [
-                (&supplied.certificate_chain, RUNTIME_CERTIFICATE, false),
-                (&supplied.private_key, RUNTIME_PRIVATE_KEY, true),
-                (&supplied.nats_certificate_chain, NATS_CERTIFICATE, false),
-                (&supplied.nats_private_key, NATS_PRIVATE_KEY, true),
+                (
+                    supplied.certificate_chain.as_ref(),
+                    RUNTIME_CERTIFICATE,
+                    false,
+                ),
+                (supplied.private_key.as_ref(), RUNTIME_PRIVATE_KEY, true),
+                (
+                    Some(&supplied.nats_certificate_chain),
+                    NATS_CERTIFICATE,
+                    false,
+                ),
+                (Some(&supplied.nats_private_key), NATS_PRIVATE_KEY, true),
             ] {
+                let Some(source) = source else { continue };
                 let contents = fs::read(source)?;
                 if private {
                     write_private_file(trellis_out.join(target), contents)?;

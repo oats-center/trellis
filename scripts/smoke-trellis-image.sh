@@ -58,9 +58,19 @@ docker volume create "${bundle_volume}" >/dev/null
 docker volume create "${state_volume}" >/dev/null
 docker run --rm --user root --entrypoint chown -v "${state_volume}":/var/lib/trellis \
   "${image}" -R 10001:10001 /var/lib/trellis
+# Production serves certificates clients already trust; the smoke issues
+# its own for localhost and trusts that issuer.
 docker run --rm --user 10001:10001 --entrypoint trellis-server \
   -v "${state_volume}":/var/lib/trellis "${image}" \
-  init --system --out /var/lib/trellis/bundle
+  tls issue --out /var/lib/trellis/certificates --host localhost --host 127.0.0.1
+docker run --rm --user 10001:10001 --entrypoint trellis-server \
+  -v "${state_volume}":/var/lib/trellis "${image}" \
+  init --system --out /var/lib/trellis/bundle --tls supplied \
+  --tls-ca-certificate /var/lib/trellis/certificates/ca.crt \
+  --tls-certificate-chain /var/lib/trellis/certificates/server.crt \
+  --tls-private-key /var/lib/trellis/certificates/server.key \
+  --nats-tls-certificate-chain /var/lib/trellis/certificates/server.crt \
+  --nats-tls-private-key /var/lib/trellis/certificates/server.key
 docker run --rm --user root --entrypoint cp \
   -v "${state_volume}":/from:ro -v "${bundle_volume}":/to "${image}" \
   -a /from/bundle/. /to/
@@ -70,8 +80,7 @@ docker run --rm --user root --entrypoint cp \
 docker run --rm --user root --entrypoint chown \
   -v "${bundle_volume}":/to "${image}" \
   -R 10001:10001 /to
-# The default bundle serves Trellis-generated TLS for localhost; probes trust
-# exactly that installation CA instead of disabling verification.
+# Probes trust exactly that issuer instead of disabling verification.
 docker run --rm --entrypoint cat -v "${bundle_volume}":/etc/trellis:ro "${image}" \
   /etc/trellis/tls/ca.crt > "${work}/ca.crt"
 

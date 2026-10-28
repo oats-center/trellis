@@ -27,8 +27,19 @@ eta.oats` (or the first-start wizard's "From other machines, for
   `--ca-certificate`. TypeScript services (`TrellisService.connect`) and
   devices do the same before their first request, and other Node programs
   call `acceptServerCertificate` from `@oatscenter/trellis/native`.
+- `trellis-server tls issue --out <folder> --host <name>` issues a certificate
+  for those hosts from a single-use CA, ready for `init --tls supplied`, so a
+  test or lab can run the production layout. The Rust and TypeScript testkits
+  now start production-shaped runtimes this way.
 
 ### Changed
+
+- `trellis-server init` without `--dev` no longer generates certificates by
+  default: pass `--tls supplied` with certificates clients already trust,
+  `--tls generated` for a lab or test installation, or `--tls
+loopback-development`. Behind a `--trusted-proxy`, `--tls supplied` needs
+  only the NATS certificate, and the setup wizard's proxy answer now asks for
+  it.
 
 - A first `trellis-server` with no installation runs a short setup wizard: who
   runs NATS, localhost development or other machines, then the hostnames,

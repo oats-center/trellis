@@ -99,29 +99,10 @@ pub(crate) fn generate_installation_tls(
     runtime_hosts: &[CertificateHost],
     nats_hosts: &[CertificateHost],
 ) -> Result<GeneratedTlsSummary, BootstrapError> {
-    let now = OffsetDateTime::now_utc();
     let mut hosts: Vec<CertificateHost> = runtime_hosts.iter().chain(nats_hosts).cloned().collect();
     hosts.sort();
     hosts.dedup();
-
-    let mut params = CertificateParams::default();
-    params.distinguished_name = DistinguishedName::new();
-    params
-        .distinguished_name
-        .push(DnType::OrganizationName, "Trellis");
-    params.distinguished_name.push(DnType::CommonName, ca_name);
-    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-    params.name_constraints = Some(name_constraints(&hosts));
-    params.serial_number = Some(random_serial());
-    params.not_before = now - CLOCK_SKEW;
-    params.not_after = now + CA_VALIDITY;
-    let ca_key = KeyPair::generate().map_err(tls_error)?;
-    let ca = params.self_signed(&ca_key).map_err(tls_error)?;
+    let (params, ca_key, ca) = new_ca(ca_name, &hosts)?;
 
     fs::create_dir_all(ca_directory)?;
     set_private_directory(ca_directory)?;
@@ -135,7 +116,7 @@ pub(crate) fn generate_installation_tls(
 
     let ca_pem = ca.pem();
     let issuer = Issuer::new(params, ca_key);
-    issue_leaf(
+    let leaf_not_after = issue_leaf(
         &issuer,
         &ca_pem,
         runtime_hosts,
@@ -154,8 +135,99 @@ pub(crate) fn generate_installation_tls(
     Ok(GeneratedTlsSummary {
         ca_sha256_fingerprint: summary.sha256_fingerprint,
         ca_certificate: bundle.join(BUNDLE_CA_CERTIFICATE),
-        leaf_not_after: now + LEAF_VALIDITY,
+        leaf_not_after,
     })
+}
+
+/// Files written by [`issue_certificates`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuedCertificates {
+    /// The issuing CA's certificate, for clients to trust.
+    pub ca_certificate: PathBuf,
+    /// SHA-256 fingerprint of the issuing CA.
+    pub ca_sha256_fingerprint: String,
+    /// The server certificate followed by the CA.
+    pub certificate_chain: PathBuf,
+    /// The server certificate's private key.
+    pub private_key: PathBuf,
+    /// Expiry of the server certificate.
+    pub not_after: OffsetDateTime,
+}
+
+/// Issues one server certificate for `hosts` from a new CA that may only
+/// issue for those hosts, writing `ca.crt`, `server.crt` and `server.key` to
+/// `out`. The CA's private key is discarded, so nothing else can be issued
+/// from it.
+///
+/// # Errors
+///
+/// Returns [`BootstrapError`] when `hosts` is empty or holds an invalid name,
+/// or a file cannot be written.
+pub fn issue_certificates(
+    out: &Path,
+    ca_name: &str,
+    hosts: &[String],
+) -> Result<IssuedCertificates, BootstrapError> {
+    let mut hosts: Vec<CertificateHost> = hosts
+        .iter()
+        .map(|host| {
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            host.parse::<IpAddr>().map_or_else(
+                |_| CertificateHost::Dns(host.to_ascii_lowercase()),
+                CertificateHost::Ip,
+            )
+        })
+        .collect();
+    hosts.sort();
+    hosts.dedup();
+    let (params, ca_key, ca) = new_ca(ca_name, &hosts)?;
+    fs::create_dir_all(out)?;
+    let ca_certificate = out.join(CA_CERTIFICATE);
+    fs::write(&ca_certificate, ca.pem())?;
+    let (certificate_chain, private_key) = (out.join("server.crt"), out.join("server.key"));
+    let not_after = issue_leaf(
+        &Issuer::new(params, ca_key),
+        &ca.pem(),
+        &hosts,
+        &certificate_chain,
+        &private_key,
+    )?;
+    let summary = trellis_runtime::tls::inspect_certificate(&ca_certificate)
+        .map_err(|error| BootstrapError::InvalidTls(error.to_string()))?;
+    Ok(IssuedCertificates {
+        ca_certificate,
+        ca_sha256_fingerprint: summary.sha256_fingerprint,
+        certificate_chain,
+        private_key,
+        not_after,
+    })
+}
+
+/// A new CA, named `ca_name`, that may only issue for `hosts`.
+fn new_ca(
+    ca_name: &str,
+    hosts: &[CertificateHost],
+) -> Result<(CertificateParams, KeyPair, rcgen::Certificate), BootstrapError> {
+    let now = OffsetDateTime::now_utc();
+    let mut params = CertificateParams::default();
+    params.distinguished_name = DistinguishedName::new();
+    params
+        .distinguished_name
+        .push(DnType::OrganizationName, "Trellis");
+    params.distinguished_name.push(DnType::CommonName, ca_name);
+    params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    params.name_constraints = Some(name_constraints(hosts));
+    params.serial_number = Some(random_serial());
+    params.not_before = now - CLOCK_SKEW;
+    params.not_after = now + CA_VALIDITY;
+    let ca_key = KeyPair::generate().map_err(tls_error)?;
+    let ca = params.self_signed(&ca_key).map_err(tls_error)?;
+    Ok((params, ca_key, ca))
 }
 
 /// One leaf certificate replaced by [`renew_generated_certificates`].

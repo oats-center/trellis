@@ -28,7 +28,10 @@ pub use nats_config::{
     render_local_nats_config, render_nats_config, slug_from_name, NatsTlsFiles,
 };
 pub use runtime_config::{render_trellis_config, trellis_runtime_config};
-pub use tls::{renew_generated_certificates, GeneratedTlsSummary, RenewedCertificate};
+pub use tls::{
+    issue_certificates, renew_generated_certificates, GeneratedTlsSummary, IssuedCertificates,
+    RenewedCertificate,
+};
 pub use types::{
     BootstrapAuthorizationPolicy, BootstrapTls, GeneratedMetadata, NatsBootstrapConfig,
     NatsBootstrapNames, NatsBootstrapOptions, NatsListeners, SuppliedTls, TrellisBootstrapOptions,

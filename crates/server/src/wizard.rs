@@ -138,24 +138,16 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
     )
     .prompt()
     .map_err(cancelled)?;
+    args.extend(["--tls".into(), "supplied".into()]);
     if certificates == SUPPLIED {
-        args.extend(["--tls".into(), "supplied".into()]);
         for (flag, label) in [
             (
                 "--tls-certificate-chain",
                 "Console and sign-in certificate chain",
             ),
             ("--tls-private-key", "Console and sign-in private key"),
-            ("--nats-tls-certificate-chain", "NATS certificate chain"),
-            ("--nats-tls-private-key", "NATS private key"),
         ] {
             args.extend([flag.into(), path_prompt(label)?]);
-        }
-        let issuer = Text::new("Private issuer's CA certificate (leave empty for a public CA)")
-            .prompt()
-            .map_err(cancelled)?;
-        if !issuer.trim().is_empty() {
-            args.extend(["--tls-ca-certificate".into(), issuer.trim().into()]);
         }
     } else {
         let network = CustomType::<ipnet::IpNet>::new("The proxy's network")
@@ -164,6 +156,19 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
             .prompt()
             .map_err(cancelled)?;
         args.extend(["--trusted-proxy".into(), network.to_string()]);
+    }
+    // Services reach NATS directly, never through the proxy.
+    for (flag, label) in [
+        ("--nats-tls-certificate-chain", "NATS certificate chain"),
+        ("--nats-tls-private-key", "NATS private key"),
+    ] {
+        args.extend([flag.into(), path_prompt(label)?]);
+    }
+    let issuer = Text::new("Private issuer's CA certificate (leave empty for a public CA)")
+        .prompt()
+        .map_err(cancelled)?;
+    if !issuer.trim().is_empty() {
+        args.extend(["--tls-ca-certificate".into(), issuer.trim().into()]);
     }
     Ok(args)
 }

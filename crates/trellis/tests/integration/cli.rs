@@ -288,6 +288,8 @@ async fn cli_server_managed_nats() {
             "init",
             "--format",
             "json",
+            "--tls",
+            "generated",
             "--out",
             bundle.to_str().expect("UTF-8 bundle path"),
             "--trellis-port",
@@ -573,6 +575,8 @@ async fn cli_server_managed_nats() {
     let broken_init = server_command(&workdir.0)
         .args([
             "init",
+            "--tls",
+            "generated",
             "--out",
             broken_bundle.to_str().expect("UTF-8 broken bundle path"),
             "--trellis-port",
@@ -954,7 +958,7 @@ fn server_rejects_reserved_oauth_origins_before_starting_listeners() {
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("reserved-origin");
     let initialized = server_command(&workdir.0)
-        .args(["init", "--out"])
+        .args(["init", "--tls", "generated", "--out"])
         .arg(&bundle)
         .output()
         .expect("initialize ordinary server bundle");
@@ -1004,10 +1008,10 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     let ports = [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
     let [http, nats, monitor, websocket, oauth] =
         ports.each_ref().map(trellis_local_nats::ReservedPort::port);
-    // Ordinary initialization with no certificate options generates the
-    // installation CA and every listener's certificate.
+    // Generated TLS makes the installation CA and every listener's
+    // certificate.
     let initialized = server_command(&workdir.0)
-        .args(["init", "--format", "json", "--out"])
+        .args(["init", "--format", "json", "--tls", "generated", "--out"])
         .arg(&bundle)
         .arg("--external-nats")
         .args([

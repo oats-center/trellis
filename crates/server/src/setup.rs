@@ -33,7 +33,9 @@ pub(crate) enum InitWebsocketMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 /// Certificate source for generated listeners.
 pub(crate) enum InitTlsMode {
-    /// Generate an installation CA and short-lived certificates (default).
+    /// Generate an installation CA and short-lived certificates. Browsers
+    /// and clients accept them by the CA's fingerprint, so they suit labs and
+    /// tests; `--dev` uses them.
     Generated,
     /// Use operator-supplied PEM certificates and keys.
     Supplied,
@@ -138,10 +140,9 @@ pub(crate) struct InitConfigArgs {
     /// Dedicated OAuth listener port.
     pub(crate) oauth_port: u16,
 
-    #[arg(long, value_enum, default_value_t = InitTlsMode::Generated)]
-    /// Certificate source. Generated certificates suit development: browsers
-    /// and clients accept them by their CA's fingerprint.
-    pub(crate) tls: InitTlsMode,
+    #[arg(long, value_enum)]
+    /// Certificate source. Required without --dev, which generates them.
+    pub(crate) tls: Option<InitTlsMode>,
 
     #[arg(long)]
     /// Directory receiving the generated CA private key; defaults to the
@@ -149,11 +150,12 @@ pub(crate) struct InitConfigArgs {
     /// Keep it out of every runtime and broker mount.
     pub(crate) tls_ca_dir: Option<PathBuf>,
 
-    #[arg(long, required_if_eq("tls", "supplied"))]
-    /// Supplied PEM certificate chain naming the Console and OAuth hosts.
+    #[arg(long, requires = "tls_private_key")]
+    /// Supplied PEM certificate chain naming the Console and OAuth hosts;
+    /// not needed behind a --trusted-proxy.
     pub(crate) tls_certificate_chain: Option<PathBuf>,
 
-    #[arg(long, required_if_eq("tls", "supplied"))]
+    #[arg(long, requires = "tls_certificate_chain")]
     /// Supplied PEM private key for --tls-certificate-chain.
     pub(crate) tls_private_key: Option<PathBuf>,
 
@@ -213,6 +215,26 @@ pub(crate) enum TlsSubcommand {
     Renew(TlsRenewArgs),
     /// Show the installation CA fingerprint and certificate expiry.
     Status(TlsStatusArgs),
+    /// Issue a certificate for some hosts from a new single-use CA, to pass
+    /// to `init --tls supplied` on a lab or test installation.
+    Issue(TlsIssueArgs),
+}
+
+#[derive(Debug, clap::Args)]
+/// Issue a server certificate from a new CA that is discarded afterwards.
+pub(crate) struct TlsIssueArgs {
+    /// Folder that receives ca.crt, server.crt and server.key.
+    #[arg(long)]
+    pub(crate) out: PathBuf,
+    /// Hostname or IP address the certificate names; repeatable.
+    #[arg(long = "host", value_name = "HOST", required = true)]
+    pub(crate) hosts: Vec<String>,
+    /// Name of the issuing CA, shown when someone inspects the certificate.
+    #[arg(long, default_value = "Trellis test CA")]
+    pub(crate) name: String,
+    /// Print the result as text or JSON.
+    #[arg(long, value_enum, default_value_t)]
+    pub(crate) format: OutputFormat,
 }
 
 #[derive(Debug, clap::Args)]
@@ -251,7 +273,18 @@ pub(crate) fn init_config(
     options.force = args.force;
     options.runtime.name = args.name.clone();
     options.runtime.trellis_port = args.trellis_port;
-    let loopback = args.tls == InitTlsMode::LoopbackDevelopment;
+    let tls = match (args.tls, args.dev) {
+        (Some(tls), _) => tls,
+        (None, true) => InitTlsMode::Generated,
+        (None, false) => {
+            return Err(miette!(
+                "choose where this installation's certificates come from: --tls supplied \
+                with certificates browsers already trust, --tls generated for a lab or test \
+                installation, or --dev for development"
+            ))
+        }
+    };
+    let loopback = tls == InitTlsMode::LoopbackDevelopment;
     if args.dev
         && (loopback
             || args.nats_websocket == Some(InitWebsocketMode::Direct)
@@ -295,7 +328,7 @@ pub(crate) fn init_config(
         // also reaches NATS; a separate WebSocket port would need its own trust.
         None => {
             args.dev
-                || (args.tls == InitTlsMode::Generated
+                || (tls == InitTlsMode::Generated
                     && args.nats_websocket_url.is_none()
                     && !args.nats_websocket_behind_proxy)
         }
@@ -327,7 +360,7 @@ pub(crate) fn init_config(
         options.runtime.oauth_port = args.oauth_port;
     }
     options.runtime.development = args.dev;
-    options.runtime.tls = match args.tls {
+    options.runtime.tls = match tls {
         // A system installation is the one roles mount, so its CA stays beside it.
         InitTlsMode::Generated => BootstrapTls::Generated {
             ca_directory: args
@@ -336,11 +369,8 @@ pub(crate) fn init_config(
                 .or_else(|| (!system).then(|| out.join(trellis_bootstrap::BUNDLE_CA_DIRECTORY))),
         },
         InitTlsMode::Supplied => BootstrapTls::Supplied(SuppliedTls {
-            certificate_chain: required_path(
-                &args.tls_certificate_chain,
-                "--tls-certificate-chain",
-            )?,
-            private_key: required_path(&args.tls_private_key, "--tls-private-key")?,
+            certificate_chain: args.tls_certificate_chain.clone(),
+            private_key: args.tls_private_key.clone(),
             nats_certificate_chain: required_path(
                 &args.nats_tls_certificate_chain,
                 "--nats-tls-certificate-chain",
@@ -545,6 +575,26 @@ pub(crate) fn tls(command: TlsSubcommand) -> miette::Result<()> {
             );
             Ok(())
         }
+        TlsSubcommand::Issue(args) => {
+            let issued = trellis_bootstrap::issue_certificates(&args.out, &args.name, &args.hosts)
+                .map_err(bootstrap_report)?;
+            if args.format == OutputFormat::Json {
+                print_json(&json!({
+                    "caCertificate": issued.ca_certificate.display().to_string(),
+                    "caSha256Fingerprint": issued.ca_sha256_fingerprint,
+                    "certificateChain": issued.certificate_chain.display().to_string(),
+                    "privateKey": issued.private_key.display().to_string(),
+                    "notAfter": rfc3339(issued.not_after),
+                }));
+                return Ok(());
+            }
+            println!("caCertificate={}", issued.ca_certificate.display());
+            println!("caSha256Fingerprint={}", issued.ca_sha256_fingerprint);
+            println!("certificateChain={}", issued.certificate_chain.display());
+            println!("privateKey={}", issued.private_key.display());
+            println!("notAfter={}", rfc3339(issued.not_after));
+            Ok(())
+        }
         TlsSubcommand::Status(TlsStatusArgs { profile, format }) => {
             let path = profile.paths(|name| std::env::var_os(name))?.config;
             let config = trellis_runtime::RuntimeConfig::load_from_path(&path).into_diagnostic()?;
@@ -741,6 +791,8 @@ mod tests {
             "init".to_string(),
             "--out".to_string(),
             out,
+            "--tls".to_string(),
+            "generated".to_string(),
         ];
         arguments.extend(flags.iter().map(|flag| (*flag).to_string()));
         match Args::parse_from(&arguments).operation {

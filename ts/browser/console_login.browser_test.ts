@@ -91,6 +91,12 @@ test("a development installation signs the Console in through /auth on its one p
         });
         // Listed users arrive over an authenticated NATS RPC.
         await page.locator(".users-row").first().waitFor({ state: "visible" });
+        // Its certificates are self-generated, and Console says so.
+        await page
+          .getByRole("status")
+          .filter({ hasText: "using self-generated certificates" })
+          .first()
+          .waitFor({ state: "visible", timeout: 15_000 });
         assert(signIn.length > 0, "sign-in ran under /auth");
         for (const url of [...signIn, ...sockets])
           assert.equal(url.host, console.host, url.href);
@@ -218,24 +224,13 @@ test("browser admin bootstrap reaches the authorized console and survives reload
           });
         }
         const page = await context.newPage();
-        // The first administrator is told the installation uses self-generated
-        // certificates on the setup page, the sign-in page, and Console.
-        const notice = () =>
-          page
-            .getByRole("status")
-            .filter({ hasText: "using self-generated certificates" })
-            .first()
-            .waitFor({ state: "visible", timeout: 15_000 });
         await page.goto(await runtime.bootstrapUrl(), {
           waitUntil: "domcontentloaded",
         });
-        await notice();
         await completeAdminBootstrapInBrowser(page, runtime, BROWSER_ADMIN);
         await page.waitForURL((url) => url.origin === runtime.oauthIssuer);
-        await notice();
         await completeConsoleEntry(page, BROWSER_ADMIN);
         await waitForConsoleReady(page);
-        await notice();
 
         await page.reload({ waitUntil: "domcontentloaded" });
         await waitForConsoleReady(page);

@@ -188,10 +188,11 @@ pub enum BootstrapTls {
 /// Operator-supplied PEM certificate files.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SuppliedTls {
-    /// Certificate chain naming the Console and OAuth hosts.
-    pub certificate_chain: PathBuf,
+    /// Certificate chain naming the Console and OAuth hosts; omitted behind
+    /// a trusted proxy, which serves them.
+    pub certificate_chain: Option<PathBuf>,
     /// Private key for `certificate_chain`.
-    pub private_key: PathBuf,
+    pub private_key: Option<PathBuf>,
     /// Certificate chain naming the native NATS and WebSocket hosts.
     pub nats_certificate_chain: PathBuf,
     /// Private key for `nats_certificate_chain`.

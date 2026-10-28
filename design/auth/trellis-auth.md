@@ -268,8 +268,8 @@ publicly trusted brokers omit it.
 
 ### Installation TLS (`crates/bootstrap/src/tls.rs`, `tls.rs`)
 
-Initialization generates TLS material unless the operator supplies certificates
-or selects loopback development. Generation creates an installation CA whose
+Production initialization takes operator-supplied certificates. Development
+mode and `--tls generated`, for labs and tests, generate TLS material instead. Generation creates an installation CA whose
 name constraints permit only the configured Console, OAuth, NATS, and WebSocket
 hosts (plus loopback names for the co-located broker), and issues short-lived
 serverAuth leaves for the runtime and broker. Leaves carry their names only in

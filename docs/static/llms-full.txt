@@ -226,14 +226,18 @@ without asking and `--local-nats=<path>` names an exact binary.
 
 #### TLS
 
-Trellis listeners use TLS by default. `trellis-server init` generates a
-name-constrained installation CA and short-lived certificates unless
-certificates are supplied (`--tls supplied`); plaintext exists only in explicit
-loopback development (`--tls loopback-development`). Clients trust a generated
-or other private CA only explicitly, after verifying its SHA-256 fingerprint
-(`trellis-server tls status`) out of band: never disable certificate verification and
-never accept a CA from broker or metadata responses. Generated leaves expire
-after 90 days; `trellis-server tls renew --bundle <dir>` replaces them without changing
+Trellis listeners use TLS. A production `trellis-server init` takes
+`--tls supplied` with certificates clients already trust; `--dev` and
+`--tls generated` (labs and tests) generate a name-constrained installation CA
+and short-lived certificates instead, and plaintext exists only in explicit
+loopback development (`--tls loopback-development`). Tests that need the
+production layout supply certificates from
+`trellis-server tls issue --out <dir> --host <name>`, which writes
+`server.crt`, `server.key` and the single-use `ca.crt` that issued them. Clients
+trust a generated or other private CA only explicitly, after verifying its
+SHA-256 fingerprint (`trellis-server tls status`) out of band: never disable
+certificate verification and never accept a CA from broker or metadata
+responses. Generated leaves expire after 90 days; `trellis-server tls renew --bundle <dir>` replaces them without changing
 client trust. Console and OAuth may run behind an HTTPS-terminating proxy with
 `--trusted-proxy`; native NATS always terminates its own TLS. Console and the
 isolated OAuth listener require HTTPS outside explicit loopback development; the
