@@ -677,8 +677,24 @@ impl RuntimeConfig {
 }
 
 /// Origins isolate JavaScript, but cookies are hostname-scoped, not port-scoped.
+///
+/// Config validation and every client registration check the same pairs, so
+/// each pair is reported once per process.
 pub(crate) fn warn_oauth_cookie_isolation(oauth: &Url, application: &Url) {
-    if oauth.host_str() == application.host_str() && oauth.origin() != application.origin() {
+    static WARNED: std::sync::Mutex<std::collections::BTreeSet<(String, String)>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    if oauth.host_str() != application.host_str() || oauth.origin() == application.origin() {
+        return;
+    }
+    let pair = (
+        oauth.origin().ascii_serialization(),
+        application.origin().ascii_serialization(),
+    );
+    if WARNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(pair)
+    {
         tracing::warn!(
             security_event = "oauth_cookie_isolation_at_risk",
             oauth_origin = %oauth.origin().ascii_serialization(),
