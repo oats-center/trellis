@@ -28,180 +28,49 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.19.0
+          cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/trellis/pages-generator
-          key: pages-generator-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            pages-generator-${{ runner.os }}-
-
-      - name: Build released and current site artifacts
+      - name: Build released and current docs
         shell: bash
         run: |
           set -euo pipefail
 
-          repo_name="${GITHUB_REPOSITORY#*/}"
-          site_root="/${repo_name}"
+          site_root="/${GITHUB_REPOSITORY#*/}"
+          pages_root="${RUNNER_TEMP}/pages"
+          release_root="${GITHUB_WORKSPACE}"
           latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
 
-          if [ -z "${latest_tag}" ]; then
-            echo "No release tag found; using current HEAD for release site"
-            latest_tag="HEAD"
-          fi
-
-          release_root="/tmp/trellis-release-site"
-          current_root="${GITHUB_WORKSPACE}"
-          pages_root="/tmp/trellis-pages-site"
-          release_worktree_path="/tmp/trellis-release-worktree"
-          release_worktree="${release_worktree_path}"
-          release_worktree_created="false"
-
-          rm -rf "${release_root}" "${pages_root}" "${release_worktree_path}"
-          mkdir -p "${release_root}" "${pages_root}"
-
-          if [ "${latest_tag}" = "HEAD" ]; then
-            release_worktree="${current_root}"
+          # Tags before 23cd10af fail to build (no mermaid grammar) and link to
+          # API docs the site no longer generates.
+          if [ -n "${latest_tag}" ] && git merge-base --is-ancestor 23cd10af "${latest_tag}"; then
+            release_root="${RUNNER_TEMP}/release"
+            git worktree add --detach "${release_root}" "${latest_tag}"
           else
-            git worktree add --detach "${release_worktree_path}" "${latest_tag}"
-            release_worktree_created="true"
+            echo "Latest release tag predates the current docs build; using main until the next release"
           fi
-
-          cleanup() {
-            if [ "${release_worktree_created}" = "true" ]; then
-              git worktree remove --force "${release_worktree_path}"
-            fi
-          }
-          trap cleanup EXIT
-
-          install_apis() {
-            local repo_root="$1"
-            (cd "${repo_root}" && rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install)
-          }
 
           build_docs() {
-            local repo_root="$1"
-            local base_path="$2"
-            local out_dir="$3"
-
             (
-              cd "${repo_root}"
-              npm ci
-              npm run browser:embedded
-              cd "${repo_root}/docs"
-              # Releases before the Sveltepress site render design docs in place.
-              if grep -q '"docs:design"' package.json; then
-                npm run docs:design
-              fi
-              SITE_BASE_PATH="${base_path}" npm exec -- vite build
-              mkdir -p "${out_dir}"
-              cp -R build/. "${out_dir}/"
+              cd "$1"
+              npm ci --workspace @trellis/docs --include-workspace-root --ignore-scripts --no-audit --no-fund
+              cd docs
+              npm run docs:design
+              SITE_BASE_PATH="$2" npm exec -- vite build
+              mkdir -p "$3"
+              cp -R build/. "$3/"
             )
           }
 
-          build_console() {
-            local repo_root="$1"
-            local base_path="$2"
-            local out_dir="$3"
-
-            (
-              cd "${repo_root}/web"
-              SITE_BASE_PATH="${base_path}" npm exec -- vite build
-              mkdir -p "${out_dir}/assets/web" "${out_dir}/console"
-              cp -R build/assets/web/. "${out_dir}/assets/web/"
-              cp build/200.html "${out_dir}/console/index.html"
-            )
-          }
-
-          release_docs_root="${release_worktree}"
-          if [ ! -d "${release_docs_root}/docs" ]; then
-            echo "Latest release tag worktree is missing docs; using current main docs until the next release tag"
-            release_docs_root="${current_root}"
-          fi
-
-          release_console_root="${release_worktree}"
-          if [ ! -f "${release_worktree}/web/svelte.config.js" ]; then
-            echo "Latest release tag worktree is missing console sources; using current main console until the next release tag"
-            release_console_root="${current_root}"
-          elif ! grep -q 'SITE_BASE_PATH' "${release_worktree}/web/svelte.config.js"; then
-            echo "Latest release tag predates Pages console base-path support; using current main console until the next release tag"
-            release_console_root="${current_root}"
-          fi
-
-          if [ ! -f "${release_worktree}/ts/packages/trellis/trellis.toml" ]; then
-            echo "Latest release tag predates project-local API installation; using current main until the next release tag"
-            release_docs_root="${current_root}"
-            release_console_root="${current_root}"
-          fi
-
-          install_apis "${release_docs_root}"
-          if [ "${release_console_root}" != "${release_docs_root}" ]; then
-            install_apis "${release_console_root}"
-          fi
-          if [ "${current_root}" != "${release_docs_root}" ] && [ "${current_root}" != "${release_console_root}" ]; then
-            install_apis "${current_root}"
-          fi
-
-          ensure_protocol_wasm() {
-            local repo_root="$1"
-            local output="${repo_root}/ts/packages/trellis/auth/protocol_wasm"
-            # Release checkouts may predate the client/provider split.
-            if [ -s "${output}/client/trellis_protocol_wasm.js" ] || [ -s "${output}/trellis_protocol_wasm.js" ]; then
-              return 0
-            fi
-            cargo run --manifest-path "${repo_root}/xtask/Cargo.toml" -- protocol-wasm
-          }
-
-          ensure_protocol_wasm "${release_docs_root}"
-          ensure_protocol_wasm "${release_console_root}"
-          ensure_protocol_wasm "${current_root}"
-
-          build_docs "${release_docs_root}" "${site_root}" "${release_root}/docs"
-          build_docs "${current_root}" "${site_root}/current" "${pages_root}/current"
-
-          build_console "${release_console_root}" "${site_root}" "${release_root}/console"
-          build_console "${current_root}" "${site_root}/current" "${pages_root}/current"
-
-          cp -R "${release_root}/docs/." "${pages_root}/"
-          mkdir -p "${pages_root}/assets/web" "${pages_root}/console"
-          cp -R "${release_root}/console/assets/web/." "${pages_root}/assets/web/"
-          cp "${release_root}/console/console/index.html" "${pages_root}/console/index.html"
+          build_docs "${release_root}" "${site_root}" "${pages_root}"
+          build_docs "${GITHUB_WORKSPACE}" "${site_root}/current" "${pages_root}/current"
 
           cat > "${pages_root}/404.html" <<EOF
           <!doctype html>
           <html lang="en">
             <head>
               <meta charset="utf-8" />
-              <meta name="viewport" content="width=device-width, initial-scale=1" />
-              <title>Trellis site redirect</title>
-              <script>
-                (() => {
-                  const siteRoot = ${site_root@Q};
-                  const pathname = window.location.pathname;
-                  const search = window.location.search;
-                  const hash = window.location.hash;
-                  const prefixes = ["/current/console", "/console"];
-
-                  for (const prefix of prefixes) {
-                    const fullPrefix = siteRoot + prefix;
-                    if (pathname === fullPrefix || pathname.startsWith(fullPrefix + "/")) {
-                      const route = pathname.slice(fullPrefix.length).replace(/^\//, "");
-                      const target = new URL(fullPrefix + "/", window.location.origin);
-                      if (route || search || hash) {
-                        target.searchParams.set("__trellis_route", route + search + hash);
-                      }
-                      window.location.replace(target.toString());
-                      return;
-                    }
-                  }
-
-                  window.location.replace(window.location.origin + siteRoot + "/");
-                })();
-              </script>
+              <title>Trellis</title>
+              <script>window.location.replace(window.location.origin + ${site_root@Q} + "/");</script>
             </head>
             <body></body>
           </html>
@@ -213,7 +82,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: /tmp/trellis-pages-site
+          path: ${{ runner.temp }}/pages
 
   deploy:
     needs: build
