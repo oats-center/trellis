@@ -40,10 +40,6 @@ struct Args {
     /// Optional one-use provisioning secret printed by `trellis deploy provision`.
     #[arg(long, env = "TRELLIS_PROVISIONING_SECRET")]
     provisioning_secret: Option<String>,
-
-    /// Private installation CA to trust, such as a Trellis-generated CA.
-    #[arg(long, env = "TRELLIS_CA_CERTIFICATE")]
-    ca_certificate: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -81,9 +77,11 @@ async fn connect_device_if_configured(args: &Args) -> anyhow::Result<Option<Conn
             .ok_or_else(|| anyhow::anyhow!("--device requires --device-root-secret"))?,
     )?;
     let identity = derive_device_identity(&root_secret)?;
-    let server =
-        trellis_rs::auth::discover_native_oauth(trellis_url, args.ca_certificate.as_slice())
-            .await?;
+    let server = trellis_rs::auth::discover_accepting_certificate(
+        trellis_url,
+        &trellis_rs::auth::CertificateAcceptance::for_program("rust-field-ops-device-demo"),
+    )
+    .await?;
     let activation = DeviceActivationOptions::new(
         trellis_rs::client::DeviceConnectOptions::<
             device_trellis::participants::demo_device_device::Participant,

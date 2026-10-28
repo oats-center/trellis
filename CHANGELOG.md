@@ -18,6 +18,13 @@ eta.oats` (or the first-start wizard's "From other machines, for
   TypeScript clients accept an issuer with a path such as
   `https://eta.oats:3000/auth`, and the testkits take `development: true`.
 - `trellis-server init --host` sets the hostname every default address uses.
+- Rust programs accept a development installation's certificate the way a
+  browser does: `trellis_rs::auth::discover_accepting_certificate` shows the
+  issuer's fingerprint and asks on a terminal, or takes it from
+  `TRELLIS_CERTIFICATE_FINGERPRINT`, or accepts it on first contact with
+  `TRELLIS_ACCEPT_SELF_SIGNED=1`, and remembers it per program. The CLI's
+  `trellis login` uses the same code. The Rust demos use it instead of
+  `--ca-certificate`.
 
 ### Changed
 

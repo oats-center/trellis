@@ -30,10 +30,6 @@ struct Args {
     /// Base64url provisioned service identity seed.
     #[arg(long, env = "TRELLIS_SEED")]
     seed: Option<String>,
-
-    /// Private installation CA to trust, such as a Trellis-generated CA.
-    #[arg(long, env = "TRELLIS_CA_CERTIFICATE")]
-    ca_certificate: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -64,9 +60,13 @@ async fn main() -> anyhow::Result<()> {
         _ => anyhow::bail!("--trellis-url and --seed must be provided together"),
     };
 
-    let server =
-        trellis_rs::auth::discover_native_oauth(&trellis_url, args.ca_certificate.as_slice())
-            .await?;
+    // A development Trellis's own certificate is accepted like a browser
+    // would: by its fingerprint, asked once and remembered.
+    let server = trellis_rs::auth::discover_accepting_certificate(
+        &trellis_url,
+        &trellis_rs::auth::CertificateAcceptance::for_program("rust-field-ops-demo"),
+    )
+    .await?;
     let mut runtime = Participant::connect(
         ServiceConnectOptions::new(server.nats_servers, server.trust, &seed)
             .with_name("rust-field-ops-demo")

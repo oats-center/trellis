@@ -2,7 +2,10 @@ use super::*;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::task::AbortOnDropHandle;
 use trellis_rs::__internal::RuntimeClient as _;
-use trellis_rs::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient};
+use trellis_rs::auth::{
+    discover_accepting_certificate, discover_native_oauth, CertificateAcceptance,
+    CertificateAcceptanceError, NativeCredentialScope, NativeOAuthClient,
+};
 use trellis_rs::client::{TrellisClientError, UserConnectOptions};
 
 async fn start_runtime(
@@ -461,9 +464,9 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
 }
 
 /// A development installation serves sign-in under `/auth` on the Console's
-/// one TLS port: a native client discovers it there, the Portal signs the
-/// administrator in and approves a device login through it, and that login
-/// connects and calls Trellis.
+/// one TLS port: a native client accepts its certificate by fingerprint and
+/// discovers it there, the Portal signs the administrator in and approves a
+/// device login through it, and that login connects and calls Trellis.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn development_mode_signs_in_through_the_console_port() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -514,9 +517,48 @@ async fn development_mode_signs_in_through_the_console_port() {
     let issuer = format!("{origin}/auth");
     let (stop, mut runtime) = start_runtime(&config, &origin, std::slice::from_ref(&ca)).await;
 
-    let discovered = discover_native_oauth(&issuer, std::slice::from_ref(&ca))
+    // No CA file is installed: the client accepts the development
+    // certificate by its issuer's fingerprint, as a browser user would.
+    let ca_fingerprint = {
+        use rustls::pki_types::pem::PemObject as _;
+        use sha2::Digest as _;
+        let der = rustls::pki_types::CertificateDer::from_pem_file(&ca).unwrap();
+        sha2::Sha256::digest(der.as_ref())
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+    let acceptance = CertificateAcceptance {
+        directory: root.join("accepted"),
+        fingerprint: None,
+        interactive: false,
+    };
+    match discover_accepting_certificate(&issuer, &acceptance).await {
+        Err(CertificateAcceptanceError::Untrusted { fingerprint, .. }) => {
+            assert_eq!(fingerprint, ca_fingerprint);
+        }
+        other => panic!("an unvouched certificate was not refused: {other:?}"),
+    }
+    let wrong = CertificateAcceptance {
+        fingerprint: Some("00".repeat(32)),
+        ..acceptance.clone()
+    };
+    assert!(matches!(
+        discover_accepting_certificate(&issuer, &wrong).await,
+        Err(CertificateAcceptanceError::Mismatch { .. })
+    ));
+    let accepting = CertificateAcceptance {
+        fingerprint: Some(ca_fingerprint.clone()),
+        ..acceptance.clone()
+    };
+    discover_accepting_certificate(&issuer, &accepting)
         .await
-        .unwrap_or_else(|error| panic!("native discovery at {issuer} failed: {error:?}"));
+        .unwrap_or_else(|error| panic!("accepting the presented certificate failed: {error}"));
+    // Remembered: the next discovery needs no fingerprint.
+    let discovered = discover_accepting_certificate(&issuer, &acceptance)
+        .await
+        .unwrap_or_else(|error| panic!("the remembered certificate was not used: {error}"));
     assert_eq!(discovered.issuer, issuer);
     let native = NativeOAuthClient::open(
         root.join("custody"),
@@ -661,6 +703,30 @@ async fn development_mode_signs_in_through_the_console_port() {
     assert!(me.to_string().contains(&principal), "{me}");
 
     drop(client);
+
+    // A server whose certificate no longer comes from the accepted issuer,
+    // such as another installation's, is refused.
+    let other = root.join("other");
+    let generated = tokio::process::Command::new(&server)
+        .args(["init", "--out"])
+        .arg(&other)
+        .args(["--external-nats", "--dev"])
+        .output()
+        .await
+        .unwrap();
+    assert!(generated.status.success());
+    let remembered = std::fs::read_dir(root.join("accepted"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::copy(other.join("tls/ca.crt"), &remembered).unwrap();
+    match discover_accepting_certificate(&issuer, &acceptance).await {
+        Err(CertificateAcceptanceError::Changed { .. }) => {}
+        other => panic!("a changed certificate was not refused: {other:?}"),
+    }
+
     stop.stop();
     tokio::time::timeout(Duration::from_secs(30), &mut runtime)
         .await
