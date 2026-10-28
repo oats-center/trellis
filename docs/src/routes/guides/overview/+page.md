@@ -108,5 +108,6 @@ each program declares what it needs and uses the generated interface for it.
   end.
 - Follow [Writing SvelteKit Apps](/guides/writing-sveltekit-apps) for a browser
   app path.
-- Use [Starting Trellis](/guides/starting-trellis) when you need a local runtime.
+- Use [Install Trellis](/guides/install-trellis) and
+  [Start Trellis](/guides/starting-trellis) when you need a running Trellis.
 - Use the [API Reference](/api) when you need exact TypeScript or Rust symbols.

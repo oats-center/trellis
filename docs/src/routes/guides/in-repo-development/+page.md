@@ -3,7 +3,7 @@ title: "In-repo development"
 description: "Run the Trellis server, console, and NATS from the source tree for local development."
 ---
 
-This guide covers day-to-day development from a Trellis source checkout. It uses the same local setup as [Starting Trellis](/guides/starting-trellis): `trellis-server` explicitly manages local NATS while the runtime and Console run from source.
+This guide covers day-to-day development from a Trellis source checkout. It uses the same local setup as [Start Trellis](/guides/starting-trellis): `trellis-server` explicitly manages local NATS while the runtime and Console run from source.
 
 ## What you need
 

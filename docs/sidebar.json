@@ -86,12 +86,16 @@
     "collapsible": false,
     "items": [
       {
-        "title": "Install the Trellis CLI",
-        "to": "/guides/install-trellis-cli"
+        "title": "Install Trellis",
+        "to": "/guides/install-trellis"
       },
       {
-        "title": "Installing Trellis",
+        "title": "Start Trellis",
         "to": "/guides/starting-trellis"
+      },
+      {
+        "title": "Install the Trellis CLI",
+        "to": "/guides/install-trellis-cli"
       }
     ]
   },

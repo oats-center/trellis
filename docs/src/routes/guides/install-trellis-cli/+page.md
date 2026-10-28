@@ -35,10 +35,8 @@ Move the binary somewhere on your `PATH`:
 install -m 755 trellis ~/.local/bin/trellis
 ```
 
-Only extract and install a binary after `sha256sum -c` reports `OK`. The server
-is installed the same way from `trellis-server-$version-$target.tar.gz` and its
-`checksum-$version-$target-trellis-server.sha256`; it is also published as the
-`ghcr.io/oats-center/trellis-server` image.
+Only extract and install a binary after `sha256sum -c` reports `OK`. For the
+server itself, see [Install Trellis](/guides/install-trellis).
 
 ## Option B: Install with Cargo
 

@@ -39,7 +39,8 @@ Trellis boundary; application policies belong in the consumer repository.
 
 Human guides on the docs site: `/guides/write-a-service` (service walkthrough),
 `/guides/authoring-contracts` (IDL), `/guides/testing-trellis-services`,
-`/guides/starting-trellis` (runtime operation), and `/api` (public language
+`/guides/install-trellis` and `/guides/starting-trellis` (installing and
+running Trellis), and `/api` (public language
 APIs). Generated participant source defines the exact names available for a
 project's declared actions.
 
