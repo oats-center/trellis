@@ -1,6 +1,6 @@
 ---
 title: "Install Trellis"
-description: "Get trellis-server onto a machine with the one-line installer, by hand, as a container image, or from source."
+description: "Get trellis-server and the trellis CLI onto a machine with the one-line installer, by hand, as a container image, or from source."
 ---
 
 Trellis runs as one program, `trellis-server`. That single binary holds the
@@ -9,39 +9,41 @@ see when they log in. It also runs [NATS](https://nats.io), the message broker
 every Trellis service talks through, so there's no separate web server,
 database or broker to set up.
 
+The `trellis` command is how you manage a Trellis from a terminal: logging in,
+deploying and upgrading services, registering apps and reviewing their APIs.
+
 ## The one-line installer
 
-On Linux x86_64, this installs the newest release into `~/.local/bin`:
+On Linux x86_64, these install the newest release of each into `~/.local/bin`:
 
 ```sh
 curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis-server
-```
-
-To upgrade later, run `trellis-server upgrade --prerelease` and restart
-the server.
-
-Then [start Trellis](/guides/starting-trellis). You'll probably want the
-`trellis` CLI too, which installs the same way:
-
-```sh
 curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis
 ```
+
+A machine that only manages a Trellis running elsewhere needs just `trellis`.
+To upgrade later, run `trellis-server upgrade --prerelease` (then restart the
+server) and `trellis upgrade --prerelease`.
+
+Then [start Trellis](/guides/starting-trellis).
 
 ## By hand
 
 Each [GitHub release](https://github.com/oats-center/trellis/releases) carries
-a `trellis-server` archive and a checksum file for it. Linux x86_64 is the only
-platform with a download today.
+a `trellis-server` and a `trellis` archive, each with a checksum file. Linux
+x86_64 is the only platform with a download today.
 
 ```sh
-version=0.100.0-rc.12
+version=0.100.0-rc.13
 target=x86_64-unknown-linux-gnu
 base=https://github.com/oats-center/trellis/releases/download/v$version
-curl -LO "$base/trellis-server-$version-$target.tar.gz"
-curl -LO "$base/checksum-$version-$target-trellis-server.sha256"
-sha256sum -c "checksum-$version-$target-trellis-server.sha256"
-tar xzf "trellis-server-$version-$target.tar.gz"
-install -m 755 trellis-server ~/.local/bin/trellis-server
+for bin in trellis-server trellis; do
+  curl -LO "$base/$bin-$version-$target.tar.gz"
+  curl -LO "$base/checksum-$version-$target-$bin.sha256"
+  sha256sum -c "checksum-$version-$target-$bin.sha256"
+  tar xzf "$bin-$version-$target.tar.gz"
+  install -m 755 "$bin" ~/.local/bin/"$bin"
+done
 ```
 
 ## NATS
@@ -61,7 +63,7 @@ others.
 ## The container image
 
 Every release is also published as `ghcr.io/oats-center/trellis-server`, tagged
-with its version (`v0.100.0-rc.12`) and `latest`. The image's entry point is
+with its version (`v0.100.0-rc.13`) and `latest`. The image's entry point is
 `trellis-server`. It also contains the `trellis` CLI and a checksum-verified
 `nats-server` at `/usr/local/bin/nats-server`.
 [Run Trellis in production](/guides/running-trellis/production) has full
@@ -72,4 +74,6 @@ examples for Podman and Docker.
 Building from a checkout is how you work on Trellis itself or try something
 that isn't released yet. [In-repo development](/guides/in-repo-development)
 has the steps; the short version is `cargo xtask install`,
-`npm run browser:embedded`, then `cargo build -p trellis-server`.
+`npm run browser:embedded`, then `cargo build -p trellis-server`. Build the CLI
+from the same checkout so its commands match the code:
+`cargo install --path crates/cli`.

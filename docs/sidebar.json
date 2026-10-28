@@ -94,10 +94,6 @@
         "to": "/guides/starting-trellis"
       },
       {
-        "title": "Install the Trellis CLI",
-        "to": "/guides/install-trellis-cli"
-      },
-      {
         "title": "Reach it from other machines",
         "to": "/guides/running-trellis/other-machines"
       },

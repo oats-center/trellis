@@ -177,7 +177,6 @@ tells you what that start is going to create.
 
 ## Next
 
-- [Install the Trellis CLI](/guides/install-trellis-cli) and log in with it.
 - [Reach Trellis from other machines](/guides/running-trellis/other-machines).
 - [Keep it running](/guides/running-trellis/upkeep): certificate renewal,
   password resets, and a second Trellis on the same machine.

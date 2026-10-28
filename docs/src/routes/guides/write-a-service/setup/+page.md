@@ -16,7 +16,7 @@ workflow are shared by both languages.
 
 ## Prerequisites
 
-- Install [the Trellis CLI](/guides/install-trellis-cli) matching your
+- Install [the Trellis CLI](/guides/install-trellis) matching your
   libraries.
 - Install Node 24 and npm 11 for this example.
 - For manual deployment, have a [running Trellis](/guides/starting-trellis) and
