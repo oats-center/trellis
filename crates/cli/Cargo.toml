@@ -9,7 +9,9 @@ publish = false
 
 [features]
 default = ["runtime"]
-runtime = ["dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:rusqlite", "dep:self_update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
+runtime = ["dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:rusqlite", "self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
+# Updating a Trellis binary in place from GitHub releases, shared with trellis-server.
+self-update = ["dep:self_update"]
 
 [dependencies]
 clap.workspace = true

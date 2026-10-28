@@ -6210,6 +6210,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "trellis-bootstrap",
+ "trellis-cli",
  "trellis-local-nats",
  "trellis-rs",
  "trellis-runtime",

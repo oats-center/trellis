@@ -45,6 +45,24 @@ enum OperationArgs {
     /// Manage Trellis-generated TLS certificates.
     #[command(subcommand)]
     Tls(setup::TlsSubcommand),
+    /// Check for or install a newer trellis-server release.
+    #[command(subcommand)]
+    Upgrade(UpgradeSubcommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum UpgradeSubcommand {
+    /// Report whether a newer release exists for this platform.
+    Check(UpgradeArgs),
+    /// Replace this binary with the newest release for this platform.
+    Install(UpgradeArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct UpgradeArgs {
+    /// Include prerelease versions such as release candidates.
+    #[arg(long)]
+    prerelease: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -230,6 +248,11 @@ impl StartupPolicy {
             }
             Some(OperationArgs::Tls(_)) => {
                 return Err(miette!("trellis-server tls runs without a server policy"));
+            }
+            Some(OperationArgs::Upgrade(_)) => {
+                return Err(miette!(
+                    "trellis-server upgrade runs without a server policy"
+                ));
             }
             None => (
                 Operation::Run,
@@ -811,6 +834,7 @@ async fn main() -> miette::Result<()> {
             };
             return setup::tls(args.format, command, config);
         }
+        Some(OperationArgs::Upgrade(command)) => return upgrade(args.format, &command),
         _ => {}
     }
     if args.server.isolated_process_group {
@@ -837,6 +861,56 @@ async fn main() -> miette::Result<()> {
     let result = run(policy).await;
     telemetry.shutdown().await;
     result
+}
+
+/// Check for, or install, a newer trellis-server release from GitHub. A
+/// running server keeps its old binary until it is restarted.
+fn upgrade(format: setup::OutputFormat, command: &UpgradeSubcommand) -> miette::Result<()> {
+    use trellis_cli::self_update::{
+        check_for_update, install_update, ReleaseChannel, SelfUpdateTarget, UpdateResult,
+    };
+    const TARGET: SelfUpdateTarget = SelfUpdateTarget::new(
+        "oats-center",
+        "trellis",
+        "trellis-server",
+        env!("CARGO_PKG_VERSION"),
+    );
+    let json = format == setup::OutputFormat::Json;
+    match command {
+        UpgradeSubcommand::Check(args) => {
+            let check = check_for_update(
+                TARGET,
+                ReleaseChannel::from_prerelease_flag(args.prerelease),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string(&check).into_diagnostic()?);
+            } else if check.needs_update {
+                println!(
+                    "update available: {} -> {}",
+                    check.current_version, check.latest_version
+                );
+            } else {
+                println!("up to date: {}", check.current_version);
+            }
+        }
+        UpgradeSubcommand::Install(args) => {
+            let result = install_update(
+                TARGET,
+                ReleaseChannel::from_prerelease_flag(args.prerelease),
+            )?;
+            if json {
+                println!("{}", serde_json::to_string(&result).into_diagnostic()?);
+            } else {
+                match result {
+                    UpdateResult::UpToDate { version } => println!("up to date: {version}"),
+                    UpdateResult::Updated { version } => {
+                        println!("updated trellis-server to {version}; restart it to run the new version")
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Asks a yes-or-no question on the terminal, defaulting to yes. Without a
