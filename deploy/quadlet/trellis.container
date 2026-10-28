@@ -5,7 +5,7 @@ Requires=trellis-nats.service
 
 [Container]
 ContainerName=trellis
-Image=localhost/trellis:revision7
+Image=ghcr.io/oats-center/trellis-server:latest
 Entrypoint=trellis-server
 Exec=--config /etc/trellis/config.toml --system all
 PublishPort=127.0.0.1:3000:3000
