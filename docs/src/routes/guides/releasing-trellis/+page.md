@@ -213,9 +213,8 @@ release, never against an earlier prerelease of the same line: an
 `0.100.0-rc.N` must be a semver-valid successor of the latest stable release.
 Server/compiler/bootstrap implementation crates are private and non-publishable.
 
-`publish-crates` restores `check-generated` and `rust-testkit-packages` from the
-same run. Pipeline preparation and Cargo
-publication verification use the same `.cargo/publication.toml` source overrides;
+`publish-crates` restores `check-generated` from the same run. Pipeline
+preparation and publication use the same `.cargo/publication.toml` source overrides;
 published production dependencies retain their registry version requirements.
 The SDK's workspace-only testkit development dependency is path-only and is
 omitted from its published manifest. The shared
@@ -223,9 +222,9 @@ omitted from its published manifest. The shared
 archive, compares every accepted file's contents and permissions (including
 frozen models/bindings and the lockfile), and runs Cargo's publication dry-run
 with build verification enabled. The pipeline exercises this no-upload sequence
-from an empty target directory before accepting the bundle. Publication runs the same
-preparation before each upload; it neither relies on a publish dry-run's scratch
-archive location nor rebuilds executables or browser applications.
+from an empty target directory before accepting the bundle. Publication then
+uploads each crate with `cargo publish --no-verify`: the acceptance gate already
+verified the same commit's packages, so publishing compiles nothing.
 
 `release prepare` also rewrites the external testkit fixture manifests under
 `integration/fixtures/testkit` so its generated application package carries the

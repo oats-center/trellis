@@ -1271,17 +1271,8 @@ jobs:
         with:
           name: check-generated
 
-      - name: Download the verified Rust packages
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-testkit-packages
-          path: dist/rust-packages
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build artifacts
-        uses: swatinem/rust-cache@v2
 
       - name: Authenticate with crates.io
         id: auth
@@ -1314,8 +1305,9 @@ jobs:
               "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
               echo "Skipping $crate@$version (already published)"
             else
-              bash scripts/prepare-rust-publication.sh dist/rust-packages target "$crate"
-              cargo publish --allow-dirty --locked --config .cargo/publication.toml -p "$crate"
+              # The acceptance gate already verified these packages; upload
+              # without building them again.
+              cargo publish --no-verify --allow-dirty --locked --config .cargo/publication.toml -p "$crate"
             fi
             wait_for_index "$crate" "$version"
           done
