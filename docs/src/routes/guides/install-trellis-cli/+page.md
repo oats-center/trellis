@@ -14,13 +14,7 @@ On Linux x86_64, this installs the newest release into `~/.local/bin`:
 curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis
 ```
 
-It works like the [server's installer](/guides/install-trellis#the-one-line-installer):
-it checks the release checksum first, and `TRELLIS_VERSION` and
-`TRELLIS_INSTALL_DIR` pick another release or folder.
-
-From then on the CLI updates itself. `trellis upgrade check` says whether a
-newer release exists, and `trellis upgrade install` replaces the binary with
-it.
+To upgrade later, run `trellis upgrade install --prerelease`.
 
 ## By hand
 
@@ -39,8 +33,6 @@ tar xzf "trellis-$version-$target.tar.gz"
 install -m 755 trellis ~/.local/bin/trellis
 ```
 
-Only install it once `sha256sum -c` reports `OK`.
-
 ## From a checkout
 
 When you're working against unreleased docs or source, build the CLI from the
@@ -52,9 +44,6 @@ cd trellis
 cargo xtask install
 cargo install --path crates/cli
 ```
-
-`cargo xtask install` generates the SDK code the workspace needs before the
-CLI can build.
 
 ## Check it works
 

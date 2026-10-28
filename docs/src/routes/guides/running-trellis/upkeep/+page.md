@@ -1,7 +1,16 @@
 ---
 title: "Keep Trellis running"
-description: "Renew certificates, reset the administrator password, run a second Trellis on one machine, and start over."
+description: "Upgrade the server, renew certificates, reset the administrator password, run a second Trellis on one machine, and start over."
 ---
+
+## Upgrade
+
+```sh
+trellis-server upgrade install --prerelease
+```
+
+Restart the server to run the new version. `trellis-server upgrade check`
+reports whether there is one.
 
 ## Renew the certificates
 
@@ -24,9 +33,8 @@ Start the server once with `--reset-admin`. It prints a reset link that lasts
 five minutes and cancels any earlier ones. Resetting keeps the account and
 everything it's allowed to do, and signs it out everywhere.
 
-This is the only way to reset the first administrator. Other administrators
-can't do it from the Console, which is the point, but `--reset-admin` still
-works when they exist.
+This is the only way to reset the first administrator; other administrators
+can't do it from the Console.
 
 ## Run a second Trellis on the same machine
 

@@ -24,11 +24,6 @@ cargo xtask install
 npm run browser:embedded
 ```
 
-`cargo xtask install` generates the SDKs, manifests and the protocol WASM the
-rest of the build needs. It doesn't need a running Trellis. `npm run browser:embedded`
-builds the Console (`web/`) and the sign-in page (`portal/`), which get
-compiled into `trellis-server`.
-
 ## Run the server
 
 ```sh

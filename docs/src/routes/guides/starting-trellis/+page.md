@@ -34,9 +34,7 @@ nats-server is not on your PATH. Download NATS 2.14.4 (checksum-verified) into /
 
 [NATS](https://nats.io) is the message broker every Trellis service talks
 through, and `trellis-server` runs it for you. If you've installed `nats-server`
-yourself you won't see this question. Otherwise say yes, and Trellis downloads
-the release it's tested with and checks it against a checksum it ships with.
-It re-checks that copy every time it starts.
+yourself you won't see this question.
 
 To skip both questions, for a script or a fresh VM, run
 `trellis-server --init --nats-download`. Without a terminal to ask on, the

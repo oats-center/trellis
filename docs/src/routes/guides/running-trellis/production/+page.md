@@ -179,8 +179,7 @@ trusted_proxies = ["10.0.0.2/32"]
 
 Trellis then answers only connections from those networks, gives everyone else
 `403`, and rate-limits clients by the proxy's `X-Forwarded-For` header. The
-proxy has to keep the original `Host` header. Caddy does that already; nginx
-needs `proxy_set_header Host $host;`. `[auth.oauth.transport]` takes the same
+proxy has to keep the original `Host` header. `[auth.oauth.transport]` takes the same
 settings for the sign-in listener.
 
 You can't run all of Trellis as plain HTTP. Sign-in cookies only work over

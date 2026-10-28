@@ -17,17 +17,8 @@ On Linux x86_64, this installs the newest release into `~/.local/bin`:
 curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis-server
 ```
 
-The script picks the newest stable release, or the newest prerelease while
-there's no stable one yet, and checks the download against the release's
-checksum before installing it. Two settings change what it does. Put them
-after the pipe so `sh` sees them:
-
-```sh
-curl -fsSL https://oats-center.github.io/trellis/install.sh \
-  | TRELLIS_VERSION=0.100.0-rc.12 TRELLIS_INSTALL_DIR=/usr/local/bin sh -s trellis-server
-```
-
-To upgrade, run it again. The server has no update command of its own.
+To upgrade later, run `trellis-server upgrade install --prerelease` and restart
+the server.
 
 Then [start Trellis](/guides/starting-trellis). You'll probably want the
 `trellis` CLI too, which installs the same way:
@@ -53,23 +44,19 @@ tar xzf "trellis-server-$version-$target.tar.gz"
 install -m 755 trellis-server ~/.local/bin/trellis-server
 ```
 
-Stop if `sha256sum` prints anything other than `OK`. The archive holds a single
-file, `trellis-server`.
-
 ## NATS
 
 You don't have to install NATS. When `trellis-server` needs it and
 `nats-server` isn't on your `PATH`, it offers to download the release Trellis
-is tested with, checked against a pinned checksum. `--nats-download` says yes
-without asking.
+is tested with. `--nats-download` says yes without asking.
 
 If you'd rather manage NATS yourself, install `nats-server` from your package
 manager or the
 [NATS install docs](https://docs.nats.io/running-a-nats-service/introduction/installation)
 and Trellis uses it from `PATH`. `--local-nats=/path/to/nats-server` picks one
-exact file instead. Trellis doesn't verify that one against its pin, which is
-the point, but it does refuse a file that isn't a regular executable owned by
-root or by you, or one where the file or a parent folder is writable by others.
+exact file instead. Trellis refuses a file that isn't a regular executable owned
+by root or by you, or one where the file or a parent folder is writable by
+others.
 
 ## The container image
 

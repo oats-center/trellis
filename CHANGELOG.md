@@ -23,6 +23,8 @@ and this project adheres to
   creates the deployment, accepts the APIs it provides, and provisions an
   instance for that identity. `ServiceUpdates.Submit` now names the submitting
   participant.
+- `trellis-server upgrade check|install` updates the server in place from
+  GitHub releases, like `trellis upgrade`.
 - One-line installers:
   `curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis`
   (or `trellis-server`) installs the newest release after checking its
