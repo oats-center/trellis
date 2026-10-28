@@ -199,8 +199,8 @@ pub(crate) struct InitConfigArgs {
 pub(crate) enum TlsSubcommand {
     /// Reissue the bundle's leaf certificates from its installation CA.
     Renew(TlsRenewArgs),
-    /// Show the installation CA fingerprint and certificate expiry for --config.
-    Status,
+    /// Show the installation CA fingerprint and certificate expiry.
+    Status(TlsStatusArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -212,6 +212,19 @@ pub(crate) struct TlsRenewArgs {
     /// CA directory holding the private key; defaults to `<bundle>-tls-ca`.
     #[arg(long)]
     pub(crate) ca_dir: Option<PathBuf>,
+    /// Print the result as text or JSON.
+    #[arg(long, value_enum, default_value_t)]
+    pub(crate) format: OutputFormat,
+}
+
+#[derive(Debug, clap::Args)]
+/// Report an installation's generated certificates.
+pub(crate) struct TlsStatusArgs {
+    #[command(flatten)]
+    pub(crate) profile: crate::ProfileArgs,
+    /// Print the result as text or JSON.
+    #[arg(long, value_enum, default_value_t)]
+    pub(crate) format: OutputFormat,
 }
 
 pub(crate) fn init_config(
@@ -433,13 +446,10 @@ fn warn_generated_tls(
     );
 }
 
-pub(crate) fn tls(
-    format: OutputFormat,
-    command: TlsSubcommand,
-    config: Option<PathBuf>,
-) -> miette::Result<()> {
+pub(crate) fn tls(command: TlsSubcommand) -> miette::Result<()> {
     match command {
         TlsSubcommand::Renew(args) => {
+            let format = args.format;
             let ca_dir = args.ca_dir.clone().unwrap_or_else(|| {
                 let mut name = args
                     .bundle
@@ -474,8 +484,8 @@ pub(crate) fn tls(
             );
             Ok(())
         }
-        TlsSubcommand::Status => {
-            let path = config.ok_or_else(|| miette!("tls status needs --config"))?;
+        TlsSubcommand::Status(TlsStatusArgs { profile, format }) => {
+            let path = profile.paths(|name| std::env::var_os(name))?.config;
             let config = trellis_runtime::RuntimeConfig::load_from_path(&path).into_diagnostic()?;
             let notice = trellis_runtime::tls::GeneratedTlsNotice::from_config(
                 &config,

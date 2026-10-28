@@ -134,7 +134,7 @@ docker volume create trellis-state
 # Create the installation once, as the image's non-root user:
 docker run --rm --user 10001:10001 --entrypoint trellis-server \
   --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis-server:latest \
-  --system init --out /var/lib/trellis/bundle
+  init --system --out /var/lib/trellis/bundle
 # Give the image's user ownership of the state volume:
 docker run --rm --user root --entrypoint sh \
   --volume trellis-state:/var/lib/trellis ghcr.io/oats-center/trellis-server:latest \

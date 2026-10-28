@@ -285,9 +285,9 @@ async fn cli_server_managed_nats() {
     //    deliberately bogus NATS URLs so the managed endpoint override is observable.
     let init_output = server_command(&workdir.0)
         .args([
+            "init",
             "--format",
             "json",
-            "init",
             "--out",
             bundle.to_str().expect("UTF-8 bundle path"),
             "--trellis-port",
@@ -1001,7 +1001,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     // Ordinary initialization with no certificate options generates the
     // installation CA and every listener's certificate.
     let initialized = server_command(&workdir.0)
-        .args(["--format", "json", "init", "--out"])
+        .args(["init", "--format", "json", "--out"])
         .arg(&bundle)
         .arg("--external-nats")
         .args([

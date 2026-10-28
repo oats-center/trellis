@@ -28,6 +28,10 @@ and this project adheres to
   after its archive matches the release's SHA-256 checksum file. `upgrade`
   installs directly; `upgrade --check` only reports. Breaking:
   `trellis upgrade check|install` is now `trellis upgrade [--check]`.
+- `trellis-server` subcommands take only their own options, after the
+  subcommand: `trellis-server init --system`, not `trellis-server --system
+init`. `--format` moved onto each command that prints a result, and
+  `trellis-server upgrade --help` no longer lists server startup options.
 - One-line installers:
   `curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis`
   (or `trellis-server`) installs the newest release after checking its

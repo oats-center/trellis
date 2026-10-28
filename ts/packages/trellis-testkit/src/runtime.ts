@@ -763,9 +763,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
       const publicOrigin = trellisUrl;
       const oauthIssuer = `https://localhost:${oauthPort}`;
       const initArgs = [
+        "init",
         "--format",
         "json",
-        "init",
         "--out",
         join(workdir, "config", "trellis"),
         "--trellis-port",
@@ -836,10 +836,10 @@ export class TrellisTestRuntime implements AsyncDisposable {
         await runBootstrapCommand(
           native.server,
           [
-            "--format",
-            "json",
             "init",
             "admin",
+            "--format",
+            "json",
             "--config",
             bootstrap.trellisConfig,
             "--username",
