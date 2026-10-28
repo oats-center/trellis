@@ -254,7 +254,7 @@ private sandbox, selects loopback ports automatically, and returns
 `connect_options()` values for your generated service and caller participants.
 It needs no Trellis source checkout and no private crate patches. See
 [Test Trellis services](/guides/testing-trellis-services) and the
-[`trellis-testkit` Rustdoc](/api/rust/trellis_testkit/index.html).
+[`trellis-testkit` Rustdoc](https://docs.rs/trellis-testkit).
 
 The harness downloads the latest Trellis release (the newest stable release, or
 the newest prerelease before the first stable one) or `TRELLIS_TEST_VERSION`,

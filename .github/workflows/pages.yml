@@ -97,7 +97,6 @@ jobs:
               if grep -q '"docs:design"' package.json; then
                 npm run docs:design
               fi
-              npm run docs:api
               SITE_BASE_PATH="${base_path}" npm exec -- vite build
               mkdir -p "${out_dir}"
               cp -R build/. "${out_dir}/"

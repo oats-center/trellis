@@ -3,11 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run docs:design && npm run docs:llms && npm run docs:api && vite dev",
+    "dev": "npm run docs:design && npm run docs:llms && vite dev",
     "docs:design": "node scripts/sync_design_docs.ts",
     "docs:llms": "node scripts/build_llms_full.ts",
-    "docs:api": "npm run protocol:wasm --prefix .. && node scripts/generate_ts_api_docs.ts && node scripts/generate_rust_api_docs.ts",
-    "build": "npm run docs:design && npm run docs:llms && npm run docs:api && vite build",
+    "build": "npm run docs:design && npm run docs:llms && vite build",
     "preview": "vite preview",
     "prepare": "svelte-kit sync || echo ''",
     "check": "npm run docs:design && svelte-kit sync && svelte-check"

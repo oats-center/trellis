@@ -31,9 +31,9 @@ Use the docs site for reader-facing and language-specific material:
   and are published as `/guides/*`
 - TypeScript language-library usage belongs in `/guides/libraries/typescript`
 - Rust language-library usage belongs in `/guides/libraries/rust`
-- generated TypeScript API reference comes from JSDoc on public entrypoints and
-  is discovered through `/api`
-- generated Rust API reference comes from Rustdoc and is discovered through
+- TypeScript API reference is the JSDoc on public entrypoints, shipped with
+  the npm packages listed on `/api`
+- Rust API reference is Rustdoc, hosted on docs.rs for the crates listed on
   `/api`
 
 Design docs may name the public helper family that implements a system rule, but
@@ -97,20 +97,20 @@ These documents define the public protocol, API, and runtime-facing surfaces.
 Read them when you are implementing or reviewing library/runtime/codegen
 ergonomics.
 
-| Document                                       | Surface                     | Read When                                                                                                |
-| ---------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `auth/auth-protocol.md`                        | Auth protocol surface       | Implementing auth callout, proofs, reply validation, or auth state model                                 |
-| `auth/auth-api.md`                             | Auth public wire API        | Implementing OAuth listener routes, native admission, `Auth.*` RPCs, or auth events                      |
-| `auth/trellis-auth.md`                         | Auth system/runtime design  | Implementing principals, login sessions, capabilities, session authority issuance, or runtime auth       |
-| `auth/device-activation.md`                    | Device activation design    | Implementing known-device activation, connect info, or activation review flows                           |
-| `auth/service-updates.md`                      | Service update design       | Implementing service IDL submission, update approval, or instance revision moves                         |
-| `operations/trellis-operations.md`             | Operations design           | Implementing caller-visible async workflows in TypeScript or Rust                                        |
-| `jobs/trellis-jobs.md`                         | Jobs design                 | Implementing service-private background execution or jobs admin surfaces                                 |
-| `contracts/trellis-idl.md`                     | Trellis IDL                 | Implementing IDL authoring, compilation, or generated TypeScript runtime ergonomics                      |
-| `contracts/trellis-rust-contract-libraries.md` | Generated Rust libraries    | Implementing Rust generated SDKs, facades, descriptors, or runtime ergonomics                            |
-| `core/state-patterns.md`                       | State design                | Implementing contract-owned state declarations, runtime state semantics, or migrations                   |
-| `core/files-transfer-patterns.md`              | Files and transfer design   | Implementing service-owned files APIs and operation-native transfer behavior                             |
-| `/api` in the guides site                      | Generated language API docs | Looking up exact TypeScript signatures, Rustdoc links, pending Rustdoc crates, or generated SDK surfaces |
+| Document                                       | Surface                    | Read When                                                                                          |
+| ---------------------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------- |
+| `auth/auth-protocol.md`                        | Auth protocol surface      | Implementing auth callout, proofs, reply validation, or auth state model                           |
+| `auth/auth-api.md`                             | Auth public wire API       | Implementing OAuth listener routes, native admission, `Auth.*` RPCs, or auth events                |
+| `auth/trellis-auth.md`                         | Auth system/runtime design | Implementing principals, login sessions, capabilities, session authority issuance, or runtime auth |
+| `auth/device-activation.md`                    | Device activation design   | Implementing known-device activation, connect info, or activation review flows                     |
+| `auth/service-updates.md`                      | Service update design      | Implementing service IDL submission, update approval, or instance revision moves                   |
+| `operations/trellis-operations.md`             | Operations design          | Implementing caller-visible async workflows in TypeScript or Rust                                  |
+| `jobs/trellis-jobs.md`                         | Jobs design                | Implementing service-private background execution or jobs admin surfaces                           |
+| `contracts/trellis-idl.md`                     | Trellis IDL                | Implementing IDL authoring, compilation, or generated TypeScript runtime ergonomics                |
+| `contracts/trellis-rust-contract-libraries.md` | Generated Rust libraries   | Implementing Rust generated SDKs, facades, descriptors, or runtime ergonomics                      |
+| `core/state-patterns.md`                       | State design               | Implementing contract-owned state declarations, runtime state semantics, or migrations             |
+| `core/files-transfer-patterns.md`              | Files and transfer design  | Implementing service-owned files APIs and operation-native transfer behavior                       |
+| `/api` in the guides site                      | Language API docs          | Finding the npm packages and docs.rs crates for exact TypeScript and Rust signatures               |
 
 ## Suggested Read Paths
 
@@ -122,14 +122,14 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 1. `operations/trellis-operations.md`
 2. `auth/trellis-auth.md`
 3. `contracts/trellis-api-participants.md`
-4. `/api` for exact TypeScript signatures
+4. public entrypoints and JSDoc for exact TypeScript signatures
 
 ### Implement Trellis operations in Rust
 
 1. `operations/trellis-operations.md`
 2. `auth/trellis-auth.md`
 3. `contracts/trellis-api-participants.md`
-4. `/api` for Rustdoc links
+4. docs.rs Rustdoc
 
 ### Implement Trellis jobs in TypeScript
 
@@ -139,7 +139,7 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
    operations
 4. `contracts/trellis-api-participants.md` when changing job-owned resources,
    bindings, or provisioning surfaces
-5. `/api` for exact TypeScript signatures
+5. public entrypoints and JSDoc for exact TypeScript signatures
 
 ### Implement Trellis jobs in Rust
 
@@ -149,7 +149,7 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
    operations
 4. `contracts/trellis-api-participants.md` when changing job-owned resources,
    bindings, or provisioning surfaces
-5. `/api` for Rustdoc links
+5. docs.rs Rustdoc
 
 ### Work on type systems or errors
 
@@ -180,7 +180,7 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 1. `core/state-patterns.md`
 2. `contracts/trellis-api-participants.md`
 3. `contracts/trellis-idl.md` when changing TS authoring
-4. `/api` for exact TypeScript state helper signatures
+4. public entrypoints and JSDoc for exact TypeScript state helper signatures
 
 ### Work on files or transfer
 
@@ -200,7 +200,7 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 2. `contracts/trellis-idl.md`
 3. `contracts/trellis-api-participants.md`
 4. `core/platform-libraries.md`
-5. `/api` for exact TypeScript signatures
+5. public entrypoints and JSDoc for exact TypeScript signatures
 
 ### Implement an activated device in TypeScript
 
@@ -209,7 +209,7 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 3. `contracts/trellis-idl.md`
 4. `contracts/trellis-api-participants.md`
 5. `core/platform-libraries.md`
-6. `/api` for exact TypeScript signatures
+6. public entrypoints and JSDoc for exact TypeScript signatures
 
 ### Work on telemetry, docs, or request correlation
 
@@ -233,13 +233,13 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 
 1. `contracts/trellis-idl.md`
 2. `contracts/trellis-api-participants.md`
-3. `/api` for exact TypeScript signatures
+3. public entrypoints and JSDoc for exact TypeScript signatures
 
 ### Implement Rust participant/runtime surfaces
 
 1. `contracts/trellis-rust-contract-libraries.md`
 2. `contracts/trellis-api-participants.md`
-3. `/api` for Rustdoc links
+3. docs.rs Rustdoc
 
 ### Change auth or operation watch behavior
 
@@ -266,14 +266,14 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 1. `auth/trellis-auth.md`
 2. `auth/auth-api.md`
 3. `auth/auth-protocol.md`
-4. `/api` for exact TypeScript signatures
+4. public entrypoints and JSDoc for exact TypeScript signatures
 
 ### Implement Rust auth surfaces
 
 1. `auth/trellis-auth.md`
 2. `auth/auth-api.md`
 3. `auth/auth-protocol.md`
-4. `/api` for Rustdoc links
+4. docs.rs Rustdoc
 
 ### Operate Trellis auth in production
 

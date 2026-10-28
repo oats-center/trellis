@@ -9,11 +9,10 @@
   TypeScript or Rust API reference. Public TS APIs should be documented with
   JSDoc for generated docs, and public Rust APIs should be documented with
   Rustdoc.
-- Use the `docs` site `/api` surface to discover generated TypeScript docs and
-  Rustdoc locations, but treat source as authoritative for exact current APIs.
-  For TypeScript, verify exact public signatures against public entrypoints and
-  their JSDoc. For Rust, verify exact APIs against Rustdoc generated from the
-  current crate source, especially when a crate is listed as pending on `/api`.
+- Treat source as authoritative for exact current APIs. For TypeScript, verify
+  exact public signatures against public entrypoints and their JSDoc. For Rust,
+  verify exact APIs against Rustdoc generated from the current crate source
+  (`cargo doc`); docs.rs hosts the published releases.
 - If design docs and source disagree, treat source as the current as-built
   behavior and design docs as intended behavior; call out the drift instead of
   silently relying on stale docs.

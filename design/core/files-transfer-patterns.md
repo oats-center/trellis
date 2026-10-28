@@ -47,7 +47,7 @@ This document defines the public Trellis files pattern:
 It does not define a global admin UI, cross-service shared raw store access, or
 ordinary language-library walkthroughs. TypeScript and Rust usage examples
 belong in `/guides/libraries/typescript`, `/guides/libraries/rust`, and the
-generated API references linked from `/api`.
+API references linked from `/api`.
 
 ## Design
 

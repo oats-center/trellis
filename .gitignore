@@ -50,8 +50,6 @@ utils/arangodb/data/
 /portal/dist/
 generated/
 ts/packages/trellis/auth/protocol_wasm/
-docs/static/api/typescript/
-docs/static/api/rust/
 **/npm/
 ts/services/trellis/jsr/
 ts/packages/result/**/*.d.ts

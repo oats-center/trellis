@@ -57,6 +57,7 @@ export default defineConfig({
             "css",
             "md",
             "sql",
+            "mermaid",
             // Shiki accepts a custom grammar object; the theme types only name bundled ones.
             trellisGrammar as unknown as "sql",
           ],
