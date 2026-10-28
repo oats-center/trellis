@@ -648,7 +648,7 @@ jobs:
   typescript-tests:
     name: TypeScript tests
     needs: [install, build, build-fixtures]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-ts"]') }}
     timeout-minutes: 45
     # One runner runs every test file, as many at once as it has cores.
     steps:
@@ -762,7 +762,7 @@ jobs:
   browser:
     name: Browser tests
     needs: [install, build]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-browser"]') }}
     timeout-minutes: 45
     # One runner runs every browser test file, several at once.
     steps:
