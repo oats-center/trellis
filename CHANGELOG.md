@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- `trellis-server init --bind-address` takes a hostname as well as an IP and
+  listens on the address of this machine it resolves to. An address that isn't
+  this machine's is refused.
+
 ## [0.100.0-rc.13] - 2026-10-28
 
 ### Added

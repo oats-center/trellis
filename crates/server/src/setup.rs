@@ -181,8 +181,9 @@ pub(crate) struct InitConfigArgs {
     #[arg(long = "extra-origin", value_name = "ORIGIN")]
     /// Additional allowed browser origin, for callers served elsewhere; repeatable.
     pub(crate) extra_origin: Vec<String>,
-    /// HTTP listener IP address.
-    #[arg(long)]
+    /// Address Console and sign-in listen on: an IP or a hostname that
+    /// resolves to one of this machine's addresses.
+    #[arg(long, value_name = "HOST", value_parser = parse_bind_address)]
     pub(crate) bind_address: Option<std::net::IpAddr>,
     /// Authorization context lifetime in seconds.
     #[arg(long)]
@@ -420,6 +421,33 @@ pub(crate) fn init_config(
     Ok(())
 }
 
+/// Resolves a `--bind-address` to the first of its addresses this machine can
+/// listen on, so a hostname picks the interface it names.
+fn parse_bind_address(value: &str) -> Result<std::net::IpAddr, String> {
+    use std::net::ToSocketAddrs as _;
+
+    let addresses: Vec<std::net::IpAddr> = (value, 0)
+        .to_socket_addrs()
+        .map_err(|error| format!("can't resolve {value}: {error}"))?
+        .map(|address| address.ip())
+        .collect();
+    addresses
+        .iter()
+        .copied()
+        .find(|address| std::net::TcpListener::bind((*address, 0)).is_ok())
+        .ok_or_else(|| {
+            let listed: Vec<String> = addresses.iter().map(ToString::to_string).collect();
+            if listed == [value] {
+                format!("{value} isn't an address of this machine")
+            } else {
+                format!(
+                    "{value} resolves to {}, none of which is an address of this machine",
+                    listed.join(", ")
+                )
+            }
+        })
+}
+
 fn required_path(
     value: &Option<std::path::PathBuf>,
     flag: &str,
@@ -556,7 +584,7 @@ mod tests {
                 "--nats-ws-port",
                 "8183",
                 "--bind-address",
-                "127.0.0.1",
+                "localhost",
                 "--auth-context-lifetime-seconds",
                 "90",
                 "--auth-oauth-admission-lifetime-seconds",
@@ -570,7 +598,13 @@ mod tests {
             http.public_origin.as_deref(),
             Some("https://localhost:3444")
         );
-        assert_eq!(http.bind_address, Some("127.0.0.1".parse().unwrap()));
+        // A hostname binds to the address it resolves to on this machine.
+        assert!(http.bind_address.expect("bind address").is_loopback());
+        // An address no interface holds can't be listened on.
+        assert!(
+            Args::try_parse_from(["trellis-server", "init", "--bind-address", "192.0.2.1"])
+                .is_err()
+        );
         assert_eq!(
             config.resolve_nats_runtime().unwrap().servers,
             "tls://localhost:4333"

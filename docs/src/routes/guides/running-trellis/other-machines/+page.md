@@ -44,13 +44,14 @@ These all go on `trellis-server init`:
 | `--nats-websocket-url wss://eta.oats:8080`             | relayed through the Console | Browsers should connect to NATS's WebSocket port directly (with `--nats-websocket direct`) |
 | `--trellis-port`, `--oauth-port`                       | `3000`, `3001`              | Those ports are taken                                                                      |
 | `--nats-port`, `--nats-monitor-port`, `--nats-ws-port` | `4222`, `8222`, `8080`      | Those ports are taken                                                                      |
-| `--bind-address 100.64.0.7`                            | all interfaces              | Console and sign-in should listen on one address only                                      |
+| `--bind-address eta.oats`                              | all interfaces              | Console and sign-in should listen on one address only                                      |
 | `--name "Lab Trellis"`                                 | `Trellis`                   | You want a different display name                                                          |
 | `--out <folder>`                                       | `~/.config/trellis`         | You want a self-contained installation in its own folder                                   |
 | `--external-nats`                                      | Trellis runs NATS           | You run NATS yourself                                                                      |
 | `--tls loopback-development`                           | `generated`                 | You want plain HTTP, which only works when everything stays on `localhost`                 |
 
-`--bind-address` only covers Console and sign-in. NATS listens on every
+`--bind-address` takes a hostname or an IP and listens on the address of this
+machine it resolves to. It only covers Console and sign-in. NATS listens on every
 interface whenever TLS is on. `init` refuses port `0`, the same port used
 twice, and a NATS port that clashes with `--trellis-port`. A proxy in front,
 your own certificates and the other production settings are in
