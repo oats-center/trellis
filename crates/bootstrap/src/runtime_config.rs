@@ -104,6 +104,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             }),
         }),
         nats: Some(NatsConfig {
+            managed: options.runtime.managed_nats,
             servers: Some(options.runtime.nats_server_url.clone()),
             ca_certificate,
             runtime: Some(NatsRuntimeConfig {

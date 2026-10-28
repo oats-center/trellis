@@ -201,14 +201,23 @@ checksum (`TRELLIS_VERSION` and `TRELLIS_INSTALL_DIR` override). The CLI
 updates itself with `trellis upgrade install`; rerun the script to upgrade the
 server. The server is also published as `ghcr.io/oats-center/trellis-server`.
 
-#### Installation bundle
+#### Installation and first start
 
-`trellis-server init --out <dir>` writes a bundle whose `config.toml` sets
-`[paths]` so data, state, cache, runtime files, and logs live in folders inside
-that bundle; start the server with `trellis-server --config <dir>/config.toml`.
-Each bundle is a separate installation, so several servers can share a host.
-`trellis-server --system init` omits `[paths]` for a read-only bundle served
-with `--system`, which uses FHS locations.
+Plain `trellis-server` uses the installation in `~/.config/trellis` (or
+`/etc/trellis` with `--system`). When none exists it asks before creating a
+localhost one; `--init` creates it without asking, and without a terminal it
+fails with a message instead. `trellis-server init` creates one with chosen
+hostnames and ports. With no `--out`, data goes to the profile's XDG (or FHS)
+folders. `init --out <dir>` writes a self-contained bundle whose `[paths]` keep
+data, state, cache, runtime files and logs inside it; start it with
+`trellis-server --config <dir>/config.toml`. Several bundles can share a host.
+
+`[nats] managed = true`, which `init` writes unless given `--external-nats`,
+makes `trellis-server` start and stop the NATS server described by the
+bundle's `nats/nats.conf`; without it the server connects to `[nats] servers`.
+A managed start uses `nats-server` from `PATH`, otherwise asks before
+downloading the pinned, checksum-verified release; `--nats-download` downloads
+without asking and `--local-nats=<path>` names an exact binary.
 
 #### TLS
 
@@ -294,12 +303,12 @@ enables both + refresh. Adding or removing native callbacks updates the
 supported flows. Kind is immutable; use a new client ID to switch kind. Native
 HTTP loopback callbacks need no development flag; browser loopback does.
 
-A deployment needs every API its participant implements accepted first:
-`trellis apis accept --source <project-root> [--participant <package>.<Name>]`
-reviews each from the compiled package evidence and accepts compatible ones
-(`apis review` with the same flags only reviews), then `trellis svc <name>
-create` installs the participant; create names any API not yet accepted. An
-incompatible change needs `trellis apis force-replace` with generated
+Creating or applying a deployment (`trellis svc <name> create`, `svc <id>
+apply`) accepts every API its participant provides that the catalog lacks or
+holds at a compatible older definition: approving a deployment is accepting
+the APIs it publishes. `trellis apis review --source <project-root>
+[--participant <package>.<Name>]` shows them first, and `apis accept` accepts
+them without a deployment. An incompatible change needs `trellis apis force-replace` with generated
 `AuthApiForceReplaceRequest` JSON, `trellis.auth.v1:apis.forceReplace`, and
 explicit breakage/consent acknowledgements. Console exposes OAuth clients and the
 API catalog.
@@ -345,11 +354,11 @@ records, so retain existing installations unchanged and use fresh
 development/test state. Unsupported records fail visibly; the runtime never
 deletes or recreates them as empty state.
 
-For multiple local managed-NATS servers, give each its own bundle and HTTP port,
-and pass `--local-nats-ports=4223,8223,8081` with `trellis-server --dev` for a
-second NATS client, monitor, and WebSocket port set. The default set is
-4222/8222/8080; generated local configs use a 30-second owner lease renewed
-every 5 seconds.
+For multiple local managed-NATS servers, give each its own `init --out` bundle
+with its own HTTP and NATS ports; `--local-nats-ports=4223,8223,8081` overrides
+a bundle's NATS client, monitor, and WebSocket ports for one run. The default
+set is 4222/8222/8080; generated local configs use a 30-second owner lease
+renewed every 5 seconds.
 
 #### Health
 

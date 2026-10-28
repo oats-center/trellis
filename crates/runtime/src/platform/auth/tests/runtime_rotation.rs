@@ -59,6 +59,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     let generated = tokio::process::Command::new(&server)
         .args(["init", "--out"])
         .arg(&config_dir)
+        .arg("--external-nats")
         .args([
             "--trellis-port",
             &ports[0].to_string(),

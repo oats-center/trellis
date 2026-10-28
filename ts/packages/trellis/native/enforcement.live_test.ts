@@ -68,6 +68,7 @@ test(
         "init",
         "--out",
         bundle,
+        "--external-nats",
         "--trellis-port",
         String(http),
         "--nats-port",

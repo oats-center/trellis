@@ -80,7 +80,7 @@ server and CLI paths are passed through the explicit native path source by the
 repository integration helper. The released TypeScript testkit defaults to the
 latest published CLI/server release, verified against its published checksum;
 production `trellis-server init`
-owns bootstrap and `trellis-server --local-nats` owns the broker. The private
+owns bootstrap and `trellis-server` runs the broker it describes (`--nats-download`). The private
 sandbox retains config, data, state, and identity across full-host restart; only
 verified immutable binaries are shared. Seeded admin is the default, with an
 explicit browser-flow option for first-admin tests. Real broker adapters use an

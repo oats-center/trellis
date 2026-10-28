@@ -172,7 +172,8 @@ Setting up the host that runs one belongs to the server binary, which already
 holds the runtime and storage code:
 
 ```text
-trellis-server init --out <dir> ...
+trellis-server [--init] [--nats-download | --local-nats=<path>] ...
+trellis-server init [--out <dir>] [--external-nats] ...
 trellis-server init admin [--config <config.toml>] [--system] ...
 trellis-server tls renew --bundle <dir> [--ca-dir <dir>]
 trellis-server tls status [--config <config.toml>]
@@ -191,12 +192,23 @@ with the CA fingerprint when it generated one. `trellis-server tls renew` reissu
 bundle's leaves from that CA with unchanged names; `trellis-server tls status` reports
 the CA fingerprint and expiry and repeats the warning.
 
-A bundle is the installation. `trellis-server init` writes `[paths]` that put
-data, state, cache, runtime files, and logs in folders inside the bundle, so
-servers started from different bundles on one host never share state. The
-server itself has no bundle-relative default: an omitted root falls back to the
-user (XDG) or `--system` (FHS) profile. `trellis-server --system init` omits
-`[paths]` for a read-only bundle served with `--system`.
+A bundle is the installation. `trellis-server init --out <dir>` writes `[paths]`
+that put data, state, cache, runtime files, and logs in folders inside the
+bundle, so servers started from different bundles on one host never share
+state. Without `--out`, `init` writes the bundle where the server looks by
+default (`~/.config/trellis`, or `/etc/trellis` with `--system`) and omits
+`[paths]`. The server itself has no bundle-relative default: an omitted root
+falls back to the user (XDG) or `--system` (FHS) profile.
+
+A first plain `trellis-server` in the user profile, with no `--config`, offers
+to create that default localhost bundle; `--init` creates it without asking,
+and with no terminal the server stops with the flag to use. The bundle decides
+who runs NATS: `[nats] managed = true`, which `init` writes unless given
+`--external-nats`, makes the server start and stop the broker described by
+`nats/nats.conf`, using `nats-server` from `PATH` or, once the operator agrees
+or passes `--nats-download`, the pinned checksum-verified release. Without
+`managed`, the server connects to `[nats] servers` and never owns the broker.
+A start validates the whole config before it fetches or starts NATS.
 
 ## Utility Commands
 

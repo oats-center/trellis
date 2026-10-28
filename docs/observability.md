@@ -3,7 +3,7 @@
 The Trellis server always writes its normal tracing output to stdout, or to
 stderr for `trellis-server check`. Attached terminals keep the human-readable
 ANSI format with targets shown only when verbose; detached output stays
-JSON-formatted without ANSI. `RUST_LOG` and the `--verbose`/`--dev` flags keep
+JSON-formatted without ANSI. `RUST_LOG` and the `--verbose` flag keep
 their existing behavior; the OpenTelemetry export described here is layered on
 top of that output and never replaces it.
 

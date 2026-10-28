@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use miette::{miette, IntoDiagnostic as _};
 use tracing::{error, info};
-use trellis_local_nats::{LocalNats, LocalNatsPorts, NatsBinarySource, NatsOutput};
+use trellis_local_nats::{
+    LocalNats, LocalNatsPorts, NatsBinarySource, NatsOutput, NatsServerBinary,
+};
 use trellis_runtime::{
     NatsEndpointOverride, RuntimeConfig, RuntimeMode, RuntimeOptions, RuntimePathDefaults,
 };
@@ -96,18 +98,18 @@ struct ServerArgs {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     /// Use Linux system/FHS paths instead of the default user profile.
-    #[arg(long, conflicts_with = "dev", global = true)]
+    #[arg(long, global = true)]
     system: bool,
-    /// Manage local NATS from PATH, or use an exact `--local-nats=<PATH>` executable.
-    #[arg(
-        short = 'n',
-        long,
-        num_args = 0..=1,
-        require_equals = true,
-        global = true
-    )]
-    local_nats: Option<Option<PathBuf>>,
-    /// Manage the explicitly downloaded, checksum-verified pinned NATS release.
+    /// Create a localhost installation in the default location without asking
+    /// when there is none yet.
+    #[arg(long)]
+    init: bool,
+    /// Run this exact nats-server executable instead of the one on PATH, for an
+    /// installation whose NATS this server runs.
+    #[arg(long, value_name = "PATH", require_equals = true, global = true)]
+    local_nats: Option<PathBuf>,
+    /// Download the pinned, checksum-verified NATS release without asking, for
+    /// an installation whose NATS this server runs.
     #[arg(long, global = true)]
     nats_download: bool,
     /// Managed NATS client, monitor, and websocket ports (default: 4222,8222,8080).
@@ -126,10 +128,6 @@ struct ServerArgs {
     /// WebSocket NATS endpoint advertised to clients only; repeatable.
     #[arg(long, global = true)]
     advertise_nats_websocket: Vec<String>,
-    /// Local development: the user profile, with this server managing NATS from
-    /// PATH. Logging is unchanged; add --verbose for detail.
-    #[arg(short, long, global = true)]
-    dev: bool,
     /// Show Trellis debug logs and copy managed NATS output to the terminal.
     /// Libraries stay at info unless RUST_LOG says otherwise.
     #[arg(short, long, global = true)]
@@ -143,10 +141,14 @@ enum Operation {
     BootstrapAdmin,
 }
 
+/// Which nats-server runs when the installation's config says this server
+/// runs NATS.
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum NatsPolicy {
-    ExternalConfigured,
-    Local(NatsBinarySource),
+enum NatsBinary {
+    /// `nats-server` from PATH, or the pinned download once the operator agrees.
+    Automatic,
+    Path(PathBuf),
+    Download,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -157,7 +159,10 @@ struct StartupPolicy {
     operation: Operation,
     mode: RuntimeMode,
     paths: ServerPaths,
-    nats: NatsPolicy,
+    system: bool,
+    config_given: bool,
+    init_missing: bool,
+    nats_binary: NatsBinary,
     nats_ports: Option<LocalNatsPorts>,
     nats_cache: Option<PathBuf>,
     advertised_native: Option<Vec<String>>,
@@ -243,33 +248,22 @@ impl StartupPolicy {
                 init admin"
             ));
         }
+        let config_given = server.config.is_some();
         let paths = if server.system {
             ServerPaths::system(server.config)?
         } else {
             ServerPaths::user(server.config, get)?
         };
-        let local_requested = server.local_nats.is_some();
-        let explicit_path = server.local_nats.flatten();
-        if explicit_path.is_some() && server.nats_download {
-            return Err(miette!(
-                "--local-nats=<PATH> conflicts with --nats-download"
-            ));
-        }
-        let nats = if server.nats_download {
-            NatsPolicy::Local(NatsBinarySource::DownloadPinned)
-        } else if let Some(path) = explicit_path {
-            NatsPolicy::Local(NatsBinarySource::Path(path))
-        } else if local_requested || server.dev {
-            NatsPolicy::Local(NatsBinarySource::PathLookup)
-        } else {
-            NatsPolicy::ExternalConfigured
+        let nats_binary = match (server.local_nats, server.nats_download) {
+            (Some(_), true) => {
+                return Err(miette!(
+                    "--local-nats=<PATH> conflicts with --nats-download"
+                ));
+            }
+            (Some(path), false) => NatsBinary::Path(path),
+            (None, true) => NatsBinary::Download,
+            (None, false) => NatsBinary::Automatic,
         };
-        if server.local_nats_ports.is_some() && matches!(nats, NatsPolicy::ExternalConfigured) {
-            return Err(miette!("--local-nats-ports requires managed NATS"));
-        }
-        if server.local_nats_cache.is_some() && matches!(nats, NatsPolicy::ExternalConfigured) {
-            return Err(miette!("--local-nats-cache requires managed NATS"));
-        }
         for (endpoints, schemes) in [
             (&server.advertise_nats_server, &["nats", "tls"][..]),
             (&server.advertise_nats_websocket, &["ws", "wss"][..]),
@@ -319,7 +313,10 @@ impl StartupPolicy {
             operation,
             mode,
             paths,
-            nats,
+            system: server.system,
+            config_given,
+            init_missing: server.init,
+            nats_binary,
             nats_ports,
             nats_cache: server.local_nats_cache,
             advertised_native: (!server.advertise_nats_server.is_empty())
@@ -511,10 +508,35 @@ fn ensure_private_runtime_fallback(path: &Path) -> miette::Result<()> {
 
 async fn run(policy: StartupPolicy) -> miette::Result<()> {
     if !policy.paths.config.is_file() {
-        return Err(miette!(
-            "Trellis configuration file not found at {}",
-            policy.paths.config.display()
-        ));
+        // Only a plain start in the user profile offers a first installation;
+        // an explicit --config or a --system host names one that must exist.
+        if policy.config_given || policy.system || policy.operation != Operation::Run {
+            return Err(miette!(
+                "Trellis configuration file not found at {}",
+                policy.paths.config.display()
+            ));
+        }
+        let folder = &policy.paths.config_root;
+        let create = policy.init_missing
+            || confirm(&format!(
+                "There is no Trellis installation in {} yet. Create one for this machine (localhost)?",
+                folder.display()
+            ))?;
+        if !create {
+            return Err(miette!(
+                "no Trellis installation in {}; create one with `trellis-server init` \
+                (it takes hostnames for other machines), pass --init to create a \
+                localhost one without asking, or name one with --config",
+                folder.display()
+            ));
+        }
+        #[derive(Parser)]
+        struct DefaultInit {
+            #[command(flatten)]
+            args: setup::InitConfigArgs,
+        }
+        let defaults = DefaultInit::parse_from(["init"]).args;
+        setup::init_config(policy.format, &defaults, false, folder.clone())?;
     }
     let (mut config, paths) = load_runtime_config(&policy)?;
 
@@ -589,9 +611,33 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         prepare_directory(&paths.runtime)?;
         prepare_directory(&paths.logs)?;
     }
+    // A start reports a broken config before it fetches or starts NATS; check
+    // reports one in its JSON report instead.
+    if policy.operation == Operation::Run {
+        config.validate_for_mode(policy.mode).into_diagnostic()?;
+    }
     let mut managed = None;
-    let nats_override = match &policy.nats {
-        NatsPolicy::ExternalConfigured => {
+    let managed_nats = config.nats.as_ref().is_some_and(|nats| nats.managed);
+    if !managed_nats {
+        for (given, flag) in [
+            (
+                policy.nats_binary != NatsBinary::Automatic,
+                "--local-nats or --nats-download",
+            ),
+            (policy.nats_ports.is_some(), "--local-nats-ports"),
+            (policy.nats_cache.is_some(), "--local-nats-cache"),
+        ] {
+            if given {
+                return Err(miette!(
+                    "{flag} only applies when trellis-server runs NATS, but {} connects \
+                    to the NATS servers in [nats] servers",
+                    policy.paths.config.display()
+                ));
+            }
+        }
+    }
+    let nats_override = match managed_nats {
+        false => {
             info!(config = %policy.paths.config.display(), "using configured external NATS");
             if policy.advertised_native.is_some() || policy.advertised_websocket.is_some() {
                 Some(NatsEndpointOverride {
@@ -603,11 +649,34 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 None
             }
         }
-        NatsPolicy::Local(source) => {
+        true => {
             let mut managed_paths = ManagedNatsPaths::resolve(&policy.paths.config_root, &paths);
             if let Some(cache) = &policy.nats_cache {
                 managed_paths.cache = cache.clone();
             }
+            let source = match &policy.nats_binary {
+                NatsBinary::Path(path) => NatsBinarySource::Path(path.clone()),
+                NatsBinary::Download => NatsBinarySource::DownloadPinned,
+                NatsBinary::Automatic if NatsServerBinary::from_path_lookup().is_ok() => {
+                    NatsBinarySource::PathLookup
+                }
+                NatsBinary::Automatic => {
+                    let version = trellis_local_nats::pinned_version().into_diagnostic()?;
+                    let download = confirm(&format!(
+                        "nats-server is not on your PATH. Download NATS {version} \
+                        (checksum-verified) into {}?",
+                        managed_paths.cache.display()
+                    ))?;
+                    if !download {
+                        return Err(miette!(
+                            "nats-server is not on PATH; install it, pass --nats-download \
+                            to download the pinned release, or name one with \
+                            --local-nats=<PATH>"
+                        ));
+                    }
+                    NatsBinarySource::DownloadPinned
+                }
+            };
             prepare_directory(&managed_paths.state)?;
             prepare_directory(&paths.runtime)?;
             prepare_directory(&paths.logs)?;
@@ -633,7 +702,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 }
             };
             let server = LocalNats::builder()
-                .binary(source.clone())
+                .binary(source)
                 .source(managed_paths.source)
                 .state(managed_paths.state)
                 .ports(nats_ports)
@@ -722,7 +791,17 @@ async fn main() -> miette::Result<()> {
     // Generating a bundle and renewing certificates need no server policy.
     match args.operation {
         Some(OperationArgs::Init(ref init)) if init.admin.is_none() => {
-            return setup::init_config(args.format, &init.config, args.server.system);
+            let profile = if args.server.system {
+                ServerPaths::system(args.server.config.clone())?
+            } else {
+                ServerPaths::user(args.server.config.clone(), |name| env::var_os(name))?
+            };
+            return setup::init_config(
+                args.format,
+                &init.config,
+                args.server.system,
+                profile.config_root,
+            );
         }
         Some(OperationArgs::Tls(command)) => {
             let config = match args.server.config {
@@ -760,6 +839,24 @@ async fn main() -> miette::Result<()> {
     result
 }
 
+/// Asks a yes-or-no question on the terminal, defaulting to yes. Without a
+/// terminal to ask on, the answer is no.
+fn confirm(question: &str) -> miette::Result<bool> {
+    use std::io::{IsTerminal as _, Write as _};
+
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Ok(false);
+    }
+    eprint!("{question} [Y/n] ");
+    std::io::stderr().flush().into_diagnostic()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).into_diagnostic()?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "" | "y" | "yes"
+    ))
+}
+
 /// Resolve the bootstrap password from argv or standard input. Stdin is preferred so the
 /// secret does not appear in the process list or shell history.
 fn resolve_bootstrap_password(
@@ -786,59 +883,11 @@ fn resolve_bootstrap_password(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::error::ErrorKind;
     use std::collections::HashMap;
 
     fn policy(arguments: &[&str]) -> StartupPolicy {
         StartupPolicy::resolve(Args::try_parse_from(arguments).expect("parse args"))
             .expect("resolve policy")
-    }
-
-    #[test]
-    fn resolves_nats_policy_before_side_effects() {
-        assert_eq!(
-            policy(&["trellis-server"]).nats,
-            NatsPolicy::ExternalConfigured
-        );
-        assert_eq!(
-            policy(&["trellis-server", "--local-nats"]).nats,
-            NatsPolicy::Local(NatsBinarySource::PathLookup)
-        );
-        assert_eq!(
-            policy(&["trellis-server", "--local-nats=/x/nats-server"]).nats,
-            NatsPolicy::Local(NatsBinarySource::Path(PathBuf::from("/x/nats-server")))
-        );
-        assert_eq!(
-            policy(&["trellis-server", "--nats-download"]).nats,
-            NatsPolicy::Local(NatsBinarySource::DownloadPinned)
-        );
-        assert_eq!(
-            policy(&["trellis-server", "--local-nats", "--nats-download"]).nats,
-            NatsPolicy::Local(NatsBinarySource::DownloadPinned)
-        );
-        assert_eq!(
-            policy(&[
-                "trellis-server",
-                "--local-nats",
-                "--local-nats-ports=14222,18222,18080",
-            ])
-            .nats_ports,
-            Some(LocalNatsPorts {
-                nats: 14222,
-                monitor: 18222,
-                websocket: 18080,
-            })
-        );
-        let dev = policy(&["trellis-server", "--dev"]);
-        assert_eq!(dev.nats, NatsPolicy::Local(NatsBinarySource::PathLookup));
-        // Development mode is about how the server runs, not how much it logs.
-        assert!(!dev.verbose);
-        let dev_download = policy(&["trellis-server", "--dev", "--nats-download"]);
-        assert_eq!(
-            dev_download.nats,
-            NatsPolicy::Local(NatsBinarySource::DownloadPinned)
-        );
-        assert!(!dev_download.verbose);
     }
 
     #[test]
@@ -850,58 +899,37 @@ mod tests {
         ])
         .expect("clap accepts policy conflict");
         assert!(StartupPolicy::resolve(explicit).is_err());
-        assert!(StartupPolicy::resolve(
-            Args::try_parse_from(["trellis-server", "--local-nats-ports=14222,18222,18080"])
-                .expect("parse ports")
-        )
-        .is_err());
-        assert!(StartupPolicy::resolve(
-            Args::try_parse_from([
-                "trellis-server",
-                "--local-nats",
-                "--local-nats-ports=14222,14222,18080",
-            ])
-            .expect("parse duplicate ports")
-        )
-        .is_err());
-        assert!(StartupPolicy::resolve(
-            Args::try_parse_from([
-                "trellis-server",
-                "--local-nats",
-                "--local-nats-ports=14222,18222",
-            ])
-            .expect("parse incomplete ports")
-        )
-        .is_err());
-        let error = Args::try_parse_from(["trellis-server", "--dev", "--system"])
-            .expect_err("dev and system conflict");
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+        for ports in ["14222,14222,18080", "14222,18222"] {
+            let parsed =
+                Args::try_parse_from(["trellis-server", &format!("--local-nats-ports={ports}")])
+                    .expect("parse ports");
+            assert!(StartupPolicy::resolve(parsed).is_err(), "{ports}");
+        }
         assert!(Args::try_parse_from(["trellis-server", "--check"]).is_err());
         let parsed = Args::try_parse_from(["trellis-server", "--reset-admin", "check"])
             .expect("parse check after run-only option");
         assert!(StartupPolicy::resolve(parsed).is_err());
         assert!(Args::try_parse_from(["trellis-server", "check", "--reset-admin"]).is_err());
-        let parsed = Args::try_parse_from(["trellis-server", "--local-nats", "jobs"])
-            .expect("bare local nats followed by mode");
+        let parsed = Args::try_parse_from(["trellis-server", "--nats-download", "jobs"])
+            .expect("flag followed by mode");
         assert_eq!(parsed.mode, RuntimeMode::Jobs);
-        assert_eq!(parsed.server.local_nats, Some(None));
     }
 
     #[test]
     fn parses_run_and_check_operations_with_the_same_server_options() {
-        let run = policy(&["trellis-server", "--system", "--local-nats", "jobs"]);
+        let run = policy(&["trellis-server", "--system", "--nats-download", "jobs"]);
         let check = policy(&[
             "trellis-server",
             "check",
             "--system",
-            "--local-nats",
+            "--nats-download",
             "jobs",
         ]);
         assert_eq!(run.operation, Operation::Run);
         assert_eq!(check.operation, Operation::Check);
         assert_eq!(run.mode, check.mode);
         assert_eq!(run.paths, check.paths);
-        assert_eq!(run.nats, check.nats);
+        assert_eq!(run.nats_binary, check.nats_binary);
 
         for (before, after) in [
             (
@@ -913,20 +941,12 @@ mod tests {
                 &["trellis-server", "check", "--config", "/x/config.toml"][..],
             ),
             (
-                &["trellis-server", "--local-nats", "check"][..],
-                &["trellis-server", "check", "--local-nats"][..],
-            ),
-            (
                 &["trellis-server", "--local-nats=/x/nats-server", "check"][..],
                 &["trellis-server", "check", "--local-nats=/x/nats-server"][..],
             ),
             (
                 &["trellis-server", "--nats-download", "check"][..],
                 &["trellis-server", "check", "--nats-download"][..],
-            ),
-            (
-                &["trellis-server", "--dev", "check"][..],
-                &["trellis-server", "check", "--dev"][..],
             ),
             (
                 &["trellis-server", "--verbose", "check"][..],
@@ -1002,25 +1022,6 @@ kind = "sqlite"
         let trellis_runtime::StorageBackend::Sqlite(jobs) =
             run_config.jobs_storage_backend().expect("jobs storage");
         assert_eq!(jobs.path, directory.path().join("data-root/jobs.sqlite"));
-    }
-
-    #[test]
-    fn check_preserves_every_managed_nats_acquisition_policy() {
-        assert_eq!(
-            policy(&["trellis-server", "check", "--local-nats"]).nats,
-            NatsPolicy::Local(NatsBinarySource::PathLookup)
-        );
-        assert_eq!(
-            policy(&["trellis-server", "check", "--local-nats=/x/nats-server"]).nats,
-            NatsPolicy::Local(NatsBinarySource::Path(PathBuf::from("/x/nats-server")))
-        );
-        assert_eq!(
-            policy(&["trellis-server", "check", "--nats-download"]).nats,
-            NatsPolicy::Local(NatsBinarySource::DownloadPinned)
-        );
-        let dev = policy(&["trellis-server", "check", "--dev"]);
-        assert_eq!(dev.nats, NatsPolicy::Local(NatsBinarySource::PathLookup));
-        assert!(!dev.verbose);
     }
 
     #[cfg(unix)]

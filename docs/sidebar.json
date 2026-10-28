@@ -82,7 +82,7 @@
     ]
   },
   {
-    "title": "Installing Trellis",
+    "title": "Running Trellis",
     "collapsible": false,
     "items": [
       {
@@ -96,6 +96,26 @@
       {
         "title": "Install the Trellis CLI",
         "to": "/guides/install-trellis-cli"
+      },
+      {
+        "title": "Reach it from other machines",
+        "to": "/guides/running-trellis/other-machines"
+      },
+      {
+        "title": "Run it in production",
+        "to": "/guides/running-trellis/production"
+      },
+      {
+        "title": "Keep it running",
+        "to": "/guides/running-trellis/upkeep"
+      },
+      {
+        "title": "Brand the sign-in page",
+        "to": "/guides/running-trellis/branding"
+      },
+      {
+        "title": "Register apps and review APIs",
+        "to": "/guides/running-trellis/apps-and-apis"
       }
     ]
   },

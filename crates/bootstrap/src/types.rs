@@ -135,6 +135,9 @@ pub struct TrellisRuntimeBootstrapConfig {
     /// folders inside the bundle. Off leaves them to the server's host profile,
     /// as for a read-only bundle served with `--system`.
     pub bundle_paths: bool,
+    /// `trellis-server` runs the generated NATS server itself. Off, it
+    /// connects to a NATS server the operator runs from the generated files.
+    pub managed_nats: bool,
 }
 
 impl Default for TrellisRuntimeBootstrapConfig {
@@ -156,6 +159,7 @@ impl Default for TrellisRuntimeBootstrapConfig {
             bind_address: None,
             authorization: BootstrapAuthorizationPolicy::default(),
             bundle_paths: true,
+            managed_nats: true,
         }
     }
 }

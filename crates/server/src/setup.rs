@@ -45,10 +45,16 @@ pub(crate) enum InitTlsMode {
 /// Generate Trellis runtime config and NATS bootstrap material.
 pub(crate) struct InitConfigArgs {
     #[arg(long)]
-    /// Output directory for generated Trellis bootstrap files.
-    // Required, but checked when generating: clap would otherwise demand it
-    // from `init admin` whenever a global option such as --config follows.
+    /// Output directory for a self-contained installation that also keeps its
+    /// data and logs. Omitted, the installation goes where the server looks by
+    /// default (~/.config/trellis, or /etc/trellis with --system) and its data
+    /// goes to the profile's data, state, cache and log folders.
     pub(crate) out: Option<PathBuf>,
+
+    #[arg(long)]
+    /// Connect to a NATS server you run from the generated files instead of
+    /// having trellis-server start one.
+    pub(crate) external_nats: bool,
 
     #[arg(long)]
     /// Replace an existing non-empty output directory.
@@ -212,11 +218,9 @@ pub(crate) fn init_config(
     format: OutputFormat,
     args: &InitConfigArgs,
     system: bool,
+    default_out: PathBuf,
 ) -> miette::Result<()> {
-    let out = args
-        .out
-        .clone()
-        .ok_or_else(|| miette!("trellis-server init needs --out <DIR>"))?;
+    let out = args.out.clone().unwrap_or(default_out);
     let mut options = TrellisBootstrapOptions::new(out.clone());
     options.force = args.force;
     options.runtime.name = args.name.clone();
@@ -294,8 +298,10 @@ pub(crate) fn init_config(
         }),
         InitTlsMode::LoopbackDevelopment => BootstrapTls::LoopbackDevelopment,
     };
-    // A `--system` server keeps its mutable files in FHS locations.
-    options.runtime.bundle_paths = !system;
+    // A `--system` server keeps its mutable files in FHS locations, and the
+    // default installation uses the profile's folders like the server does.
+    options.runtime.bundle_paths = !system && args.out.is_some();
+    options.runtime.managed_nats = !args.external_nats;
     options.runtime.trusted_proxies = args.trusted_proxy.clone();
     options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
     options.runtime.nats_websocket_via_runtime = relay;
@@ -642,7 +648,7 @@ mod tests {
         ] {
             let out = temp.path().join(name);
             let args = init_config_args(&out, &flags);
-            init_config(OutputFormat::Json, &args, false)
+            init_config(OutputFormat::Json, &args, false, out.clone())
                 .expect_err("invalid listener ports must be rejected");
             assert!(
                 !out.exists(),
@@ -674,7 +680,7 @@ mod tests {
         trellis_bootstrap::NatsListeners,
     ) {
         let args = init_config_args(out, flags);
-        init_config(OutputFormat::Json, &args, false).expect("generate bundle");
+        init_config(OutputFormat::Json, &args, false, out.to_path_buf()).expect("generate bundle");
         (
             trellis_runtime::RuntimeConfig::load_from_path(out.join("config.toml"))
                 .expect("load production runtime config"),

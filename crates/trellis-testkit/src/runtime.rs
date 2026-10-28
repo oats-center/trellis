@@ -307,6 +307,7 @@ async fn start_once(
         command
             .args(["init", "--out"])
             .arg(&config_dir)
+            .arg("--external-nats")
             .args([
                 "--trellis-port",
                 &ports.http.to_string(),

@@ -56,6 +56,7 @@ fn runtime_config() -> RuntimeConfig {
         http: None,
         tls: None,
         nats: Some(crate::NatsConfig {
+            managed: false,
             servers: Some("nats://127.0.0.1:4222".to_owned()),
             ca_certificate: None,
             runtime: Some(crate::NatsRuntimeConfig {

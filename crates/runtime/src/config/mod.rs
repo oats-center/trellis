@@ -858,6 +858,10 @@ impl CanonicalOrigin {
 /// NATS configuration for runtime connections and auth callout material.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NatsConfig {
+    /// `trellis-server` starts and stops the NATS server described by
+    /// `nats/nats.conf` beside the config file. Off, it connects to `servers`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub managed: bool,
     /// NATS server URL or comma-separated URLs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub servers: Option<String>,

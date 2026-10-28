@@ -1,102 +1,69 @@
 ---
 title: "In-repo development"
-description: "Run the Trellis server, console, and NATS from the source tree for local development."
+description: "Run the Trellis server, Console and NATS from a source checkout while you change them."
 ---
 
-This guide covers day-to-day development from a Trellis source checkout. It uses the same local setup as [Start Trellis](/guides/starting-trellis): `trellis-server` explicitly manages local NATS while the runtime and Console run from source.
+This is for working on Trellis itself. The server runs from your checkout the
+same way an installed one does in [Start Trellis](/guides/starting-trellis):
+it creates an installation on first start and runs NATS for you.
 
 ## What you need
 
 - Git
 - [Node](https://nodejs.org) 24 and npm 11+
-- a Rust toolchain
-- the `trellis` CLI installed (see [Install the Trellis CLI](/guides/install-trellis-cli))
-- `nats-server` on `PATH`, or network access when explicitly using
-  `--nats-download`
+- a Rust toolchain with the `wasm32-unknown-unknown` target
+  (`rustup target add wasm32-unknown-unknown`)
 
-## 1. Prepare a local runtime bundle
-
-Generate local NATS, Trellis config, credentials, keys, and data directories:
-
-```sh
-trellis-server init --out ~/trellis
-```
-
-`trellis-server` derives its managed NATS config from that bundle, so no
-separate NATS setup step is needed.
-
-## 2. Clone and prepare the repo
+## Prepare the checkout
 
 ```sh
 git clone https://github.com/oats-center/trellis.git
 cd trellis
-```
-
-Install API dependencies and generate contract artifacts, including the
-TypeScript SDK's protocol WASM, from a clean checkout. This needs the
-`wasm32-unknown-unknown` Rust target (`rustup target add wasm32-unknown-unknown`):
-
-```sh
+npm ci
 cargo xtask install
-```
-
-Installation is bootstrap-safe; you do not need a running Trellis instance to generate SDKs and manifests.
-
-## 3. Start the Trellis runtime
-
-Run the server from the source tree so runtime changes are picked up by rebuilds:
-
-```sh
-cargo run -p trellis-server -- --dev
-```
-
-The runtime safely converges the streams and KV buckets owned by `all`, then
-starts on `http://localhost:3000` using the generated TOML config. The current
-Rust runtime exposes `/healthz` and `/readyz`; both return version and mode
-metadata.
-
-## 4. Check runtime readiness
-
-Query both runtime endpoints:
-
-```sh
-curl http://localhost:3000/healthz
-curl http://localhost:3000/readyz
-```
-
-Use a runtime path that explicitly includes the auth and portal services for end-to-end first-admin, portal, and CLI login flows.
-
-## 5. Change the built-in web apps
-
-The Console (`web/`) and the OAuth sign-in portal (`portal/`) are compiled into
-`trellis-server`. The runtime does not proxy them or serve them from another
-directory. After editing either app, rebuild the embedded assets and the
-server, then restart `trellis-server`:
-
-```sh
 npm run browser:embedded
-cargo build -p trellis-server
 ```
 
-Then open `http://localhost:3000/console`. Signing in redirects to the portal on
-the dedicated OAuth listener and returns to the Console.
+`cargo xtask install` generates the SDKs, manifests and the protocol WASM the
+rest of the build needs. It doesn't need a running Trellis. `npm run browser:embedded`
+builds the Console (`web/`) and the sign-in page (`portal/`), which get
+compiled into `trellis-server`.
 
-## Development workflow
-
-- **Runtime changes**: edit files under `crates/runtime/`; rebuild and restart `trellis-server` after changes.
-- **Web changes**: edit files under `web/` or `portal/`, run `npm run browser:embedded`, then rebuild and restart `trellis-server`.
-- **Contract changes**: run `cargo xtask install`.
-- **CLI changes**: run `cargo build -p trellis-cli` in the `rust/` directory, then re-run `trellis ...` commands.
-- **Type checking**: run `npm run check:sdk` and `npm run check:integration`.
-- **Tests**: run `npm test` for everything Check runs, built once and run
-  concurrently (`npm test -- --all` adds packaging and images), or one Check job
-  with `scripts/check.sh <job>`.
-
-## Verify
+## Run the server
 
 ```sh
-curl http://127.0.0.1:8222/healthz
-curl http://localhost:3000/healthz
-curl http://localhost:3000/readyz
-curl -I http://localhost:3000/console
+cargo run -p trellis-server
 ```
+
+The first run asks to create an installation in `~/.config/trellis` and, if
+`nats-server` isn't on your `PATH`, to download NATS. Pass
+`cargo run -p trellis-server -- --init --nats-download` to answer yes to both.
+If that folder already holds an installation from a released Trellis, keep
+them apart: `cargo run -p trellis-server -- init --out ~/trellis-dev` once,
+then `cargo run -p trellis-server -- --config ~/trellis-dev/config.toml`.
+
+Once it's up, Console is at `https://localhost:3000/console`, and the
+certificate steps in
+[Start Trellis](/guides/starting-trellis#trust-trelliss-certificate) apply
+unchanged. To check on it:
+
+```sh
+curl --cacert ~/.config/trellis/tls/ca.crt https://localhost:3000/healthz
+curl --cacert ~/.config/trellis/tls/ca.crt https://localhost:3000/readyz
+curl http://127.0.0.1:8222/healthz
+```
+
+## While you work
+
+- Runtime changes under `crates/runtime/`: stop the server and `cargo run` it
+  again.
+- Console or sign-in changes under `web/` or `portal/`: run
+  `npm run browser:embedded`, then restart the server. It serves the copies
+  compiled into it, never the source folders.
+- Contract changes: run `cargo xtask install`.
+- CLI changes: `cargo run -p trellis-cli -- <command>`, or
+  `cargo install --path crates/cli` to replace your installed `trellis`.
+- Type checks: `npm run check:sdk` and `npm run check:integration`.
+- Tests: `npm test` builds once and runs everything the Pipeline checks, in
+  parallel (`npm test -- --all` adds packaging and images). `scripts/check.sh <job>`
+  runs one job.

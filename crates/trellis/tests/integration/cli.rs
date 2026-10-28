@@ -628,7 +628,8 @@ async fn cli_server_managed_nats() {
         log_tail(&broken_stderr)
     );
 
-    // 4. Plain startup uses configured external NATS and never owns that process.
+    // 4. An installation without `managed` uses configured external NATS and
+    //    never owns that process.
     let binary = NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache_dir))
         .expect("cached nats-server binary");
     let external_pid_file = workdir.0.join("external-nats-server.pid");
@@ -660,8 +661,11 @@ async fn cli_server_managed_nats() {
         .await
         .expect("connect to external NATS");
     let jetstream = jetstream::new(nats);
+    // Dropping `managed` hands NATS to the operator: the same bundle now
+    // connects to the server listed in [nats] servers.
     let external_config = fs::read_to_string(&config_path)
         .expect("read bundle config")
+        .replace("managed = true\n", "")
         .replace(BOGUS_NATS_URL, &format!("tls://127.0.0.1:{nats_port}"))
         .replace(BOGUS_WS_URL, &format!("wss://localhost:{websocket_port}"));
     fs::write(&config_path, external_config).expect("write external NATS config");
@@ -897,6 +901,48 @@ async fn cli_server_managed_nats() {
     // Drop stops the test-owned server and removes its pid file.
 }
 
+/// A first plain start with no installation and no terminal to ask on creates
+/// nothing; `--init` creates the default localhost installation, which every
+/// later plain start then finds. Without nats-server on PATH the managed start
+/// stops before binding any of the installation's fixed default ports.
+#[test]
+fn first_start_creates_the_default_installation_only_when_asked() {
+    let workdir = WorkdirGuard::new();
+    let search_path = std::env::var_os("CARGO")
+        .map(PathBuf::from)
+        .and_then(|cargo| cargo.parent().map(Path::to_path_buf))
+        .unwrap_or_default();
+    let start = |extra: &[&str]| {
+        let output = server_command(&workdir.0)
+            .env("PATH", &search_path)
+            .args(extra)
+            .output()
+            .expect("run trellis-server");
+        assert!(!output.status.success(), "start without NATS succeeded");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    };
+    let installation = workdir.0.join("config/trellis");
+
+    let refused = start(&[]);
+    assert!(
+        refused.contains("no Trellis installation in"),
+        "unexpected refusal: {refused}"
+    );
+    assert!(!installation.exists(), "an unconfirmed start created files");
+
+    let created = start(&["--init"]);
+    assert!(
+        installation.join("config.toml").is_file(),
+        "--init did not create the default installation: {created}"
+    );
+    for stderr in [created, start(&[])] {
+        assert!(
+            stderr.contains("nats-server is not on PATH"),
+            "start did not reach managed NATS: {stderr}"
+        );
+    }
+}
+
 #[test]
 fn server_rejects_reserved_oauth_origins_before_starting_listeners() {
     let workdir = WorkdirGuard::new();
@@ -957,6 +1003,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     let initialized = server_command(&workdir.0)
         .args(["--format", "json", "init", "--out"])
         .arg(&bundle)
+        .arg("--external-nats")
         .args([
             "--trellis-port",
             &http.to_string(),
