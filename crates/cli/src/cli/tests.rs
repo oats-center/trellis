@@ -149,20 +149,11 @@ fn parses_resources_and_events_pagination_commands() {
 }
 
 #[test]
-fn parses_keys_upgrade_version_and_completion() {
+fn parses_keys_version_and_completion() {
     let cli = Cli::parse_from(["trellis", "keys", "new", "--seed", "abc"]);
     match cli.command {
         TopLevelCommand::Keys(command) => match command.command {
             KeysSubcommand::New(args) => assert_eq!(args.seed.as_deref(), Some("abc")),
-        },
-        other => panic!("unexpected top-level command: {other:?}"),
-    }
-
-    let cli = Cli::parse_from(["trellis", "upgrade", "install", "--prerelease"]);
-    match cli.command {
-        TopLevelCommand::Upgrade(command) => match command.command {
-            UpgradeSubcommand::Install(args) => assert!(args.prerelease),
-            other => panic!("unexpected upgrade command: {other:?}"),
         },
         other => panic!("unexpected top-level command: {other:?}"),
     }

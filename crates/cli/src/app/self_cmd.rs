@@ -1,16 +1,13 @@
 use crate::app::{release_channel, SELF_UPDATE_TARGET};
 use crate::cli::*;
 use crate::output;
-use crate::self_update::{check_for_update, install_update, UpdateResult};
+use crate::self_update::{check_for_update, install_update, ReleaseChannel, UpdateResult};
 pub(super) fn run_upgrade(format: OutputFormat, command: UpgradeCommand) -> miette::Result<()> {
-    match command.command {
-        UpgradeSubcommand::Check(args) => check_command(format, &args),
-        UpgradeSubcommand::Install(args) => install_command(format, &args),
+    let channel = release_channel(command.prerelease);
+    if !command.check {
+        return install_command(format, channel);
     }
-}
-
-fn check_command(format: OutputFormat, args: &UpgradeCheckArgs) -> miette::Result<()> {
-    let check = check_for_update(SELF_UPDATE_TARGET, release_channel(args.prerelease))?;
+    let check = check_for_update(SELF_UPDATE_TARGET, channel)?;
     if output::is_json(format) {
         output::print_json(&check)?;
         return Ok(());
@@ -27,8 +24,8 @@ fn check_command(format: OutputFormat, args: &UpgradeCheckArgs) -> miette::Resul
     Ok(())
 }
 
-fn install_command(format: OutputFormat, args: &UpgradeInstallArgs) -> miette::Result<()> {
-    let result = install_update(SELF_UPDATE_TARGET, release_channel(args.prerelease))?;
+fn install_command(format: OutputFormat, channel: ReleaseChannel) -> miette::Result<()> {
+    let result = install_update(SELF_UPDATE_TARGET, channel)?;
     if output::is_json(format) {
         output::print_json(&result)?;
         return Ok(());

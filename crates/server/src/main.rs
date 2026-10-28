@@ -45,21 +45,16 @@ enum OperationArgs {
     /// Manage Trellis-generated TLS certificates.
     #[command(subcommand)]
     Tls(setup::TlsSubcommand),
-    /// Check for or install a newer trellis-server release.
-    #[command(subcommand)]
-    Upgrade(UpgradeSubcommand),
-}
-
-#[derive(Debug, Subcommand)]
-enum UpgradeSubcommand {
-    /// Report whether a newer release exists for this platform.
-    Check(UpgradeArgs),
-    /// Replace this binary with the newest release for this platform.
-    Install(UpgradeArgs),
+    /// Replace this binary with the newest trellis-server release for this
+    /// platform.
+    Upgrade(UpgradeArgs),
 }
 
 #[derive(Debug, clap::Args)]
 struct UpgradeArgs {
+    /// Only report whether a newer release exists.
+    #[arg(long)]
+    check: bool,
     /// Include prerelease versions such as release candidates.
     #[arg(long)]
     prerelease: bool,
@@ -834,7 +829,7 @@ async fn main() -> miette::Result<()> {
             };
             return setup::tls(args.format, command, config);
         }
-        Some(OperationArgs::Upgrade(command)) => return upgrade(args.format, &command),
+        Some(OperationArgs::Upgrade(upgrade_args)) => return upgrade(args.format, &upgrade_args),
         _ => {}
     }
     if args.server.isolated_process_group {
@@ -865,7 +860,7 @@ async fn main() -> miette::Result<()> {
 
 /// Check for, or install, a newer trellis-server release from GitHub. A
 /// running server keeps its old binary until it is restarted.
-fn upgrade(format: setup::OutputFormat, command: &UpgradeSubcommand) -> miette::Result<()> {
+fn upgrade(format: setup::OutputFormat, args: &UpgradeArgs) -> miette::Result<()> {
     use trellis_cli::self_update::{
         check_for_update, install_update, ReleaseChannel, SelfUpdateTarget, UpdateResult,
     };
@@ -876,36 +871,30 @@ fn upgrade(format: setup::OutputFormat, command: &UpgradeSubcommand) -> miette::
         env!("CARGO_PKG_VERSION"),
     );
     let json = format == setup::OutputFormat::Json;
-    match command {
-        UpgradeSubcommand::Check(args) => {
-            let check = check_for_update(
-                TARGET,
-                ReleaseChannel::from_prerelease_flag(args.prerelease),
-            )?;
-            if json {
-                println!("{}", serde_json::to_string(&check).into_diagnostic()?);
-            } else if check.needs_update {
-                println!(
-                    "update available: {} -> {}",
-                    check.current_version, check.latest_version
-                );
-            } else {
-                println!("up to date: {}", check.current_version);
-            }
+    let channel = ReleaseChannel::from_prerelease_flag(args.prerelease);
+    if args.check {
+        let check = check_for_update(TARGET, channel)?;
+        if json {
+            println!("{}", serde_json::to_string(&check).into_diagnostic()?);
+        } else if check.needs_update {
+            println!(
+                "update available: {} -> {}",
+                check.current_version, check.latest_version
+            );
+        } else {
+            println!("up to date: {}", check.current_version);
         }
-        UpgradeSubcommand::Install(args) => {
-            let result = install_update(
-                TARGET,
-                ReleaseChannel::from_prerelease_flag(args.prerelease),
-            )?;
-            if json {
-                println!("{}", serde_json::to_string(&result).into_diagnostic()?);
-            } else {
-                match result {
-                    UpdateResult::UpToDate { version } => println!("up to date: {version}"),
-                    UpdateResult::Updated { version } => {
-                        println!("updated trellis-server to {version}; restart it to run the new version")
-                    }
+    } else {
+        let result = install_update(TARGET, channel)?;
+        if json {
+            println!("{}", serde_json::to_string(&result).into_diagnostic()?);
+        } else {
+            match result {
+                UpdateResult::UpToDate { version } => println!("up to date: {version}"),
+                UpdateResult::Updated { version } => {
+                    println!(
+                        "updated trellis-server to {version}; restart it to run the new version"
+                    )
                 }
             }
         }

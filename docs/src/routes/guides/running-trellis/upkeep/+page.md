@@ -6,10 +6,10 @@ description: "Upgrade the server, renew certificates, reset the administrator pa
 ## Upgrade
 
 ```sh
-trellis-server upgrade install --prerelease
+trellis-server upgrade --prerelease
 ```
 
-Restart the server to run the new version. `trellis-server upgrade check`
+Restart the server to run the new version. `trellis-server upgrade --check`
 reports whether there is one.
 
 ## Renew the certificates

@@ -17,7 +17,7 @@ On Linux x86_64, this installs the newest release into `~/.local/bin`:
 curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis-server
 ```
 
-To upgrade later, run `trellis-server upgrade install --prerelease` and restart
+To upgrade later, run `trellis-server upgrade --prerelease` and restart
 the server.
 
 Then [start Trellis](/guides/starting-trellis). You'll probably want the

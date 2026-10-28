@@ -183,7 +183,7 @@ trellis-server init [--out <dir>] [--external-nats] ...
 trellis-server init admin [--config <config.toml>] [--system] ...
 trellis-server tls renew --bundle <dir> [--ca-dir <dir>]
 trellis-server tls status [--config <config.toml>]
-trellis-server upgrade check|install [--prerelease]
+trellis-server upgrade [--check] [--prerelease]
 ```
 
 These accept `--format json` for scripts. Initialization creates ordinary secure directories only when absent and rejects
@@ -221,7 +221,7 @@ A start validates the whole config before it fetches or starts NATS.
 
 ```text
 trellis keys ...
-trellis upgrade ...
+trellis upgrade [--check] [--prerelease]
 trellis version
 trellis completion <shell>
 ```

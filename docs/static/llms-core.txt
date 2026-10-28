@@ -192,7 +192,7 @@ On Linux x86_64, `curl -fsSL https://oats-center.github.io/trellis/install.sh |
 sh -s trellis` installs the CLI and `... | sh -s trellis-server` the server,
 from the newest release into `~/.local/bin` after checking the release
 checksum (`TRELLIS_VERSION` and `TRELLIS_INSTALL_DIR` override). Both update
-themselves: `trellis upgrade install` and `trellis-server upgrade install`
+themselves: `trellis upgrade` and `trellis-server upgrade`
 (`--prerelease` before the first stable release), then restart the server. The server is also published as `ghcr.io/oats-center/trellis-server`.
 
 ### Installation and first start

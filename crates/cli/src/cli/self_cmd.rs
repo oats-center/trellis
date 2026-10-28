@@ -15,33 +15,12 @@ pub enum KeysSubcommand {
 }
 
 #[derive(Debug, Args)]
-/// Check for or install newer Trellis CLI releases.
+/// Install the newest Trellis CLI release for this platform.
 pub struct UpgradeCommand {
-    #[command(subcommand)]
-    pub command: UpgradeSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-/// Trellis CLI upgrade commands.
-pub enum UpgradeSubcommand {
-    /// Check GitHub releases and report whether an update is available.
-    Check(UpgradeCheckArgs),
-    /// Download and install the latest Trellis CLI release for this platform.
-    Install(UpgradeInstallArgs),
-}
-
-#[derive(Debug, Args)]
-/// Check whether a newer Trellis CLI release exists.
-pub struct UpgradeCheckArgs {
+    #[arg(long)]
+    /// Only report whether a newer release exists.
+    pub check: bool,
     #[arg(long)]
     /// Include prerelease versions such as release candidates.
-    pub prerelease: bool,
-}
-
-#[derive(Debug, Args)]
-/// Install the newest Trellis CLI release for this platform.
-pub struct UpgradeInstallArgs {
-    #[arg(long)]
-    /// Allow prerelease versions such as release candidates.
     pub prerelease: bool,
 }
