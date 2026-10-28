@@ -28,6 +28,7 @@ import {
 } from "./core.ts";
 import type { TrellisAuth as SessionAuth } from "../../auth/session_auth.ts";
 import { connectProvisioned } from "../../auth/connection.ts";
+import { acceptServerCertificateFor } from "../../native/certificate_acceptance.ts";
 import { discoverNativeOAuth } from "../../native/discovery.ts";
 import { Type } from "typebox";
 import { ContractResourceBindingsSchema } from "../../participant_runtime/schemas.ts";
@@ -3109,6 +3110,12 @@ export function connectTrellisServiceWithRuntimeDeps<
         if (args.telemetry !== false && args.telemetry?.enabled !== false)
           await runtimeDeps.initTelemetry?.(name);
         let ingress: ServiceProviderIngress | undefined;
+        // A development Trellis's own certificate is accepted like a browser
+        // would: by its fingerprint, asked once and remembered.
+        await acceptServerCertificateFor(
+          args.trellisUrl,
+          args.participant.identity,
+        );
         const discovered = await discoverNativeOAuth(args.trellisUrl, {
           signal: args.signal,
         });

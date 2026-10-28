@@ -1,4 +1,8 @@
 // Request-serving participants load the provider protocol build.
+import {
+  acceptServerCertificateFor,
+  trustAcceptedCertificatesFor,
+} from "./native/certificate_acceptance.ts";
 import "./auth/protocol_wasm_provider.ts";
 import type { NatsConnection } from "@nats-io/nats-core";
 export { checkDeviceActivation } from "./device/activation.ts";
@@ -420,6 +424,7 @@ export async function startDeviceActivationWithDeps<
 ): Promise<
   TrellisDeviceActivationSession<TrellisDevicePendingActivationState>
 > {
+  await acceptServerCertificateFor(args.trellisUrl, args.participant.identity);
   const rootSecret = normalizeRootSecret(args.rootSecret);
   const identity = await deriveDeviceIdentity(rootSecret);
   const nonce = base64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
@@ -501,6 +506,7 @@ export async function resumeDeviceActivationWithDeps<
   },
   deps: Pick<DeviceConnectDeps, "now">,
 ): Promise<TrellisDeviceActivationSession<TLocalState>> {
+  await acceptServerCertificateFor(args.trellisUrl, args.participant.identity);
   const rootSecret = normalizeRootSecret(args.rootSecret);
   const identity = await deriveDeviceIdentity(rootSecret);
 
@@ -523,6 +529,7 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
   args: TrellisDeviceConnectArgs<TContract>,
   deps: DeviceConnectDeps,
 ): Promise<TrellisDeviceConnection<TContract>> {
+  await trustAcceptedCertificatesFor(args.participant.identity);
   const connected = await connectProvisioned(
     args,
     "device",

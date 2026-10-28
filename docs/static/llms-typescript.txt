@@ -95,6 +95,14 @@ retransmit the request or bypass lost coverage.
 
 ### Node native applications
 
+`TrellisService.connect` and the device entry points accept a development
+installation's own certificate the way a browser does before their first
+request: by `TRELLIS_CERTIFICATE_FINGERPRINT`, by `TRELLIS_ACCEPT_SELF_SIGNED=1`
+on first contact, or by asking on a terminal, remembered per participant under
+`$XDG_STATE_HOME/trellis/<participant>/servers`. Other Node programs call
+`acceptServerCertificate(issuer, certificateAcceptanceFor("my-tool"))` from
+`@oatscenter/trellis/native` before `discoverNativeOAuth`.
+
 Node native applications import `@oatscenter/trellis/native`, not browser
 custody. Use `discoverNativeOAuth`, `NativeOAuthClient.open` with explicit scope
 and trust, Device Code or `resume`, and `connectNativeClient` with a generated

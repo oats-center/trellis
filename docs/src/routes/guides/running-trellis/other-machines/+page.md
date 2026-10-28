@@ -24,11 +24,13 @@ accept it. Nothing gets installed on the other machine.
 The CLI does the same check. `trellis login https://eta.oats:3000/auth` shows
 the fingerprint, asks whether to accept it, and remembers the answer.
 
-Services connect to NATS at `tls://eta.oats:4222`. For now a service on another
-machine still needs the installation's `tls/ca.crt`: Node services start with
-`NODE_EXTRA_CA_CERTS` pointing at it, Rust services put its path in
-`RuntimeAuthorizationTrust.root_certificates`. The certificate also names
-`localhost`, so a service on the same machine can connect locally.
+Services and devices do the same the first time they connect: started from a
+terminal, they show the fingerprint and ask, then remember the answer. For a
+service started by systemd or in a container, set
+`TRELLIS_CERTIFICATE_FINGERPRINT` to the fingerprint instead, or
+`TRELLIS_ACCEPT_SELF_SIGNED=1` to take whatever certificate it finds on that
+first connection. A later different certificate is refused. The certificate
+also names `localhost`, so a service on the same machine can connect locally.
 
 Already started once for `localhost`? Then there's an installation in the way.
 [Start over](/guides/running-trellis/upkeep#start-over) first, or create the

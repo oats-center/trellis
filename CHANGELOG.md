@@ -24,7 +24,9 @@ eta.oats` (or the first-start wizard's "From other machines, for
   `TRELLIS_CERTIFICATE_FINGERPRINT`, or accepts it on first contact with
   `TRELLIS_ACCEPT_SELF_SIGNED=1`, and remembers it per program. The CLI's
   `trellis login` uses the same code. The Rust demos use it instead of
-  `--ca-certificate`.
+  `--ca-certificate`. TypeScript services (`TrellisService.connect`) and
+  devices do the same before their first request, and other Node programs
+  call `acceptServerCertificate` from `@oatscenter/trellis/native`.
 
 ### Changed
 

@@ -5,6 +5,13 @@ export {
   NativeDeviceAuthorization,
 } from "./native/oauth.ts";
 export {
+  acceptServerCertificate,
+  certificateAcceptanceFor,
+  ACCEPT_SELF_SIGNED_ENV,
+  CERTIFICATE_FINGERPRINT_ENV,
+  type CertificateAcceptance,
+} from "./native/certificate_acceptance.ts";
+export {
   discoverNativeOAuth,
   type NativeOAuthServer,
 } from "./native/discovery.ts";

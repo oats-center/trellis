@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { acceptServerCertificateFor } from "../native/certificate_acceptance.ts";
 import { dirname, join } from "node:path";
 import { env, platform } from "node:process";
 import type { StaticDecode } from "typebox";
@@ -473,6 +474,7 @@ export async function checkDeviceActivation<
 >(
   args: CheckDeviceActivationArgs<TContract>,
 ): Promise<TrellisDeviceActivationStatus> {
+  await acceptServerCertificateFor(args.trellisUrl, args.participant.identity);
   const store = await openDeviceActivationStateStore({
     trellisUrl: args.trellisUrl,
     rootSecret: args.rootSecret,
