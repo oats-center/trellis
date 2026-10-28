@@ -25,7 +25,7 @@ trellis-server tls renew --bundle ~/.config/trellis
 trust anything new. Trellis picks up its new certificate within seconds. NATS
 doesn't: restart `trellis-server`, or send NATS `nats-server --signal reload`
 if you run it yourself. A timer that runs the renewal needs read access to the
-CA folder (`~/.config/trellis-tls-ca/`).
+CA folder (`~/.config/trellis/tls-ca/`).
 
 ## Reset the administrator password
 
@@ -61,9 +61,10 @@ To throw away the default installation and everything it stored, stop the
 server and delete its folders:
 
 ```sh
-rm -rf ~/.config/trellis ~/.config/trellis-tls-ca \
+rm -rf ~/.config/trellis \
   ~/.local/share/trellis ~/.local/state/trellis ~/.cache/trellis
 ```
 
 The next `trellis-server` offers to create a fresh one. An installation made
-with `--out` is one folder, plus its `<folder>-tls-ca` next to it.
+with `--out` is one folder. A `--system` installation also has its CA in
+`<folder>-tls-ca` next to it.

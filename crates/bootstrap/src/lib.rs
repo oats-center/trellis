@@ -20,7 +20,9 @@ pub use constants::{
     DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME, DEFAULT_TRELLIS_PORT,
 };
 pub use error::{BootstrapError, NatsConfigError};
-pub use generation::{generate_nats_bootstrap, generate_trellis_bootstrap};
+pub use generation::{
+    bundle_ca_directory, generate_nats_bootstrap, generate_trellis_bootstrap, BUNDLE_CA_DIRECTORY,
+};
 pub use nats_config::{
     read_nats_listen_ports, render_auth_callout_env, render_local_jwt_config,
     render_local_nats_config, render_nats_config, slug_from_name, NatsTlsFiles,

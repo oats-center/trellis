@@ -49,6 +49,11 @@ Relative paths resolve from the folder holding `config.toml`. Leave a line out
 and the server uses the profile's folder for it. Database files you don't name
 explicitly get fixed names under the data folder.
 
+The installation's CA lives in its `tls-ca` folder. With `--system` it goes
+next to the installation instead, in `<folder>-tls-ca`, so the CA's private key
+stays out of anything mounted into a container. `--tls-ca-dir <folder>` puts it
+anywhere else outside the installation.
+
 ## Who runs NATS
 
 By default `trellis-server` starts the NATS server described by `nats/nats.conf`
@@ -71,6 +76,7 @@ private installation first, with your real hostnames:
 ```sh
 install -d -m 0700 "$HOME/trellis" "$HOME/trellis/data"
 trellis-server init --out "$HOME/trellis/config" --external-nats \
+  --tls-ca-dir "$HOME/trellis/tls-ca" \
   --public-origin https://console.example.com \
   --oauth-origin https://auth.example.com \
   --nats-server-url tls://nats.example.com:4222 \
@@ -219,7 +225,8 @@ restore them together:
 - the NATS JetStream data
 - the installation folder: `config.toml`, `session.seed`, `auth/`,
   `live-providers/`, `nats/` and `tls/`
-- the CA folder next to the installation (`<name>-tls-ca/`), kept separately
+- the CA folder (`tls-ca/`, or `<name>-tls-ca/` next to a `--system`
+  installation), kept separately
   and never mounted into a container
 
 If a signing key in `platform.issuer-keys/` goes missing, restore it from a

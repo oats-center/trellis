@@ -28,6 +28,10 @@ and this project adheres to
   after its archive matches the release's SHA-256 checksum file. `upgrade`
   installs directly; `upgrade --check` only reports. Breaking:
   `trellis upgrade check|install` is now `trellis upgrade [--check]`.
+- A local installation keeps its generated CA in its own `tls-ca/` folder
+  instead of a `<folder>-tls-ca` folder beside it. `--system` installations,
+  which containers mount, still keep it beside the installation.
+  `trellis-server tls renew` finds the CA in either place.
 - `trellis-server` subcommands take only their own options, after the
   subcommand: `trellis-server init --system`, not `trellis-server --system
 init`. `--format` moved onto each command that prints a result, and

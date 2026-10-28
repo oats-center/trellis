@@ -70,10 +70,12 @@ pub fn generate_trellis_bootstrap(
         _ => None,
     };
     if let Some(ca_directory) = &ca_directory {
-        // The CA private key must never be written into, or wiped with, a
-        // bundle that roles mount.
+        // The CA must never be wiped with the bundle or mixed into the files
+        // roles read; inside the bundle it may only use its own folder.
         let (bundle, ca) = (resolve_path(&options.out)?, resolve_path(ca_directory)?);
-        if bundle.starts_with(&ca) || ca.starts_with(&bundle) {
+        if bundle.starts_with(&ca)
+            || (ca.starts_with(&bundle) && ca != bundle.join(BUNDLE_CA_DIRECTORY))
+        {
             return Err(BootstrapError::InvalidTls(format!(
                 "CA directory '{}' must not overlap the bundle '{}'",
                 ca_directory.display(),
@@ -207,6 +209,21 @@ pub fn generate_trellis_bootstrap(
     )
     .map_err(|error| BootstrapError::AuthorizationTrust(error.to_string()))?;
     Ok(summary)
+}
+
+/// The CA folder inside a bundle, for an installation that is never mounted
+/// into a role's container.
+pub const BUNDLE_CA_DIRECTORY: &str = "tls-ca";
+
+/// Where a bundle's CA lives: its own `tls-ca` folder when it has one, else
+/// the `<bundle>-tls-ca` folder beside it.
+pub fn bundle_ca_directory(bundle: &Path) -> PathBuf {
+    let inside = bundle.join(BUNDLE_CA_DIRECTORY);
+    if inside.is_dir() {
+        inside
+    } else {
+        default_ca_directory(bundle)
+    }
 }
 
 /// The default CA directory sits beside the bundle so no role mounts it.

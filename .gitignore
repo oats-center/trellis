@@ -102,4 +102,3 @@ xtask/Cargo.lock
 .cortexkit
 /dist/
 /.trellis/
-/.trellis-tls-ca/

@@ -746,6 +746,26 @@ fn generated_ca_directory_must_not_overlap_the_bundle() {
 }
 
 #[test]
+fn a_bundle_keeps_its_ca_in_its_own_folder_and_renews_from_it() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let out = temp.path().join("bundle");
+    let mut options = trellis_options(&out);
+    options.runtime.tls = BootstrapTls::Generated {
+        ca_directory: Some(out.join(crate::BUNDLE_CA_DIRECTORY)),
+    };
+    generate_trellis_bootstrap(&options).expect("bundle with its CA inside");
+    let runtime_leaf = fs::read(out.join("tls/runtime.crt")).expect("runtime leaf");
+
+    let ca_directory = crate::bundle_ca_directory(&out);
+    assert_eq!(ca_directory, out.join("tls-ca"));
+    renew_generated_certificates(&out, &ca_directory).expect("renew from the bundle's CA");
+    let renewed_leaf = fs::read(out.join("tls/runtime.crt")).expect("renewed leaf");
+    assert_ne!(renewed_leaf, runtime_leaf);
+    verify_with_installation_ca(&out.join("tls/ca.crt"), &renewed_leaf, "localhost")
+        .expect("renewed leaf is trusted by the unchanged CA");
+}
+
+#[test]
 fn bundle_tls_modes_reject_endpoints_they_cannot_protect() {
     let temp = tempfile::tempdir().expect("temp dir");
     let mut plaintext_broker = trellis_options(temp.path().join("plaintext-broker"));

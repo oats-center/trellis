@@ -134,8 +134,9 @@ pub(crate) struct InitConfigArgs {
     pub(crate) tls: InitTlsMode,
 
     #[arg(long)]
-    /// Directory receiving the generated CA private key; defaults to
-    /// `<out>-tls-ca`. Keep it out of every runtime and broker mount.
+    /// Directory receiving the generated CA private key; defaults to the
+    /// installation's `tls-ca` folder, or `<out>-tls-ca` with `--system`.
+    /// Keep it out of every runtime and broker mount.
     pub(crate) tls_ca_dir: Option<PathBuf>,
 
     #[arg(long, required_if_eq("tls", "supplied"))]
@@ -209,7 +210,8 @@ pub(crate) struct TlsRenewArgs {
     /// Bundle directory written by `trellis-server init --out`.
     #[arg(long)]
     pub(crate) bundle: PathBuf,
-    /// CA directory holding the private key; defaults to `<bundle>-tls-ca`.
+    /// CA directory holding the private key; defaults to the bundle's
+    /// `tls-ca` folder, else `<bundle>-tls-ca`.
     #[arg(long)]
     pub(crate) ca_dir: Option<PathBuf>,
     /// Print the result as text or JSON.
@@ -293,8 +295,12 @@ pub(crate) fn init_config(
         .unwrap_or_else(|| format!("{http}://localhost:{}", args.oauth_port));
     options.runtime.oauth_port = args.oauth_port;
     options.runtime.tls = match args.tls {
+        // A system installation is the one roles mount, so its CA stays beside it.
         InitTlsMode::Generated => BootstrapTls::Generated {
-            ca_directory: args.tls_ca_dir.clone(),
+            ca_directory: args
+                .tls_ca_dir
+                .clone()
+                .or_else(|| (!system).then(|| out.join(trellis_bootstrap::BUNDLE_CA_DIRECTORY))),
         },
         InitTlsMode::Supplied => BootstrapTls::Supplied(SuppliedTls {
             certificate_chain: required_path(
@@ -450,15 +456,10 @@ pub(crate) fn tls(command: TlsSubcommand) -> miette::Result<()> {
     match command {
         TlsSubcommand::Renew(args) => {
             let format = args.format;
-            let ca_dir = args.ca_dir.clone().unwrap_or_else(|| {
-                let mut name = args
-                    .bundle
-                    .file_name()
-                    .map(std::ffi::OsStr::to_os_string)
-                    .unwrap_or_else(|| "trellis".into());
-                name.push("-tls-ca");
-                args.bundle.with_file_name(name)
-            });
+            let ca_dir = args
+                .ca_dir
+                .clone()
+                .unwrap_or_else(|| trellis_bootstrap::bundle_ca_directory(&args.bundle));
             let renewed = trellis_bootstrap::renew_generated_certificates(&args.bundle, &ca_dir)
                 .map_err(bootstrap_report)?;
             if format == OutputFormat::Json {

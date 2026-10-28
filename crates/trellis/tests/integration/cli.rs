@@ -1040,8 +1040,8 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         .to_owned();
     let ca = bundle.join("tls/ca.crt");
     assert!(
-        !bundle.join("tls/ca.key").exists() && workdir.0.join("tls-tls-ca/ca.key").is_file(),
-        "the CA private key must live outside the role-mounted bundle"
+        !bundle.join("tls/ca.key").exists() && bundle.join("tls-ca/ca.key").is_file(),
+        "a local installation keeps its CA private key in its own tls-ca folder"
     );
     let config = bundle.join("config.toml");
     let bootstrap = server_command(&workdir.0)

@@ -63,8 +63,7 @@ download in `~/.cache/trellis`.
 Trellis uses TLS on every connection, even on `localhost`, so creating the
 installation also made a small certificate authority (CA) of its own. The CA
 can only sign for the hostnames it was created with. Its private key is in
-`~/.config/trellis-tls-ca/`, outside the installation on purpose. Back it up,
-and don't copy it anywhere Trellis runs.
+`~/.config/trellis/tls-ca/`. Back it up and keep it private.
 
 When the installation was created, Trellis printed the CA's fingerprint:
 
