@@ -478,7 +478,6 @@ fn changes(
         .iter()
         .map(ToString::to_string)
         .collect();
-    let mut accepted_apis = Vec::new();
     let mut shared_apis = Vec::new();
     for identity in definition.implements() {
         let api = &identity.to_string();
@@ -487,36 +486,8 @@ fn changes(
         {
             shared_apis.push(api.clone());
         }
-        let accepted: Option<(String, String)> = connection
-            .query_row(
-                "SELECT definition_digest,definition_json FROM auth_accepted_apis WHERE api_id=?1",
-                [api],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        let proposed = api_digest(&candidate.graph, identity)
-            .map_err(|error| AuthError::Invalid(error.to_string()))?;
-        match accepted {
-            None => accepted_apis.push(api.clone()),
-            Some((digest, _)) if digest == proposed => {}
-            Some((_, accepted)) => {
-                let accepted = compile_evidence(decode(&accepted)?)
-                    .map_err(|error| AuthError::Invalid(error.to_string()))?;
-                if !compare_implementation(
-                    resolve_api(&accepted, api)?,
-                    resolve_api(&candidate.graph, api)?,
-                )
-                .compatible
-                {
-                    return Err(AuthError::Invalid(format!(
-                        "API {api} changed incompatibly with its accepted definition; \
-                        an administrator must force-replace it first"
-                    )));
-                }
-                accepted_apis.push(api.clone());
-            }
-        }
     }
+    let accepted_apis = apis_to_accept(connection, &candidate.graph, definition)?;
     let resource = |(kind, name): &&(String, String)| json!({"kind": kind, "name": name});
     Ok(serde_json::from_value(json!({
         "addedCapabilities": capabilities.difference(&current.capabilities).collect::<Vec<_>>(),
@@ -530,6 +501,101 @@ fn changes(
         "removedApis": current.apis.difference(&apis).collect::<Vec<_>>(),
         "acceptedApis": accepted_apis,
     }))?)
+}
+
+/// The APIs `definition` provides that the catalog does not hold at the
+/// definition `graph` gives them: new ones and compatible changes. An
+/// incompatible change fails, since it needs a force replacement first.
+fn apis_to_accept(
+    connection: &Connection,
+    graph: &trellis_idl::PackageGraph,
+    definition: &trellis_idl::ParticipantDefinition,
+) -> Result<Vec<String>, AuthError> {
+    let mut accepted_apis = Vec::new();
+    for identity in definition.implements() {
+        let api = &identity.to_string();
+        let accepted: Option<(String, String)> = connection
+            .query_row(
+                "SELECT definition_digest,definition_json FROM auth_accepted_apis WHERE api_id=?1",
+                [api],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let proposed =
+            api_digest(graph, identity).map_err(|error| AuthError::Invalid(error.to_string()))?;
+        match accepted {
+            None => accepted_apis.push(api.clone()),
+            Some((digest, _)) if digest == proposed => {}
+            Some((_, accepted)) => {
+                let accepted = compile_evidence(decode(&accepted)?)
+                    .map_err(|error| AuthError::Invalid(error.to_string()))?;
+                if !compare_implementation(resolve_api(&accepted, api)?, resolve_api(graph, api)?)
+                    .compatible
+                {
+                    return Err(AuthError::Invalid(format!(
+                        "API {api} changed incompatibly with its accepted definition; \
+                        an administrator must force-replace it first"
+                    )));
+                }
+                accepted_apis.push(api.clone());
+            }
+        }
+    }
+    Ok(accepted_apis)
+}
+
+/// Accepts every API `participant` in `evidence` provides that the catalog
+/// does not hold at that definition yet. Approving what a deployment provides
+/// is accepting the APIs it publishes, under the approver's authority.
+pub(super) fn accept_provided_apis(
+    connection: &Connection,
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    evidence: &trellis_idl::PackageEvidence,
+    participant: &str,
+    now: i64,
+) -> Result<(), AuthError> {
+    let graph = compile_evidence(evidence.clone())
+        .map_err(|error| AuthError::Invalid(error.to_string()))?;
+    let definition = graph
+        .root_package()
+        .participants()
+        .values()
+        .find(|definition| definition.identity().as_str() == participant)
+        .ok_or(AuthError::NotFound)?;
+    let apis = apis_to_accept(connection, &graph, definition)?;
+    accept_apis(connection, store, identity, evidence, &apis, now)
+}
+
+/// Reviews and accepts each of `apis` from `evidence` in the caller's
+/// transaction.
+fn accept_apis(
+    connection: &Connection,
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    evidence: &trellis_idl::PackageEvidence,
+    apis: &[impl AsRef<str>],
+    now: i64,
+) -> Result<(), AuthError> {
+    for api in apis {
+        let review =
+            store.review_api_in_transaction(connection, evidence.clone(), api.as_ref(), now)?;
+        store.accept_api_in_transaction(
+            connection,
+            identity,
+            &ApiAcceptance {
+                review_id: review.review_id,
+                reviewed_digest: review.definition_digest,
+                force: false,
+                acknowledge_breakage: false,
+                confirm_consent_meanings: false,
+                materially_changed: vec![],
+                policy_edits: vec![],
+            },
+            now,
+        )?;
+    }
+    Ok(())
 }
 
 fn requests_access(changes: &AuthServiceUpdateChanges) -> bool {
@@ -670,28 +736,14 @@ fn apply(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if candidate.digest != current.digest {
-        for api in &changes.accepted_apis {
-            let review = store.review_api_in_transaction(
-                connection,
-                candidate.evidence.clone(),
-                api.as_ref(),
-                now,
-            )?;
-            store.accept_api_in_transaction(
-                connection,
-                identity,
-                &ApiAcceptance {
-                    review_id: review.review_id,
-                    reviewed_digest: review.definition_digest,
-                    force: false,
-                    acknowledge_breakage: false,
-                    confirm_consent_meanings: false,
-                    materially_changed: vec![],
-                    policy_edits: vec![],
-                },
-                now,
-            )?;
-        }
+        accept_apis(
+            connection,
+            store,
+            identity,
+            &candidate.evidence,
+            &changes.accepted_apis,
+            now,
+        )?;
         let provisioning = super::rpc_deployments::deployment_input(
             connection,
             &serde_json::from_value(serde_json::to_value(&candidate.evidence)?)?,

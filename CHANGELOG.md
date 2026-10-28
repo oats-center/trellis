@@ -8,6 +8,48 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis-server` with no installation offers to create a localhost one in
+  `~/.config/trellis`; `--init` creates it without asking. A managed start with
+  no `nats-server` on `PATH` offers to download the pinned release;
+  `--nats-download` downloads without asking. Without a terminal, both stop
+  with a message naming the flag.
+- One-line installers:
+  `curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis`
+  (or `trellis-server`) installs the newest release after checking its
+  checksum.
+
+### Changed
+
+- Creating or applying a deployment accepts the APIs its service provides, new
+  ones and compatible changes, under the approving administrator's authority.
+  `trellis apis accept` is no longer a required step before `svc create`; an
+  incompatible change still needs `apis force-replace`.
+- `--dev` is gone. The installation's config says who runs NATS:
+  `[nats] managed = true`, which `trellis-server init` writes, makes the server
+  start and stop it; `init --external-nats` leaves NATS to you. Bundles made
+  before this connect to external NATS until `managed = true` is added.
+- `trellis-server init` without `--out` creates the installation where the
+  server looks by default, with its data in the profile's folders.
+  `--local-nats` now always takes a path (`--local-nats=<PATH>`).
+- The Rust testkit runs NATS itself and creates its installations with
+  `--external-nats`; a Rust testkit older than this release can't start a
+  server from this release. The TypeScript testkit lets the server run NATS and
+  is unaffected.
+- The Quadlet runtime unit runs `ghcr.io/oats-center/trellis-server:latest`,
+  and the separate Console unit is removed; the Console is part of the server.
+- The docs site no longer generates API references: Rust crates link to
+  docs.rs and TypeScript packages to npm. Running Trellis now has its own
+  section: install, start, other machines, production, upkeep, branding, and
+  app and API administration.
+
+### Fixed
+
+- A start reports an invalid config before it fetches or starts NATS.
+- The warning about sign-in sharing a hostname with an app prints once per
+  start instead of about ten times.
+
 ## [0.100.0-rc.12] - 2026-10-27
 
 ### Added

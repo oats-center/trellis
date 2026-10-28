@@ -93,32 +93,26 @@ test(
           "--participant",
           provider.id,
         ];
-        // A deployment needs its implemented API accepted, and says which.
-        await assert.rejects(
-          run("svc", "provider", "create", ...source),
-          (error: Error) =>
-            // The terminal report wraps the message in a box.
-            error.message
-              .replace(/[\s│]+/g, " ")
-              .includes(`API ${apiId} is not accepted`),
-        );
+        // Creating a deployment accepts the API it provides.
         const { reviews } = await run("apis", "review", ...source);
         assert.deepEqual(
           reviews.map((review: { apiId: string }) => review.apiId),
           [apiId],
         );
-        const { apis } = await run("apis", "accept", ...source);
-        assert.equal(apis[0].canonicalDigest, reviews[0].canonicalDigest);
-        const accepted = await run("apis", "get", apiId);
-        assert.equal(accepted.api.canonicalDigest, reviews[0].canonicalDigest);
-        // Accepting the same definition again changes nothing.
-        const again = await run("apis", "accept", ...source);
-        assert.equal(again.apis[0].acceptedRevision, apis[0].acceptedRevision);
+        await assert.rejects(run("apis", "get", apiId));
         const { deployment } = await run(
           "svc",
           "provider",
           "create",
           ...source,
+        );
+        const accepted = await run("apis", "get", apiId);
+        assert.equal(accepted.api.canonicalDigest, reviews[0].canonicalDigest);
+        // Accepting the same definition again changes nothing.
+        const again = await run("apis", "accept", ...source);
+        assert.equal(
+          again.apis[0].acceptedRevision,
+          accepted.api.acceptedRevision,
         );
         assert.equal(deployment.participantId, provider.id);
         const logo = `${directory}/logo.svg`;

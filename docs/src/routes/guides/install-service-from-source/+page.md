@@ -22,14 +22,13 @@ artifacts or rewrite imports as an installation step.
 
 ## Install and apply the participant
 
-Log in to the target runtime with `trellis login <url>`. Accept the APIs the
-service implements with
-`trellis apis accept --source <project-root> --participant <package>.<Service>`,
-then create the service deployment from verified source with
+Log in to the target runtime with `trellis login <url>`. Create the service
+deployment from verified source with
 `trellis svc <name> create --source <project-root> --participant <package>.<Service>`,
 then provision an instance with `trellis svc <deployment-id> provision`. Later
 releases use `trellis svc <deployment-id> apply --source <project-root>`.
-Create and apply compile and install the selected participant,
+Create and apply compile and install the selected participant, accept the
+APIs it provides (new ones and compatible changes),
 updates deployment resources, and writes its participant-scoped grant. See
 [installing an image](/guides/install-service-from-image) for the matching
 provisioning sequence.
@@ -46,7 +45,7 @@ For an update, rebuild from the new IDL and source and restart the service.
 It submits its own build: a build that asks for nothing new installs at once,
 and one that asks for new capabilities or resources waits while it prints a
 review link and QR code for an administrator (`trellis svc <deployment-id>
-approve` does the same). You can still install first with `trellis apis accept`
-and `trellis svc <deployment-id> apply`. Keep the same provisioned identity for
+approve` does the same). You can still install a release first with
+`trellis svc <deployment-id> apply`. Keep the same provisioned identity for
 the same instance. Do not reprovision merely because the generated SDK or
 application binary changed.

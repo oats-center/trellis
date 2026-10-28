@@ -7,8 +7,9 @@ participant that differs from the revision its instance runs, the service
 submits its IDL to Auth. Auth applies an update that asks for nothing new at
 once, and holds one that asks for new access until an administrator approves it.
 
-The administrator-driven path (`trellis apis accept` then `trellis svc apply`)
-stays. A service update is the same install, started by the service.
+The administrator-driven path (`trellis svc create|apply`) stays; like an
+approved update, it accepts the APIs the build provides. A service update is
+the same install, started by the service.
 
 ## Principles
 

@@ -295,6 +295,14 @@ pub(super) fn create_deployment(
                 &identity.actor,
                 Administration::ManagePrincipals,
             )?;
+            super::service_updates::accept_provided_apis(
+                connection,
+                store,
+                identity,
+                &serde_json::from_value(serde_json::to_value(&input.package_evidence)?)?,
+                &input.participant_id,
+                now,
+            )?;
             let provisioning = deployment_input(
                 connection,
                 &input.package_evidence,
@@ -413,6 +421,14 @@ pub(super) fn apply_deployment(
                 WHERE deployment_id=?1",
                 [&deployment],
                 |row| row.get(0),
+            )?;
+            super::service_updates::accept_provided_apis(
+                connection,
+                store,
+                identity,
+                &serde_json::from_value(serde_json::to_value(&input.package_evidence)?)?,
+                &current.participant_id,
+                now,
             )?;
             let provisioning = deployment_input(
                 connection,
