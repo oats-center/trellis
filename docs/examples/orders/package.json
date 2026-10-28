@@ -12,8 +12,8 @@
     "start": "node main.ts"
   },
   "dependencies": {
-    "@oatscenter/trellis": "^0.100.0-rc.12",
-    "@oatscenter/trellis-testkit": "^0.100.0-rc.12",
+    "@oatscenter/trellis": "^0.100.0-rc.13",
+    "@oatscenter/trellis-testkit": "^0.100.0-rc.13",
     "ulid": "^3.0.2"
   },
   "devDependencies": {

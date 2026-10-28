@@ -2613,7 +2613,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.100.0-rc.12"
+version = "0.100.0-rc.13"
 dependencies = [
  "serde",
  "serde_json",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol"
-version = "0.100.0-rc.9"
+version = "0.100.0-rc.13"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0-rc.12"
+version = "0.100.0-rc.13"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -3198,7 +3198,3 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[patch.unused]]
-name = "trellis-testkit"
-version = "0.100.0-rc.12"

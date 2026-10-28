@@ -1,6 +1,6 @@
 {
   "name": "@oatscenter/trellis-svelte",
-  "version": "0.100.0-rc.12",
+  "version": "0.100.0-rc.13",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
@@ -15,8 +15,8 @@
     "build": "svelte-package --input src --output npm && node scripts/build_npm.ts"
   },
   "dependencies": {
-    "@oatscenter/trellis": "0.100.0-rc.12",
-    "@oatscenter/result": "0.100.0-rc.12"
+    "@oatscenter/trellis": "0.100.0-rc.13",
+    "@oatscenter/result": "0.100.0-rc.13"
   },
   "peerDependencies": {
     "svelte": "^5.0.0"

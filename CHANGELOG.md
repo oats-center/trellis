@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.13] - 2026-10-28
+
 ### Added
 
 - `trellis-server` with no installation offers to create a localhost one in
@@ -28,14 +30,6 @@ and this project adheres to
   after its archive matches the release's SHA-256 checksum file. `upgrade`
   installs directly; `upgrade --check` only reports. Breaking:
   `trellis upgrade check|install` is now `trellis upgrade [--check]`.
-- A local installation keeps its generated CA in its own `tls-ca/` folder
-  instead of a `<folder>-tls-ca` folder beside it. `--system` installations,
-  which containers mount, still keep it beside the installation.
-  `trellis-server tls renew` finds the CA in either place.
-- `trellis-server` subcommands take only their own options, after the
-  subcommand: `trellis-server init --system`, not `trellis-server --system
-init`. `--format` moved onto each command that prints a result, and
-  `trellis-server upgrade --help` no longer lists server startup options.
 - One-line installers:
   `curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis`
   (or `trellis-server`) installs the newest release after checking its
@@ -55,9 +49,17 @@ init`. `--format` moved onto each command that prints a result, and
   server looks by default, with its data in the profile's folders.
   `--local-nats` now always takes a path (`--local-nats=<PATH>`).
 - The Rust testkit runs NATS itself and creates its installations with
-  `--external-nats`; a Rust testkit older than this release can't start a
-  server from this release. The TypeScript testkit lets the server run NATS and
-  is unaffected.
+  `--external-nats`. Testkits older than this release, Rust or TypeScript,
+  can't start a server from this release.
+- A local installation keeps its generated CA in its own `tls-ca/` folder
+  instead of a `<folder>-tls-ca` folder beside it. `--system` installations,
+  which containers mount, still keep it beside the installation.
+  `trellis-server tls renew` finds the CA in either place.
+- `trellis-server` subcommands take only their own options, after the
+  subcommand: `trellis-server init --system`, not
+  `trellis-server --system init`. `--format` moved onto each command that
+  prints a result, and `trellis-server upgrade --help` no longer lists server
+  startup options.
 - The Quadlet runtime unit runs `ghcr.io/oats-center/trellis-server:latest`,
   and the separate Console unit is removed; the Console is part of the server.
 - The docs site no longer generates API references: Rust crates link to
