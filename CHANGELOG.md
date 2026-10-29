@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.14] - 2026-10-29
+
 ### Added
 
 - Development mode for other machines: `trellis-server init --dev --host

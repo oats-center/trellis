@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0-rc.13"
+version = "0.100.0-rc.14"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
