@@ -174,6 +174,19 @@ pub(super) fn current_members(
         .transpose()
 }
 
+/// An app's "allowed without asking" list with each listed group's current
+/// members, so a listed group allows what it contains.
+pub(super) fn with_members(
+    connection: &Connection,
+    listed: Vec<String>,
+) -> Result<Vec<String>, AuthError> {
+    let mut all = listed.clone();
+    for id in &listed {
+        all.extend(current_members(connection, id)?.unwrap_or_default());
+    }
+    Ok(all)
+}
+
 /// Whether entitlements cover a selected capability or group: for a group,
 /// any current member, or every one when `whole`.
 pub(super) fn covers(

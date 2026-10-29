@@ -51,7 +51,7 @@ fn omitted_role_id_is_generated_once_and_replay_does_not_overwrite_an_update() {
                 connection,
                 &AuthPageRequest {
                     page: None,
-                    search: None,
+                    search: Some("Editors".to_string().into()),
                     extra: Default::default(),
                 },
             )
@@ -597,7 +597,7 @@ fn role_queries_follow_updates_paginate_and_hide_deleted_definitions() {
                 connection,
                 &AuthPageRequest {
                     page: None,
-                    search: None,
+                    search: Some("REVIEW".to_string().into()),
                     extra: Default::default(),
                 },
             )

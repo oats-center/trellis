@@ -198,6 +198,10 @@ impl SqliteAuthorizationStore {
                     )?;
                     // Use exactly the API ownership set used by production
                     // built-in provider initialization, never all accepted APIs.
+                    // Everything in them, as groups where a group covers it.
+                    let mut everything = Vec::new();
+                    let mut singles = Vec::new();
+                    let mut covered = std::collections::BTreeSet::new();
                     for (apis, evidence) in builtin_package_evidence()? {
                         for api in apis {
                             let accepted: bool = connection.query_row(
@@ -230,55 +234,62 @@ impl SqliteAuthorizationStore {
                                 )?;
                             }
                             let mut statement = connection.prepare(
-                                "SELECT capability_id \
+                                "SELECT capability_id,kind \
                                 FROM auth_capability_identities \
-                                WHERE api_id=?1 AND state='active' AND kind='capability' \
+                                WHERE api_id=?1 AND state='active' \
                                 ORDER BY capability_id",
                             )?;
                             let capabilities = statement
-                                .query_map([api], |row| row.get::<_, String>(0))?
+                                .query_map([api], |row| {
+                                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                                })?
                                 .collect::<rusqlite::Result<Vec<_>>>()?;
-                            for capability_id in capabilities {
-                                if capability_id == super::deployments::SELF_HEALTH_CAPABILITY
-                                    || super::administration::is_administrative(&capability_id)
+                            for (capability_id, kind) in capabilities {
+                                if kind == "group" {
+                                    covered.extend(
+                                        super::policy::current_members(connection, &capability_id)?
+                                            .unwrap_or_default(),
+                                    );
+                                    everything.push(capability_id);
+                                } else if capability_id
+                                    != super::deployments::SELF_HEALTH_CAPABILITY
                                 {
-                                    continue;
+                                    singles.push(capability_id);
                                 }
-                                super::policy::apply_policy_in_transaction(
-                                    connection,
-                                    &identity,
-                                    &super::PolicyMutation::CapabilityGrant {
-                                        principal_id: principal.clone(),
-                                        capability_id,
-                                        expected_revision: 0,
-                                        expires_at: None,
-                                    },
-                                    now,
-                                )?;
                             }
                         }
+                    }
+                    everything.extend(singles.into_iter().filter(|id| !covered.contains(id)));
+                    // The administrator holds it through an ordinary, editable
+                    // role; administration itself stays theirs regardless.
+                    let role_id = id();
+                    for mutation in [
+                        super::PolicyMutation::RolePut {
+                            role_id: role_id.clone(),
+                            expected_revision: 0,
+                            title: "Administrator".into(),
+                            description: "Everything in Trellis's built-in APIs, including \
+                                administration."
+                                .into(),
+                            capabilities: everything.clone(),
+                        },
+                        super::PolicyMutation::RoleAssign {
+                            principal_id: principal.clone(),
+                            role_id,
+                            expected_revision: 0,
+                            expires_at: None,
+                        },
+                    ] {
+                        super::policy::apply_policy_in_transaction(
+                            connection, &identity, &mutation, now,
+                        )?;
                     }
                     for registration in registrations.unwrap_or_default() {
                         // The Console ships with Trellis and asks only for the
                         // built-in APIs' capabilities, all allowed without asking.
                         let mut registration = registration.clone();
                         if registration.client_id == CONSOLE_CLIENT_ID {
-                            for (apis, _) in builtin_package_evidence()? {
-                                for api in apis {
-                                    registration.implied_capabilities.extend(
-                                        connection
-                                            .prepare(
-                                                "SELECT capability_id \
-                                                FROM auth_capability_identities \
-                                                WHERE api_id=?1 AND state='active' \
-                                                AND kind='capability'",
-                                            )?
-                                            .query_map([api], |row| row.get::<_, String>(0))?
-                                            .collect::<rusqlite::Result<Vec<_>>>()?,
-                                    );
-                                }
-                            }
-                            registration.implied_capabilities.sort();
+                            registration.implied_capabilities = everything.clone();
                         }
                         let registration = &registration;
                         self.register_client_in_transaction(

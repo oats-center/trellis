@@ -54,6 +54,32 @@ fn the_default_administrator_holds_administration_without_grants_and_cannot_lose
         .read(|connection| super::super::policy::entitlements(connection, &f.admin, None, NOW))
         .unwrap();
     for administration in Administration::ALL {
+        assert!(held[administration.capability_id()]
+            .sources
+            .contains(&"administrator".to_string()));
+    }
+    // Taking away the Administrator role leaves administration in place.
+    let assignment = held[Administration::ManageRoles.capability_id()]
+        .sources
+        .iter()
+        .find_map(|source| source.strip_prefix("role:"))
+        .unwrap()
+        .to_owned();
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::RoleRevoke {
+            principal_id: f.admin.clone(),
+            role_id: assignment,
+            expected_revision: 1,
+        },
+        NOW,
+    );
+    let held = f
+        .store
+        .read(|connection| super::super::policy::entitlements(connection, &f.admin, None, NOW))
+        .unwrap();
+    for administration in Administration::ALL {
         assert_eq!(
             held[administration.capability_id()].sources,
             ["administrator"]

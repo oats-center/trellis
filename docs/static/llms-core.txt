@@ -612,7 +612,7 @@ presentation. Signed session authority has a shared 64 KiB issuer,
 verification, and parsing budget.
 
 Configured implied consent applies only to registered browser bindings and their
-bounded capability subset. Native and Device Code clients require explicit user
+bounded capability subset; a listed group allows its current members. Native and Device Code clients require explicit user
 approval even when registered, and Device Code confirmation remains mandatory.
 
 Provisional CIMD client intake shares a 128-client/16 MiB budget and a
@@ -654,7 +654,7 @@ required/optional selections; there is no separate privilege request. Optional
 administration is never preselected or remembered. Delegating one to an app has
 two safeguards, on by default under `[auth.administration]`: a separate consent
 confirmation and registered clients only. The initialized administrator holds
-all six inherently. Localhost or
+all six inherently, and everything else through an editable Administrator role. Localhost or
 development mode establishes no trust, and application/OAuth origins remain
 isolated.
 

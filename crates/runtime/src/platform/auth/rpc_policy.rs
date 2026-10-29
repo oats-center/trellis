@@ -809,16 +809,21 @@ pub(super) fn read_effective_access(
                             },
                             role_id,
                             grant_id: if origin == "direct" {
+                                // Its own grant, or the grant of a group that includes it.
                                 let grant_id: String = connection.query_row(
-                                    "SELECT grant_id FROM auth_direct_capabilities \
-                                    WHERE principal_id=?1 \
-                                    AND capability_id=?2 \
-                                    AND capability_generation=?3",
-                                    params![
-                                        principal_id,
-                                        id,
-                                        definition.identity.identity_generation.0 .0
-                                    ],
+                                    "SELECT d.grant_id FROM auth_direct_capabilities d \
+                                    JOIN auth_capability_identities c \
+                                    ON c.capability_id=d.capability_id \
+                                    AND c.identity_generation=d.capability_generation \
+                                    AND c.state='active' \
+                                    WHERE d.principal_id=?1 \
+                                    AND (d.capability_id=?2 OR EXISTS(SELECT 1 \
+                                    FROM auth_capability_group_members m \
+                                    WHERE m.group_id=d.capability_id \
+                                    AND m.group_generation=d.capability_generation \
+                                    AND m.capability_id=?2)) \
+                                    ORDER BY d.capability_id=?2 DESC LIMIT 1",
+                                    params![principal_id, id],
                                     |row| row.get(0),
                                 )?;
                                 Some(grant_id.parse().map_err(|_| AuthError::Unavailable)?)

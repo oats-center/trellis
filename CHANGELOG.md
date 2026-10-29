@@ -8,6 +8,27 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- A new installation gives its administrator an ordinary Administrator role
+  holding the built-in APIs' groups (and any capability no group includes)
+  instead of a direct grant of every capability. Giving someone that role
+  makes them an administrator. The Console's "Allowed without asking" list is
+  made of the same groups, and a group on that list allows its members.
+- Console permission pickers show what is already covered: a capability in a
+  chosen or held group shows "Included in …", something the person already
+  has shows "Already has this", and a partly covered group shows how much of it
+  is included. Choosing a group drops its separately chosen members.
+
+### Fixed
+
+- Giving a person a role or permission from their page in the Console failed
+  every time.
+- Reading the effective access of someone who holds a group by direct grant
+  failed.
+- The users list showed "Administrator" twice for an administrator holding the
+  Administrator role.
+
 ## [0.100.0-rc.14] - 2026-10-29
 
 ### Added

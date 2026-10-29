@@ -686,7 +686,7 @@ impl SqliteAuthorizationStore {
             // Registered browser trust cannot stand in for a native user's
             // explicit approval, including Device Authorization Grant consent.
             let implied: Vec<String> = if kind == "browser" {
-                decode(&implied)?
+                super::policy::with_members(connection, decode(&implied)?)?
             } else {
                 Vec::new()
             };

@@ -50,11 +50,17 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       const title = `Console role ${ulid()}`;
       await page.goto(`${runtime.trellisUrl}/console/admin/roles/new`);
       await page.getByLabel("Title", { exact: true }).fill(title);
-      await page
-        .getByRole("group", { name: "Auth", exact: true })
-        .getByRole("button", { name: /^More/ })
-        .click();
-      await page.getByRole("checkbox", { name: /See your profile/ }).check();
+      const auth = page.getByRole("group", { name: "Auth", exact: true });
+      const account = auth.getByRole("checkbox", { name: /^Your account/ });
+      const profile = auth.getByRole("checkbox", { name: /See your profile/ });
+      await account.check();
+      await auth.getByRole("button", { name: /^More/ }).click();
+      assert.equal(await profile.isChecked(), true);
+      assert.equal(await profile.isDisabled(), true);
+      await account.uncheck();
+      await profile.check();
+      assert.equal(await account.isChecked(), false);
+      await auth.getByText(/1 of \d+ already included/).waitFor();
       await page
         .getByRole("button", { name: "Save role", exact: true })
         .click();

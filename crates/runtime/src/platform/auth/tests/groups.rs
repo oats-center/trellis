@@ -167,3 +167,37 @@ fn a_member_s_new_grants_do_not_reopen_an_approved_group() {
     accept(&f.store, &f.admin, &reworded, false, NOW + 1);
     assert_eq!(app_holds(&f, grant, NOW + 1), std::slice::from_ref(&f.read));
 }
+
+#[test]
+fn effective_access_traces_a_group_s_members_to_the_group_s_grant() {
+    let f = fixture();
+    accept(&f.store, &f.admin, &grouped(&["read", "write"]), false, NOW);
+    let user = create_user(&f.store, &f.admin, NOW);
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::CapabilityGrant {
+            principal_id: user.clone(),
+            capability_id: editor(&f),
+            expected_revision: 0,
+            expires_at: None,
+        },
+        NOW,
+    );
+    let access = f
+        .store
+        .transaction(|connection| {
+            super::super::rpc_policy::read_effective_access(connection, &user, NOW)
+        })
+        .unwrap();
+    let grant = |capability: &str| {
+        access
+            .capabilities
+            .iter()
+            .find(|held| held.definition.identity.capability_id.as_ref() == capability)
+            .and_then(|held| held.sources[0].grant_id)
+            .unwrap()
+    };
+    assert_eq!(grant(&f.read), grant(&editor(&f)));
+    assert_eq!(grant(&f.write), grant(&editor(&f)));
+}

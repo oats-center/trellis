@@ -727,7 +727,12 @@ async fn approve_without_asking(
                 )
                 .optional()?;
             implied
-                .map(|implied| super::super::sqlite::decode(&implied))
+                .map(|implied| {
+                    super::super::policy::with_members(
+                        connection,
+                        super::super::sqlite::decode(&implied)?,
+                    )
+                })
                 .transpose()
         })
     })

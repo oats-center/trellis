@@ -34,6 +34,8 @@
   let roles = $state.raw<readonly apis.auth.RolesListOutput["items"][number][]>(
     [],
   );
+  // Everything the person has, however they have it.
+  let held = $state.raw<readonly string[]>([]);
   let capabilityId = $state("");
   let roleId = $state("");
   let expiresAt = $state("");
@@ -81,6 +83,18 @@
       if (!scope.isCurrent(token)) return;
       const failed = results.find((result) => !result.complete);
       if (failed) throw failed.error;
+      const access = canPerform(
+        authority.authority,
+        "principalsEffectiveAccess",
+      )
+        ? await trellis.principalsEffectiveAccess({ principalId: id }).orThrow()
+        : null;
+      if (!scope.isCurrent(token)) return;
+      held = access
+        ? access.capabilities.map(
+            (item) => item.definition.identity.capabilityId,
+          )
+        : results[0].items.map((grant) => grant.capability.capabilityId);
       grants = results[0].items;
       assignments = results[1].items;
       capabilities = results[2].items;
@@ -115,16 +129,6 @@
       : "this access";
   }
 
-  // Permissions not yet given directly, in the same picker as roles.
-  const grantable = $derived(
-    capabilities.filter(
-      (item) =>
-        !grants.some(
-          (grant) =>
-            grant.capability.capabilityId === item.identity.capabilityId,
-        ),
-    ),
-  );
   let adding = $state(false);
   let picks = $state<string[]>([]);
 
@@ -150,7 +154,7 @@
             apis.auth.API.actions["rpc:CapabilityGrants.Grant"].input.decode({
               principalId: id,
               capabilityId: capability,
-              expectedRevision: 0n,
+              expectedRevision: "0",
               idempotencyKey: ulid(),
               ...expiry,
             }),
@@ -220,7 +224,7 @@
             .roleAssignmentsRevoke(
               apis.auth.API.actions["rpc:RoleAssignments.Revoke"].input.decode({
                 assignmentId: existing.assignmentId,
-                expectedRevision: existing.revision,
+                expectedRevision: String(existing.revision),
                 idempotencyKey: key,
               }),
             )
@@ -231,7 +235,7 @@
               apis.auth.API.actions["rpc:RoleAssignments.Assign"].input.decode({
                 principalId: id,
                 roleId: selected,
-                expectedRevision: 0n,
+                expectedRevision: "0",
                 idempotencyKey: key,
                 ...expiry,
               }),
@@ -243,7 +247,7 @@
           .capabilityGrantsRevoke(
             apis.auth.API.actions["rpc:CapabilityGrants.Revoke"].input.decode({
               grantId: existing.grantId,
-              expectedRevision: existing.revision,
+              expectedRevision: String(existing.revision),
               idempotencyKey: key,
             }),
           )
@@ -254,7 +258,7 @@
             apis.auth.API.actions["rpc:CapabilityGrants.Grant"].input.decode({
               principalId: id,
               capabilityId: selected,
-              expectedRevision: 0n,
+              expectedRevision: "0",
               idempotencyKey: key,
               ...expiry,
             }),
@@ -282,6 +286,7 @@
     scope.setKey(`user-access:${principalId}`);
     untrack(() => {
       grants = [];
+      held = [];
       assignments = [];
       capabilities = [];
       roles = [];
@@ -411,7 +416,8 @@
       {#if adding}
         <div class="mt-3 space-y-3">
           <PermissionGroups
-            capabilities={grantable}
+            {capabilities}
+            {held}
             bind:selected={picks}
             disabled={busy || uncertain || !!error}
           />

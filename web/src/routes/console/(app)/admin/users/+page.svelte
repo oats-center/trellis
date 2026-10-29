@@ -330,8 +330,10 @@
           {#each visibleUsers as user (user.principalId)}
             {@const active = user.account?.principal.enabled ?? true}
             {@const roles = [
-              ...(admins.has(user.principalId) ? ["Administrator"] : []),
-              ...(rolesByUser.get(user.principalId) ?? []),
+              ...new Set([
+                ...(admins.has(user.principalId) ? ["Administrator"] : []),
+                ...(rolesByUser.get(user.principalId) ?? []),
+              ]),
             ]}
             <tr class="users-row">
               <td class="max-w-0">

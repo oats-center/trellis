@@ -386,9 +386,11 @@ registers it against the configured Console application origin using the
 ordinary registered-client store, then exposes its public client ID and validated
 callback URI through Console configuration. Operators do not manually register
 the bundled Console. Its client ID is neither a deployment ID nor a secret.
-Initialization registers it with every capability of the built-in APIs, the
-only ones it asks for, allowed without asking. A registered browser client
-whose implied capabilities cover everything it requests that the user holds
+Initialization registers it with everything in the built-in APIs, the only
+ones it asks for, allowed without asking: each group, and each capability no
+group includes. A listed group allows its current members. A registered
+browser client whose implied capabilities cover everything it requests that
+the user holds
 signs in without a consent page, administration included: the administrator
 who allowed it confirmed it. The user's own holdings remain the limit; when
 they lack something the client requires, or it asks for anything not implied,
@@ -870,11 +872,12 @@ The initial administrator is created through the local production bootstrap
 boundary and cannot be disabled; it holds every administrative capability
 inherently. Fresh initialization accepts any missing Trellis-owned built-in APIs
 from the production Platform, Health, Jobs, and Events participant descriptors
-and grants the administrator each currently accepted active capability of those
-APIs (Auth, Core, State, Health, Jobs, and Events). These are explicit
-whole-capability policy grants committed atomically with Console/CLI
-registration, not wildcard authority. Initialization replay neither grants
-capabilities added later nor overwrites registered clients. Domain APIs are
+and creates an ordinary, editable Administrator role holding everything in those
+APIs (Auth, Core, State, Health, Jobs, and Events): each group, and each
+capability no group includes. The administrator is assigned that role in the
+same transaction as Console/CLI registration; it is not wildcard authority, and
+removing it leaves the administrator's inherent administration. Initialization
+replay neither changes the role nor overwrites registered clients. Domain APIs are
 excluded. Application connections still require their actual selected and
 approved capabilities. Passwords use Argon2; password change/reset retires the
 affected login families in the same transaction. Authentication failures do not

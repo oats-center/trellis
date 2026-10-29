@@ -8,15 +8,56 @@
   type Props = {
     capabilities: readonly Capability[];
     selected: string[];
+    /** What the person already has some other way; shown, not chosen. */
+    held?: readonly string[];
     disabled?: boolean;
   };
 
   let {
     capabilities,
     selected = $bindable(),
+    held = [],
     disabled = false,
   }: Props = $props();
   let expanded = $state<string[]>([]);
+
+  // A chosen or held group brings its members along.
+  const groupOf = $derived.by(() => {
+    const groups = new Map<string, string>();
+    for (const capability of capabilities)
+      if (
+        capability.kind === "group" &&
+        (selected.includes(capability.identity.capabilityId) ||
+          held.includes(capability.identity.capabilityId))
+      )
+        for (const member of capability.members)
+          if (!groups.has(member)) groups.set(member, capability.title);
+    return groups;
+  });
+
+  function status(item: Capability): {
+    checked: boolean;
+    fixed: boolean;
+    note?: string;
+  } {
+    const id = item.identity.capabilityId;
+    if (selected.includes(id)) return { checked: true, fixed: false };
+    if (held.includes(id))
+      return { checked: true, fixed: true, note: "Already has this" };
+    const group = groupOf.get(id);
+    if (group)
+      return { checked: true, fixed: true, note: `Included in ${group}` };
+    return { checked: false, fixed: false };
+  }
+
+  function included(item: Capability): number {
+    return item.members.filter(
+      (member) =>
+        selected.includes(member) ||
+        held.includes(member) ||
+        groupOf.has(member),
+    ).length;
+  }
 
   // One section per API. Its groups are the usual choice; single
   // permissions wait under "More" for one-off needs.
@@ -60,35 +101,45 @@
       .sort((a, b) => a.title.localeCompare(b.title));
   });
 
-  function toggle(id: string, on: boolean): void {
+  function toggle(item: Capability, on: boolean): void {
+    const id = item.identity.capabilityId;
+    // Choosing a group makes its separately chosen members redundant.
     selected = on
-      ? [...selected, id]
+      ? [...selected.filter((value) => !item.members.includes(value)), id]
       : selected.filter((value) => value !== id);
   }
 </script>
 
 {#snippet choice(item: Capability, inset: boolean)}
+  {@const current = status(item)}
+  {@const some = item.kind === "group" ? included(item) : 0}
   <label
     class={[
-      "flex cursor-pointer items-start gap-3 py-2 pr-4",
+      "flex items-start gap-3 py-2 pr-4",
+      current.fixed ? "cursor-default" : "cursor-pointer",
       inset ? "pl-11" : "pl-4",
     ]}
   >
     <input
       type="checkbox"
       class="checkbox checkbox-sm mt-0.5"
-      checked={selected.includes(item.identity.capabilityId)}
-      {disabled}
-      onchange={(event) =>
-        toggle(item.identity.capabilityId, event.currentTarget.checked)}
+      checked={current.checked}
+      indeterminate={!current.checked && some > 0}
+      disabled={disabled || current.fixed}
+      onchange={(event) => toggle(item, event.currentTarget.checked)}
     />
     <span>
       <span class="block text-sm font-medium">{item.title}</span>
       <span class="block text-xs text-base-content/60">{item.description}</span>
-      {#if item.kind === "group"}<span
+      {#if current.note}<span class="block text-xs text-base-content/60"
+          >{current.note}</span
+        >{:else if item.kind === "group"}<span
           class="block text-xs text-base-content/60"
-          >Includes {item.members.length}
-          {item.members.length === 1 ? "permission" : "permissions"}</span
+          >{#if some && !current.checked}{some} of {item.members.length} already included{:else}Includes
+            {item.members.length}
+            {item.members.length === 1
+              ? "permission"
+              : "permissions"}{/if}</span
         >{/if}
     </span>
   </label>

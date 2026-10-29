@@ -223,6 +223,39 @@ test("B25 users list renders and exact edit reloads on query change", async () =
         state: "visible",
         timeout: 30_000,
       });
+      // A given group shows as held, along with everything it includes.
+      const auth = page.getByRole("group", { name: "Auth", exact: true });
+      const account = auth.getByRole("checkbox", { name: /^Your account/ });
+      await page
+        .getByRole("button", { name: "Add permissions", exact: true })
+        .click();
+      await account.check();
+      await page
+        .getByRole("button", { name: "Give 1 permission", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Add permissions", exact: true })
+        .click();
+      await auth.getByText("Already has this", { exact: true }).waitFor();
+      assert.equal(await account.isChecked(), true);
+      assert.equal(await account.isDisabled(), true);
+      await auth.getByRole("button", { name: /^More/ }).click();
+      const profile = auth.getByRole("checkbox", { name: /See your profile/ });
+      assert.equal(await profile.isChecked(), true);
+      assert.equal(await profile.isDisabled(), true);
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      await page
+        .getByLabel("Role to give")
+        .selectOption({ label: "Administrator" });
+      page.once("dialog", (dialog) => dialog.accept());
+      await page
+        .getByRole("button", { name: "Give role", exact: true })
+        .click();
+      await page
+        .getByRole("listitem")
+        .filter({ hasText: "Administrator" })
+        .getByRole("button", { name: "Remove", exact: true })
+        .waitFor();
       await page.goto(
         `${runtime.trellisUrl}/console/admin/users/edit?userId=${userId}`,
         {
