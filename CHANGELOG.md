@@ -20,6 +20,8 @@ and this project adheres to
 
 ### Fixed
 
+- Creating a deployment that uses an API nobody has accepted failed with only
+  "Not found". It now names the APIs to review and accept first.
 - Saving any change to a profile whose name was never chosen, such as adding
   an email on the Account page, replaced the shown name with the user ID. A
   default name is no longer stored, so it follows the username again, and

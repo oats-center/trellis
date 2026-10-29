@@ -480,6 +480,27 @@ impl SqliteAuthorizationStore {
             if input.expected_api_generations.len() != provided.len() {
                 return Err(AuthError::Conflict);
             }
+            // Its permissions only exist once each API it uses is accepted.
+            let mut unaccepted = Vec::new();
+            for api in participant.uses().keys() {
+                let accepted: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_accepted_apis WHERE api_id=?1)",
+                    [api.as_str()],
+                    |row| row.get(0),
+                )?;
+                if !accepted {
+                    unaccepted.push(api.to_string());
+                }
+            }
+            if !unaccepted.is_empty() {
+                return Err(AuthError::Invalid(format!(
+                    "This deployment uses {} {}, which {} not accepted; review and accept {} before deploying",
+                    if unaccepted.len() == 1 { "API" } else { "APIs" },
+                    unaccepted.join(", "),
+                    if unaccepted.len() == 1 { "is" } else { "are" },
+                    if unaccepted.len() == 1 { "it" } else { "them" },
+                )));
+            }
             for requested in required.iter().chain(&optional) {
                 capability(connection, requested)?;
             }

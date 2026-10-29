@@ -246,3 +246,63 @@ fn an_accepted_api_describes_its_actions_and_their_schemas() {
         .unwrap();
     assert_eq!(put.description, None);
 }
+
+#[test]
+fn deploying_a_service_that_uses_an_unaccepted_api_names_that_api() {
+    let f = fixture();
+    // An API of its own that nobody has accepted yet.
+    let source = SOURCE
+        .replace("documents", "notes")
+        .replace("Documents", "Notes")
+        .replace("Document", "Note");
+    let evidence = evidence(&source);
+    let graph = trellis_idl::compile_evidence(evidence.clone()).unwrap();
+    let api = graph
+        .root_package()
+        .apis()
+        .keys()
+        .next()
+        .unwrap()
+        .to_string();
+    let reader = graph
+        .root_package()
+        .participants()
+        .values()
+        .find(|participant| participant.name() == "Reader")
+        .unwrap();
+    let create: trellis_runtime_apis::types::AuthDeploymentCreateRequest =
+        serde_json::from_value(serde_json::json!({
+            "packageEvidence": evidence,
+            "participantId": reader.identity().as_str(),
+            "kind": "service",
+            "title": "Reader",
+            "idempotencyKey": ulid::Ulid::new().to_string()
+        }))
+        .unwrap();
+    let refused = super::super::rpc_deployments::create_deployment(
+        &f.store,
+        &mutation(&f.admin, &create),
+        &create,
+        NOW,
+    );
+    match refused {
+        Err(AuthError::Invalid(message)) => {
+            assert!(message.contains(&api), "{message}");
+            assert!(message.contains("not accepted"), "{message}");
+        }
+        other => panic!("deploying before acceptance was not explained: {other:?}"),
+    }
+    // Once the API is accepted, the same deployment goes ahead.
+    accept(&f.store, &f.admin, &source, false, NOW);
+    let create = trellis_runtime_apis::types::AuthDeploymentCreateRequest {
+        idempotency_key: ulid::Ulid::new().to_string().into(),
+        ..create
+    };
+    super::super::rpc_deployments::create_deployment(
+        &f.store,
+        &mutation(&f.admin, &create),
+        &create,
+        NOW + 1,
+    )
+    .unwrap();
+}
