@@ -6,7 +6,7 @@ publish = false
 build = "../../../crates/runtime-trellis/build.rs"
 
 [dependencies]
-trellis-rs = "0.100.0-rc.14"
+trellis-rs = "0.100.0-rc.15"
 trellis-models = "0.100.0-rc.13"
 trellis-protocol = "0.100.0-rc.13"
 serde = { version = "1.0", features = ["derive"] }

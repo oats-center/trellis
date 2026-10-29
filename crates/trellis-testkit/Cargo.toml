@@ -23,7 +23,7 @@ sha2 = { workspace = true }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 toml = "1.1.2"
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.14" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.15" }
 trellis-protocol = { path = "../protocol", version = "0.100.0-rc.13" }
 trellis-models = { path = "../models", version = "0.100.0-rc.13" }
 flate2 = "1.1.9"
@@ -34,7 +34,7 @@ ulid.workspace = true
 url = { workspace = true }
 
 [dev-dependencies]
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.14" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.15" }
 trellis-runtime-apis = { path = "../runtime-apis" }
 trellis-idl = { path = "../idl" }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

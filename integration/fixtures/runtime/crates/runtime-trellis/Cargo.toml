@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-trellis-rs = "0.100.0-rc.14"
+trellis-rs = "0.100.0-rc.15"
 trellis-models = { path = "../../../../../crates/models" }
 trellis-protocol = { path = "../../../../../crates/protocol" }
 serde = { version = "1.0", features = ["derive"] }

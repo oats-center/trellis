@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.15] - 2026-10-29
+
 ### Changed
 
 - A new installation gives its administrator an ordinary Administrator role
