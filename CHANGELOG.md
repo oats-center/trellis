@@ -28,6 +28,11 @@ and this project adheres to
   failed.
 - The users list showed "Administrator" twice for an administrator holding the
   Administrator role.
+- `trellis login`, services and devices accept the Console's address, such as
+  `https://eta.oats:3000`, not only the sign-in address. The Console names its
+  sign-in in RFC 9728 protected resource metadata, and the Rust and
+  TypeScript clients follow it. Before, the CLI reported "native OAuth trust
+  or response mismatch".
 
 ## [0.100.0-rc.14] - 2026-10-29
 

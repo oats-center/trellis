@@ -32,6 +32,35 @@ const metadataSchema = z.object({
   }),
 });
 
+/** RFC 9728 protected resource metadata, as the Console's address serves it. */
+const resourceSchema = z.object({
+  resource: z.string(),
+  authorization_servers: z.tuple([z.string()]),
+});
+
+/**
+ * The issuer an HTTPS address names (HTTP only for literal loopback hosts).
+ * A development installation's issuer carries a path (`/auth`) on the
+ * Console's origin; metadata lives under the issuer either way.
+ */
+function issuerOf(address: string): string {
+  const url = new URL(address);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  const loopback =
+    host === "localhost" ||
+    host === "::1" ||
+    (isIP(host) === 4 && host.startsWith("127."));
+  if (
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
+  )
+    throw new AuthError({ reason: "InvalidIssuer" });
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
 /** Explicit selected issuer, native transport addresses, and initial trust pin. */
 export type NativeOAuthServer = Readonly<{
   issuer: string;
@@ -48,36 +77,36 @@ export async function discoverNativeOAuth(
   options: { signal?: AbortSignal } = {},
 ): Promise<Result<NativeOAuthServer, AuthError>> {
   try {
-    const url = new URL(origin);
-    const host = url.hostname.replace(/^\[|\]$/g, "");
-    const loopback =
-      host === "localhost" ||
-      host === "::1" ||
-      (isIP(host) === 4 && host.startsWith("127."));
-    if (
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
-    )
-      throw new AuthError({ reason: "InvalidIssuer" });
-    // A development installation's issuer carries a path (`/auth`) on the
-    // Console's origin; metadata lives under the issuer either way.
-    const issuer = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
-    const response = await fetch(
-      `${issuer}/.well-known/oauth-authorization-server`,
-      {
+    const get = (url: string) =>
+      fetch(url, {
         redirect: "error",
         credentials: "omit",
         signal: AbortSignal.any([
           AbortSignal.timeout(30000),
           ...(options.signal ? [options.signal] : []),
         ]),
-      },
+      });
+    let issuer = issuerOf(origin);
+    let response = await get(
+      `${issuer}/.well-known/oauth-authorization-server`,
     );
     if (response.status === 429) throw new AuthError({ reason: "OAuthBusy" });
-    if (!response.ok) throw new AuthError({ reason: "OAuthUnavailable" });
+    if (
+      !response.ok ||
+      !response.headers.get("Content-Type")?.startsWith("application/json")
+    ) {
+      // The Console's address names its sign-in in protected resource
+      // metadata (RFC 9728), so people can log in with the address they use.
+      const named = await get(`${issuer}/.well-known/oauth-protected-resource`);
+      if (!named.ok) throw new AuthError({ reason: "OAuthUnavailable" });
+      const resource = resourceSchema.parse(await boundedJson(named));
+      if (issuerOf(resource.resource) !== issuer)
+        throw new AuthError({ reason: "InvalidIssuer" });
+      issuer = issuerOf(resource.authorization_servers[0]);
+      response = await get(`${issuer}/.well-known/oauth-authorization-server`);
+      if (response.status === 429) throw new AuthError({ reason: "OAuthBusy" });
+      if (!response.ok) throw new AuthError({ reason: "OAuthUnavailable" });
+    }
     const dpopNonce = usableNonce(response.headers.get("DPoP-Nonce"));
     const metadata = metadataSchema.parse(await boundedJson(response));
     if (metadata.issuer !== issuer)

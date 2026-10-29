@@ -211,7 +211,7 @@ hostnames, ports and certificates) and prints the matching `init` command;
 without asking, and without a terminal it fails with a message instead. `trellis-server init` creates one with chosen
 hostnames and ports. `init --dev --host <name>` creates a development
 installation other machines can use: one TLS port carries the Console,
-sign-in (issuer `https://<name>:3000/auth`) and browsers' NATS (`/nats`), so a
+sign-in and browsers' NATS (`/nats`), so a
 browser accepts one generated certificate. It is never a production setup. With no `--out`, data goes to the profile's XDG (or FHS)
 folders. `init --out <dir>` writes a self-contained bundle whose `[paths]` keep
 data, state, cache, runtime files and logs inside it; start it with
@@ -1642,8 +1642,7 @@ let mut service = connect(
 
 Discover the installation with
 `discover_accepting_certificate(issuer, &CertificateAcceptance::for_program("orders-service"))`
-(the issuer is the sign-in origin, or `https://<host>:<port>/auth` for a
-development installation). A certificate the platform trust store vouches for
+(the Console's address works; it names the sign-in issuer). A certificate the platform trust store vouches for
 needs nothing. A development installation's own certificate is accepted like a
 browser would: its issuer's SHA-256 fingerprint must match
 `TRELLIS_CERTIFICATE_FINGERPRINT`, or `TRELLIS_ACCEPT_SELF_SIGNED=1` accepts it

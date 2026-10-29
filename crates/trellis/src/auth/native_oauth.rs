@@ -40,6 +40,13 @@ struct DiscoveryDocument {
     trellis: DiscoveryTrellis,
 }
 
+/// RFC 9728 protected resource metadata, as the Console's address serves it.
+#[derive(Deserialize)]
+struct ResourceDocument {
+    resource: String,
+    authorization_servers: Vec<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DiscoveryTrellis {
@@ -66,52 +73,51 @@ pub async fn discover_native_oauth(
     selected_origin: &str,
     root_certificates: &[PathBuf],
 ) -> Result<NativeOAuthServer, NativeOAuthError> {
-    let origin = url::Url::parse(selected_origin).map_err(|_| NativeOAuthError::InvalidResponse)?;
-    let loopback = match origin.host() {
-        Some(url::Host::Domain("localhost")) => true,
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        _ => false,
-    };
-    if !(origin.scheme() == "https" || (origin.scheme() == "http" && loopback))
-        || !origin.username().is_empty()
-        || origin.password().is_some()
-        || origin.query().is_some()
-        || origin.fragment().is_some()
-    {
-        return Err(NativeOAuthError::InvalidResponse);
-    }
-    // A development installation's issuer carries a path (`/auth`) on the
-    // Console's origin; metadata lives under the issuer either way.
-    let issuer = format!(
-        "{}{}",
-        origin.origin().ascii_serialization(),
-        origin.path().trim_end_matches('/')
-    );
+    let mut issuer = issuer_of(selected_origin)?;
     let http = oauth_http_client(root_certificates)?;
-    let mut response = http
-        .get(format!("{issuer}/.well-known/oauth-authorization-server"))
-        .send()
-        .await
-        .map_err(|_| NativeOAuthError::Unavailable)?;
-    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return Err(NativeOAuthError::Busy);
-    }
-    if !response.status().is_success() {
-        return Err(NativeOAuthError::InvalidResponse);
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| NativeOAuthError::Unavailable)?
-    {
-        if bytes.len() + chunk.len() > 64 * 1024 {
+    let mut followed = false;
+    let (bytes, dpop_nonce) = loop {
+        let response = http
+            .get(format!("{issuer}/.well-known/oauth-authorization-server"))
+            .send()
+            .await
+            .map_err(|_| NativeOAuthError::Unavailable)?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(NativeOAuthError::Busy);
+        }
+        let json = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json"));
+        if response.status().is_success() && json {
+            let dpop_nonce = single_nonce(response.headers());
+            break (bounded_body(response).await?, dpop_nonce);
+        }
+        // The Console's address names its sign-in in protected resource
+        // metadata (RFC 9728), so people can log in with the address they use.
+        if followed {
             return Err(NativeOAuthError::InvalidResponse);
         }
-        bytes.extend_from_slice(&chunk);
-    }
-    let dpop_nonce = single_nonce(response.headers());
+        let response = http
+            .get(format!("{issuer}/.well-known/oauth-protected-resource"))
+            .send()
+            .await
+            .map_err(|_| NativeOAuthError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(NativeOAuthError::InvalidResponse);
+        }
+        let resource: ResourceDocument = serde_json::from_slice(&bounded_body(response).await?)
+            .map_err(|_| NativeOAuthError::InvalidResponse)?;
+        let [server] = resource.authorization_servers.as_slice() else {
+            return Err(NativeOAuthError::InvalidResponse);
+        };
+        if issuer_of(&resource.resource)? != issuer {
+            return Err(NativeOAuthError::InvalidResponse);
+        }
+        issuer = issuer_of(server)?;
+        followed = true;
+    };
     let document: DiscoveryDocument =
         serde_json::from_slice(&bytes).map_err(|_| NativeOAuthError::InvalidResponse)?;
     let metadata = document.trellis;
@@ -199,6 +205,48 @@ fn single_nonce(headers: &reqwest::header::HeaderMap) -> Option<String> {
         .ok()
         .filter(|value| !value.is_empty() && value.len() <= 1024)
         .map(str::to_owned)
+}
+
+/// The issuer an HTTPS address names (HTTP only for literal loopback hosts).
+/// A development installation's issuer carries a path (`/auth`) on the
+/// Console's origin; metadata lives under the issuer either way.
+fn issuer_of(address: &str) -> Result<String, NativeOAuthError> {
+    let origin = url::Url::parse(address).map_err(|_| NativeOAuthError::InvalidResponse)?;
+    let loopback = match origin.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    if !(origin.scheme() == "https" || (origin.scheme() == "http" && loopback))
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
+        return Err(NativeOAuthError::InvalidResponse);
+    }
+    Ok(format!(
+        "{}{}",
+        origin.origin().ascii_serialization(),
+        origin.path().trim_end_matches('/')
+    ))
+}
+
+/// Reads a discovery document of at most 64 KiB.
+async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, NativeOAuthError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| NativeOAuthError::Unavailable)?
+    {
+        if bytes.len() + chunk.len() > 64 * 1024 {
+            return Err(NativeOAuthError::InvalidResponse);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 /// Builds the non-redirecting OAuth HTTP client, trusting only `root_certificates` when given.

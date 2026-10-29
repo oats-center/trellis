@@ -24,7 +24,17 @@ pub(super) fn router(config: &RuntimeConfig) -> Result<Router, RuntimeError> {
         // Every Console user sees a banner while the installation serves its
         // own generated certificates.
         "generatedTls":crate::tls::serves_generated_certificate(config,config.http_transport())});
+    // RFC 9728: the Console's address names its sign-in, so native programs
+    // accept the address people use in a browser.
+    let resource = serde_json::json!({
+        "resource": config.public_origin(),
+        "authorization_servers": [oauth.origin],
+    });
     Ok(Router::new()
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(move || std::future::ready(axum::Json(resource.clone()))),
+        )
         .route(
             "/assets/web/runtime-config.js",
             get(move || {
