@@ -20,6 +20,7 @@ esac
 
 case "$(uname -s)/$(uname -m)" in
 Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+Linux/aarch64 | Linux/arm64) target=aarch64-unknown-linux-gnu ;;
 *)
   echo "install.sh: no prebuilt $bin for $(uname -s) $(uname -m); see https://oats-center.github.io/trellis/guides/install-trellis" >&2
   exit 1

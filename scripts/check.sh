@@ -246,12 +246,14 @@ job_images() {
   if [[ "${1:-}" != "--smoke-only" ]]; then
     # The image runs the binaries on its Debian base, so they come from the
     # same container release build the pipeline uses, not the host's debug build.
+    local goarch
+    case "$(uname -m)" in x86_64) goarch=amd64 ;; aarch64 | arm64) goarch=arm64 ;; *) goarch="$(uname -m)" ;; esac
     mkdir -p "$temp"
-    rm -rf "$temp/release" dist/native/amd64
+    rm -rf "$temp/release" "dist/native/$goarch"
     "$engine" build --file crates/runtime/Containerfile.build \
       --output "type=local,dest=$temp/release" .
-    mkdir -p dist/native/amd64
-    cp "$temp/release/trellis" "$temp/release/trellis-server" dist/native/amd64/
+    mkdir -p "dist/native/$goarch"
+    cp "$temp/release/trellis" "$temp/release/trellis-server" "dist/native/$goarch/"
     "$engine" build --file web/Containerfile --tag trellis-console-check:local .
     "$engine" build --file crates/runtime/Containerfile.release --tag trellis-smoke:test .
     "$engine" image rm trellis-console-check:local >/dev/null

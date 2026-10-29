@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Linux arm64 releases: `trellis` and `trellis-server` archives
+  (`aarch64-unknown-linux-gnu`), arm64 in the `trellis-server` and `console`
+  images, and arm64 support in `install.sh`.
+
 ### Changed
 
 - Breaking: the browser SDK's `loopbackDevelopment` option is gone. A browser

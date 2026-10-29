@@ -198,7 +198,7 @@ are not consumer dependencies.
 
 #### Installing the binaries
 
-On Linux x86_64, `curl -fsSL https://oats-center.github.io/trellis/install.sh |
+On Linux (x86_64 or arm64), `curl -fsSL https://oats-center.github.io/trellis/install.sh |
 sh -s trellis` installs the CLI and `... | sh -s trellis-server` the server,
 from the newest release into `~/.local/bin` after checking the release
 checksum (`TRELLIS_VERSION` and `TRELLIS_INSTALL_DIR` override). Both update
@@ -1534,8 +1534,8 @@ checked atomically.
 For live Node tests, `await using runtime = await TrellisTestRuntime.start()`
 from `@oatscenter/trellis-testkit` downloads the latest Trellis CLI/server
 release (newest stable, else newest prerelease; `TRELLIS_TEST_VERSION` selects
-another), verified against its published checksum, currently for Linux x86-64
-only; no installed Trellis executables or nsc are required. Use
+another), verified against its published checksum, currently for Linux
+x86-64 and arm64 only; no installed Trellis executables or nsc are required. Use
 `trellis: { source: { kind: "path", server } }`, or set `TRELLIS_TEST_SERVER_BIN`, for a prebuilt server, with
 no fallback. `restart()` retains data and identity and
 restarts the full host and broker. Stop first requests graceful host shutdown;

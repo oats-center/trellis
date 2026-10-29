@@ -467,6 +467,54 @@ jobs:
             dist/*.sha256
           retention-days: 3
 
+  # The same container release build on a native arm64 runner, for the arm64
+  # release archives and the arm64 half of the trellis-server image. Only the
+  # x86-64 build is tested.
+  build-arm64:
+    name: Build arm64 runtime binaries
+    needs: [install]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore pipeline inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          docker buildx build --builder default --pull \
+            --file crates/runtime/Containerfile.build \
+            --output "type=local,dest=$RUNNER_TEMP/release" \
+            .
+
+      - name: Stage CLI archives
+        run: |
+          set -euo pipefail
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          target="aarch64-unknown-linux-gnu"
+          mkdir -p dist
+          for binary in trellis trellis-server; do
+            archive="${binary}-${version}-${target}.tar.gz"
+            tar -C "$RUNNER_TEMP/release" -czf "dist/$archive" "$binary"
+            (cd dist && sha256sum "$archive" > "checksum-${version}-${target}-${binary}.sha256")
+          done
+
+      - name: Upload packaged CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trellis-cli-aarch64-unknown-linux-gnu
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          retention-days: 3
+
   rust:
     name: Rust tests
     needs: [install, build, build-fixtures]
@@ -928,7 +976,7 @@ jobs:
 
   verify-images:
     name: Build verified ${{ matrix.image }} image
-    needs: [install, build]
+    needs: [install, build, build-arm64]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -958,7 +1006,8 @@ jobs:
         if: matrix.image == 'trellis-server'
         uses: actions/download-artifact@v4
         with:
-          name: trellis-cli-x86_64-unknown-linux-gnu
+          pattern: trellis-cli-*-unknown-linux-gnu
+          merge-multiple: true
           path: ${{ runner.temp }}/native-runtime
 
       - name: Stage native binaries for image assembly
@@ -966,11 +1015,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/native/amd64
-          for binary in trellis trellis-server; do
-            tar --no-same-owner -xzf "$RUNNER_TEMP/native-runtime/${binary}-"[0-9]*-x86_64-unknown-linux-gnu.tar.gz \
-              -C dist/native/amd64 "$binary"
+          for pair in amd64:x86_64 arm64:aarch64; do
+            mkdir -p "dist/native/${pair%%:*}"
+            for binary in trellis trellis-server; do
+              tar --no-same-owner -xzf "$RUNNER_TEMP/native-runtime/${binary}-"[0-9]*-"${pair#*:}"-unknown-linux-gnu.tar.gz \
+                -C "dist/native/${pair%%:*}" "$binary"
+            done
           done
+
+      # Each image's arm64 half runs a few package and file commands under
+      # emulation; nothing is compiled there.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -980,7 +1038,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.file }}
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           outputs: type=oci,dest=/tmp/${{ matrix.image }}.tar
           build-args: |
             TRELLIS_VERSION=${{ github.ref_name }}
@@ -1064,6 +1122,7 @@ jobs:
       - testkit-tests
       - rust-testkit-consumer
       - typescript-testkit-package
+      - build-arm64
       - verify-images
     if: always()
     runs-on: ubuntu-latest
@@ -1229,10 +1288,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download the CLI archive
+      - name: Download the CLI archives
         uses: actions/download-artifact@v4
         with:
-          name: trellis-cli-x86_64-unknown-linux-gnu
+          pattern: trellis-cli-*-unknown-linux-gnu
+          merge-multiple: true
           path: dist
 
       - name: Download release notes

@@ -14,7 +14,7 @@ deploying and upgrading services, registering apps and reviewing their APIs.
 
 ## The one-line installer
 
-On Linux x86_64, these install the newest release of each into `~/.local/bin`:
+On Linux, x86_64 or arm64, these install the newest release of each into `~/.local/bin`:
 
 ```sh
 curl -fsSL https://oats-center.github.io/trellis/install.sh | sh -s trellis-server
@@ -31,11 +31,11 @@ Then [start Trellis](/guides/starting-trellis).
 
 Each [GitHub release](https://github.com/oats-center/trellis/releases) carries
 a `trellis-server` and a `trellis` archive, each with a checksum file. Linux
-x86_64 is the only platform with a download today.
+x86_64 and arm64 have downloads today.
 
 ```sh
 version=0.100.0-rc.13
-target=x86_64-unknown-linux-gnu
+target=x86_64-unknown-linux-gnu # or aarch64-unknown-linux-gnu
 base=https://github.com/oats-center/trellis/releases/download/v$version
 for bin in trellis-server trellis; do
   curl -LO "$base/$bin-$version-$target.tar.gz"
@@ -63,7 +63,8 @@ others.
 ## The container image
 
 Every release is also published as `ghcr.io/oats-center/trellis-server`, tagged
-with its version (`v0.100.0-rc.13`) and `latest`. The image's entry point is
+with its version (`v0.100.0-rc.13`) and `latest`, for linux/amd64 and
+linux/arm64. The image's entry point is
 `trellis-server`. It also contains the `trellis` CLI and a checksum-verified
 `nats-server` at `/usr/local/bin/nats-server`.
 [Run Trellis in production](/guides/running-trellis/production) has full
