@@ -21,7 +21,7 @@ it warns that it doesn't know who issued the certificate; check that the
 issuer's SHA-256 fingerprint matches the one `trellis-server init` printed, and
 accept it. Nothing gets installed on the other machine.
 
-The CLI does the same check. `trellis login https://eta.oats:3000/auth` shows
+The CLI does the same check. `trellis login https://eta.oats:3000` shows
 the fingerprint, asks whether to accept it, and remembers the answer.
 
 Services and devices do the same the first time they connect: started from a

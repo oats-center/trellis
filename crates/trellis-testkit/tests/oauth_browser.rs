@@ -8,9 +8,11 @@ use trellis_testkit::TrellisTestRuntime;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    // The Console's address, as people type it, leads to its sign-in.
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
+    assert_eq!(server.issuer, runtime.oauth_origin().trim_end_matches('/'));
     let native = NativeOAuthClient::open(
         runtime.workdir().join("browser-admin"),
         NativeCredentialScope {

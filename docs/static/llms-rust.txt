@@ -84,8 +84,7 @@ let mut service = connect(
 
 Discover the installation with
 `discover_accepting_certificate(issuer, &CertificateAcceptance::for_program("orders-service"))`
-(the issuer is the sign-in origin, or `https://<host>:<port>/auth` for a
-development installation). A certificate the platform trust store vouches for
+(the Console's address works; it names the sign-in issuer). A certificate the platform trust store vouches for
 needs nothing. A development installation's own certificate is accepted like a
 browser would: its issuer's SHA-256 fingerprint must match
 `TRELLIS_CERTIFICATE_FINGERPRINT`, or `TRELLIS_ACCEPT_SELF_SIGNED=1` accepts it

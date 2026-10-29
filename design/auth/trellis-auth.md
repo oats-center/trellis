@@ -239,6 +239,13 @@ Portal app its base. Clients fetch metadata at `<issuer>/.well-known/...` and
 accept an issuer with a path when it is canonical. Production configuration
 never takes this path.
 
+In every mode the Console origin serves RFC 9728 protected resource metadata
+(`/.well-known/oauth-protected-resource`) naming its one authorization server.
+Native discovery given the Console's address, which answers authorization
+server metadata with no JSON document, follows that single named issuer once
+and then validates it as usual. The Console's own TLS trust authenticates the
+pointer, so people sign in with the address they use in a browser.
+
 Request admission budgets each client address, and additionally each browser
 `Origin` when the header is present. Requests without `Origin` (native token
 clients, navigations, asset loads) share no common budget. Expired budget

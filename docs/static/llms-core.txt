@@ -205,7 +205,7 @@ hostnames, ports and certificates) and prints the matching `init` command;
 without asking, and without a terminal it fails with a message instead. `trellis-server init` creates one with chosen
 hostnames and ports. `init --dev --host <name>` creates a development
 installation other machines can use: one TLS port carries the Console,
-sign-in (issuer `https://<name>:3000/auth`) and browsers' NATS (`/nats`), so a
+sign-in and browsers' NATS (`/nats`), so a
 browser accepts one generated certificate. It is never a production setup. With no `--out`, data goes to the profile's XDG (or FHS)
 folders. `init --out <dir>` writes a self-contained bundle whose `[paths]` keep
 data, state, cache, runtime files and logs inside it; start it with
