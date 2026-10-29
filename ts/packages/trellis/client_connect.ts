@@ -40,7 +40,6 @@ export type ClientAuthOptions = {
   /** Local multi-account slot; defaults to the registered client ID. */
   credentialHandle?: string;
   redirectTo: string;
-  loopbackDevelopment?: boolean;
   currentUrl?: string;
 };
 /** Required authorization redirect, returned to the application's own navigation owner. */
@@ -119,7 +118,6 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
             issuer: args.trellisUrl,
             clientId: args.auth.clientId,
             credentialHandle: args.auth.credentialHandle ?? args.auth.clientId,
-            loopbackDevelopment: args.auth.loopbackDevelopment,
           })
         ).take();
         if (isErr(opened)) return Result.err(opened.error);

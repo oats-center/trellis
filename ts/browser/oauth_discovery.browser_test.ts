@@ -69,7 +69,6 @@ test("first-contact browser discovery does not require a registered application 
                 issuer,
                 clientId: "https://new-app.example/oauth-client.json",
                 credentialHandle: "first-contact",
-                loopbackDevelopment: true,
               })
             ).unwrapOrElse((error) => {
               throw error;

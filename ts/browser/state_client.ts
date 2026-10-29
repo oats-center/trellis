@@ -21,7 +21,6 @@ export async function connect(issuer: string, clientId: string) {
       auth: {
         clientId,
         redirectTo: `${location.origin}/callback`,
-        loopbackDevelopment: true,
       },
     })
   ).orThrow();

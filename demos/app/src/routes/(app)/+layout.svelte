@@ -15,7 +15,6 @@
   auth={{
     clientId: apps.App.request.id,
     redirectTo: new URL(resolve("/inspection"), page.url.origin).href,
-    loopbackDevelopment: true,
   }}
 >
   {#snippet loading()}

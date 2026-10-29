@@ -50,7 +50,6 @@ async function connect() {
       clientId: config.clientId,
       credentialHandle: config.credentialHandle,
       redirectTo: `${location.origin}/callback`,
-      loopbackDevelopment: true,
     },
   }).orThrow();
 }

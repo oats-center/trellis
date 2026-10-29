@@ -4,7 +4,6 @@ type RuntimeAppConfig = {
   authUrl: string;
   clientId: string;
   callbackUri: string;
-  loopbackDevelopment: boolean;
 };
 
 function readRuntimeConfig(): RuntimeAppConfig {
@@ -18,8 +17,7 @@ function readRuntimeConfig(): RuntimeAppConfig {
     typeof config.authUrl !== "string" ||
     typeof config.clientId !== "string" ||
     !config.clientId ||
-    typeof config.callbackUri !== "string" ||
-    typeof config.loopbackDevelopment !== "boolean"
+    typeof config.callbackUri !== "string"
   )
     throw new Error("Console OAuth configuration is missing or invalid");
   const callback = new URL(config.callbackUri);
@@ -61,9 +59,6 @@ export const APP_CONFIG: RuntimeAppConfig = {
   get callbackUri() {
     return readRuntimeConfig().callbackUri;
   },
-  get loopbackDevelopment() {
-    return readRuntimeConfig().loopbackDevelopment;
-  },
 };
 
 /** The Console's OAuth identity; its generated request already asks for administration optionally. */
@@ -71,7 +66,6 @@ export function consoleAuthOptions(): ClientAuthOptions {
   return {
     clientId: APP_CONFIG.clientId,
     redirectTo: APP_CONFIG.callbackUri,
-    loopbackDevelopment: APP_CONFIG.loopbackDevelopment,
   };
 }
 

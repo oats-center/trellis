@@ -17,10 +17,7 @@ pub(super) fn router(config: &RuntimeConfig) -> Result<Router, RuntimeError> {
         .resolve_oauth_listener()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let base = serde_json::json!({"authUrl":oauth.origin,"clientId":super::auth::CONSOLE_CLIENT_ID,
-        "callbackUri":registration.redirect_uris[0],"loopbackDevelopment":matches!(
-            oauth.transport,
-            crate::config::ListenerTransport::LoopbackDevelopment
-        ),
+        "callbackUri":registration.redirect_uris[0],
         // Every Console user sees a banner while the installation serves its
         // own generated certificates.
         "generatedTls":crate::tls::serves_generated_certificate(config,config.http_transport())});

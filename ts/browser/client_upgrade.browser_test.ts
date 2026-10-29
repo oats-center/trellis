@@ -203,7 +203,6 @@ test("browser consent renewal and incompatible API recovery retain the authentic
                     issuer,
                     clientId,
                     credentialHandle: clientId,
-                    loopbackDevelopment: true,
                   })
                 ).unwrapOrElse((error) => {
                   throw error;
@@ -262,7 +261,6 @@ test("browser consent renewal and incompatible API recovery retain the authentic
                 const auth = {
                   clientId,
                   redirectTo: `${origin}/callback`,
-                  loopbackDevelopment: true,
                 };
                 if (variant === "breaking") {
                   const client = (

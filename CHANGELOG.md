@@ -10,6 +10,10 @@ and this project adheres to
 
 ### Changed
 
+- Breaking: the browser SDK's `loopbackDevelopment` option is gone. A browser
+  app signs in over plain HTTP whenever its Trellis address is on this
+  machine (`localhost`, `127.0.0.1` or `[::1]`), and only over HTTPS
+  otherwise; remove the option from `TrellisClient.connect` calls.
 - The Console's Resources page lists all storage by default. Unused storage
   is set apart above it, with a count and what deleting means, so it can be
   deleted from one place.

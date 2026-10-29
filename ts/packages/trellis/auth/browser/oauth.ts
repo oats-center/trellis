@@ -112,10 +112,10 @@ export class BrowserOAuthClient {
     issuer: string;
     clientId: string;
     credentialHandle: string;
-    loopbackDevelopment?: boolean;
   }): Promise<Result<BrowserOAuthClient, AuthError>> {
     try {
       const issuer = new URL(options.issuer);
+      // Plain HTTP only reaches this machine, which browsers already trust.
       const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
         issuer.hostname,
       );
@@ -125,11 +125,7 @@ export class BrowserOAuthClient {
         issuer.hash ||
         issuer.search ||
         (issuer.protocol !== "https:" &&
-          !(
-            options.loopbackDevelopment &&
-            loopback &&
-            issuer.protocol === "http:"
-          ))
+          !(loopback && issuer.protocol === "http:"))
       )
         return err(new AuthError({ reason: "InvalidIssuer" }));
       const response = await fetch(
