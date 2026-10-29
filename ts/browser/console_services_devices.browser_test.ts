@@ -101,8 +101,8 @@ test("B02 installed service resources render from real evidence", async () => {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
-        await page.getByRole("button", { name: "All", exact: true }).click();
         const resourceRows = page
+          .getByRole("region", { name: "All storage" })
           .locator("tbody tr")
           .filter({ hasText: seeded.displayName });
         await resourceRows.first().waitFor({
