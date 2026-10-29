@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.17] - 2026-10-29
+
 ### Added
 
 - Linux arm64 releases: `trellis` and `trellis-server` archives
