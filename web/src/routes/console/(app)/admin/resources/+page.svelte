@@ -27,8 +27,7 @@
   type Resource = apis.auth.ResourcesListOutput["items"][number];
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
-  const scope = new RequestScope("resources:detached");
-  let filter = $state<"detached" | "all">("detached");
+  const scope = new RequestScope("resources");
   let open = $state<string | null>(null);
   const KINDS: Record<string, string> = {
     kv: "Key-value store",
@@ -50,6 +49,9 @@
     );
   }
   let resources = $state.raw<Resource[]>([]);
+  /** Every unused allocation, so each one can be decided on in one place. */
+  let unused = $state.raw<readonly Resource[]>([]);
+  let unusedComplete = $state(true);
   let history = $state(resetCursorHistory());
   let nextCursor = $state<string>();
   let loading = $state(true);
@@ -68,39 +70,40 @@
   async function load(pageHistory: CursorHistory = history): Promise<void> {
     if (authorityState !== "ready" || !canRead) return;
     const token = scope.begin();
-    const state = filter;
     loading = true;
     readError = null;
     try {
-      const result = await trellis
-        .resourcesList(
-          {
-            page: tablePage(pageHistory.cursor),
-            ...(state === "detached" ? { state: "detached" as const } : {}),
-          },
-          { timeout: 10_000 },
-        )
-        .orThrow();
+      const [result, detached] = await Promise.all([
+        trellis
+          .resourcesList(
+            { page: tablePage(pageHistory.cursor) },
+            { timeout: 10_000 },
+          )
+          .orThrow(),
+        traverseAll(async (page) => {
+          const response = await trellis
+            .resourcesList(
+              { page, state: "detached" as const },
+              { timeout: 10_000 },
+            )
+            .orThrow();
+          return { items: response.items, cursor: response.page.nextCursor };
+        }),
+      ]);
       if (!scope.isCurrent(token)) return;
+      if (!detached.complete && detached.items.length === 0)
+        throw detached.error;
       resources = result.items;
       nextCursor = result.page.nextCursor;
       history = pageHistory;
+      unused = detached.items;
+      unusedComplete = detached.complete;
     } catch (cause) {
       if (scope.isCurrent(token))
         readError = projectConsoleError(cause).message;
     } finally {
       if (scope.settle(token)) loading = false;
     }
-  }
-
-  function changeFilter(next: "detached" | "all"): void {
-    if (next === filter || busy) return;
-    filter = next;
-    scope.setKey(`resources:${next}`);
-    resources = [];
-    nextCursor = undefined;
-    history = resetCursorHistory();
-    void load();
   }
 
   async function remove(resource: Resource): Promise<void> {
@@ -190,6 +193,69 @@
   onDestroy(() => scope.dispose());
 </script>
 
+{#snippet nameCell(resource: Resource)}
+  <button
+    type="button"
+    class="text-left"
+    aria-expanded={open === resource.resourceId}
+    onclick={() =>
+      (open = open === resource.resourceId ? null : resource.resourceId)}
+  >
+    <span class="block font-medium hover:underline"
+      >{humanizeName(resource.localName)}</span
+    >
+  </button>
+  <span class="block text-xs text-base-content/60"
+    >{KINDS[resource.kind] ?? humanizeName(resource.kind)} ·
+    <span class="trellis-identifier text-[0.7rem]">{resource.resourceId}</span
+    ></span
+  >
+{/snippet}
+
+{#snippet ownerCell(resource: Resource)}
+  <span class="block"
+    >{ownerNames.get(resource.ownerId) ??
+      humanizeName(resource.participantId ?? resource.clientId ?? "—")}</span
+  >
+  <span class="block text-xs text-base-content/60"
+    >{resource.ownerKind === "user" ? "Person" : "Service"}</span
+  >
+{/snippet}
+
+{#snippet details(resource: Resource, columns: number)}
+  <tr class="bg-base-200/40">
+    <td colspan={columns}>
+      <dl class="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[max-content_1fr]">
+        <dt class="text-base-content/60">Type</dt>
+        <dd>{KINDS[resource.kind] ?? humanizeName(resource.kind)}</dd>
+        <dt class="text-base-content/60">Name in its program</dt>
+        <dd><code>{resource.localName}</code></dd>
+        <dt class="text-base-content/60">Owner</dt>
+        <dd>
+          {ownerNames.get(resource.ownerId) ?? resource.ownerId}
+          <span class="text-base-content/60"
+            >· {resource.ownerKind === "user" ? "Person" : "Service"}</span
+          >
+        </dd>
+        {#if resource.participantId}
+          <dt class="text-base-content/60">Program</dt>
+          <dd><code>{resource.participantId}</code></dd>
+        {/if}
+        {#if resource.clientId}
+          <dt class="text-base-content/60">App</dt>
+          <dd><code>{resource.clientId}</code></dd>
+        {/if}
+        {#if resource.browserOrigin}
+          <dt class="text-base-content/60">Web address</dt>
+          <dd>{resource.browserOrigin}</dd>
+        {/if}
+        <dt class="text-base-content/60">Changes</dt>
+        <dd>{resource.revision}</dd>
+      </dl>
+    </td>
+  </tr>
+{/snippet}
+
 <section class="space-y-5">
   <PageToolbar
     title="Resources"
@@ -211,24 +277,60 @@
       >{readError} Deleting is off until the list loads again.</Notice
     >{/if}
 
-  <div class="trellis-section">
-    <div class="flex flex-wrap items-center justify-between gap-3 p-4">
-      <div class="trellis-segment" role="group" aria-label="Filter resources">
-        <button
-          type="button"
-          class={{ active: filter === "detached" }}
-          aria-pressed={filter === "detached"}
-          disabled={busy}
-          onclick={() => changeFilter("detached")}>Unused</button
-        >
-        <button
-          type="button"
-          class={{ active: filter === "all" }}
-          aria-pressed={filter === "all"}
-          disabled={busy}
-          onclick={() => changeFilter("all")}>All</button
-        >
+  {#if unused.length > 0}
+    <section
+      class="trellis-section unused-storage"
+      aria-labelledby="unused-storage-title"
+    >
+      <div class="p-4 pb-2">
+        <h2 id="unused-storage-title" class="font-semibold">
+          Unused storage <span class="badge badge-warning badge-sm"
+            >{unused.length}{unusedComplete ? "" : "+"}</span
+          >
+        </h2>
+        <p class="mt-1 text-sm text-base-content/70">
+          Nothing uses these any more, usually because the service or device
+          that had them was removed or changed. Their data is kept until you
+          delete them; a service that comes back can use its storage again.
+        </p>
       </div>
+      <DataTable>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Was used by</th>
+            <th><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each unused as resource (resource.resourceId)}
+            <tr>
+              <td>{@render nameCell(resource)}</td>
+              <td>{@render ownerCell(resource)}</td>
+              <td class="text-right">
+                {#if canRemove}<button
+                    class="btn btn-outline btn-error btn-sm"
+                    aria-label={`Delete ${resource.localName} used by ${resource.ownerKind} ${resource.ownerId}`}
+                    disabled={busy ||
+                      uncertain ||
+                      loading ||
+                      readError !== null}
+                    onclick={() => void remove(resource)}>Delete</button
+                  >{/if}
+              </td>
+            </tr>
+            {#if open === resource.resourceId}
+              {@render details(resource, 3)}
+            {/if}
+          {/each}
+        </tbody>
+      </DataTable>
+    </section>
+  {/if}
+
+  <section class="trellis-section" aria-labelledby="all-storage-title">
+    <div class="flex flex-wrap items-center justify-between gap-3 p-4">
+      <h2 id="all-storage-title" class="font-semibold">All storage</h2>
       <p class="text-sm text-base-content/60" aria-live="polite">
         {loading ? "Loading…" : ""}
       </p>
@@ -239,10 +341,8 @@
     {:else if resources.length === 0 && !readError}
       <EmptyState
         class="m-4"
-        title={filter === "detached" ? "No unused storage" : "No storage yet"}
-        description={filter === "detached"
-          ? "When a service stops using storage, it shows up here so you can delete it."
-          : "Storage appears when services and devices are set up."}
+        title="No storage yet"
+        description="Storage appears when services and devices are set up."
       />
     {:else if resources.length > 0}
       <DataTable>
@@ -251,45 +351,13 @@
             <th>Name</th>
             <th>Used by</th>
             <th>Status</th>
-            <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
           {#each resources as resource (resource.resourceId)}
             <tr>
-              <td>
-                <button
-                  type="button"
-                  class="text-left"
-                  aria-expanded={open === resource.resourceId}
-                  onclick={() =>
-                    (open =
-                      open === resource.resourceId
-                        ? null
-                        : resource.resourceId)}
-                >
-                  <span class="block font-medium hover:underline"
-                    >{humanizeName(resource.localName)}</span
-                  >
-                </button>
-                <span class="block text-xs text-base-content/60"
-                  >{KINDS[resource.kind] ?? humanizeName(resource.kind)} ·
-                  <span class="trellis-identifier text-[0.7rem]"
-                    >{resource.resourceId}</span
-                  ></span
-                >
-              </td>
-              <td>
-                <span class="block"
-                  >{ownerNames.get(resource.ownerId) ??
-                    humanizeName(
-                      resource.participantId ?? resource.clientId ?? "—",
-                    )}</span
-                >
-                <span class="block text-xs text-base-content/60"
-                  >{resource.ownerKind === "user" ? "Person" : "Service"}</span
-                >
-              </td>
+              <td>{@render nameCell(resource)}</td>
+              <td>{@render ownerCell(resource)}</td>
               <td>
                 <span
                   class={[
@@ -299,7 +367,8 @@
                       : resource.state === "failed"
                         ? "badge-error"
                         : resource.state === "pending" ||
-                            resource.state === "destroying"
+                            resource.state === "destroying" ||
+                            resource.state === "detached"
                           ? "badge-warning"
                           : "badge-neutral",
                   ]}
@@ -312,56 +381,9 @@
                         : humanizeName(resource.state)}</span
                 >
               </td>
-              <td class="text-right">
-                {#if resource.state === "detached" && canRemove}<button
-                    class="btn btn-outline btn-error btn-sm"
-                    aria-label={`Delete ${resource.localName} used by ${resource.ownerKind} ${resource.ownerId}`}
-                    disabled={busy ||
-                      uncertain ||
-                      loading ||
-                      readError !== null}
-                    onclick={() => void remove(resource)}>Delete</button
-                  >{/if}
-              </td>
             </tr>
             {#if open === resource.resourceId}
-              <tr class="bg-base-200/40">
-                <td colspan="4">
-                  <dl
-                    class="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[max-content_1fr]"
-                  >
-                    <dt class="text-base-content/60">Type</dt>
-                    <dd>
-                      {KINDS[resource.kind] ?? humanizeName(resource.kind)}
-                    </dd>
-                    <dt class="text-base-content/60">Name in its program</dt>
-                    <dd><code>{resource.localName}</code></dd>
-                    <dt class="text-base-content/60">Owner</dt>
-                    <dd>
-                      {ownerNames.get(resource.ownerId) ?? resource.ownerId}
-                      <span class="text-base-content/60"
-                        >· {resource.ownerKind === "user"
-                          ? "Person"
-                          : "Service"}</span
-                      >
-                    </dd>
-                    {#if resource.participantId}
-                      <dt class="text-base-content/60">Program</dt>
-                      <dd><code>{resource.participantId}</code></dd>
-                    {/if}
-                    {#if resource.clientId}
-                      <dt class="text-base-content/60">App</dt>
-                      <dd><code>{resource.clientId}</code></dd>
-                    {/if}
-                    {#if resource.browserOrigin}
-                      <dt class="text-base-content/60">Web address</dt>
-                      <dd>{resource.browserOrigin}</dd>
-                    {/if}
-                    <dt class="text-base-content/60">Changes</dt>
-                    <dd>{resource.revision}</dd>
-                  </dl>
-                </td>
-              </tr>
+              {@render details(resource, 3)}
             {/if}
           {/each}
         </tbody>
@@ -381,7 +403,17 @@
         }}
       />
     {/if}
-  </div>
+  </section>
 </section>
 
 <ConfirmationModal bind:this={confirmation} />
+
+<style>
+  .unused-storage {
+    border-color: color-mix(
+      in oklab,
+      var(--color-warning) 45%,
+      var(--color-base-300)
+    );
+  }
+</style>

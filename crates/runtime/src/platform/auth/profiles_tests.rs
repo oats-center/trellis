@@ -291,3 +291,41 @@ fn linked_profile_keeps_manual_choices_and_unlink_removes_only_upstream_data() {
         .picture
         .is_none());
 }
+
+#[test]
+fn saving_other_profile_fields_keeps_a_default_name_following_the_username() {
+    let directory = tempfile::tempdir().unwrap();
+    let key = SigningKey::from_bytes(&[41; 32]);
+    let store = open(&directory, key.clone());
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator(
+            "admin",
+            Some("profile administrator password"),
+            None,
+            None,
+            NOW,
+        )
+        .unwrap()
+        .principal_id;
+    let before = store
+        .transaction(|connection| rpc_users::read_user(&store, connection, &admin, true))
+        .unwrap();
+    assert_eq!(before.display_name, "admin");
+    // Adding an email is the only change; the name was never chosen.
+    let input: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
+        "email":"admin@example.com",
+        "expectedRevision":before.account.unwrap().profile_revision.0.0.to_string(),
+        "idempotencyKey":id(),
+    }))
+    .unwrap();
+    let updated = rpc_users::update_profile(&store, &mutation(&admin, &input), &input, NOW + 1)
+        .unwrap()
+        .user;
+    assert_eq!(updated.email.as_deref(), Some("admin@example.com"));
+    assert_eq!(updated.display_name, "admin");
+    let reread = store
+        .transaction(|connection| rpc_users::read_user(&store, connection, &admin, true))
+        .unwrap();
+    assert_eq!(reread.display_name, "admin");
+}

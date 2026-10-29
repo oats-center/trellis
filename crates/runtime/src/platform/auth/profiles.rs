@@ -101,24 +101,40 @@ pub(super) struct Profile {
     pub(super) revision: u64,
 }
 
-pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, AuthError> {
-    // Without a stored name, people recognise a local account by its username.
+/// The name shown for someone who has neither set one nor been given one by
+/// their sign-in provider: their username, which people recognise, and the
+/// principal ID only for an account without one.
+fn default_name(connection: &Connection, principal: &str) -> Result<String, AuthError> {
     let username: Option<String> = connection
         .query_row(
-            "SELECT normalized_username FROM auth_local_credentials WHERE principal_id=?1",
+            "SELECT coalesce((SELECT normalized_username \
+            FROM auth_local_credentials \
+            WHERE principal_id=?1),(SELECT provider_subject \
+            FROM auth_provider_identities \
+            WHERE principal_id=?1 \
+            AND provider='local'))",
             [principal],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()?
+        .flatten();
+    Ok(username.unwrap_or_else(|| principal.to_owned()))
+}
+
+pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, AuthError> {
+    let fallback = default_name(connection, principal)?;
+    // A default name is never stored, so it follows the username.
     Ok(connection
         .query_row(
-            "SELECT coalesce(display_name,?2),given_name,family_name,\
+            "SELECT coalesce(CASE display_name_source \
+            WHEN 'default' THEN NULL \
+            ELSE display_name END,?2),given_name,family_name,\
             display_name_source,given_name_source,family_name_source,email,\
             email_verified,email_source,email_provider_id,oidc_picture_url,\
             avatar_override_url,gravatar_enabled,version \
             FROM auth_user_profiles \
             WHERE principal_id=?1",
-            rusqlite::params![principal, username.as_deref().unwrap_or(principal)],
+            rusqlite::params![principal, fallback],
             |row| {
                 Ok(Profile {
                     display_name: row.get(0)?,
@@ -140,7 +156,7 @@ pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, 
         )
         .optional()?
         .unwrap_or(Profile {
-            display_name: username.unwrap_or_else(|| principal.to_owned()),
+            display_name: fallback,
             given_name: None,
             family_name: None,
             display_source: "default".into(),
@@ -263,7 +279,10 @@ pub(super) fn write(
             "default"
         }
         .into();
-        current.display_name = upstream.name.unwrap_or_else(|| principal.to_owned());
+        current.display_name = match upstream.name {
+            Some(name) => name,
+            None => default_name(connection, principal)?,
+        };
     }
     if current.given_source != "manual" {
         current.given_source = if upstream.given_name.is_some() {
@@ -322,7 +341,7 @@ pub(super) fn write(
             updated_at=excluded.updated_at,version=excluded.version",
             params![
                 principal,
-                current.display_name,
+                (current.display_source != "default").then_some(&current.display_name),
                 current.given_name,
                 current.family_name,
                 current.display_source,

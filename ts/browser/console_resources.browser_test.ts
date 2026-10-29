@@ -21,8 +21,9 @@ import { TrellisService } from "../packages/trellis/service/mod.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
 
+/** Pages through the all-storage table until it shows the exact resource. */
 async function findResource(page: Page, resourceId: string): Promise<void> {
-  const row = page
+  const row = allStorage(page)
     .getByRole("row")
     .filter({ has: page.getByText(resourceId, { exact: true }) });
   for (let index = 0; index < 40; index++) {
@@ -45,7 +46,9 @@ async function findResource(page: Page, resourceId: string): Promise<void> {
       (await next.count()) && (await next.isEnabled()),
       `Exact resource ${resourceId} absent from the retained catalog`,
     );
-    const previousRows = await page.getByRole("row").allTextContents();
+    const previousRows = await allStorage(page)
+      .getByRole("row")
+      .allTextContents();
     await next.click();
     await page.waitForFunction(
       (previous) => {
@@ -59,6 +62,10 @@ async function findResource(page: Page, resourceId: string): Promise<void> {
     );
   }
   throw new Error(`Exact resource ${resourceId} not found within 40 pages`);
+}
+
+function allStorage(page: Page) {
+  return page.getByRole("region", { name: "All storage" });
 }
 
 // Allocate through public deployment/provision/apply APIs. Never pick the first
@@ -192,28 +199,36 @@ test(
         await page
           .getByRole("heading", { name: "Resources", exact: true })
           .waitFor();
-        const row = page
+        // Unused storage is set apart for a decision; everything, in use or
+        // not, stays listed under All storage.
+        const unused = page.getByRole("region", { name: /^Unused storage/ });
+        const row = unused
           .getByRole("row")
           .filter({ has: page.getByText(resourceId, { exact: true }) });
+        await row.waitFor();
         await findResource(page, resourceId);
         await page.reload();
         await page
           .getByRole("heading", { name: "Resources", exact: true })
           .waitFor();
-        await findResource(page, resourceId);
         // Seeing the allocation after a real read, not a declaration inventory, is
-        // what establishes retention. Changing filters must include ready resources.
-        await page.getByRole("button", { name: "All", exact: true }).click();
-        const ready = page
+        // what establishes retention.
+        await row.waitFor();
+        await findResource(page, readyId);
+        const ready = allStorage(page)
           .getByRole("row")
           .filter({ has: page.getByText(readyId, { exact: true }) });
-        await findResource(page, readyId);
         strictEqual(
           await ready.getByRole("button", { name: /^Delete / }).count(),
           0,
         );
-        await page.getByRole("button", { name: "Unused", exact: true }).click();
-        await findResource(page, resourceId);
+        strictEqual(
+          await unused
+            .getByRole("row")
+            .filter({ has: page.getByText(readyId, { exact: true }) })
+            .count(),
+          0,
+        );
         await row.getByRole("button", { name: /^Delete / }).click();
         const dialog = page.getByRole("dialog");
         await dialog
@@ -223,7 +238,6 @@ test(
         await page
           .getByRole("button", { name: "Refresh", exact: true })
           .click();
-        await findResource(page, resourceId);
         await row.getByRole("button", { name: /^Delete / }).waitFor();
         await row.getByRole("button", { name: /^Delete / }).click();
         await dialog.getByRole("textbox").fill(resourceName);
@@ -231,7 +245,6 @@ test(
           .getByRole("button", { name: "Permanently delete", exact: true })
           .click();
         await row.waitFor({ state: "hidden" });
-        await page.getByRole("button", { name: "All", exact: true }).click();
         await findResource(page, readyId);
       } catch (error) {
         const results = fileURLToPath(

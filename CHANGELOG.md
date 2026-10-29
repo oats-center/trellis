@@ -8,6 +8,19 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- The Console's Resources page lists all storage by default. Unused storage
+  is set apart above it, with a count and what deleting means, so it can be
+  deleted from one place.
+
+### Fixed
+
+- Saving any change to a profile whose name was never chosen, such as adding
+  an email on the Account page, replaced the shown name with the user ID. A
+  default name is no longer stored, so it follows the username again, and
+  profiles already affected show the username.
+
 ## [0.100.0-rc.16] - 2026-10-29
 
 ### Added
