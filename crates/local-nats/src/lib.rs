@@ -32,9 +32,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Connect timeout for the nats-server release download.
 const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Overall and per-body-read timeout for the nats-server release download, so DNS
-/// stalls and header stalls cannot exceed the bound either.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+/// Bound on reaching the release host and getting its response, so DNS, connect
+/// and header stalls fail promptly.
+const DOWNLOAD_RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Bound on the whole download, which on a slow link takes far longer than
+/// getting the response does.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Process-local registry serializing installation per cache directory, so concurrent
 /// [`NatsServerBinary::ensure`] calls into the same cache cannot interfere. Lazily
@@ -1042,11 +1045,14 @@ fn unique_temp_path(cache_dir: &Path, label: &str) -> PathBuf {
     ))
 }
 
-/// ureq agent with explicit connect, read, and overall timeouts for the release download.
+/// ureq agent with explicit connect, response, and overall timeouts for the release download.
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .timeout_resolve(Some(DOWNLOAD_RESPONSE_TIMEOUT))
         .timeout_connect(Some(DOWNLOAD_CONNECT_TIMEOUT))
+        .timeout_send_request(Some(DOWNLOAD_RESPONSE_TIMEOUT))
+        .timeout_recv_response(Some(DOWNLOAD_RESPONSE_TIMEOUT))
         .timeout_recv_body(Some(DOWNLOAD_TIMEOUT))
         .build()
         .new_agent()

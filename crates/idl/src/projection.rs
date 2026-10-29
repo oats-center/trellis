@@ -17,6 +17,37 @@ pub fn json_schema(graph: &PackageGraph, root: &TypeRef) -> miette::Result<Value
     Ok(schema)
 }
 
+/// [`json_schema`] with authored descriptions on each definition and field.
+/// For reading; validators and compatibility use the undescribed form.
+pub fn described_json_schema(graph: &PackageGraph, root: &TypeRef) -> miette::Result<Value> {
+    let mut schema = json_schema(graph, root)?;
+    for (package_id, package) in graph.packages() {
+        for id in package.types().keys() {
+            let reference = TypeRef {
+                package: package_id.clone(),
+                id: id.clone(),
+            };
+            let Some(definition) = schema["$defs"].get_mut(definition_key(&reference)) else {
+                continue;
+            };
+            if let Some(doc) = package.doc(&format!("type.{id}")) {
+                definition["description"] = Value::String(doc.to_owned());
+            }
+            if let Some(properties) = definition
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+            {
+                for (field, property) in properties {
+                    if let Some(doc) = package.doc(&format!("type.{id}.{field}")) {
+                        property["description"] = Value::String(doc.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    Ok(schema)
+}
+
 fn project_named(
     graph: &PackageGraph,
     reference: &TypeRef,

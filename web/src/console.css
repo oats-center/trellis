@@ -200,6 +200,40 @@ select {
   outline: none;
 }
 
+.trellis-chip {
+  align-items: center;
+  background: var(--color-base-100);
+  border: 1px solid color-mix(in oklab, var(--color-base-300) 90%, transparent);
+  border-radius: 999px;
+  color: color-mix(in oklab, var(--color-base-content) 75%, transparent);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  gap: 0.35rem;
+  min-height: 1.85rem;
+  padding: 0 0.75rem;
+}
+
+.trellis-chip:hover {
+  border-color: color-mix(in oklab, var(--color-base-content) 30%, transparent);
+}
+
+.trellis-chip.active {
+  background: color-mix(
+    in oklab,
+    var(--color-primary) 14%,
+    var(--color-base-100)
+  );
+  border-color: color-mix(in oklab, var(--color-primary) 45%, transparent);
+  color: var(--color-base-content);
+}
+
+.trellis-chip:focus-visible {
+  box-shadow: var(--trellis-focus-ring);
+  outline: none;
+}
+
 .trellis-ledger {
   display: grid;
   gap: 0.85rem;

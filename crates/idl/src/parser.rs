@@ -130,27 +130,37 @@ impl<'a> Parser<'a> {
     }
 
     fn model(&mut self) -> miette::Result<Model> {
+        let docs = self.docs_above(self.previous_span().start);
         let name = self.ident()?;
         self.token(TokenKind::LBrace)?;
         let mut fields = BTreeMap::new();
         while !self.at(TokenKind::RBrace) {
+            let field_docs = self.docs_above(self.current_span().start);
             let field = self.ident()?;
             let optional = self.eat(TokenKind::Question);
             self.token(TokenKind::Colon)?;
             let ty = self.ty()?;
             self.token(TokenKind::Semi)?;
             if fields
-                .insert(field.clone(), Field { optional, ty })
+                .insert(
+                    field.clone(),
+                    Field {
+                        optional,
+                        ty,
+                        docs: field_docs,
+                    },
+                )
                 .is_some()
             {
                 return Err(self.error_previous(format!("duplicate field '{field}'")));
             }
         }
         self.token(TokenKind::RBrace)?;
-        Ok(Model { name, fields })
+        Ok(Model { name, docs, fields })
     }
 
     fn enum_decl(&mut self) -> miette::Result<Enum> {
+        let docs = self.docs_above(self.previous_span().start);
         let name = self.ident()?;
         self.token(TokenKind::LBrace)?;
         let mut symbols = Vec::new();
@@ -167,15 +177,20 @@ impl<'a> Parser<'a> {
             self.token(TokenKind::Semi)?;
         }
         self.token(TokenKind::RBrace)?;
-        Ok(Enum { name, symbols })
+        Ok(Enum {
+            name,
+            docs,
+            symbols,
+        })
     }
 
     fn alias(&mut self) -> miette::Result<Alias> {
+        let docs = self.docs_above(self.previous_span().start);
         let name = self.ident()?;
         self.token(TokenKind::Eq)?;
         let ty = self.ty()?;
         self.token(TokenKind::Semi)?;
-        Ok(Alias { name, ty })
+        Ok(Alias { name, docs, ty })
     }
 
     fn ty(&mut self) -> miette::Result<TypeExpr> {
@@ -306,6 +321,7 @@ impl<'a> Parser<'a> {
 
     fn action(&mut self, kind: String) -> miette::Result<Action> {
         let start = self.previous_span().start;
+        let docs = self.docs_above(start);
         let name = self.path()?;
         self.token(TokenKind::LBrace)?;
         let mut members = BTreeMap::new();
@@ -352,6 +368,7 @@ impl<'a> Parser<'a> {
         Ok(Action {
             kind,
             name,
+            docs,
             members,
             span,
         })
@@ -861,6 +878,23 @@ impl<'a> Parser<'a> {
     }
     fn text(&self, span: &std::ops::Range<usize>) -> &str {
         &self.input.source[span.clone()]
+    }
+    /// The `///` lines directly above a declaration that starts its line.
+    fn docs_above(&self, offset: usize) -> String {
+        let text = &self.input.source;
+        let line_start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
+        if !text[line_start..offset].trim().is_empty() {
+            return String::new();
+        }
+        let mut lines = Vec::new();
+        for line in text[..line_start].lines().rev() {
+            let Some(doc) = line.trim_start().strip_prefix("///") else {
+                break;
+            };
+            lines.push(doc.strip_prefix(' ').unwrap_or(doc).trim_end());
+        }
+        lines.reverse();
+        lines.join("\n").trim().to_owned()
     }
     fn current_span(&self) -> std::ops::Range<usize> {
         self.tokens

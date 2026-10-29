@@ -8,6 +8,51 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- IDL descriptions: a `///` comment directly above a model, field, enum, type
+  alias or action describes it. Descriptions appear in the presentation IDL,
+  never in a digest, validator or compatibility check. Every built-in action
+  now has one.
+- `Auth.Apis.Get` returns each action with its description, kind, flags and
+  JSON Schemas (input, output, data, progress, updates, signals and errors)
+  carrying those descriptions. Accepted APIs carry their title, description
+  and release version.
+- The Console's APIs page is an API explorer: search installed APIs, then
+  open one to browse its requests, operations, events and live feeds, see who
+  can use each, read its inputs, outputs and errors field by field, and copy
+  its IDL.
+
+### Changed
+
+- The Console's Events page opens on an overview: activity over time by
+  events, data or verification problems, figures for the period, every event
+  type with its share, how events checked out, and delivery to services with
+  failed deliveries. The event log is its own tab, full width, with search,
+  an event-type picker and filters; choosing an event type or check on the
+  overview opens the log filtered to it.
+- The Console's Jobs page gets the same treatment: an overview of activity
+  over time (finished, created, started, failed or retried), figures for the
+  period, every job type with its counts, failures and typical wait and run
+  times, how jobs ended, and the workers each service runs. The job list is
+  its own tab with an All view and a job-type picker; choosing a job type or
+  an outcome on the overview opens the list filtered to it.
+- `trellis users list` shows usernames and sign-in status only when the login
+  may manage users, and says so instead of printing empty columns.
+
+### Fixed
+
+- Filter chips on the Events and Jobs pages had no styling.
+- Keyed job admission gave up after eight conflicting writes, so a busy key
+  could reject jobs it had room for; it now retries for up to 30 seconds.
+- A `trellis-server` that runs its own NATS told clients to connect to its
+  loopback address, so the CLI and services on any other machine could log in
+  but not connect. It now gives them the addresses in `[client]
+nats_servers`, which `init` sets from `--host`.
+- Downloading `nats-server` failed on links slower than about 1 Mbit/s; the
+  whole download may now take up to 10 minutes, while reaching the release
+  host is still bounded at a minute.
+
 ## [0.100.0-rc.15] - 2026-10-29
 
 ### Changed

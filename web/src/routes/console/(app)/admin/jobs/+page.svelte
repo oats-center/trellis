@@ -1,8 +1,8 @@
 <script lang="ts">
   import { resolve } from "$lib/console_paths";
-  import { afterNavigate } from "$app/navigation";
+  import { afterNavigate, goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { onDestroy, untrack } from "svelte";
+  import { onDestroy, tick, untrack } from "svelte";
   import {
     beginOwnedWatch,
     LiveSubscription,
@@ -44,7 +44,10 @@
   type JobState = Job["state"];
   type ServiceInfo = apis.jobs.ListServicesOutput["items"][number];
   type MetricsWindow = apis.jobs.MetricsInput["window"];
-  type Focus = "running-risk" | "running" | "action" | "completed" | "failed" | "dead" | "backlog";
+  type Focus = "all" | "running-risk" | "running" | "action" | "completed" | "failed" | "dead" | "backlog";
+  type View = "overview" | "log";
+  type Measure = "completed" | "submitted" | "started" | "failed" | "retried";
+  type TypeStats = apis.jobs.MetricsOutput["summary"][number];
   type JobPathname = `/admin/jobs/${string}` & {};
 
   const trellis = getTrellis();
@@ -77,12 +80,27 @@
   let selectedJobType = $state<string | null>(null);
   let focus = $state<Focus>(asFocus(page.url.searchParams.get("focus")) ?? "running-risk");
   let handledFocusParam = page.url.searchParams.get("focus");
+  /** A link that names which jobs to show opens the list; otherwise the overview. */
+  let view = $state<View>(viewOf(page.url));
+  let measure = $state<Measure>("completed");
+  const views: Array<{ value: View; label: string }> = [
+    { value: "overview", label: "Overview" },
+    { value: "log", label: "Job list" },
+  ];
+  const measures: Array<{ value: Measure; label: string; unit: string }> = [
+    { value: "completed", label: "Finished", unit: "jobs finished" },
+    { value: "submitted", label: "Created", unit: "jobs created" },
+    { value: "started", label: "Started", unit: "tries started" },
+    { value: "failed", label: "Failed", unit: "jobs failed" },
+    { value: "retried", label: "Retried", unit: "retries" },
+  ];
 
   afterNavigate(() => {
+    view = viewOf(page.url);
     const value = page.url.searchParams.get("focus");
     if (value === handledFocusParam) return;
     handledFocusParam = value;
-    const next = value === "running-risk" || value === "running" || value === "action" || value === "completed" || value === "failed" || value === "dead" || value === "backlog" ? value : null;
+    const next = asFocus(value);
     if (next && next !== focus) {
       focus = next;
       ({ cursor, back: cursorBackStack } = resetCursorHistory());
@@ -139,8 +157,34 @@
     };
   });
 
+  function viewOf(url: URL): View {
+    return url.searchParams.get("view") === "list" || url.searchParams.has("focus") ? "log" : "overview";
+  }
+
+  async function showView(next: View): Promise<void> {
+    if (next === view) return;
+    view = next;
+    const base = resolve("/admin/jobs");
+    await goto(next === "log" ? `${base}?view=list` : base, { noScroll: true, keepFocus: true });
+    await tick();
+  }
+
+  /** Opens the list showing one kind of job. */
+  function openFocus(value: Focus) {
+    selectedJobType = null;
+    selectFocus(value);
+    void showView("log");
+  }
+
+  /** Opens the list showing every job of one type. */
+  function openJobType(key: string) {
+    selectedJobType = key;
+    selectFocus("all");
+    void showView("log");
+  }
+
   function asFocus(value: string | null): Focus | null {
-    if (value === "running-risk" || value === "running" || value === "action" || value === "completed" || value === "failed" || value === "dead" || value === "backlog") return value;
+    if (value === "all" || value === "running-risk" || value === "running" || value === "action" || value === "completed" || value === "failed" || value === "dead" || value === "backlog") return value;
     return null;
   }
 
@@ -192,7 +236,8 @@
     await cancelJobs(targets, query);
   }
 
-  function focusStates(value: Focus): JobState[] {
+  function focusStates(value: Focus): JobState[] | undefined {
+    if (value === "all") return undefined;
     if (value === "running-risk") return ["active", "retry"];
     if (value === "running") return ["active"];
     if (value === "action") return ["retry", "failed", "dead", "stale"];
@@ -203,6 +248,7 @@
   }
 
   const listTabs: Array<{ value: Focus; label: string }> = [
+    { value: "all", label: "All" },
     { value: "action", label: "Needs attention" },
     { value: "running-risk", label: "Running" },
     { value: "backlog", label: "Waiting" },
@@ -217,6 +263,7 @@
     if (focus === "backlog") return { title: "Nothing is waiting", description: "Jobs wait here until a service is free to run them." };
     if (focus === "dead") return { title: "No jobs failed for good", description: "Jobs that run out of tries wait here so you can run them again or dismiss them." };
     if (focus === "failed") return { title: "No failed jobs", description: "Jobs that fail without retrying show up here." };
+    if (focus === "all") return { title: "No jobs", description: "Jobs your services create show up here." };
     return { title: "No finished jobs", description: "Try a longer time range." };
   }
 
@@ -422,10 +469,10 @@
   }
 
   const ledgerItems = $derived([
-    { id: "action", label: "Needs attention", value: overview.action, detail: overview.action > 0 ? [overview.failed + overview.dead > 0 ? `${overview.failed + overview.dead} failed` : "", overview.retrying > 0 ? `${overview.retrying} retrying` : "", overview.stale > 0 ? `${overview.stale} stuck` : ""].filter(Boolean).join(" · ") : "All good", tone: overview.action > 0 ? "error" as const : "success" as const, active: focus === "action", attention: overview.action > 0 },
-    { id: "running", label: "Running", value: overview.running, detail: overview.slow > 0 ? `${overview.slow} slower than usual` : `${workerCount} ${workerCount === 1 ? "worker" : "workers"} ready`, tone: "success" as const, active: focus === "running" || focus === "running-risk" },
-    { id: "backlog", label: "Waiting", value: overview.backlog, detail: "In line to run", tone: overview.backlog > 0 ? "warning" as const : "success" as const, active: focus === "backlog" },
-    { id: "completed", label: "Finished", value: overview.processed.toLocaleString(), detail: overview.failureRate > 0 ? `${overview.failureRate.toFixed(1)}% failed` : "None failed", tone: "info" as const, active: focus === "completed" },
+    { id: "action", label: "Needs attention", value: overview.action, detail: overview.action > 0 ? [overview.failed + overview.dead > 0 ? `${overview.failed + overview.dead} failed` : "", overview.retrying > 0 ? `${overview.retrying} retrying` : "", overview.stale > 0 ? `${overview.stale} stuck` : ""].filter(Boolean).join(" · ") : "All good", tone: overview.action > 0 ? "error" as const : "success" as const, active: view === "log" && focus === "action", attention: overview.action > 0 },
+    { id: "running", label: "Running", value: overview.running, detail: overview.slow > 0 ? `${overview.slow} slower than usual` : `${workerCount} ${workerCount === 1 ? "worker" : "workers"} ready`, tone: "success" as const, active: view === "log" && (focus === "running" || focus === "running-risk") },
+    { id: "backlog", label: "Waiting", value: overview.backlog, detail: "In line to run", tone: overview.backlog > 0 ? "warning" as const : "success" as const, active: view === "log" && focus === "backlog" },
+    { id: "completed", label: "Finished", value: overview.processed.toLocaleString(), detail: overview.failureRate > 0 ? `${overview.failureRate.toFixed(1)}% failed` : "None failed", tone: "info" as const, active: view === "log" && focus === "completed" },
   ]);
 
   const chartPoints = $derived(
@@ -435,14 +482,111 @@
       return {
         label: date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
         tick: metricsWindow === "7d" ? date.toLocaleDateString(undefined, { weekday: "short" }) : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }),
-        value: boundedNumber(groups.reduce((sum, group) => sum + group.completed, 0n)),
+        value: boundedNumber(groups.reduce((sum, group) => sum + measureCount(group), 0n)),
       };
     }),
   );
 
   function handleLedgerSelect(id: string) {
-    if (id === "running") selectFocus("running-risk");
-    else if (id === "action" || id === "completed" || id === "failed" || id === "dead" || id === "backlog") selectFocus(id);
+    if (id === "running") openFocus("running-risk");
+    else if (id === "action" || id === "completed" || id === "failed" || id === "dead" || id === "backlog") openFocus(id);
+  }
+
+  function measureCount(group: apis.jobs.MetricsOutput["buckets"][number]["groups"][number]): bigint {
+    if (measure === "submitted") return group.submitted;
+    if (measure === "started") return group.started;
+    if (measure === "failed") return group.failed + group.dead;
+    if (measure === "retried") return group.retried;
+    return group.completed;
+  }
+
+  const measureOption = $derived(measures.find((option) => option.value === measure) ?? measures[0]);
+  const typeStats = $derived(
+    [...(metrics?.summary ?? [])].sort((a, b) => boundedNumber(b.total - a.total) || a.label.localeCompare(b.label)),
+  );
+  /** Every outcome in the period, summed over its intervals and job types. */
+  const totals = $derived.by(() => {
+    const sum = { submitted: 0n, started: 0n, completed: 0n, failed: 0n, dead: 0n, retried: 0n, cancelled: 0n, dismissed: 0n };
+    for (const bucket of metrics?.buckets ?? [])
+      for (const group of bucket.groups) {
+        sum.submitted += group.submitted;
+        sum.started += group.started;
+        sum.completed += group.completed;
+        sum.failed += group.failed;
+        sum.dead += group.dead;
+        sum.retried += group.retried;
+        sum.cancelled += group.cancelled;
+        sum.dismissed += group.dismissed;
+      }
+    return sum;
+  });
+  const outcomeRows = $derived.by(() => {
+    const rows: Array<{ label: string; detail: string; count: bigint; focus?: Focus; tone: "ok" | "problem" | "neutral" }> = [
+      { label: "Finished", detail: "Done without an error", count: totals.completed, focus: "completed", tone: "ok" },
+      { label: "Failed", detail: "Stopped with an error and won't be tried again", count: totals.failed, focus: "failed", tone: "problem" },
+      { label: "Failed for good", detail: "Ran out of tries; waiting for you to retry or dismiss", count: totals.dead, focus: "dead", tone: "problem" },
+      { label: "Retried", detail: "Tried again after a try failed", count: totals.retried, focus: "action", tone: "neutral" },
+      { label: "Cancelled", detail: "Stopped before finishing", count: totals.cancelled, tone: "neutral" },
+      { label: "Dismissed", detail: "Failed for good, then set aside", count: totals.dismissed, tone: "neutral" },
+    ];
+    return rows.filter((row) => row.count > 0n || row.tone !== "neutral");
+  });
+  const outcomeTotal = $derived(outcomeRows.reduce((sum, row) => sum + boundedNumber(row.count), 0));
+  /** Figures for the period that the summary cards don't already give. */
+  const figures = $derived.by(() => {
+    if (!metrics) return [];
+    const weighted = (pick: (item: TypeStats) => { count: bigint; p50Ms?: bigint }) => {
+      let count = 0;
+      let total = 0;
+      for (const item of metrics?.summary ?? []) {
+        const latency = pick(item);
+        if (latency.p50Ms === undefined || latency.count === 0n) continue;
+        count += boundedNumber(latency.count);
+        total += boundedNumber(latency.p50Ms) * boundedNumber(latency.count);
+      }
+      return count > 0 ? total / count : undefined;
+    };
+    const slowest = (metrics.summary ?? []).reduce<TypeStats | undefined>(
+      (worst, item) => ((item.runtime.p95Ms ?? 0n) > (worst?.runtime.p95Ms ?? 0n) ? item : worst),
+      undefined,
+    );
+    const run = weighted((item) => item.runtime);
+    const wait = weighted((item) => item.queueWait);
+    const ended = boundedNumber(totals.completed + totals.failed + totals.dead);
+    return [
+      { label: "Created", value: totals.submitted.toLocaleString(), detail: `${totals.started.toLocaleString()} ${totals.started === 1n ? "try" : "tries"} started` },
+      { label: "Succeeded", value: ended > 0 ? `${((boundedNumber(totals.completed) / ended) * 100).toFixed(1)}%` : "—", detail: `of ${ended.toLocaleString()} that ended` },
+      { label: "Typical run", value: run === undefined ? "—" : friendlyDuration(run), detail: slowest?.runtime.p95Ms ? `${jobTypeLabel(slowest.label)} is slowest: ${friendlyDuration(boundedNumber(slowest.runtime.p95Ms))} for most` : undefined },
+      { label: "Typical wait", value: wait === undefined ? "—" : friendlyDuration(wait), detail: "Before a service picks a job up" },
+      { label: "Workers", value: workerCount.toLocaleString(), detail: `in ${services.length} ${services.length === 1 ? "service" : "services"}` },
+    ];
+  });
+
+  /** One service's workers, grouped by the job type they run. */
+  function workerTypes(service: ServiceInfo): Array<{ type: string; count: number; concurrency: number }> {
+    const byType = new Map<string, { type: string; count: number; concurrency: number }>();
+    for (const worker of service.workers) {
+      const entry = byType.get(worker.jobType) ?? { type: worker.jobType, count: 0, concurrency: 0 };
+      entry.count += 1;
+      entry.concurrency += Number(worker.concurrency ?? 1);
+      byType.set(worker.jobType, entry);
+    }
+    return [...byType.values()].sort((a, b) => a.type.localeCompare(b.type));
+  }
+
+  function latencyLabel(latency: { count: bigint; p50Ms?: bigint; p95Ms?: bigint }): string {
+    if (latency.count === 0n || latency.p50Ms === undefined) return "—";
+    const typical = friendlyDuration(boundedNumber(latency.p50Ms));
+    return latency.p95Ms === undefined ? typical : `${typical} · ${friendlyDuration(boundedNumber(latency.p95Ms))}`;
+  }
+
+  function share(count: bigint, total: number): number {
+    return total > 0 ? boundedNumber(count) / total : 0;
+  }
+
+  function shareLabel(count: bigint, total: number): string {
+    const value = share(count, total) * 100;
+    return value >= 10 || value === 0 ? `${Math.round(value)}%` : `${value.toFixed(1)}%`;
   }
 
   function stopWatch() {
@@ -554,67 +698,159 @@ untrack(() => {
     </Notice>
   {/if}
 
-  {#if !loading && !unavailableMessage}
-    {#if !summaryError}
-      <MetricsLedger ariaLabel="Jobs status summary" items={ledgerItems} onSelect={handleLedgerSelect} />
-    {/if}
+  {#if !unavailableMessage}
+    <div class="trellis-segment jobs-views" role="tablist" aria-label="Jobs view">
+      {#each views as option (option.value)}
+        <button type="button" role="tab" aria-selected={view === option.value} class:active={view === option.value} onclick={() => showView(option.value)}>{option.label}</button>
+      {/each}
+    </div>
+  {/if}
 
+  {#if !loading && !unavailableMessage && !summaryError}
+    <MetricsLedger ariaLabel="Jobs status summary" items={ledgerItems} onSelect={handleLedgerSelect} />
+  {/if}
+
+  {#if view === "overview" && !loading && !unavailableMessage}
     <div class="jobs-overview">
-      {#if !summaryError}
-        <Panel title="Job types">
-          {#snippet actions()}
-            {#if selectedJobType}<button type="button" class="trellis-chip active" onclick={() => selectJobType(null)}>{jobTypeLabel(selectedJobType)} <span aria-hidden="true">×</span><span class="sr-only">Show all job types</span></button>{/if}
-          {/snippet}
-          {#if groups.length === 0}
-            <p class="py-6 text-center text-sm text-base-content/60">No jobs in this period.</p>
-          {:else}
-            <ul class="type-list">
-              {#each groups as group (group.key)}
-                {@const selected = selectedJobType === group.key}
-                <li>
-                  <button type="button" class="type-row" class:selected aria-pressed={selected} title="Show only this job type" onclick={() => selectJobType(selected ? null : group.key)}>
-                    <span class="min-w-0">
-                      <span class="block truncate font-medium">{jobTypeLabel(group.label)}</span>
-                      <span class="block truncate text-xs text-base-content/60">
-                        {group.count.toLocaleString()} {group.count === 1n ? "job" : "jobs"}{(group.depth ?? 0n) > 0n ? ` · ${(group.depth ?? 0n).toLocaleString()} waiting` : ""}{group.oldestCreatedAt && (group.depth ?? 0n) > 0n ? ` · oldest ${friendlyDuration(Date.now() - new Date(group.oldestCreatedAt).getTime())}` : ""}
-                      </span>
-                    </span>
-                    {#if group.failureRate !== undefined && group.failureRate > 0}
-                      <span class="text-sm text-error tabular-nums">{(group.failureRate * 100).toFixed(1)}% failed</span>
-                    {:else}
-                      <span class="text-sm text-base-content/50">No failures</span>
-                    {/if}
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </Panel>
-      {/if}
-      <Panel title="Finished over time">
+      <Panel title="Activity">
         {#snippet actions()}<span class="text-sm text-base-content/60">{windowLabel}</span>{/snippet}
+        <div class="trellis-segment measure-segment" role="group" aria-label="Measure">
+          {#each measures as option (option.value)}
+            <button type="button" class:active={measure === option.value} aria-pressed={measure === option.value} onclick={() => { measure = option.value; }}>{option.label}</button>
+          {/each}
+        </div>
         {#if metricsLoading && !metrics}
           <LoadingState label="Loading job trends" />
         {:else if metricsError}
           <p class="py-10 text-center text-sm text-base-content/60">Trends can't be shown: {metricsError}</p>
-        {:else if chartPoints.length === 0}
-          <p class="py-10 text-center text-sm text-base-content/60">No jobs in this period.</p>
+        {:else if chartPoints.every((point) => point.value === 0)}
+          <p class="py-10 text-center text-sm text-base-content/60">None in this period.</p>
         {:else}
-          <ColumnChart points={chartPoints} unit="jobs finished" />
+          <ColumnChart points={chartPoints} unit={measureOption.unit} />
+        {/if}
+      </Panel>
+      <Panel title="In this period">
+        {#if !metrics}
+          <p class="text-sm text-base-content/60">{metricsLoading ? "Loading…" : "Not available."}</p>
+        {:else}
+          <dl class="figures">
+            {#each figures as figure (figure.label)}
+              <div><dt>{figure.label}</dt><dd>{figure.value}</dd>{#if figure.detail}<small>{figure.detail}</small>{/if}</div>
+            {/each}
+          </dl>
+        {/if}
+      </Panel>
+    </div>
+
+    <Panel title="Job types">
+      {#snippet actions()}<span class="text-sm text-base-content/60">{windowLabel}</span>{/snippet}
+      {#if !metrics}
+        <p class="text-sm text-base-content/60">{metricsLoading ? "Loading…" : `Not available${metricsError ? `: ${metricsError}` : "."}`}</p>
+      {:else if typeStats.length === 0}
+        <p class="py-6 text-center text-sm text-base-content/60">No jobs in this period.</p>
+      {:else}
+        <p class="mb-2 text-sm text-base-content/60">Choose one to see its jobs. Times are typical, with the slowest one in twenty after them.</p>
+        <DataTable>
+          <thead><tr><th>Job type</th><th class="text-right">Jobs</th><th class="text-right">Waiting</th><th class="text-right">Failed</th><th class="hidden text-right md:table-cell">Wait</th><th class="hidden text-right md:table-cell">Run</th></tr></thead>
+          <tbody>
+            {#each typeStats as item (item.key)}
+              {@const failed = (item.failed ?? 0n) + (item.dead ?? 0n)}
+              <tr class="type-row-link" onclick={() => openJobType(item.key)}>
+                <td class="min-w-0">
+                  <button type="button" class="link link-hover block max-w-xs truncate text-left font-medium" onclick={(event) => { event.stopPropagation(); openJobType(item.key); }}>{jobTypeLabel(item.label)}</button>
+                  {#if item.oldestCreatedAt && (item.queued ?? 0n) > 0n}<span class="block text-xs text-base-content/60">Oldest waiting {friendlyDuration(Date.now() - new Date(item.oldestCreatedAt).getTime())}</span>{/if}
+                </td>
+                <td class="text-right tabular-nums">{item.total.toLocaleString()}</td>
+                <td class="text-right tabular-nums">{(item.queued ?? 0n).toLocaleString()}</td>
+                <td class={["text-right tabular-nums", failed > 0n ? "text-error" : "text-base-content/50"]}>{failed > 0n ? `${failed.toLocaleString()} (${shareLabel(failed, boundedNumber(item.total))})` : "None"}</td>
+                <td class="hidden text-right text-sm tabular-nums md:table-cell">{latencyLabel(item.queueWait)}</td>
+                <td class="hidden text-right text-sm tabular-nums md:table-cell">{latencyLabel(item.runtime)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </DataTable>
+      {/if}
+    </Panel>
+
+    <div class="jobs-pair">
+      <Panel title="Outcomes">
+        {#if !metrics}
+          <p class="text-sm text-base-content/60">{metricsLoading ? "Loading…" : "Not available."}</p>
+        {:else}
+          <p class="mb-2 text-sm text-base-content/60">How jobs ended in this period.</p>
+          <div class="bar-list">
+            {#each outcomeRows as row (row.label)}
+              {#if row.focus}
+                <button type="button" title="Show these jobs" onclick={() => openFocus(row.focus ?? "all")}>
+                  <span><strong>{row.label}</strong><small>{row.detail}</small></span>
+                  <b>{row.count.toLocaleString()} <small>{shareLabel(row.count, outcomeTotal)}</small></b>
+                  <i class:problem={row.tone === "problem"} style={`--width: ${share(row.count, outcomeTotal) * 100}%`}></i>
+                </button>
+              {:else}
+                <div>
+                  <span><strong>{row.label}</strong><small>{row.detail}</small></span>
+                  <b>{row.count.toLocaleString()} <small>{shareLabel(row.count, outcomeTotal)}</small></b>
+                  <i style={`--width: ${share(row.count, outcomeTotal) * 100}%`}></i>
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {/if}
+      </Panel>
+      <Panel title="Workers">
+        {#if servicesError}
+          <p class="text-sm text-base-content/60">Workers can't be shown: {servicesError}</p>
+        {:else if services.length === 0}
+          <EmptyState title="No workers" description="Services that run jobs show up here while they're connected." />
+        {:else}
+          <ul class="worker-list">
+            {#each services as service (service.name)}
+              <li>
+                <div class="flex items-center justify-between gap-3">
+                  <span class="truncate font-medium">{names.participant(service.name)}</span>
+                  <StatusBadge label={service.healthy ? "Healthy" : "Not healthy"} status={service.healthy ? "healthy" : "unhealthy"} />
+                </div>
+                <ul class="mt-1 text-sm text-base-content/70">
+                  {#each workerTypes(service) as entry (entry.type)}
+                    <li>{jobTypeLabel(entry.type)} · {entry.count} {entry.count === 1 ? "worker" : "workers"}, up to {entry.concurrency} at once</li>
+                  {/each}
+                </ul>
+              </li>
+            {/each}
+          </ul>
         {/if}
       </Panel>
     </div>
   {/if}
 
-  {#if !unavailableMessage}
+  {#if view === "log" && !unavailableMessage}
     <Panel title="Jobs">
       {#snippet actions()}
-        <div class="trellis-segment" role="group" aria-label="Which jobs">
-          {#each listTabs as tab (tab.value)}
-            <button type="button" class:active={focus === tab.value || (tab.value === "running-risk" && focus === "running")} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
-          {/each}
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="trellis-segment" role="group" aria-label="Which jobs">
+            {#each listTabs as tab (tab.value)}
+              <button type="button" class:active={focus === tab.value || (tab.value === "running-risk" && focus === "running")} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
+            {/each}
+          </div>
+          {#if groups.length > 0 || selectedJobType}
+            <label class="select select-sm w-48">
+              <span class="sr-only">Job type</span>
+              <select value={selectedJobType ?? ""} onchange={(event) => selectJobType(event.currentTarget.value || null)}>
+                <option value="">Every job type</option>
+                {#if selectedJobType && !groups.some((group) => group.key === selectedJobType)}<option value={selectedJobType}>{jobTypeLabel(selectedJobType)}</option>{/if}
+                {#each groups as group (group.key)}
+                  <option value={group.key}>{jobTypeLabel(group.label)}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
         </div>
       {/snippet}
+      {#if selectedJobType}
+        <div class="chip-row" aria-label="Active filter">
+          <button type="button" class="trellis-chip active" onclick={() => selectJobType(null)}>{jobTypeLabel(selectedJobType)} <span aria-hidden="true">×</span><span class="sr-only">Show every job type</span></button>
+        </div>
+      {/if}
       {#if bulkResult}
         <BulkResult
           succeeded={bulkResult.succeeded}
@@ -703,45 +939,154 @@ untrack(() => {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .jobs-views {
+    justify-self: start;
+  }
+
+  .measure-segment {
+    margin-bottom: 0.75rem;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
   .jobs-overview {
     display: grid;
     gap: 1.25rem;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr);
+    align-items: stretch;
+  }
+
+  .jobs-pair {
+    display: grid;
+    gap: 1.25rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
   }
 
-  .jobs-overview > :global(*) {
+  .jobs-overview > :global(*),
+  .jobs-pair > :global(*) {
     min-width: 0;
   }
 
-  .type-list > li {
-    border-top: 1px solid var(--color-base-300);
+  .figures {
+    display: grid;
+    gap: 1.25rem 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
   }
 
-  .type-list > li:first-child {
-    border-top: 0;
+  .figures dt,
+  .figures small {
+    color: color-mix(in oklab, var(--color-base-content) 60%, transparent);
   }
 
-  .type-row {
-    align-items: center;
+  .figures dt {
+    font-size: 0.8125rem;
+  }
+
+  .figures dd {
+    font-size: 1.25rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+
+  .figures small {
+    display: block;
+    font-size: 0.75rem;
+  }
+
+  .type-row-link {
+    cursor: pointer;
+  }
+
+  .type-row-link:hover {
+    background: color-mix(in oklab, var(--color-base-200) 55%, transparent);
+  }
+
+  .bar-list {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .bar-list > button,
+  .bar-list > div {
     background: transparent;
     border: 0;
-    cursor: pointer;
-    display: flex;
-    gap: 1rem;
-    justify-content: space-between;
-    padding: 0.7rem 0.25rem;
+    border-radius: 0.5rem;
+    display: grid;
+    gap: 0.2rem 0.5rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin: 0 -0.35rem;
+    padding: 0.4rem 0.35rem;
     text-align: left;
-    width: 100%;
+    width: calc(100% + 0.7rem);
   }
 
-  .type-row:hover {
-    background: color-mix(in oklab, var(--color-base-200) 60%, transparent);
+  .bar-list > button {
+    cursor: pointer;
   }
 
-  .type-row.selected {
-    background: color-mix(in oklab, var(--color-primary) 7%, transparent);
+  .bar-list > button:hover {
+    background: color-mix(in oklab, var(--color-base-200) 72%, transparent);
   }
+
+  .bar-list strong,
+  .bar-list span > small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bar-list strong {
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+  .bar-list span > small,
+  .bar-list b small {
+    color: color-mix(in oklab, var(--color-base-content) 58%, transparent);
+    font-size: 0.75rem;
+    font-weight: 400;
+  }
+
+  .bar-list b {
+    font-size: 0.875rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    text-align: right;
+  }
+
+  .bar-list i {
+    background: color-mix(in oklab, var(--color-primary) 55%, var(--color-base-300));
+    border-radius: 999px;
+    grid-column: 1 / -1;
+    height: 0.25rem;
+    width: var(--width);
+  }
+
+  .bar-list i.problem {
+    background: color-mix(in oklab, var(--color-error) 65%, var(--color-base-300));
+  }
+
+  .worker-list > li {
+    border-top: 1px solid var(--color-base-300);
+    padding: 0.7rem 0;
+  }
+
+  .worker-list > li:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .chip-row {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+  }
+
 
   .jobs-progress {
     background: color-mix(in oklab, var(--color-base-300) 70%, transparent);
@@ -760,7 +1105,8 @@ untrack(() => {
   }
 
   @media (max-width: 1100px) {
-    .jobs-overview {
+    .jobs-overview,
+    .jobs-pair {
       grid-template-columns: minmax(0, 1fr);
     }
   }

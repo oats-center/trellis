@@ -22,24 +22,28 @@ api state@v1 {
   error UnsupportedRepresentation(StateRepresentationError);
   error RegistrationConflict(StateRegistrationConflict);
 
+  /// Register the state a program keeps, before using it.
   rpc Register {
     input StateRegisterRequest;
     output StateRegisterResponse;
     errors [RegistrationConflict];
   }
 
+  /// Read a stored value.
   rpc Get {
     input StateGetRequest;
     output StateGetResponse;
     errors [CorruptRepresentation, UnsupportedRepresentation];
   }
 
+  /// Store a value, optionally only if it hasn't changed since you read it.
   rpc Put {
     input StatePutRequest;
     output StatePutResponse;
     errors [Conflict, CorruptRepresentation, UnsupportedRepresentation];
   }
 
+  /// Delete a stored value.
   rpc Delete {
     input StateDeleteRequest;
     output StateDeleteResponse;
@@ -47,6 +51,7 @@ api state@v1 {
   }
 
 
+  /// Follow changes to stored values as they happen.
   live Watch {
     input StateGetRequest;
     event StateGetResponse;

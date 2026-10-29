@@ -114,8 +114,12 @@ test("B37 Jobs renders a real primary result and type summary", async () => {
         await main
           .getByRole("heading", { name: "Jobs", exact: true, level: 1 })
           .waitFor({ state: "visible", timeout: 30_000 });
-        // The default focus is running-risk, so select the Processed ledger
-        // item to bring the finished seeded job into the primary result.
+        await main.getByText("Job types", { exact: true }).first().waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+        // The overview opens first; the Finished card opens the list of
+        // finished jobs, which holds the seeded one.
         await main
           .getByRole("button", { name: /Finished/ })
           .first()
@@ -132,10 +136,23 @@ test("B37 Jobs renders a real primary result and type summary", async () => {
           true,
           "the primary job query returned at least the seeded job",
         );
-        await main.getByText("Job types", { exact: true }).first().waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
+        // Choosing a job type on the overview opens the list of every job of
+        // that type, finished ones included.
+        await main.getByRole("tab", { name: "Overview" }).click();
+        const jobType = main.getByRole("button", { name: "Work", exact: true });
+        await jobType.waitFor({ state: "visible", timeout: 30_000 });
+        await jobType.click();
+        await main
+          .getByRole("tab", { name: "Job list", selected: true })
+          .waitFor({ state: "visible", timeout: 15_000 });
+        await main
+          .locator(".trellis-chip.active", { hasText: "Work" })
+          .waitFor({ state: "visible", timeout: 15_000 });
+        await main
+          .locator(
+            `a[href="/console/admin/jobs/${encodeURIComponent(created.id)}"]`,
+          )
+          .waitFor({ state: "visible", timeout: 30_000 });
         await assertNoBrowserErrors(errors);
       } finally {
         await context.close();
@@ -211,23 +228,24 @@ test("B41 Events renders its primary query table", async () => {
             level: 1,
           })
           .waitFor({ state: "visible", timeout: 30_000 });
-        // The primary event table is present even if optional panels fail.
-        await main.getByRole("table").first().waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
-        // Filtering by a busiest event type sends only its identity; the
-        // metrics row it comes from carries bigint counts.
+        // Choosing an event type on the overview opens the log filtered to
+        // it; the filter sends only its identity, while the metrics row it
+        // comes from carries bigint counts.
         const eventType = main.locator(".event-types button").first();
         await eventType.waitFor({ state: "visible", timeout: 30_000 });
+        const typeName = await eventType.locator("strong").innerText();
         await eventType.click();
         await main
-          .locator('.event-types button[aria-pressed="true"]')
+          .getByRole("tab", { name: "Event log", selected: true })
+          .waitFor({ state: "visible", timeout: 15_000 });
+        await main
+          .locator(".trellis-chip.active", { hasText: typeName })
           .waitFor({ state: "visible", timeout: 15_000 });
         await main.getByRole("table").first().waitFor({
           state: "visible",
           timeout: 30_000,
         });
+        assert.deepEqual(new URL(page.url()).searchParams.get("view"), "log");
         assert.deepEqual(await main.getByText(/serialize a BigInt/).count(), 0);
         await assertNoBrowserErrors(errors);
       } finally {
@@ -1048,10 +1066,9 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
         try {
           await openConsoleAsRuntimeAdmin(page, runtime);
           await assertNoBrowserErrors(errors);
-          await page.goto(
-            `${runtime.trellisUrl}/console/admin/events?focus=all`,
-            { waitUntil: "domcontentloaded" },
-          );
+          await page.goto(`${runtime.trellisUrl}/console/admin/events`, {
+            waitUntil: "domcontentloaded",
+          });
           await waitForConsoleShell(page);
           const main = page.locator("main");
           await main
@@ -1160,10 +1177,9 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
             { timeoutMs: 60_000 },
           );
           await assertNoBrowserErrors(errors);
-          await page.goto(
-            `${runtime.trellisUrl}/console/admin/events?focus=all`,
-            { waitUntil: "domcontentloaded" },
-          );
+          await page.goto(`${runtime.trellisUrl}/console/admin/events`, {
+            waitUntil: "domcontentloaded",
+          });
           await waitForConsoleShell(page);
           await main
             .getByRole("heading", {

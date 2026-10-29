@@ -74,10 +74,10 @@ model AuthActionSummary {
   kind: AuthActionKind;
   direction: AuthActionDirection;
 }
-// The presentation group people choose access by; ungrouped capabilities
-// belong to their API's own group.
+/// The presentation group people choose access by; ungrouped capabilities
+/// belong to their API's own group.
 enum AuthCapabilityKind { capability; group; }
-// A capability, or a developer-defined group that stands for its members.
+/// A capability, or a developer-defined group that stands for its members.
 model AuthCapabilityDefinition {
   identity: AuthCapabilityIdentity;
   kind: AuthCapabilityKind;
@@ -86,7 +86,7 @@ model AuthCapabilityDefinition {
   title: string;
   description: string;
   grants: string;
-  // A group's current member capabilities.
+  /// A group's current member capabilities.
   members: list<string>;
   allows: list<AuthActionSummary>;
 }
@@ -104,7 +104,7 @@ model AuthRole {
   title: string;
   description: string;
   capabilities: list<AuthCapabilityIdentity>;
-  // Auth assigns this role to every user it creates.
+  /// Auth assigns this role to every user it creates.
   assignToNewUsers: bool;
 }
 model AuthRoleGetRequest { roleId: ulid; }
@@ -117,7 +117,7 @@ model AuthRolePutRequest {
   title: AuthName;
   description: AuthDescription;
   capabilityIds: list<AuthCapabilityId>;
-  // Assign to every user created from now on; existing users keep their roles.
+  /// Assign to every user created from now on; existing users keep their roles.
   assignToNewUsers: bool;
 }
 model AuthRolePutResponse { role: AuthRole; enforcement?: AuthEnforcementProgress; }
@@ -218,6 +218,10 @@ model AuthPackageEvidence {
 }
 model AuthAcceptedApi {
   apiId: AuthApiId;
+  title: string;
+  description: string;
+  /// The authored release version, when the API names one.
+  version?: string;
   generation: AuthRevision;
   acceptedRevision: AuthRevision;
   canonicalDigest: AuthDigest;
@@ -225,7 +229,49 @@ model AuthAcceptedApi {
   capabilities: list<AuthCapabilityDefinition>;
 }
 model AuthApiGetRequest { apiId: AuthApiId; }
-model AuthApiGetResponse { api: AuthAcceptedApi; canonicalIdl: string; }
+/// A domain error an action may return.
+model AuthApiActionError {
+  name: string;
+  /// JSON Schema of the error's data, when it carries any.
+  payload?: json;
+}
+/// One RPC, operation, event or live feed an API offers. Schemas are JSON
+/// Schema documents carrying the IDL's descriptions.
+model AuthApiAction {
+  kind: AuthActionKind;
+  /// The action's name, such as `Users.Create`.
+  name: string;
+  description?: string;
+  /// What a caller sends: an RPC's request, an operation's invocation, or a
+  /// live feed's request.
+  input?: json;
+  /// What an RPC returns or an operation completes with.
+  output?: json;
+  /// An event's data, or each item a live feed sends.
+  payload?: json;
+  /// An operation's durable progress.
+  progress?: json;
+  /// An operation's live-only updates.
+  update?: json;
+  /// An operation's named signals and their data.
+  signals: map<json>;
+  errors: list<AuthApiActionError>;
+  /// The payload fields an event is routed by, as dotted paths.
+  params: list<string>;
+  /// RPC results come a page at a time.
+  paginated: bool;
+  /// An operation accepts uploaded bytes.
+  upload: bool;
+  /// Uploaded bytes go straight to the handler instead of being staged.
+  stream: bool;
+  /// An RPC result may carry a download.
+  download: bool;
+}
+model AuthApiGetResponse {
+  api: AuthAcceptedApi;
+  actions: list<AuthApiAction>;
+  canonicalIdl: string;
+}
 type AuthApisListResponse = CursorPage<AuthAcceptedApi>;
 model AuthApiReviewRequest { apiId: AuthApiId; packageEvidence: AuthPackageEvidence; }
 model AuthCapabilityChange {
@@ -286,12 +332,12 @@ model AuthOAuthClient {
   signUp: AuthOAuthClientSignUp;
   revision: AuthRevision;
 }
-// Ways someone signing in to the app may create their own account. Each new
-// account gets the roles marked for new users.
+/// Ways someone signing in to the app may create their own account. Each new
+/// account gets the roles marked for new users.
 model AuthOAuthClientSignUp {
-  // A username and password chosen on the Portal.
+  /// A username and password chosen on the Portal.
   password: bool;
-  // A first sign-in with an active identity provider.
+  /// A first sign-in with an active identity provider.
   providers: bool;
 }
 model AuthOAuthClientGetRequest { clientId: AuthClientId; }
@@ -308,15 +354,15 @@ model AuthOAuthClientPutRequest {
   expectedRevision: uint64;
   idempotencyKey: AuthIdempotencyKey;
 }
-// How people may sign in to this installation. Takes effect immediately.
+/// How people may sign in to this installation. Takes effect immediately.
 model AuthSignInSettings {
-  // Sign in with a username and password.
+  /// Sign in with a username and password.
   localUsers: bool;
-  // Create your own username-and-password account, through apps that also
-  // allow it. Needs localUsers.
+  /// Create your own username-and-password account, through apps that also
+  /// allow it. Needs localUsers.
   localSignUp: bool;
-  // Sign in with an active identity provider (company sign-in). At least one
-  // of localUsers and providers stays on.
+  /// Sign in with an active identity provider (company sign-in). At least one
+  /// of localUsers and providers stays on.
   providers: bool;
   revision: AuthRevision;
 }
@@ -340,7 +386,7 @@ model AuthOAuthClientMutationRequest {
   idempotencyKey: AuthIdempotencyKey;
 }
 enum AuthPortalLogoFormat { png; jpeg; webp; svg; }
-// At most 256 KiB once decoded.
+/// At most 256 KiB once decoded.
 type AuthPortalLogoData = string(min_length=1, max_length=349528);
 type AuthPortalName = string(min_length=1, max_length=64);
 type AuthPortalStylesheet = string(max_length=65536);
@@ -348,7 +394,7 @@ type AuthPortalTitle = string(max_length=120);
 type AuthPortalSubtitle = string(max_length=280);
 type AuthPortalFooter = string(max_length=500);
 model AuthPortalLogo { format: AuthPortalLogoFormat; base64: AuthPortalLogoData; }
-// Hex colours such as #0050b3 for the Portal's own palette.
+/// Hex colours such as #0050b3 for the Portal's own palette.
 model AuthPortalPalette {
   page?: string;
   surface?: string;
@@ -366,7 +412,7 @@ model AuthPortalCopy {
   signInSubtitle?: AuthPortalSubtitle;
   footer?: AuthPortalFooter;
 }
-// Without clientId, the installation theme every client inherits.
+/// Without clientId, the installation theme every client inherits.
 model AuthPortalTheme {
   clientId?: AuthClientId;
   name?: AuthPortalName;
@@ -387,7 +433,7 @@ model AuthPortalThemeSummary {
 type AuthPortalThemesListResponse = CursorPage<AuthPortalThemeSummary>;
 model AuthPortalThemeGetRequest { clientId?: AuthClientId; }
 model AuthPortalThemeGetResponse { theme?: AuthPortalTheme; }
-// Replaces the whole theme; only the installation theme takes a stylesheet.
+/// Replaces the whole theme; only the installation theme takes a stylesheet.
 model AuthPortalThemePutRequest {
   clientId?: AuthClientId;
   name?: AuthPortalName;
@@ -729,9 +775,9 @@ model AuthServiceUpdate {
 }
 model AuthServiceUpdateSubmitRequest { participantId: string; packageEvidence: AuthPackageEvidence; }
 enum AuthServiceClaimState { waiting; claimed; removed; }
-// A service deployment that takes whatever service first connects with its
-// identity. The connecting service submits its IDL as an update to the claim;
-// approving it creates the deployment (`deploymentId`) and its instance.
+/// A service deployment that takes whatever service first connects with its
+/// identity. The connecting service submits its IDL as an update to the claim;
+/// approving it creates the deployment (`deploymentId`) and its instance.
 model AuthServiceClaim {
   claimId: ulid;
   title: AuthName;
@@ -789,7 +835,7 @@ model AuthInstanceMutationRequest {
 model AuthInstanceMutationResponse { instance: AuthProvisionedInstance; enforcement?: AuthEnforcementProgress; }
 type AuthDeviceConfirmationCode = string(min_length=8, max_length=8);
 type AuthDeviceProvisioningSecret = string(min_length=43, max_length=43);
-// JSON-number Unix milliseconds; the session-proof verifier also requires an integer.
+/// JSON-number Unix milliseconds; the session-proof verifier also requires an integer.
 type AuthDeviceProofIssuedAt = number(min=0, max=9007199254740991);
 model AuthDeviceProof { format: string; signature: string; }
 model AuthDeviceEnrollmentRequest {

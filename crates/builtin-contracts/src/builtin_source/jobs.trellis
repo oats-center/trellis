@@ -407,69 +407,82 @@ api jobs@v1 {
   error NotFoundError(JobsNotFoundErrorData);
   error UnexpectedError;
   error ValidationError;
+  /// What happened to one job, attempt by attempt.
   rpc History {
     input JobsHistoryRequest;
     output JobsHistoryResponse;
     errors [UnexpectedError, ValidationError];
   }
+  /// Cancel a job that hasn't finished.
   rpc Cancel {
     input JobsCancelRequest;
     output JobsCancelResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// Discard a job that failed for good.
   rpc DismissDLQ {
     input JobsDismissDLQRequest;
     output JobsDismissDLQResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// Find a job by its key.
   rpc GetKey {
     input JobsGetKeyRequest;
     output JobsGetKeyResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// Get one job and its current state.
   rpc Inspect {
     input JobsInspectRequest;
     output JobsInspectResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// List jobs that failed for good.
   rpc ListDLQ {
     input JobsListDLQRequest;
     output JobsListDLQResponse;
     errors [UnexpectedError, ValidationError];
     pagination cursor;
   }
+  /// List the services that run jobs, and their workers.
   rpc ListServices {
     input JobsListServicesRequest;
     output JobsListServicesResponse;
     errors [UnexpectedError, ValidationError];
     pagination cursor;
   }
+  /// Job volume, duration and failures over a time window.
   rpc Metrics {
     input JobsMetricsRequest;
     output JobsMetricsResponse;
     errors [UnexpectedError, ValidationError];
   }
+  /// List jobs, optionally by service, kind or state.
   rpc Query {
     input JobsQueryRequest;
     output JobsQueryResponse;
     errors [UnexpectedError, ValidationError];
     pagination cursor;
   }
+  /// How many jobs are waiting, running, done or failed.
   rpc Summary {
     input JobsSummaryRequest;
     output JobsSummaryResponse;
     errors [UnexpectedError, ValidationError];
   }
+  /// Run a job that failed for good again.
   rpc ReplayDLQ {
     input JobsReplayDLQRequest;
     output JobsReplayDLQResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// Retry a failed job now.
   rpc Retry {
     input JobsRetryRequest;
     output JobsRetryResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// Follow job changes as they happen.
   live Watch {
     input JobsWatchRequest;
     event JobsWatchFrame;

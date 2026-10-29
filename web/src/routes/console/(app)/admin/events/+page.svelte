@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onDestroy, untrack } from "svelte";
-  import { afterNavigate } from "$app/navigation";
+  import { onDestroy, tick, untrack } from "svelte";
+  import { afterNavigate, goto } from "$app/navigation";
+  import { resolve } from "$lib/console_paths";
   import { page } from "$app/state";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import Icon from "$lib/components/Icon.svelte";
@@ -112,6 +113,18 @@
     "outside-session-window",
     "auth-unavailable",
   ];
+  type View = "overview" | "log";
+  const views: Array<{ value: View; label: string }> = [
+    { value: "overview", label: "Overview" },
+    { value: "log", label: "Event log" },
+  ];
+  type Measure = "events" | "data" | "problems";
+  const measures: Array<{ value: Measure; label: string; unit: string }> = [
+    { value: "events", label: "Events", unit: "events" },
+    { value: "data", label: "Data", unit: "bytes" },
+    { value: "problems", label: "Problems", unit: "events that couldn't be verified" },
+  ];
+  const eventTypeLimit = 8;
   const listTabs: Array<{ value: Focus; label: string }> = [
     { value: "all", label: "All" },
     { value: "exceptions", label: "Problems" },
@@ -141,6 +154,10 @@
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
   let focus = $state<Focus>(asEventFocus(page.url.searchParams.get("focus")) ?? "all");
+  /** A link that names which events to show opens the log; otherwise the overview. */
+  let view = $state<View>(viewOf(page.url));
+  let measure = $state<Measure>("events");
+  let showAllEventTypes = $state(false);
   let handledFocusParam = page.url.searchParams.get("focus");
   /**
    * Completion status of each optional read, separate from its value.
@@ -155,6 +172,7 @@
   let metricsScope = $state<WindowValue | null>(null);
 
   afterNavigate(() => {
+    view = viewOf(page.url);
     const value = page.url.searchParams.get("focus");
     if (value === handledFocusParam) return;
     handledFocusParam = value;
@@ -255,11 +273,41 @@
     selectedConsumer ? deadLetters.filter((item) => item.resourceId === selectedConsumer?.resourceId) : deadLetters,
   );
   const failedDeliveries = $derived(metricsReady && metrics ? metrics.summary.deadLettersByState.dead : undefined);
+  const measureOption = $derived(measures.find((option) => option.value === measure) ?? measures[0]);
   const chartPoints = $derived(
     metricsReady && metrics
-      ? metrics.buckets.map((bucket) => ({ ...bucketLabel(bucket.start), value: boundedNumber(bucket.total) }))
+      ? metrics.buckets.map((bucket) => ({
+          ...bucketLabel(bucket.start),
+          value: boundedNumber(measure === "data" ? bucket.payloadSizeBytes : measure === "problems" ? bucket.integrityExceptions : bucket.total),
+        }))
       : [],
   );
+  const shownEventTypes = $derived(showAllEventTypes ? eventTypesByCount : eventTypesByCount.slice(0, eventTypeLimit));
+  /** Figures for the period that the health summary doesn't already give. */
+  const figures = $derived.by(() => {
+    if (!metricsReady || !metrics) return [];
+    const summary = metrics.summary;
+    const total = boundedNumber(summary.total);
+    const bytes = boundedNumber(summary.payloadSizeBytes);
+    const verified = boundedNumber(summary.byVerificationStatus.verified ?? 0n);
+    const busiest = metrics.buckets.reduce<(typeof metrics.buckets)[number] | undefined>(
+      (best, bucket) => (!best || bucket.total > best.total ? bucket : best),
+      undefined,
+    );
+    const items: Array<{ label: string; value: string; detail?: string }> = [
+      { label: "Data published", value: formatBytes(bytes), detail: total > 0 ? `${formatBytes(bytes / total)} per event on average` : undefined },
+      { label: "Event types", value: summary.eventTypes.length.toLocaleString(), detail: `${summary.uniqueSubjects.toLocaleString()} distinct subjects` },
+      { label: "Verified", value: total > 0 ? `${((verified / total) * 100).toFixed(1)}%` : "—", detail: `${verified.toLocaleString()} of ${total.toLocaleString()} events` },
+      { label: "Busiest moment", value: busiest && busiest.total > 0n ? busiest.total.toLocaleString() : "—", detail: busiest && busiest.total > 0n ? `events from ${bucketLabel(busiest.start).label}` : "No events yet" },
+    ];
+    if (diagnostics?.retainedFrom) items.push({ label: "History kept from", value: formatDate(diagnostics.retainedFrom) });
+    return items;
+  });
+  const checkRows = $derived.by(() => {
+    if (!metricsReady || !metrics) return [];
+    const verified = { focus: "verified" as Focus, label: "Verified", count: verificationCount("verified"), problem: false };
+    return [verified, ...problemCounts.map((item) => ({ ...item, problem: true }))].map((row) => ({ ...row, detail: checkExplanation(row.focus) }));
+  });
   const problemCounts = $derived.by(() => {
     if (!metricsReady || !metrics) return [];
     const counts: Array<{ focus: Focus; label: string; count: bigint }> = verificationIssues
@@ -390,22 +438,91 @@
     windowMinutes: windowOption.minutes,
     attentionConsumers: attentionConsumers.length,
     shownConsumers: consumers.length,
-    focus,
+    // The overview shows every kind of event, so no card is a chosen filter there.
+    focus: view === "log" ? focus : "",
     attentionConsumersOnly,
     failedActive: false,
   }));
 
-  function handleLedgerSelect(id: string) {
+  async function handleLedgerSelect(id: string) {
     if (id === "consumers") {
       attentionConsumersOnly = !attentionConsumersOnly;
+      await showView("overview");
       document.querySelector(".consumer-health")?.scrollIntoView({ behavior: "smooth", block: "start" });
     } else if (id === "failed") {
       selectConsumer(null);
+      await showView("overview");
       document.getElementById("failed-deliveries")?.scrollIntoView({ behavior: "smooth", block: "start" });
     } else if (id === "all" || id === "exceptions") {
-      selectFocus(id);
-      document.getElementById("recent-events")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      openFocus(id);
     }
+  }
+
+  function viewOf(url: URL): View {
+    return url.searchParams.get("view") === "log" || url.searchParams.has("focus") ? "log" : "overview";
+  }
+
+  async function showView(next: View): Promise<void> {
+    if (next === view) return;
+    view = next;
+    const base = resolve("/admin/events");
+    await goto(next === "log" ? `${base}?view=log` : base, { noScroll: true, keepFocus: true });
+    await tick();
+  }
+
+  /** Opens the log showing one kind of event. */
+  function openFocus(value: Focus) {
+    selectedEventType = null;
+    selectFocus(value);
+    void showView("log");
+  }
+
+  /** Opens the log showing only one event type. */
+  function openEventType(eventType: EventTypeRef) {
+    // Metrics rows carry bigint counts; the filter keeps only the identity.
+    const { ownerContractId, ownerEventName } = eventType;
+    selectedEventType = { ownerContractId, ownerEventName };
+    if (focus !== "all" && focus !== "largest") focus = "all";
+    resetAndLoad();
+    void showView("log");
+  }
+
+  function checkExplanation(value: Focus): string {
+    switch (value) {
+      case "verified": return "Signed by a known sender allowed to publish it";
+      case "missing-proof": return "Carried no signature";
+      case "missing-key": return "Signed by a key Trellis doesn't know";
+      case "untrusted-key": return "Signed by a key Trellis doesn't trust";
+      case "invalid-signature": return "The signature doesn't match the event";
+      case "missing-session": return "The sender wasn't signed in";
+      case "subject-denied": return "The sender isn't allowed to publish this event";
+      case "outside-session-window": return "Sent before or after the sender's session";
+      case "auth-unavailable": return "Sign-in wasn't reachable to check the sender";
+      case "unresolved": return "No API declares this event";
+      case "malformed": return "The event couldn't be read";
+      default: return "";
+    }
+  }
+
+  function eventTypeKey(eventType: EventTypeRef): string {
+    return `${eventType.ownerContractId}:${eventType.ownerEventName}`;
+  }
+
+  function chooseEventType(key: string) {
+    const match = eventTypesByCount.find((eventType) => eventTypeKey(eventType) === key);
+    selectedEventType = match ? { ownerContractId: match.ownerContractId, ownerEventName: match.ownerEventName } : null;
+    if (selectedEventType && focus !== "all" && focus !== "largest") focus = "all";
+    resetAndLoad();
+  }
+
+  function share(count: bigint): number {
+    const total = metrics ? boundedNumber(metrics.summary.total) : 0;
+    return total > 0 ? boundedNumber(count) / total : 0;
+  }
+
+  function shareLabel(count: bigint): string {
+    const value = share(count) * 100;
+    return value >= 10 || value === 0 ? `${Math.round(value)}%` : `${value.toFixed(1)}%`;
   }
 
   function formatBytes(bytes: number): string {
@@ -659,14 +776,6 @@
     if (value === "all" || value === "exceptions" || value === "unresolved" || value === "malformed" || value === "largest") return value;
     if (isVerificationStatus(value)) return value;
     return null;
-  }
-
-  function selectEventType(eventType: EventTypeRef) {
-    // Metrics rows carry bigint counts; the filter keeps only the identity.
-    const { ownerContractId, ownerEventName } = eventType;
-    selectedEventType = selectedEventType?.ownerContractId === ownerContractId && selectedEventType.ownerEventName === ownerEventName ? null : { ownerContractId, ownerEventName };
-    if (selectedEventType && focus === "exceptions") focus = "all";
-    resetAndLoad();
   }
 
   function clearEventFilters() {
@@ -954,6 +1063,12 @@
   {:else if unavailableMessage}
     <EmptyState title="Events can't be shown" description={unavailableMessage} />
   {:else}
+    <div class="trellis-segment events-views" role="tablist" aria-label="Events view">
+      {#each views as option (option.value)}
+        <button type="button" role="tab" aria-selected={view === option.value} class:active={view === option.value} onclick={() => showView(option.value)}>{option.label}</button>
+      {/each}
+    </div>
+
     <MetricsLedger ariaLabel="Event health summary" items={ledgerItems} onSelect={handleLedgerSelect} />
 
     {#if diagnostics?.gapDetected}
@@ -962,87 +1077,83 @@
       <Notice variant="info" role="status">It isn't known whether event history is complete: {diagnosticsError}</Notice>
     {/if}
 
-    <div id="recent-events">
-      <Panel title={focusTitle(focus)}>
-        {#snippet actions()}
-          <div class="flex flex-wrap items-center gap-2">
-            <div class="trellis-segment" role="group" aria-label="Which events">
-              {#each listTabs as tab (tab.value)}
-                <button type="button" class:active={focus === tab.value} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
+    {#if view === "overview"}
+      <div class="events-overview">
+        <Panel title="Activity">
+          {#snippet actions()}
+            <div class="trellis-segment" role="group" aria-label="Measure">
+              {#each measures as option (option.value)}
+                <button type="button" class:active={measure === option.value} aria-pressed={measure === option.value} onclick={() => { measure = option.value; }}>{option.label}</button>
               {/each}
             </div>
-            <label class="input input-sm w-56">
-              <span class="sr-only">Search events</span>
-              <input type="search" placeholder="Search events" bind:value={searchText} onchange={resetAndLoad} />
-            </label>
-          </div>
-        {/snippet}
-        {#if focus !== "all" && focus !== "largest" && problemCounts.length > 0}
-          <div class="chip-row" aria-label="Kinds of problem">
-            {#each problemCounts as problem (problem.focus)}
-              <button type="button" class="trellis-chip" class:active={focus === problem.focus} aria-pressed={focus === problem.focus} onclick={() => selectFocus(focus === problem.focus ? "exceptions" : problem.focus)}>{problem.label} <b>{problem.count.toLocaleString()}</b></button>
-            {/each}
-          </div>
-        {/if}
-        {#if selectedEventType || ownerContractId || publisherDeploymentId || searchText}
-          <div class="chip-row" aria-label="Active filter">
-            {#if selectedEventType}<button type="button" class="trellis-chip active" onclick={() => { selectedEventType = null; resetAndLoad(); }}>{sentenceName(selectedEventType.ownerEventName)} <span aria-hidden="true">×</span></button>{/if}
-            {#if ownerContractId}<button type="button" class="trellis-chip active" onclick={() => { ownerContractId = ""; resetAndLoad(); }}>{apiLabel(ownerContractId)} <span aria-hidden="true">×</span></button>{/if}
-            {#if publisherDeploymentId}<button type="button" class="trellis-chip active" onclick={() => { publisherDeploymentId = ""; resetAndLoad(); }}>From {names.deployment(publisherDeploymentId) ?? "one service"} <span aria-hidden="true">×</span></button>{/if}
-            <button type="button" class="btn btn-ghost btn-xs" onclick={clearEventFilters}>Clear filter</button>
-          </div>
-        {/if}
-        {#if rows.length === 0}
-          <EmptyState
-            title={focus === "exceptions" ? "Every event was verified" : "No events match"}
-            description={focus === "exceptions" ? "Events that can't be traced to a trusted sender show up here." : "Try another filter or a longer time range."}
-          />
-        {:else}
-          <DataTable>
-            <thead><tr><th class="w-6"><span class="sr-only">Details</span></th><th>When</th><th>Event</th><th>From</th><th>Check</th><th class="text-right">Size</th></tr></thead>
-            <tbody>
-              {#each rows as row (`${row.streamSequence}:${row.eventId}`)}
-                {@const check = eventCheckLabel(row.verificationStatus, row.resolution)}
-                {@const open = openEventKey === eventKey(row)}
-                <tr class="event-row" class:row-selected={open} data-event-type={`${row.ownerContractId ?? ""} / ${row.ownerEventName ?? ""}`} data-publisher={row.publisherDeploymentId} onclick={() => { void toggleEvent(row); }}>
-                  <td><Icon name={open ? "chevronDown" : "chevronRight"} size={14} class="text-base-content/50" /></td>
-                  <td class="whitespace-nowrap text-sm">{formatDate(row.eventTime)}</td>
-                  <td class="min-w-0">
-                    <button type="button" class="link link-hover block max-w-sm truncate text-left font-medium" aria-expanded={open} onclick={(event) => { event.stopPropagation(); void toggleEvent(row); }}>{eventLabel(row)}</button>
-                    <span class="block text-xs text-base-content/60">{apiLabel(row.ownerContractId)}</span>
-                  </td>
-                  <td class="text-sm">
-                    {#if row.publisherDeploymentId}<button type="button" class="link link-hover text-left" title="Show only events from this sender" onclick={(event) => { event.stopPropagation(); selectPublisher(row.publisherDeploymentId); }}>{publisherLabel(row)}</button>{:else}{publisherLabel(row)}{/if}
-                  </td>
-                  <td><StatusBadge label={check.label} status={check.ok ? "healthy" : row.resolution === "resolved" ? "degraded" : "unhealthy"} /></td>
-                  <td class="text-right text-sm tabular-nums">{formatBytes(boundedNumber(row.payloadSizeBytes))}</td>
-                </tr>
-                {#if open}
-                  <tr class="event-detail-row">
-                    <td colspan="6">
-                      {#if detailLoading}
-                        <LoadingState label="Loading event" />
-                      {:else if selectedEvent}
-                        {@render eventDetail(selectedEvent)}
-                      {/if}
-                    </td>
-                  </tr>
-                {/if}
-              {/each}
-            </tbody>
-          </DataTable>
-          {#if cursorBackStack.length > 0 || nextCursor}
-            <nav class="flex items-center justify-end gap-3 text-sm text-base-content/70" aria-label="Event pages">
-              <button class="btn btn-outline btn-xs" onclick={goPrevious} disabled={cursorBackStack.length === 0}>Previous</button>
-              <span>Page {cursorBackStack.length + 1}</span>
-              <button class="btn btn-outline btn-xs" onclick={goNext} disabled={!nextCursor}>Next</button>
-            </nav>
+          {/snippet}
+          {#if !metricsReady}
+            <p class="py-10 text-center text-sm text-base-content/60">
+              {visibleMetricsState === "pending" ? "Loading…" : `Activity can't be shown: ${metricsError ?? "not allowed"}`}
+            </p>
+          {:else if chartPoints.every((point) => point.value === 0)}
+            <p class="py-10 text-center text-sm text-base-content/60">{measure === "problems" ? "Every event in this period was verified." : "No events in this period."}</p>
+          {:else}
+            <ColumnChart points={chartPoints} unit={measureOption.unit} />
           {/if}
-        {/if}
-      </Panel>
-    </div>
+        </Panel>
+        <Panel title="In this period">
+          {#if !metricsReady}
+            <p class="text-sm text-base-content/60">{visibleMetricsState === "pending" ? "Loading…" : "Not available."}</p>
+          {:else}
+            <dl class="figures">
+              {#each figures as figure (figure.label)}
+                <div><dt>{figure.label}</dt><dd>{figure.value}</dd>{#if figure.detail}<small>{figure.detail}</small>{/if}</div>
+              {/each}
+            </dl>
+          {/if}
+        </Panel>
+      </div>
 
-    <div class="events-grid">
+      <div class="events-pair">
+        <Panel title="Event types">
+          {#if !metricsReady}
+            <p class="text-sm text-base-content/60">{visibleMetricsState === "pending" ? "Loading…" : "Not available."}</p>
+          {:else}
+            <p class="mb-2 text-sm text-base-content/60">Choose one to see its events.</p>
+            <div class="event-types">
+              {#each shownEventTypes as eventType (`${eventType.ownerContractId}:${eventType.ownerEventName}`)}
+                <button type="button" title="Show these events" onclick={() => openEventType(eventType)}>
+                  <span><strong>{sentenceName(eventType.ownerEventName)}</strong><small>{apiLabel(eventType.ownerContractId)}</small></span>
+                  <b>{eventType.count.toLocaleString()} <small>{shareLabel(eventType.count)}</small></b>
+                  <i style={`--width: ${share(eventType.count) * 100}%`}></i>
+                </button>
+              {:else}
+                <p class="text-sm text-base-content/60">No events in this period.</p>
+              {/each}
+            </div>
+            {#if eventTypesByCount.length > eventTypeLimit}
+              <button type="button" class="btn btn-ghost btn-xs mt-2" onclick={() => { showAllEventTypes = !showAllEventTypes; }}>{showAllEventTypes ? "Show fewer" : `Show all ${eventTypesByCount.length}`}</button>
+            {/if}
+          {/if}
+        </Panel>
+        <Panel title="Checks">
+          {#if !metricsReady}
+            <p class="text-sm text-base-content/60">{visibleMetricsState === "pending" ? "Loading…" : "Not available."}</p>
+          {:else}
+            <p class="mb-2 text-sm text-base-content/60">Whether each event came from a sender allowed to publish it, as a type an API declares.</p>
+            <div class="event-types checks">
+              {#each checkRows as row (row.focus)}
+                <button type="button" title="Show these events" onclick={() => openFocus(row.focus)}>
+                  <span><strong>{row.label}</strong><small>{row.detail}</small></span>
+                  <b>{row.count.toLocaleString()} <small>{shareLabel(row.count)}</small></b>
+                  <i class:problem={row.problem} style={`--width: ${share(row.count) * 100}%`}></i>
+                </button>
+              {/each}
+            </div>
+            {#if problemCounts.length === 0 && metrics && metrics.summary.total > 0n}
+              <p class="mt-3 text-sm text-base-content/70">Every event came from a known sender and matched a known event type.</p>
+            {/if}
+          {/if}
+        </Panel>
+      </div>
+
+      <div class="events-pair">
       <Panel title="Delivery to services" class="consumer-health min-w-0">
         {#snippet actions()}
           {#if attentionConsumersOnly}
@@ -1086,109 +1197,172 @@
         {/if}
       </Panel>
 
-      <aside class="events-rail" aria-label="Event activity">
-        <Panel title="Activity">
-          {#snippet actions()}<span class="text-sm text-base-content/60">{windowOption.title}</span>{/snippet}
-          {#if !metricsReady}
-            <p class="py-10 text-center text-sm text-base-content/60">
-              {visibleMetricsState === "pending" ? "Loading…" : `Activity can't be shown: ${metricsError ?? "not allowed"}`}
-            </p>
-          {:else if chartPoints.length === 0}
-            <p class="py-10 text-center text-sm text-base-content/60">No events in this period.</p>
+      <div id="failed-deliveries">
+        <Panel title="Failed deliveries">
+          {#snippet actions()}
+            {#if selectedConsumer}
+              <button type="button" class="trellis-chip" onclick={() => selectConsumer(null)}>For {consumerName(selectedConsumer)} <span aria-hidden="true">×</span><span class="sr-only">Show all services</span></button>
+            {/if}
+          {/snippet}
+          {#if deadLetterPanelError}
+            <Notice variant="warning" role="status">Failed deliveries can't be shown: {deadLetterPanelError}</Notice>
+          {:else if shownDeadLetters.length === 0}
+            <EmptyState
+              title="No failed deliveries"
+              description={selectedConsumer ? "Everything sent to this service was delivered." : "When a service keeps failing to handle an event, it waits here for you to retry or dismiss it."}
+            />
           {:else}
-            <ColumnChart points={chartPoints} unit="events" />
-          {/if}
-        </Panel>
-        <Panel title="Most published">
-          {#if !metricsReady}
-            <p class="text-sm text-base-content/60">{visibleMetricsState === "pending" ? "Loading…" : "Not available."}</p>
-          {:else}
-            <div class="event-types">
-              {#each eventTypesByCount.slice(0, 6) as eventType (`${eventType.ownerContractId}:${eventType.ownerEventName}`)}
-                {@const active = selectedEventType?.ownerContractId === eventType.ownerContractId && selectedEventType.ownerEventName === eventType.ownerEventName}
-                <button class:active aria-pressed={active} title="Show only these events" onclick={() => selectEventType(eventType)}>
-                  <span><strong>{sentenceName(eventType.ownerEventName)}</strong><small>{apiLabel(eventType.ownerContractId)}</small></span><b>{eventType.count.toLocaleString()}</b>
-                  <i style={`--width: ${metrics?.summary.total ? boundedNumber(eventType.count) / boundedNumber(metrics.summary.total) * 100 : 0}%`}></i>
-                </button>
-              {:else}
-                <p class="text-sm text-base-content/60">No events in this period.</p>
-              {/each}
-            </div>
-          {/if}
-        </Panel>
-      </aside>
-    </div>
-
-    <div id="failed-deliveries">
-      <Panel title="Failed deliveries">
-        {#snippet actions()}
-          {#if selectedConsumer}
-            <button type="button" class="trellis-chip" onclick={() => selectConsumer(null)}>For {consumerName(selectedConsumer)} <span aria-hidden="true">×</span><span class="sr-only">Show all services</span></button>
-          {/if}
-        {/snippet}
-        {#if deadLetterPanelError}
-          <Notice variant="warning" role="status">Failed deliveries can't be shown: {deadLetterPanelError}</Notice>
-        {:else if shownDeadLetters.length === 0}
-          <EmptyState
-            title="No failed deliveries"
-            description={selectedConsumer ? "Everything sent to this service was delivered." : "When a service keeps failing to handle an event, it waits here for you to retry or dismiss it."}
-          />
-        {:else}
-          <ul class="failure-list">
-            {#each shownDeadLetters as deadLetter (deadLetter.deadLetterId)}
-              {@const open = openDeadLetter === deadLetter.deadLetterId}
-              <li data-dead-letter={deadLetter.deadLetterId}>
-                <div class="failure-row">
-                  <button type="button" class="failure-main" aria-expanded={open} onclick={() => void toggleDeadLetter(deadLetter)}>
-                    <span class="font-medium">{deadLetterService(deadLetter)}</span>
-                    <span class="block text-sm text-error">{errorText(deadLetter.lastError) ?? "The service didn't finish handling this event."}</span>
-                    <span class="block text-xs text-base-content/60">Tried {deadLetter.deliveries} {deadLetter.deliveries === 1 ? "time" : "times"} · last {ageLabel(deadLetter.updatedAt)} ago{deadLetter.state === "dead" ? "" : " · retry in progress"}</span>
-                  </button>
-                  {#if deadLetter.state === "dead"}
-                    <span class="flex shrink-0 gap-2">
-                      <button class="btn btn-outline btn-sm" disabled={deadLetterBusy === deadLetter.deadLetterId} onclick={() => changeDeadLetter(deadLetter, "replay")}>Retry</button>
-                      <button class="btn btn-ghost btn-sm text-error" disabled={deadLetterBusy === deadLetter.deadLetterId} onclick={() => changeDeadLetter(deadLetter, "dismiss")}>Dismiss</button>
-                    </span>
-                  {/if}
-                </div>
-                {#if deadLetterError[deadLetter.deadLetterId]}<p class="mt-2 text-sm text-error">{deadLetterError[deadLetter.deadLetterId]}</p>{/if}
-                {#if open}
-                  <div class="failure-detail">
-                    {#if !deadLetterDetail}
-                      {#if !deadLetterError[deadLetter.deadLetterId]}<p class="text-sm text-base-content/60">Loading…</p>{/if}
-                    {:else}
-                      {@const data = decodeData(deadLetterDetail.originalPayload)}
-                      <dl class="fact-list">
-                        <div><dt>Event</dt><dd>{sentenceName(subjectEventName(deadLetterDetail.originalSubject))}</dd></div>
-                        <div><dt>Published</dt><dd>{formatDate(deadLetterDetail.originalPublishedAt)}</dd></div>
-                      </dl>
-                      <div class="mt-3">
-                        {#if data?.kind === "value"}<DataPanel value={data.value} />
-                        {:else}
-                          <h3 class="text-sm font-semibold">Data</h3>
-                          {#if data?.kind === "text"}<p class="text-sm whitespace-pre-wrap">{data.text}</p>
-                          {:else}<p class="text-sm text-base-content/60">This event's data isn't readable text ({data?.kind === "bytes" ? formatBytes(data.size) : "empty"}).</p>{/if}
-                        {/if}
-                      </div>
+            <ul class="failure-list">
+              {#each shownDeadLetters as deadLetter (deadLetter.deadLetterId)}
+                {@const open = openDeadLetter === deadLetter.deadLetterId}
+                <li data-dead-letter={deadLetter.deadLetterId}>
+                  <div class="failure-row">
+                    <button type="button" class="failure-main" aria-expanded={open} onclick={() => void toggleDeadLetter(deadLetter)}>
+                      <span class="font-medium">{deadLetterService(deadLetter)}</span>
+                      <span class="block text-sm text-error">{errorText(deadLetter.lastError) ?? "The service didn't finish handling this event."}</span>
+                      <span class="block text-xs text-base-content/60">Tried {deadLetter.deliveries} {deadLetter.deliveries === 1 ? "time" : "times"} · last {ageLabel(deadLetter.updatedAt)} ago{deadLetter.state === "dead" ? "" : " · retry in progress"}</span>
+                    </button>
+                    {#if deadLetter.state === "dead"}
+                      <span class="flex shrink-0 gap-2">
+                        <button class="btn btn-outline btn-sm" disabled={deadLetterBusy === deadLetter.deadLetterId} onclick={() => changeDeadLetter(deadLetter, "replay")}>Retry</button>
+                        <button class="btn btn-ghost btn-sm text-error" disabled={deadLetterBusy === deadLetter.deadLetterId} onclick={() => changeDeadLetter(deadLetter, "dismiss")}>Dismiss</button>
+                      </span>
                     {/if}
                   </div>
-                {/if}
-              </li>
+                  {#if deadLetterError[deadLetter.deadLetterId]}<p class="mt-2 text-sm text-error">{deadLetterError[deadLetter.deadLetterId]}</p>{/if}
+                  {#if open}
+                    <div class="failure-detail">
+                      {#if !deadLetterDetail}
+                        {#if !deadLetterError[deadLetter.deadLetterId]}<p class="text-sm text-base-content/60">Loading…</p>{/if}
+                      {:else}
+                        {@const data = decodeData(deadLetterDetail.originalPayload)}
+                        <dl class="fact-list">
+                          <div><dt>Event</dt><dd>{sentenceName(subjectEventName(deadLetterDetail.originalSubject))}</dd></div>
+                          <div><dt>Published</dt><dd>{formatDate(deadLetterDetail.originalPublishedAt)}</dd></div>
+                        </dl>
+                        <div class="mt-3">
+                          {#if data?.kind === "value"}<DataPanel value={data.value} />
+                          {:else}
+                            <h3 class="text-sm font-semibold">Data</h3>
+                            {#if data?.kind === "text"}<p class="text-sm whitespace-pre-wrap">{data.text}</p>
+                            {:else}<p class="text-sm text-base-content/60">This event's data isn't readable text ({data?.kind === "bytes" ? formatBytes(data.size) : "empty"}).</p>{/if}
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Panel>
+      </div>
+      </div>
+    {:else}
+      <div id="recent-events">
+      <Panel title={focusTitle(focus)}>
+        {#snippet actions()}
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="trellis-segment" role="group" aria-label="Which events">
+              {#each listTabs as tab (tab.value)}
+                <button type="button" class:active={focus === tab.value} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
+              {/each}
+            </div>
+            {#if eventTypesByCount.length > 0}
+              <label class="select select-sm w-52">
+                <span class="sr-only">Event type</span>
+                <select value={selectedEventType ? eventTypeKey(selectedEventType) : ""} onchange={(event) => chooseEventType(event.currentTarget.value)}>
+                  <option value="">Every event type</option>
+                  {#each eventTypesByCount as eventType (eventTypeKey(eventType))}
+                    <option value={eventTypeKey(eventType)}>{sentenceName(eventType.ownerEventName)} · {apiLabel(eventType.ownerContractId)}</option>
+                  {/each}
+                </select>
+              </label>
+            {/if}
+            <label class="input input-sm w-56">
+              <span class="sr-only">Search events</span>
+              <input type="search" placeholder="Search events" bind:value={searchText} onchange={resetAndLoad} />
+            </label>
+          </div>
+        {/snippet}
+        {#if focus !== "all" && focus !== "largest" && problemCounts.length > 0}
+          <div class="chip-row" aria-label="Kinds of problem">
+            {#each problemCounts as problem (problem.focus)}
+              <button type="button" class="trellis-chip" class:active={focus === problem.focus} aria-pressed={focus === problem.focus} onclick={() => selectFocus(focus === problem.focus ? "exceptions" : problem.focus)}>{problem.label} <b>{problem.count.toLocaleString()}</b></button>
             {/each}
-          </ul>
+          </div>
+        {/if}
+        {#if selectedEventType || ownerContractId || publisherDeploymentId || searchText}
+          <div class="chip-row" aria-label="Active filter">
+            {#if selectedEventType}<button type="button" class="trellis-chip active" onclick={() => { selectedEventType = null; resetAndLoad(); }}>{sentenceName(selectedEventType.ownerEventName)} <span aria-hidden="true">×</span></button>{/if}
+            {#if ownerContractId}<button type="button" class="trellis-chip active" onclick={() => { ownerContractId = ""; resetAndLoad(); }}>{apiLabel(ownerContractId)} <span aria-hidden="true">×</span></button>{/if}
+            {#if publisherDeploymentId}<button type="button" class="trellis-chip active" onclick={() => { publisherDeploymentId = ""; resetAndLoad(); }}>From {names.deployment(publisherDeploymentId) ?? "one service"} <span aria-hidden="true">×</span></button>{/if}
+            <button type="button" class="btn btn-ghost btn-xs" onclick={clearEventFilters}>Clear filter</button>
+          </div>
+        {/if}
+        {#if rows.length === 0}
+          <EmptyState
+            title={focus === "exceptions" ? "Every event was verified" : "No events match"}
+            description={focus === "exceptions" ? "Events that can't be traced to a trusted sender show up here." : "Try another filter or a longer time range."}
+          />
+        {:else}
+          <DataTable>
+            <thead><tr><th class="w-6"><span class="sr-only">Details</span></th><th>When</th><th>Event</th><th>From</th><th>Check</th><th class="hidden text-right lg:table-cell">Size</th></tr></thead>
+            <tbody>
+              {#each rows as row (`${row.streamSequence}:${row.eventId}`)}
+                {@const check = eventCheckLabel(row.verificationStatus, row.resolution)}
+                {@const open = openEventKey === eventKey(row)}
+                <tr class="event-row" class:row-selected={open} data-event-type={`${row.ownerContractId ?? ""} / ${row.ownerEventName ?? ""}`} data-publisher={row.publisherDeploymentId} onclick={() => { void toggleEvent(row); }}>
+                  <td><Icon name={open ? "chevronDown" : "chevronRight"} size={14} class="text-base-content/50" /></td>
+                  <td class="whitespace-nowrap text-sm">{formatDate(row.eventTime)}</td>
+                  <td class="min-w-0">
+                    <button type="button" class="link link-hover block max-w-sm truncate text-left font-medium" aria-expanded={open} onclick={(event) => { event.stopPropagation(); void toggleEvent(row); }}>{eventLabel(row)}</button>
+                    <span class="block text-xs text-base-content/60">{apiLabel(row.ownerContractId)}</span>
+                  </td>
+                  <td class="text-sm">
+                    {#if row.publisherDeploymentId}<button type="button" class="link link-hover text-left" title="Show only events from this sender" onclick={(event) => { event.stopPropagation(); selectPublisher(row.publisherDeploymentId); }}>{publisherLabel(row)}</button>{:else}{publisherLabel(row)}{/if}
+                  </td>
+                  <td><StatusBadge label={check.label} status={check.ok ? "healthy" : row.resolution === "resolved" ? "degraded" : "unhealthy"} /></td>
+                  <td class="hidden text-right text-sm tabular-nums lg:table-cell">{formatBytes(boundedNumber(row.payloadSizeBytes))}</td>
+                </tr>
+                {#if open}
+                  <tr class="event-detail-row">
+                    <td colspan="6">
+                      {#if detailLoading}
+                        <LoadingState label="Loading event" />
+                      {:else if selectedEvent}
+                        {@render eventDetail(selectedEvent)}
+                      {/if}
+                    </td>
+                  </tr>
+                {/if}
+              {/each}
+            </tbody>
+          </DataTable>
+          {#if cursorBackStack.length > 0 || nextCursor}
+            <nav class="flex items-center justify-end gap-3 text-sm text-base-content/70" aria-label="Event pages">
+              <button class="btn btn-outline btn-xs" onclick={goPrevious} disabled={cursorBackStack.length === 0}>Previous</button>
+              <span>Page {cursorBackStack.length + 1}</span>
+              <button class="btn btn-outline btn-xs" onclick={goNext} disabled={!nextCursor}>Next</button>
+            </nav>
+          {/if}
         {/if}
       </Panel>
-    </div>
-
-
+      </div>
+    {/if}
   {/if}
   <ConfirmationModal bind:this={confirmationModal} />
 </section>
 
 <style>
   .events-page { display: grid; gap: 1.25rem; grid-template-columns: minmax(0, 1fr); }
-  .events-grid { display: grid; gap: 1.25rem; grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem); align-items: start; }
-  .events-rail { display: grid; gap: 1.25rem; min-width: 0; }
+  .events-views { justify-self: start; }
+  .events-overview { display: grid; gap: 1.25rem; grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr); align-items: stretch; }
+  .events-pair { display: grid; gap: 1.25rem; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .figures { display: grid; gap: 1.25rem 1rem; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr)); }
+  .figures dt { color: color-mix(in oklab, var(--color-base-content) 60%, transparent); font-size: 0.8125rem; }
+  .figures dd { font-size: 1.25rem; font-variant-numeric: tabular-nums; font-weight: 600; line-height: 1.3; }
+  .figures small { color: color-mix(in oklab, var(--color-base-content) 60%, transparent); display: block; font-size: 0.75rem; }
   .row-selected { background: color-mix(in oklab, var(--color-primary) 8%, var(--color-base-100)); }
   .service-list { display: grid; }
   .service-list > li { border-top: 1px solid var(--color-base-300); }
@@ -1216,15 +1390,17 @@
   .event-detail-row > td { background: color-mix(in oklab, var(--color-base-200) 45%, transparent); padding: 1rem 1.25rem 1.25rem; }
   .event-types { display: grid; gap: 0.35rem; min-width: 0; }
   .event-types button { background: transparent; border: 0; border-radius: 0.5rem; cursor: pointer; display: grid; gap: 0.2rem 0.5rem; grid-template-columns: minmax(0, 1fr) auto; margin: 0 -0.35rem; padding: 0.4rem 0.35rem; text-align: left; width: calc(100% + 0.7rem); }
-  .event-types button:hover, .event-types button.active { background: color-mix(in oklab, var(--color-base-200) 72%, transparent); }
+  .event-types button:hover { background: color-mix(in oklab, var(--color-base-200) 72%, transparent); }
   .event-types button span { min-width: 0; }
   .event-types button strong, .event-types button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .event-types button strong { font-size: 0.875rem; font-weight: 500; }
   .event-types button small { color: color-mix(in oklab, var(--color-base-content) 60%, transparent); font-size: 0.75rem; }
-  .event-types button b { font-size: 0.875rem; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .event-types button b { font-size: 0.875rem; font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+  .event-types button b small { color: color-mix(in oklab, var(--color-base-content) 55%, transparent); display: inline; font-weight: 400; margin-left: 0.25rem; }
+  .event-types button i.problem { background: color-mix(in oklab, var(--color-warning) 70%, var(--color-base-300)); }
   .event-types button i { background: color-mix(in oklab, var(--color-primary) 55%, var(--color-base-300)); border-radius: 999px; grid-column: 1 / -1; height: 0.25rem; width: var(--width); }
 
   @media (max-width: 75rem) {
-    .events-grid { grid-template-columns: minmax(0, 1fr); }
+    .events-overview, .events-pair { grid-template-columns: minmax(0, 1fr); }
   }
 </style>

@@ -390,10 +390,19 @@ async function runRustLiveProbeCaller(
       CARGO_TARGET_DIR: fileURLToPath(new URL("../../target", import.meta.url)),
     },
   });
-  child.stderr.pipe(process.stderr);
+  let output = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    output += chunk.toString();
+  });
+  // A stalled caller would otherwise hold the file open long after the test
+  // times out; end its process group and fail with what it printed.
+  let timedOut = false;
+  const deadline = setTimeout(() => {
+    timedOut = true;
+    if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+  }, 240_000);
   const loginMarker = "NATIVE_LOGIN ";
   const resultMarker = "LIVE_PROBE_CALLER_RESULT ";
-  let output = "";
   let result: Record<string, number> | undefined;
   for await (const line of createInterface({ input: child.stdout })) {
     output += `${line}\n`;
@@ -418,6 +427,8 @@ async function runRustLiveProbeCaller(
         .parse(JSON.parse(line.slice(resultMarker.length)));
   }
   const status = await child.exited;
+  clearTimeout(deadline);
+  assert(!timedOut, `Rust liveprobe caller did not finish: ${output}`);
   assert.equal(status.code, 0, `Rust liveprobe caller failed: ${output}`);
   assert(result, `Rust liveprobe caller produced no result: ${output}`);
   return result;
@@ -442,6 +453,7 @@ function startRustProvider(runtime: ProviderRuntime): {
   kill: () => void;
 } {
   let pid: number | undefined;
+  let killed = false;
   const statusPromise = runtime
     .registerService({
       name: "live-probe-rust",
@@ -462,11 +474,14 @@ function startRustProvider(runtime: ProviderRuntime): {
       child.stdout.pipe(process.stdout);
       child.stderr.pipe(process.stderr);
       pid = child.pid;
+      // A stop requested while the identity was registering still applies.
+      if (killed && pid !== undefined) process.kill(-pid, "SIGTERM");
       return child.exited;
     });
   return {
     status: statusPromise,
     kill: () => {
+      killed = true;
       if (pid !== undefined) process.kill(-pid, "SIGTERM");
     },
   };

@@ -246,6 +246,8 @@ pub struct SemanticPackage {
     pub(crate) participants: BTreeMap<ParticipantId, ParticipantDefinition>,
     pub(crate) app_requests: BTreeMap<AppRequestId, AppRequestDefinition>,
     pub(crate) sources: SourceMap,
+    /// Authored `///` descriptions keyed like `sources`; presentation only.
+    pub(crate) docs: BTreeMap<String, String>,
 }
 
 impl SemanticPackage {
@@ -272,6 +274,11 @@ impl SemanticPackage {
     /// Return package participants.
     pub fn participants(&self) -> &BTreeMap<ParticipantId, ParticipantDefinition> {
         &self.participants
+    }
+    /// Return the authored description of a type (`type.Name`), a model field
+    /// (`type.Name.field`) or an API action (`api.Name.rpc.Action`).
+    pub fn doc(&self, key: &str) -> Option<&str> {
+        self.docs.get(key).map(String::as_str)
     }
     /// Return application authoring metadata, which does not define installable principals.
     pub fn app_requests(&self) -> &BTreeMap<AppRequestId, AppRequestDefinition> {

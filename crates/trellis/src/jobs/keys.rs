@@ -9,7 +9,9 @@ use crate::jobs::types::JobContext;
 
 const JOBS_KEYS_BUCKET_PREFIX: &str = "JOBS_KEYS";
 const KEY_STATE_VERSION: u32 = 1;
-const CAS_RETRIES: usize = 8;
+/// Each conflict means a competing writer committed, so a busy key is still
+/// progressing; retry by time rather than by count so many writers can all land.
+const CAS_RETRY_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[doc = concat!("Trellis API operation `", stringify!(job_key), "`.")]
 pub fn job_key(service: &str, job_type: &str, job_id: &str) -> String {
@@ -827,7 +829,9 @@ impl NatsKeyCoordinator {
         T: KeyStateUpdate,
     {
         let key = coordination_key(&policy.service, &policy.job_type, &policy.key_hash());
-        for _ in 0..CAS_RETRIES {
+        let deadline = tokio::time::Instant::now() + CAS_RETRY_WINDOW;
+        let mut attempt = 0u32;
+        while tokio::time::Instant::now() < deadline {
             let entry = self.store.entry(key.clone()).await.map_err(|error| {
                 NatsKeyCoordinatorError::Read {
                     key: key.clone(),
@@ -868,7 +872,15 @@ impl NatsKeyCoordinator {
             };
             match written {
                 Ok(_) => return Ok(output),
-                Err(error) if is_revision_mismatch(&error) || already_exists(&error) => continue,
+                Err(error) if is_revision_mismatch(&error) || already_exists(&error) => {
+                    // Spread competing writers rather than retrying in lockstep.
+                    let ceiling = 5u64.saturating_mul(1 << attempt.min(5)).min(100);
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(rand::random_range(
+                        0..=ceiling,
+                    )))
+                    .await;
+                }
                 Err(error) => {
                     return Err(NatsKeyCoordinatorError::Write {
                         key: key.clone(),
@@ -1054,5 +1066,114 @@ mod recovery_tests {
             release_active_slot(state, &input.job_id, &input.slot_token, &restart.started_at),
             LeaseMutationOutcome::Lost { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod contention_tests {
+    use super::*;
+    use ulid::Ulid;
+
+    #[tokio::test]
+    async fn concurrent_admissions_on_one_key_all_land_across_coordinators() {
+        let source = tempfile::tempdir().unwrap();
+        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
+            source.path(),
+        ))
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut nats = trellis_local_nats::LocalNats::builder()
+            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
+            .source(source.path())
+            .temporary_state()
+            .ephemeral_ports()
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: state.path().join("nats.log"),
+                mirror: false,
+            })
+            .start()
+            .unwrap();
+        let client = async_nats::ConnectOptions::new()
+            .credentials_file(source.path().join("creds/trellis-auth.creds"))
+            .await
+            .unwrap()
+            .connect(nats.nats_url())
+            .await
+            .unwrap();
+        async_nats::jetstream::new(client.clone())
+            .create_key_value(async_nats::jetstream::kv::Config {
+                bucket: format!("{JOBS_KEYS_BUCKET_PREFIX}_contention"),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut coordinators = Vec::new();
+        for _ in 0..4 {
+            coordinators.push(
+                NatsKeyCoordinator::open_for_service(client.clone(), "contention")
+                    .await
+                    .unwrap(),
+            );
+        }
+        let policy = JobKeyPolicy {
+            service: "contention".into(),
+            job_type: "work".into(),
+            key: "shared".into(),
+            key_hash: "shared-hash".into(),
+            max_active: 1,
+            max_queued_per_key: 32,
+            when_full: JobQueueWhenFull::Reject,
+            stale_policy: JobKeyStalePolicy::FailStale,
+        };
+        let ids = (0..32).map(|_| Ulid::new().to_string()).collect::<Vec<_>>();
+        let admissions = ids.iter().enumerate().map(|(index, job_id)| {
+            coordinators[index % coordinators.len()].admit(
+                policy.clone(),
+                AdmitJobInput {
+                    job_id: job_id.clone(),
+                    request_id: job_id.clone(),
+                    created_at: "2026-10-29T00:00:00Z".into(),
+                    context: JobContext {
+                        request_id: job_id.clone(),
+                        trace_id: "0123456789abcdef0123456789abcdef".into(),
+                        traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+                            .into(),
+                        tracestate: None,
+                    },
+                },
+            )
+        });
+        for outcome in futures_util::future::join_all(admissions).await {
+            assert!(
+                matches!(outcome, Ok(AdmitJobOutcome::Accepted { .. })),
+                "every admission with room must be accepted: {outcome:?}"
+            );
+        }
+        let entry = coordinators[0]
+            .store
+            .entry(coordination_key(
+                &policy.service,
+                &policy.job_type,
+                &policy.key_hash(),
+            ))
+            .await
+            .unwrap()
+            .expect("the key has state");
+        let stored: JobKeyState = serde_json::from_slice(&entry.value).unwrap();
+        let mut retained = stored
+            .active
+            .iter()
+            .map(|slot| slot.job_id.clone())
+            .chain(stored.queued.iter().map(|entry| entry.job_id.clone()))
+            .collect::<Vec<_>>();
+        retained.sort();
+        let mut expected = ids;
+        expected.sort();
+        assert_eq!(retained, expected, "the key retains every accepted job");
+        nats.stop().unwrap();
     }
 }

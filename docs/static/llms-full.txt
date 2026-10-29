@@ -101,6 +101,10 @@ group's `grants` text; changing that text makes them approve again, while
 editing `title`, `description`, `allows`, or group members does not. Keep
 `grants` honest, and put changes that break what users agreed to in a new API
 major version. Authors declare no revision counters.
+A `///` comment directly above a model, field, enum, type alias, or action
+describes it. Descriptions show in the presentation IDL, `Apis.Get`, and the
+Console's API pages; they never change a digest or compatibility. Plain `//`
+comments are dropped.
 Participant identity, API identity, API release version, and surface transport
 version are separate concepts.
 

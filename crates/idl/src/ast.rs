@@ -50,21 +50,25 @@ pub(crate) enum Declaration {
 #[derive(Clone, Debug)]
 pub(crate) struct Model {
     pub name: String,
+    pub docs: String,
     pub fields: BTreeMap<String, Field>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Field {
     pub optional: bool,
     pub ty: TypeExpr,
+    pub docs: String,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Enum {
     pub name: String,
+    pub docs: String,
     pub symbols: Vec<String>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Alias {
     pub name: String,
+    pub docs: String,
     pub ty: TypeExpr,
 }
 
@@ -106,6 +110,7 @@ pub(crate) struct CapabilityGroup {
 pub(crate) struct Action {
     pub kind: String,
     pub name: String,
+    pub docs: String,
     pub members: BTreeMap<String, MemberValue>,
     pub span: Range<usize>,
 }

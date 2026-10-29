@@ -8,9 +8,9 @@ use trellis_idl::project::{
 };
 use trellis_idl::{
     canonical_package, compare_implementation, compare_resource, compare_resource_evolution,
-    compare_selected, compile_evidence, compile_project, json_schema, CanonicalMode,
-    PackageEvidence, PackageSourceEvidence, RetainedResourceActual, SelectedCompatibilityCache,
-    SourceUnit, TypeDefinition,
+    compare_selected, compile_evidence, compile_project, described_json_schema, json_schema,
+    CanonicalMode, PackageEvidence, PackageSourceEvidence, RetainedResourceActual,
+    SelectedCompatibilityCache, SourceUnit, TypeDefinition,
 };
 
 fn manifest(sources: &[(&str, &str)]) -> PackageManifest {
@@ -1373,5 +1373,78 @@ fn operation_live_channel_compares_effective_schema() {
             repeated.api(&api).unwrap(),
         )
         .compatible
+    );
+}
+
+#[test]
+fn descriptions_round_trip_through_evidence_without_changing_meaning() {
+    let compile = |types: &str, api: &str| {
+        compile_project(
+            &manifest(&[("types", "types.trellis"), ("api", "api.trellis")]),
+            vec![
+                source("types", "types.trellis", types),
+                source("api", "api.trellis", api),
+            ],
+            BTreeMap::new(),
+        )
+        .unwrap()
+    };
+    let types = TYPES.replace(
+        "model GetInput { id: OrderId; page?: CursorQuery; }",
+        "/// What to look up.\nmodel GetInput {\n  /// The order.\n  ///\n  /// Exactly one.\n  id: OrderId;\n  page?: CursorQuery;\n}",
+    );
+    let api = API.replace(
+        "  rpc Get {",
+        "  // Not a description.\n  /// Find orders by ID.\n  rpc Get {",
+    );
+    let plain = compile(TYPES, API);
+    let described = compile(&types, &api);
+    assert_eq!(plain.root_digest(), described.root_digest());
+
+    let canonical =
+        canonical_package(&described, described.root(), CanonicalMode::Presentation).unwrap();
+    let evidence = PackageEvidence {
+        root_package: "orders".into(),
+        root_digest: described.root_digest().into(),
+        packages: vec![PackageSourceEvidence {
+            name: "orders".into(),
+            version: Version::new(1, 2, 3),
+            digest: described.root_digest().into(),
+            source: canonical.clone(),
+        }],
+    };
+    let stored = compile_evidence(evidence).unwrap();
+    assert_eq!(
+        canonical_package(&stored, stored.root(), CanonicalMode::Presentation).unwrap(),
+        canonical
+    );
+    let package = stored.root_package();
+    assert_eq!(
+        package.doc("api.orders.rpc.Get"),
+        Some("Find orders by ID.")
+    );
+
+    let input = package
+        .apis()
+        .values()
+        .flat_map(|api| api.actions().values())
+        .find_map(|action| match action {
+            trellis_idl::ActionDefinition::Rpc { input, .. } => Some(input.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let schema = described_json_schema(&stored, &input).unwrap();
+    let definition = &schema["$defs"]["orders.GetInput"];
+    assert_eq!(definition["description"], "What to look up.");
+    assert_eq!(
+        definition["properties"]["id"]["description"],
+        "The order.\n\nExactly one."
+    );
+    assert!(definition["properties"]["page"]
+        .get("description")
+        .is_none());
+    assert_eq!(
+        json_schema(&stored, &input).unwrap(),
+        json_schema(&plain, &input).unwrap()
     );
 }

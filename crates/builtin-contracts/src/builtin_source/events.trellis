@@ -420,64 +420,76 @@ api events@v1 {
   error UnreplayableOriginal(EventsErrorData);
   error UnexpectedError;
   error ValidationError;
+  /// Get one event consumer and how far behind it is.
   rpc Consumers.Inspect {
     input EventsConsumersInspectRequest;
     output EventsConsumersInspectResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// List event consumers and their delivery status.
   rpc Consumers.Query {
     input EventsConsumersQueryRequest;
     output EventsConsumersQueryResponse;
     errors [UnexpectedError, ValidationError];
     pagination cursor;
   }
+  /// A service reports how delivering an event to it went.
   rpc Consumers.ReportDelivery {
     input EventsConsumersReportDeliveryRequest;
     output EventsConsumersReportDeliveryResponse;
     errors [Conflict, Forbidden, NotFoundError, Unavailable, ValidationError];
   }
+  /// Get one published event and its data.
   rpc Inspect {
     input EventsInspectRequest;
     output EventsInspectResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// Event volume and delivery speed over a time window.
   rpc Metrics {
     input EventsMetricsRequest;
     output EventsMetricsResponse;
     errors [UnexpectedError, ValidationError];
   }
+  /// Problems with event storage and processing, and whether history is complete.
   rpc Diagnostics {
     input EventsDiagnosticsRequest;
     output EventsDiagnosticsResponse;
     errors [UnexpectedError, ValidationError];
   }
+  /// List published events, newest first, optionally by type, sender or text.
   rpc Query {
     input EventsQueryRequest;
     output EventsQueryResponse;
     errors [UnexpectedError, ValidationError];
     pagination cursor;
   }
+  /// List events that failed to reach a service.
   rpc DeadLetters.Query {
     input EventsDeadLettersQueryRequest;
     output EventsDeadLettersQueryResponse;
     errors [Forbidden, UnexpectedError, ValidationError];
     pagination cursor;
   }
+  /// Get one failed delivery, its data and the error.
   rpc DeadLetters.Inspect {
     input EventsDeadLettersInspectRequest;
     output EventsDeadLettersInspectResponse;
     errors [Forbidden, NotFoundError, Unavailable, ValidationError];
   }
+  /// Send a failed event to its service again.
   rpc DeadLetters.Replay {
     input EventsDeadLettersReplayRequest;
     output EventsDeadLettersReplayResponse;
     errors [Conflict, Forbidden, NotFoundError, Unavailable, UnreplayableOriginal, ValidationError];
   }
+  /// Discard a failed delivery.
   rpc DeadLetters.Dismiss {
     input EventsDeadLettersDismissRequest;
     output EventsDeadLettersDismissResponse;
     errors [Conflict, Forbidden, NotFoundError, Unavailable, ValidationError];
   }
+  /// Follow published events and delivery changes as they happen.
   live Watch {
     input EventsWatchRequest;
     event EventsWatchFrame;

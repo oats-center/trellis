@@ -8,7 +8,7 @@
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { isUncertainError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
-  import { groupByArea } from "$lib/console/capability_areas.ts";
+  import { consoleUrl } from "$lib/console_paths";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import Pager from "$lib/components/Pager.svelte";
@@ -34,16 +34,6 @@
     return apiId.split("@")[1] ?? "";
   }
 
-  function groupsOf(api: Api) {
-    return groupByArea(
-      api.capabilities,
-      (capability) => capability.identity.capabilityId,
-    ).map((group) => ({
-      id: group.id,
-      title: group.title,
-      items: group.items.map((capability) => capability.title),
-    }));
-  }
   type Review = apis.auth.ApisReviewOutput["review"];
 
   /** Capability titles come from the accepted catalog; the ID is the fallback. */
@@ -84,9 +74,15 @@
   const scope = new RequestScope("api-catalog");
   const reviewScope = new RequestScope("api-review");
   let catalog = $state.raw<apis.auth.ApisListOutput["items"]>([]);
+  let search = $state("");
   const namespaces = $derived.by(() => {
     const byId = new Map<string, Api[]>();
-    for (const api of catalog) {
+    const term = search.trim().toLowerCase();
+    for (const api of catalog.filter((item) =>
+      `${item.title} ${item.description} ${item.apiId}`
+        .toLowerCase()
+        .includes(term),
+    )) {
       const id = namespaceOf(api.apiId);
       byId.set(id, [...(byId.get(id) ?? []), api]);
     }
@@ -94,11 +90,6 @@
       .map(([id, apis]) => ({ id, apis }))
       .sort((a, b) => a.id.localeCompare(b.id));
   });
-  let detail = $state.raw<apis.auth.ApisGetOutput | null>(null);
-  let selectedId = $state<string | null>(null);
-  const selectedApi = $derived(
-    catalog.find((api) => api.apiId === selectedId) ?? null,
-  );
   let review = $state.raw<apis.auth.ApisReviewOutput["review"] | null>(null);
   let result = $state.raw<apis.auth.ApisAcceptOutput | null>(null);
   let cursor = $state<string | undefined>();
@@ -127,18 +118,6 @@
       if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
     } finally {
       if (scope.settle(token)) loading = false;
-    }
-  }
-
-  async function inspect(apiId: string): Promise<void> {
-    const token = reviewScope.begin();
-    selectedId = apiId;
-    detail = null;
-    try {
-      const response = await trellis.apisGet({ apiId }).orThrow();
-      if (reviewScope.settle(token)) detail = response;
-    } catch (cause) {
-      if (reviewScope.settle(token)) error = projectConsoleError(cause).message;
     }
   }
 
@@ -222,116 +201,91 @@
 </script>
 
 <section class="space-y-5">
-  <PageToolbar title="APIs" description="What services on Trellis can do." />
+  <PageToolbar
+    title="APIs"
+    description="What's installed, what each API offers, and how to call it."
+  />
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if result}<Notice variant="success"
       >{apiName(result.api.apiId)} is updated.</Notice
     >{/if}
 
-  <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-    <div class="trellis-section min-w-0">
-      {#if loading}<LoadingState
-          label="Loading APIs"
-        />{:else if !catalog.length}
-        <EmptyState class="m-4" title="No APIs installed" />
-      {:else}
-        {#each namespaces as namespace (namespace.id)}
-          <h3
-            class="border-b border-base-300 bg-base-200/60 px-5 py-2 text-sm font-semibold"
+  <input
+    class="input w-full max-w-sm"
+    type="search"
+    placeholder="Search APIs"
+    aria-label="Search APIs"
+    bind:value={search}
+  />
+  <div class="trellis-section min-w-0">
+    {#if loading}<LoadingState label="Loading APIs" />{:else if !catalog.length}
+      <EmptyState class="m-4" title="No APIs installed" />
+    {:else if !namespaces.length}
+      <EmptyState class="m-4" title="No APIs match" />
+    {:else}
+      {#each namespaces as namespace (namespace.id)}
+        <h3
+          class="border-b border-base-300 bg-base-200/60 px-5 py-2 text-sm font-semibold"
+        >
+          {humanizeName(namespace.id)}
+          <span class="font-normal text-base-content/55"
+            >· {namespace.apis.length}
+            {namespace.apis.length === 1 ? "API" : "APIs"}</span
           >
-            {humanizeName(namespace.id)}
-            <span class="font-normal text-base-content/55"
-              >· {namespace.apis.length}
-              {namespace.apis.length === 1 ? "API" : "APIs"}</span
-            >
-          </h3>
-          <ul class="divide-y divide-base-300">
-            {#each namespace.apis as api (api.apiId)}
-              <li>
-                <button
-                  type="button"
-                  class={[
-                    "flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-base-200/60",
-                    selectedId === api.apiId && "bg-primary/10",
-                  ]}
-                  disabled={busy}
-                  onclick={() => void inspect(api.apiId)}
+        </h3>
+        <ul class="divide-y divide-base-300">
+          {#each namespace.apis as api (api.apiId)}
+            <li>
+              <a
+                class="flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-base-200/60"
+                href={consoleUrl("/admin/apis/view", {
+                  query: { apiId: api.apiId },
+                })}
+              >
+                <span
+                  class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-base-200 text-base-content/70"
+                  ><Icon name="braces" size={16} /></span
                 >
-                  <span
-                    class="grid h-9 w-9 place-items-center rounded-full bg-base-200 text-base-content/70"
-                    ><Icon name="braces" size={16} /></span
+                <span class="min-w-0 flex-1">
+                  <span class="block font-medium">{api.title}</span>
+                  <span class="block truncate text-sm text-base-content/65"
+                    >{api.description}</span
                   >
-                  <span class="min-w-0 flex-1">
-                    <span class="block font-medium">{apiName(api.apiId)}</span>
-                    <span class="block text-xs text-base-content/60"
-                      >{api.capabilities.length} permissions · installed {formatDate(
-                        api.acceptedAt,
-                      )}</span
-                    >
-                  </span>
-                  <span class="badge badge-sm badge-neutral"
-                    >{apiVersion(api.apiId)}</span
-                  >
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/each}
-        {#if history.length || next}
-          <Pager
-            summary={`Showing ${catalog.length} APIs on this page`}
-            canPrevious={history.length > 0}
-            canNext={!!next}
-            busy={loading || busy}
-            onPrevious={() => {
-              cursor = history.at(-1);
-              history = history.slice(0, -1);
-              void load();
-            }}
-            onNext={() => {
-              history = [...history, cursor];
-              cursor = next;
-              void load();
-            }}
-          />
-        {/if}
-      {/if}
-    </div>
-
-    <div class="trellis-section min-w-0 p-5">
-      {#if selectedApi}
-        <div class="flex items-baseline justify-between gap-3">
-          <h2 class="text-lg font-semibold">{apiName(selectedApi.apiId)}</h2>
-          <span class="text-sm text-base-content/60"
-            >{apiVersion(selectedApi.apiId)} · update {selectedApi.acceptedRevision}</span
-          >
-        </div>
-        <h3 class="mt-4 text-sm font-semibold">Permissions it offers</h3>
-        <dl class="mt-2 space-y-3 text-sm">
-          {#each groupsOf(selectedApi) as group (group.id)}
-            <div>
-              <dt class="font-medium">{group.title}</dt>
-              <dd class="text-base-content/70">{group.items.join(", ")}</dd>
-            </div>
+                </span>
+                <span class="hidden text-xs text-base-content/55 sm:block"
+                  >{api.capabilities.filter(
+                    (item) => item.kind === "capability",
+                  ).length} permissions · installed {formatDate(
+                    api.acceptedAt,
+                  )}</span
+                >
+                <span class="badge badge-sm badge-neutral"
+                  >{api.version ?? apiVersion(api.apiId)}</span
+                >
+              </a>
+            </li>
           {/each}
-        </dl>
-        <details class="mt-5 text-sm">
-          <summary class="cursor-pointer text-base-content/70"
-            >Definition</summary
-          >
-          {#if detail}<pre
-              class="mt-3 max-h-[28rem] overflow-auto rounded-field border border-base-300 bg-base-200/40 p-3 text-xs">{detail.canonicalIdl}</pre>{:else}<p
-              class="mt-2 text-base-content/60"
-            >
-              Loading…
-            </p>{/if}
-        </details>
-      {:else}
-        <p class="py-10 text-center text-sm text-base-content/60">
-          Choose an API to see what it offers.
-        </p>
+        </ul>
+      {/each}
+      {#if history.length || next}
+        <Pager
+          summary={`Showing ${catalog.length} APIs on this page`}
+          canPrevious={history.length > 0}
+          canNext={!!next}
+          busy={loading || busy}
+          onPrevious={() => {
+            cursor = history.at(-1);
+            history = history.slice(0, -1);
+            void load();
+          }}
+          onNext={() => {
+            history = [...history, cursor];
+            cursor = next;
+            void load();
+          }}
+        />
       {/if}
-    </div>
+    {/if}
   </div>
 
   {#if canPerform(authority.authority, "apisReview")}

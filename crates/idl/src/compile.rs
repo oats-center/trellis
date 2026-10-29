@@ -49,6 +49,7 @@ pub(crate) fn compile(
         participants: BTreeMap::new(),
         app_requests: BTreeMap::new(),
         sources: BTreeMap::new(),
+        docs: BTreeMap::new(),
     };
     let scope = Scope {
         package: &package_id,
@@ -97,6 +98,20 @@ pub(crate) fn compile(
             resolved.map_err(|error| at(&parsed[*source], declaration, error.to_string()))?;
         package.types.insert(TypeId::new(name), value);
         record_span(&mut package, &parsed, format!("type.{name}"), declaration);
+        let (docs, fields) = match &declaration.value {
+            Declaration::Model(model) => (&model.docs, Some(&model.fields)),
+            Declaration::Enum(value) => (&value.docs, None),
+            Declaration::Alias(value) => (&value.docs, None),
+            _ => unreachable!(),
+        };
+        let fields = fields.into_iter().flatten();
+        for (key, docs) in std::iter::once((format!("type.{name}"), docs))
+            .chain(fields.map(|(field, value)| (format!("type.{name}.{field}"), &value.docs)))
+        {
+            if !docs.is_empty() {
+                package.docs.insert(key, docs.clone());
+            }
+        }
     }
     validate_type_graph(&package)?;
     mark_recursive_model_fields(&mut package);
@@ -123,17 +138,15 @@ pub(crate) fn compile(
                     candidate.kind == raw_action_kind(action.kind) && candidate.name == action.name
                 })
                 .expect("resolved action has syntax");
-            record_inner_span(
-                &mut package,
-                &parsed,
-                *source,
-                format!(
-                    "api.{name}.{}.{}",
-                    raw_action_kind(action.kind),
-                    action.name
-                ),
-                raw_action.span.clone(),
+            let key = format!(
+                "api.{name}.{}.{}",
+                raw_action_kind(action.kind),
+                action.name
             );
+            if !raw_action.docs.is_empty() {
+                package.docs.insert(key.clone(), raw_action.docs.clone());
+            }
+            record_inner_span(&mut package, &parsed, *source, key, raw_action.span.clone());
         }
         for capability in api.capabilities.keys() {
             let raw_name = crate::semantic::capability_name(capability.as_str());

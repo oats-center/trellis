@@ -141,135 +141,238 @@ api auth@v1 {
   error ValidationError(AuthErrorDetails);
 
   // trellis.auth.v1:roles.manage; role membership never contains action-level grants.
+  /// List roles, newest first, optionally matching a search.
   rpc Roles.List { input AuthPageRequest; output AuthRolesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Get one role and what it holds.
   rpc Roles.Get { input AuthRoleGetRequest; output AuthRoleGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Create a role or replace its title, description and permissions.
   rpc Roles.Put { input AuthRolePutRequest; output AuthRolePutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Delete a role. Everyone who had it loses what it gave them.
   rpc Roles.Delete { input AuthRoleDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List who has which roles, optionally for one person or role.
   rpc RoleAssignments.List { input AuthRoleAssignmentsListRequest; output AuthRoleAssignmentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Give a person a role, optionally until a set time.
   rpc RoleAssignments.Assign { input AuthRoleAssignRequest; output AuthRoleAssignResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Take a role away from a person.
   rpc RoleAssignments.Revoke { input AuthRoleRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List permissions given directly to people, outside roles.
   rpc CapabilityGrants.List { input AuthCapabilityGrantsListRequest; output AuthCapabilityGrantsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Give a person one permission or group directly, optionally until a set time.
   rpc CapabilityGrants.Grant { input AuthCapabilityGrantRequest; output AuthCapabilityGrantResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Take back a permission given directly.
   rpc CapabilityGrants.Revoke { input AuthCapabilityRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List the permissions and groups installed APIs define, with what each allows.
   rpc Capabilities.List { input AuthCapabilitiesListRequest; output AuthCapabilitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Everything a person or service can do, and where each permission comes from.
   rpc Principals.EffectiveAccess { input AuthPrincipalRequest; output AuthEffectiveAccessResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // apis.accept; ForceReplace additionally requires apis.forceReplace.
+  /// List the APIs this installation has accepted.
   rpc Apis.List { input AuthPageRequest; output AuthApisListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Get one accepted API: its actions, their schemas and descriptions, its permissions and its IDL.
   rpc Apis.Get { input AuthApiGetRequest; output AuthApiGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Check a new or changed API definition before accepting it, showing what would change.
   rpc Apis.Review { input AuthApiReviewRequest; output AuthApiReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Accept a reviewed API definition.
   rpc Apis.Accept { input AuthApiAcceptRequest; output AuthApiAcceptResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Accept a reviewed definition that breaks the current one.
   rpc Apis.ForceReplace { input AuthApiForceReplaceRequest; output AuthApiAcceptResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.manageClients.
+  /// List registered apps.
   rpc OAuthClients.List { input AuthPageRequest; output AuthOAuthClientsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Get one registered app.
   rpc OAuthClients.Get { input AuthOAuthClientGetRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Register an app or change its settings.
   rpc OAuthClients.Put { input AuthOAuthClientPutRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   // Whether people signing in to this app may create their own account.
+  /// Choose whether people signing in to this app may create their own account.
   rpc OAuthClients.SignUp.Update { input AuthOAuthClientSignUpUpdateRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Turn an app off. People can no longer sign in to it.
   rpc OAuthClients.Disable { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Delete a registered app.
   rpc OAuthClients.Delete { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // The installation theme needs platform.manage; an app's theme clients.manage.
   // How people may sign in to this installation; platform.manage.
+  /// How people may sign in to this installation.
   rpc SignInSettings.Get { input AuthEmpty; output AuthSignInSettingsGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Change how people may sign in. Takes effect immediately.
   rpc SignInSettings.Update { input AuthSignInSettingsUpdateRequest; output AuthSignInSettingsGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List sign-in page themes.
   rpc PortalThemes.List { input AuthPageRequest; output AuthPortalThemesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Get the sign-in page theme for the installation or one app.
   rpc PortalThemes.Get { input AuthPortalThemeGetRequest; output AuthPortalThemeGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Set the sign-in page theme for the installation or one app.
   rpc PortalThemes.Put { input AuthPortalThemePutRequest; output AuthPortalThemeGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Remove an app's sign-in page theme so it uses the installation's.
   rpc PortalThemes.Delete { input AuthPortalThemeDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // These handlers scope ordinary delegated access to the verified user.
   // Cross-user administration additionally requires trellis.managePrincipals.
+  /// List the apps people have allowed to act for them.
   rpc Delegations.List { input AuthDelegationsListRequest; output AuthDelegationsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// See exactly what one app was allowed to do for a person.
   rpc Delegations.Review { input AuthDelegationReviewRequest; output AuthDelegationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Stop an app acting for a person.
   rpc Delegations.Revoke { input AuthDelegationRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.auth.v1:users.manage; logical retirement and physical kicks are distinct.
+  /// List active app sessions.
   rpc AuthorizationSessions.List { input AuthAuthorizationSessionsListRequest; output AuthAuthorizationSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// End an app session.
   rpc AuthorizationSessions.Revoke { input AuthAuthorizationSessionRevokeRequest; output AuthAuthorizationSessionRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List live connections to Trellis.
   rpc Connections.List { input AuthConnectionsListRequest; output AuthConnectionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Disconnect a live connection now.
   rpc Connections.Kick { input AuthConnectionsKickRequest; output AuthConnectionsKickResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // Fixed authenticated-session rights. These cannot widen the original
   // request, change the ephemeral key, or renew a retired session.
+  /// Renew the calling session's signed authority before it expires.
   rpc Authority.Renew { input AuthAuthorityRenewRequest; output AuthAuthorityRenewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Renew the calling connection's admission before it expires.
   rpc Admission.Renew { input AuthAdmissionRenewRequest; output AuthAdmissionRenewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Who the calling session belongs to and what it may do.
   rpc Sessions.Me { input AuthEmpty; output AuthSessionsMeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Sign the calling session out.
   rpc Sessions.Logout { input AuthEmpty; output AuthSessionsLogoutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.managePlatform.
+  /// Start signing with a new issuer key.
   rpc Issuers.Rotate { input AuthIssuerRotateRequest; output AuthIssuerRotateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Stop trusting an issuer key. Sessions it signed must sign in again.
   rpc Issuers.Revoke { input AuthIssuerRevokeRequest; output AuthIssuerRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // Own-account data, bounded by the named capabilities below.
+  /// The calling person's own account.
   rpc Users.Resolve { input AuthEmpty; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Change your own name or picture.
   rpc Users.Profile.Update { input AuthUserProfileUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Change your own password. Your other sign-ins end.
   rpc Users.Password.Change { input AuthPasswordChangeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Start linking a company sign-in to your account.
   rpc Users.IdentityLink.Create { input AuthIdentityLinkCreateRequest; output AuthIdentityLinkCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List the company sign-ins linked to an account.
   rpc UserIdentities.List { input AuthPageRequest; output AuthUserIdentitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Remove a linked company sign-in from an account.
   rpc UserIdentities.Unlink { input AuthUserIdentityUnlinkRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List an account's sign-ins.
   rpc Sessions.List { input AuthPageRequest; output AuthSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// End one of an account's sign-ins.
   rpc Sessions.Revoke { input AuthLoginRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.managePrincipals. Administrative account access grants no domain data.
+  /// Get one person's account.
   rpc Users.Get { input AuthUserGetRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List people, optionally matching a search or status.
   rpc Users.List { input AuthPageRequest; output AuthUsersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Create an account. It gets the roles marked for new users.
   rpc Users.Create { input AuthUserCreateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Change a person's name, email or whether they can sign in.
   rpc Users.Update { input AuthUserUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Create a one-time link that lets a person set a new password.
   rpc Users.PasswordReset.Create { input AuthPasswordResetCreateRequest; output AuthPasswordResetCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List company sign-in providers.
   rpc OIDCProviders.List { input AuthPageRequest; output AuthOIDCProvidersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Get one company sign-in provider.
   rpc OIDCProviders.Get { input AuthOIDCProviderGetRequest; output AuthOIDCProviderGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Add a company sign-in provider or change its settings.
   rpc OIDCProviders.Put { input AuthOIDCProviderPutRequest; output AuthOIDCProviderGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Turn a company sign-in provider off.
   rpc OIDCProviders.Disable { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Delete a company sign-in provider.
   rpc OIDCProviders.Delete { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.auth.v1:roles.manage; mappings apply only to verified claims from this provider.
+  /// List which provider groups give which roles.
   rpc OIDCRoleMappings.List { input AuthOIDCRoleMappingsListRequest; output AuthOIDCRoleMappingsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Give roles to everyone in a provider group.
   rpc OIDCRoleMappings.Put { input AuthOIDCRoleMappingPutRequest; output AuthOIDCRoleMappingPutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Stop a provider group giving roles.
   rpc OIDCRoleMappings.Delete { input AuthOIDCRoleMappingDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.auth.v1:users.manage; only service/device implementations can be deployed.
+  /// Get one device activation waiting for review.
   rpc Devices.Reviews.Get { input AuthDeviceReviewGetRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List device activations waiting for review.
   rpc Devices.Reviews.List { input AuthPageRequest; output AuthDeviceReviewsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Approve or reject a device activation.
   rpc Devices.Reviews.Decide { input AuthDeviceReviewDecideRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Attach a companion app to an activated device.
   rpc DeviceCompanions.Attach { input AuthDeviceCompanionAttachRequest; output AuthDeviceCompanion; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Detach a device's companion app.
   rpc DeviceCompanions.Revoke { input AuthDeviceCompanionRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Create a deployment for a service or device kind.
   rpc Deployments.Create { input AuthDeploymentCreateRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Get one deployment.
   rpc Deployments.Get { input AuthDeploymentGetRequest; output AuthDeploymentGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List deployments.
   rpc Deployments.List { input AuthPageRequest; output AuthDeploymentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Apply a service or device definition to a deployment.
   rpc Deployments.Apply { input AuthDeploymentApplyRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Turn a deployment on.
   rpc Deployments.Enable { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Turn a deployment off. Its instances stop connecting.
   rpc Deployments.Disable { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Remove a deployment.
   rpc Deployments.Remove { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Submit a service's new definition when it connects.
   rpc ServiceUpdates.Submit { input AuthServiceUpdateSubmitRequest; output AuthServiceUpdateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Whether a submitted service update was accepted.
   rpc ServiceUpdates.Status { input AuthServiceUpdateStatusRequest; output AuthServiceUpdateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List service updates waiting for an administrator.
   rpc ServiceUpdates.List { input AuthServiceUpdatesListRequest; output AuthServiceUpdatesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Get one service update and what it would change.
   rpc ServiceUpdates.Get { input AuthServiceUpdateStatusRequest; output AuthServiceUpdateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Approve or reject a service update.
   rpc ServiceUpdates.Decide { input AuthServiceUpdateDecideRequest; output AuthServiceUpdateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Let a new service identity join a deployment the first time it connects.
   rpc ServiceClaims.Create { input AuthServiceClaimCreateRequest; output AuthServiceClaimResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List service identities waiting to join.
   rpc ServiceClaims.List { input AuthPageRequest; output AuthServiceClaimsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Turn a waiting service identity away.
   rpc ServiceClaims.Remove { input AuthServiceClaimRemoveRequest; output AuthServiceClaimResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List service instances.
   rpc ServiceInstances.List { input AuthInstancesListRequest; output AuthInstancesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Provision a service instance with its own identity.
   rpc ServiceInstances.Provision { input AuthInstanceProvisionRequest; output AuthInstanceProvisionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Let a service instance connect.
   rpc ServiceInstances.Enable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Stop a service instance connecting.
   rpc ServiceInstances.Disable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Remove a service instance.
   rpc ServiceInstances.Remove { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List devices.
   rpc Devices.List { input AuthInstancesListRequest; output AuthInstancesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Provision a device with its own identity.
   rpc Devices.Provision { input AuthInstanceProvisionRequest; output AuthInstanceProvisionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Let a device connect.
   rpc Devices.Enable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Stop a device connecting.
   rpc Devices.Disable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Remove a device.
   rpc Devices.Remove { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List the storage, jobs and other resources deployments use.
   rpc Resources.List { input AuthResourcesListRequest; output AuthResourcesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Get one resource.
   rpc Resources.Get { input AuthResourceGetRequest; output AuthResourceGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Remove a resource and what it stores.
   rpc Resources.Remove { input AuthResourceRemoveRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Which deployments use which resources.
   rpc ResourceBindings.Query { input AuthResourceBindingsQueryRequest; output AuthResourceBindingsQueryResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
 
+  /// Someone or something connected to Trellis.
   event Connections.Opened { payload AuthSecurityEvent; }
+  /// A connection to Trellis closed.
   event Connections.Closed { payload AuthSecurityEvent; }
+  /// An administrator disconnected a connection.
   event Connections.Kicked { payload AuthSecurityEvent; }
+  /// An app session ended.
   event AuthorizationSessions.Retired { payload AuthSecurityEvent; }
+  /// Trellis started signing with a new issuer key.
   event Issuers.Rotated { payload AuthSecurityEvent; }
+  /// Trellis stopped trusting an issuer key.
   event Issuers.Revoked { payload AuthSecurityEvent; }
 
   capabilities {

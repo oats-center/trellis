@@ -775,15 +775,22 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 .into_diagnostic()?;
             info!("managed NATS ready");
             let servers = server.nats_url().to_string();
+            // Clients elsewhere reach the broker by the addresses [client]
+            // names, not the loopback address the runtime itself uses.
+            let client_native = config.client.as_ref().and_then(|c| c.nats_servers.clone());
+            let client_websocket = config
+                .client
+                .as_ref()
+                .and_then(|c| c.ws_nats_servers.clone());
             // A runtime relaying browser WebSockets relays to the broker it
             // just started, and keeps advertising its own origin.
             let websocket = match config.http.as_mut() {
                 Some(http) if http.nats_websocket_upstream.is_some() => {
                     http.nats_websocket_upstream =
                         Some(format!("127.0.0.1:{}", nats_ports.websocket));
-                    config.same_origin_websocket_url()
+                    config.same_origin_websocket_url().map(|url| vec![url])
                 }
-                _ => Some(server.websocket_url().to_string()),
+                _ => client_websocket.or_else(|| Some(vec![server.websocket_url().to_string()])),
             };
             managed = Some(server);
             Some(NatsEndpointOverride {
@@ -791,11 +798,9 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 advertised_native: policy
                     .advertised_native
                     .clone()
+                    .or(client_native)
                     .or_else(|| Some(vec![servers])),
-                advertised_websocket: policy
-                    .advertised_websocket
-                    .clone()
-                    .or_else(|| websocket.map(|url| vec![url])),
+                advertised_websocket: policy.advertised_websocket.clone().or(websocket),
             })
         }
     };

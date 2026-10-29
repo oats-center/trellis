@@ -12,7 +12,9 @@ const DEFAULT_MAX_ACTIVE = 1;
 const DEFAULT_MAX_QUEUED_PER_KEY = 0;
 const DEFAULT_QUEUE_WHEN_FULL = "reject";
 const DEFAULT_STALE_POLICY = "fail-stale";
-const MAX_CAS_ATTEMPTS = 8;
+// Each conflict means a competing writer committed, so a busy key is still
+// progressing; retry by time rather than by count so many writers can all land.
+const CAS_RETRY_WINDOW_MS = 30_000;
 
 export type JobKeyStalePolicy = "fail-stale" | "block";
 export type JobQueueWhenFull = "reject" | "coalesce" | "replace-oldest";
@@ -1117,7 +1119,8 @@ async function updateState<TOutcome>(
   reducer: (state: JobKeyState | undefined) => TOutcome,
 ): Promise<TOutcome> {
   const kv = await openKv();
-  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt += 1) {
+  const deadline = Date.now() + CAS_RETRY_WINDOW_MS;
+  for (let attempt = 0; Date.now() < deadline; attempt += 1) {
     const entry = await getStateEntry(kv, derived.kvKey);
     const current = entry ? parseState(entry, derived) : undefined;
     const outcome = reducer(current);
@@ -1136,12 +1139,10 @@ async function updateState<TOutcome>(
       if (!isCasConflict(error)) {
         throw error;
       }
-      if (attempt + 1 < MAX_CAS_ATTEMPTS) {
-        // Spread competing writers rather than exhausting retries in lockstep.
-        await new Promise((resolve) =>
-          setTimeout(resolve, Math.random() * Math.min(100, 5 * 2 ** attempt)),
-        );
-      }
+      // Spread competing writers rather than retrying in lockstep.
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.random() * Math.min(100, 5 * 2 ** attempt)),
+      );
     }
   }
   throw new Error(`Could not update keyed job state '${derived.kvKey}'`);

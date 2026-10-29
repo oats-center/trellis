@@ -17,12 +17,14 @@ api core@v1 {
   error UnexpectedError;
   error ValidationError;
 
+  /// Whether this Trellis is up, and the APIs it serves.
   rpc Surface.Status {
     input TrellisSurfaceStatusRequest;
     output TrellisSurfaceStatusResponse;
     errors [UnexpectedError, ValidationError];
   }
 
+  /// List the resources the caller can see.
   rpc Resources.Query {
     input ResourcesQueryRequest;
     output ResourcesQueryResponse;
@@ -30,12 +32,14 @@ api core@v1 {
     pagination cursor;
   }
 
+  /// Get one resource and how it is used.
   rpc Resources.Inspect {
     input ResourcesInspectRequest;
     output ResourcesInspectResponse;
     errors [UnexpectedError, ValidationError];
   }
 
+  /// Destroy a resource and what it stores.
   rpc Resources.Destroy {
     input ResourcesDestroyRequest;
     output ResourcesDestroyResponse;

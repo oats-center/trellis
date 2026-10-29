@@ -104,9 +104,25 @@ test("the Console signs in without asking for access and uses the real authentic
         .first()
         .waitFor();
       await page.goto(new URL("/console/admin/apis", origin).href);
-      await page.getByRole("button", { name: /^Auth\b/ }).click();
-      await page.getByText("Definition", { exact: true }).click();
-      await page.locator("pre").filter({ hasText: "OAuthClients" }).waitFor();
+      await page.getByRole("link", { name: /^Trellis Auth\b/ }).click();
+      await page
+        .getByLabel("Find an action", { exact: true })
+        .fill("Users.Create");
+      await page
+        .getByRole("list", { name: "Actions" })
+        .getByRole("button", { name: /^Users\.Create\b/ })
+        .click();
+      await page
+        .getByText("Create an account. It gets the roles marked for new users.")
+        .first()
+        .waitFor();
+      await page.getByText("Manage users", { exact: false }).first().waitFor();
+      await page.locator("code", { hasText: /^username$/ }).waitFor();
+      await page.getByRole("tab", { name: "IDL", exact: true }).click();
+      await page
+        .locator("pre")
+        .filter({ hasText: "/// Create an account." })
+        .waitFor();
       await page.goto(new URL("/console/admin/users", origin).href);
       await page.getByLabel("Open user menu", { exact: true }).click();
       await page

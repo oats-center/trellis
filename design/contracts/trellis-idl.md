@@ -96,6 +96,26 @@ Inputs, outputs, progress, events, and error payloads reference top-level types.
 There is no `rpc internal`, `EventClass`, per-action version, general transfer
 block, participant-local schema, or API State.
 
+A `///` comment directly above a model, field, enum, type alias, or action is
+its description. Descriptions are presentation: they appear in the presentation
+canonical IDL, in Auth's `Apis.Get` action schemas, and in the Console's API
+pages, and never in the semantic digest, validators, or compatibility. Plain
+`//` comments are dropped. APIs, capabilities, and groups keep their `title`
+and `description` statements.
+
+```trellis
+/// An order a customer placed.
+model Order {
+  /// When the customer placed it.
+  placedAt: timestamp;
+}
+
+api orders@v1 {
+  /// Look up one order.
+  rpc Get { input OrderRequest; output Order; }
+}
+```
+
 Transfers are member flags, not a block. An RPC's `download;` lets its response
 carry a receive grant. An Operation's `upload;` accepts caller bytes that the
 runtime durably stages before the handler reads them, so a recovered execution

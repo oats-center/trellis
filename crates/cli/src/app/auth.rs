@@ -477,6 +477,16 @@ async fn users_list_command(format: OutputFormat) -> miette::Result<()> {
     }
     if output::is_json(format) {
         output::print_json(&json!({ "items": users }))?;
+    } else if users.iter().all(|user| user.account.is_none()) {
+        // Account details come only with permission to manage users.
+        let rows = users
+            .iter()
+            .map(|user| vec![user.principal_id.to_string(), user.display_name.clone()])
+            .collect();
+        println!("{}", output::table(&["userId", "name"], rows));
+        output::print_info(
+            "usernames and sign-in status need the Manage users permission; log in again and allow it to see them",
+        );
     } else {
         let rows = users
             .iter()

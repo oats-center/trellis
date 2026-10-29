@@ -282,12 +282,14 @@ fn render(
     if !imports.names.is_empty() {
         output.push('\n');
     }
+    // Descriptions are presentation: the semantic form and its digest omit them.
+    let docs = (mode == CanonicalMode::Presentation).then_some(&package.docs);
     for (id, definition) in &package.types {
-        render_type_definition(&mut output, id, definition, &imports);
+        render_type_definition(&mut output, id, definition, &imports, docs);
         output.push('\n');
     }
     for api in package.apis.values() {
-        output.push_str(&render_api(api, mode, &imports));
+        output.push_str(&render_api(api, mode, &imports, docs));
         output.push('\n');
     }
     let companions = package
@@ -389,16 +391,40 @@ impl Imports {
     }
 }
 
+/// Write a description as `///` lines at the given indent.
+fn render_doc(
+    output: &mut String,
+    indent: &str,
+    docs: Option<&BTreeMap<String, String>>,
+    key: &str,
+) {
+    for line in docs
+        .and_then(|docs| docs.get(key))
+        .into_iter()
+        .flat_map(|doc| doc.lines())
+    {
+        let line = if line.is_empty() {
+            String::new()
+        } else {
+            format!(" {line}")
+        };
+        writeln!(output, "{indent}///{line}").unwrap();
+    }
+}
+
 fn render_type_definition(
     output: &mut String,
     id: &TypeId,
     value: &TypeDefinition,
     imports: &Imports,
+    docs: Option<&BTreeMap<String, String>>,
 ) {
+    render_doc(output, "", docs, &format!("type.{id}"));
     match value {
         TypeDefinition::Model(fields) => {
             writeln!(output, "model {id} {{").unwrap();
             for (name, field) in fields {
+                render_doc(output, "  ", docs, &format!("type.{id}.{name}"));
                 writeln!(
                     output,
                     "  {name}{}: {};",
@@ -477,7 +503,12 @@ fn numeric_bound(value: NumericBound) -> String {
     }
 }
 
-fn render_api(api: &ApiDefinition, mode: CanonicalMode, imports: &Imports) -> String {
+fn render_api(
+    api: &ApiDefinition,
+    mode: CanonicalMode,
+    imports: &Imports,
+    docs: Option<&BTreeMap<String, String>>,
+) -> String {
     let mut output = format!("api {}@v{} {{\n", api.name, api.major);
     if mode == CanonicalMode::Presentation {
         writeln!(output, "  title {};", quote(&api.docs.title)).unwrap();
@@ -496,6 +527,12 @@ fn render_api(api: &ApiDefinition, mode: CanonicalMode, imports: &Imports) -> St
     let mut actions = api.actions.iter().collect::<Vec<_>>();
     actions.sort_by_key(|(id, _)| format!("{} {}", raw_kind(id.kind), id.name));
     for (id, action) in actions {
+        render_doc(
+            &mut output,
+            "  ",
+            docs,
+            &format!("api.{}.{}.{}", api.name, raw_kind(id.kind), id.name),
+        );
         render_action(&mut output, id, action, imports);
     }
     output.push_str("  capabilities {\n");

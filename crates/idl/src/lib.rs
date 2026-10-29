@@ -20,7 +20,7 @@ pub use compatibility::{
     SelectedCompatibilityCache,
 };
 pub use compile::SuppliedDependencies;
-pub use projection::json_schema;
+pub use projection::{described_json_schema, json_schema};
 pub use semantic::*;
 
 #[cfg(test)]

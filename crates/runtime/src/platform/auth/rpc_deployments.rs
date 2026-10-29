@@ -1050,17 +1050,53 @@ fn reviewed_acceptance(
     Ok(acceptance)
 }
 
+/// One API's definition in a compiled accepted package.
+fn defined_api<'a>(
+    graph: &'a trellis_idl::PackageGraph,
+    api_id: &str,
+) -> Result<
+    (
+        &'a trellis_idl::SemanticPackage,
+        &'a trellis_idl::ApiDefinition,
+    ),
+    AuthError,
+> {
+    graph
+        .packages()
+        .values()
+        .find_map(|package| {
+            package
+                .apis()
+                .values()
+                .find(|api| api.identity().as_str() == api_id)
+                .map(|api| (package, api))
+        })
+        .ok_or(AuthError::NotFound)
+}
+
 fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi, AuthError> {
-    let (generation, revision, digest, accepted_at): (u64, u64, String, i64) = connection
-        .query_row(
-            "SELECT generation,accepted_revision,definition_digest,accepted_at \
-            FROM auth_accepted_apis \
-            WHERE api_id=?1",
-            [api_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .optional()?
-        .ok_or(AuthError::NotFound)?;
+    let (generation, revision, digest, accepted_at, evidence): (u64, u64, String, i64, String) =
+        connection
+            .query_row(
+                "SELECT generation,accepted_revision,definition_digest,accepted_at,definition_json \
+                FROM auth_accepted_apis \
+                WHERE api_id=?1",
+                [api_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(AuthError::NotFound)?;
+    let graph = trellis_idl::compile_evidence(super::sqlite::decode(&evidence)?)
+        .map_err(|_| AuthError::Unavailable)?;
+    let (_, definition) = defined_api(&graph, api_id)?;
     let capabilities = connection
         .prepare(
             "SELECT capability_id FROM auth_capability_identities \
@@ -1073,6 +1109,9 @@ fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi
         .collect::<Result<_, AuthError>>()?;
     Ok(AuthAcceptedApi {
         api_id: api_id.to_owned().into(),
+        title: definition.documentation().title.clone(),
+        description: definition.documentation().description.clone(),
+        version: definition.version().map(ToString::to_string),
         generation: AuthRevision(generation.into()),
         accepted_revision: AuthRevision(revision.into()),
         canonical_digest: digest.into(),
@@ -1102,8 +1141,103 @@ pub(super) fn read_api(
         trellis_idl::CanonicalMode::Presentation,
     )
     .map_err(|_| AuthError::Unavailable)?;
+    let (package, api) = defined_api(&graph, input.api_id.as_ref())?;
+    let schema = |ty: &trellis_idl::TypeRef| {
+        trellis_idl::described_json_schema(&graph, ty).map_err(|_| AuthError::Unavailable)
+    };
+    let mut actions = Vec::new();
+    for (id, action) in api.actions() {
+        let kind = match id.kind {
+            trellis_idl::ActionKind::Rpc => "rpc",
+            trellis_idl::ActionKind::Operation => "operation",
+            trellis_idl::ActionKind::Event => "event",
+            trellis_idl::ActionKind::Live => "live",
+        };
+        let errors = |names: &std::collections::BTreeSet<String>| {
+            names
+                .iter()
+                .map(|name| {
+                    Ok(AuthApiActionError {
+                        name: name.clone(),
+                        payload: api.errors()[name].as_ref().map(schema).transpose()?,
+                        extra: Default::default(),
+                    })
+                })
+                .collect::<Result<Vec<_>, AuthError>>()
+        };
+        let mut entry = AuthApiAction {
+            kind: serde_json::from_value(serde_json::json!(kind))?,
+            name: id.name.clone(),
+            description: package
+                .doc(&format!("api.{}.{kind}.{}", api.name(), id.name))
+                .map(str::to_owned),
+            input: None,
+            output: None,
+            payload: None,
+            progress: None,
+            update: None,
+            signals: Default::default(),
+            errors: Vec::new(),
+            params: Vec::new(),
+            paginated: false,
+            upload: false,
+            stream: false,
+            download: false,
+            extra: Default::default(),
+        };
+        match action {
+            trellis_idl::ActionDefinition::Rpc {
+                input,
+                output,
+                errors: names,
+                download,
+                pagination,
+            } => {
+                entry.input = Some(schema(input)?);
+                entry.output = Some(schema(output)?);
+                entry.errors = errors(names)?;
+                entry.download = *download;
+                entry.paginated = pagination.is_some();
+            }
+            trellis_idl::ActionDefinition::Operation {
+                input,
+                output,
+                progress,
+                update,
+                errors: names,
+                signals,
+                upload,
+                stream,
+            } => {
+                entry.input = Some(schema(input)?);
+                entry.output = Some(schema(output)?);
+                entry.progress = progress.as_ref().map(schema).transpose()?;
+                entry.update = update.as_ref().map(schema).transpose()?;
+                entry.signals = signals
+                    .iter()
+                    .map(|(name, ty)| Ok((name.clone(), schema(ty)?)))
+                    .collect::<Result<_, AuthError>>()?;
+                entry.errors = errors(names)?;
+                entry.upload = *upload;
+                entry.stream = *stream;
+            }
+            trellis_idl::ActionDefinition::Event {
+                payload,
+                parameters,
+            } => {
+                entry.payload = Some(schema(payload)?);
+                entry.params = parameters.iter().map(|path| path.join(".")).collect();
+            }
+            trellis_idl::ActionDefinition::Live { input, event } => {
+                entry.input = Some(schema(input)?);
+                entry.payload = Some(schema(event)?);
+            }
+        }
+        actions.push(entry);
+    }
     Ok(AuthApiGetResponse {
         api: accepted_api(connection, &input.api_id)?,
+        actions,
         canonical_idl,
         extra: Default::default(),
     })

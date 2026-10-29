@@ -405,33 +405,40 @@ api health@v1 {
   error NotFoundError(HealthNotFoundErrorData);
   error UnexpectedError;
   error ValidationError;
+  /// Get one service or device's latest health and checks.
   rpc Inspect {
     input HealthInspectRequest;
     output HealthInspectResponse;
     errors [NotFoundError, UnexpectedError, ValidationError];
   }
+  /// Health check results over a time window.
   rpc Metrics {
     input HealthMetricsRequest;
     output HealthMetricsResponse;
     errors [UnexpectedError, ValidationError];
   }
+  /// List services and devices by health.
   rpc Query {
     input HealthQueryRequest;
     output HealthQueryResponse;
     errors [UnexpectedError, ValidationError];
     pagination cursor;
   }
+  /// How many services and devices are healthy, degraded or down.
   rpc Summary {
     input HealthSummaryRequest;
     output HealthSummaryResponse;
     errors [UnexpectedError, ValidationError];
   }
+  /// A service or device reports its health and checks.
   event Heartbeat {
     payload HealthHeartbeatSample;
   }
+  /// A service or device became healthy, degraded or unreachable.
   event StatusChanged {
     payload HealthStatusChangedEvent;
   }
+  /// Follow health changes as they happen.
   live Watch {
     input HealthWatchRequest;
     event HealthWatchFrame;

@@ -201,3 +201,48 @@ fn effective_access_traces_a_group_s_members_to_the_group_s_grant() {
     assert_eq!(grant(&f.read), grant(&editor(&f)));
     assert_eq!(grant(&f.write), grant(&editor(&f)));
 }
+
+#[test]
+fn an_accepted_api_describes_its_actions_and_their_schemas() {
+    let f = fixture();
+    let described = SOURCE
+        .replace(
+            "model Document { id: string; }",
+            "/// A stored document.\nmodel Document {\n  /// Its unique name.\n  id: string;\n}",
+        )
+        .replace(" rpc Get {", " /// Fetch one document.\n rpc Get {");
+    accept(&f.store, &f.admin, &described, false, NOW);
+    let api = f
+        .store
+        .read(|connection| {
+            super::super::rpc_deployments::read_api(
+                connection,
+                &trellis_runtime_apis::__types::trellis::AuthApiGetRequest {
+                    api_id: f.api.clone().into(),
+                    extra: Default::default(),
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(api.api.title, "Documents");
+    let get = api
+        .actions
+        .iter()
+        .find(|action| action.name == "Get")
+        .unwrap();
+    assert_eq!(get.description.as_deref(), Some("Fetch one document."));
+    let input = get.input.as_ref().unwrap();
+    let document = input["$defs"].as_object().unwrap().values().next().unwrap();
+    assert_eq!(document["description"], "A stored document.");
+    assert_eq!(
+        document["properties"]["id"]["description"],
+        "Its unique name."
+    );
+    assert!(api.canonical_idl.contains("/// Fetch one document."));
+    let put = api
+        .actions
+        .iter()
+        .find(|action| action.name == "Put")
+        .unwrap();
+    assert_eq!(put.description, None);
+}

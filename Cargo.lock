@@ -6261,6 +6261,7 @@ dependencies = [
  "ipnet",
  "libc",
  "miette",
+ "rustls",
  "serde_json",
  "tempfile",
  "time",

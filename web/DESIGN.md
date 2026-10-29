@@ -27,6 +27,9 @@ Design the page around those answers, not around the shape of the API.
   revisions, generations, digests, or internal state names in primary UI.
   Show the human title. Put exact identifiers in a details disclosure or a copy
   button when someone needs them for support or scripting.
+- The APIs pages are reference for people building on Trellis: action names,
+  type names, and API IDs are their content, shown as code, with each
+  description beside them.
 - Show names, not IDs. When a record only has an ID, show a short, copyable
   form and work toward giving it a name.
 - No explanatory prose blocks. A page gets at most one short subtitle. If a
