@@ -317,6 +317,7 @@ export function hasExactPermission(
 }
 
 const ADMINISTRATIVE_CAPABILITIES: ReadonlySet<string> = new Set([
+  "trellis.auth.v1:accounts.manage",
   "trellis.auth.v1:users.manage",
   "trellis.auth.v1:roles.manage",
   "trellis.auth.v1:apis.accept",
@@ -325,7 +326,7 @@ const ADMINISTRATIVE_CAPABILITIES: ReadonlySet<string> = new Set([
   "trellis.auth.v1:platform.manage",
 ]);
 
-/** Whether a capability is one of the six administrative capabilities. */
+/** Whether a capability is one of the seven administrative capabilities. */
 export function isAdministrativeCapability(capabilityId: string): boolean {
   return ADMINISTRATIVE_CAPABILITIES.has(capabilityId);
 }

@@ -83,7 +83,7 @@ fn reset_requester(
     SqliteAuthorizationStore::require_administration(
         connection,
         actor,
-        Administration::ManagePrincipals,
+        Administration::ManageAccounts,
     )?;
     let (grant, identity): (Option<String>, Option<String>) = connection
         .query_row(
@@ -105,7 +105,7 @@ fn reset_requester(
     let current = credential_snapshot(connection, &credential, now)?;
     if current.principal_id != actor
         || !current.approved.iter().flatten().any(|capability| {
-            capability.capability_id == Administration::ManagePrincipals.capability_id()
+            capability.capability_id == Administration::ManageAccounts.capability_id()
         })
     {
         return Err(AuthError::Denied);
@@ -188,6 +188,7 @@ pub(crate) fn create_reset(
             if protected {
                 return Err(AuthError::Denied);
             }
+            SqliteAuthorizationStore::require_account_reach(connection, &identity.actor, &target)?;
             let (username, version): (Option<String>, Option<u64>) = connection
                 .query_row(
                     "SELECT coalesce(c.normalized_username,(SELECT provider_subject \
@@ -505,6 +506,11 @@ pub(crate) fn complete_reset(
                     return Err(AuthError::Denied);
                 }
                 reset_requester(connection, &action.payload.actor, session, now)?;
+                SqliteAuthorizationStore::require_account_reach(
+                    connection,
+                    &action.payload.actor,
+                    &action.target,
+                )?;
             }
             Some(PasswordResetAuthority::LocalOperator)
                 if action.payload.actor == action.target => {}

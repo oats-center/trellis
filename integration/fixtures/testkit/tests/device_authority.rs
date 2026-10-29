@@ -41,7 +41,11 @@ async fn oauth(
         optional.push("trellis.auth.v1:account.linkDevice");
     }
     let required: &[&str] = if admin {
-        &["trellis.auth.v1:users.manage", "trellis.auth.v1:roles.manage"]
+        &[
+            "trellis.auth.v1:accounts.manage",
+            "trellis.auth.v1:users.manage",
+            "trellis.auth.v1:roles.manage",
+        ]
     } else {
         &[]
     };

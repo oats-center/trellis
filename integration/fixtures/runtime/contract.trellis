@@ -123,7 +123,7 @@ agent DirectoryCaller {
     required capability users.read;
     required capability account.read;
     required capability account.edit;
-    capability users.manage;
+    capability accounts.manage;
   }
 }
 agent DirectoryOptional {

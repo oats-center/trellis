@@ -619,6 +619,11 @@ model AuthUserUpdateRequest {
   expectedProfileRevision?: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
+model AuthUserDeleteRequest {
+  userId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
 model AuthUserProfileUpdateRequest {
   displayName?: AuthName;
   givenName?: AuthName;

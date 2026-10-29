@@ -38,7 +38,9 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
             {"type":"trellis_capabilities","required":[
                 trellis_auth_v1::rpc::UsersCreate::CALLER_CAPABILITIES[0],
                 trellis_auth_v1::rpc::CapabilityGrantsGrant::CALLER_CAPABILITIES[0],
-                trellis_auth_v1::rpc::SessionsRevoke::CALLER_CAPABILITIES[0]
+                trellis_auth_v1::rpc::SessionsRevoke::CALLER_CAPABILITIES[0],
+                // Ending another person's sign-in.
+                trellis_auth_v1::rpc::AuthorizationSessionsRevoke::CALLER_CAPABILITIES[0]
             ],"optional":[]}
         ]))
         .await

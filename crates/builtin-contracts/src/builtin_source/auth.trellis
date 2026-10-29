@@ -75,6 +75,7 @@ import {
   AuthUsersListResponse,
   AuthUserCreateRequest,
   AuthUserUpdateRequest,
+  AuthUserDeleteRequest,
   AuthPasswordChangeRequest,
   AuthPasswordResetCreateRequest,
   AuthPasswordResetCreateResponse,
@@ -262,7 +263,8 @@ api auth@v1 {
   /// End one of an account's sign-ins.
   rpc Sessions.Revoke { input AuthLoginRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // trellis.managePrincipals. Administrative account access grants no domain data.
+  // trellis.auth.v1:accounts.manage, only for accounts whose access the caller
+  // holds too. Administrative account access grants no domain data.
   /// Get one person's account.
   rpc Users.Get { input AuthUserGetRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// List people, optionally matching a search or status.
@@ -271,8 +273,12 @@ api auth@v1 {
   rpc Users.Create { input AuthUserCreateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Change a person's name, email or whether they can sign in.
   rpc Users.Update { input AuthUserUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Delete a person's account. They are signed out everywhere, and their sign-ins, profile and access are removed.
+  rpc Users.Delete { input AuthUserDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Create a one-time link that lets a person set a new password.
   rpc Users.PasswordReset.Create { input AuthPasswordResetCreateRequest; output AuthPasswordResetCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // trellis.auth.v1:users.manage.
   /// List company sign-in providers.
   rpc OIDCProviders.List { input AuthPageRequest; output AuthOIDCProvidersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   /// Get one company sign-in provider.
@@ -442,12 +448,19 @@ api auth@v1 {
       grants "Can see everyone's name, email, and photo.";
       allows { rpc Users.List; rpc Users.Get; }
     }
+    capability accounts.manage {
+      administrative;
+      title "Manage accounts";
+      description "Add, change and delete people's accounts and send them password reset links, but only for accounts with no access you lack.";
+      grants "Can create, change and delete accounts that have no more access than you.";
+      allows { rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.Delete; rpc Users.PasswordReset.Create; }
+    }
     capability users.manage {
       administrative;
-      title "Manage users and services";
-      description "Add and change users, sign-in providers, services, devices, storage, sessions, and connections.";
-      grants "Can create and change any account or service in this Trellis and sign anyone out.";
-      allows { rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.PasswordReset.Create; rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
+      title "Manage sign-in and services";
+      description "Change sign-in providers, services, devices, storage, sessions, and connections.";
+      grants "Can change any service or device in this Trellis and sign anyone out.";
+      allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
     }
     capability roles.manage {
       administrative;
@@ -527,6 +540,7 @@ api auth@v1 {
       title "Administer this Trellis";
       description "Manage users, roles, apps, APIs, and who administers this Trellis.";
       grants "Full control of this Trellis installation.";
+      capability accounts.manage;
       capability users.manage;
       capability roles.manage;
       capability apis.accept;

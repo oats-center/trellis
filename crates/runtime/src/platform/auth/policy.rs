@@ -531,7 +531,26 @@ pub(super) fn apply_policy_in_transaction(
 ) -> Result<u64, AuthError> {
     let required = match mutation {
         PolicyMutation::ClientState { .. } => Some(Administration::ManageClients),
-        PolicyMutation::PrincipalState { .. } => Some(Administration::ManagePrincipals),
+        PolicyMutation::PrincipalState { principal_id, .. } => {
+            let kind: String = connection
+                .query_row(
+                    "SELECT kind FROM auth_principals WHERE principal_id=?1",
+                    [principal_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AuthError::NotFound)?;
+            if kind == "user" {
+                SqliteAuthorizationStore::require_account_reach(
+                    connection,
+                    &identity.actor,
+                    principal_id,
+                )?;
+                None
+            } else {
+                Some(Administration::ManagePrincipals)
+            }
+        }
         PolicyMutation::ConsentRevoke { principal_id, .. } if principal_id == &identity.actor => {
             None
         }

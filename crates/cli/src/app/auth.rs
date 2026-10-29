@@ -48,6 +48,7 @@ pub(super) async fn users(format: OutputFormat, command: UsersCommand) -> miette
         UsersSubcommand::Show(args) => users_show_command(format, &args).await,
         UsersSubcommand::Create(args) => users_create_command(format, &args).await,
         UsersSubcommand::Edit(args) => users_edit_command(format, &args).await,
+        UsersSubcommand::Delete(args) => users_delete_command(format, &args).await,
     }
 }
 
@@ -627,6 +628,38 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
         output::print_json(&json!({ "user": user, "userId": args.user_id }))?;
     } else {
         output::print_success("updated user");
+        output::print_info(&format!("userId={}", args.user_id));
+    }
+    Ok(())
+}
+
+async fn users_delete_command(format: OutputFormat, args: &UserRefArgs) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let current = auth
+        .users_get(&auth_types::AuthUserGetRequest {
+            user_id: wire(&args.user_id)?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .user;
+    let account = current
+        .account
+        .ok_or_else(|| miette::miette!("account management authority is required"))?;
+    auth.users_delete(&auth_types::AuthUserDeleteRequest {
+        user_id: current.principal_id,
+        expected_revision: account.principal.revision,
+        idempotency_key: wire(cli_idempotency_key())?,
+        extra: Default::default(),
+    })
+    .await
+    .into_diagnostic()?;
+    if output::is_json(format) {
+        output::print_json(&json!({ "deleted": true, "userId": args.user_id }))?;
+    } else {
+        output::print_success("deleted user");
         output::print_info(&format!("userId={}", args.user_id));
     }
     Ok(())

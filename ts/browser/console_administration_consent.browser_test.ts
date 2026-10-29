@@ -16,7 +16,10 @@ import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
 
 // Consent for an app that asks, here the CLI signing in with a device code.
-for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
+for (const selected of [
+  undefined,
+  "trellis.auth.v1:accounts.manage",
+] as const) {
   test(`consent promotes only selected administration (${selected ?? "none"})`, async () => {
     await withTrellisRuntime(async (runtime) => {
       const username = runtime.adminUsername;
@@ -134,9 +137,7 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
             .click();
         }
         if (selected)
-          await page
-            .getByRole("checkbox", { name: /Manage users and services/ })
-            .check();
+          await page.getByRole("checkbox", { name: /Manage accounts/ }).check();
         await page.getByRole("button", { name: "Allow", exact: true }).click();
         if (selected) {
           // Administration takes a separate confirmation step.

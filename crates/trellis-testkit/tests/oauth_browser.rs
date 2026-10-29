@@ -31,6 +31,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
             {
                 "type":"trellis_capabilities",
                 "required": [
+                    "trellis.auth.v1:accounts.manage",
                     "trellis.auth.v1:users.manage",
                     "trellis.auth.v1:roles.manage",
                     "trellis.auth.v1:clients.manage",

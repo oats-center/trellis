@@ -3,7 +3,7 @@
   import { ulid } from "ulid";
   import { apis } from "trellis-web-generated";
   import { page } from "$app/state";
-  import { beforeNavigate } from "$app/navigation";
+  import { beforeNavigate, goto } from "$app/navigation";
   import { onDestroy, untrack } from "svelte";
   import { resolve } from "$lib/console_paths";
   import { RequestScope } from "$lib/console/request_scope.ts";
@@ -11,6 +11,7 @@
   import { captureIntent, MutationController } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { canPerform } from "$lib/console/operations.ts";
+  import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import CopyButton from "$lib/components/CopyButton.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
@@ -35,6 +36,7 @@
   let enabled = $state(true);
   let error = $state<string | null>(null);
   let saved = $state(false);
+  let confirmationModal: ConfirmationModal | undefined = $state();
   const dirty = $derived(
     user !== null &&
       (displayName !== user.displayName ||
@@ -130,10 +132,48 @@
           : projectConsoleError(outcome.error).message;
   }
 
+  async function remove(): Promise<void> {
+    if (
+      !user?.account ||
+      saving ||
+      !canPerform(authority.authority, "usersDelete")
+    )
+      return;
+    const target = user;
+    const username = user.account.username;
+    const confirmed = await confirmationModal?.confirm({
+      title: "Delete this account?",
+      message:
+        "They are signed out everywhere, and their sign-ins, profile and access are removed. This can't be undone.",
+      confirmLabel: "Delete account",
+      targetLabel: "Username",
+      targetName: username,
+      expectedValue: username,
+    });
+    if (!confirmed || user !== target || !target.account) return;
+    const key = scope.key;
+    saving = true;
+    try {
+      await trellis
+        .usersDelete({
+          userId: target.principalId,
+          expectedRevision: target.account.principal.revision,
+          idempotencyKey: ulid(),
+        })
+        .orThrow();
+      if (scope.key === key) await goto(resolve("/admin/users"));
+    } catch (cause) {
+      if (scope.key === key) error = projectConsoleError(cause).message;
+    } finally {
+      saving = false;
+    }
+  }
+
   $effect(() => {
     const id = requestedUserId;
     scope.setKey(id);
     mutation.cancel();
+    confirmationModal?.cancel();
     untrack(() => void load(id));
     return () => scope.invalidate();
   });
@@ -213,17 +253,27 @@
           /></label
         >
       </section>
-      <div class="flex justify-end gap-2 px-5 py-3">
-        <a class="btn btn-ghost" href={resolve("/admin/users")}>Cancel</a
-        ><button
-          class="btn btn-primary"
-          type="submit"
-          disabled={saving ||
-            !!error ||
-            !dirty ||
-            !canPerform(authority.authority, "usersUpdate")}
-          >{saving ? "Saving…" : "Save profile"}</button
-        >
+      <div class="flex justify-between gap-2 px-5 py-3">
+        <div>
+          {#if canPerform(authority.authority, "usersDelete")}<button
+              class="btn btn-error btn-outline"
+              type="button"
+              disabled={saving}
+              onclick={() => void remove()}>Delete account</button
+            >{/if}
+        </div>
+        <div class="flex gap-2">
+          <a class="btn btn-ghost" href={resolve("/admin/users")}>Cancel</a
+          ><button
+            class="btn btn-primary"
+            type="submit"
+            disabled={saving ||
+              !!error ||
+              !dirty ||
+              !canPerform(authority.authority, "usersUpdate")}
+            >{saving ? "Saving…" : "Save profile"}</button
+          >
+        </div>
       </div>
     </form>
     <UserAccess principalId={user.principalId} />
@@ -234,3 +284,4 @@
     />
   {/if}
 </section>
+<ConfirmationModal bind:this={confirmationModal} />

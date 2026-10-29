@@ -70,25 +70,25 @@ NATS through `Auth.Authority.*` and `Auth.Admission.Renew`, never over HTTP.
 The Auth contract groups its RPCs into these families. Generated clients carry
 the exact request, response, and error types.
 
-| Family                | RPCs                                                                                                                                                                             |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Own authority         | `Authority.Renew`, `Admission.Renew`                                                                                                                                             |
-| APIs and capabilities | `Apis.List/Get/Review/Accept/ForceReplace`, `Capabilities.List`                                                                                                                  |
-| Capability grants     | `CapabilityGrants.Grant/List/Revoke`, `Delegations.List/Review/Revoke`                                                                                                           |
-| Roles                 | `Roles.*`, `RoleAssignments.*`                                                                                                                                                   |
-| Principals            | `Principals.EffectiveAccess`                                                                                                                                                     |
-| OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`, `OAuthClients.SignUp.Update`                                                                                                         |
-| Sign-in methods       | `SignInSettings.Get/Update`                                                                                                                                                      |
-| Portal themes         | `PortalThemes.List/Get/Put/Delete`                                                                                                                                               |
-| Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                          |
-| Issuers               | `Issuers.Rotate`, `Issuers.Revoke`                                                                                                                                               |
-| Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`                                                                                                                        |
-| Service instances     | `ServiceInstances.Provision/List/Disable/Enable/Remove`                                                                                                                          |
-| Devices               | `Devices.Provision/List/Disable/Enable/Remove`, `Devices.Reviews.*`, `DeviceCompanions.Attach/Revoke`                                                                            |
-| Resources             | `Resources.List/Get/Remove`, `ResourceBindings.Query`                                                                                                                            |
-| Sessions              | `Sessions.Me/List/Revoke/Logout`, `AuthorizationSessions.List/Revoke`                                                                                                            |
-| Connections           | `Connections.List`, `Connections.Kick`                                                                                                                                           |
-| Users                 | `Users.Create/Get/List/Resolve/Update`, `Users.Profile.Update`, `Users.Password.Change`, `Users.PasswordReset.Create`, `Users.IdentityLink.Create`, `UserIdentities.List/Unlink` |
+| Family                | RPCs                                                                                                                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Own authority         | `Authority.Renew`, `Admission.Renew`                                                                                                                                                    |
+| APIs and capabilities | `Apis.List/Get/Review/Accept/ForceReplace`, `Capabilities.List`                                                                                                                         |
+| Capability grants     | `CapabilityGrants.Grant/List/Revoke`, `Delegations.List/Review/Revoke`                                                                                                                  |
+| Roles                 | `Roles.*`, `RoleAssignments.*`                                                                                                                                                          |
+| Principals            | `Principals.EffectiveAccess`                                                                                                                                                            |
+| OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`, `OAuthClients.SignUp.Update`                                                                                                                |
+| Sign-in methods       | `SignInSettings.Get/Update`                                                                                                                                                             |
+| Portal themes         | `PortalThemes.List/Get/Put/Delete`                                                                                                                                                      |
+| Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                                 |
+| Issuers               | `Issuers.Rotate`, `Issuers.Revoke`                                                                                                                                                      |
+| Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`                                                                                                                               |
+| Service instances     | `ServiceInstances.Provision/List/Disable/Enable/Remove`                                                                                                                                 |
+| Devices               | `Devices.Provision/List/Disable/Enable/Remove`, `Devices.Reviews.*`, `DeviceCompanions.Attach/Revoke`                                                                                   |
+| Resources             | `Resources.List/Get/Remove`, `ResourceBindings.Query`                                                                                                                                   |
+| Sessions              | `Sessions.Me/List/Revoke/Logout`, `AuthorizationSessions.List/Revoke`                                                                                                                   |
+| Connections           | `Connections.List`, `Connections.Kick`                                                                                                                                                  |
+| Users                 | `Users.Create/Delete/Get/List/Resolve/Update`, `Users.Profile.Update`, `Users.Password.Change`, `Users.PasswordReset.Create`, `Users.IdentityLink.Create`, `UserIdentities.List/Unlink` |
 
 ### Issuers
 
@@ -141,6 +141,13 @@ remain separate actions.
 
 ### User Management
 
+Account management needs `trellis.auth.v1:accounts.manage` and reaches only
+accounts that hold no capability the caller lacks; the default administrator is
+never in reach. `Auth.Users.Delete` checks `expectedRevision`, revokes the
+principal, and removes its sign-ins, profile, avatar, roles, direct grants,
+remembered consent, and pending account actions. Deleted accounts are gone from
+List/Get and their username is free.
+
 `Auth.Users.Update` checks account lifecycle `expectedRevision`. Profile fields
 are optional: a lifecycle-only update leaves the profile untouched. An intentional
 profile edit must also supply `expectedProfileRevision`; its independent CAS is
@@ -154,8 +161,8 @@ five-minute, one-use token. Open `/account/reset?token=...` on the
 isolated OAuth origin to complete it with an Origin-checked, CSRF-protected
 native form. Creating the token does not change the password. Completion checks
 credential CAS, the target's protected-administrator status, and the requester's
-still-active logical authorization session and current
-`trellis.auth.v1:users.manage`. It atomically changes the credential, consumes
+still-active logical authorization session, current
+`trellis.auth.v1:accounts.manage`, and that the target is still in reach. It atomically changes the credential, consumes
 the action, and revokes existing logins, OAuth grants, and refresh families.
 Bootstrap administrators cannot use this RPC reset path; their existing local
 recovery path remains authoritative. Replay responses keep the same bearer token

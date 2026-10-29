@@ -115,6 +115,7 @@ test(
           clientId: "trellis.cli",
           request: adminApps.cli.request,
           administrativeCapabilities: [
+            "trellis.auth.v1:accounts.manage",
             "trellis.auth.v1:users.manage",
             "trellis.auth.v1:roles.manage",
             "trellis.auth.v1:clients.manage",

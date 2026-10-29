@@ -36,6 +36,7 @@ agent cli {
     capability apis.forceReplace;
     capability clients.manage;
     capability platform.manage;
+    capability accounts.manage;
     capability users.manage;
     capability users.read;
     capability account.read;
@@ -71,6 +72,7 @@ app console {
     capability apis.forceReplace;
     capability clients.manage;
     capability platform.manage;
+    capability accounts.manage;
     capability users.manage;
     capability users.read;
     capability security.observe;

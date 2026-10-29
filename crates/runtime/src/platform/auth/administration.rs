@@ -1,10 +1,13 @@
-//! The six administrative capabilities: installation-wide powers in the
+//! The seven administrative capabilities: installation-wide powers in the
 //! reserved `trellis.*` namespace, declared by the builtin Auth contract.
+
+use std::collections::BTreeSet;
 
 use super::sqlite::{AuthError, Connection, SqliteAuthorizationStore};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Administration {
+    ManageAccounts,
     ManagePrincipals,
     ManageRoles,
     AcceptApis,
@@ -14,7 +17,8 @@ pub(crate) enum Administration {
 }
 
 impl Administration {
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
+        Self::ManageAccounts,
         Self::ManagePrincipals,
         Self::ManageRoles,
         Self::AcceptApis,
@@ -25,6 +29,7 @@ impl Administration {
 
     pub(crate) fn capability_id(self) -> &'static str {
         match self {
+            Self::ManageAccounts => "trellis.auth.v1:accounts.manage",
             Self::ManagePrincipals => "trellis.auth.v1:users.manage",
             Self::ManageRoles => "trellis.auth.v1:roles.manage",
             Self::AcceptApis => "trellis.auth.v1:apis.accept",
@@ -65,6 +70,38 @@ impl SqliteAuthorizationStore {
         }
     }
 
+    /// Managing accounts never reaches past the manager's own access: `actor`
+    /// must hold `accounts.manage` and every capability the user `target`
+    /// holds, so it can never reset, disable or delete a more powerful
+    /// account. A holder of `roles.manage` can give itself any ordinary
+    /// capability, so for it only administrative capabilities count. The
+    /// default administrator is never in reach.
+    pub(super) fn require_account_reach(
+        connection: &Connection,
+        actor: &str,
+        target: &str,
+    ) -> Result<(), AuthError> {
+        Self::require_administration(connection, actor, Administration::ManageAccounts)?;
+        let protected: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
+            [target],
+            |row| row.get(0),
+        )?;
+        if protected && target != actor {
+            return Err(AuthError::Denied);
+        }
+        let mine = held(connection, actor)?;
+        let grants_ordinary = mine.contains(Administration::ManageRoles.capability_id());
+        for capability in held(connection, target)? {
+            if !mine.contains(&capability)
+                && (!grants_ordinary || administrative(connection, &capability)?)
+            {
+                return Err(AuthError::Denied);
+            }
+        }
+        Ok(())
+    }
+
     /// Changing who holds an administrative capability is itself the power to
     /// manage the platform.
     pub(super) fn require_platform_for<'a>(
@@ -87,7 +124,6 @@ impl SqliteAuthorizationStore {
 
 fn holds(connection: &Connection, actor: &str, capability: &str) -> Result<bool, AuthError> {
     use rusqlite::OptionalExtension as _;
-    let now = crate::clock::unix_now();
     let active: Option<bool> = connection
         .query_row(
             "SELECT state='active' FROM auth_principals WHERE principal_id=?1",
@@ -95,9 +131,14 @@ fn holds(connection: &Connection, actor: &str, capability: &str) -> Result<bool,
             |row| row.get(0),
         )
         .optional()?;
-    if active != Some(true) {
-        return Ok(false);
-    }
+    Ok(active == Some(true) && held(connection, actor)?.contains(capability))
+}
+
+/// Every capability `principal` holds through a direct grant, a role, or an
+/// identity-provider mapping under any of their active logins, whatever the
+/// account's state.
+fn held(connection: &Connection, principal: &str) -> Result<BTreeSet<String>, AuthError> {
+    let now = crate::clock::unix_now();
     let mut logins: Vec<Option<String>> = vec![None];
     logins.extend(
         connection
@@ -105,17 +146,16 @@ fn holds(connection: &Connection, actor: &str, capability: &str) -> Result<bool,
                 "SELECT login_session_id FROM auth_login_sessions \
                 WHERE principal_id=?1 AND revoked_at IS NULL AND expires_at>?2",
             )?
-            .query_map(rusqlite::params![actor, now], |row| row.get(0))?
+            .query_map(rusqlite::params![principal, now], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?
             .into_iter()
             .map(Some),
     );
+    let mut capabilities = BTreeSet::new();
     for login in logins {
-        if super::policy::entitlements(connection, actor, login.as_deref(), now)?
-            .contains_key(capability)
-        {
-            return Ok(true);
-        }
+        capabilities.extend(
+            super::policy::entitlements(connection, principal, login.as_deref(), now)?.into_keys(),
+        );
     }
-    Ok(false)
+    Ok(capabilities)
 }

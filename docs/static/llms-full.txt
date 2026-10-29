@@ -651,7 +651,8 @@ roles marked for new users.
 #### Administrative capabilities
 
 Administrative Auth RPCs are allowed by the administrative capability that names
-them: `trellis.auth.v1:users.manage`, `trellis.auth.v1:roles.manage`,
+them: `trellis.auth.v1:accounts.manage`, `trellis.auth.v1:users.manage`,
+`trellis.auth.v1:roles.manage`,
 `trellis.auth.v1:apis.accept`, `trellis.auth.v1:apis.forceReplace`,
 `trellis.auth.v1:clients.manage`, and `trellis.auth.v1:platform.manage`. They
 are ordinary capabilities in a namespace only built-in Trellis contracts may
@@ -664,7 +665,7 @@ required/optional selections; there is no separate privilege request. Optional
 administration is never preselected or remembered. Delegating one to an app has
 two safeguards, on by default under `[auth.administration]`: a separate consent
 confirmation and registered clients only. The initialized administrator holds
-all six inherently, and everything else through an editable Administrator role. Localhost or
+all seven inherently, and everything else through an editable Administrator role. Localhost or
 development mode establishes no trust, and application/OAuth origins remain
 isolated.
 
@@ -710,7 +711,7 @@ inspect Trellis's internal authorization registry.
 - `usersRead`, selected and consented, permits `Users.List/Get`: an active-user
   directory with immutable `principalId`, names, available email, and photos.
   Ordinary results omit `account`. Delegated and currently held
-  `trellis.auth.v1:users.manage` additionally exposes username, password status,
+  `trellis.auth.v1:accounts.manage` additionally exposes username, password status,
   and lifecycle/revision, and permits inactive-user lookup and username search.
 - `accountProfileWrite` permits `Users.Profile.Update` on your own names, manual
   unverified email, HTTPS picture override, and Gravatar preference. Use the self
@@ -718,9 +719,13 @@ inspect Trellis's internal authorization registry.
   unchanged; clear flags restore eligible linked-provider values. Manual choices
   survive OIDC login, and matching-sub bounded UserInfo enriches presentation
   only. Email equality never links identities.
-- Administrative `Users.Update` checks lifecycle `expectedRevision`; omitted
+- `accounts.manage` permits `Users.Create/Update/Delete` and
+  `Users.PasswordReset.Create`, only for accounts holding no capability the
+  caller lacks. `Users.Update` checks lifecycle `expectedRevision`; omitted
   profile fields are untouched, and intentional profile changes also require
   `expectedProfileRevision`. A stale combined save rolls back both.
+  `Users.Delete` signs the account out everywhere and removes its sign-ins,
+  profile, and access; its username becomes free.
 
 A handler sees its own caller's profile without any directory capability: a
 verified user caller carries `user` with `displayName`, optional `givenName`,
@@ -745,7 +750,8 @@ remote-derived images, including cached ones, with
 `Users.PasswordReset.Create` targets `userId` and returns a five-minute, one-use
 token for `/account/reset?token=...` on the OAuth origin. Completion checks
 Origin/CSRF, credential CAS, and the requester's original active logical session
-and current `trellis.auth.v1:users.manage`, then atomically changes the password
+and current `trellis.auth.v1:accounts.manage` with the target still in reach,
+then atomically changes the password
 and revokes login/grant families. Bootstrap administrators use local recovery
 instead.
 
@@ -1969,7 +1975,7 @@ self account's `profileRevision` and an idempotency key. Omitted fields stay
 unchanged; explicit clears restore linked-provider defaults, and manually set
 email is unverified. Manual choices survive later OIDC login. `Users.Resolve`
 with `accountRead` is self-only. Ordinary profiles omit `account`; admin details
-require delegated and currently held `trellis.auth.v1:users.manage`. A directory match
+require delegated and currently held `trellis.auth.v1:accounts.manage`. A directory match
 does not grant access to application-owned records; key those rules by immutable
 `principalId`, not names or email.
 

@@ -137,6 +137,7 @@ export class TrellisTestAdminAutomation {
           username: ADMIN_USERNAME,
           password: this.#adminPassword,
           administrativeCapabilities: [
+            "trellis.auth.v1:accounts.manage",
             "trellis.auth.v1:users.manage",
             "trellis.auth.v1:roles.manage",
             "trellis.auth.v1:apis.accept",

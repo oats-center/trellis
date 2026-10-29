@@ -711,7 +711,7 @@ staticPasswords:
                 .unwrap();
             let login = authority.portal_login(cookie, &csrf, current).unwrap();
             let mut approval = grant_request(&f.admin, &login.login_session_id, "", "", current);
-            let manage = crate::platform::auth::Administration::ManagePrincipals.capability_id();
+            let manage = crate::platform::auth::Administration::ManageAccounts.capability_id();
             approval.selection.required = vec![manage.into()];
             approval.selection.optional.clear();
             approval.approved = vec![manage.into()];

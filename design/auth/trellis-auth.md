@@ -819,7 +819,8 @@ catalog-signature authenticity.
 Issuer rotation installs a signed, preceding-key-bound, monotonic chain record
 and retains retired public keys and immutable signed contexts. Issuer
 rotation/revocation requires `trellis.auth.v1:platform.manage`; other hard-root
-revocation requires `trellis.auth.v1:users.manage`. `Issuers.Rotate` requires
+revocation requires `trellis.auth.v1:users.manage`, or `trellis.auth.v1:accounts.manage`
+for a login of an account in the caller's reach. `Issuers.Rotate` requires
 the expected current issuer key and an idempotency key. Auth generates successor
 signing custody locally; private keys never enter the RPC. Before committing a
 rotation, Auth creates a private `0700` directory beside its effective
@@ -894,7 +895,8 @@ Account reset and identity linking use five-minute, one-use account actions in
 the existing isolated OAuth portal. Action creation replay preserves the
 original response under OAuth sealing custody, never a renewed deadline. Reset
 completion checks the originating logical session, current
-`trellis.auth.v1:users.manage`, credential CAS, and protected-administrator
+`trellis.auth.v1:accounts.manage`, that the target is still in the requester's
+reach, credential CAS, and protected-administrator
 status before atomically changing the password and revoking login/grant
 families. Bootstrap-administrator reset remains on the existing local recovery
 path. Until the protected administrator sets a password, each startup issues and
@@ -1006,7 +1008,7 @@ authorization. Unknown and inactive users have the same `not_found` result for
 ordinary reads.
 
 `account` contains the principal lifecycle/revision, username and local-password
-status. List/Get include it only when `trellis.auth.v1:users.manage` was
+status. List/Get include it only when `trellis.auth.v1:accounts.manage` was
 delegated to the verified session and is still held at the read transaction.
 Holding it without delegating it never expands a client's delegation.
 `Users.Resolve` requires `trellis.auth.v1:account.read`, is self-only, and

@@ -4,13 +4,13 @@ root = "performance-trellis"
 [[packages]]
 name = "performance-trellis"
 version = "0.100.0"
-digest = "1prLFQsMBPNFRpKCLrzoI3rhkNXc-AmQot0E4kTh7Ks"
-distribution-digest = "sha256:3d6489ec268e16b34cd172f59718e6edde3f4cbd8b1c92b5b8e24c6fd2487add"
+digest = "VtMoln020OT6-tsKrLJJ5oAO6ldyw0co_OvxcaC-zx4"
+distribution-digest = "sha256:d6641f87e8cfa0b5368e80fc2dbb8159adb26659629006100724c433264af122"
 
 [[packages.dependencies]]
 name = "trellis"
 version = "0.100.0-rc.16"
-digest = "rqMEONQ_lUg8B-9tgfQWfJx7x6cCvcq_c6OiiO3Glwo"
+digest = "zLi6PQ9y2Ug6UVb1wQAc_292qClTYbjTMQrfl9xZo74"
 
 [packages.source]
 kind = "path"
@@ -19,8 +19,8 @@ path = "."
 [[packages]]
 name = "trellis"
 version = "0.100.0-rc.16"
-digest = "rqMEONQ_lUg8B-9tgfQWfJx7x6cCvcq_c6OiiO3Glwo"
-distribution-digest = "sha256:5576a37bda02c14304e61ff19ac48943a00e83b52aa982261b43a5a2a5ed5f17"
+digest = "zLi6PQ9y2Ug6UVb1wQAc_292qClTYbjTMQrfl9xZo74"
+distribution-digest = "sha256:94bed512b63e6ace769f6aeeeddf1c11774ecbc5a390d25ef3e37adfb59c99aa"
 dependencies = []
 
 [packages.source]

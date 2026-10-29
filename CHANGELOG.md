@@ -8,6 +8,25 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Account management that can be handed out without making someone an
+  administrator. The new `trellis.auth.v1:accounts.manage` capability allows
+  `Users.List/Get/Create/Update/Delete` and `Users.PasswordReset.Create`, but
+  only for accounts that hold no capability the caller lacks, so it can never
+  disable, delete or take over a more powerful account.
+- `Auth.Users.Delete`, `trellis users delete` and a Delete account button on
+  the Console's user page. A deleted account is signed out everywhere, its
+  sign-ins, profile and access are removed, and its username is free again.
+
+### Changed
+
+- Breaking: `trellis.auth.v1:users.manage` no longer covers user accounts; it
+  keeps sign-in providers, services, devices, storage, sessions and
+  connections, and is now titled "Manage sign-in and services". Grant
+  `accounts.manage` to whoever manages accounts. The Administrator role's
+  group includes both.
+
 ## [0.100.0-rc.17] - 2026-10-29
 
 ### Added

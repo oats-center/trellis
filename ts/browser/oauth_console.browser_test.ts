@@ -116,7 +116,7 @@ test("the Console signs in without asking for access and uses the real authentic
         .getByText("Create an account. It gets the roles marked for new users.")
         .first()
         .waitFor();
-      await page.getByText("Manage users", { exact: false }).first().waitFor();
+      await page.getByText("Manage accounts", { exact: false }).first().waitFor();
       await page.locator("code", { hasText: /^username$/ }).waitFor();
       await page.getByRole("tab", { name: "IDL", exact: true }).click();
       await page

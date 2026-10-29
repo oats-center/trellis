@@ -45,7 +45,7 @@ fn reset_session(
         )
         .unwrap();
     let mut approval = grant_request(actor, &login.login_session_id, "", "", NOW);
-    let manage = Administration::ManagePrincipals.capability_id().to_string();
+    let manage = Administration::ManageAccounts.capability_id().to_string();
     approval.selection.required = vec![manage.clone()];
     approval.selection.optional.clear();
     approval.approved = vec![manage];
@@ -859,7 +859,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     let alice = &principals[1];
     let grant = PolicyMutation::CapabilityGrant {
         principal_id: operator.clone(),
-        capability_id: Administration::ManagePrincipals.capability_id().into(),
+        capability_id: Administration::ManageAccounts.capability_id().into(),
         expected_revision: 0,
         expires_at: None,
     };
@@ -887,7 +887,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     .unwrap();
     let revoke = PolicyMutation::CapabilityRevoke {
         principal_id: operator.clone(),
-        capability_id: Administration::ManagePrincipals.capability_id().into(),
+        capability_id: Administration::ManageAccounts.capability_id().into(),
         expected_revision: 1,
     };
     crate::platform::auth::tests::apply_policy(
@@ -1193,4 +1193,143 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
     settings(2, true, true).unwrap();
     sign_in(&store).unwrap();
     disable_provider(&store, &mutation(&admin, &disable), &disable, NOW).unwrap();
+}
+
+#[test]
+fn account_managers_reach_only_accounts_with_no_more_access_and_delete_them() {
+    use crate::platform::auth::oauth::account::create_reset;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(open(&directory, SigningKey::from_bytes(&[53; 32])));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[23; 32]).unwrap();
+    let create = |actor: &str, username: &str| {
+        let input = AuthUserCreateRequest {
+            given_name: None,
+            family_name: None,
+            email: None,
+            username: username.to_string().into(),
+            display_name: username.to_string().into(),
+            password: Some("initial account password".to_string().into()),
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+        create_user(&store, &mutation(actor, &input), &input, NOW).map(|created| created.user)
+    };
+    let manager = create(&admin, "manager").unwrap().principal_id.to_string();
+    let boss = create(&admin, "boss").unwrap().principal_id.to_string();
+    for (principal, administration) in [
+        (&manager, Administration::ManageAccounts),
+        (&boss, Administration::ManageRoles),
+    ] {
+        let grant = PolicyMutation::CapabilityGrant {
+            principal_id: principal.clone(),
+            capability_id: administration.capability_id().into(),
+            expected_revision: 0,
+            expires_at: None,
+        };
+        crate::platform::auth::tests::apply_policy(&store, &mutation(&admin, &grant), &grant, NOW)
+            .unwrap();
+    }
+    let alice = create(&manager, "alice").unwrap();
+    let account = |user: &AuthUser| user.account.as_ref().unwrap().principal.revision;
+    let disable = |target: &AuthUser| AuthUserUpdateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
+        clear_email: None,
+        user_id: target.principal_id,
+        expected_revision: account(target),
+        display_name: None,
+        expected_profile_revision: None,
+        enabled: false,
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let boss_user = store
+        .transaction(|connection| read_user(&store, connection, &boss, true))
+        .unwrap();
+
+    // The boss can change roles, which the manager can't, so the manager can't
+    // disable, reset or delete the boss's account.
+    let input = disable(&boss_user);
+    assert!(matches!(
+        update_user(&store, &mutation(&manager, &input), &input, NOW + 1),
+        Err(AuthError::Denied)
+    ));
+    let session = reset_session(
+        &store,
+        &admin,
+        &manager,
+        "manager",
+        "initial account password",
+    );
+    let reset = |target: &AuthUser| {
+        let request = AuthPasswordResetCreateRequest {
+            user_id: target.principal_id,
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+        create_reset(
+            &storage,
+            &mutation(&manager, &request),
+            &request,
+            &session,
+            NOW + 1,
+        )
+    };
+    assert!(matches!(reset(&boss_user), Err(AuthError::Denied)));
+    assert!(reset(&alice).is_ok());
+    let delete = |target: &AuthUser| AuthUserDeleteRequest {
+        user_id: target.principal_id,
+        expected_revision: account(target),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let input = delete(&boss_user);
+    assert!(matches!(
+        delete_user(&store, &mutation(&manager, &input), &input, NOW + 1),
+        Err(AuthError::Denied)
+    ));
+    let cookie = store.create_portal_session(NOW + 1).unwrap();
+    assert!(store
+        .portal_local_login(
+            &cookie.cookie,
+            &cookie.csrf,
+            &"b".repeat(43),
+            ("boss", "initial account password"),
+            &id(),
+            NOW + 1,
+        )
+        .is_ok());
+
+    // Alice has no access the manager lacks: her account is deleted, she can't
+    // sign in, and her username is free for a new account.
+    let input = delete(&alice);
+    delete_user(&store, &mutation(&manager, &input), &input, NOW + 2).unwrap();
+    assert!(matches!(
+        store.transaction(|connection| read_user(
+            &store,
+            connection,
+            &alice.principal_id.to_string(),
+            true
+        )),
+        Err(AuthError::NotFound)
+    ));
+    let cookie = store.create_portal_session(NOW + 2).unwrap();
+    assert!(store
+        .portal_local_login(
+            &cookie.cookie,
+            &cookie.csrf,
+            &"c".repeat(43),
+            ("alice", "initial account password"),
+            &id(),
+            NOW + 2,
+        )
+        .is_err());
+    let again = create(&manager, "alice").unwrap();
+    assert_ne!(again.principal_id, alice.principal_id);
 }

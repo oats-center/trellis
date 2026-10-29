@@ -830,7 +830,31 @@ impl SqliteAuthorizationStore {
                     )?,
                     _ => false,
                 };
-                if !owned {
+                // Account managers end the sign-ins of accounts in their reach,
+                // as a password reset does.
+                let reachable = match scope {
+                    EnforcementScope::Login(login) if !owned => {
+                        let user: Option<String> = connection
+                            .query_row(
+                                "SELECT l.principal_id \
+                                FROM auth_login_sessions l \
+                                JOIN auth_principals p USING(principal_id) \
+                                WHERE l.login_session_id=?1 AND p.kind='user'",
+                                [login],
+                                |row| row.get(0),
+                            )
+                            .optional()?;
+                        match user.map(|user| {
+                            Self::require_account_reach(connection, &identity.actor, &user)
+                        }) {
+                            Some(Ok(())) => true,
+                            None | Some(Err(AuthError::Denied)) => false,
+                            Some(Err(error)) => return Err(error),
+                        }
+                    }
+                    _ => false,
+                };
+                if !owned && !reachable {
                     Self::require_administration(
                         connection,
                         &identity.actor,

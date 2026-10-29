@@ -41,7 +41,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
         let store = users.clone();
         async move {
             let actor = caller(&context, None).map_err(rpc_error)?;
-            let delegated = caller(&context, Some(Administration::ManagePrincipals)).is_ok();
+            let delegated = caller(&context, Some(Administration::ManageAccounts)).is_ok();
             blocking(move || {
                 store.transaction(|connection| {
                     let administrative =
@@ -64,7 +64,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                         FROM auth_principals p \
                         LEFT JOIN auth_user_profiles u USING(principal_id) \
                         LEFT JOIN auth_local_credentials c USING(principal_id) \
-                        WHERE p.kind='user' \
+                        WHERE p.kind='user' AND p.state!='revoked' \
                         AND p.principal_id>?1 \
                         AND (?4 OR p.state='active') \
                         AND (?2 IS NULL OR (?4 \

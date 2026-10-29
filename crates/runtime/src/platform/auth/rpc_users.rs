@@ -32,7 +32,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         let store = Arc::clone(&users);
         async move {
             let actor = caller(&context, None).map_err(rpc_error)?;
-            let delegated = caller(&context, Some(Administration::ManagePrincipals)).is_ok();
+            let delegated = caller(&context, Some(Administration::ManageAccounts)).is_ok();
             blocking(move || {
                 store.transaction(|connection| {
                     let administrative = directory_account_access(connection, &actor, delegated)?;
@@ -69,7 +69,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         }
     });
     macro_rules! admin_mutation {
-        ($register:ident, $operation:ident) => {{
+        ($register:ident, $operation:ident, $administration:ident) => {{
             let store = Arc::clone(&store);
             provider.$register(move |context, input| {
                 let store = Arc::clone(&store);
@@ -77,7 +77,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                     let identity = mutation(
                         &context,
                         &input.idempotency_key,
-                        Some(Administration::ManagePrincipals),
+                        Some(Administration::$administration),
                         &input,
                     )
                     .map_err(rpc_error)?;
@@ -90,8 +90,9 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
             });
         }};
     }
-    admin_mutation!(register_users_create, create_user);
-    admin_mutation!(register_users_update, update_user);
+    admin_mutation!(register_users_create, create_user, ManageAccounts);
+    admin_mutation!(register_users_update, update_user, ManageAccounts);
+    admin_mutation!(register_users_delete, delete_user, ManageAccounts);
     let profiles = Arc::clone(&store);
     provider.register_users_profile_update(move |context, input| {
         let store = Arc::clone(&profiles);
@@ -103,8 +104,16 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 .map_err(rpc_error)
         }
     });
-    admin_mutation!(register_oidc_providers_disable, disable_provider);
-    admin_mutation!(register_oidc_providers_delete, delete_provider);
+    admin_mutation!(
+        register_oidc_providers_disable,
+        disable_provider,
+        ManagePrincipals
+    );
+    admin_mutation!(
+        register_oidc_providers_delete,
+        delete_provider,
+        ManagePrincipals
+    );
 
     let identities = Arc::clone(&store);
     provider.register_user_identities_list(move |context, input| {
@@ -261,7 +270,7 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
             let identity = mutation(
                 &context,
                 &input.idempotency_key,
-                Some(Administration::ManagePrincipals),
+                Some(Administration::ManageAccounts),
                 &input,
             )
             .map_err(rpc_error)?;
@@ -573,7 +582,7 @@ pub(super) fn directory_account_access(
     match SqliteAuthorizationStore::require_administration(
         connection,
         actor,
-        Administration::ManagePrincipals,
+        Administration::ManageAccounts,
     ) {
         Ok(()) => Ok(true),
         Err(AuthError::Denied) => Ok(false),
@@ -587,7 +596,6 @@ pub(super) fn read_user(
     principal: &str,
     account: bool,
 ) -> Result<AuthUser, AuthError> {
-    let profile = super::profiles::read(connection, principal)?;
     let (state, revision, created, username, password) = connection
         .query_row(
             "SELECT p.state,p.version,p.created_at,coalesce(c.normalized_username,\
@@ -598,7 +606,7 @@ pub(super) fn read_user(
             FROM auth_principals p \
             LEFT JOIN auth_local_credentials c USING(principal_id) \
             WHERE p.principal_id=?1 \
-            AND p.kind='user' AND (?2 \
+            AND p.kind='user' AND p.state!='revoked' AND (?2 \
             OR p.state='active')",
             params![principal, account],
             |row| {
@@ -613,6 +621,7 @@ pub(super) fn read_user(
         )
         .optional()?
         .ok_or(AuthError::NotFound)?;
+    let profile = super::profiles::read(connection, principal)?;
     let avatar_url = if state == "active" {
         super::avatars::avatar_url(store, principal, &profile)
     } else {
@@ -772,7 +781,7 @@ pub(super) fn create_user(
             SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                Administration::ManagePrincipals,
+                Administration::ManageAccounts,
             )?;
             let principal = id();
             insert_user(connection, &principal, now)?;
@@ -848,6 +857,55 @@ pub(super) fn update_user(
         }
         Ok(AuthUserGetResponse {
             user: read_user(store, connection, &principal, true)?,
+            extra: Default::default(),
+        })
+    })
+}
+
+/// Delete an account: revoke the principal, which signs it out everywhere, then
+/// remove its sign-ins, profile and access. The principal row stays behind as
+/// a tombstone for the security audit that names it, and its username is free
+/// for a new account.
+pub(super) fn delete_user(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthUserDeleteRequest,
+    now: i64,
+) -> Result<AuthMutationResult, AuthError> {
+    store.mutate(identity, "rpc.users.delete", input, now, |connection| {
+        let principal = input.user_id.to_string();
+        read_user(store, connection, &principal, true)?;
+        let revision = apply_policy_in_transaction(
+            connection,
+            identity,
+            &PolicyMutation::PrincipalState {
+                principal_id: principal.clone(),
+                expected_revision: input.expected_revision.0 .0,
+                state: "revoked".into(),
+            },
+            now,
+        )?;
+        for table in [
+            "auth_local_credentials",
+            "auth_provider_identities",
+            "auth_user_profiles",
+            "auth_avatar_cache",
+            "auth_role_assignments",
+            "auth_direct_capabilities",
+            "auth_remembered_consent",
+        ] {
+            connection.execute(
+                &format!("DELETE FROM {table} WHERE principal_id=?1"),
+                [&principal],
+            )?;
+        }
+        connection.execute(
+            "DELETE FROM auth_account_flows WHERE target_principal_id=?1",
+            [&principal],
+        )?;
+        Ok(AuthMutationResult {
+            revision: AuthRevision(revision.into()),
+            enforcement: None,
             extra: Default::default(),
         })
     })

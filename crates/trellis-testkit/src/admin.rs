@@ -284,6 +284,7 @@ impl AdminSession {
                 {
                     "type":"trellis_capabilities",
                     "required": [
+                        "trellis.auth.v1:accounts.manage",
                         "trellis.auth.v1:users.manage",
                         "trellis.auth.v1:roles.manage",
                         "trellis.auth.v1:apis.accept",

@@ -233,6 +233,8 @@ pub enum UsersSubcommand {
     Create(UserCreateArgs),
     /// Edit one Trellis user.
     Edit(UserEditArgs),
+    /// Delete one Trellis user, signing them out everywhere.
+    Delete(UserRefArgs),
 }
 
 #[derive(Debug, Args)]

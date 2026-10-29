@@ -3,6 +3,7 @@ import { auth, events, health, jobs, state } from trellis;
 agent cli {
   use auth {
     capability roles.manage;
+    capability accounts.manage;
     capability users.manage;
     capability users.read;
     capability apis.accept;

@@ -3,7 +3,7 @@
 Status: implemented.
 
 Trellis has one permission system: capabilities. Managing the Trellis
-installation itself is done with six **administrative capabilities**.
+installation itself is done with seven **administrative capabilities**.
 
 ## Names
 
@@ -11,7 +11,8 @@ The administrative capabilities belong to the built-in Auth API:
 
 | Capability                          | Allows                                                    |
 | ----------------------------------- | --------------------------------------------------------- |
-| `trellis.auth.v1:users.manage`      | users, services, devices, resources, sign-in providers    |
+| `trellis.auth.v1:accounts.manage`   | people's accounts, within the holder's own access         |
+| `trellis.auth.v1:users.manage`      | services, devices, resources, sign-in providers, sessions |
 | `trellis.auth.v1:roles.manage`      | roles, assignments, direct grants, provider role mappings |
 | `trellis.auth.v1:apis.accept`       | reviewing and accepting compatible API updates            |
 | `trellis.auth.v1:apis.forceReplace` | installing API updates that break compatibility           |
@@ -29,6 +30,16 @@ identity-provider mappings can all carry them. Mapping administration to a role
 or a provider group is an administrator's decision. Changing who holds an
 administrative capability, by any of those paths, requires
 `trellis.auth.v1:platform.manage`.
+
+## Account reach
+
+`accounts.manage` creates, changes, deletes, and resets the passwords of
+people's accounts, but only accounts that hold no capability the caller lacks.
+Account management can therefore be handed to someone without making them an
+administrator: they can never disable, delete, or take over a more powerful
+account. Deleting an account revokes the principal, signing it out everywhere,
+and removes its sign-ins, profile, and access; the principal ID stays behind for
+the audit record and the username is free again.
 
 ## The default administrator
 
