@@ -1,8 +1,7 @@
 <script lang="ts">
-  import {
-    capabilityArea,
-    groupByArea,
-  } from "$lib/console/capability_areas.ts";
+  import Icon from "./Icon.svelte";
+  import PermissionGroups from "./PermissionGroups.svelte";
+  import { capabilityArea } from "$lib/console/capability_areas.ts";
   import { onDestroy, untrack } from "svelte";
   import { ulid } from "ulid";
   import { apis } from "trellis-web-generated";
@@ -116,19 +115,61 @@
       : "this access";
   }
 
-  // Grantable permissions grouped by API area, as in the role picker.
+  // Permissions not yet given directly, in the same picker as roles.
   const grantable = $derived(
-    groupByArea(
-      capabilities.filter(
-        (item) =>
-          !grants.some(
-            (grant) =>
-              grant.capability.capabilityId === item.identity.capabilityId,
-          ),
-      ),
-      (item) => item.identity.capabilityId,
+    capabilities.filter(
+      (item) =>
+        !grants.some(
+          (grant) =>
+            grant.capability.capabilityId === item.identity.capabilityId,
+        ),
     ),
   );
+  let adding = $state(false);
+  let picks = $state<string[]>([]);
+
+  async function giveAll(): Promise<void> {
+    if (
+      busy ||
+      uncertain ||
+      error ||
+      !picks.length ||
+      !canPerform(authority.authority, "capabilityGrantsGrant")
+    )
+      return;
+    const id = principalId;
+    const route = scope.key;
+    busy = true;
+    try {
+      const expiry = expiresAt
+        ? { expiresAt: new Date(expiresAt).toISOString() }
+        : {};
+      for (const capability of picks)
+        await trellis
+          .capabilityGrantsGrant(
+            apis.auth.API.actions["rpc:CapabilityGrants.Grant"].input.decode({
+              principalId: id,
+              capabilityId: capability,
+              expectedRevision: 0n,
+              idempotencyKey: ulid(),
+              ...expiry,
+            }),
+          )
+          .orThrow();
+      if (scope.disposed || scope.key !== route) return;
+      picks = [];
+      adding = false;
+      await load();
+    } catch (cause) {
+      if (scope.disposed || scope.key !== route) return;
+      uncertain = classifyMutationError(cause).kind === "unknown";
+      error = uncertain
+        ? "We couldn't confirm the change. Refresh before trying again."
+        : projectConsoleError(cause).message;
+    } finally {
+      if (!scope.disposed && scope.key === route) busy = false;
+    }
+  }
 
   async function change(
     kind: "role" | "capability",
@@ -366,33 +407,41 @@
         <li class="px-3 py-2 text-sm text-base-content/60">None.</li>
       {/each}
     </ul>
-    <div class="mt-2 flex flex-wrap gap-2">
-      <select
-        class="select select-sm flex-1"
-        aria-label="Permission to give"
-        bind:value={capabilityId}
-        disabled={busy || uncertain || !!error}
-      >
-        <option value="">Choose a permission…</option>
-        {#each grantable as group (group.id)}
-          <optgroup label={group.title}>
-            {#each group.items as item (item.identity.capabilityId)}<option
-                value={item.identity.capabilityId}>{item.title}</option
-              >{/each}
-          </optgroup>
-        {/each}
-      </select>
-      <button
-        class="btn btn-outline btn-sm"
-        onclick={() => change("capability")}
-        disabled={!capabilityId ||
-          busy ||
-          uncertain ||
-          !!error ||
-          !canPerform(authority.authority, "capabilityGrantsGrant")}
-        >Give permission</button
-      >
-    </div>
+    {#if canPerform(authority.authority, "capabilityGrantsGrant")}
+      {#if adding}
+        <div class="mt-3 space-y-3">
+          <PermissionGroups
+            capabilities={grantable}
+            bind:selected={picks}
+            disabled={busy || uncertain || !!error}
+          />
+          <div class="flex gap-2">
+            <button
+              class="btn btn-primary btn-sm"
+              onclick={() => void giveAll()}
+              disabled={!picks.length || busy || uncertain || !!error}
+              >Give {picks.length || ""}
+              {picks.length === 1 ? "permission" : "permissions"}</button
+            >
+            <button
+              class="btn btn-ghost btn-sm"
+              disabled={busy}
+              onclick={() => {
+                adding = false;
+                picks = [];
+              }}>Cancel</button
+            >
+          </div>
+        </div>
+      {:else}
+        <button
+          class="btn btn-outline btn-sm mt-2"
+          disabled={busy || uncertain || !!error}
+          onclick={() => (adding = true)}
+          ><Icon name="plus" size={16} />Add permissions</button
+        >
+      {/if}
+    {/if}
 
     <label class="trellis-field mt-5 max-w-xs"
       ><span class="trellis-field-label">Until (optional)</span><input

@@ -34,6 +34,33 @@ eta.oats` (or the first-start wizard's "From other machines, for
 
 ### Changed
 
+- Administrators administer: an app an administrator approves for
+  administration gets it at once. The peer-approval step, its
+  `[auth.administration] require_peer_approval` setting, the
+  `Administration.Reviews.*` RPCs and the Console's Admin approvals page are
+  gone. The portal's confirmation for administration is calmer and needs no
+  extra checkbox.
+- An app whose "Allowed without asking" covers everything it asks for signs
+  people in without a consent page, administration included. A new
+  installation registers the Console that way, with every built-in capability,
+  so signing in to it asks nothing; administrators can change its list in Apps.
+- Console:
+  - The connection badge is gone; a full-screen notice covers the Console
+    while it can't reach Trellis.
+  - Health no longer flashes every time a heartbeat arrives.
+  - Services no longer report a "nats" health check that always passed.
+  - Connected apps can be grouped by person or by app, and everyone gets
+    "Your apps" under Account for their own.
+  - APIs are grouped by namespace.
+  - Permission pickers show one section per API, with its groups first and
+    single permissions under "More". Users get permissions through the same
+    picker instead of a dropdown.
+  - The app form is laid out in sections: web or native, a list of return
+    addresses, and account-creation options that are switched off with a
+    note when this Trellis doesn't allow them.
+  - Resources open to show their owner, program, app and web address.
+  - Events puts the event list first, and an event's details show its facts
+    above its data, with nested values indented.
 - `trellis-server init` without `--dev` no longer generates certificates by
   default: pass `--tls supplied` with certificates clients already trust,
   `--tls generated` for a lab or test installation, or `--tls

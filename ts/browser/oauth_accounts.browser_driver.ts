@@ -27,17 +27,6 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
     await page.getByLabel("Password", { exact: true }).fill(password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await page
-      .getByRole("heading", { name: /wants to use your account/ })
-      .waitFor();
-    for (const choice of await page.getByRole("checkbox").all())
-      if (await choice.isEnabled()) await choice.check();
-    await page.getByRole("button", { name: "Allow", exact: true }).click();
-    // Administration takes a separate confirmation step.
-    await page.getByRole("checkbox", { name: /I understand this app/ }).check();
-    await page
-      .getByRole("button", { name: "Allow management", exact: true })
-      .click();
-    await page
       .getByRole("cell", { name: username, exact: true })
       .first()
       .waitFor();
@@ -84,15 +73,6 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
       .getByLabel("Password", { exact: true })
       .fill("a separate browser account password");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await page
-      .getByRole("heading", { name: /wants to use your account/ })
-      .waitFor();
-    await page
-      .getByRole("group", { name: "Account", exact: true })
-      .getByRole("button")
-      .click();
-    await page.getByRole("checkbox", { name: /See your profile/ }).check();
-    await page.getByRole("button", { name: "Allow", exact: true }).click();
     await page.waitForURL(
       (url) =>
         url.origin === new URL(application).origin &&

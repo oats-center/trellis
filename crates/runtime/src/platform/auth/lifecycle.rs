@@ -691,11 +691,6 @@ impl SqliteAuthorizationStore {
                 Vec::new()
             };
             let safeguards = self.settings.administration;
-            let default_administrator: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
-                [&approval.principal_id],
-                |row| row.get(0),
-            )?;
             let entitled = entitlements(
                 connection,
                 &approval.principal_id,
@@ -750,19 +745,12 @@ impl SqliteAuthorizationStore {
                     Err(error) => return Err(error),
                 };
                 let administrative = super::administration::administrative(connection, name)?;
-                if accepted && administrative {
-                    if (safeguards.registered_clients_only && !registered)
-                        || (safeguards.confirm_on_consent && !approval.administration_confirmed)
-                    {
-                        return Err(AuthError::Denied);
-                    }
-                    if safeguards.require_peer_approval
-                        && !default_administrator
-                        && !peer_approved(connection, approval, name, now)?
-                    {
-                        // Withheld until another administrator approves it.
-                        continue;
-                    }
+                if accepted
+                    && administrative
+                    && ((safeguards.registered_clients_only && !registered)
+                        || (safeguards.confirm_on_consent && !approval.administration_confirmed))
+                {
+                    return Err(AuthError::Denied);
                 }
                 // Administration is never remembered: each delegation is confirmed.
                 if approval.remember && !reused.contains(name) && !administrative {
@@ -880,52 +868,4 @@ impl SqliteAuthorizationStore {
             Ok(grant)
         })
     }
-}
-
-/// Whether another administrator approved `capability` for this user and app
-/// binding. A first request opens the review; a rejected one reopens it.
-fn peer_approved(
-    connection: &Connection,
-    approval: &GrantApproval,
-    capability: &str,
-    now: i64,
-) -> Result<bool, AuthError> {
-    let state: Option<String> = connection
-        .query_row(
-            "SELECT state FROM auth_administration_reviews \
-            WHERE principal_id=?1 AND client_id=?2 \
-            AND binding_kind=?3 AND binding_value=?4 AND capability_id=?5",
-            params![
-                approval.principal_id,
-                approval.client_id,
-                approval.binding_kind,
-                approval.binding_value,
-                capability
-            ],
-            |row| row.get(0),
-        )
-        .optional()?;
-    match state.as_deref() {
-        Some("approved") => return Ok(true),
-        Some("pending") => return Ok(false),
-        _ => {}
-    }
-    connection.execute(
-        "INSERT INTO auth_administration_reviews \
-        VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,NULL,NULL,1) \
-        ON CONFLICT(principal_id,client_id,binding_kind,binding_value,capability_id) \
-        DO UPDATE SET review_id=excluded.review_id,state='pending',\
-        requested_at=excluded.requested_at,decided_at=NULL,decided_by=NULL,\
-        revision=revision+1",
-        params![
-            id(),
-            approval.principal_id,
-            approval.client_id,
-            approval.binding_kind,
-            approval.binding_value,
-            capability,
-            now
-        ],
-    )?;
-    Ok(false)
 }

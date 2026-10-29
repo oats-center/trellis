@@ -168,10 +168,9 @@ A group grants its members. Its holders see membership changes immediately;
 growth requires a higher consent revision, so an app keeps the members its user
 approved until asked again, while removed members disappear everywhere.
 
-Administrative capabilities, and groups that contain one, carry three
+Administrative capabilities, and groups that contain one, carry two
 safeguards configured under `[auth.administration]`: a separate confirmation
-step, peer approval by another `trellis.auth.v1:platform.manage` holder, and
-registered clients only. See [administrative
+step and registered clients only. See [administrative
 capabilities](./administrative-capabilities.md).
 
 ## Catalog acceptance
@@ -387,6 +386,14 @@ registers it against the configured Console application origin using the
 ordinary registered-client store, then exposes its public client ID and validated
 callback URI through Console configuration. Operators do not manually register
 the bundled Console. Its client ID is neither a deployment ID nor a secret.
+Initialization registers it with every capability of the built-in APIs, the
+only ones it asks for, allowed without asking. A registered browser client
+whose implied capabilities cover everything it requests that the user holds
+signs in without a consent page, administration included: the administrator
+who allowed it confirmed it. The user's own holdings remain the limit; when
+they lack something the client requires, or it asks for anything not implied,
+the ordinary consent page is shown. Administrators edit the Console's list like
+any other app's.
 Production administrator seeding initializes the administrator and registers
 `trellis.console` and `trellis.cli` in one idempotent aggregate transaction. CLI
 is an explicitly registered native Device Code/refresh client without a callback

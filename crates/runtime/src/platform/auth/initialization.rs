@@ -259,6 +259,28 @@ impl SqliteAuthorizationStore {
                         }
                     }
                     for registration in registrations.unwrap_or_default() {
+                        // The Console ships with Trellis and asks only for the
+                        // built-in APIs' capabilities, all allowed without asking.
+                        let mut registration = registration.clone();
+                        if registration.client_id == CONSOLE_CLIENT_ID {
+                            for (apis, _) in builtin_package_evidence()? {
+                                for api in apis {
+                                    registration.implied_capabilities.extend(
+                                        connection
+                                            .prepare(
+                                                "SELECT capability_id \
+                                                FROM auth_capability_identities \
+                                                WHERE api_id=?1 AND state='active' \
+                                                AND kind='capability'",
+                                            )?
+                                            .query_map([api], |row| row.get::<_, String>(0))?
+                                            .collect::<rusqlite::Result<Vec<_>>>()?,
+                                    );
+                                }
+                            }
+                            registration.implied_capabilities.sort();
+                        }
+                        let registration = &registration;
                         self.register_client_in_transaction(
                             connection,
                             &Mutation {

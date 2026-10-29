@@ -66,13 +66,6 @@
 
   const routePath = $derived(toRoutePath(page.url.pathname));
   const pageTitle = $derived(getPageTitle(routePath));
-  const connectionLabel = $derived(
-    connectionStatus === "connected"
-      ? "Connected"
-      : connectionStatus === "reconnecting"
-        ? "Reconnecting"
-        : "Offline",
-  );
 
   function toRoutePath(pathname: string): string {
     if (base && pathname === base) {
@@ -146,22 +139,6 @@
         <kbd class="kbd kbd-xs hidden md:inline-flex">{paletteShortcut}</kbd>
       </button>
       <div class="ml-auto flex items-center gap-2 sm:gap-3">
-        <span
-          class="hidden h-10 items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3.5 text-sm sm:inline-flex"
-          role="status"
-        >
-          <span
-            class={[
-              "h-2 w-2 rounded-full",
-              connectionStatus === "connected"
-                ? "bg-success"
-                : connectionStatus === "reconnecting"
-                  ? "bg-warning"
-                  : "bg-error",
-            ]}
-          ></span>
-          {connectionLabel}
-        </span>
         <label
           class="swap swap-rotate btn btn-ghost btn-square"
           title="Toggle dark mode"
@@ -293,3 +270,24 @@
 </div>
 
 <CommandPalette commands={commandIndex} bind:open={paletteOpen} />
+
+{#if connectionStatus !== "connected"}
+  <div
+    class="fixed inset-0 z-50 grid place-items-center bg-base-100/85 p-6 backdrop-blur-sm"
+    role="alert"
+    aria-live="assertive"
+  >
+    <div class="max-w-sm text-center">
+      <span class="loading loading-spinner loading-lg text-base-content/60"
+      ></span>
+      <p class="mt-4 text-lg font-semibold">
+        {connectionStatus === "reconnecting"
+          ? "Reconnecting to Trellis…"
+          : "Can't reach Trellis"}
+      </p>
+      <p class="mt-1 text-sm text-base-content/60">
+        This page picks up where you left off once the connection is back.
+      </p>
+    </div>
+  </div>
+{/if}

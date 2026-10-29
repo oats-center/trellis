@@ -207,7 +207,12 @@
     });
   }
 
-  async function loadDetail(participant: Participant | null): Promise<void> {
+  // A live refresh updates the open detail in place; only a new selection
+  // shows it loading.
+  async function loadDetail(
+    participant: Participant | null,
+    inPlace = false,
+  ): Promise<void> {
     const sequence = ++detailSequence;
     metricsError = null;
     if (!participant) {
@@ -219,7 +224,7 @@
     // cannot show A's metrics under B's title.
     const participantKind = participant.participantKind;
     const contractId = participant.contractId;
-    detailLoading = true;
+    detailLoading = !inPlace;
     const end = new Date();
     const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
     const [inspectResult, metricsResult] = await Promise.allSettled([
@@ -283,7 +288,7 @@
   async function refresh(): Promise<void> {
     await loadParticipants();
     if (disposed) return;
-    await loadDetail(selectedParticipant);
+    await loadDetail(selectedParticipant, true);
   }
 
   async function selectParticipant(participant: Participant): Promise<void> {

@@ -4,12 +4,9 @@ import { test } from "node:test";
 import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
-import {
-  browserRuntimeOptions,
-  confirmAdministrationIfAsked,
-} from "./browser_test_support.ts";
+import { browserRuntimeOptions } from "./browser_test_support.ts";
 
-test("registered Console delegates administrative authority through consent and uses the real authenticated client", async () => {
+test("the Console signs in without asking for access and uses the real authenticated client", async () => {
   await withTrellisRuntime(async (runtime) => {
     const application = runtime.trellisUrl;
     const username = runtime.adminUsername;
@@ -46,10 +43,19 @@ test("registered Console delegates administrative authority through consent and 
       page.setDefaultTimeout(10000);
       page.setDefaultNavigationTimeout(10000);
       let callback: URL | undefined;
+      let asked = false;
       page.on("request", (request) => {
         const url = new URL(request.url());
         if (url.searchParams.has("code") && url.searchParams.has("state"))
           callback = url;
+      });
+      page.on("response", (response) => {
+        // A consent page is served as a page; skipping it is a redirect.
+        if (
+          new URL(response.url()).pathname.endsWith("/consent") &&
+          response.status() === 200
+        )
+          asked = true;
       });
       await page.goto(new URL("/console/admin/users", origin).href);
       await page
@@ -58,14 +64,6 @@ test("registered Console delegates administrative authority through consent and 
       await page.getByLabel("Username", { exact: true }).fill(username);
       await page.getByLabel("Password", { exact: true }).fill(password);
       await page.getByRole("button", { name: "Sign in", exact: true }).click();
-      await page
-        .getByRole("heading", { name: /wants to use your account/ })
-        .waitFor();
-      const choices = page.getByRole("checkbox");
-      for (const choice of await choices.all())
-        if (await choice.isEnabled()) await choice.check();
-      await page.getByRole("button", { name: "Allow", exact: true }).click();
-      await confirmAdministrationIfAsked(page);
       await page.waitForURL(
         (url) =>
           url.origin === origin && url.pathname === "/console/admin/users",
@@ -74,6 +72,8 @@ test("registered Console delegates administrative authority through consent and 
         .getByRole("cell", { name: username, exact: true })
         .first()
         .waitFor();
+      // The Console ships with Trellis, so it never shows a consent page.
+      strictEqual(asked, false);
       strictEqual(callback?.origin, origin);
       strictEqual(callback?.pathname, "/login");
       await page.reload();

@@ -905,7 +905,13 @@
   {@const check = eventCheckLabel(event.verificationStatus, event.resolution)}
   <div class="event-detail">
     {#if detailError}<Notice variant="warning" role="status">Some details couldn't be loaded: {detailError}</Notice>{/if}
-    <div class="event-detail-grid">
+    <div class="space-y-4">
+      <dl class="fact-list">
+        <div><dt>Published</dt><dd>{formatDate(event.eventTime)}</dd></div>
+        <div><dt>From</dt><dd>{publisherLabel(event)}</dd></div>
+        <div><dt>Check</dt><dd><StatusBadge label={check.label} status={check.ok ? "healthy" : "degraded"} /></dd></div>
+        <div><dt>Delivered to</dt><dd>{matchingConsumers.map(consumerName).join(", ") || "No service listens for it"}</dd></div>
+      </dl>
       <div class="min-w-0">
         {#if detail.data?.kind === "value"}<DataPanel value={detail.data.value} />
         {:else}
@@ -917,12 +923,6 @@
           </div>
         {/if}
       </div>
-      <dl class="fact-list single">
-        <div><dt>Published</dt><dd>{formatDate(event.eventTime)}</dd></div>
-        <div><dt>From</dt><dd>{publisherLabel(event)}</dd></div>
-        <div><dt>Check</dt><dd><StatusBadge label={check.label} status={check.ok ? "healthy" : "degraded"} /></dd></div>
-        <div><dt>Delivered to</dt><dd>{matchingConsumers.map(consumerName).join(", ") || "No service listens for it"}</dd></div>
-      </dl>
     </div>
   </div>
 {/snippet}
@@ -961,6 +961,86 @@
     {:else if diagnosticsError}
       <Notice variant="info" role="status">It isn't known whether event history is complete: {diagnosticsError}</Notice>
     {/if}
+
+    <div id="recent-events">
+      <Panel title={focusTitle(focus)}>
+        {#snippet actions()}
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="trellis-segment" role="group" aria-label="Which events">
+              {#each listTabs as tab (tab.value)}
+                <button type="button" class:active={focus === tab.value} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
+              {/each}
+            </div>
+            <label class="input input-sm w-56">
+              <span class="sr-only">Search events</span>
+              <input type="search" placeholder="Search events" bind:value={searchText} onchange={resetAndLoad} />
+            </label>
+          </div>
+        {/snippet}
+        {#if focus !== "all" && focus !== "largest" && problemCounts.length > 0}
+          <div class="chip-row" aria-label="Kinds of problem">
+            {#each problemCounts as problem (problem.focus)}
+              <button type="button" class="trellis-chip" class:active={focus === problem.focus} aria-pressed={focus === problem.focus} onclick={() => selectFocus(focus === problem.focus ? "exceptions" : problem.focus)}>{problem.label} <b>{problem.count.toLocaleString()}</b></button>
+            {/each}
+          </div>
+        {/if}
+        {#if selectedEventType || ownerContractId || publisherDeploymentId || searchText}
+          <div class="chip-row" aria-label="Active filter">
+            {#if selectedEventType}<button type="button" class="trellis-chip active" onclick={() => { selectedEventType = null; resetAndLoad(); }}>{sentenceName(selectedEventType.ownerEventName)} <span aria-hidden="true">×</span></button>{/if}
+            {#if ownerContractId}<button type="button" class="trellis-chip active" onclick={() => { ownerContractId = ""; resetAndLoad(); }}>{apiLabel(ownerContractId)} <span aria-hidden="true">×</span></button>{/if}
+            {#if publisherDeploymentId}<button type="button" class="trellis-chip active" onclick={() => { publisherDeploymentId = ""; resetAndLoad(); }}>From {names.deployment(publisherDeploymentId) ?? "one service"} <span aria-hidden="true">×</span></button>{/if}
+            <button type="button" class="btn btn-ghost btn-xs" onclick={clearEventFilters}>Clear filter</button>
+          </div>
+        {/if}
+        {#if rows.length === 0}
+          <EmptyState
+            title={focus === "exceptions" ? "Every event was verified" : "No events match"}
+            description={focus === "exceptions" ? "Events that can't be traced to a trusted sender show up here." : "Try another filter or a longer time range."}
+          />
+        {:else}
+          <DataTable>
+            <thead><tr><th class="w-6"><span class="sr-only">Details</span></th><th>When</th><th>Event</th><th>From</th><th>Check</th><th class="text-right">Size</th></tr></thead>
+            <tbody>
+              {#each rows as row (`${row.streamSequence}:${row.eventId}`)}
+                {@const check = eventCheckLabel(row.verificationStatus, row.resolution)}
+                {@const open = openEventKey === eventKey(row)}
+                <tr class="event-row" class:row-selected={open} data-event-type={`${row.ownerContractId ?? ""} / ${row.ownerEventName ?? ""}`} data-publisher={row.publisherDeploymentId} onclick={() => { void toggleEvent(row); }}>
+                  <td><Icon name={open ? "chevronDown" : "chevronRight"} size={14} class="text-base-content/50" /></td>
+                  <td class="whitespace-nowrap text-sm">{formatDate(row.eventTime)}</td>
+                  <td class="min-w-0">
+                    <button type="button" class="link link-hover block max-w-sm truncate text-left font-medium" aria-expanded={open} onclick={(event) => { event.stopPropagation(); void toggleEvent(row); }}>{eventLabel(row)}</button>
+                    <span class="block text-xs text-base-content/60">{apiLabel(row.ownerContractId)}</span>
+                  </td>
+                  <td class="text-sm">
+                    {#if row.publisherDeploymentId}<button type="button" class="link link-hover text-left" title="Show only events from this sender" onclick={(event) => { event.stopPropagation(); selectPublisher(row.publisherDeploymentId); }}>{publisherLabel(row)}</button>{:else}{publisherLabel(row)}{/if}
+                  </td>
+                  <td><StatusBadge label={check.label} status={check.ok ? "healthy" : row.resolution === "resolved" ? "degraded" : "unhealthy"} /></td>
+                  <td class="text-right text-sm tabular-nums">{formatBytes(boundedNumber(row.payloadSizeBytes))}</td>
+                </tr>
+                {#if open}
+                  <tr class="event-detail-row">
+                    <td colspan="6">
+                      {#if detailLoading}
+                        <LoadingState label="Loading event" />
+                      {:else if selectedEvent}
+                        {@render eventDetail(selectedEvent)}
+                      {/if}
+                    </td>
+                  </tr>
+                {/if}
+              {/each}
+            </tbody>
+          </DataTable>
+          {#if cursorBackStack.length > 0 || nextCursor}
+            <nav class="flex items-center justify-end gap-3 text-sm text-base-content/70" aria-label="Event pages">
+              <button class="btn btn-outline btn-xs" onclick={goPrevious} disabled={cursorBackStack.length === 0}>Previous</button>
+              <span>Page {cursorBackStack.length + 1}</span>
+              <button class="btn btn-outline btn-xs" onclick={goNext} disabled={!nextCursor}>Next</button>
+            </nav>
+          {/if}
+        {/if}
+      </Panel>
+    </div>
 
     <div class="events-grid">
       <Panel title="Delivery to services" class="consumer-health min-w-0">
@@ -1100,85 +1180,6 @@
       </Panel>
     </div>
 
-    <div id="recent-events">
-      <Panel title={focusTitle(focus)}>
-        {#snippet actions()}
-          <div class="flex flex-wrap items-center gap-2">
-            <div class="trellis-segment" role="group" aria-label="Which events">
-              {#each listTabs as tab (tab.value)}
-                <button type="button" class:active={focus === tab.value} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
-              {/each}
-            </div>
-            <label class="input input-sm w-56">
-              <span class="sr-only">Search events</span>
-              <input type="search" placeholder="Search events" bind:value={searchText} onchange={resetAndLoad} />
-            </label>
-          </div>
-        {/snippet}
-        {#if focus !== "all" && focus !== "largest" && problemCounts.length > 0}
-          <div class="chip-row" aria-label="Kinds of problem">
-            {#each problemCounts as problem (problem.focus)}
-              <button type="button" class="trellis-chip" class:active={focus === problem.focus} aria-pressed={focus === problem.focus} onclick={() => selectFocus(focus === problem.focus ? "exceptions" : problem.focus)}>{problem.label} <b>{problem.count.toLocaleString()}</b></button>
-            {/each}
-          </div>
-        {/if}
-        {#if selectedEventType || ownerContractId || publisherDeploymentId || searchText}
-          <div class="chip-row" aria-label="Active filter">
-            {#if selectedEventType}<button type="button" class="trellis-chip active" onclick={() => { selectedEventType = null; resetAndLoad(); }}>{sentenceName(selectedEventType.ownerEventName)} <span aria-hidden="true">×</span></button>{/if}
-            {#if ownerContractId}<button type="button" class="trellis-chip active" onclick={() => { ownerContractId = ""; resetAndLoad(); }}>{apiLabel(ownerContractId)} <span aria-hidden="true">×</span></button>{/if}
-            {#if publisherDeploymentId}<button type="button" class="trellis-chip active" onclick={() => { publisherDeploymentId = ""; resetAndLoad(); }}>From {names.deployment(publisherDeploymentId) ?? "one service"} <span aria-hidden="true">×</span></button>{/if}
-            <button type="button" class="btn btn-ghost btn-xs" onclick={clearEventFilters}>Clear filter</button>
-          </div>
-        {/if}
-        {#if rows.length === 0}
-          <EmptyState
-            title={focus === "exceptions" ? "Every event was verified" : "No events match"}
-            description={focus === "exceptions" ? "Events that can't be traced to a trusted sender show up here." : "Try another filter or a longer time range."}
-          />
-        {:else}
-          <DataTable>
-            <thead><tr><th class="w-6"><span class="sr-only">Details</span></th><th>When</th><th>Event</th><th>From</th><th>Check</th><th class="text-right">Size</th></tr></thead>
-            <tbody>
-              {#each rows as row (`${row.streamSequence}:${row.eventId}`)}
-                {@const check = eventCheckLabel(row.verificationStatus, row.resolution)}
-                {@const open = openEventKey === eventKey(row)}
-                <tr class="event-row" class:row-selected={open} data-event-type={`${row.ownerContractId ?? ""} / ${row.ownerEventName ?? ""}`} data-publisher={row.publisherDeploymentId} onclick={() => { void toggleEvent(row); }}>
-                  <td><Icon name={open ? "chevronDown" : "chevronRight"} size={14} class="text-base-content/50" /></td>
-                  <td class="whitespace-nowrap text-sm">{formatDate(row.eventTime)}</td>
-                  <td class="min-w-0">
-                    <button type="button" class="link link-hover block max-w-sm truncate text-left font-medium" aria-expanded={open} onclick={(event) => { event.stopPropagation(); void toggleEvent(row); }}>{eventLabel(row)}</button>
-                    <span class="block text-xs text-base-content/60">{apiLabel(row.ownerContractId)}</span>
-                  </td>
-                  <td class="text-sm">
-                    {#if row.publisherDeploymentId}<button type="button" class="link link-hover text-left" title="Show only events from this sender" onclick={(event) => { event.stopPropagation(); selectPublisher(row.publisherDeploymentId); }}>{publisherLabel(row)}</button>{:else}{publisherLabel(row)}{/if}
-                  </td>
-                  <td><StatusBadge label={check.label} status={check.ok ? "healthy" : row.resolution === "resolved" ? "degraded" : "unhealthy"} /></td>
-                  <td class="text-right text-sm tabular-nums">{formatBytes(boundedNumber(row.payloadSizeBytes))}</td>
-                </tr>
-                {#if open}
-                  <tr class="event-detail-row">
-                    <td colspan="6">
-                      {#if detailLoading}
-                        <LoadingState label="Loading event" />
-                      {:else if selectedEvent}
-                        {@render eventDetail(selectedEvent)}
-                      {/if}
-                    </td>
-                  </tr>
-                {/if}
-              {/each}
-            </tbody>
-          </DataTable>
-          {#if cursorBackStack.length > 0 || nextCursor}
-            <nav class="flex items-center justify-end gap-3 text-sm text-base-content/70" aria-label="Event pages">
-              <button class="btn btn-outline btn-xs" onclick={goPrevious} disabled={cursorBackStack.length === 0}>Previous</button>
-              <span>Page {cursorBackStack.length + 1}</span>
-              <button class="btn btn-outline btn-xs" onclick={goNext} disabled={!nextCursor}>Next</button>
-            </nav>
-          {/if}
-        {/if}
-      </Panel>
-    </div>
 
   {/if}
   <ConfirmationModal bind:this={confirmationModal} />
@@ -1213,8 +1214,6 @@
   .event-row { cursor: pointer; }
   .event-row:hover { background: color-mix(in oklab, var(--color-base-200) 55%, transparent); }
   .event-detail-row > td { background: color-mix(in oklab, var(--color-base-200) 45%, transparent); padding: 1rem 1.25rem 1.25rem; }
-  .event-detail-grid { display: grid; gap: 1.5rem; grid-template-columns: minmax(0, 1fr) minmax(12rem, 18rem); }
-  .fact-list.single { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .event-types { display: grid; gap: 0.35rem; min-width: 0; }
   .event-types button { background: transparent; border: 0; border-radius: 0.5rem; cursor: pointer; display: grid; gap: 0.2rem 0.5rem; grid-template-columns: minmax(0, 1fr) auto; margin: 0 -0.35rem; padding: 0.4rem 0.35rem; text-align: left; width: calc(100% + 0.7rem); }
   .event-types button:hover, .event-types button.active { background: color-mix(in oklab, var(--color-base-200) 72%, transparent); }

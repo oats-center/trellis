@@ -8,7 +8,7 @@ import { apis, apps } from "../../trellis-testkit/trellis/index.js";
 import { connectNativeClient } from "../native.ts";
 
 test(
-  "role entitlements and optional consent remain distinct; delegated administration awaits peer approval",
+  "role entitlements and optional consent remain distinct; delegated administration reaches the app once approved",
   { timeout: 45_000 },
   async (context) => {
     await withTrellisRuntime(async (runtime) => {
@@ -129,7 +129,7 @@ test(
           true,
           "an unapproved optional capability must not become usable through role membership",
         );
-        // Approving it opens a peer review instead of delegating it at once.
+        // Approving it delegates it at once.
         const delegating = await loginNativeTestClient({
           issuer,
           username: user.account.username,
@@ -145,42 +145,21 @@ test(
           signal: context.signal,
         }).orThrow();
         connections.push(() => delegated.connection.close());
-        assert.equal(
-          (
-            await delegated.rolesPut({
-              roleId: role.roleId,
-              title: "Unapproved overwrite",
-              description: "",
-              capabilityIds: [],
-              assignToNewUsers: false,
-              expectedRevision: role.revision,
-              idempotencyKey: ulid(),
-            })
-          ).isErr(),
-          true,
-        );
-        const review = (
-          await admin.administrationReviewsList({}).orThrow()
-        ).items.find(
-          (item) =>
-            item.principalId === user.principalId &&
-            item.capabilityId === declined,
-        );
-        assert.ok(review);
-        assert.equal(review.state, "pending");
-        const decided = await admin
-          .administrationReviewsDecide({
-            reviewId: review.reviewId,
-            decision: "approved",
-            expectedRevision: review.revision,
+        // Roles without administration need only the delegated roles.manage.
+        const { role: created } = await delegated
+          .rolesPut({
+            title: `Delegated ${suffix}`,
+            description: "",
+            capabilityIds: [],
+            assignToNewUsers: false,
+            expectedRevision: 0n,
             idempotencyKey: ulid(),
           })
           .orThrow();
-        assert.equal(decided.review.state, "approved");
-        const unchanged = await admin
-          .rolesGet({ roleId: role.roleId })
+        const stored = await admin
+          .rolesGet({ roleId: created.roleId })
           .orThrow();
-        assert.equal(unchanged.role.title, role.title);
+        assert.equal(stored.role.title, `Delegated ${suffix}`);
       } finally {
         for (const close of connections.reverse()) await close();
       }

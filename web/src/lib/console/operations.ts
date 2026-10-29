@@ -196,8 +196,6 @@ export const CONSOLE_OPERATIONS = {
   authorizationSessionsRevoke: authRpc("AuthorizationSessions.Revoke"),
   capabilitiesList: authRpc("Capabilities.List"),
   issuersRevoke: authRpc("Issuers.Revoke"),
-  administrationReviewsList: authRpc("Administration.Reviews.List"),
-  administrationReviewsDecide: authRpc("Administration.Reviews.Decide"),
   oAuthClientsList: authRpc("OAuthClients.List"),
   oAuthClientsGet: authRpc("OAuthClients.Get"),
   oAuthClientsPut: authRpc("OAuthClients.Put"),

@@ -1,7 +1,4 @@
 use super::*;
-use trellis_runtime_apis::types::{
-    AuthAdministrationReviewDecideRequest, AuthAdministrationReviewState, AuthDecision,
-};
 
 fn login(f: &Fixture, principal: &str) -> String {
     f.store
@@ -47,37 +44,6 @@ fn authority_holds(f: &Fixture, grant: String, capability: &str) -> bool {
         .capabilities
         .iter()
         .any(|held| held.capability_id == capability)
-}
-
-fn pending_review(f: &Fixture, principal: &str) -> (String, u64) {
-    f.store
-        .read(|connection| {
-            Ok(connection.query_row(
-                "SELECT review_id,revision FROM auth_administration_reviews \
-                WHERE principal_id=?1 AND state='pending'",
-                [principal],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-        .unwrap()
-}
-
-fn decide(
-    f: &Fixture,
-    actor: &str,
-    review: &str,
-    revision: u64,
-    decision: AuthDecision,
-) -> Result<AuthAdministrationReviewState, AuthError> {
-    let input: AuthAdministrationReviewDecideRequest = serde_json::from_value(serde_json::json!({
-        "reviewId": review,
-        "decision": decision,
-        "expectedRevision": revision.to_string(),
-        "idempotencyKey": ulid::Ulid::new().to_string(),
-    }))
-    .unwrap();
-    super::super::administration::decide(&f.store, &mutation(actor, &input), &input, NOW)
-        .map(|response| response.review.state)
 }
 
 #[test]
@@ -176,7 +142,6 @@ fn delegating_administration_requires_confirmation_and_a_registered_client() {
             .approve_grant(&mutation(&f.admin, &approval), &approval, NOW),
         Err(AuthError::Denied)
     ));
-    // The default administrator's own confirmed delegation needs no review.
     let approval = request_roles(&f, &f.admin);
     let grant = f
         .store
@@ -190,7 +155,7 @@ fn delegating_administration_requires_confirmation_and_a_registered_client() {
 }
 
 #[test]
-fn another_platform_manager_approves_a_delegation_before_the_app_holds_it() {
+fn an_administrators_confirmed_delegation_reaches_the_app_at_once() {
     let f = fixture();
     administer(
         &f.store,
@@ -205,68 +170,5 @@ fn another_platform_manager_approves_a_delegation_before_the_app_holds_it() {
         .store
         .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
         .unwrap();
-    assert!(!authority_holds(&f, grant.clone(), roles));
-    let (review, revision) = pending_review(&f, &f.principal);
-    // Nobody approves their own delegation, even holding managePlatform.
-    administer(
-        &f.store,
-        &f.admin,
-        &f.principal,
-        &[Administration::ManagePlatform],
-        NOW,
-    );
-    assert!(matches!(
-        decide(&f, &f.principal, &review, revision, AuthDecision::Approved),
-        Err(AuthError::Denied)
-    ));
-    let bystander = create_user(&f.store, &f.admin, NOW);
-    assert!(matches!(
-        decide(&f, &bystander, &review, revision, AuthDecision::Approved),
-        Err(AuthError::Denied)
-    ));
-    assert_eq!(
-        decide(&f, &f.admin, &review, revision, AuthDecision::Approved).unwrap(),
-        AuthAdministrationReviewState::Approved
-    );
     assert!(authority_holds(&f, grant, roles));
-    // Later grants for the same app binding reuse the decision.
-    let approval = request_roles(&f, &f.principal);
-    let grant = f
-        .store
-        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
-        .unwrap();
-    assert!(authority_holds(&f, grant, roles));
-}
-
-#[test]
-fn a_rejected_delegation_is_withheld_until_requested_again() {
-    let f = fixture();
-    administer(
-        &f.store,
-        &f.admin,
-        &f.principal,
-        &[Administration::ManageRoles],
-        NOW,
-    );
-    let approval = request_roles(&f, &f.principal);
-    let grant = f
-        .store
-        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
-        .unwrap();
-    let (review, revision) = pending_review(&f, &f.principal);
-    assert_eq!(
-        decide(&f, &f.admin, &review, revision, AuthDecision::Declined).unwrap(),
-        AuthAdministrationReviewState::Rejected
-    );
-    assert!(!authority_holds(
-        &f,
-        grant,
-        Administration::ManageRoles.capability_id()
-    ));
-    let approval = request_roles(&f, &f.principal);
-    f.store
-        .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
-        .unwrap();
-    let (reopened, _) = pending_review(&f, &f.principal);
-    assert_ne!(reopened, review);
 }

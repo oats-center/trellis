@@ -54,31 +54,6 @@ fn reset_session(
     let grant = store
         .approve_grant(&mutation(actor, &approval), &approval, NOW)
         .unwrap();
-    // Another administrator approves the delegation.
-    let pending: Option<(String, u64)> = store
-        .read(|connection| {
-            Ok(connection
-                .query_row(
-                    "SELECT review_id,revision FROM auth_administration_reviews \
-                    WHERE principal_id=?1 AND state='pending'",
-                    [actor],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?)
-        })
-        .unwrap();
-    if let Some((review, revision)) = pending {
-        let input: trellis_runtime_apis::types::AuthAdministrationReviewDecideRequest =
-            serde_json::from_value(serde_json::json!({
-                "reviewId": review,
-                "decision": "approved",
-                "expectedRevision": revision.to_string(),
-                "idempotencyKey": id(),
-            }))
-            .unwrap();
-        crate::platform::auth::administration::decide(store, &mutation(admin, &input), &input, NOW)
-            .unwrap();
-    }
     let admission = AdmissionIdentity {
         refresh_family_id: Some(crate::platform::auth::tests::oauth_family(
             store,

@@ -30,8 +30,6 @@
     capabilities: Capability[];
     /** Administration needs a separate confirmation step. */
     confirmAdministration: boolean;
-    /** Another administrator approves administration before the app holds it. */
-    peerApproval: boolean;
   }
 
   interface Provider {
@@ -1007,14 +1005,13 @@
 
       {#if confirming}
         <section
-          class="alert warn administration"
+          class="alert administration"
           aria-labelledby="administration-title"
         >
-          <h2 id="administration-title">Let {appName} manage this Trellis?</h2>
-          <p>
-            Most apps never need this. Only allow it if you expected the request
-            and trust this app.
-          </p>
+          <h2 id="administration-title">
+            Allow {appName} to manage this Trellis?
+          </h2>
+          <p>Only allow this if you expected it. {appName} will be able to:</p>
           <ul>
             {#each selectedAdministration as choice (choice.id)}
               <li>
@@ -1022,20 +1019,7 @@
               </li>
             {/each}
           </ul>
-          {#if view.peerApproval}<p>
-              Another administrator must also approve this before the app gets
-              it.
-            </p>{/if}
-          <label class="check"
-            ><input
-              type="checkbox"
-              name="confirm_administration"
-              value="true"
-              required
-            /><span
-              >I understand this app will be able to manage this Trellis</span
-            ></label
-          >
+          <input type="hidden" name="confirm_administration" value="true" />
         </section>
       {/if}
 

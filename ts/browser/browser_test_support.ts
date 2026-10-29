@@ -93,7 +93,6 @@ export async function confirmAdministrationIfAsked(
     exact: true,
   });
   if (await visibleWithin(allow, timeoutMs)) {
-    await page.getByRole("checkbox", { name: /I understand this app/ }).check();
     await allow.click();
   }
 }
@@ -255,7 +254,14 @@ export async function waitForConsoleConnected(
       .locator("body")
       .innerText()
       .catch(() => "");
-    if (text.includes("Connected")) return;
+    // Only the signed-in shell has the search box, and it covers the page
+    // with a notice whenever it isn't connected.
+    if (
+      text.includes("Search Trellis") &&
+      !text.includes("Reconnecting to Trellis") &&
+      !text.includes("Can't reach Trellis")
+    )
+      return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error("the console did not reach the connected state");

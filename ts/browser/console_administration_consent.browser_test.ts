@@ -3,18 +3,24 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { ulid } from "ulid";
+import {
+  connectNativeClient,
+  discoverNativeOAuth,
+  NativeOAuthClient,
+} from "../packages/trellis/native.ts";
+import { apps } from "../packages/trellis-testkit/trellis/index.js";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
 
-// Uses the initialized production host and registered Console, never a fake issuer.
+// Consent for an app that asks, here the CLI signing in with a device code.
 for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
-  test(`Console consent promotes only selected administration (${selected ?? "none"})`, async () => {
+  test(`consent promotes only selected administration (${selected ?? "none"})`, async () => {
     await withTrellisRuntime(async (runtime) => {
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
-      const origin = new URL(runtime.trellisUrl).origin;
       const browser = await chromium.launch({
         headless: true,
         env: browserTrustEnvironment(),
@@ -54,7 +60,27 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
       try {
         page.setDefaultTimeout(10000);
         page.setDefaultNavigationTimeout(10000);
-        await page.goto(new URL("/console/profile", origin).href);
+        const server = (
+          await discoverNativeOAuth(runtime.oauthIssuer)
+        ).orThrow();
+        const client = (
+          await NativeOAuthClient.open({
+            scope: {
+              issuer: server.issuer,
+              instanceId: server.trust.instanceId,
+              account: server.trust.account,
+              clientId: "trellis.cli",
+              credentialHandle: ulid(),
+            },
+            trust: server.trust,
+          })
+        ).orThrow();
+        const device = (await client.startDevice(apps.cli.request)).orThrow();
+        await page.goto(device.verificationUri);
+        await page.getByLabel("Code", { exact: true }).fill(device.userCode);
+        await page
+          .getByRole("button", { name: "Continue", exact: true })
+          .click();
         await page
           .getByRole("heading", { name: "Sign in", exact: true })
           .waitFor();
@@ -115,84 +141,38 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
         if (selected) {
           // Administration takes a separate confirmation step.
           await page
-            .getByRole("heading", { name: /Let .* manage this Trellis\?/ })
+            .getByRole("heading", { name: /Allow .* to manage this Trellis\?/ })
             .waitFor();
-          await page
-            .getByRole("checkbox", { name: /I understand this app/ })
-            .check();
           await page
             .getByRole("button", { name: "Allow management", exact: true })
             .click();
         }
-        await page.waitForURL(
-          (url) => url.origin === origin && url.pathname === "/console/profile",
+        await page.waitForURL((url) =>
+          url.pathname.endsWith("/device/complete"),
         );
-        await page
-          .locator("main")
-          .getByText(username, { exact: true })
-          .first()
-          .waitFor();
-        await page
-          .getByText(
-            selected
-              ? "1 administrator power allowed."
-              : "No administrator powers allowed.",
-            { exact: true },
-          )
-          .waitFor();
-        // Reload must resume the same consented grant, not silently acquire other administration.
-        await page.reload();
-        await page
-          .locator("main")
-          .getByText(username, { exact: true })
-          .first()
-          .waitFor();
-        await page
-          .getByText(
-            selected
-              ? "1 administrator power allowed."
-              : "No administrator powers allowed.",
-            { exact: true },
-          )
-          .waitFor();
-        if (selected) {
-          await page.goto(new URL("/console/admin/users", origin).href);
-          await page
-            .getByRole("cell", { name: username, exact: true })
-            .first()
-            .waitFor();
-          // Managing users covers company sign-in providers, but not the
-          // installation's sign-in methods.
-          await page
-            .getByRole("link", { name: "Sign-in methods", exact: true })
-            .click();
-          await page
-            .getByRole("heading", {
-              name: "Company sign-in providers",
-              exact: true,
-            })
-            .waitFor();
-          strictEqual(
-            await page
-              .getByText("Username and password", { exact: true })
-              .count(),
-            0,
-          );
-        } else {
-          strictEqual(
-            await page
-              .getByRole("link", { name: "Sign-in methods", exact: true })
-              .count(),
-            0,
-          );
+        const session = (await device.complete()).orThrow();
+        const cli = await connectNativeClient({
+          session,
+          servers: server.natsServers,
+          request: apps.cli.request,
+        }).orThrow();
+        try {
+          // The app holds administration exactly when it was selected.
+          const created = await cli.usersCreate({
+            username: `consented-${ulid().toLowerCase()}`,
+            displayName: "Consented",
+            idempotencyKey: ulid(),
+          });
+          strictEqual(created.isOk(), selected !== undefined);
+        } finally {
+          await cli.connection.close();
         }
-        strictEqual(new URL(page.url()).origin, origin);
       } catch (error) {
         const results = fileURLToPath(
           new URL("./test-results/", import.meta.url),
         );
         await mkdir(results, { recursive: true });
-        const prefix = `${results}console-consent-${selected ?? "none"}`;
+        const prefix = `${results}consent-${selected ?? "none"}`;
         // Callback URLs contain one-time credentials; capture the rendered page and
         // request paths, never query strings or transport/token bodies.
         await page.screenshot({ path: `${prefix}.png`, fullPage: true });

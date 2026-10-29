@@ -24,6 +24,12 @@
     return humanizeName(apiId.split("@")[0] ?? apiId);
   }
 
+  // `trellis.auth@v1` belongs to the `trellis` namespace.
+  function namespaceOf(apiId: string): string {
+    const name = apiId.split("@")[0] ?? apiId;
+    return name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : name;
+  }
+
   function apiVersion(apiId: string): string {
     return apiId.split("@")[1] ?? "";
   }
@@ -78,6 +84,16 @@
   const scope = new RequestScope("api-catalog");
   const reviewScope = new RequestScope("api-review");
   let catalog = $state.raw<apis.auth.ApisListOutput["items"]>([]);
+  const namespaces = $derived.by(() => {
+    const byId = new Map<string, Api[]>();
+    for (const api of catalog) {
+      const id = namespaceOf(api.apiId);
+      byId.set(id, [...(byId.get(id) ?? []), api]);
+    }
+    return [...byId]
+      .map(([id, apis]) => ({ id, apis }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  });
   let detail = $state.raw<apis.auth.ApisGetOutput | null>(null);
   let selectedId = $state<string | null>(null);
   const selectedApi = $derived(
@@ -219,37 +235,48 @@
         />{:else if !catalog.length}
         <EmptyState class="m-4" title="No APIs installed" />
       {:else}
-        <ul class="divide-y divide-base-300">
-          {#each catalog as api (api.apiId)}
-            <li>
-              <button
-                type="button"
-                class={[
-                  "flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-base-200/60",
-                  selectedId === api.apiId && "bg-primary/10",
-                ]}
-                disabled={busy}
-                onclick={() => void inspect(api.apiId)}
-              >
-                <span
-                  class="grid h-9 w-9 place-items-center rounded-full bg-base-200 text-base-content/70"
-                  ><Icon name="braces" size={16} /></span
+        {#each namespaces as namespace (namespace.id)}
+          <h3
+            class="border-b border-base-300 bg-base-200/60 px-5 py-2 text-sm font-semibold"
+          >
+            {humanizeName(namespace.id)}
+            <span class="font-normal text-base-content/55"
+              >· {namespace.apis.length}
+              {namespace.apis.length === 1 ? "API" : "APIs"}</span
+            >
+          </h3>
+          <ul class="divide-y divide-base-300">
+            {#each namespace.apis as api (api.apiId)}
+              <li>
+                <button
+                  type="button"
+                  class={[
+                    "flex w-full items-center gap-3 px-5 py-3 text-left hover:bg-base-200/60",
+                    selectedId === api.apiId && "bg-primary/10",
+                  ]}
+                  disabled={busy}
+                  onclick={() => void inspect(api.apiId)}
                 >
-                <span class="min-w-0 flex-1">
-                  <span class="block font-medium">{apiName(api.apiId)}</span>
-                  <span class="block text-xs text-base-content/60"
-                    >{api.capabilities.length} permissions · installed {formatDate(
-                      api.acceptedAt,
-                    )}</span
+                  <span
+                    class="grid h-9 w-9 place-items-center rounded-full bg-base-200 text-base-content/70"
+                    ><Icon name="braces" size={16} /></span
                   >
-                </span>
-                <span class="badge badge-sm badge-neutral"
-                  >{apiVersion(api.apiId)}</span
-                >
-              </button>
-            </li>
-          {/each}
-        </ul>
+                  <span class="min-w-0 flex-1">
+                    <span class="block font-medium">{apiName(api.apiId)}</span>
+                    <span class="block text-xs text-base-content/60"
+                      >{api.capabilities.length} permissions · installed {formatDate(
+                        api.acceptedAt,
+                      )}</span
+                    >
+                  </span>
+                  <span class="badge badge-sm badge-neutral"
+                    >{apiVersion(api.apiId)}</span
+                  >
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/each}
         {#if history.length || next}
           <Pager
             summary={`Showing ${catalog.length} APIs on this page`}

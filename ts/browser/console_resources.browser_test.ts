@@ -190,29 +190,6 @@ test(
           .getByRole("button", { name: "Sign in", exact: true })
           .click();
         await page
-          .getByRole("heading", { name: /wants to use your account/ })
-          .waitFor();
-        for (const choice of await page.getByRole("checkbox").all())
-          if (await choice.isEnabled()) await choice.check();
-        const administration = page.getByRole("group", {
-          name: "Manage this Trellis",
-          exact: true,
-        });
-        await administration
-          .getByRole("checkbox", { name: /^Allow all: / })
-          .uncheck();
-        await administration.getByRole("button").click();
-        await page
-          .getByRole("checkbox", { name: /Manage users and services/ })
-          .check();
-        await page.getByRole("button", { name: "Allow", exact: true }).click();
-        await page
-          .getByRole("checkbox", { name: /I understand this app/ })
-          .check();
-        await page
-          .getByRole("button", { name: "Allow management", exact: true })
-          .click();
-        await page
           .getByRole("heading", { name: "Resources", exact: true })
           .waitFor();
         const row = page

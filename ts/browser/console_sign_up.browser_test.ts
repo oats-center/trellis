@@ -26,9 +26,8 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       await admin.goto(`${runtime.trellisUrl}/console/admin/roles/new`);
       await admin.getByLabel("Title", { exact: true }).fill(role);
       await admin
-        .getByRole("group", { name: "Account", exact: true })
-        .first()
-        .getByRole("button")
+        .getByRole("group", { name: "Auth", exact: true })
+        .getByRole("button", { name: /^More/ })
         .click();
       await admin.getByRole("checkbox", { name: /See your profile/ }).check();
       await admin.getByRole("checkbox", { name: /Give to new users/ }).check();
@@ -134,16 +133,6 @@ test("an administrator sets sign-in methods, providers and their group roles in 
         .fill("a long enough password");
       await newcomer
         .getByRole("button", { name: "Create account", exact: true })
-        .click();
-      await newcomer
-        .getByRole("heading", { name: /wants to use your account/ })
-        .waitFor();
-      await newcomer.getByText(username).waitFor();
-      // The role lets the newcomer allow the Console to show their profile.
-      for (const checkbox of await newcomer.getByRole("checkbox").all())
-        if (await checkbox.isEnabled()) await checkbox.check();
-      await newcomer
-        .getByRole("button", { name: "Allow", exact: true })
         .click();
       await newcomer
         .getByRole("heading", { name: "Your account", exact: true })

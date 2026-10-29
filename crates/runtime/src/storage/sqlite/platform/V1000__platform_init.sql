@@ -785,27 +785,6 @@ CREATE TABLE auth_oauth_grants (
 CREATE INDEX auth_oauth_grants_login ON auth_oauth_grants(login_session_id, revoked_at, expires_at);
 CREATE INDEX auth_oauth_grants_binding
 ON auth_oauth_grants(principal_id, client_id, binding_kind, binding_value, revoked_at);
--- A user's request that an app hold an administrative capability, awaiting or
--- carrying another administrator's decision. Approval applies to the user's
--- current and later grants for the same app binding.
-CREATE TABLE auth_administration_reviews (
-    review_id TEXT PRIMARY KEY CHECK (length(review_id) = 26),
-    principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
-    client_id TEXT NOT NULL,
-    binding_kind TEXT NOT NULL CHECK (binding_kind IN ('browser', 'native')),
-    binding_value TEXT NOT NULL,
-    capability_id TEXT NOT NULL CHECK (capability_id GLOB 'trellis.*'),
-    state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected')),
-    requested_at INTEGER NOT NULL,
-    decided_at INTEGER,
-    decided_by TEXT,
-    revision INTEGER NOT NULL CHECK (revision >= 1),
-    UNIQUE (principal_id, client_id, binding_kind, binding_value, capability_id),
-    CHECK ((state = 'pending') = (decided_at IS NULL)),
-    CHECK ((decided_at IS NULL) = (decided_by IS NULL))
-);
-CREATE INDEX auth_administration_reviews_state
-ON auth_administration_reviews(state, review_id);
 CREATE TABLE auth_oauth_families (
     family_lookup_hash TEXT PRIMARY KEY CHECK (length(family_lookup_hash) = 43),
     oauth_grant_id TEXT NOT NULL REFERENCES auth_oauth_grants(oauth_grant_id),

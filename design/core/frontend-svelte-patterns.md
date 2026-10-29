@@ -92,8 +92,10 @@ uncertain transport outcome as unknown rather than successful or failed.
 A watch is established once per semantic scope and tied to component disposal,
 not restarted on every data refresh. Change events schedule a non-resetting
 coalesced refresh with at most one read in flight and one trailing refresh, so
-continuous events cannot starve the view. A live indicator reflects the actual
-live lifecycle; the general connection badge does not.
+continuous events cannot starve the view, and a refresh updates what is shown
+in place rather than returning it to a loading state. A live indicator reflects
+the actual live lifecycle. The app shell shows no connection badge; while the
+connection is down it covers the page with a full-screen notice instead.
 
 ## Browser App Runtime Pattern
 

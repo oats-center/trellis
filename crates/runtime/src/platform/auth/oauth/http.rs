@@ -623,14 +623,21 @@ async fn login_page(
             .authority
             .portal_session_identity(&cookie, &csrf, now)
             .map_err(|_| ErrorCode::AccessDenied)?;
-        store
+        let flow = store
             .authorization(&transaction, &session, now)
             .map_err(|_| ErrorCode::InvalidRequest)?;
-        Ok::<_, ErrorCode>(())
+        // An app that signs in without asking leaves the Portal straight from
+        // this page's form, so its callback is an allowed form destination.
+        Ok::<_, ErrorCode>(match flow.request {
+            super::portal::ConsentRequest::Authorization(pairs) => pairs
+                .into_iter()
+                .find_map(|(key, value)| (key == "redirect_uri").then_some(value)),
+            super::portal::ConsentRequest::Device { .. } => None,
+        })
     })
     .await;
     match pending {
-        Ok(()) => super::assets::page(&engine, None),
+        Ok(callback) => super::assets::page(&engine, callback.as_deref()),
         Err(code) => error(code),
     }
 }
@@ -691,7 +698,75 @@ async fn consent_page(
         Ok(view) => view,
         Err(code) => return error(code),
     };
+    if let Some(response) = approve_without_asking(&engine, &headers, transaction, &view).await {
+        return response;
+    }
     super::assets::page(&engine, view.get("redirectUri").and_then(Value::as_str))
+}
+
+/// A registered web app whose "allowed without asking" covers everything it
+/// asks for that the person holds signs in without a consent page. An
+/// administrator who allowed administration that way already confirmed it.
+/// When the person lacks something the app requires, the page explains.
+async fn approve_without_asking(
+    engine: &OAuthEngine,
+    headers: &HeaderMap,
+    transaction: &str,
+    view: &Value,
+) -> Option<Response> {
+    let client = view.get("clientId")?.as_str()?.to_owned();
+    let store = engine.server.store().clone();
+    let implied: Vec<String> = blocking(move || {
+        store.authority.read(|connection| {
+            let implied: Option<String> = connection
+                .query_row(
+                    "SELECT implied_capabilities_json FROM auth_oauth_clients \
+                    WHERE client_id=?1 AND state='active' AND kind='browser'",
+                    [&client],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            implied
+                .map(|implied| super::super::sqlite::decode(&implied))
+                .transpose()
+        })
+    })
+    .await
+    .ok()??;
+    let mut approved = Vec::new();
+    for capability in view.get("capabilities")?.as_array()? {
+        let id = capability.get("capabilityId")?.as_str()?;
+        let available = capability.get("available").and_then(Value::as_bool) == Some(true);
+        let required = capability.get("required").and_then(Value::as_bool) == Some(true);
+        if (required && !available) || (available && !implied.iter().any(|held| held == id)) {
+            return None;
+        }
+        if available {
+            approved.push(id.to_owned());
+        }
+    }
+    let cookie = portal_cookie(headers, "__Host-trellis-portal")?;
+    let csrf = portal_cookie(headers, "__Host-trellis-portal-csrf")?;
+    let now = crate::clock::unix_now();
+    let (login, flow) = login_and_flow(engine, cookie, csrf, transaction, now)
+        .await
+        .ok()?;
+    let presentation = flow.presentation.clone()?;
+    let validated = engine.consent_intent(&flow.request).await.ok()?;
+    Some(
+        complete_approval(
+            engine,
+            transaction,
+            login,
+            flow,
+            validated,
+            presentation,
+            approved,
+            false,
+            true,
+        )
+        .await,
+    )
 }
 
 async fn consent(
@@ -952,8 +1027,7 @@ async fn consent_data(
                 "redirectUri":validated.redirect_uri,
                 "deviceUserCode":validated.device_user_code,
                 "capabilities":capabilities,
-                "confirmAdministration":administration.confirm_on_consent,
-                "peerApproval":administration.require_peer_approval
+                "confirmAdministration":administration.confirm_on_consent
             }))
         })
     })
@@ -1046,7 +1120,7 @@ async fn approve(
     }
     let Some(presentation) = flow
         .presentation
-        .as_ref()
+        .clone()
         .filter(|presentation| form.get("presentation") == Some(&presentation.id))
     else {
         return Redirect::to(&format!(
@@ -1054,6 +1128,44 @@ async fn approve(
         ))
         .into_response();
     };
+    let remember = match form.get("remember").map(String::as_str) {
+        Some("true") => true,
+        None | Some("false") => false,
+        _ => return error(ErrorCode::InvalidRequest),
+    };
+    let administration_confirmed = match form.get("confirm_administration").map(String::as_str) {
+        Some("true") => true,
+        None => false,
+        _ => return error(ErrorCode::InvalidRequest),
+    };
+    complete_approval(
+        &engine,
+        transaction,
+        login,
+        flow,
+        validated,
+        presentation,
+        approved,
+        remember,
+        administration_confirmed,
+    )
+    .await
+}
+
+/// Records an approval of `presentation` and returns the response that
+/// finishes the authorization: back to the app, or the device's result page.
+#[allow(clippy::too_many_arguments)]
+async fn complete_approval(
+    engine: &OAuthEngine,
+    transaction: &str,
+    login: super::portal::PortalLogin,
+    flow: super::portal::PortalAuthorization,
+    validated: super::portal::ConsentIntent,
+    presentation: super::portal::ConsentPresentation,
+    approved: Vec<String>,
+    remember: bool,
+    administration_confirmed: bool,
+) -> Response {
     let requested = match super::RequestedAuthority::parse(&validated.authorization_details) {
         Ok(request) => request,
         Err(_) => return error(ErrorCode::InvalidRequest),
@@ -1094,16 +1206,6 @@ async fn approve(
         }
     } else {
         jkt.clone()
-    };
-    let remember = match form.get("remember").map(String::as_str) {
-        Some("true") => true,
-        None | Some("false") => false,
-        _ => return error(ErrorCode::InvalidRequest),
-    };
-    let administration_confirmed = match form.get("confirm_administration").map(String::as_str) {
-        Some("true") => true,
-        None => false,
-        _ => return error(ErrorCode::InvalidRequest),
     };
     let declined = requested
         .capabilities

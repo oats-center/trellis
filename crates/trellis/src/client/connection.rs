@@ -608,15 +608,8 @@ fn build_health_heartbeat(
         },
         reported_status: HealthHeartbeatSampleReportedStatus::Healthy,
         summary: None,
-        checks: vec![HealthHeartbeatSampleChecksItem {
-            name: HealthHeartbeatSampleChecksItemName("nats".into()),
-            status: HealthHeartbeatSampleChecksItemStatus::Ok,
-            latency_ms: HealthHeartbeatSampleChecksItemLatencyMs(crate::__types::Number(0.0)),
-            error: None,
-            info: None,
-            summary: None,
-            extra: Default::default(),
-        }],
+        // A heartbeat that arrives already proves the broker connection.
+        checks: Vec::new(),
         extra: Default::default(),
     })
 }

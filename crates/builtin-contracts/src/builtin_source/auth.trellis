@@ -118,9 +118,6 @@ import {
   AuthDeviceReviewGetRequest,
   AuthDeviceReviewResponse,
   AuthDeviceReviewsListResponse,
-  AuthAdministrationReviewDecideRequest,
-  AuthAdministrationReviewResponse,
-  AuthAdministrationReviewsListResponse,
   AuthDeviceReviewDecideRequest,
   AuthDeviceCompanionAttachRequest,
   AuthDeviceCompanion,
@@ -204,8 +201,6 @@ api auth@v1 {
   // trellis.managePlatform.
   rpc Issuers.Rotate { input AuthIssuerRotateRequest; output AuthIssuerRotateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Issuers.Revoke { input AuthIssuerRevokeRequest; output AuthIssuerRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  rpc Administration.Reviews.List { input AuthPageRequest; output AuthAdministrationReviewsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
-  rpc Administration.Reviews.Decide { input AuthAdministrationReviewDecideRequest; output AuthAdministrationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // Own-account data, bounded by the named capabilities below.
   rpc Users.Resolve { input AuthEmpty; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -390,7 +385,7 @@ api auth@v1 {
       title "Manage this Trellis";
       description "Decide who administers this Trellis and manage its signing keys.";
       grants "Full control of this Trellis installation.";
-      allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc Administration.Reviews.List; rpc Administration.Reviews.Decide; rpc SignInSettings.Get; rpc SignInSettings.Update; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
+      allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc SignInSettings.Get; rpc SignInSettings.Update; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
     }
     capability serviceUpdates.submit {
       title "Submit its own updates";

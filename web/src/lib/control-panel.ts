@@ -33,6 +33,7 @@ type DisplayProfile = {
 
 export const routeTitles = {
   "/profile": "Account",
+  "/profile/apps": "Your Apps",
   "/admin": "Overview",
   "/admin/users": "Users",
   "/admin/users/edit": "Edit User",
@@ -60,7 +61,6 @@ export const routeTitles = {
   "/admin/apis": "APIs",
   "/admin/sign-in": "Sign-in methods",
   "/admin/branding": "Sign-in page",
-  "/admin/administration": "Admin approvals",
 } as const;
 
 /**
@@ -176,21 +176,6 @@ const navSections: NavSection[] = [
         requires: ADMIN_ONLY,
       },
       {
-        href: "/admin/administration",
-        label: "Admin approvals",
-        icon: "lock",
-        requires: [
-          {
-            permission: {
-              api: apis.auth.API.identity,
-              surface: "rpc",
-              name: "Administration.Reviews.List",
-              action: "call",
-            },
-          },
-        ],
-      },
-      {
         href: "/admin/clients",
         label: "Apps",
         icon: "appWindow",
@@ -295,7 +280,24 @@ const navSections: NavSection[] = [
   },
   {
     title: "Account",
-    items: [{ href: "/profile", label: "Account", icon: "settings" }],
+    items: [
+      { href: "/profile", label: "Account", icon: "settings" },
+      {
+        href: "/profile/apps",
+        label: "Your apps",
+        icon: "plug",
+        requires: [
+          {
+            permission: {
+              api: apis.auth.API.identity,
+              surface: "rpc",
+              name: "Delegations.List",
+              action: "call",
+            },
+          },
+        ],
+      },
+    ],
   },
 ];
 

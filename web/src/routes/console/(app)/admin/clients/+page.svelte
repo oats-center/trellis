@@ -3,6 +3,7 @@
   import { apis } from "trellis-web-generated";
   import { ulid } from "ulid";
   import { getTrellis } from "$lib/trellis";
+  import { resolve } from "$lib/console_paths";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
@@ -37,11 +38,21 @@
   let description = $state("");
   let kind = $state("browser");
   let development = $state(false);
-  let redirects = $state("");
+  let redirects = $state<string[]>([""]);
   let implied = $state<string[]>([]);
   let passwordSignUp = $state(false);
   let providerSignUp = $state(false);
   let catalog = $state.raw<apis.auth.CapabilitiesListOutput["items"]>([]);
+  // What this Trellis allows; unknown when the viewer can't read it.
+  let signIn = $state.raw<apis.auth.SignInSettingsGetOutput["settings"] | null>(
+    null,
+  );
+  const web = $derived(kind === "browser");
+
+  async function loadSignIn(): Promise<void> {
+    if (!canPerform(authority.authority, "signInSettingsGet")) return;
+    signIn = (await trellis.signInSettingsGet({}).orThrow()).settings;
+  }
 
   async function loadCatalog(): Promise<void> {
     const result = await traverseAll(async (page) => {
@@ -75,7 +86,7 @@
     description = client?.description ?? "";
     kind = client?.kind ?? "browser";
     development = client?.development ?? false;
-    redirects = client?.redirectUris.join("\n") ?? "";
+    redirects = client?.redirectUris.length ? [...client.redirectUris] : [""];
     implied = [...(client?.impliedConsent ?? [])];
     passwordSignUp = client?.signUp.password ?? false;
     providerSignUp = client?.signUp.providers ?? false;
@@ -107,9 +118,12 @@
           title: title.trim(),
           description,
           kind,
-          development,
-          redirectUris: redirects.split(/\s+/).filter(Boolean),
-          impliedConsent: implied,
+          // Native apps sign in with a code, and only web apps skip asking.
+          redirectUris: web
+            ? redirects.map((uri) => uri.trim()).filter(Boolean)
+            : [],
+          development: web && development,
+          impliedConsent: web ? implied : [],
         });
         let { client } = await trellis.oAuthClientsPut(input).orThrow();
         // Sign-up has its own setting, so re-registering never changes it.
@@ -161,6 +175,7 @@
   onMount(() => {
     void load();
     void loadCatalog().catch(() => {});
+    void loadSignIn().catch(() => {});
     return () => scope.dispose();
   });
 </script>
@@ -185,7 +200,7 @@
   <div
     class={[
       "grid gap-4",
-      editing && "xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]",
+      editing && "xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]",
     ]}
   >
     <div class="trellis-section min-w-0">
@@ -297,96 +312,162 @@
             ><Icon name="close" size={16} /></button
           >
         </div>
-        <fieldset class="space-y-4" disabled={saving}>
-          <label class="trellis-field"
-            ><span class="trellis-field-label">Name</span><input
-              class="input w-full"
-              bind:value={title}
-              required
-            /></label
-          >
-          <label class="trellis-field"
-            ><span class="trellis-field-label">App ID</span><input
-              class="input w-full font-mono"
-              bind:value={clientId}
-              required
-              readonly={selected !== null}
-            /><span class="trellis-field-help"
-              >The app uses this to identify itself. It can't change later.</span
-            ></label
-          >
-          <label class="trellis-field"
-            ><span class="trellis-field-label">Description</span><input
-              class="input w-full"
-              bind:value={description}
-            /></label
-          >
-          <label class="trellis-field"
-            ><span class="trellis-field-label">Type</span><select
-              class="select w-full"
-              bind:value={kind}
-              ><option value="browser">Web app</option><option value="native"
-                >Native app</option
-              ></select
-            ></label
-          >
-          <label class="trellis-field"
-            ><span class="trellis-field-label">Redirect URLs</span><textarea
-              class="textarea w-full font-mono text-sm"
-              bind:value={redirects}
-            ></textarea><span class="trellis-field-help"
-              >Where people return after signing in. One per line.</span
-            ></label
-          >
-          <label class="flex items-center gap-3"
-            ><input
-              class="checkbox checkbox-sm"
-              type="checkbox"
-              bind:checked={development}
-            /><span
-              >Local development app <span class="text-sm text-base-content/60"
-                >· allows localhost redirect URLs</span
-              ></span
-            ></label
-          >
-          <div class="space-y-2">
-            <div>
-              <span class="trellis-field-label">Allowed without asking</span>
-              <p class="trellis-field-help">
-                People won't be asked to approve these. Leave empty to always
-                ask.
-              </p>
-            </div>
-            <PermissionGroups capabilities={catalog} bind:selected={implied} />
-          </div>
-          {#if canPerform(authority.authority, "oAuthClientsSignUpUpdate")}
-            <div class="space-y-2">
-              <div>
-                <span class="trellis-field-label">Creating accounts</span>
-                <p class="trellis-field-help">
-                  Let people create their own account while signing in to this
-                  app. New accounts get the roles marked for new users.
-                </p>
+        <fieldset class="space-y-6" disabled={saving}>
+          <div class="space-y-4">
+            <label class="trellis-field"
+              ><span class="trellis-field-label">Name</span><input
+                class="input w-full"
+                bind:value={title}
+                required
+              /></label
+            >
+            <label class="trellis-field"
+              ><span class="trellis-field-label">Description</span><textarea
+                class="textarea w-full"
+                rows="2"
+                bind:value={description}
+              ></textarea></label
+            >
+            {#if selected}
+              <div class="trellis-field">
+                <span class="trellis-field-label">App ID</span>
+                <code class="text-sm">{clientId}</code>
               </div>
-              <label class="flex items-center gap-3"
+            {:else}
+              <label class="trellis-field"
+                ><span class="trellis-field-label">App ID</span><input
+                  class="input w-full font-mono"
+                  bind:value={clientId}
+                  required
+                /><span class="trellis-field-help"
+                  >The app uses this to identify itself. It can't change later.</span
+                ></label
+              >
+            {/if}
+          </div>
+
+          <div class="space-y-3 border-t border-base-300 pt-5">
+            <h3 class="font-semibold">How it signs in</h3>
+            <div class="grid gap-2 sm:grid-cols-2" role="radiogroup">
+              {#each [{ value: "browser", label: "Web app", help: "Runs in a browser and returns to a web address." }, { value: "native", label: "Native app", help: "Runs on a computer or device and signs in with a code." }] as option (option.value)}
+                <label
+                  class={[
+                    "flex cursor-pointer gap-3 rounded-box border p-3",
+                    kind === option.value
+                      ? "border-primary bg-primary/5"
+                      : "border-base-300",
+                  ]}
+                  ><input
+                    type="radio"
+                    class="radio radio-sm mt-0.5"
+                    name="kind"
+                    value={option.value}
+                    bind:group={kind}
+                    disabled={selected !== null}
+                  /><span
+                    ><span class="block font-medium">{option.label}</span><span
+                      class="block text-sm text-base-content/60"
+                      >{option.help}</span
+                    ></span
+                  ></label
+                >
+              {/each}
+            </div>
+            {#if web}
+              <div class="trellis-field">
+                <span class="trellis-field-label">Return addresses</span>
+                <span class="trellis-field-help"
+                  >Where people come back to after signing in.</span
+                >
+                {#each redirects as _, index (index)}
+                  <div class="flex gap-2">
+                    <input
+                      class="input w-full font-mono text-sm"
+                      type="url"
+                      aria-label={`Return address ${index + 1}`}
+                      placeholder="https://app.example.com/callback"
+                      bind:value={redirects[index]}
+                    />
+                    {#if redirects.length > 1}<button
+                        type="button"
+                        class="btn btn-ghost btn-square"
+                        aria-label={`Remove return address ${index + 1}`}
+                        onclick={() =>
+                          (redirects = redirects.filter((_, i) => i !== index))}
+                        ><Icon name="close" size={16} /></button
+                      >{/if}
+                  </div>
+                {/each}
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm self-start"
+                  onclick={() => (redirects = [...redirects, ""])}
+                  ><Icon name="plus" size={16} />Add address</button
+                >
+              </div>
+              <label class="flex items-start gap-3"
                 ><input
-                  class="checkbox checkbox-sm"
+                  class="toggle toggle-sm mt-0.5"
                   type="checkbox"
-                  bind:checked={passwordSignUp}
+                  bind:checked={development}
                 /><span
-                  >With a username and password <span
-                    class="text-sm text-base-content/60"
-                    >· only if this Trellis allows local sign-up</span
+                  ><span class="block">Local development</span><span
+                    class="block text-sm text-base-content/60"
+                    >Allows http://localhost return addresses.</span
                   ></span
                 ></label
               >
-              <label class="flex items-center gap-3"
-                ><input
-                  class="checkbox checkbox-sm"
-                  type="checkbox"
-                  bind:checked={providerSignUp}
-                /><span>With a company sign-in</span></label
-              >
+            {/if}
+          </div>
+
+          {#if web}
+            <div class="space-y-3 border-t border-base-300 pt-5">
+              <div>
+                <h3 class="font-semibold">Allowed without asking</h3>
+                <p class="text-sm text-base-content/60">
+                  People who hold these aren't asked to approve them. When this
+                  covers everything the app asks for, signing in asks nothing.
+                </p>
+              </div>
+              <PermissionGroups
+                capabilities={catalog}
+                bind:selected={implied}
+              />
+            </div>
+          {/if}
+
+          {#if canPerform(authority.authority, "oAuthClientsSignUpUpdate")}
+            <div class="space-y-3 border-t border-base-300 pt-5">
+              <div>
+                <h3 class="font-semibold">Creating accounts</h3>
+                <p class="text-sm text-base-content/60">
+                  New accounts get the roles marked for new users.
+                </p>
+              </div>
+              {#each [{ label: "With a username and password", allowed: signIn?.localSignUp, off: "Account creation is turned off for this Trellis." }, { label: "With a company sign-in", allowed: signIn?.providers, off: "Company sign-in is turned off for this Trellis." }] as option, index (option.label)}
+                <label class="flex items-start gap-3"
+                  >{#if index === 0}<input
+                      class="toggle toggle-sm mt-0.5"
+                      type="checkbox"
+                      disabled={option.allowed === false}
+                      bind:checked={passwordSignUp}
+                    />{:else}<input
+                      class="toggle toggle-sm mt-0.5"
+                      type="checkbox"
+                      disabled={option.allowed === false}
+                      bind:checked={providerSignUp}
+                    />{/if}<span
+                    ><span class="block">{option.label}</span
+                    >{#if option.allowed === false}<span
+                        class="block text-sm text-base-content/60"
+                        >{option.off}
+                        <a class="link" href={resolve("/admin/sign-in")}
+                          >Sign-in methods</a
+                        ></span
+                      >{/if}</span
+                  ></label
+                >
+              {/each}
             </div>
           {/if}
         </fieldset>

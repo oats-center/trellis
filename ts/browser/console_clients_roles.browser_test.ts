@@ -22,9 +22,9 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       await page.getByLabel("App ID").fill(clientId);
       await page.getByLabel("Name", { exact: true }).fill(clientId);
       await page
-        .getByRole("textbox", { name: /^Redirect URLs/ })
+        .getByRole("textbox", { name: "Return address 1", exact: true })
         .fill("http://localhost:49371/callback");
-      await page.getByLabel(/Local development app/).check();
+      await page.getByLabel(/Local development/).check();
       await page.getByRole("button", { name: "Save app", exact: true }).click();
       await page.getByText("App saved.", { exact: true }).waitFor();
       await page.reload();
@@ -32,7 +32,7 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       await row.getByRole("button", { name: "Edit", exact: true }).click();
       assert.equal(
         await page
-          .getByRole("textbox", { name: /^Redirect URLs/ })
+          .getByRole("textbox", { name: "Return address 1", exact: true })
           .inputValue(),
         "http://localhost:49371/callback",
       );
@@ -51,9 +51,8 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       await page.goto(`${runtime.trellisUrl}/console/admin/roles/new`);
       await page.getByLabel("Title", { exact: true }).fill(title);
       await page
-        .getByRole("group", { name: "Account", exact: true })
-        .first()
-        .getByRole("button")
+        .getByRole("group", { name: "Auth", exact: true })
+        .getByRole("button", { name: /^More/ })
         .click();
       await page.getByRole("checkbox", { name: /See your profile/ }).check();
       await page

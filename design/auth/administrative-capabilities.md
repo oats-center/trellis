@@ -16,7 +16,7 @@ The administrative capabilities belong to the built-in Auth API:
 | `trellis.auth.v1:apis.accept`       | reviewing and accepting compatible API updates            |
 | `trellis.auth.v1:apis.forceReplace` | installing API updates that break compatibility           |
 | `trellis.auth.v1:clients.manage`    | registering apps and changing their sign-in settings      |
-| `trellis.auth.v1:platform.manage`   | who administers, issuer keys, administration reviews      |
+| `trellis.auth.v1:platform.manage`   | who administers, issuer keys                              |
 
 The built-in Auth contract declares them with the IDL `administrative;` marker,
 which only the built-in `trellis` package may use. Auth refuses to review or
@@ -39,26 +39,21 @@ always someone who can approve administrative delegations.
 
 ## Delegation safeguards
 
-Delegating administration to an app has three safeguards. All are on by
+Delegating administration to an app has two safeguards. Both are on by
 default and configurable:
 
 ```toml
 [auth.administration]
 confirm_on_consent = true
-require_peer_approval = true
 registered_clients_only = true
 ```
 
 - **Confirm on consent.** After selection, a separate step states that the app
-  is asking to manage this Trellis installation itself, which is rare and
-  exceptional, and requires explicit confirmation. Select all never selects
-  administration, and administrative choices are never remembered.
-- **Peer approval.** The grant is created without its administrative
-  capabilities and a review opens per user, app binding, and capability.
-  Someone holding `trellis.auth.v1:platform.manage` other than the requester decides it
-  with `Administration.Reviews.Decide`. Approval reaches the user's live grants
-  for that binding and later grants reuse it; rejection withholds it until the
-  user asks again. The default administrator's own delegations need no review.
+  is asking to manage this Trellis installation itself and lists what it may
+  do; approving it confirms. Select all never selects administration, and
+  administrative choices are never remembered. An administrator's confirmed
+  delegation reaches the app at once: administrators administer, and nobody
+  else approves their choice.
 - **Registered clients only.** Only OAuth clients an administrator registered
   may receive administrative capabilities; a client known only from its
   metadata document cannot.

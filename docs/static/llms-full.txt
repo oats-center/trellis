@@ -658,10 +658,9 @@ current entitlements on every call.
 Apps request administrative capabilities like any other, through their generated
 required/optional selections; there is no separate privilege request. Optional
 administration is never preselected or remembered. Delegating one to an app has
-three safeguards, on by default under `[auth.administration]`: a separate consent
-confirmation, approval by another `trellis.auth.v1:platform.manage` holder
-(`Administration.Reviews.*`), and registered clients only. The initialized
-administrator holds all six inherently and needs no review. Localhost or
+two safeguards, on by default under `[auth.administration]`: a separate consent
+confirmation and registered clients only. The initialized administrator holds
+all six inherently. Localhost or
 development mode establishes no trust, and application/OAuth origins remain
 isolated.
 

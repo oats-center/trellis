@@ -76,7 +76,6 @@ the exact request, response, and error types.
 | APIs and capabilities | `Apis.List/Get/Review/Accept/ForceReplace`, `Capabilities.List`                                                                                                                  |
 | Capability grants     | `CapabilityGrants.Grant/List/Revoke`, `Delegations.List/Review/Revoke`                                                                                                           |
 | Roles                 | `Roles.*`, `RoleAssignments.*`                                                                                                                                                   |
-| Administration        | `Administration.Reviews.List/Decide`                                                                                                                                             |
 | Principals            | `Principals.EffectiveAccess`                                                                                                                                                     |
 | OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`, `OAuthClients.SignUp.Update`                                                                                                         |
 | Sign-in methods       | `SignInSettings.Get/Update`                                                                                                                                                      |
@@ -183,12 +182,6 @@ through a role or identity-provider mapping, requires `trellis.auth.v1:platform.
 Mutation authorization and idempotency replay are checked in the same SQL
 transaction using the current principal, login/credential, exact authority
 revision, and expiry.
-
-`Administration.Reviews.List/Decide` require `trellis.auth.v1:platform.manage`. A review
-records a user's request that one app binding hold one administrative
-capability. Nobody decides their own review. Approval adds the capability to the
-user's live grants for that binding that asked for it, and later grants for the
-binding reuse it; rejection withholds it until the user asks again.
 
 ## Events And Post-Commit Work
 

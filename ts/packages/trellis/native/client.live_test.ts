@@ -103,22 +103,14 @@ test(
               item.principalId === subject.user.principalId,
           ),
         );
-        const denied = await ordinary.usersCreate({
-          username: `must-not-exist-${ulid()}`,
-          displayName: "Denied",
-          idempotencyKey: ulid(),
-        });
-        // Delegated administration waits for another administrator's approval.
-        assert.ok(denied.isErr());
-        const reviews = await admin.administrationReviewsList({}).orThrow();
-        assert.ok(
-          reviews.items.some(
-            (review) =>
-              review.principalId === subject.user.principalId &&
-              review.capabilityId === managePrincipals &&
-              review.state === "pending",
-          ),
-        );
+        // A confirmed administrative delegation reaches the app at once.
+        await ordinary
+          .usersCreate({
+            username: `delegated-${ulid()}`,
+            displayName: "Delegated",
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
         await ordinary.connection.close();
 
         const declinedLogin = await loginNativeTestClient({

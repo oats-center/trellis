@@ -29,6 +29,14 @@
   const authority = getConsoleAuthority();
   const scope = new RequestScope("resources:detached");
   let filter = $state<"detached" | "all">("detached");
+  let open = $state<string | null>(null);
+  const KINDS: Record<string, string> = {
+    kv: "Key-value store",
+    store: "File store",
+    state: "Saved state",
+    job: "Job queue",
+    eventConsumer: "Event subscription",
+  };
   // Owner names make "used by" readable; IDs are the fallback.
   let ownerNames = $state.raw<Map<string, string>>(new Map());
 
@@ -250,11 +258,22 @@
           {#each resources as resource (resource.resourceId)}
             <tr>
               <td>
-                <span class="block font-medium"
-                  >{humanizeName(resource.localName)}</span
+                <button
+                  type="button"
+                  class="text-left"
+                  aria-expanded={open === resource.resourceId}
+                  onclick={() =>
+                    (open =
+                      open === resource.resourceId
+                        ? null
+                        : resource.resourceId)}
                 >
+                  <span class="block font-medium hover:underline"
+                    >{humanizeName(resource.localName)}</span
+                  >
+                </button>
                 <span class="block text-xs text-base-content/60"
-                  >{humanizeName(resource.kind)} ·
+                  >{KINDS[resource.kind] ?? humanizeName(resource.kind)} ·
                   <span class="trellis-identifier text-[0.7rem]"
                     >{resource.resourceId}</span
                   ></span
@@ -268,9 +287,7 @@
                     )}</span
                 >
                 <span class="block text-xs text-base-content/60"
-                  >{resource.ownerKind === "device"
-                    ? "Device"
-                    : "Service"}</span
+                  >{resource.ownerKind === "user" ? "Person" : "Service"}</span
                 >
               </td>
               <td>
@@ -307,6 +324,45 @@
                   >{/if}
               </td>
             </tr>
+            {#if open === resource.resourceId}
+              <tr class="bg-base-200/40">
+                <td colspan="4">
+                  <dl
+                    class="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[max-content_1fr]"
+                  >
+                    <dt class="text-base-content/60">Type</dt>
+                    <dd>
+                      {KINDS[resource.kind] ?? humanizeName(resource.kind)}
+                    </dd>
+                    <dt class="text-base-content/60">Name in its program</dt>
+                    <dd><code>{resource.localName}</code></dd>
+                    <dt class="text-base-content/60">Owner</dt>
+                    <dd>
+                      {ownerNames.get(resource.ownerId) ?? resource.ownerId}
+                      <span class="text-base-content/60"
+                        >· {resource.ownerKind === "user"
+                          ? "Person"
+                          : "Service"}</span
+                      >
+                    </dd>
+                    {#if resource.participantId}
+                      <dt class="text-base-content/60">Program</dt>
+                      <dd><code>{resource.participantId}</code></dd>
+                    {/if}
+                    {#if resource.clientId}
+                      <dt class="text-base-content/60">App</dt>
+                      <dd><code>{resource.clientId}</code></dd>
+                    {/if}
+                    {#if resource.browserOrigin}
+                      <dt class="text-base-content/60">Web address</dt>
+                      <dd>{resource.browserOrigin}</dd>
+                    {/if}
+                    <dt class="text-base-content/60">Changes</dt>
+                    <dd>{resource.revision}</dd>
+                  </dl>
+                </td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </DataTable>

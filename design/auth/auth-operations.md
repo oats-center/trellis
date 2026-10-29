@@ -19,7 +19,6 @@ Every `[auth]` key, from `AuthConfig` in `crates/runtime/src/config/mod.rs`:
 | `local_identity.password_min_length`                | no (12)  | The minimum length every local password must meet. Which sign-in methods are on is Auth state (`Auth.SignInSettings`), not configuration. |
 | `avatar.external_fetch_enabled`                     | no (on)  | Fetch OIDC, override, and Gravatar profile images; off serves local initials only.                                                        |
 | `administration.confirm_on_consent`                 | no (on)  | Consent asks for a separate confirmation before delegating administration.                                                                |
-| `administration.require_peer_approval`              | no (on)  | Another `trellis.auth.v1:platform.manage` holder approves a delegated administrative capability.                                          |
 | `administration.registered_clients_only`            | no (on)  | Only administrator-registered OAuth clients may receive administrative capabilities.                                                      |
 
 Login, OAuth token, device-code, portal, and request-admission lifetimes and

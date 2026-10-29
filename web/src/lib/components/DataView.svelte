@@ -74,6 +74,16 @@
 {/if}
 
 <style>
+  /* Nested values read as indented sections, not one run of fields. */
+  .data-view :global(.data-view),
+  .data-view :global(.data-list) {
+    border-left: 2px solid var(--color-base-300);
+    padding-left: 0.75rem;
+  }
+  .data-view > dt {
+    color: color-mix(in oklab, var(--color-base-content) 60%, transparent);
+    font-size: 0.8125rem;
+  }
   .data-view {
     display: grid;
     gap: 0.35rem 1rem;
