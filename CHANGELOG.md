@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.16] - 2026-10-29
+
 ### Added
 
 - IDL descriptions: a `///` comment directly above a model, field, enum, type
