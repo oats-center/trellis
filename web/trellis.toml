@@ -1,6 +1,6 @@
 [package]
 name = "trellis-web-generated"
-version = "0.100.0-rc.17"
+version = "0.100.0-rc.18"
 
 [sources]
 console = "contract.trellis"

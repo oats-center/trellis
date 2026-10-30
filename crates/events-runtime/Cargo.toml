@@ -21,9 +21,9 @@ thiserror.workspace = true
 tokio.workspace = true
 time.workspace = true
 tracing.workspace = true
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.17" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.18" }
 trellis-protocol.workspace = true
-trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0-rc.17" }
+trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0-rc.18" }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.18] - 2026-10-30
+
 ### Added
 
 - Account management that can be handed out without making someone an

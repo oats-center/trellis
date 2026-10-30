@@ -23,11 +23,11 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.17" }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.18" }
 trellis-cli = { path = "../cli", default-features = false, features = ["self-update"] }
-trellis-local-nats = { path = "../local-nats", version = "0.100.0-rc.17" }
-trellis-runtime = { path = "../runtime", version = "0.100.0-rc.17" }
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.17", features = ["telemetry-otlp"] }
+trellis-local-nats = { path = "../local-nats", version = "0.100.0-rc.18" }
+trellis-runtime = { path = "../runtime", version = "0.100.0-rc.18" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.18", features = ["telemetry-otlp"] }
 
 [dev-dependencies]
 rustls.workspace = true
