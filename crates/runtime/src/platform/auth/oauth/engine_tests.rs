@@ -558,7 +558,7 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
-    let listener = super::super::oauth::OAuthListener::load(
+    let listener = super::super::oauth::OriginListener::load(
         socket,
         &origin,
         &super::super::oauth::OAuthTransport::LoopbackDevelopment,
@@ -635,7 +635,7 @@ async fn portal_sign_out_returns_only_to_an_origin_the_client_registered() {
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
-    let listener = super::super::oauth::OAuthListener::load(
+    let listener = super::super::oauth::OriginListener::load(
         socket,
         &origin,
         &super::super::oauth::OAuthTransport::LoopbackDevelopment,
@@ -702,21 +702,23 @@ async fn trusted_proxy_clients_without_origin_have_independent_budgets() {
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
-    let listener = super::super::oauth::OAuthListener::load(
-        socket,
-        &origin,
-        &super::super::oauth::OAuthTransport::LoopbackDevelopment,
-    )
-    .await
-    .unwrap()
-    .forwarded_by(&["127.0.0.1/32".parse().unwrap()]);
+    // Sign-in is served the way the Trellis listener serves it.
     let stop = tokio_util::sync::CancellationToken::new();
     let stopped = stop.clone();
+    let url = url::Url::parse(&origin).unwrap();
     let host = tokio::spawn(async move {
-        listener
-            .run(super::super::oauth::router(engine, Vec::new()), stopped)
-            .await
-            .unwrap();
+        crate::serve_http_listener(
+            socket,
+            &url,
+            &super::super::oauth::OAuthTransport::LoopbackDevelopment,
+            &["127.0.0.1/32".parse().unwrap()],
+            crate::RuntimeMode::Platform,
+            super::super::oauth::router(engine, Vec::new()),
+            Arc::default(),
+            stopped.cancelled_owned(),
+        )
+        .await
+        .unwrap();
     });
     let http = reqwest::Client::new();
     let get = |forwarded: String| {
@@ -767,7 +769,7 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );
-    let listener = super::super::oauth::OAuthListener::load(
+    let listener = super::super::oauth::OriginListener::load(
         socket,
         &origin,
         &super::super::oauth::OAuthTransport::LoopbackDevelopment,

@@ -10,7 +10,7 @@ async fn typescript_job_history_uses_the_successor_transport() {
         .args([
             "--experimental-transform-types",
             "integration/fixtures/runtime/job_history_recovery.ts",
-            runtime.oauth_origin(),
+            runtime.trellis_url(),
             runtime.admin_username(),
             runtime.admin_password(),
         ])

@@ -29,50 +29,6 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-/// Development mode serves sign-in under
-/// [`crate::config::DEVELOPMENT_SIGN_IN_PATH`] on the Console's listener. The
-/// handlers write root-relative redirects and links, so this prefixes them on
-/// the way out and tells the Portal app its base.
-pub(crate) async fn under_development_path(response: Response) -> Response {
-    const BASE: &str = crate::config::DEVELOPMENT_SIGN_IN_PATH;
-    let (mut parts, body) = response.into_parts();
-    if let Some(location) = parts
-        .headers
-        .get(header::LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .filter(|location| location.starts_with('/') && !location.starts_with("//"))
-        .and_then(|location| HeaderValue::from_str(&format!("{BASE}{location}")).ok())
-    {
-        parts.headers.insert(header::LOCATION, location);
-    }
-    let html = parts
-        .headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/html"));
-    if !html {
-        return Response::from_parts(parts, body);
-    }
-    let Ok(bytes) = axum::body::to_bytes(body, 4 << 20).await else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
-    let mut text = String::from_utf8_lossy(&bytes).into_owned();
-    for attribute in ["href", "action", "src"] {
-        text = text
-            .replace(
-                &format!("{attribute}=\"/"),
-                &format!("{attribute}=\"{BASE}/"),
-            )
-            .replace(
-                &format!("{attribute}=\"{BASE}//"),
-                &format!("{attribute}=\"//"),
-            );
-    }
-    text = text.replacen("<html", &format!("<html data-base=\"{BASE}\""), 1);
-    parts.headers.remove(header::CONTENT_LENGTH);
-    Response::from_parts(parts, axum::body::Body::from(text))
-}
-
 pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> Router {
     let origin = engine.server.config().issuer.clone();
     let cors_engine = engine.clone();

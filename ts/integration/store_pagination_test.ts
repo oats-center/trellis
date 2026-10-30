@@ -32,7 +32,7 @@ test("Store deletion preserves neighboring objects and rejects a foreign purge",
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed: identity.seed,
       }).orThrow();
@@ -114,7 +114,7 @@ test("generated keyset clients cross the live runtime boundary", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "store-pagination-provider",
       seed: key.seed,
@@ -179,7 +179,7 @@ test("generated keyset clients cross the live runtime boundary", async () => {
         Promise.resolve(Result.ok(job.payload)),
       );
       const login = await loginNativeTestClient({
-        issuer: runtime.oauthIssuer,
+        issuer: runtime.trellisUrl,
         clientId: "trellis.cli",
         request: adminParticipant,
         username: "admin",

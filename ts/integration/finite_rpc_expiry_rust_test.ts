@@ -23,7 +23,7 @@ test("generated Rust finite success and declared error survive opening expiry wi
         contract,
       });
       const provider = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();
@@ -72,7 +72,7 @@ test("generated Rust finite success and declared error survive opening expiry wi
       const child = spawnTracked("setsid", rustFixtureArgv("finite_rpc"), {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: caller.seed,
         },

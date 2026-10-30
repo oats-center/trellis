@@ -1,19 +1,16 @@
-//! Same-origin NATS WebSocket for browsers.
+//! NATS WebSocket on the Trellis origin.
 //!
-//! When configured, the application listener forwards WebSocket upgrades on
-//! [`PATH`] to the broker's plaintext WebSocket listener and then relays bytes
-//! both ways. Browsers reach NATS through the Console's own host and
-//! certificate, so one trusted certificate covers both.
+//! When configured, the Trellis listener applies the rule a proxy in front of
+//! it would: any request asking for a WebSocket upgrade goes to the broker's
+//! plaintext WebSocket listener, whatever its path, and bytes are then relayed
+//! both ways. Everything else is served as usual. Clients reach NATS at the
+//! Trellis origin with its certificate.
 
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::Router;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-
-/// Path on the application origin that carries the NATS WebSocket.
-pub const PATH: &str = "/nats";
 
 /// Bound on the broker's upgrade response head.
 const MAX_RESPONSE_HEAD: usize = 16 * 1024;
@@ -36,19 +33,20 @@ const FORWARDED_RESPONSE: [header::HeaderName; 4] = [
     header::SEC_WEBSOCKET_EXTENSIONS,
 ];
 
-/// Routes [`PATH`] to the broker WebSocket listener at `upstream` (`host:port`).
-pub(crate) fn router(upstream: String) -> Router {
-    Router::new().route(PATH, get(proxy)).with_state(upstream)
-}
-
-async fn proxy(State(upstream): State<String>, mut request: Request) -> Response {
+/// Sends WebSocket upgrades to the broker WebSocket listener at `upstream`
+/// (`host:port`) and every other request on to `next`.
+pub(crate) async fn relay(
+    State(upstream): State<String>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let headers = request.headers();
     if !headers
         .get(header::UPGRADE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
     {
-        return (StatusCode::UPGRADE_REQUIRED, "WebSocket upgrade required").into_response();
+        return next.run(request).await;
     }
     let mut head = format!("GET / HTTP/1.1\r\nHost: {upstream}\r\nConnection: Upgrade\r\n");
     for name in FORWARDED_REQUEST {

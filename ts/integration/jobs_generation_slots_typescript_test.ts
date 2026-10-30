@@ -37,7 +37,7 @@ test("managed Jobs keeps two execution slots and receives new work after generat
         idempotencyKey: ulid(),
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: instance.seed,
       }).orThrow();
@@ -172,7 +172,7 @@ test("managed Jobs stop interrupts withheld preparation without consuming queued
         contract,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: instance.seed,
       }).orThrow();

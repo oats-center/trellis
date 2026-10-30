@@ -32,7 +32,7 @@ implemented. CONNECT proves possession of the registered immutable identity key.
 ## Account actions
 
 `Auth.Users.PasswordReset.Create` returns a five-minute, one-use token for a
-non-bootstrap user. Open `/account/reset?token=...` on the OAuth origin and submit
+non-bootstrap user. Open `/account/reset?token=...` on the Trellis origin and submit
 the native password form. Completion requires the requester's original logical
 session and current accepted `principals.manage`, rejects stale credentials, and
 atomically changes the password and signs out existing login/grant families.
@@ -200,7 +200,8 @@ capabilities and administrative checks.
 ## Browser login and the portal
 
 Browser applications use OAuth Authorization Code with PKCE and DPoP against
-the installation's dedicated OAuth origin. Trellis's portal on that origin
+the Trellis origin, which no application shares; even the Console is an app on
+its own origin. Trellis's portal on that origin
 performs local-password or OIDC sign-in and explicit capability consent under its
 own cookie and CSRF controls. The token response carries a signed Trellis
 admission for the browser's fresh runtime key; the client connects with it and

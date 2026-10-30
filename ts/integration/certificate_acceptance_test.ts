@@ -36,7 +36,7 @@ test("a program accepts a development installation's certificate by its fingerpr
       const run = async (
         directory: string,
         env: Record<string, string> = {},
-        address = runtime.oauthIssuer,
+        address = runtime.trellisUrl,
       ): Promise<{ reason?: string; message?: string; issuer?: string }> => {
         const { NODE_EXTRA_CA_CERTS: _, ...inherited } = process.env;
         const { stdout } = await promisify(execFile)(
@@ -65,18 +65,18 @@ test("a program accepts a development installation's certificate by its fingerpr
       const accepted = await run(directory, {
         TRELLIS_CERTIFICATE_FINGERPRINT: fingerprint,
       });
-      assert.equal(accepted.issuer, runtime.oauthIssuer);
+      assert.equal(accepted.issuer, runtime.trellisUrl);
       // Remembered: the next start needs nothing.
-      assert.equal((await run(directory)).issuer, runtime.oauthIssuer);
+      assert.equal((await run(directory)).issuer, runtime.trellisUrl);
 
       const fresh = await mkdtemp(join(tmpdir(), "trellis-accepted-"));
       // The Console's address, as people type it, leads to its sign-in.
       const selfSigned = await run(
         fresh,
         { TRELLIS_ACCEPT_SELF_SIGNED: "1" },
-        runtime.trellisUrl,
+        runtime.consoleUrl,
       );
-      assert.equal(selfSigned.issuer, runtime.oauthIssuer);
+      assert.equal(selfSigned.issuer, runtime.trellisUrl);
     },
     { development: true },
   );

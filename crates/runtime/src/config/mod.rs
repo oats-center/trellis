@@ -26,9 +26,12 @@ pub struct RuntimeConfig {
     /// Host path-root overrides. Relative values resolve against this config file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<RuntimePathsConfig>,
-    /// HTTP listener configuration.
+    /// The Trellis listener: sign-in, OAuth, discovery and health.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpConfig>,
+    /// The bundled Console's own listener, an app beside the Trellis origin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub console: Option<ConsoleListenerConfig>,
     /// Installation TLS metadata shared by every runtime listener.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
@@ -134,7 +137,7 @@ impl RuntimeConfig {
             }
         }
         if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
-            self.resolve_oauth_listener()?;
+            self.resolve_console_listener()?;
         }
         if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
             self.resolve_authorization()?;
@@ -143,8 +146,8 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    /// Resolves the dedicated authorization listener and checks installation identity.
-    pub fn resolve_oauth_listener(&self) -> Result<&OAuthListenerConfig, ConfigError> {
+    /// Resolves the Console's listener and checks installation identity.
+    pub fn resolve_console_listener(&self) -> Result<&ConsoleListenerConfig, ConfigError> {
         let auth = self
             .auth
             .as_ref()
@@ -174,67 +177,35 @@ impl RuntimeConfig {
                 "must identify the existing installation-owned OAuth key file",
             ));
         }
-        let oauth = auth.oauth.as_ref().ok_or(ConfigError::MissingSection {
-            section: "auth.oauth",
-        })?;
-        let origin = Url::parse(&oauth.origin)
-            .map_err(|_| invalid_authorization("oauth.origin", "must be an absolute origin"))?;
-        let console_origin = self.public_origin();
-        if self.development() {
-            // One listener serves both, so sign-in's issuer is the Console's
-            // origin plus its path, on the Console's port.
-            if oauth.origin != format!("{console_origin}{DEVELOPMENT_SIGN_IN_PATH}")
-                || oauth.port != self.http_port()
-            {
-                return Err(invalid_authorization(
-                    "oauth",
-                    "in development mode must be the Console origin followed by /auth, \
-                    on the Console's port",
-                ));
-            }
-        } else if origin.host().is_none()
+        let console = self
+            .console
+            .as_ref()
+            .ok_or(ConfigError::MissingSection { section: "console" })?;
+        let invalid = |reason| ConfigError::InvalidConsoleListener { reason };
+        let origin = Url::parse(&console.origin)
+            .map_err(|_| invalid("origin must be an absolute origin"))?;
+        if origin.host().is_none()
             || !origin.username().is_empty()
             || origin.password().is_some()
             || origin.path() != "/"
             || origin.query().is_some()
             || origin.fragment().is_some()
-            || oauth.port == 0
+            || console.port == 0
         {
-            return Err(invalid_authorization(
-                "oauth",
-                "requires a nonzero listener port and an origin without credentials, \
-                path, query, or fragment",
+            return Err(invalid(
+                "requires a nonzero port and an origin without credentials, path, query, \
+                or fragment",
             ));
         }
-        validate_listener_transport(&origin, oauth.bind_address, &oauth.transport)
-            .map_err(|reason| invalid_authorization("oauth.transport", reason))?;
-        // Development mode shares the Console's origin on purpose.
-        let applications = if self.development() {
-            Vec::new()
-        } else {
-            std::iter::once(console_origin.clone())
-                .chain(
-                    self.http
-                        .iter()
-                        .flat_map(|http| http.origins.iter().flatten().cloned()),
-                )
-                .collect()
-        };
-        for other in &applications {
-            let other = Url::parse(other).map_err(|_| {
-                invalid_authorization(
-                    "oauth.origin",
-                    "configured application origins must be valid URLs",
-                )
-            })?;
-            if other.origin() == origin.origin() {
-                return Err(invalid_authorization(
-                    "oauth.origin",
-                    "must differ from every configured application origin",
-                ));
-            }
-            warn_oauth_cookie_isolation(&origin, &other);
+        validate_listener_transport(&origin, console.bind_address, &console.transport)
+            .map_err(invalid)?;
+        // Sign-in lives on the Trellis origin; the Console is an app beside it.
+        let trellis = Url::parse(&self.public_origin())
+            .map_err(|_| invalid("needs a valid [http] public_origin beside it"))?;
+        if trellis.origin() == origin.origin() {
+            return Err(invalid("origin must differ from the Trellis origin"));
         }
+        warn_oauth_cookie_isolation(&trellis, &origin);
         if let Some(servers) = self.nats.as_ref().and_then(|nats| nats.servers.as_deref()) {
             for server in servers.split(',') {
                 let endpoint = Url::parse(server.trim()).map_err(|_| {
@@ -256,8 +227,10 @@ impl RuntimeConfig {
                     || endpoint.query().is_some()
                     || endpoint.fragment().is_some()
                     || !(matches!(endpoint.scheme(), "tls" | "wss")
-                        || (matches!(oauth.transport, ListenerTransport::LoopbackDevelopment)
-                            && loopback
+                        || (matches!(
+                            self.http_transport(),
+                            ListenerTransport::LoopbackDevelopment
+                        ) && loopback
                             && matches!(endpoint.scheme(), "nats" | "ws")))
                 {
                     return Err(invalid_authorization(
@@ -267,7 +240,7 @@ impl RuntimeConfig {
                 }
             }
         }
-        Ok(oauth)
+        Ok(console)
     }
 
     fn validate_distinct_sqlite_paths(&self) -> Result<(), ConfigError> {
@@ -367,13 +340,6 @@ impl RuntimeConfig {
 
     /// Returns the configured HTTP bind address.
     ///
-    /// Whether this is a development installation serving sign-in on the
-    /// Console's listener.
-    #[must_use]
-    pub fn development(&self) -> bool {
-        self.http.as_ref().is_some_and(|http| http.development)
-    }
-
     /// An omitted address binds loopback for plaintext development and the
     /// unspecified IPv4 address for TLS or proxy transport.
     #[must_use]
@@ -387,8 +353,8 @@ impl RuntimeConfig {
             })
     }
 
-    /// Returns the broker WebSocket listener the application listener relays
-    /// `/nats` upgrades to, when configured.
+    /// Returns the broker WebSocket listener the Trellis listener relays
+    /// WebSocket upgrades to, when configured.
     #[must_use]
     pub fn nats_websocket_upstream(&self) -> Option<&str> {
         self.http
@@ -396,8 +362,8 @@ impl RuntimeConfig {
             .and_then(|http| http.nats_websocket_upstream.as_deref())
     }
 
-    /// The browser NATS WebSocket URL on the application origin, advertised
-    /// whenever the application listener relays the broker's WebSocket.
+    /// The NATS WebSocket URL on the Trellis origin, advertised whenever the
+    /// Trellis listener relays the broker's WebSocket.
     #[must_use]
     pub fn same_origin_websocket_url(&self) -> Option<String> {
         self.nats_websocket_upstream()?;
@@ -408,20 +374,24 @@ impl RuntimeConfig {
             "ws"
         };
         let (_, authority) = origin.split_once("://")?;
-        Some(format!(
-            "{scheme}://{}{}",
-            authority.trim_end_matches('/'),
-            crate::nats_websocket::PATH
-        ))
+        Some(format!("{scheme}://{}", authority.trim_end_matches('/')))
     }
 
-    /// Returns the application listener transport; omission selects loopback development.
+    /// Returns the Trellis listener transport; omission selects loopback development.
     #[must_use]
     pub fn http_transport(&self) -> &ListenerTransport {
         self.http
             .as_ref()
             .and_then(|http| http.transport.as_ref())
             .unwrap_or(&ListenerTransport::LoopbackDevelopment)
+    }
+
+    /// Proxies in front of a TLS Trellis listener whose `X-Forwarded-For` names the client.
+    #[must_use]
+    pub fn http_trusted_proxies(&self) -> &[ipnet::IpNet] {
+        self.http
+            .as_ref()
+            .map_or(&[], |http| http.trusted_proxies.as_slice())
     }
 
     /// Resolves the canonical public browser origin, defaulting to loopback HTTP.
@@ -436,7 +406,7 @@ impl RuntimeConfig {
             .unwrap_or_else(|| format!("http://localhost:{}", self.http_port()))
     }
 
-    /// Validates that the application and OAuth listener transports can protect
+    /// Validates that the Trellis and Console listener transports can protect
     /// their public origins and that broker endpoints use TLS outside loopback
     /// development, without reading any referenced file.
     ///
@@ -445,7 +415,7 @@ impl RuntimeConfig {
     /// Returns [`ConfigError`] naming the listener or endpoint that is unsafe.
     pub fn validate_listeners(&self) -> Result<(), ConfigError> {
         self.validate_http_listener()?;
-        self.resolve_oauth_listener().map(|_| ())
+        self.resolve_console_listener().map(|_| ())
     }
 
     /// Rejects an application listener whose transport cannot protect its public origin.
@@ -637,18 +607,18 @@ impl RuntimeConfig {
 
         if let Some(auth) = &mut self.auth {
             resolve_path(base_dir, &mut auth.oauth_storage_key_file);
-            if let Some(OAuthListenerConfig {
-                transport:
-                    ListenerTransport::Tls {
-                        certificate_chain,
-                        private_key,
-                    },
-                ..
-            }) = &mut auth.oauth
-            {
-                resolve_required_path(base_dir, certificate_chain);
-                resolve_required_path(base_dir, private_key);
-            }
+        }
+        if let Some(ConsoleListenerConfig {
+            transport:
+                ListenerTransport::Tls {
+                    certificate_chain,
+                    private_key,
+                },
+            ..
+        }) = &mut self.console
+        {
+            resolve_required_path(base_dir, certificate_chain);
+            resolve_required_path(base_dir, private_key);
         }
         if let Some(authorization) = self
             .auth
@@ -860,30 +830,24 @@ pub struct HttpConfig {
     /// Address the HTTP listener binds to. Absent binds the unspecified IPv4 address.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bind_address: Option<IpAddr>,
-    /// Public browser origin for runtime URLs.
+    /// The Trellis origin: sign-in's issuer and the address clients use.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_origin: Option<String>,
-    /// Allowed browser origins.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origins: Option<Vec<String>>,
     /// Listener transport. Absent selects loopback-only plaintext development.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<ListenerTransport>,
     /// `host:port` of the broker's plaintext WebSocket listener. When set, the
-    /// listener relays WebSocket upgrades on `/nats` to it, so browsers reach
-    /// NATS on this origin with this listener's certificate.
+    /// listener relays every WebSocket upgrade to it, whatever its path, so
+    /// clients reach NATS on this origin with this listener's certificate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nats_websocket_upstream: Option<String>,
-    /// Development mode: this one listener and its one certificate also serve
-    /// sign-in under [`DEVELOPMENT_SIGN_IN_PATH`], so a browser accepts a
-    /// single certificate. Sign-in then shares the Console's origin, which a
-    /// production installation never allows.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub development: bool,
+    /// Reverse-proxy addresses or CIDR ranges whose `X-Forwarded-For` header
+    /// identifies the client for request admission, for a proxy in front of a
+    /// TLS listener, such as one that re-encrypts. A `proxy` transport already
+    /// serves only its own trusted proxies and presents the forwarded client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
-
-/// Where development mode serves sign-in on the Console's origin.
-pub const DEVELOPMENT_SIGN_IN_PATH: &str = "/auth";
 
 /// A canonical `scheme://host[:port]` browser origin.
 struct CanonicalOrigin;
@@ -1138,9 +1102,6 @@ pub struct AuthConfig {
     /// Stable installation ULID, provisioned once and retained across key rotations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
-    /// Dedicated OAuth listener, distinct from application origins.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth: Option<OAuthListenerConfig>,
     /// Installation-owned base64url 32-byte key sealing durable OAuth credentials.
     /// Provision once; retain across restarts and issuer rotations.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1187,27 +1148,18 @@ pub struct AvatarConfig {
     pub external_fetch_enabled: bool,
 }
 
-/// Explicit dedicated OAuth listener configuration.
+/// The bundled Console's listener, an app on its own origin.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct OAuthListenerConfig {
-    /// Public authorization origin, distinct from every application origin.
+pub struct ConsoleListenerConfig {
+    /// The Console's public origin, distinct from the Trellis origin.
     pub origin: String,
-    /// Dedicated authorization listener address.
+    /// Address the Console listener binds to.
     pub bind_address: IpAddr,
-    /// Dedicated listener port.
+    /// The Console's port.
     pub port: u16,
     /// TLS, reverse-proxy, or explicitly insecure loopback-only development transport.
     pub transport: ListenerTransport,
-    /// Reverse-proxy addresses or CIDR ranges whose `X-Forwarded-For` header
-    /// identifies the client for request admission. Forwarding headers from
-    /// any other peer are ignored. Empty means the listener faces clients.
-    ///
-    /// A `proxy` transport already serves only its own trusted proxies and
-    /// presents the forwarded client; this list is for a proxy in front of a
-    /// TLS listener, such as one that re-encrypts.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
 /// Transport for a runtime HTTP listener; failed TLS never becomes plaintext.
@@ -1561,6 +1513,12 @@ pub enum ConfigError {
         /// Invalid field name.
         field: &'static str,
         /// Validation failure reason.
+        reason: &'static str,
+    },
+    /// The Console listener can't serve its origin safely.
+    #[error("invalid runtime config section [console]: {reason}")]
+    InvalidConsoleListener {
+        /// Why the listener is refused.
         reason: &'static str,
     },
     /// The configured HTTP public origin is not a valid absolute HTTP(S) origin.

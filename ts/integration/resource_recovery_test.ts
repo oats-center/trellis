@@ -20,7 +20,7 @@ test("deployment disable and enable preserve KV data and queued work", async () 
       contract,
     });
     let service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: contract,
       seed: identity.seed,
     }).orThrow();
@@ -43,7 +43,7 @@ test("deployment disable and enable preserve KV data and queued work", async () 
       await service.stop();
       await exit;
       const denied = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       });
@@ -54,7 +54,7 @@ test("deployment disable and enable preserve KV data and queued work", async () 
         idempotencyKey: ulid(),
       });
       service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();
@@ -87,7 +87,7 @@ for (const recovery of ["apply", "restart"] as const) {
         contract,
       });
       let service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();
@@ -130,7 +130,7 @@ for (const recovery of ["apply", "restart"] as const) {
         if (recovery === "restart") await runtime.restart();
         else await runtime.contracts.apply({ contract });
         service = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: contract,
           seed: identity.seed,
         }).orThrow();

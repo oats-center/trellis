@@ -17,7 +17,7 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       const page = await context.newPage();
       await openConsole(page, runtime, BROWSER_ADMIN);
       const clientId = `console-development-${ulid()}`;
-      await page.goto(`${runtime.trellisUrl}/console/admin/clients`);
+      await page.goto(`${runtime.consoleUrl}/console/admin/clients`);
       await page.getByRole("button", { name: "New app", exact: true }).click();
       await page.getByLabel("App ID").fill(clientId);
       await page.getByLabel("Name", { exact: true }).fill(clientId);
@@ -48,7 +48,7 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       assert.equal(await row.count(), 0);
 
       const title = `Console role ${ulid()}`;
-      await page.goto(`${runtime.trellisUrl}/console/admin/roles/new`);
+      await page.goto(`${runtime.consoleUrl}/console/admin/roles/new`);
       await page.getByLabel("Title", { exact: true }).fill(title);
       const auth = page.getByRole("group", { name: "Auth", exact: true });
       const account = auth.getByRole("checkbox", { name: /^Your account/ });

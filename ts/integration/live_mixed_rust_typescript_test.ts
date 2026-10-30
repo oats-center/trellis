@@ -75,7 +75,7 @@ test("mixed Rust processes and a TypeScript runtime overlap on one host", async 
     }
 
     // The TypeScript runtime and both Rust children are live simultaneously.
-    const endpoints = [runtime.trellisUrl, runtime.natsUrl];
+    const endpoints = [runtime.consoleUrl, runtime.natsUrl];
     for (let index = 0; index < 2; index++) {
       const lines = (
         await readFile(join(dir, `endpoints-${index}.txt`), "utf8")

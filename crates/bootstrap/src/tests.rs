@@ -165,7 +165,6 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
     options.runtime.nats_server_url = "tls://nats.example.test:4222".to_string();
     options.runtime.nats_websocket_url = "wss://nats.example.test/ws".to_string();
     options.runtime.public_origin = "https://trellis.example.test/".to_string();
-    options.runtime.extra_origins = vec!["http://localhost:5174".to_string()];
     let config = render_trellis_config(&options);
 
     let temp = tempfile::tempdir().expect("config tempdir");
@@ -632,7 +631,7 @@ fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trus
     let ca_directory = temp.path().join("ca");
     let mut options = trellis_options(&out);
     options.runtime.public_origin = "https://eta.oats:3000".into();
-    options.runtime.oauth_origin = "https://auth.eta.oats:3001".into();
+    options.runtime.console_origin = "https://console.eta.oats:3001".into();
     options.runtime.nats_server_url = "tls://192.0.2.10:4222".into();
     options.runtime.nats_websocket_url = "wss://nats.eta.oats:8080".into();
     options.runtime.tls = BootstrapTls::Generated {
@@ -665,7 +664,7 @@ fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trus
         summary.ca_sha256_fingerprint
     );
     verify_with_installation_ca(&ca, &runtime_leaf, "eta.oats").expect("Console host");
-    verify_with_installation_ca(&ca, &runtime_leaf, "auth.eta.oats").expect("OAuth host");
+    verify_with_installation_ca(&ca, &runtime_leaf, "console.eta.oats").expect("OAuth host");
     verify_with_installation_ca(&ca, &nats_leaf, "nats.eta.oats").expect("WebSocket host");
     verify_with_installation_ca(&ca, &nats_leaf, "192.0.2.10").expect("native broker IP");
     verify_with_installation_ca(&ca, &runtime_leaf, "other.example")
@@ -689,7 +688,7 @@ fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trus
     assert_eq!(renewed.len(), 2);
     let renewed_leaf = fs::read(out.join("tls/runtime.crt")).expect("renewed leaf");
     assert_ne!(renewed_leaf, runtime_leaf, "renewal must replace the leaf");
-    verify_with_installation_ca(&ca, &renewed_leaf, "auth.eta.oats")
+    verify_with_installation_ca(&ca, &renewed_leaf, "console.eta.oats")
         .expect("renewed leaf keeps its names under the unchanged CA");
     assert_eq!(
         fs::read(&ca).unwrap(),
@@ -778,7 +777,7 @@ fn bundle_tls_modes_reject_endpoints_they_cannot_protect() {
     let mut remote_loopback = trellis_options(temp.path().join("remote-loopback"));
     remote_loopback.runtime.tls = BootstrapTls::LoopbackDevelopment;
     remote_loopback.runtime.public_origin = "http://eta.oats:3000".into();
-    remote_loopback.runtime.oauth_origin = "http://localhost:3001".into();
+    remote_loopback.runtime.console_origin = "http://localhost:3001".into();
     remote_loopback.runtime.nats_server_url = "nats://localhost:4222".into();
     remote_loopback.runtime.nats_websocket_url = "ws://localhost:8080".into();
     assert!(matches!(

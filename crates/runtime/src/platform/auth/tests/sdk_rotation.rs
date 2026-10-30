@@ -1,6 +1,6 @@
 //! Persisted public Node and Chromium custody over the production OAuth HTTP adapter.
 
-use super::super::oauth::{OAuthEngine, OAuthListener, OAuthStorage, OAuthTransport};
+use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport, OriginListener};
 use super::*;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -127,7 +127,7 @@ async fn sdk_rotation(mode: &str) {
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );
-    let listener = OAuthListener::load(
+    let listener = OriginListener::load(
         backend,
         &backend_origin,
         &OAuthTransport::LoopbackDevelopment,
@@ -197,7 +197,7 @@ async fn sdk_rotation(mode: &str) {
                         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap())
                             .unwrap(),
                     );
-                    let listener = OAuthListener::load(
+                    let listener = OriginListener::load(
                         socket,
                         &backend_origin,
                         &OAuthTransport::LoopbackDevelopment,

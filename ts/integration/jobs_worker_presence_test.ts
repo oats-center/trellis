@@ -20,7 +20,7 @@ test("a real Jobs worker appears publicly while another principal cannot publish
         contract,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();

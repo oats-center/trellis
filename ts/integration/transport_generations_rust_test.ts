@@ -84,7 +84,7 @@ async function withTransportGrowthLeg(
     {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: seed,
       },
@@ -224,7 +224,7 @@ test("Rust transport generations adopt grown authority automatically without an 
       contract: targetContract,
     });
     const target = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: targetContract,
       name: "tg-target",
       seed: targetInstance.seed,

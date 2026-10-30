@@ -79,7 +79,7 @@ test("required capability reduction retires native service sockets and fences it
       contract: participants.TransportGrowthTarget.participant,
     });
     const target = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.TransportGrowthTarget.participant,
       seed: targetIdentity.seed,
     }).orThrow();
@@ -98,7 +98,7 @@ test("required capability reduction retires native service sockets and fences it
         contract,
       });
       const source = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();
@@ -147,7 +147,7 @@ test("required capability reduction retires native service sockets and fences it
       await source.connection.close();
       const denied = (
         await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: contract,
           seed: identity.seed,
         })
@@ -165,7 +165,7 @@ test("required capability reduction retires native service sockets and fences it
         idempotencyKey: ulid(),
       });
       const restored = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();

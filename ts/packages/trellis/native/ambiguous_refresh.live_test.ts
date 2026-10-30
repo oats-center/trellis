@@ -137,7 +137,7 @@ test(
         {
           env: {
             ...process.env,
-            TRELLIS_NATIVE_TEST_ISSUER: runtime.oauthIssuer,
+            TRELLIS_NATIVE_TEST_ISSUER: runtime.trellisUrl,
             TRELLIS_NATIVE_TEST_USERNAME: runtime.adminUsername,
             TRELLIS_NATIVE_TEST_PASSWORD: runtime.adminPassword,
             NODE_EXTRA_CA_CERTS: runtime.caCertificate,

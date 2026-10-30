@@ -49,7 +49,7 @@ for (const scenario of [
           },
         };
         const login = await loginNativeTestClient({
-          issuer: runtime.oauthIssuer,
+          issuer: runtime.trellisUrl,
           username: runtime.adminUsername,
           password: runtime.adminPassword,
           clientId: "trellis.cli",

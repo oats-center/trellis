@@ -40,7 +40,7 @@ async fn rust_observes_v2_operation_updates_from_an_implementation_only_typescri
         .write_all(
             format!(
                 "{}\n",
-                json!({"trellisUrl":runtime.oauth_origin(), "seed":identity.seed()})
+                json!({"trellisUrl":runtime.trellis_url(), "seed":identity.seed()})
             )
             .as_bytes(),
         )
@@ -224,7 +224,7 @@ async fn typescript_observes_v2_operation_updates_from_an_implementation_only_ru
         .unwrap();
     let mut input = caller.stdin.take().unwrap();
     input.write_all(format!("{}\n", json!({
-        "issuer":runtime.oauth_origin(),
+        "issuer":runtime.trellis_url(),
         "username":runtime.admin_username(),
         "password":runtime.admin_password(),
         "clientId":client_id

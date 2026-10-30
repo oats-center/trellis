@@ -20,7 +20,7 @@ test("service provisioning requires an installed deployment and admits its ident
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "provider",
       seed: identity.seed,

@@ -28,7 +28,7 @@ for (const cancelDuringCommit of [false, true]) {
             contract,
           });
           const provider = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: contract,
             name: "commit-recovery",
             seed: identity.seed,

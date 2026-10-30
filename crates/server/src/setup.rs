@@ -23,8 +23,9 @@ pub(crate) enum OutputFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 /// How browsers reach the broker's NATS WebSocket.
 pub(crate) enum InitWebsocketMode {
-    /// On the Console origin at `/nats`, relayed by the runtime, so browsers
-    /// trust one host and certificate. Default with generated TLS.
+    /// On the Trellis origin: the Trellis port sends every WebSocket upgrade
+    /// to NATS, as a proxy in front would, so clients trust one host and
+    /// certificate. Default with generated TLS.
     Relay,
     /// At the broker's own WebSocket listener and certificate.
     Direct,
@@ -58,14 +59,14 @@ pub(crate) struct InitConfigArgs {
     /// having trellis-server start one.
     pub(crate) external_nats: bool,
 
-    #[arg(long, conflicts_with_all = ["oauth_origin", "oauth_port"])]
-    /// Development mode: the Console's port and its one certificate also carry
-    /// sign-in (under /auth) and browsers' NATS, so a browser on another
-    /// machine accepts a single certificate. Not for production.
+    #[arg(long)]
+    /// Development mode: generated certificates, and the Trellis port relays
+    /// NATS WebSockets, so a machine elsewhere accepts one certificate. Not
+    /// for production.
     pub(crate) dev: bool,
 
     #[arg(long, default_value = "localhost")]
-    /// Hostname the default Console, sign-in and NATS addresses use.
+    /// Hostname the default Trellis, Console and NATS addresses use.
     pub(crate) host: String,
 
     #[arg(long)]
@@ -96,8 +97,8 @@ pub(crate) struct InitConfigArgs {
     /// Override the NATS server name written to nats.conf.
     pub(crate) server_name: Option<String>,
 
-    #[arg(long, default_value_t = 3000)]
-    /// Trellis HTTP port written to config.toml.
+    #[arg(long, default_value_t = trellis_bootstrap::DEFAULT_TRELLIS_PORT)]
+    /// Trellis port: sign-in, discovery and health.
     pub(crate) trellis_port: u16,
 
     #[arg(long, default_value_t = 4222)]
@@ -127,18 +128,19 @@ pub(crate) struct InitConfigArgs {
     pub(crate) nats_websocket_url: Option<String>,
 
     #[arg(long)]
-    /// Public Console origin; defaults to https://localhost:<trellis-port>
-    /// (http:// in loopback development).
-    pub(crate) public_origin: Option<String>,
+    /// Public Trellis origin, where sign-in lives and clients connect;
+    /// defaults to https://<host>:<trellis-port> (http:// in loopback
+    /// development).
+    pub(crate) trellis_origin: Option<String>,
 
     #[arg(long)]
-    /// Public OAuth origin, distinct from the Console origin; defaults to
-    /// https://localhost:<oauth-port> (http:// in loopback development).
-    pub(crate) oauth_origin: Option<String>,
+    /// Public Console origin, distinct from the Trellis origin; defaults to
+    /// https://<host>:<console-port> (http:// in loopback development).
+    pub(crate) console_origin: Option<String>,
 
-    #[arg(long, default_value_t = trellis_bootstrap::DEFAULT_OAUTH_PORT)]
-    /// Dedicated OAuth listener port.
-    pub(crate) oauth_port: u16,
+    #[arg(long, default_value_t = trellis_bootstrap::DEFAULT_CONSOLE_PORT)]
+    /// The Console's port.
+    pub(crate) console_port: u16,
 
     #[arg(long, value_enum)]
     /// Certificate source. Required without --dev, which generates them.
@@ -188,18 +190,14 @@ pub(crate) struct InitConfigArgs {
     pub(crate) nats_websocket_only: bool,
 
     #[arg(long, value_enum)]
-    /// How browsers reach NATS WebSockets. `relay` serves them on the Console
-    /// origin at `/nats` through the runtime, so one certificate covers both;
-    /// the broker's WebSocket port then serves plaintext and must stay
-    /// private. Defaults to `relay` with generated TLS unless
-    /// --nats-websocket-url or --nats-websocket-behind-proxy is given, and to
-    /// `direct` otherwise.
+    /// How clients reach NATS WebSockets. `relay` has the Trellis port send
+    /// every WebSocket upgrade to NATS, so one certificate covers both; the
+    /// broker's WebSocket port then serves plaintext and must stay private.
+    /// Defaults to `relay` with generated TLS unless --nats-websocket-url or
+    /// --nats-websocket-behind-proxy is given, and to `direct` otherwise.
     pub(crate) nats_websocket: Option<InitWebsocketMode>,
 
-    #[arg(long = "extra-origin", value_name = "ORIGIN")]
-    /// Additional allowed browser origin, for callers served elsewhere; repeatable.
-    pub(crate) extra_origin: Vec<String>,
-    /// Address Console and sign-in listen on: an IP or a hostname that
+    /// Address Trellis and the Console listen on: an IP or a hostname that
     /// resolves to one of this machine's addresses.
     #[arg(long, value_name = "HOST", value_parser = parse_bind_address)]
     pub(crate) bind_address: Option<std::net::IpAddr>,
@@ -297,7 +295,7 @@ pub(crate) fn init_config(
             || args.nats_websocket_url.is_some())
     {
         return Err(miette!(
-            "--dev serves everything over TLS on the Console's port; it can't be combined \
+            "--dev relays NATS WebSockets through the Trellis port; it can't be combined \
             with --tls loopback-development, --nats-websocket direct or --nats-websocket-url"
         ));
     }
@@ -316,7 +314,7 @@ pub(crate) fn init_config(
         .clone()
         .unwrap_or_else(|| format!("{websocket}://{host}:{}", args.nats_ws_port));
     options.runtime.public_origin = args
-        .public_origin
+        .trellis_origin
         .clone()
         .unwrap_or_else(|| format!("{http}://{host}:{}", args.trellis_port));
     let relay = match args.nats_websocket {
@@ -341,31 +339,17 @@ pub(crate) fn init_config(
     };
     if relay {
         // Reported for operators; the runtime derives the same URL itself.
-        options.runtime.nats_websocket_url = format!(
-            "{}{}",
-            options
-                .runtime
-                .public_origin
-                .trim_end_matches('/')
-                .replacen("http", "ws", 1),
-            trellis_runtime::nats_websocket::PATH
-        );
+        options.runtime.nats_websocket_url = options
+            .runtime
+            .public_origin
+            .trim_end_matches('/')
+            .replacen("http", "ws", 1);
     }
-    if args.dev {
-        options.runtime.oauth_origin = format!(
-            "{}{}",
-            options.runtime.public_origin.trim_end_matches('/'),
-            trellis_runtime::config::DEVELOPMENT_SIGN_IN_PATH
-        );
-        options.runtime.oauth_port = args.trellis_port;
-    } else {
-        options.runtime.oauth_origin = args
-            .oauth_origin
-            .clone()
-            .unwrap_or_else(|| format!("{http}://{host}:{}", args.oauth_port));
-        options.runtime.oauth_port = args.oauth_port;
-    }
-    options.runtime.development = args.dev;
+    options.runtime.console_origin = args
+        .console_origin
+        .clone()
+        .unwrap_or_else(|| format!("{http}://{host}:{}", args.console_port));
+    options.runtime.console_port = args.console_port;
     options.runtime.tls = match tls {
         // A system installation is the one roles mount, so its CA stays beside it.
         InitTlsMode::Generated => BootstrapTls::Generated {
@@ -394,7 +378,6 @@ pub(crate) fn init_config(
     options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
     options.runtime.nats_websocket_via_runtime = relay;
     options.runtime.nats_websocket_only = args.nats_websocket_only;
-    options.runtime.extra_origins = args.extra_origin.clone();
     options.runtime.bind_address = args.bind_address;
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
         context_lifetime_seconds: args.auth_context_lifetime_seconds,
@@ -459,10 +442,10 @@ pub(crate) fn init_config(
             "trellisConfig": trellis_config.display().to_string(),
             "natsConfig": nats_config.display().to_string(),
             "trellisRuntimeCreds": out.join("nats/creds/trellis-auth.creds").display().to_string(),
-            "publicOrigin": options.runtime.public_origin,
+            "trellisOrigin": options.runtime.public_origin,
             "natsServer": options.runtime.nats_server_url,
             "natsWebsocket": options.runtime.nats_websocket_url,
-            "oauthOrigin": options.runtime.oauth_origin,
+            "consoleOrigin": options.runtime.console_origin,
             "generatedTls": generated.as_ref().map(|tls| json!({
                 "caCertificate": tls.ca_certificate.display().to_string(),
                 "caSha256Fingerprint": tls.ca_sha256_fingerprint,
@@ -476,10 +459,10 @@ pub(crate) fn init_config(
     println!("out={}", out.display());
     println!("trellisConfig={}", trellis_config.display());
     println!("natsConfig={}", nats_config.display());
-    println!("publicOrigin={}", options.runtime.public_origin);
+    println!("trellisOrigin={}", options.runtime.public_origin);
     println!("natsServer={}", options.runtime.nats_server_url);
     println!("natsWebsocket={}", options.runtime.nats_websocket_url);
-    println!("oauthOrigin={}", options.runtime.oauth_origin);
+    println!("consoleOrigin={}", options.runtime.console_origin);
     if let Some(tls) = &generated {
         warn_generated_tls(
             &tls.ca_certificate,
@@ -721,15 +704,15 @@ mod tests {
             (listeners.native, listeners.monitor, listeners.websocket),
             (4333, 8333, 8183)
         );
-        // Generated TLS relays browser WebSockets through the Console origin
-        // to the broker's WebSocket listener.
+        // Generated TLS relays WebSockets through the Trellis origin to the
+        // broker's WebSocket listener.
         assert_eq!(
             http.nats_websocket_upstream.as_deref(),
             Some("localhost:8183")
         );
         assert_eq!(
             config.same_origin_websocket_url().as_deref(),
-            Some("wss://localhost:3444/nats")
+            Some("wss://localhost:3444")
         );
         let auth = config.resolve_authorization().unwrap();
         assert_eq!(auth.context_lifetime_seconds, 90);
@@ -749,7 +732,7 @@ mod tests {
                 "tls://nats.example.test:4999",
                 "--nats-websocket-url",
                 "wss://nats.example.test/ws",
-                "--public-origin",
+                "--trellis-origin",
                 "https://trellis.example.test",
             ],
         );
@@ -771,21 +754,6 @@ mod tests {
             config.http.as_ref().unwrap().public_origin.as_deref(),
             Some("https://trellis.example.test")
         );
-    }
-
-    #[test]
-    fn init_config_adds_extra_origins() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let (config, _) = generate_bundle(
-            &temp.path().join("extra-origin"),
-            &["--extra-origin", "http://localhost:5174"],
-        );
-        let http = config.http.unwrap();
-        assert!(http
-            .origins
-            .unwrap()
-            .iter()
-            .any(|origin| origin == "http://localhost:5174"));
     }
 
     #[test]

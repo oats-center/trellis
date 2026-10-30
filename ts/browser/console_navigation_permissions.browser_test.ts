@@ -25,7 +25,7 @@ test("a denied administrative read preserves ordinary account access and navigat
       const page = await context.newPage();
       const errors = await captureBrowserErrors(page);
       await openConsole(page, runtime, credentials);
-      await page.goto(`${runtime.trellisUrl}/console/profile`);
+      await page.goto(`${runtime.consoleUrl}/console/profile`);
       await page.getByText("How you sign in", { exact: true }).waitFor();
       try {
         await page
@@ -62,7 +62,7 @@ test("a denied administrative read preserves ordinary account access and navigat
         await page.getByLabel("Email", { exact: true }).inputValue(),
         "owner@example.com",
       );
-      await page.goto(`${runtime.trellisUrl}/console/admin/services`);
+      await page.goto(`${runtime.consoleUrl}/console/admin/services`);
       await waitForConsoleShell(page);
       await page
         .getByText("You haven't allowed the Console to do this.", {
@@ -104,7 +104,7 @@ test("an unavailable profile photo falls back to local initials without browser 
       const requests: string[] = [];
       page.on("request", (request) => requests.push(request.url()));
       await openConsole(page, runtime, credentials);
-      await page.goto(`${runtime.trellisUrl}/console/profile`);
+      await page.goto(`${runtime.consoleUrl}/console/profile`);
       await page
         .getByLabel("Picture URL", { exact: true })
         .fill("https://images.invalid/photo.png");

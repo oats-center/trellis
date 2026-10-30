@@ -47,7 +47,7 @@ for (const closeWhileHeld of [false, true]) {
             contract: targetContract,
           });
           const target = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: targetContract,
             name: "cs-target",
             seed: targetInstance.seed,
@@ -75,7 +75,7 @@ for (const closeWhileHeld of [false, true]) {
 
           async function connectSubject(seed: string) {
             return await TrellisService.connect({
-              trellisUrl: runtime.oauthIssuer,
+              trellisUrl: runtime.trellisUrl,
               participant: subjectContract,
               name: "cs-subject",
               seed,

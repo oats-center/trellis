@@ -49,7 +49,7 @@ test("user updates preserve identity while disabling retires authorization and r
         idempotencyKey: ulid(),
       });
     const login = await loginNativeTestClient({
-      issuer: runtime.oauthIssuer,
+      issuer: runtime.trellisUrl,
       clientId,
       request: adminParticipant,
       username: create.username,
@@ -109,7 +109,7 @@ test("user updates preserve identity while disabling retires authorization and r
         (await caller.sessionsMe({}, { timeout: 1000 })).isErr(),
       );
       const rejectedLogin = loginNativeTestClient({
-        issuer: runtime.oauthIssuer,
+        issuer: runtime.trellisUrl,
         clientId,
         request: adminParticipant,
         username: create.username,
@@ -125,7 +125,7 @@ test("user updates preserve identity while disabling retires authorization and r
         idempotencyKey: ulid(),
       });
       const restored = await loginNativeTestClient({
-        issuer: runtime.oauthIssuer,
+        issuer: runtime.trellisUrl,
         clientId,
         request: adminParticipant,
         username: create.username,

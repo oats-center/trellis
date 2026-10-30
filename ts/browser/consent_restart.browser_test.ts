@@ -19,7 +19,7 @@ test("ordinary OAuth consent and account access survive a control-plane restart"
     try {
       const page = await context.newPage();
       await openConsole(page, runtime, user);
-      await page.goto(`${runtime.trellisUrl}/console/profile`);
+      await page.goto(`${runtime.consoleUrl}/console/profile`);
       await page
         .getByRole("heading", { name: user.username, exact: true })
         .waitFor()

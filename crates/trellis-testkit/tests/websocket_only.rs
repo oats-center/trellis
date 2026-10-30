@@ -13,7 +13,7 @@ async fn clients_connect_over_the_websocket_when_native_nats_is_private() {
     let metadata: serde_json::Value = http
         .get(format!(
             "{}/.well-known/oauth-authorization-server",
-            runtime.oauth_origin()
+            runtime.trellis_url()
         ))
         .send()
         .await
@@ -31,7 +31,7 @@ async fn clients_connect_over_the_websocket_when_native_nats_is_private() {
     // A load balancer's health check names the target, not the sign-in host.
     // Readiness answers it; sign-in itself still refuses that host.
     let probe = |path: &str| {
-        http.get(format!("{}{path}", runtime.oauth_origin()))
+        http.get(format!("{}{path}", runtime.trellis_url()))
             .header(reqwest::header::HOST, "load-balancer.invalid")
             .send()
     };
@@ -53,7 +53,7 @@ async fn clients_connect_over_the_websocket_when_native_nats_is_private() {
         .args([
             "--experimental-transform-types",
             "integration/fixtures/runtime/activation_recheck.ts",
-            runtime.oauth_origin(),
+            runtime.trellis_url(),
             runtime.admin_username(),
             runtime.admin_password(),
         ])

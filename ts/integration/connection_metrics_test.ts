@@ -52,7 +52,7 @@ test("service metrics observe real admission, authoritative disable, and disposa
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed: identity.seed,
         // The real exporter above owns SDK initialization for this process.

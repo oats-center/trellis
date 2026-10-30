@@ -18,7 +18,7 @@ async fn oauth(
     runtime: &mut TrellisTestRuntime,
     admin: bool,
 ) -> (UserConnectOptions<'static>, String) {
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let native = NativeOAuthClient::open(
@@ -77,7 +77,7 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
         .https_client_builder()
         .build()
         .unwrap()
-        .post(format!("{}/auth/device/enroll", runtime.oauth_origin()))
+        .post(format!("{}/auth/device/enroll", runtime.trellis_url()))
         .json(&json!({"proof":"private-enrollment-sentinel"}))
         .send()
         .await
@@ -168,7 +168,7 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
             format!(
                 "{}\n",
                 json!({
-                    "issuer":runtime.oauth_origin(),
+                    "issuer":runtime.trellis_url(),
                     "provisioningSecret":provisioned.provisioning_secret,
                     "username":user.account.as_ref().unwrap().username,
                     "password":password
@@ -320,7 +320,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
             .unwrap(),
         }],
     };
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let details = json!([
@@ -562,7 +562,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
     use trellis_rs::auth::{
         check_device_activation, DeviceActivationOptions, DeviceActivationStatus,
     };
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let deployment = match deployment {
@@ -600,7 +600,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
     let (activation_key, _) = trellis_rs::auth::generate_session_keypair();
     let options = DeviceActivationOptions::new(
         DeviceConnectOptions::<P>::new(
-            runtime.oauth_origin(),
+            runtime.trellis_url(),
             &seed,
             server.nats_servers.clone(),
             server.trust.clone(),
@@ -623,7 +623,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
     let (other_seed, _) = trellis_rs::auth::generate_session_keypair();
     let other = DeviceActivationOptions::new(
         DeviceConnectOptions::<P>::new(
-            runtime.oauth_origin(),
+            runtime.trellis_url(),
             &other_seed,
             server.nats_servers.clone(),
             server.trust.clone(),
@@ -638,7 +638,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
     assert!(
         Client::connect_device(
             DeviceConnectOptions::<P>::new(
-                runtime.oauth_origin(),
+                runtime.trellis_url(),
                 &seed,
                 server.nats_servers.clone(),
                 server.trust.clone()
@@ -691,7 +691,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         DeviceActivationStatus::Ready(_)
     ));
     let without_user = Client::connect_device(DeviceConnectOptions::<P>::new(
-        runtime.oauth_origin(),
+        runtime.trellis_url(),
         &seed,
         server.nats_servers.clone(),
         server.trust.clone(),
@@ -780,7 +780,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         .unwrap();
     let parent = Client::connect_device(
         DeviceConnectOptions::<P>::new(
-            runtime.oauth_origin(),
+            runtime.trellis_url(),
             &seed,
             server.nats_servers.clone(),
             server.trust.clone(),
@@ -910,7 +910,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         .await
         .unwrap();
     let reconnect = Client::connect_device(DeviceConnectOptions::<P>::new(
-        runtime.oauth_origin(),
+        runtime.trellis_url(),
         &seed,
         server.nats_servers.clone(),
         server.trust.clone(),
@@ -941,11 +941,11 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
         .await
         .unwrap()
         .instance;
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let device = Client::connect_device(DeviceConnectOptions::<Device>::new(
-        runtime.oauth_origin(),
+        runtime.trellis_url(),
         &seed,
         server.nats_servers.clone(),
         server.trust.clone(),
@@ -1110,7 +1110,7 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
         .unwrap();
     assert!(Client::connect_device(
         DeviceConnectOptions::<Device>::new(
-            runtime.oauth_origin(),
+            runtime.trellis_url(),
             &seed,
             server.nats_servers,
             server.trust

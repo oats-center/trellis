@@ -17,7 +17,7 @@ test("completed requests release large payloads while their connection stays ope
     });
     const provider = (
       await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed: identity.seed,
       })

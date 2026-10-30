@@ -125,7 +125,7 @@ try {
     ).toString("base64url");
     const service = spawn(
       process.execPath,
-      ["service/build/service/src/main.js", runtime.oauthIssuer, identity.seed],
+      ["service/build/service/src/main.js", runtime.trellisUrl, identity.seed],
       {
         cwd: destination,
         env: childEnv,
@@ -160,7 +160,7 @@ try {
         process.execPath,
         [
           "device/build/device/src/main.js",
-          runtime.oauthIssuer,
+          runtime.trellisUrl,
           rootSecret,
           provisioned.provisioningSecret,
         ],
@@ -247,7 +247,7 @@ try {
       );
       const peer = await run(
         process.execPath,
-        ["peer.mjs", runtime.oauthIssuer, rootSecret],
+        ["peer.mjs", runtime.trellisUrl, rootSecret],
         {
           cwd: destination,
           env: childEnv,

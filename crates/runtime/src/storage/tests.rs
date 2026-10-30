@@ -54,6 +54,7 @@ fn runtime_config() -> RuntimeConfig {
         live_provider_seed_files: None,
         paths: None,
         http: None,
+        console: None,
         tls: None,
         nats: Some(crate::NatsConfig {
             managed: false,
@@ -82,7 +83,6 @@ fn runtime_config() -> RuntimeConfig {
             avatar: None,
             administration: Default::default(),
             instance_id: None,
-            oauth: None,
             oauth_storage_key_file: None,
             local_identity: None,
             authorization: Some(crate::AuthorizationConfig {

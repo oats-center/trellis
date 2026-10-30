@@ -72,7 +72,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
           contract: participants.Provider.participant,
         });
         const service = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           seed: identity.seed,
         }).orThrow();
@@ -178,7 +178,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
                   contract: breakingProviders.Provider.participant,
                 });
                 const next = await TrellisService.connect({
-                  trellisUrl: runtime.oauthIssuer,
+                  trellisUrl: runtime.trellisUrl,
                   participant: breakingProviders.Provider.participant,
                   seed: nextIdentity.seed,
                 }).orThrow();
@@ -219,7 +219,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
                 oauth.store.close();
                 return url;
               },
-              { issuer: runtime.oauthIssuer, origin, clientId, variant },
+              { issuer: runtime.trellisUrl, origin, clientId, variant },
             );
             await page.goto(authorization);
             if (variant === "narrow") {
@@ -308,7 +308,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
                   await client.connection.close();
                 }
               },
-              { issuer: runtime.oauthIssuer, origin, clientId, variant },
+              { issuer: runtime.trellisUrl, origin, clientId, variant },
             );
             assert.deepEqual(
               result.value,

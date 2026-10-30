@@ -29,7 +29,7 @@ test("native request expansion and revised capability meaning require fresh expl
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -49,7 +49,7 @@ test("native request expansion and revised capability meaning require fresh expl
       await prepared.session.close();
       const custody = new MemoryNativeOAuthCustody();
       const credentials = await loginNativeTestClient({
-        issuer: runtime.oauthIssuer,
+        issuer: runtime.trellisUrl,
         custody,
         clientId: request.id,
         request,

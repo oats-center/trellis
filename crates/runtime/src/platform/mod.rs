@@ -57,11 +57,12 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .as_ref()
         .and_then(|auth| auth.oauth_storage_key_file.clone())
         .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
-    let (opened, public_origin, keep_admin) = (
-        store.clone(),
-        context.config.public_origin(),
-        !context.reset_admin,
-    );
+    let console = context
+        .config
+        .resolve_console_listener()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let (opened, console_origin, keep_admin) =
+        (store.clone(), console.origin.clone(), !context.reset_admin);
     let (engine, account_url) = auth::blocking(move || {
         let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
         opened.initialize_issuer(crate::clock::unix_now())?;
@@ -70,7 +71,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         let account_url = if !opened.has_administrator()? {
             storage
                 .initialize_local_administrator(
-                    &public_origin,
+                    &console_origin,
                     "admin",
                     None,
                     crate::clock::unix_now(),
@@ -89,33 +90,19 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     if let Some(url) = account_url {
         println!("{}", serde_json::json!({"adminAccountUrl":url}));
     }
-    let oauth = context
-        .config
-        .resolve_oauth_listener()
+    let socket = tokio::net::TcpListener::bind((console.bind_address, console.port))
+        .await
+        .map_err(|error| RuntimeError::Platform(format!("bind the Console listener: {error}")))?;
+    let listener = auth::OriginListener::load(socket, &console.origin, &console.transport)
+        .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    // Development mode serves sign-in on the Console's listener instead.
-    let listener = if context.config.development() {
-        None
-    } else {
-        let socket = tokio::net::TcpListener::bind((oauth.bind_address, oauth.port))
-            .await
-            .map_err(|error| {
-                RuntimeError::Platform(format!("bind isolated OAuth listener: {error}"))
-            })?;
-        Some(
-            auth::OAuthListener::load(socket, &oauth.origin, &oauth.transport)
-                .await
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?
-                .forwarded_by(&oauth.trusted_proxies),
-        )
-    };
     let (native, websocket) =
         advertised_endpoints(&context.config, &nats, context.nats_override.as_ref());
     // Every Login Portal page shows the generated-CA notice for the
-    // certificate this OAuth listener serves.
+    // certificate the Trellis listener serves.
     engine.serve_generated_tls(crate::tls::serves_generated_certificate(
         &context.config,
-        &oauth.transport,
+        context.config.http_transport(),
     ));
     engine.serve_operational(context.trellis_nats.clone());
     let router = auth::oauth_router(
@@ -199,22 +186,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .map_err(|_| {
             RuntimeError::Platform("Platform authorization store is already installed".into())
         })?;
-    context.register_http_router(console::router(&context.config)?)?;
-    let listener = match listener {
-        // Health checks address the listener directly, so they're answered
-        // before sign-in's Host check.
-        Some(listener) => Some((
-            listener,
-            crate::server::health_router(context.mode, context.http_ready.clone()).merge(router),
-        )),
-        None => {
-            context.register_http_router(axum::Router::new().nest(
-                crate::config::DEVELOPMENT_SIGN_IN_PATH,
-                router.layer(axum::middleware::map_response(auth::under_development_path)),
-            ))?;
-            None
-        }
-    };
+    // Sign-in lives on the Trellis listener; the Console is an app on its own.
+    context.register_http_router(router)?;
+    let console_router = crate::server::health_router(context.mode, context.http_ready.clone())
+        .merge(console::router(&context.config)?);
     let stop = StopHandle::new();
     let task_stop = stop.clone();
     let provider_store = store.clone();
@@ -228,15 +203,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut tasks = tokio::task::JoinSet::new();
-        if let Some((listener, router)) = listener {
-            let listener_cancel = cancel.clone();
-            tasks.spawn(async move {
-                listener
-                    .run(router, listener_cancel)
-                    .await
-                    .map_err(|error| RuntimeError::Platform(error.to_string()))
-            });
-        }
+        let listener_cancel = cancel.clone();
+        tasks.spawn(async move {
+            listener
+                .run(console_router, listener_cancel)
+                .await
+                .map_err(|error| RuntimeError::Platform(error.to_string()))
+        });
         let callout_stop = task_stop.clone();
         tasks.spawn(async move { callout.run(callout_stop).await });
         let own_stop = task_stop.clone();
@@ -538,6 +511,11 @@ fn initialize_admin_credentials_in(
     username: &str,
     password: Option<&str>,
 ) -> Result<(String, Option<String>), RuntimeError> {
+    let console_origin = config
+        .resolve_console_listener()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+        .origin
+        .clone();
     let crate::StorageBackend::Sqlite(storage) = config
         .platform_storage_backend()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
@@ -584,12 +562,12 @@ fn initialize_admin_credentials_in(
         ));
     }
     if let Some(password) = password {
-        auth.seed_administrator_and_console(&config.public_origin(), username, password, now)
+        auth.seed_administrator_and_console(&console_origin, username, password, now)
             .map(|principal| (principal, None))
             .map_err(|error| RuntimeError::Platform(error.to_string()))
     } else {
         storage
-            .initialize_local_administrator(&config.public_origin(), username, None, now)
+            .initialize_local_administrator(&console_origin, username, None, now)
             .map_err(|error| RuntimeError::Platform(error.to_string()))
     }
 }

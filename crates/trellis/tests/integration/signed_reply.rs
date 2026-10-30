@@ -32,7 +32,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
         .await
         .unwrap();
     let server =
-        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        trellis_rs::auth::discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
     let provider = Arc::new(

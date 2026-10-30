@@ -2,10 +2,10 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::{
-    DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
-    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OAUTH_ORIGIN,
-    DEFAULT_OAUTH_PORT, DEFAULT_OPERATOR_NAME, DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT,
-    DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME, DEFAULT_TRELLIS_PORT,
+    DEFAULT_AUTH_ACCOUNT, DEFAULT_CONSOLE_ORIGIN, DEFAULT_CONSOLE_PORT, DEFAULT_NATS_MONITOR_PORT,
+    DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL, DEFAULT_NATS_WEBSOCKET_PORT,
+    DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OPERATOR_NAME, DEFAULT_PUBLIC_ORIGIN,
+    DEFAULT_SYSTEM_ACCOUNT, DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME, DEFAULT_TRELLIS_PORT,
 };
 
 /// Shared NATS bootstrap names.
@@ -98,41 +98,36 @@ impl NatsBootstrapOptions {
 pub struct TrellisRuntimeBootstrapConfig {
     /// Installation ULID generated once for this bootstrap bundle.
     pub instance_id: String,
-    /// Public origin of the dedicated authorization listener, distinct from the application origin.
-    pub oauth_origin: String,
-    /// Dedicated authorization listener port.
-    pub oauth_port: u16,
+    /// The Console's public origin, distinct from the Trellis origin.
+    pub console_origin: String,
+    /// The Console's listener port.
+    pub console_port: u16,
     /// Certificate source for every TLS listener in the bundle.
     pub tls: BootstrapTls,
-    /// Reverse-proxy networks; non-empty serves Console and OAuth as plaintext
+    /// Reverse-proxy networks; non-empty serves Trellis and the Console as plaintext
     /// behind an HTTPS-terminating proxy at those addresses.
     pub trusted_proxies: Vec<ipnet::IpNet>,
     /// Serve browser WebSockets as plaintext behind an HTTPS-terminating proxy.
     /// Native NATS always terminates its own TLS.
     pub nats_websocket_behind_proxy: bool,
-    /// Relay browser WebSockets through the application listener at
-    /// `<public origin>/nats`, so browsers need one host and one certificate.
-    /// The broker's WebSocket listener then serves plaintext for the runtime,
-    /// and `nats_websocket_url` is not used.
+    /// The Trellis listener relays every WebSocket upgrade to the broker, so
+    /// clients reach NATS at the Trellis origin with its certificate. The
+    /// broker's WebSocket listener then serves plaintext for the runtime, and
+    /// `nats_websocket_url` is not used.
     pub nats_websocket_via_runtime: bool,
     /// Advertise only the WebSocket to clients; `nats_server_url` is then only
     /// where the runtime itself reaches NATS.
     pub nats_websocket_only: bool,
-    /// Development mode: the Console listener also serves sign-in under
-    /// `/auth`, so one certificate covers everything a browser reaches.
-    pub development: bool,
     /// Human-readable Trellis name written to runtime config.
     pub name: String,
-    /// Trellis HTTP port written to `config.toml`.
+    /// Trellis listener port written to `config.toml`.
     pub trellis_port: u16,
     /// Native NATS URL used by server-side Trellis services.
     pub nats_server_url: String,
     /// Browser-facing NATS websocket URL advertised to clients.
     pub nats_websocket_url: String,
-    /// Public HTTP origin for OAuth redirects.
+    /// The Trellis origin: sign-in's issuer and the address clients use.
     pub public_origin: String,
-    /// Additional browser origins accepted by the runtime, for callers served elsewhere.
-    pub extra_origins: Vec<String>,
     /// Optional HTTP listener address; omission retains the production default.
     pub bind_address: Option<IpAddr>,
     /// Authorization timing without access to generated signing material.
@@ -150,20 +145,18 @@ impl Default for TrellisRuntimeBootstrapConfig {
     fn default() -> Self {
         Self {
             instance_id: ulid::Ulid::new().to_string(),
-            oauth_origin: DEFAULT_OAUTH_ORIGIN.to_string(),
-            oauth_port: DEFAULT_OAUTH_PORT,
+            console_origin: DEFAULT_CONSOLE_ORIGIN.to_string(),
+            console_port: DEFAULT_CONSOLE_PORT,
             tls: BootstrapTls::Generated { ca_directory: None },
             trusted_proxies: Vec::new(),
             nats_websocket_behind_proxy: false,
             nats_websocket_via_runtime: false,
             nats_websocket_only: false,
-            development: false,
             name: DEFAULT_TRELLIS_NAME.to_string(),
             trellis_port: DEFAULT_TRELLIS_PORT,
             nats_server_url: DEFAULT_NATS_SERVER_URL.to_string(),
             nats_websocket_url: DEFAULT_NATS_WEBSOCKET_URL.to_string(),
             public_origin: DEFAULT_PUBLIC_ORIGIN.to_string(),
-            extra_origins: Vec::new(),
             bind_address: None,
             authorization: BootstrapAuthorizationPolicy::default(),
             bundle_paths: true,

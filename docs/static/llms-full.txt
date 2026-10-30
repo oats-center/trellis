@@ -214,9 +214,9 @@ hostnames, ports and certificates) and prints the matching `init` command;
 `--init` creates a localhost development installation (plain HTTP on loopback)
 without asking, and without a terminal it fails with a message instead. `trellis-server init` creates one with chosen
 hostnames and ports. `init --dev --host <name>` creates a development
-installation other machines can use: one TLS port carries the Console,
-sign-in and browsers' NATS (`/nats`), so a
-browser accepts one generated certificate. It is never a production setup. With no `--out`, data goes to the profile's XDG (or FHS)
+installation other machines can use: one generated certificate covers the
+Trellis port (sign-in, and NATS for every WebSocket upgrade) and the Console's
+port. It is never a production setup. With no `--out`, data goes to the profile's XDG (or FHS)
 folders. `init --out <dir>` writes a self-contained bundle whose `[paths]` keep
 data, state, cache, runtime files and logs inside it; start it with
 `trellis-server --config <dir>/config.toml`. Several bundles can share a host.
@@ -242,21 +242,25 @@ trust a generated or other private CA only explicitly, after verifying its
 SHA-256 fingerprint (`trellis-server tls status`) out of band: never disable
 certificate verification and never accept a CA from broker or metadata
 responses. Generated leaves expire after 90 days; `trellis-server tls renew --bundle <dir>` replaces them without changing
-client trust. Console and OAuth may run behind an HTTPS-terminating proxy with
-`--trusted-proxy`; native NATS always terminates its own TLS. Console and the
-isolated OAuth listener require HTTPS outside explicit loopback development; the
-HTTP insecure-origin allowlist does not relax that requirement.
+client trust. An installation has two HTTP origins: the Trellis origin
+(`--trellis-origin`: sign-in, and the address the CLI, services, devices and
+apps connect to) and the Console's own origin (`--console-origin`); the Console
+is an ordinary app. Both may run behind an HTTPS-terminating proxy with
+`--trusted-proxy`; native NATS always terminates its own TLS. Both require
+HTTPS outside explicit loopback development. Browser origins are trusted from
+registered clients' redirect URIs, never from server configuration.
 
 Rust participants put a private CA in `RuntimeAuthorizationTrust.root_certificates`
 or pass it to `discover_native_oauth(origin, &[ca_path])`. Node participants
-start with `NODE_EXTRA_CA_CERTS=<ca path>`. `trellis login <oauth-origin>`
+start with `NODE_EXTRA_CA_CERTS=<ca path>`. `trellis login <trellis-origin>`
 shows an untrusted CA's fingerprint and pins it once accepted (prompt, or
 `--ca-fingerprint <sha256>`); `--ca-certificate <ca path>` trusts a CA file
 directly. A pinned CA that changes is a hard error. Browsers trust the CA
 through the operating system or browser trust store. With generated TLS,
-`trellis-server init` has the runtime relay NATS WebSockets at
-`wss://<console host>/nats` by default (`--nats-websocket direct` opts out), so
-one host and certificate cover both. `trellis-server init --nats-websocket-only`
+`trellis-server init` has the Trellis port hand every WebSocket upgrade to NATS,
+advertising `wss://<trellis host>` (`--nats-websocket direct` opts out), so one
+host and certificate cover both. A proxy in front can apply the same rule
+(`--nats-websocket-url wss://<trellis host> --nats-websocket-behind-proxy`). `trellis-server init --nats-websocket-only`
 offers clients only the WebSocket; the CLI, services and devices then connect
 over it, so only HTTPS needs to be public.
 
@@ -289,7 +293,7 @@ and fails closed on missing custody.
 Fresh startup creates the protected administrator and accepted built-in authority
 before provider admission. The username defaults to `admin`. Without an initial
 password, startup emits `adminAccountUrl`, a one-time password-setup link on the
-isolated OAuth origin that expires after five minutes; no default password
+Trellis origin that expires after five minutes; no default password
 exists. Startup flags `--admin-username`, `--admin-password`, and
 `--admin-password-stdin` configure fresh credentials. Explicit initialization
 uses `trellis-server init admin --config <path>` with `--username` (default `admin`),
@@ -490,7 +494,7 @@ session and enqueue cutoff/kicks. Provisioned admission still needs the
 client's identity signature (`provisioned_signature_required`).
 
 Cold OAuth resume verifies signed issuer successors from the retained pin using
-`GET /.well-known/trellis/issuer-chain` at the selected OAuth origin and
+`GET /.well-known/trellis/issuer-chain` at the selected Trellis origin and
 persists successor trust before spending a refresh token. Unavailable or invalid
 chains leave it unspent. A returned new token survives later issuer
 verification failure, but its admission stays unusable until authenticated.
@@ -668,8 +672,8 @@ administration is never preselected or remembered. Delegating one to an app has
 two safeguards, on by default under `[auth.administration]`: a separate consent
 confirmation and registered clients only. The initialized administrator holds
 all seven inherently, and everything else through an editable Administrator role. Localhost or
-development mode establishes no trust, and application/OAuth origins remain
-isolated.
+development mode establishes no trust, and the Console and every application
+stay on origins of their own, apart from the Trellis origin.
 
 #### Verification
 
@@ -750,7 +754,7 @@ remote-derived images, including cached ones, with
 `auth.avatar.external_fetch_enabled=false`.
 
 `Users.PasswordReset.Create` targets `userId` and returns a five-minute, one-use
-token for `/account/reset?token=...` on the OAuth origin. Completion checks
+token for `/account/reset?token=...` on the Trellis origin. Completion checks
 Origin/CSRF, credential CAS, and the requester's original active logical session
 and current `trellis.auth.v1:accounts.manage` with the target still in reach,
 then atomically changes the password
@@ -1918,7 +1922,7 @@ Trellis integration behavior:
 - `createTrellisApp(...)`, `TrellisProvider`, `SvelteTrellisConnection`, and
   browser client auth mode `"browser"` are the intended browser-app wiring.
 - Browser sign-in is OAuth Authorization Code with PKCE and DPoP against the
-  installation's dedicated OAuth origin. Local-password or OIDC sign-in and
+  installation's Trellis origin, which no application shares. Local-password or OIDC sign-in and
   explicit capability consent happen on Trellis's own portal at that origin.
   Application code never renders Trellis login or consent, handles upstream
   provider callbacks, or constructs grant sets or capability lists.
@@ -1935,7 +1939,7 @@ Trellis integration behavior:
   verified authority. It does not own refresh or verification; do not implement
   a second verifier in Svelte or TypeScript code because Rust/WASM is
   authoritative.
-- Issuer trust comes from the selected OAuth origin and authenticated rotation
+- Issuer trust comes from the selected Trellis origin and authenticated rotation
   links. Pending devices poll `/auth/device/enroll` through the device
   activation helpers; approved devices connect with a signed provisioned
   admission in NATS CONNECT, never an HTTP bootstrap.

@@ -8,7 +8,7 @@ import { browserRuntimeOptions } from "./browser_test_support.ts";
 
 test("the Console signs in without asking for access and uses the real authenticated client", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const application = runtime.trellisUrl;
+    const application = runtime.consoleUrl;
     const username = runtime.adminUsername;
     const password = runtime.adminPassword;
     const origin = new URL(application).origin;
@@ -116,7 +116,10 @@ test("the Console signs in without asking for access and uses the real authentic
         .getByText("Create an account. It gets the roles marked for new users.")
         .first()
         .waitFor();
-      await page.getByText("Manage accounts", { exact: false }).first().waitFor();
+      await page
+        .getByText("Manage accounts", { exact: false })
+        .first()
+        .waitFor();
       await page.locator("code", { hasText: /^username$/ }).waitFor();
       await page.getByRole("tab", { name: "IDL", exact: true }).click();
       await page

@@ -29,13 +29,13 @@ test(
           acknowledgeSharedApis: true,
         });
         const a = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           seed: identityA.seed,
           name: "target-a",
         }).orThrow();
         const b = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           seed: identityB.seed,
           name: "target-b",
@@ -278,7 +278,7 @@ test(
           });
           assert.equal(replica.deploymentId, identityA.deploymentId);
           successor = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: participants.Provider.participant,
             seed: replica.seed,
             name: "target-a-replica",

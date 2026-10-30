@@ -92,7 +92,7 @@ test("service bootstrap rejects a different issuer origin and admits the selecte
       name: "bootstrap-origin-provider",
       contract: participants.Provider.participant,
     });
-    const wrongUrl = new URL(runtime.oauthIssuer);
+    const wrongUrl = new URL(runtime.trellisUrl);
     wrongUrl.hostname =
       wrongUrl.hostname === "localhost" ? "127.0.0.1" : "localhost";
     const result = await TrellisService.connect({
@@ -103,7 +103,7 @@ test("service bootstrap rejects a different issuer origin and admits the selecte
     assert(isErr(result));
 
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -118,7 +118,7 @@ test("service wait rejects an unrequested transport close but accepts stop", asy
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -129,7 +129,7 @@ test("service wait rejects an unrequested transport close but accepts stop", asy
     assert(error.message.includes("closed unexpectedly"));
 
     const healthy = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -138,7 +138,7 @@ test("service wait rejects an unrequested transport close but accepts stop", asy
     await healthyExit;
 
     const stopped = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -164,7 +164,7 @@ test("generated TypeScript caller reaches Rust provider", async () => {
         const child = spawnTracked("setsid", providerArgv, {
           env: {
             ...process.env,
-            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_URL: runtime.trellisUrl,
             TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             TRELLIS_IDENTITY_SEED: identity.seed,
             // Only the caller traverses the interruptible path in this journey.
@@ -313,7 +313,7 @@ test("generated TypeScript caller reaches Rust provider", async () => {
           deployment: "operation-intruder",
         });
         const intruder = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.OperationCaller.participant,
           seed: intruderIdentity.seed,
         }).orThrow();
@@ -444,7 +444,7 @@ test("generated TypeScript caller reaches Rust provider", async () => {
         const callerChild = spawnTracked(callerArgv[0], callerArgv.slice(1), {
           env: {
             ...process.env,
-            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_URL: runtime.trellisUrl,
             TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),
           },
@@ -487,7 +487,7 @@ test("simultaneous Feed controls remain creator and feed scoped", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -546,7 +546,7 @@ test("generated Rust resources use live NATS", async () => {
     const child = spawnTracked(resourcesArgv[0], resourcesArgv.slice(1), {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
       },
@@ -592,7 +592,7 @@ test("generated Rust resources use live NATS", async () => {
     const stateChild = spawnTracked(stateArgv[0], stateArgv.slice(1), {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_STATE_ACCEPTANCE: "1",
         XDG_CONFIG_HOME: join(runtime.workdir, "rust-state-config"),
@@ -635,7 +635,7 @@ test("generated runtime workflows", async (t) => {
       assert(
         (
           await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: participants.Provider.participant,
             seed: wrongSeed,
           })
@@ -644,14 +644,14 @@ test("generated runtime workflows", async (t) => {
       assert(
         (
           await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: participants.AdminService.participant,
             seed: identity.seed,
           })
         ).isErr(),
       );
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: "provider",
         seed: identity.seed,
@@ -849,7 +849,7 @@ test("generated runtime workflows", async (t) => {
                 });
                 assert.deepEqual(sibling.deploymentId, identity.deploymentId);
                 const siblingService = await TrellisService.connect({
-                  trellisUrl: runtime.oauthIssuer,
+                  trellisUrl: runtime.trellisUrl,
                   participant: participants.Provider.participant,
                   name: "provider-sibling",
                   seed: sibling.seed,
@@ -1182,7 +1182,7 @@ test("generated runtime workflows", async (t) => {
               contract: participants.AdminService.participant,
             });
             const native = await TrellisService.connect({
-              trellisUrl: runtime.oauthIssuer,
+              trellisUrl: runtime.trellisUrl,
               participant: participants.AdminService.participant,
               seed: identity.seed,
             }).orThrow();
@@ -1251,7 +1251,7 @@ test("surviving replica reclaims an expired operation lease", async () => {
     const services = await Promise.all(
       identities.map((identity) =>
         TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           name: "operation-replicas",
           seed: identity.seed,
@@ -1304,7 +1304,7 @@ test("parallel client and service shutdown is repeatable", async () => {
 
     for (let round = 0; round < 3; round++) {
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: `parallel-shutdown-${round}`,
         seed: identity.seed,
@@ -1336,7 +1336,7 @@ test("ordinary attempts stay bounded while failed cleanup redelivers beyond that
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -1384,7 +1384,7 @@ test("started job deadline waits for native handler reconciliation", async () =>
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -1473,7 +1473,7 @@ test("unkeyed job maintains progress across broker ACK windows and completes onc
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();

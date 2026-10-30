@@ -31,7 +31,7 @@ test(
         // Register both before connecting either, so no failure can strand a
         // connected provider outside the cleanup below.
         const provider = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.LiveV1Provider.participant,
           seed: identity.seed,
         }).orThrow();
@@ -39,7 +39,7 @@ test(
         const rust = spawnTracked(argv[0], argv.slice(1), {
           env: {
             ...process.env,
-            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_URL: runtime.trellisUrl,
             TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             TRELLIS_IDENTITY_SEED: rustIdentity.seed,
           },

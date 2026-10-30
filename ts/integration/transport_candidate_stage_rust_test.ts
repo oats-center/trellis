@@ -101,7 +101,7 @@ async function withTransportGrowthLeg(
     {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: seed,
         TRELLIS_NATIVE_OWNER_SCOPE: nativeOwnerScope ? "1" : "0",
@@ -374,7 +374,7 @@ async function prepareSubjects(runtime: Runtime) {
     contract: targetContract,
   });
   const target = await TrellisService.connect({
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     participant: targetContract,
     name: "cs-target",
     seed: targetInstance.seed,

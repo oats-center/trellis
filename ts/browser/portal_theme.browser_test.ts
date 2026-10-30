@@ -24,7 +24,7 @@ test("themes saved in the Console brand the Portal at once, per installation and
     try {
       const page = await admin.newPage();
       await openConsole(page, runtime, BROWSER_ADMIN);
-      await page.goto(`${runtime.trellisUrl}/console/admin/branding`);
+      await page.goto(`${runtime.consoleUrl}/console/admin/branding`);
       const form = page.locator("form");
       await form.getByLabel("Name", { exact: true }).fill("Acme Cloud");
       await form.locator("input[type=file]").setInputFiles({
@@ -66,11 +66,11 @@ test("themes saved in the Console brand the Portal at once, per installation and
     const context = await browser.newContext();
     try {
       const page = await context.newPage();
-      await page.goto(`${runtime.trellisUrl}/login`, {
+      await page.goto(`${runtime.consoleUrl}/login`, {
         waitUntil: "domcontentloaded",
       });
       // The Console's sign-in reaches the Portal with its own transaction.
-      await page.waitForURL((url) => url.origin === runtime.oauthIssuer, {
+      await page.waitForURL((url) => url.origin === runtime.trellisUrl, {
         timeout: 30_000,
       });
       const transaction = new URL(page.url()).searchParams.get("transaction");
@@ -107,18 +107,18 @@ test("themes saved in the Console brand the Portal at once, per installation and
       // The server resolves the client from its own record of the
       // transaction; a client named in the request changes nothing.
       const crafted = await page.request.get(
-        `${runtime.oauthIssuer}/portal/theme?transaction=${encodeURIComponent(transaction)}&client=someone-else`,
+        `${runtime.trellisUrl}/portal/theme?transaction=${encodeURIComponent(transaction)}&client=someone-else`,
       );
       assert.equal((await crafted.json()).name, "Acme Console");
       const unknown = await page.request.get(
-        `${runtime.oauthIssuer}/portal/theme?transaction=unknown`,
+        `${runtime.trellisUrl}/portal/theme?transaction=unknown`,
       );
       assert.equal((await unknown.json()).name, "Acme Cloud");
 
       // A logo opened directly is sandboxed and cannot run script.
       const logo = await context.newPage();
       const response = await logo.goto(
-        `${runtime.oauthIssuer}/portal-theme/logo`,
+        `${runtime.trellisUrl}/portal-theme/logo`,
       );
       assert.match(
         response?.headers()["content-security-policy"] ?? "",
@@ -134,7 +134,7 @@ test("themes saved in the Console brand the Portal at once, per installation and
       });
       await page.waitForURL(
         (url) =>
-          url.origin === runtime.trellisUrl &&
+          url.origin === runtime.consoleUrl &&
           url.pathname.startsWith("/console"),
         { timeout: 30_000 },
       );

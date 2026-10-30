@@ -42,7 +42,7 @@ for (const language of ["rust", "node"] as const) {
             {
               env: {
                 ...process.env,
-                TRELLIS_URL: runtime.oauthIssuer,
+                TRELLIS_URL: runtime.trellisUrl,
                 TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
                 TRELLIS_IDENTITY_SEED: identity.seed,
               },
@@ -64,7 +64,7 @@ for (const language of ["rust", "node"] as const) {
           });
         } else {
           const service = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: participants.OperationProvider.participant,
             seed: identity.seed,
           }).orThrow();
@@ -280,7 +280,7 @@ test("a download source whose cancellation never settles cannot block provider s
       contract: participants.OperationProvider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.OperationProvider.participant,
       seed: identity.seed,
     }).orThrow();

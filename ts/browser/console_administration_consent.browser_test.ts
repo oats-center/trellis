@@ -64,7 +64,7 @@ for (const selected of [
         page.setDefaultTimeout(10000);
         page.setDefaultNavigationTimeout(10000);
         const server = (
-          await discoverNativeOAuth(runtime.oauthIssuer)
+          await discoverNativeOAuth(runtime.trellisUrl)
         ).orThrow();
         const client = (
           await NativeOAuthClient.open({

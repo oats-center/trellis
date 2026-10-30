@@ -38,7 +38,7 @@ test("service health survives generation reaping and stop fences sampling", asyn
         idempotencyKey: ulid(),
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         name: "health-generation-provider",
         seed: instance.seed,

@@ -174,8 +174,8 @@ test(
   { timeout: 45_000 },
   async (context) => {
     await withTrellisRuntime(async (runtime) => {
-      const issuer = runtime.oauthIssuer;
-      const trellisUrl = runtime.oauthIssuer;
+      const issuer = runtime.trellisUrl;
+      const trellisUrl = runtime.trellisUrl;
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
 

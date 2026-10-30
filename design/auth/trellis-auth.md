@@ -202,9 +202,13 @@ Fresh initialization generates `auth.instance_id` as a canonical ULID. Retain it
 with the installation configuration and database across restarts and all key
 rotations; startup requires it rather than inventing a new identity.
 
-`auth.oauth` explicitly configures the dedicated listener's `origin`,
-`bind_address`, `port`, and `transport`; `[http] transport` configures the
-application (Console) listener the same way. Each transport is one of:
+Trellis serves two HTTP listeners. `[http]` is the Trellis listener: its
+`public_origin` is sign-in's issuer and the address the CLI, services, devices
+and apps connect to, and it serves the OAuth routes, discovery, and health. No
+application code runs on that origin. `[console]` configures the bundled
+Console's own listener (`origin`, `bind_address`, `port`, and `transport`); the
+Console is an ordinary registered browser client on its own origin, so its
+scripts never share an origin with sign-in's cookies. Each transport is one of:
 
 - `tls`: HTTPS with `certificate_chain` and `private_key` PEM paths resolved
   relative to the runtime configuration. The origin must be HTTPS. Startup
@@ -217,55 +221,48 @@ application (Console) listener the same way. Each transport is one of:
   limits is the first untrusted `X-Forwarded-For` entry read right to left, so
   a client cannot spoof it past a trusted proxy. The proxy must preserve `Host`.
 - `loopback_development`: explicit plaintext restricted to an HTTP loopback
-  origin and a loopback bind address. An omitted application transport selects
-  it and binds loopback by default. It is never a TLS fallback.
+  origin and a loopback bind address. An omitted Trellis transport selects it
+  and binds loopback by default. It is never a TLS fallback.
 
 There is no insecure-origin allow-list: a remote origin is served only over TLS
 or behind a trusted HTTPS proxy, because OAuth's `__Host-` `Secure` cookies and
-browser credential custody require a secure context. The OAuth origin must
-differ from all configured application origins. A shared hostname is allowed but
-requires a prominent cookie-scope warning, because cookies are not port-scoped.
-Console assets and application routers are never mounted on the OAuth listener.
+browser credential custody require a secure context. The Console origin must
+differ from the Trellis origin, and no client may register a callback on the
+Trellis origin. A shared hostname is allowed but logs a prominent cookie-scope
+warning, because cookies are not port-scoped. Browser origins are trusted from
+the redirect URIs of registered and URL-identified clients, never from server
+configuration. Development mode (`trellis-server init --dev`) uses the same two
+listeners with one generated certificate naming both.
 
-Development mode (`[http] development = true`, from `trellis-server init
---dev`) is the one exception, made so a browser on another machine accepts a
-single certificate. The Console listener also serves the OAuth routes under
-`/auth`; the issuer is `<console origin>/auth` on the Console's port, and no
-separate OAuth listener binds. Sign-in then shares the Console's origin, so
-nothing reserves that origin from application callbacks and no cookie-scope
-warning is logged. Handlers keep writing root-relative links; on the way out
-the runtime prefixes redirects and HTML attributes with `/auth` and tells the
-Portal app its base. Clients fetch metadata at `<issuer>/.well-known/...` and
-accept an issuer with a path when it is canonical. Production configuration
-never takes this path.
-
-In every mode the Console origin serves RFC 9728 protected resource metadata
-(`/.well-known/oauth-protected-resource`) naming its one authorization server.
-Native discovery given the Console's address, which answers authorization
-server metadata with no JSON document, follows that single named issuer once
-and then validates it as usual. The Console's own TLS trust authenticates the
-pointer, so people sign in with the address they use in a browser.
+The Console origin serves RFC 9728 protected resource metadata
+(`/.well-known/oauth-protected-resource`) naming the Trellis origin as its one
+authorization server. Native discovery given the Console's address, which
+answers authorization server metadata with no JSON document, follows that
+single named issuer once and then validates it as usual. The Console's own TLS
+trust authenticates the pointer, so people may sign in with the address they
+use in a browser.
 
 Request admission budgets each client address, and additionally each browser
 `Origin` when the header is present. Requests without `Origin` (native token
 clients, navigations, asset loads) share no common budget. Expired budget
 windows restart when next used and the table is swept only when full. Forwarding
-headers are ignored unless the TCP peer falls inside
-`auth.oauth.trusted_proxies`, a list of CIDR ranges (`/32` or `/128` for one
-address). For a trusted peer, the client is the right-most `X-Forwarded-For` hop
-outside those ranges, and a malformed header is rejected. Use it for a proxy in
-front of a TLS listener, such as one that re-encrypts; a `proxy` transport
-already admits only its own trusted proxies and presents the forwarded client.
-Both use the same walk.
+headers are ignored unless the TCP peer falls inside `[http] trusted_proxies`, a
+list of CIDR ranges (`/32` or `/128` for one address). For a trusted peer, the
+client is the right-most `X-Forwarded-For` hop outside those ranges, and a
+malformed header is rejected. Use it for a proxy in front of a TLS listener,
+such as one that re-encrypts; a `proxy` transport already admits only its own
+trusted proxies and presents the forwarded client. Both use the same walk.
 
-Remote deployments use native TLS NATS and WSS in addition to the dedicated
-HTTPS OAuth listener. Native NATS always terminates its own TLS, because its
+Remote deployments use native TLS NATS and WSS in addition to the HTTPS
+Trellis listener. Native NATS always terminates its own TLS, because its
 protocol upgrades to TLS after a plaintext `INFO` and an ordinary TLS proxy
 cannot terminate it; only the WebSocket listener may sit behind an
-HTTPS-terminating proxy. The runtime can be that proxy: with
-`[http] nats_websocket_upstream`, the application listener relays WebSocket
-upgrades on `/nats` to the broker's plaintext WebSocket listener and advertises
-`wss://<public origin>/nats` instead of configured WebSocket hints, so a browser
+HTTPS-terminating proxy. A proxy in front can send every request asking for a
+WebSocket upgrade to the broker's plaintext WebSocket listener and everything
+else to Trellis, so the WebSocket shares the Trellis origin at any path. The
+runtime can apply that rule itself: with `[http] nats_websocket_upstream`, the
+Trellis listener relays every WebSocket upgrade to the broker and advertises
+`wss://<Trellis origin>` instead of configured WebSocket hints, so a client
 trusts one host and certificate. Production deployments with publicly trusted
 certificates can still expose the broker's WebSocket listener directly. A
 deployment that keeps native NATS private advertises an empty `[client]

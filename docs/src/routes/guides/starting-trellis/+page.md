@@ -74,7 +74,7 @@ The first start creates Trellis's databases and NATS streams, then prints the
 one line you need:
 
 ```json
-{ "adminAccountUrl": "http://localhost:3001/account/reset?token=eUi1Xqst..." }
+{ "adminAccountUrl": "http://localhost:3000/account/reset?token=eUi1Xqst..." }
 ```
 
 Open it and choose a password for the `admin` account. Trellis never has a
@@ -92,21 +92,22 @@ does the same without starting the server.
 
 ## Open the Console
 
-Go to `http://localhost:3000/console`. Signing in sends you to the sign-in
-page on port 3001 and back again. The Console and the sign-in page are both
-part of `trellis-server`, so there's nothing else to start.
+Go to `http://localhost:3001/console`. Signing in sends you to Trellis's
+sign-in page on port 3000 and back again. The Console is an app like any other,
+on a port of its own; both are part of `trellis-server`, so there's nothing
+else to start.
 
-The CLI logs in the same way: `trellis login http://localhost:3001`.
+The CLI logs in to Trellis itself: `trellis login http://localhost:3000`.
 
 These are the ports in use, all on `localhost` only:
 
-| Port   | Who uses it                  |
-| ------ | ---------------------------- |
-| `3000` | Console                      |
-| `3001` | The sign-in page             |
-| `4222` | Services connecting to NATS  |
-| `8080` | Browsers connecting to NATS  |
-| `8222` | NATS monitoring (`/healthz`) |
+| Port   | Who uses it                                 |
+| ------ | ------------------------------------------- |
+| `3000` | Trellis: sign-in, and where clients connect |
+| `3001` | Console                                     |
+| `4222` | Services connecting to NATS                 |
+| `8080` | Browsers connecting to NATS                 |
+| `8222` | NATS monitoring (`/healthz`)                |
 
 If one is taken, create the installation with
 `trellis-server init --tls loopback-development` and the

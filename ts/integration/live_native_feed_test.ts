@@ -28,7 +28,7 @@ async function completeRustLogin(
   const child = spawnTracked(argv[0], argv.slice(1), {
     env: {
       ...process.env,
-      TRELLIS_URL: runtime.oauthIssuer,
+      TRELLIS_URL: runtime.trellisUrl,
       TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
       CARGO_TARGET_DIR: fileURLToPath(new URL("../../target", import.meta.url)),
@@ -65,7 +65,7 @@ test("NX01 rust caller receives Watch frames from rust provider", async () => {
       {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(
@@ -144,7 +144,7 @@ test("NX03 empty finite Watch completes with no frames", async () => {
       {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           TRELLIS_FEED_EMPTY: "1",
@@ -209,7 +209,7 @@ test("L2 TypeScript caller receives rust Watch over live open", async () => {
       {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(
@@ -272,7 +272,7 @@ test("L3 TypeScript provider serves Watch over live open", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -318,7 +318,7 @@ test("NX02 rust console client receives Health Watch", async () => {
       {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         },
       },
@@ -356,7 +356,7 @@ test("NX05 two TypeScript callers abort one other continues", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -422,7 +422,7 @@ test("NX06 source starts once per session", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -466,7 +466,7 @@ test("NX09 reconnect opens a new Watch without reviving the old session", async 
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -526,7 +526,7 @@ test("NX10 setup timeout releases consumer admission", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -562,7 +562,7 @@ test("NX08 consumer drop does not throw", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();

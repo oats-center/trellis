@@ -57,7 +57,7 @@ test("an in-flight upload transfer finishes with exact bytes across automatic gr
         idempotencyKey: ulid(),
       });
       let service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: providerContract,
         name: "transfer-generation-provider",
         seed: instance.seed,
@@ -314,7 +314,7 @@ test("an in-flight upload transfer finishes with exact bytes across automatic gr
           releaseInterrupted = true;
           assert(isErr(await interrupted));
           service = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: providerContract,
             name: "transfer-generation-provider",
             seed: instance.seed,
@@ -464,7 +464,7 @@ test("download endAck retires the last caller and provider generation leases", a
         idempotencyKey: ulid(),
       });
       const provider = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: providerContract,
         name: "download-ack-provider",
         seed: providerInstance.seed,
@@ -479,7 +479,7 @@ test("download endAck retires the last caller and provider generation leases", a
           contract: targetContract,
         });
         const growthTarget = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: targetContract,
           name: "download-ack-growth-target",
           seed: targetInstance.seed,

@@ -22,7 +22,7 @@ test("failed provisional mirror preserves live delivery and real revocation enfo
         contract: participants.TransportGrowthTarget.participant,
       });
       const target = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.TransportGrowthTarget.participant,
         seed: targetIdentity.seed,
       }).orThrow();
@@ -47,7 +47,7 @@ test("failed provisional mirror preserves live delivery and real revocation enfo
         idempotencyKey: ulid(),
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();

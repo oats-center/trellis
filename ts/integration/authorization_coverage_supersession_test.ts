@@ -43,7 +43,7 @@ test("a superseding capability publication does not wait for a stale mirror repl
           idempotencyKey: ulid(),
         });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();

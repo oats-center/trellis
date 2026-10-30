@@ -22,7 +22,7 @@ test(
   { timeout: 45000 },
   async (context) => {
     await withTrellisRuntime(async (runtime) => {
-      const issuer = runtime.oauthIssuer;
+      const issuer = runtime.trellisUrl;
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
       const close: Array<() => Promise<unknown>> = [];

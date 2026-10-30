@@ -18,7 +18,7 @@ test("an app requesting a group sees each member the user holds without the whol
       contract: participants.TransportGrowthTarget.participant,
     });
     const target = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.TransportGrowthTarget.participant,
       seed: identity.seed,
     }).orThrow();

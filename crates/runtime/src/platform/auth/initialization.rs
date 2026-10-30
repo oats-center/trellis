@@ -478,10 +478,11 @@ mod tests {
         }
         let config: RuntimeConfig = serde_json::from_value(serde_json::json!({
             "event_session_seed_file": directory.path().join("session.seed"),
+            "http":{"public_origin":"http://localhost:3001","port":3001},
+            "console":{"origin":"http://localhost:3000","bind_address":"127.0.0.1","port":3000,
+                "transport":{"mode":"loopback_development"}},
             "auth":{
                 "instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV", "oauth_storage_key_file":sealing,
-                "oauth":{"origin":"http://localhost:3001","bind_address":"127.0.0.1","port":3001,
-                    "transport":{"mode":"loopback_development"}},
                 "authorization":{"issuer_signing_seed_file":issuer,"context_lifetime_seconds":300,
                     "allowed_clock_skew_seconds":30}
             }

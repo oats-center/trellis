@@ -52,7 +52,7 @@ import { checkDeviceActivation } from "@oatscenter/trellis/device";
 import { participants } from "field-device-trellis";
 
 const activation = await checkDeviceActivation({
-  trellisUrl: "https://auth.example.com",
+  trellisUrl: "https://trellis.example.com",
   participant: participants.fieldDevice.participant,
   rootSecret,
   provisioningSecret,

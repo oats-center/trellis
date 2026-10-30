@@ -23,7 +23,7 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       const admin = await context.newPage();
       await openConsole(admin, runtime, BROWSER_ADMIN);
       const role = `Newcomers ${ulid()}`;
-      await admin.goto(`${runtime.trellisUrl}/console/admin/roles/new`);
+      await admin.goto(`${runtime.consoleUrl}/console/admin/roles/new`);
       await admin.getByLabel("Title", { exact: true }).fill(role);
       await admin
         .getByRole("group", { name: "Auth", exact: true })
@@ -39,7 +39,7 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       // Signing up needs the installation and the app to allow it.
       const signUp = async () => {
         const page = await browser.newPage();
-        await page.goto(`${runtime.trellisUrl}/console/`);
+        await page.goto(`${runtime.consoleUrl}/console/`);
         await page
           .getByRole("heading", { name: "Sign in", exact: true })
           .waitFor();
@@ -53,7 +53,7 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       );
       await closed.close();
 
-      await admin.goto(`${runtime.trellisUrl}/console/admin/sign-in`);
+      await admin.goto(`${runtime.consoleUrl}/console/admin/sign-in`);
       await admin
         .getByRole("checkbox", { name: /People can create their own account/ })
         .check();
@@ -107,7 +107,7 @@ test("an administrator sets sign-in methods, providers and their group roles in 
         .click();
       await admin.getByText(`→ ${role}`).waitFor({ state: "detached" });
 
-      await admin.goto(`${runtime.trellisUrl}/console/admin/clients`);
+      await admin.goto(`${runtime.consoleUrl}/console/admin/clients`);
       await admin
         .getByRole("row")
         .filter({ hasText: "trellis.console" })
@@ -140,7 +140,7 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       assert.match(await newcomer.locator("main").innerText(), /New Person/);
 
       // The new account holds the role marked for new users.
-      await admin.goto(`${runtime.trellisUrl}/console/admin/users`);
+      await admin.goto(`${runtime.consoleUrl}/console/admin/users`);
       await admin
         .getByRole("row")
         .filter({ hasText: username })

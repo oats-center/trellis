@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use trellis_runtime::{
-    AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig, ListenerTransport,
-    LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, OAuthListenerConfig, RuntimeConfig, RuntimePathsConfig, StorageConfig,
+    AuthConfig, AuthorizationConfig, ClientConfig, ConsoleListenerConfig, HttpConfig, LeasesConfig,
+    ListenerTransport, LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig,
+    NatsConfig, NatsRuntimeConfig, RuntimeConfig, RuntimePathsConfig, StorageConfig,
     SubsystemConfig, TlsConfig,
 };
 
@@ -49,8 +49,8 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             .map(|_| bundle_path(BUNDLE_CA_CERTIFICATE)),
         BootstrapTls::LoopbackDevelopment => None,
     };
-    let oauth = OAuthListenerConfig {
-        origin: options.runtime.oauth_origin.clone(),
+    let console = ConsoleListenerConfig {
+        origin: options.runtime.console_origin.clone(),
         bind_address: options.runtime.bind_address.unwrap_or(
             if transport == ListenerTransport::LoopbackDevelopment {
                 std::net::Ipv4Addr::LOCALHOST.into()
@@ -58,10 +58,8 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 std::net::Ipv4Addr::UNSPECIFIED.into()
             },
         ),
-        port: options.runtime.oauth_port,
+        port: options.runtime.console_port,
         transport: transport.clone(),
-        // A proxy transport already presents the forwarded client.
-        trusted_proxies: Vec::new(),
     };
     RuntimeConfig {
         instance_name: Some(options.runtime.name.clone()),
@@ -87,11 +85,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             port: Some(options.runtime.trellis_port),
             bind_address: options.runtime.bind_address,
             public_origin: Some(options.runtime.public_origin.clone()),
-            origins: Some({
-                let mut origins = vec![options.runtime.public_origin.clone()];
-                origins.extend(options.runtime.extra_origins.iter().cloned());
-                origins
-            }),
             transport: (transport != ListenerTransport::LoopbackDevelopment).then_some(transport),
             // The runtime reaches the broker's WebSocket listener on the host
             // it uses for native NATS.
@@ -102,8 +95,10 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                     .unwrap_or_else(|| "127.0.0.1".into());
                 format!("{host}:{}", options.nats.websocket_port)
             }),
-            development: options.runtime.development,
+            // A proxy transport already presents the forwarded client.
+            trusted_proxies: Vec::new(),
         }),
+        console: Some(console),
         nats: Some(NatsConfig {
             managed: options.runtime.managed_nats,
             servers: Some(options.runtime.nats_server_url.clone()),
@@ -143,7 +138,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             avatar: None,
             administration: Default::default(),
             instance_id: Some(options.runtime.instance_id.clone()),
-            oauth: Some(oauth),
             oauth_storage_key_file: Some(PathBuf::from("./auth/oauth-storage.key")),
             local_identity: Some(LocalIdentityConfig {
                 password_min_length: Some(8),

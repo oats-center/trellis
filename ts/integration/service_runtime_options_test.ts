@@ -30,7 +30,7 @@ test("service connect honors telemetry opt-out and runtime logger", async () => 
     const service = (
       await connectTrellisServiceWithRuntimeDeps(
         {
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           seed: identity.seed,
           telemetry: false,

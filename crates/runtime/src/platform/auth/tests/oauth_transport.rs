@@ -1,4 +1,4 @@
-use super::super::oauth::{OAuthEngine, OAuthListener, OAuthStorage};
+use super::super::oauth::{OAuthEngine, OAuthStorage};
 use super::*;
 use std::sync::Arc;
 
@@ -100,38 +100,41 @@ async fn oauth_tls_serves_http2_and_rejects_untrusted_tls_plaintext_and_foreign_
         &config_path,
         format!(
             r#"
-[auth]
-instance_id = "{}"
-oauth_storage_key_file = "oauth-storage.key"
-[auth.oauth]
-origin = {origin:?}
-bind_address = "127.0.0.1"
+[http]
+public_origin = {origin:?}
 port = {}
-[auth.oauth.transport]
+[http.transport]
 mode = "tls"
 certificate_chain = "certificate.pem"
 private_key = "private-key.pem"
-[http]
-public_origin = "https://127.0.0.1:3000"
 "#,
-            ulid::Ulid::new(),
             address.port()
         ),
     )
     .unwrap();
     let config = crate::config::RuntimeConfig::load_from_path(&config_path).unwrap();
-    let oauth = config.resolve_oauth_listener().unwrap();
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let admin = f.admin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
-    let listener = OAuthListener::load(socket, &oauth.origin, &oauth.transport)
-        .await
-        .unwrap();
+    // Sign-in is served the way the Trellis listener serves it.
     let shutdown = tokio_util::sync::CancellationToken::new();
     let stopping = shutdown.clone();
     let router = super::super::oauth::router(engine.clone(), vec!["tls://127.0.0.1:4222".into()]);
-    let server = tokio::spawn(listener.run(router, stopping));
+    let url = url::Url::parse(&origin).unwrap();
+    let server = tokio::spawn(async move {
+        crate::serve_http_listener(
+            socket,
+            &url,
+            config.http_transport(),
+            &[],
+            crate::RuntimeMode::Platform,
+            router,
+            Arc::default(),
+            stopping.cancelled_owned(),
+        )
+        .await
+    });
     let metadata = format!("{origin}/.well-known/oauth-authorization-server");
     let untrusted = reqwest::Client::builder().no_proxy().build().unwrap();
     assert!(

@@ -1,5 +1,5 @@
 //! Native SDK custody and refresh against the production OAuth HTTP engine.
-use super::super::oauth::{OAuthEngine, OAuthListener, OAuthStorage, OAuthTransport};
+use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport, OriginListener};
 use super::*;
 use std::{
     sync::Arc,
@@ -243,7 +243,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );
-    let listener = OAuthListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
+    let listener = OriginListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
         .await
         .unwrap();
     let mut shutdown = tokio_util::sync::CancellationToken::new();
@@ -459,7 +459,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         let engine = Arc::new(
             OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
         );
-        let listener = OAuthListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
+        let listener = OriginListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
             .await
             .unwrap();
         shutdown = tokio_util::sync::CancellationToken::new();
@@ -568,7 +568,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
     let socket = tokio::net::TcpListener::bind(backend_address)
         .await
         .unwrap();
-    let listener = OAuthListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
+    let listener = OriginListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
         .await
         .unwrap();
     shutdown = tokio_util::sync::CancellationToken::new();

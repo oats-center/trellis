@@ -90,7 +90,7 @@ export async function seedServiceWithoutResources(
     acknowledgeSharedApis: true,
   });
   const service = await TrellisService.connect({
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     participant: participants.Provider.participant,
     name: displayName,
     seed: key.seed,

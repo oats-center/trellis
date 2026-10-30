@@ -18,19 +18,19 @@ test(
         const page = await context.newPage();
         const errors: Error[] = [];
         page.on("pageerror", (error) => errors.push(error));
-        await page.goto(`${runtime.publicOrigin}/console`, {
+        await page.goto(`${runtime.consoleUrl}/console`, {
           waitUntil: "domcontentloaded",
         });
         await page
           .getByLabel("Username", { exact: true })
           .waitFor({ state: "visible" });
-        assert.equal(new URL(page.url()).origin, runtime.oauthIssuer);
+        assert.equal(new URL(page.url()).origin, runtime.trellisUrl);
         await signInIfPrompted(page, {
           username: runtime.adminUsername,
           password: runtime.adminPassword,
         });
         await waitForConsoleReady(page);
-        assert.equal(new URL(page.url()).origin, runtime.publicOrigin);
+        assert.equal(new URL(page.url()).origin, runtime.consoleUrl);
         assert.deepEqual(errors, []);
       } finally {
         await context.close();

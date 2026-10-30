@@ -1,6 +1,6 @@
 # Design: Auth API
 
-The public Auth surface: the dedicated OAuth listener's HTTP routes, native
+The public Auth surface: the Trellis listener's HTTP routes, native
 admission, and the Auth contract's RPC families. See
 [trellis-auth.md](trellis-auth.md) for the authoritative core model and
 [auth-protocol.md](auth-protocol.md) for proofs, custody, and admission rules.
@@ -9,7 +9,7 @@ admission, and the Auth contract's RPC families. See
 
 `crates/builtin-contracts/src/builtin_source/auth.trellis` is the native Auth
 source. Generated Rust and TypeScript clients and schemas are the public RPC
-reference. The OAuth listener's routes are defined by the router in
+reference. The Trellis listener's routes are defined by the router in
 `crates/runtime/src/platform/auth/oauth/http.rs`; their HTTP-only DTOs remain
 Rust-owned at that transport boundary.
 
@@ -19,8 +19,9 @@ device-connect APIs, and no HTTP bootstrap or context-refresh endpoints.
 
 ## HTTP Surface
 
-All routes are served only by the dedicated OAuth listener (`auth.oauth`).
-Console and application routers are never mounted there.
+All routes are served only by the Trellis listener (`[http]`), beside
+`/healthz` and `/readyz`. The Console and application routers are never
+mounted there; the Console has its own listener (`[console]`).
 
 | Method | Route                                     | Purpose                                                                                         |
 | ------ | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -158,7 +159,7 @@ does not provide a zero-revision bypass for updating existing profiles.
 
 `Auth.Users.PasswordReset.Create` accepts a target `userId` and returns a
 five-minute, one-use token. Open `/account/reset?token=...` on the
-isolated OAuth origin to complete it with an Origin-checked, CSRF-protected
+Trellis origin to complete it with an Origin-checked, CSRF-protected
 native form. Creating the token does not change the password. Completion checks
 credential CAS, the target's protected-administrator status, and the requester's
 still-active logical authorization session, current

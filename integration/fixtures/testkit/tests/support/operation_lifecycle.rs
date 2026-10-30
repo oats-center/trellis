@@ -460,7 +460,7 @@ async fn cancelled_operation_recovers_cleanup_after_its_provider_process_is_kill
         (
             process.spawn().unwrap(),
             json!({
-                "trellisUrl":runtime.oauth_origin(),
+                "trellisUrl":runtime.trellis_url(),
                 "seed":identity.seed(),
                 "holdCleanup":hold_cleanup
             }),

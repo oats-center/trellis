@@ -139,7 +139,7 @@ pub fn generate_trellis_bootstrap(
             };
             let runtime_hosts = hosts(&[
                 &options.runtime.public_origin,
-                &options.runtime.oauth_origin,
+                &options.runtime.console_origin,
             ])?;
             // Managed brokers are reached over loopback by the co-located runtime.
             let mut nats_hosts = if options.runtime.nats_websocket_via_runtime {

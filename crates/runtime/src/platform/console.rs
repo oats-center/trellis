@@ -1,4 +1,4 @@
-//! Bundled Console serving on the application origin, never the OAuth listener.
+//! Bundled Console, an app on its own listener and origin beside Trellis.
 
 use crate::{supervisor::RuntimeError, RuntimeConfig};
 use axum::{
@@ -11,21 +11,21 @@ use axum::{
 static ASSETS: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 
 pub(super) fn router(config: &RuntimeConfig) -> Result<Router, RuntimeError> {
-    let registration = super::auth::console_registration(&config.public_origin())
+    let console = config
+        .resolve_console_listener()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let oauth = config
-        .resolve_oauth_listener()
+    let registration = super::auth::console_registration(&console.origin)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let base = serde_json::json!({"authUrl":oauth.origin,"clientId":super::auth::CONSOLE_CLIENT_ID,
+    let base = serde_json::json!({"authUrl":config.public_origin(),"clientId":super::auth::CONSOLE_CLIENT_ID,
         "callbackUri":registration.redirect_uris[0],
         // Every Console user sees a banner while the installation serves its
         // own generated certificates.
-        "generatedTls":crate::tls::serves_generated_certificate(config,config.http_transport())});
+        "generatedTls":crate::tls::serves_generated_certificate(config,&console.transport)});
     // RFC 9728: the Console's address names its sign-in, so native programs
     // accept the address people use in a browser.
     let resource = serde_json::json!({
-        "resource": config.public_origin(),
-        "authorization_servers": [oauth.origin],
+        "resource": console.origin,
+        "authorization_servers": [config.public_origin()],
     });
     Ok(Router::new()
         .route(
@@ -97,15 +97,16 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn console_http_bootstrap_uses_application_callback_and_isolated_oauth_origin() {
+    async fn console_signs_in_on_its_own_origin_through_the_trellis_origin() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let address = listener.local_addr().unwrap();
+        let origin = format!("http://{address}");
         let config:RuntimeConfig=serde_json::from_value(serde_json::json!({
-            "http":{"public_origin":origin},
-            "auth":{"instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","oauth_storage_key_file":"./auth/oauth.key",
-                "oauth":{"origin":"http://localhost:3001","bind_address":"127.0.0.1","port":3001,
-                    "transport":{"mode":"loopback_development"}}}
+            "http":{"public_origin":"http://localhost:3001","port":3001},
+            "console":{"origin":origin,"bind_address":"127.0.0.1","port":address.port(),
+                "transport":{"mode":"loopback_development"}},
+            "auth":{"instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","oauth_storage_key_file":"./auth/oauth.key"}
         })).unwrap();
         let app = router(&config).unwrap();
         let stop = tokio_util::sync::CancellationToken::new();

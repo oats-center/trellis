@@ -21,7 +21,7 @@ test("Rust preserves accepted Live during blocked preparation and publishes gran
         contract: participants.TransportGrowthTarget.participant,
       });
       const target = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.TransportGrowthTarget.participant,
         seed: targetIdentity.seed,
       }).orThrow();
@@ -54,7 +54,7 @@ test("Rust preserves accepted Live during blocked preparation and publishes gran
       const child = spawnTracked(argv[0], argv.slice(1), {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           RUST_LOG: "trellis_rs=info",

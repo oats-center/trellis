@@ -30,7 +30,7 @@ test("a revision-pinned service projects current materialization", async () => {
       contract: r1,
     });
     const serviceA = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: r1,
       seed: instanceA.seed,
     }).orThrow();
@@ -49,7 +49,7 @@ test("a revision-pinned service projects current materialization", async () => {
         contract: r2,
       });
       const serviceB = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: r2,
         seed: instanceB.seed,
       }).orThrow();
@@ -73,7 +73,7 @@ test("a revision-pinned service projects current materialization", async () => {
       await serviceA.stop();
       await aExit;
       const reconnected = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: r1,
         seed: instanceA.seed,
       }).orThrow();

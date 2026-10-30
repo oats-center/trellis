@@ -39,7 +39,7 @@ test("a service drains accepted RPCs across growth and renews in place after rea
         idempotencyKey: ulid(),
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: instance.seed,
       }).orThrow();

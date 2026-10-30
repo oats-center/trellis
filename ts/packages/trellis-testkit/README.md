@@ -21,7 +21,7 @@ const identity = await runtime.registerService({
   contract: participants.provider.participant,
 });
 const service = await TrellisService.connect({
-  trellisUrl: runtime.oauthIssuer,
+  trellisUrl: runtime.trellisUrl,
   participant: participants.provider.participant,
   name: "provider",
   seed: identity.seed,

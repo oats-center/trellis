@@ -13,7 +13,7 @@ test("an RPC mount rejects when the broker never confirms its subscription", asy
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: "mount-provider",
         seed: identity.seed,

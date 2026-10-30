@@ -78,8 +78,8 @@ test(
       let resourceId = "";
       let resourceName = "";
       let readyId = "";
-      const application = runtime.trellisUrl;
-      const issuer = runtime.oauthIssuer;
+      const application = runtime.consoleUrl;
+      const issuer = runtime.trellisUrl;
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
       const close: Array<() => Promise<unknown>> = [];

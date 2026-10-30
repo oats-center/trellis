@@ -57,7 +57,6 @@ pub struct TrellisTestRuntimeBuilder {
     retention: WorkdirRetention,
     timeouts: TestTimeouts,
     timeouts_explicit: bool,
-    extra_origins: Vec<String>,
     nats_websocket_only: bool,
     admin_username: Option<String>,
     admin_password: Option<String>,
@@ -72,7 +71,6 @@ impl Default for TrellisTestRuntimeBuilder {
             retention: WorkdirRetention::OnFailure,
             timeouts: TestTimeouts::default(),
             timeouts_explicit: false,
-            extra_origins: Vec::new(),
             nats_websocket_only: false,
             admin_username: None,
             admin_password: None,
@@ -110,18 +108,6 @@ impl TrellisTestRuntimeBuilder {
     pub fn timeouts(mut self, timeouts: TestTimeouts) -> Self {
         self.timeouts = timeouts;
         self.timeouts_explicit = true;
-        self
-    }
-    /// Replaces the additional allowed browser origins.
-    #[must_use]
-    pub fn extra_origins(mut self, origins: Vec<String>) -> Self {
-        self.extra_origins = origins;
-        self
-    }
-    /// Adds one additional allowed HTTP origin.
-    #[must_use]
-    pub fn extra_origin(mut self, origin: impl Into<String>) -> Self {
-        self.extra_origins.push(origin.into());
         self
     }
     /// Advertises only the NATS WebSocket, as a Trellis that keeps native NATS
@@ -166,9 +152,6 @@ impl TrellisTestRuntimeBuilder {
             self.timeouts
         };
         validate_timeouts(&timeouts)?;
-        for origin in &self.extra_origins {
-            validate_origin(origin)?;
-        }
         let username = self.admin_username.as_deref().unwrap_or(ADMIN_USERNAME);
         let password = self
             .admin_password
@@ -181,9 +164,6 @@ impl TrellisTestRuntimeBuilder {
             .unwrap_or_else(std::env::temp_dir);
         // Installation choices the builder adds to `trellis-server init`.
         let mut init_args = Vec::new();
-        for origin in &self.extra_origins {
-            init_args.extend(["--extra-origin".to_owned(), origin.clone()]);
-        }
         if self.nats_websocket_only {
             init_args.push("--nats-websocket-only".to_owned());
         }
@@ -310,7 +290,7 @@ async fn start_once(
         // A runtime serves certificates from its own test CA, as a production
         // installation serves ones browsers trust; clients trust only that CA.
         let public_origin = format!("https://127.0.0.1:{}", ports.http);
-        let oauth_origin = format!("https://127.0.0.1:{}", ports.oauth);
+        let trellis_url = format!("https://127.0.0.1:{}", ports.oauth);
         let nats_url = format!("tls://127.0.0.1:{}", ports.nats);
         let websocket_url = format!("wss://127.0.0.1:{}", ports.websocket);
         let config_dir = infrastructure
@@ -346,7 +326,7 @@ async fn start_once(
         }
         command
             .args([
-                "--trellis-port",
+                "--console-port",
                 &ports.http.to_string(),
                 "--nats-port",
                 &ports.nats.to_string(),
@@ -358,11 +338,11 @@ async fn start_once(
                 &nats_url,
                 "--nats-websocket-url",
                 &websocket_url,
-                "--public-origin",
+                "--console-origin",
                 &public_origin,
-                "--oauth-origin",
-                &oauth_origin,
-                "--oauth-port",
+                "--trellis-origin",
+                &trellis_url,
+                "--trellis-port",
                 &ports.oauth.to_string(),
                 "--bind-address",
                 "127.0.0.1",
@@ -481,7 +461,7 @@ async fn start_once(
         let trust_roots = vec![config_dir.join("tls/ca.crt")];
         wait_for_readyz(&public_origin, &trust_roots, &mut infrastructure).await?;
         let admin = AdminSession::connect(
-            &oauth_origin,
+            &trellis_url,
             &trust_roots,
             &workdir.join("credentials/admin"),
             username,
@@ -494,7 +474,7 @@ async fn start_once(
             distribution,
             config_path,
             public_origin,
-            oauth_origin,
+            trellis_url,
             trust_roots,
             nats_url,
             websocket_url,
@@ -509,8 +489,8 @@ async fn start_once(
             workdir,
             distribution,
             config,
+            console_url,
             trellis_url,
-            oauth_origin,
             trust_roots,
             nats_url,
             websocket_url,
@@ -523,8 +503,8 @@ async fn start_once(
                 config,
                 distribution,
                 workdir,
+                console_url,
                 trellis_url,
-                oauth_origin,
                 trust_roots,
                 nats_url,
                 websocket_url,
@@ -635,8 +615,8 @@ pub struct TrellisTestRuntime {
     config: PathBuf,
     distribution: Distribution,
     workdir: PathBuf,
+    console_url: String,
     trellis_url: String,
-    oauth_origin: String,
     trust_roots: Vec<PathBuf>,
     nats_url: String,
     websocket_url: String,
@@ -683,7 +663,7 @@ impl TrellisTestRuntime {
         tokio::time::timeout(
             self.timeouts.startup,
             wait_for_readyz(
-                &self.trellis_url,
+                &self.console_url,
                 &self.trust_roots,
                 &mut self.infrastructure,
             ),
@@ -692,7 +672,7 @@ impl TrellisTestRuntime {
         .map_err(|_| request_timeout("runtime restart", TrellisTestStage::RuntimeStart))??;
         self.admin = Some(
             AdminSession::connect(
-                &self.oauth_origin,
+                &self.trellis_url,
                 &self.trust_roots,
                 &self.workdir.join("credentials/admin"),
                 &self.username,
@@ -715,15 +695,15 @@ impl TrellisTestRuntime {
     pub fn builder() -> TrellisTestRuntimeBuilder {
         TrellisTestRuntimeBuilder::default()
     }
-    /// Base URL of the runtime.
+    /// The Trellis origin: sign-in, discovery, and where clients connect.
     #[must_use]
     pub fn trellis_url(&self) -> &str {
         &self.trellis_url
     }
-    /// Isolated OAuth issuer and portal origin, distinct from the application listener.
+    /// The Console's origin, an app beside Trellis.
     #[must_use]
-    pub fn oauth_origin(&self) -> &str {
-        &self.oauth_origin
+    pub fn console_url(&self) -> &str {
+        &self.console_url
     }
     /// PEM files of this runtime's generated installation CA.
     ///
@@ -785,7 +765,7 @@ impl TrellisTestRuntime {
         let result = tokio::time::timeout(
             self.timeouts.request,
             crate::admin::approve_device(
-                &self.oauth_origin,
+                &self.trellis_url,
                 &self.trust_roots,
                 client_id,
                 user_code,
@@ -1121,7 +1101,7 @@ impl TrellisTestRuntime {
         let (session, nats_servers) = tokio::time::timeout(
             self.timeouts.request,
             crate::admin::login_client(
-                &self.oauth_origin,
+                &self.trellis_url,
                 &self.trust_roots,
                 &self
                     .workdir
@@ -1215,27 +1195,6 @@ fn validate_admin_credentials(username: &str, password: &str) -> Result<(), Trel
             "administrator username must be nonempty without controls and password \
             at least 8 characters without line breaks",
         ));
-    }
-    Ok(())
-}
-fn validate_origin(origin: &str) -> Result<(), TrellisTestError> {
-    let invalid = || {
-        TrellisTestError::new(
-            TrellisTestErrorKind::InvalidConfiguration,
-            TrellisTestStage::Validation,
-            format!("invalid extra origin '{origin}': expected a bare HTTP(S) origin"),
-        )
-    };
-    let parsed = url::Url::parse(origin).map_err(|_| invalid())?;
-    if !matches!(parsed.scheme(), "http" | "https")
-        || parsed.host_str().is_none()
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-        || parsed.path() != "/"
-    {
-        return Err(invalid());
     }
     Ok(())
 }

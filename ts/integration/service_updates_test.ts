@@ -38,7 +38,7 @@ test("a service update waits for approval only when it asks for new access", asy
     });
     const connect = <P extends typeof base | typeof extended>(participant: P) =>
       TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant,
         seed: instance.seed,
       }).orThrow();
@@ -58,7 +58,7 @@ test("a service update waits for approval only when it asks for new access", asy
     assert.deepEqual(pending.changes.addedCapabilities, []);
     assert.equal(
       pending.reviewUrl,
-      `${runtime.trellisUrl}/console/admin/services/${pending.deploymentId}?update=${pending.updateId}`,
+      `${runtime.consoleUrl}/console/admin/services/${pending.deploymentId}?update=${pending.updateId}`,
     );
     const { update: approved } = await runtime.callAdminRpc(
       "authServiceUpdatesDecide",
@@ -137,7 +137,7 @@ test("a Rust service waits for its update's approval, then connects under it", a
     const child = spawnTracked(argv[0], argv.slice(1), {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: instance.seed,
       },
@@ -194,7 +194,7 @@ test("providing a new API waits for approval; sharing one another service serves
       contract: resources,
     });
     const sharing = TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: extendedParticipants.ResourceProvider.participant,
       seed: takeover.seed,
     }).orThrow();
@@ -235,7 +235,7 @@ test("providing a new API waits for approval; sharing one another service serves
       contract: jobs,
     });
     const connecting = TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: extendedParticipants.OrdinaryJobs.participant,
       seed: instance.seed,
     }).orThrow();
@@ -292,7 +292,7 @@ test("an update keeps an administrator's revocation and grants what new resource
     // A narrower build keeps users.read and drops bindings.readJobs: it asks
     // for nothing new, so it installs, and the revocation stays in force.
     const narrower = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: extendedParticipants.GrantKeeper.participant,
       seed: instance.seed,
     }).orThrow();
@@ -317,7 +317,7 @@ test("an update keeps an administrator's revocation and grants what new resource
       contract: echo,
     });
     const connecting = TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: extendedParticipants.EchoProvider.participant,
       seed: jobs.seed,
     }).orThrow();
@@ -365,7 +365,7 @@ test("a service claim takes whatever service connects first, once an administrat
     const participant = participants.Provider.participant;
     const apiId = participant.implements[0].identity;
     const connecting = TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant,
       seed: claimed.seed,
     }).orThrow();
@@ -427,7 +427,7 @@ test("a service claim takes whatever service connects first, once an administrat
     });
     await assert.rejects(
       TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant,
         seed: unwanted.seed,
       }).orThrow(),
@@ -450,7 +450,7 @@ test("a Rust service connecting to a claim waits for approval, then runs as the 
     const child = spawnTracked(argv[0], argv.slice(1), {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: seed.toString("base64url"),
       },

@@ -107,7 +107,7 @@ for (const scenario of [
           // A real authenticated service connection exercises the running
           // runtime's platform, Jobs, and Events wiring end to end.
           const service = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: participants.Provider.participant,
             name: "provider",
             seed: identity.seed,
@@ -293,7 +293,7 @@ for (const scenario of [
               const child = spawnTracked(callerArgv[0], callerArgv.slice(1), {
                 env: {
                   ...process.env,
-                  TRELLIS_URL: runtime.oauthIssuer,
+                  TRELLIS_URL: runtime.trellisUrl,
                   TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
                   XDG_CONFIG_HOME: join(
                     runtime.workdir,
@@ -433,7 +433,7 @@ test("TS standalone live telemetry derives exact per-side deltas from one owner"
           contract: participants.Provider.participant,
         });
         const service = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           name: "live-owner-observability",
           seed: identity.seed,
@@ -537,7 +537,7 @@ test("TS transfer telemetry labels each endpoint by direction and side", async (
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: "transfer-observability",
         seed: identity.seed,

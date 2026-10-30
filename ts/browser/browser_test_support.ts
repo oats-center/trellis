@@ -160,7 +160,7 @@ export async function completeAdminBootstrapInBrowser(
   await page
     .getByText("Your new password is set")
     .waitFor({ state: "visible" });
-  await page.goto(`${runtime.trellisUrl}/console`, {
+  await page.goto(`${runtime.consoleUrl}/console`, {
     waitUntil: "domcontentloaded",
   });
 }
@@ -229,7 +229,7 @@ export async function completePasswordReset(
   runtime: TrellisTestRuntime,
   credentials: { username: string; password: string },
 ): Promise<void> {
-  await page.goto(`${runtime.trellisUrl}/console`, {
+  await page.goto(`${runtime.consoleUrl}/console`, {
     waitUntil: "domcontentloaded",
   });
   await completeConsoleEntry(page, credentials);
@@ -332,7 +332,7 @@ export async function loginCliAsAdministrator(
       "--format",
       "json",
       "login",
-      runtime.oauthIssuer,
+      runtime.trellisUrl,
       "--ca-certificate",
       runtime.caCertificate,
     ],

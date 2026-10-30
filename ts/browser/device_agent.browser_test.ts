@@ -32,7 +32,7 @@ test("an enrolled device uses an independently browser-consented native companio
       contract: participants.ChildProvider.participant,
     });
     const provider = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.ChildProvider.participant,
       seed: providerIdentity.seed,
     }).orThrow();
@@ -57,7 +57,7 @@ test("an enrolled device uses an independently browser-consented native companio
       assert(provisioned.provisioningSecret);
       const rootSecret = crypto.getRandomValues(new Uint8Array(32));
       const activation = await checkDeviceActivation({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant,
         rootSecret,
         provisioningSecret: provisioned.provisioningSecret,
@@ -87,7 +87,7 @@ test("an enrolled device uses an independently browser-consented native companio
         contract: request,
       });
       await prepared.session.close();
-      const server = (await discoverNativeOAuth(runtime.oauthIssuer)).orThrow();
+      const server = (await discoverNativeOAuth(runtime.trellisUrl)).orThrow();
       const credentialCustody = new MemoryNativeOAuthCustody();
       const custody = (
         await NativeOAuthClient.open({

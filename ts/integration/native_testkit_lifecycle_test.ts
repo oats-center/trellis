@@ -25,7 +25,7 @@ test("native startup rejects another host's ready listener without disturbing th
     await assert.rejects(
       async () => {
         duplicate = await startTrellisProcess({
-          trellisUrl: runtime.trellisUrl,
+          trellisUrl: runtime.consoleUrl,
           configPath: join(logs, "config.toml"),
           command: {
             cmd: server,
@@ -99,7 +99,7 @@ test("native testkit concurrent hosts isolate mutations, persist through restart
     await Promise.all(runtimes.map((runtime) => runtime.stop()));
   }
   for (const runtime of runtimes) {
-    for (const url of [runtime.trellisUrl, runtime.natsUrl]) {
+    for (const url of [runtime.consoleUrl, runtime.natsUrl]) {
       const endpoint = new URL(url);
       await assert.rejects(
         async () => {
@@ -172,7 +172,7 @@ for (const failure of ["stalled", "crashed"] as const) {
         async () =>
           (await processIsGone(host.pid)) && (await processIsGone(brokerPid)),
       );
-      for (const url of [runtime.trellisUrl, runtime.natsUrl]) {
+      for (const url of [runtime.consoleUrl, runtime.natsUrl]) {
         const endpoint = new URL(url);
         await assert.rejects(
           async () => {

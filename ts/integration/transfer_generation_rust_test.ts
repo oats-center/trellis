@@ -98,7 +98,7 @@ test("Rust downloads survive growth and open after the original attachment close
               ([key]) => !key.startsWith("OTEL_"),
             ),
           ),
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: instance.seed,
           OTEL_METRICS_EXPORTER: "otlp",
@@ -136,7 +136,7 @@ test("Rust downloads survive growth and open after the original attachment close
         contract: participants.TransportGrowthTarget.participant,
       });
       const target = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.TransportGrowthTarget.participant,
         seed: targetIdentity.seed,
       }).orThrow();

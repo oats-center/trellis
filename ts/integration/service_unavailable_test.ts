@@ -17,7 +17,7 @@ test("unavailable provider preserves typed observation errors and completed oper
       contract: participants.Provider.participant,
     });
     let service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "observation-unavailable",
       seed: identity.seed,
@@ -59,7 +59,7 @@ test("unavailable provider preserves typed observation errors and completed oper
       }
 
       service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: "observation-unavailable",
         seed: identity.seed,

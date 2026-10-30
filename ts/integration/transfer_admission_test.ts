@@ -22,7 +22,7 @@ test(
         contract: participants.OperationProvider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.OperationProvider.participant,
         seed: identity.seed,
       }).orThrow();

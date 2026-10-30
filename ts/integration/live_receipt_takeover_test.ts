@@ -67,7 +67,7 @@ test("a retained receipt is answered by the surviving same-route generation", as
       contract: targetContract,
     });
     const target = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: targetContract,
       name: "receipt-takeover-target",
       seed: targetInstance.seed,
@@ -97,7 +97,7 @@ test("a retained receipt is answered by the surviving same-route generation", as
       idempotencyKey: ulid(),
     });
     const subject = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: subjectContract,
       name: "receipt-takeover-subject",
       seed: instance.seed,

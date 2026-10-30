@@ -108,9 +108,9 @@ async function startSplitRole(
     // one of its own.
     delete nats.managed;
     assert("transport" in http);
-    const oauthListener = (config.auth as Record<string, unknown> | undefined)
-      ?.oauth as Record<string, unknown> | undefined;
-    for (const listener of [http.transport, oauthListener?.transport]) {
+    const consoleListener = config.console as
+      Record<string, unknown> | undefined;
+    for (const listener of [http.transport, consoleListener?.transport]) {
       assert(listener && typeof listener === "object");
       const files = listener as Record<string, unknown>;
       files.certificate_chain = bundlePath(files.certificate_chain);
@@ -251,7 +251,7 @@ test("BI03 split Jobs role emits queryInvalidated", async () => {
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: "bi03-split-jobs-provider",
         seed: key.seed,
@@ -361,7 +361,7 @@ test("BI03 split Events role emits published events", async () => {
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: "bi03-split-events-provider",
         seed: key.seed,

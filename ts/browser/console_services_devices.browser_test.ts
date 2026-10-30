@@ -32,7 +32,7 @@ test("B01 creating a native service deployment opens its persisted implementatio
       const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
-      await page.goto(`${runtime.trellisUrl}/console/admin/services/new`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -97,7 +97,7 @@ test("B02 installed service resources render from real evidence", async () => {
         const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
 
-        await page.goto(`${runtime.trellisUrl}/console/admin/resources`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/resources`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
@@ -138,7 +138,7 @@ test("B03 same-document service navigation replaces A with B", async () => {
         await openConsoleAsRuntimeAdmin(page, runtime);
 
         await page.goto(
-          `${runtime.trellisUrl}/console/admin/services/${a.deploymentId}`,
+          `${runtime.consoleUrl}/console/admin/services/${a.deploymentId}`,
           { waitUntil: "domcontentloaded" },
         );
         await page
@@ -194,7 +194,7 @@ test("B04 a missing service ID renders unavailable, not a fallback", async () =>
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/services/${ulid()}`,
+        `${runtime.consoleUrl}/console/admin/services/${ulid()}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -222,7 +222,7 @@ test("B05 service table pages and resets on filter change", async () => {
       const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
-      await page.goto(`${runtime.trellisUrl}/console/admin/services`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/services`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -296,7 +296,7 @@ test("B06 device creation persists the authored participant and returns its allo
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/profiles/new`,
+        `${runtime.consoleUrl}/console/admin/devices/profiles/new`,
         {
           waitUntil: "domcontentloaded",
         },
@@ -355,7 +355,7 @@ test("B07 provisioning deep link selects exactly the requested deployment", asyn
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/instances/provision?deploymentId=${targetId}`,
+        `${runtime.consoleUrl}/console/admin/devices/instances/provision?deploymentId=${targetId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -368,7 +368,7 @@ test("B07 provisioning deep link selects exactly the requested deployment", asyn
 
       const missingId = ulid();
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/instances/provision?deploymentId=${missingId}`,
+        `${runtime.consoleUrl}/console/admin/devices/instances/provision?deploymentId=${missingId}`,
         { waitUntil: "domcontentloaded" },
       );
       await page
@@ -400,7 +400,7 @@ test("N05 device disable after query navigation affects only the new target", as
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/profiles/disable?deployment=${a.deploymentId}`,
+        `${runtime.consoleUrl}/console/admin/devices/profiles/disable?deployment=${a.deploymentId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -477,7 +477,7 @@ test("B08 provisioning receipt shows the returned identity", async () => {
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/instances/provision?deploymentId=${deploymentId}`,
+        `${runtime.consoleUrl}/console/admin/devices/instances/provision?deploymentId=${deploymentId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -569,7 +569,7 @@ test("B09 missing device action targets never default to another row", async () 
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/profiles/disable?deployment=${missingId}`,
+        `${runtime.consoleUrl}/console/admin/devices/profiles/disable?deployment=${missingId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -579,7 +579,7 @@ test("B09 missing device action targets never default to another row", async () 
       });
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/devices/instances/disable?instance=${missingId}`,
+        `${runtime.consoleUrl}/console/admin/devices/instances/disable?instance=${missingId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -613,7 +613,7 @@ test("B12 device back links stay inside the configured console path", async () =
         "/console/admin/devices/profiles/new",
         "/console/admin/devices/instances/provision",
       ]) {
-        await page.goto(`${runtime.trellisUrl}${route}`, {
+        await page.goto(`${runtime.consoleUrl}${route}`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);

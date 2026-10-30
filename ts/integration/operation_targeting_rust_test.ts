@@ -59,7 +59,7 @@ for (const sharedDeployment of [false, true]) {
             {
               env: {
                 ...process.env,
-                TRELLIS_URL: runtime.oauthIssuer,
+                TRELLIS_URL: runtime.trellisUrl,
                 TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
                 TRELLIS_IDENTITY_SEED: nativeIdentity.seed,
               },
@@ -72,7 +72,7 @@ for (const sharedDeployment of [false, true]) {
               nativeLines.push(line);
           })();
           const service = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: participants.OperationProvider.participant,
             seed: nodeIdentity.seed,
             name: "mixed-node",
@@ -206,7 +206,7 @@ for (const sharedDeployment of [false, true]) {
               {
                 env: {
                   ...process.env,
-                  TRELLIS_URL: runtime.oauthIssuer,
+                  TRELLIS_URL: runtime.trellisUrl,
                   TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
                   TRELLIS_NATIVE_CLIENT_ID: apps.Caller.request.id,
                   XDG_CONFIG_HOME: custody,

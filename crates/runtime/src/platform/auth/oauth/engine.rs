@@ -426,9 +426,7 @@ impl OAuthEngine {
             for callbacks in clients.query_map([], |row| row.get::<_, String>(0))? {
                 for callback in serde_json::from_str::<Vec<String>>(&callbacks?)? {
                     let callback = url::Url::parse(&callback).map_err(|_| AuthError::Denied)?;
-                    if !storage.authority.settings.development {
-                        super::super::warn_oauth_cookie_isolation(&origin, &callback);
-                    }
+                    super::super::warn_oauth_cookie_isolation(&origin, &callback);
                 }
             }
         }

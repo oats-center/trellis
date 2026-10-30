@@ -49,7 +49,7 @@ test("Rust device companion renews admitted authority and resumes after restart 
       for (let leg = 0; leg < 2; leg++) {
         if (leg === 1) await runtime.restart();
         const service = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.ChildProvider.participant,
           seed: providerIdentity.seed,
         }).orThrow();
@@ -67,7 +67,7 @@ test("Rust device companion renews admitted authority and resumes after restart 
         } = spawnTracked(command, args, {
           env: {
             ...process.env,
-            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_URL: runtime.trellisUrl,
             TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             DEVICE_ROOT_SECRET: base64urlEncode(rootSecret),
             XDG_CONFIG_HOME: join(runtime.workdir, "rust-companion-config"),
@@ -152,7 +152,7 @@ test("Rust device companion renews admitted authority and resumes after restart 
                   .parse(JSON.parse(line.slice("NATIVE_LOGIN ".length)));
                 assert.equal(login.clientId, clientId);
                 await approveNativeDeviceCode({
-                  issuer: runtime.oauthIssuer,
+                  issuer: runtime.trellisUrl,
                   clientId: login.clientId,
                   userCode: login.userCode,
                   username: runtime.adminUsername,

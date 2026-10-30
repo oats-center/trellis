@@ -40,7 +40,7 @@ Trellis integration behavior:
 - `createTrellisApp(...)`, `TrellisProvider`, `SvelteTrellisConnection`, and
   browser client auth mode `"browser"` are the intended browser-app wiring.
 - Browser sign-in is OAuth Authorization Code with PKCE and DPoP against the
-  installation's dedicated OAuth origin. Local-password or OIDC sign-in and
+  installation's Trellis origin, which no application shares. Local-password or OIDC sign-in and
   explicit capability consent happen on Trellis's own portal at that origin.
   Application code never renders Trellis login or consent, handles upstream
   provider callbacks, or constructs grant sets or capability lists.
@@ -57,7 +57,7 @@ Trellis integration behavior:
   verified authority. It does not own refresh or verification; do not implement
   a second verifier in Svelte or TypeScript code because Rust/WASM is
   authoritative.
-- Issuer trust comes from the selected OAuth origin and authenticated rotation
+- Issuer trust comes from the selected Trellis origin and authenticated rotation
   links. Pending devices poll `/auth/device/enroll` through the device
   activation helpers; approved devices connect with a signed provisioned
   admission in NATS CONNECT, never an HTTP bootstrap.

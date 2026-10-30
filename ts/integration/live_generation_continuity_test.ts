@@ -21,7 +21,7 @@ test("accepted Live survives growth while fresh intake uses the new attachment",
         contract: participants.TransportGrowthTarget.participant,
       });
       const target = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.TransportGrowthTarget.participant,
         seed: targetIdentity.seed,
       }).orThrow();
@@ -46,7 +46,7 @@ test("accepted Live survives growth while fresh intake uses the new attachment",
         idempotencyKey: ulid(),
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();

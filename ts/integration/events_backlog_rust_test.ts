@@ -15,7 +15,7 @@ test("generated Rust durable Events retain publication-time authority after norm
       const child = spawnTracked("setsid", rustFixtureArgv("events"), {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           PUBLIC_BACKLOG: "true",

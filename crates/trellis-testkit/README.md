@@ -43,11 +43,11 @@ Ports are reserved automatically outside Linux's outbound ephemeral range; you
 never select them. The kernel enforces each reservation until startup, and
 outbound bootstrap connections cannot claim its port after release.
 
-The application listener's extra development origins can be configured with
-`TrellisTestRuntime::builder().extra_origin("http://localhost:5174")` (or
-`extra_origins(vec![...])`). This does not register an OAuth client or grant
-authority. OAuth and portal requests use the separate `oauth_origin()`;
-browser clients need ordinary registered callback metadata and user consent.
+`trellis_url()` is the Trellis origin: sign-in, the portal, and where clients
+connect. `console_url()` is the Console's own origin. Browser clients need
+ordinary registered callback metadata and user consent; their redirect origins
+are what Trellis trusts. `nats_websocket_only()` starts a runtime that
+advertises only its NATS WebSocket, as one that keeps native NATS private does.
 
 ## Example
 
@@ -122,7 +122,7 @@ login; `register_client::<P>` preserves the seeded-administrator convenience.
 
 The runtime exposes the isolated administrator credentials it bootstrapped:
 `TrellisTestRuntime::admin_username()` and `admin_password()`. Use them to drive
-a real browser or portal login against `oauth_origin()`. The administrator is
+a real browser or portal login against `trellis_url()`. The administrator is
 already seeded, so this is normal login rather than first-run setup. Both values
 are sandbox-only secrets; never log them or include them in uploaded evidence.
 
@@ -141,8 +141,7 @@ let mut runtime = TrellisTestRuntime::builder()
 # }
 ```
 
-Browser authorization uses registered callback metadata; an `extra_origin`
-entry does not implicitly trust or register an OAuth client.
+Browser authorization uses registered callback metadata.
 
 ## Generated service and application descriptors
 
@@ -169,7 +168,7 @@ descriptor or its package evidence.
 - It does not simulate authorization. `register_client` runs real native OAuth
   and portal consent; denied calls are denied by the real server.
 - Browser application requests are rejected by the native caller helper. Drive
-  their ordinary browser authorization flow against `oauth_origin()` instead.
+  their ordinary browser authorization flow against `trellis_url()` instead.
 - It does not cover device activation or the full administrator surface in this
   release. `Device` participants are rejected by `register_service` /
   `register_client`.

@@ -25,7 +25,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
       contract: participants.Provider.participant,
     });
     let service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -38,7 +38,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
     await prepared.session.close();
     const credentialCustody = new MemoryNativeOAuthCustody();
     const credentials = await loginNativeTestClient({
-      issuer: runtime.oauthIssuer,
+      issuer: runtime.trellisUrl,
       custody: credentialCustody,
       clientId: apps.Caller.request.id,
       request: apps.Caller.request,
@@ -82,7 +82,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
       });
       assert.notEqual(second.keyId, rotated.keyId);
       const freshCredentials = await loginNativeTestClient({
-        issuer: runtime.oauthIssuer,
+        issuer: runtime.trellisUrl,
         clientId: "trellis.cli",
         request: adminParticipant,
         username: runtime.adminUsername,
@@ -107,7 +107,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
       await serviceExit;
       await runtime.restart();
       service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed: identity.seed,
       }).orThrow();

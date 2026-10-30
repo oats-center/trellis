@@ -36,7 +36,7 @@ test("G02/T14 revoking the caller fences a quiet live observation", async () => 
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: "live-authority",
         seed: identity.seed,

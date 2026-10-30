@@ -14,12 +14,8 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
         .iter()
         .map(|listener| format!("http://{}", listener.local_addr().unwrap()))
         .collect();
-    let mut runtime = TrellisTestRuntime::builder()
-        .extra_origins(origins.clone())
-        .start()
-        .await
-        .unwrap();
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let native = NativeOAuthClient::open(
@@ -84,7 +80,7 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
     let mut child = std::process::Command::new("node")
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .arg("ts/browser/state.browser_driver.ts")
-        .env("TRELLIS_TEST_OAUTH_ORIGIN", runtime.oauth_origin())
+        .env("TRELLIS_TEST_OAUTH_ORIGIN", runtime.trellis_url())
         // The browser trusts the installation CA through a private NSS store
         // and Node through its standard extra-CA setting.
         .env("TRELLIS_TEST_CA_CERTIFICATE", &runtime.trust_roots()[0])

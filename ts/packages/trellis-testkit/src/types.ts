@@ -60,19 +60,18 @@ export type TrellisTestRuntimeStartOptions = {
   trellis?: TrellisTestRuntimeTrellisOptions;
   /** Seed via production `trellis-server init admin` by default; browser-flow exercises first-admin UI. */
   firstAdmin?: "seeded" | "browser-flow";
-  /** Additional exact browser origins allowed by the test runtime. */
-  webOrigins?: readonly string[];
   /** Route the advertised browser WebSocket endpoint through a replaceable TCP proxy. */
   rotatableWebsocketProxy?: boolean;
   /**
-   * Serve browser NATS WebSockets on the application origin at `/nats`,
-   * relayed by the runtime, as `trellis-server init` does by default with generated TLS.
+   * Relay NATS WebSockets through the Trellis port, which sends every
+   * WebSocket upgrade to NATS, as `trellis-server init` does by default with
+   * generated TLS.
    */
   sameOriginWebsocket?: boolean;
   /**
-   * Create a development installation (`trellis-server init --dev`): the
-   * Console's port also serves sign-in under `/auth` and browsers' NATS, so
-   * one certificate covers everything a browser reaches.
+   * Create a development installation (`trellis-server init --dev`): one
+   * generated certificate for the Trellis and Console ports, and the Trellis
+   * port relays NATS WebSockets.
    */
   development?: boolean;
   /**

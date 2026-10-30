@@ -279,7 +279,7 @@ test(
       assert(picture.avatarUrl);
       assert.equal(
         new URL(picture.avatarUrl).origin,
-        new URL(runtime.oauthIssuer).origin,
+        new URL(runtime.trellisUrl).origin,
       );
       assert(
         new URL(picture.avatarUrl).pathname.startsWith("/profile/avatars/"),

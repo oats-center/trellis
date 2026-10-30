@@ -28,7 +28,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         .await
         .unwrap();
     let server =
-        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        trellis_rs::auth::discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
     let publisher =
@@ -343,7 +343,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     // administrator, then compare retained broker chronology with a new publish
     // of exactly the same previously signed bytes.
     let server =
-        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        trellis_rs::auth::discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
     let native = trellis_rs::auth::NativeOAuthClient::open(

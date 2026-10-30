@@ -23,7 +23,7 @@ test(
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed: identity.seed,
         name: "owned-object-provider",
@@ -191,7 +191,7 @@ test(
         );
         await assert.rejects(() =>
           loginNativeTestClient({
-            issuer: runtime.oauthIssuer,
+            issuer: runtime.trellisUrl,
             clientId: apps.Caller.request.id,
             request: apps.Caller.request,
             username: bob.username,

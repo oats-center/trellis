@@ -300,7 +300,7 @@ try {
           response.setHeader("content-type", "application/json");
           response.end(
             JSON.stringify({
-              trellisUrl: runtime!.oauthIssuer,
+              trellisUrl: runtime!.trellisUrl,
               credentialHandle: credentialHandles[index],
               clientId: apps.BrowserCaller.request.id,
             }),
@@ -358,7 +358,6 @@ try {
     },
     adminPassword: "benchmark-isolated-password",
     timeouts: { startupMs: 60_000, waitForMs: 30_000 },
-    webOrigins: browserOrigin ? [browserOrigin] : [],
     interruptibleNativeProxy: lane === "lifecycle",
     // Ordinary production policy, with a shorter signed window to observe renewal.
     authorization:
@@ -434,7 +433,7 @@ try {
     arrivalRate,
     maxOutstanding,
     output,
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     username: runtime.adminUsername,
     password: runtime.adminPassword,
     serviceSeed: serviceKey.seed,

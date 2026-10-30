@@ -45,7 +45,7 @@ test(
         expectedRevision: 0n,
         idempotencyKey: ulid(),
       });
-      const server = (await discoverNativeOAuth(runtime.oauthIssuer)).orThrow();
+      const server = (await discoverNativeOAuth(runtime.trellisUrl)).orThrow();
       const custody = (
         await NativeOAuthClient.open({
           scope: {

@@ -15,7 +15,7 @@ and Live helpers. One process runs exactly one build.
 
 ## Selected installation and public verification metadata
 
-The caller selects an installation's HTTPS OAuth origin. Explicit loopback
+The caller selects an installation's HTTPS Trellis origin. Explicit loopback
 development is the only plaintext exception. Credential-free browser GETs can
 read discovery and the issuer chain before the application is registered or its
 CIMD document has been fetched. Public metadata does not grant application or
@@ -41,7 +41,7 @@ themselves with HTTPS CIMD documents; Auth validates their retrieval and metadat
 without requiring administrator registration. Registered Console eligibility is
 distinct from arbitrary applications sharing a loopback origin.
 
-The dedicated OAuth origin owns login cookies, local/OIDC authentication, and
+The Trellis origin, where no application runs, owns login cookies, local/OIDC authentication, and
 consent. An existing valid login can authenticate a new consent decision without
 another password or provider login. Consent does not create missing account
 entitlement, extend a login, or widen a retained grant. Revised capability meaning

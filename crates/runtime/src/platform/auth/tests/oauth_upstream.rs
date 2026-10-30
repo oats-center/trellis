@@ -1,5 +1,5 @@
 //! Live upstream interoperability with the unmodified production Dex binary.
-use super::super::oauth::{OAuthEngine, OAuthListener, OAuthStorage, OAuthTransport};
+use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport, OriginListener};
 use super::*;
 use axum::response::IntoResponse as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -444,7 +444,7 @@ staticPasswords:
     )
     .unwrap();
     let engine = Arc::new(OAuthEngine::new(storage).unwrap());
-    let listener = OAuthListener::load(
+    let listener = OriginListener::load(
         portal_socket,
         &origin,
         &OAuthTransport::Tls {

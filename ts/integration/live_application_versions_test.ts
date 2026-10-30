@@ -35,7 +35,7 @@ test(
         contract: participants.LiveV2Provider.participant,
       });
       const provider = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.LiveV2Provider.participant,
         seed: identity.seed,
       }).orThrow();
@@ -70,7 +70,7 @@ test(
         contract: v1Participants.LiveV1Provider.participant,
       });
       const first = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: v1Participants.LiveV1Provider.participant,
         seed: firstIdentity.seed,
       }).orThrow();
@@ -96,7 +96,7 @@ test(
       const second = spawnTracked(providerArgv[0], providerArgv.slice(1), {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: secondIdentity.seed,
         },
@@ -240,7 +240,7 @@ test(
       const native = spawnTracked(callerArgv[0], callerArgv.slice(1), {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_NATIVE_CLIENT_ID: v1Apps.LiveV1Caller.request.id,
           XDG_CONFIG_HOME: join(runtime.workdir, "live-version-caller"),

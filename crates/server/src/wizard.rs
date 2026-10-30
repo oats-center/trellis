@@ -59,18 +59,13 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
     }
     let development = place == DEVELOPMENT;
 
-    // Development mode carries sign-in on the Console's port.
-    let all_ports = [
-        ("--trellis-port", "Console port", 3000),
-        ("--oauth-port", "Sign-in port", 3001),
+    let asked = [
+        ("--trellis-port", "Trellis port (sign-in and clients)", 3000),
+        ("--console-port", "Console port", 3001),
         ("--nats-port", "NATS port for services", 4222),
         ("--nats-monitor-port", "NATS monitoring port", 8222),
         ("--nats-ws-port", "NATS WebSocket port", 8080),
     ];
-    let asked: Vec<_> = all_ports
-        .into_iter()
-        .filter(|(flag, _, _)| !(development && *flag == "--oauth-port"))
-        .collect();
     let defaults: Vec<String> = asked.iter().map(|(_, _, port)| port.to_string()).collect();
     let mut ports = std::collections::HashMap::new();
     if Confirm::new(&format!("Use the default ports ({})?", defaults.join(", ")))
@@ -106,15 +101,18 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
         args.extend(["--dev".into(), "--host".into(), host]);
         return Ok(args);
     }
-    let (console_port, oauth_port, nats_port) = (
+    let (trellis_port, console_port, nats_port) = (
         ports["--trellis-port"],
-        ports["--oauth-port"],
+        ports["--console-port"],
         ports["--nats-port"],
     );
-    let console = url_prompt("Console address", &format!("https://{host}:{console_port}"))?;
-    let oauth = url_prompt(
-        "Sign-in address (its own origin, ideally its own hostname)",
-        &format!("https://{host}:{oauth_port}"),
+    let trellis = url_prompt(
+        "Trellis address (sign-in, and where clients connect)",
+        &format!("https://{host}:{trellis_port}"),
+    )?;
+    let console = url_prompt(
+        "Console address (its own origin, ideally its own hostname)",
+        &format!("https://{host}:{console_port}"),
     )?;
     let nats_default = if external_nats {
         format!("tls://{host}:4222")
@@ -123,10 +121,10 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
     };
     let nats = url_prompt("NATS address services connect to", &nats_default)?;
     args.extend([
-        "--public-origin".into(),
+        "--trellis-origin".into(),
+        trellis,
+        "--console-origin".into(),
         console,
-        "--oauth-origin".into(),
-        oauth,
         "--nats-server-url".into(),
         nats,
     ]);
@@ -143,9 +141,9 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
         for (flag, label) in [
             (
                 "--tls-certificate-chain",
-                "Console and sign-in certificate chain",
+                "Trellis and Console certificate chain",
             ),
-            ("--tls-private-key", "Console and sign-in private key"),
+            ("--tls-private-key", "Trellis and Console private key"),
         ] {
             args.extend([flag.into(), path_prompt(label)?]);
         }

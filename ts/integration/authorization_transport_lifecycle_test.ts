@@ -54,7 +54,7 @@ test("a non-renewing native attachment cannot outlive its required capability gr
           idempotencyKey: ulid(),
         });
       const login = await loginNativeTestClient({
-        issuer: runtime.oauthIssuer,
+        issuer: runtime.trellisUrl,
         clientId,
         request: adminParticipant,
         username,
@@ -109,7 +109,7 @@ test("recovered service attachments remain subject to server enforcement after r
       contract,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: contract,
       seed: identity.seed,
     }).orThrow();

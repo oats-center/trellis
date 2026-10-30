@@ -55,8 +55,8 @@ pub enum BootstrapError {
         /// Shared port.
         port: u16,
     },
-    /// A generated NATS listener collided with the locally hosted Trellis HTTP port.
-    #[error("generated NATS {listener} listener port {port} collides with the Trellis HTTP port")]
+    /// A generated listener collided with the Trellis or Console port.
+    #[error("the {listener} listener port {port} collides with the Trellis or Console port")]
     TrellisListenerPortCollision {
         /// Listener label.
         listener: &'static str,

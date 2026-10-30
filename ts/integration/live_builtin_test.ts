@@ -48,7 +48,7 @@ test("Jobs.Watch emits live queryInvalidated after job create", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "jobs-watch-provider",
       seed: key.seed,
@@ -101,7 +101,7 @@ test("Events.Watch emits live frames after publishChanged", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "events-watch-provider",
       seed: key.seed,

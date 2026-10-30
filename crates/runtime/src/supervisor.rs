@@ -814,6 +814,18 @@ async fn supervise_owned(
     ownership: &mut RuntimeOwnership,
     stop: Option<crate::shutdown::StopHandle>,
 ) -> Result<(), RuntimeError> {
+    // Register the OS shutdown signal before any listener becomes observable;
+    // the platform subsystem binds the Console's. A host can connect to a
+    // bound port immediately, so a SIGTERM delivered during startup must
+    // already be observed cooperatively instead of terminating the process
+    // with its runtime lease held.
+    let shutdown = shutdown_or_stop(stop);
+    tokio::pin!(shutdown);
+    std::future::poll_fn(|cx| {
+        let _ = std::future::Future::poll(shutdown.as_mut(), cx);
+        std::task::Poll::Ready(())
+    })
+    .await;
     let mut handles = start_subsystems(context).await?;
     let root_stop = StopHandle::new();
     // Only components selected by the runtime mode report ready; others are
@@ -835,22 +847,18 @@ async fn supervise_owned(
     let server_stop = root_stop.clone();
     let mut http_router = context.take_http_router()?;
     if let Some(upstream) = context.config.nats_websocket_upstream() {
-        http_router = http_router.merge(crate::nats_websocket::router(upstream.to_owned()));
+        // An upgrade may name any path, including ones no route serves, so
+        // the rule also wraps the fallback.
+        http_router = http_router
+            .fallback(|| std::future::ready(axum::http::StatusCode::NOT_FOUND))
+            .layer(axum::middleware::from_fn_with_state(
+                upstream.to_owned(),
+                crate::nats_websocket::relay,
+            ));
     }
     // Readiness stays false until built-in live providers have finished their
     // bootstrap, so callers never begin work against half-started routes.
     let http_ready = std::sync::Arc::clone(&context.http_ready);
-    // Register the OS shutdown signal before the HTTP listener becomes
-    // observable. A host can connect to the bound port immediately, so a
-    // SIGTERM delivered during startup must already be observed cooperatively
-    // instead of terminating the process with its runtime lease held.
-    let shutdown = shutdown_or_stop(stop);
-    tokio::pin!(shutdown);
-    std::future::poll_fn(|cx| {
-        let _ = std::future::Future::poll(shutdown.as_mut(), cx);
-        std::task::Poll::Ready(())
-    })
-    .await;
     let listener = match crate::bind_http_listener(&context.config).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -880,6 +888,7 @@ async fn supervise_owned(
         listener,
         &origin,
         &transport,
+        context.config.http_trusted_proxies(),
         context.mode,
         http_router,
         std::sync::Arc::clone(&http_ready),
@@ -1005,18 +1014,8 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
             crate::platform::auth::blocking(move || store.runtime_authorization_trust()).await?
         }
         None => {
-            let origin = context
-                .config
-                .auth
-                .as_ref()
-                .and_then(|auth| auth.oauth.as_ref())
-                .map(|oauth| oauth.origin.as_str())
-                .ok_or_else(|| {
-                    RuntimeError::Platform(
-                        "the selected Auth origin is required for split roles".into(),
-                    )
-                })?;
-            trellis_rs::auth::discover_native_oauth(origin, &root_certificates)
+            let origin = context.config.public_origin();
+            trellis_rs::auth::discover_native_oauth(&origin, &root_certificates)
                 .await
                 .map_err(|error| {
                     RuntimeError::Platform(format!("discover configured Auth origin: {error}"))

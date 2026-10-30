@@ -35,7 +35,7 @@ async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-    for (origin, route) in [(runtime.trellis_url(), "/console")] {
+    for (origin, route) in [(runtime.console_url(), "/console")] {
         let response = http
             .get(format!("{origin}{route}"))
             .send()
@@ -332,7 +332,7 @@ async fn ephemeral_events_authenticate_before_yielding_typed_payloads() {
         .await
         .unwrap();
     let server =
-        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        trellis_rs::auth::discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
     let provider =
@@ -437,7 +437,7 @@ async fn ephemeral_events_authenticate_before_yielding_typed_payloads() {
         .await
         .unwrap();
     let foreign_server = trellis_rs::auth::discover_native_oauth(
-        foreign_runtime.oauth_origin(),
+        foreign_runtime.trellis_url(),
         &foreign_runtime.trust_roots(),
     )
     .await
@@ -1874,7 +1874,7 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
     // execution tasks too, rather than leaving a survivor in the caller runtime.
     let first_provider = {
         let server =
-            trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            trellis_rs::auth::discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
                 .await
                 .expect("selected installation trust");
         let seed = identity.seed().to_owned();

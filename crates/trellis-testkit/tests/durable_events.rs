@@ -25,7 +25,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             .register_service::<runtime_trellis_event_service::Participant>("durable events")
             .await
             .unwrap();
-        let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
         let native = NativeOAuthClient::open(
@@ -92,7 +92,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
         let native = NativeOAuthClient::open(
             runtime.workdir().join("events-driver"),
             NativeCredentialScope {
-                issuer: runtime.oauth_origin().into(),
+                issuer: runtime.trellis_url().into(),
                 instance_id: server.trust.instance_id.clone(),
                 account: server.trust.account.clone(),
                 client_id: "trellis.cli".into(),
@@ -142,7 +142,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             )
             .await
             .unwrap();
-        let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
         let plain = runtime_trellis_echo_provider::Participant::connect(
@@ -182,7 +182,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             command.args([
                 "--experimental-transform-types",
                 "integration/fixtures/runtime/events.ts",
-                runtime.oauth_origin(),
+                runtime.trellis_url(),
                 identity.seed(),
             ]);
             command
@@ -194,7 +194,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
         };
         command
             .current_dir(&root)
-            .env("TRELLIS_URL", runtime.oauth_origin())
+            .env("TRELLIS_URL", runtime.trellis_url())
             // Each SDK trusts the installation CA through its ordinary
             // configuration, never through system trust.
             .env("TRELLIS_CA_CERTIFICATE", &runtime.trust_roots()[0])
@@ -288,7 +288,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 )
                 .await
                 .unwrap();
-            let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
                 .await
                 .unwrap();
             let other = runtime_trellis_event_service::Participant::connect(
@@ -596,7 +596,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 .args([
                     "--experimental-transform-types",
                     "integration/fixtures/runtime/events.ts",
-                    runtime.oauth_origin(),
+                    runtime.trellis_url(),
                     identity.seed(),
                 ])
                 .current_dir(&root)
@@ -739,7 +739,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 )
                 .await
                 .unwrap();
-                let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+                let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
                     .await
                     .unwrap();
                 // This instance runs the revision without the Consumer. Its
@@ -837,7 +837,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                     !denied.to_string().contains("not found"),
                     "old pre-Apply authority must not gain access: {denied}"
                 );
-                let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+                let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
                     .await
                     .unwrap();
                 let renewed = P::connect(trellis_rs::service::ServiceConnectOptions::new(
@@ -884,7 +884,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 )
                 .await
                 .unwrap();
-                let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+                let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
                     .await
                     .unwrap();
                 let omitted = pinned(omitted_seed.clone(), server).await;

@@ -26,7 +26,7 @@ test(
         contract,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         name: "lifecycle-provider",
         seed: instance.seed,

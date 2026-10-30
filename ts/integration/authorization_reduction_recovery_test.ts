@@ -21,7 +21,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
         contract: participants.TransportGrowthTarget.participant,
       });
       const target = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.TransportGrowthTarget.participant,
         seed: targetIdentity.seed,
       }).orThrow();
@@ -52,7 +52,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
           idempotencyKey: ulid(),
         });
         const service = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: contract,
           seed: identity.seed,
         }).orThrow();

@@ -23,7 +23,7 @@ test("Console sign-in recovery returns to the protected page it left", async () 
       // Auth recovery sends the Console here; with no session left, sign-in
       // leaves for the authorization server and comes back to bare /login.
       await page.goto(
-        `${runtime.trellisUrl}/login?redirectTo=${encodeURIComponent("/console/admin/users?search=admin")}`,
+        `${runtime.consoleUrl}/login?redirectTo=${encodeURIComponent("/console/admin/users?search=admin")}`,
         { waitUntil: "domcontentloaded" },
       );
       await completeConsoleEntry(page, {
@@ -42,7 +42,7 @@ test("Console sign-in recovery returns to the protected page it left", async () 
   }, browserRuntimeOptions());
 });
 
-test("Console reaches NATS on its own origin when the runtime relays WebSockets", async () => {
+test("Console reaches NATS on the Trellis origin when the runtime relays WebSockets", async () => {
   await withTrellisRuntime(
     async (runtime) => {
       const context = await launchProfile(runtime);
@@ -51,17 +51,16 @@ test("Console reaches NATS on its own origin when the runtime relays WebSockets"
         const sockets: URL[] = [];
         page.on("websocket", (socket) => sockets.push(new URL(socket.url())));
         await openConsoleAsRuntimeAdmin(page, runtime);
-        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/users`, {
           waitUntil: "domcontentloaded",
         });
         // Listed users arrive over an authenticated NATS RPC.
         await page.locator(".users-row").first().waitFor({ state: "visible" });
         assert(sockets.length > 0, "the Console opened a broker WebSocket");
-        const console = new URL(runtime.trellisUrl);
+        const trellis = new URL(runtime.trellisUrl);
         for (const socket of sockets) {
           assert.equal(socket.protocol, "wss:");
-          assert.equal(socket.host, console.host);
-          assert.equal(socket.pathname, "/nats");
+          assert.equal(socket.host, trellis.host);
         }
       } finally {
         await context.close();
@@ -71,22 +70,22 @@ test("Console reaches NATS on its own origin when the runtime relays WebSockets"
   );
 });
 
-test("a development installation signs the Console in through /auth on its one port", async () => {
+test("a development installation signs the Console in and reaches NATS on the Trellis port", async () => {
   await withTrellisRuntime(
     async (runtime) => {
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const console = new URL(runtime.trellisUrl);
+        const trellis = new URL(runtime.trellisUrl);
         const signIn: URL[] = [];
         page.on("framenavigated", (frame) => {
           const url = new URL(frame.url());
-          if (url.pathname.startsWith("/auth/")) signIn.push(url);
+          if (url.host === trellis.host) signIn.push(url);
         });
         const sockets: URL[] = [];
         page.on("websocket", (socket) => sockets.push(new URL(socket.url())));
         await openConsoleAsRuntimeAdmin(page, runtime);
-        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/users`, {
           waitUntil: "domcontentloaded",
         });
         // Listed users arrive over an authenticated NATS RPC.
@@ -97,9 +96,9 @@ test("a development installation signs the Console in through /auth on its one p
           .filter({ hasText: "using self-generated certificates" })
           .first()
           .waitFor({ state: "visible", timeout: 15_000 });
-        assert(signIn.length > 0, "sign-in ran under /auth");
-        for (const url of [...signIn, ...sockets])
-          assert.equal(url.host, console.host, url.href);
+        assert(signIn.length > 0, "sign-in ran on the Trellis origin");
+        for (const url of sockets)
+          assert.equal(url.host, trellis.host, url.href);
         assert(sockets.length > 0, "the Console opened a broker WebSocket");
       } finally {
         await context.close();
@@ -139,7 +138,7 @@ test("browser carrier interruption resumes a fresh authenticated RPC without rel
           tokenExchanges++;
       });
       await openConsoleAsRuntimeAdmin(page, runtime);
-      await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/users`, {
         waitUntil: "domcontentloaded",
       });
       await page.getByLabel("Search users").waitFor({ state: "visible" });
@@ -228,7 +227,7 @@ test("browser admin bootstrap reaches the authorized console and survives reload
           waitUntil: "domcontentloaded",
         });
         await completeAdminBootstrapInBrowser(page, runtime, BROWSER_ADMIN);
-        await page.waitForURL((url) => url.origin === runtime.oauthIssuer);
+        await page.waitForURL((url) => url.origin === runtime.trellisUrl);
         await completeConsoleEntry(page, BROWSER_ADMIN);
         await waitForConsoleReady(page);
 
@@ -236,7 +235,7 @@ test("browser admin bootstrap reaches the authorized console and survives reload
         await waitForConsoleReady(page);
         if (captureEndpoint) {
           const traceExportsBeforeEvents = traceExports;
-          await page.goto(`${runtime.trellisUrl}/console/admin/events`, {
+          await page.goto(`${runtime.consoleUrl}/console/admin/events`, {
             waitUntil: "domcontentloaded",
           });
           await page.getByText(/^Updated /).waitFor({
@@ -269,7 +268,7 @@ test("an OAuth authorization page survives reload and completes the initiating C
       const pageErrors: string[] = [];
       page.on("pageerror", (error) => pageErrors.push(String(error)));
 
-      await page.goto(`${runtime.trellisUrl}/console`, {
+      await page.goto(`${runtime.consoleUrl}/console`, {
         waitUntil: "domcontentloaded",
       });
       await page

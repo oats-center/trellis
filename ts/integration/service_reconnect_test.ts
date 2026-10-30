@@ -16,7 +16,7 @@ test("a provisioned Node service recovers after losing every native attachment",
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed: identity.seed,
       }).orThrow();

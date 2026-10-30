@@ -83,7 +83,8 @@ struct HttpState {
 /// Serves `application_router` plus the readiness endpoints on a bound listener.
 ///
 /// `transport` selects TLS, trusted-proxy plaintext, or loopback development;
-/// a TLS certificate must name `origin`'s host.
+/// a TLS certificate must name `origin`'s host. `trusted_proxies` may front a
+/// TLS listener and name the client in `X-Forwarded-For`.
 /// `/healthz` always answers process metadata. `/readyz` answers `503` until
 /// the supervisor marks startup complete and `200` afterwards, so a caller
 /// never begins work against a runtime whose routes and built-in live
@@ -93,10 +94,12 @@ struct HttpState {
 ///
 /// Returns [`ServerError::Transport`] when TLS material cannot be loaded and
 /// [`ServerError::Serve`] when the HTTP server exits with an error.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_http_listener(
     listener: tokio::net::TcpListener,
     origin: &url::Url,
     transport: &ListenerTransport,
+    trusted_proxies: &[ipnet::IpNet],
     mode: RuntimeMode,
     application_router: Router,
     ready: Arc<AtomicBool>,
@@ -104,7 +107,8 @@ pub async fn serve_http_listener(
 ) -> Result<(), ServerError> {
     let listener = crate::listener::LoadedListener::load(listener, origin, transport)
         .await
-        .map_err(ServerError::Transport)?;
+        .map_err(ServerError::Transport)?
+        .forwarded_by(trusted_proxies);
     let router = health_router(mode, ready).merge(application_router);
 
     listener
@@ -144,6 +148,7 @@ pub async fn run_http_server(
         listener,
         &origin,
         config.http_transport(),
+        config.http_trusted_proxies(),
         mode,
         application_router,
         ready,

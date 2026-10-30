@@ -36,7 +36,7 @@ test("retained Jobs refs get, wait and cancel after broker-confirmed original so
         idempotencyKey: ulid(),
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: instance.seed,
       }).orThrow();

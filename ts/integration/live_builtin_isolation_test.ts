@@ -44,7 +44,7 @@ async function connectProvider(runtime: Runtime, name: string) {
     contract: participants.Provider.participant,
   });
   return await TrellisService.connect({
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     participant: participants.Provider.participant,
     name,
     seed: identity.seed,

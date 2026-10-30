@@ -22,7 +22,7 @@ test("identical deployment apply retains keyed Jobs and durable Events evidence"
       contract,
     });
     let service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: contract,
       seed: identity.seed,
     }).orThrow();
@@ -130,7 +130,7 @@ test("identical deployment apply retains keyed Jobs and durable Events evidence"
       await service.stop();
       await exit;
       service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();

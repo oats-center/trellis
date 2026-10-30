@@ -22,7 +22,7 @@ test("concurrent admission preserves cancellation, frozen input and creator", as
     const services = await Promise.all(
       [identity, replica].map((instance) =>
         TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           name: "atomic-admission",
           seed: instance.seed,
@@ -39,7 +39,7 @@ test("concurrent admission preserves cancellation, frozen input and creator", as
       contract: participants.OperationCaller.participant,
     });
     const foreign = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.OperationCaller.participant,
       name: "atomic-admission-foreign-caller",
       seed: foreignIdentity.seed,

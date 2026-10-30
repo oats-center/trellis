@@ -323,7 +323,6 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
             instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             account: account_key().into(),
             oauth_issuer: "https://auth.example".into(),
-            development: false,
             console_origin: "https://trellis.example".into(),
             authority_lifetime_seconds: 60,
             clock_skew_seconds: 5,
@@ -499,8 +498,8 @@ pub(super) fn fixture() -> Fixture {
         kind: "native".into(),
         display_name: "Native client".into(),
         redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
-        development: false,
         implied_capabilities: vec![],
+        development: false,
         metadata: serde_json::json!({}),
         expected_revision: 0,
     };

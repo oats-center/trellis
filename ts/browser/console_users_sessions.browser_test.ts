@@ -38,7 +38,7 @@ test("an empty later page of users still offers the previous page", async () => 
     try {
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
-      await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/users`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -91,7 +91,7 @@ test("a late reply to an earlier user search does not replace newer results", as
       const wired = await wireNatsGate(page);
       try {
         await openConsoleAsRuntimeAdmin(page, runtime);
-        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/users`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
@@ -171,7 +171,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
       const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
-      await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/users`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -181,7 +181,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
       });
 
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${userId}`,
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -257,7 +257,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
         .getByRole("button", { name: "Remove", exact: true })
         .waitFor();
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${userId}`,
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
         {
           waitUntil: "domcontentloaded",
         },
@@ -278,7 +278,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
         "Console B25",
       );
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${other.user.principalId}`,
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${other.user.principalId}`,
         {
           waitUntil: "domcontentloaded",
         },
@@ -320,7 +320,7 @@ test("B27 a disabled user stays disabled after a metadata edit", async () => {
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${userId}`,
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -383,7 +383,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
       const page = await context.newPage();
       const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
-      await page.goto(`${runtime.trellisUrl}/console/admin/users/new`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/users/new`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -447,7 +447,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
           firstUrl,
         false,
       );
-      await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/users`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -475,7 +475,7 @@ test("a password reset receipt clears its token when closed", async () => {
     try {
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
-      await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/users`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -521,7 +521,7 @@ test("N09 a stale user edit cannot overwrite a concurrent update and can be resu
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
         {
           waitUntil: "domcontentloaded",
         },
@@ -533,7 +533,7 @@ test("N09 a stale user edit cannot overwrite a concurrent update and can be resu
 
       const secondPage = await context.newPage();
       await secondPage.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(secondPage);
@@ -639,7 +639,7 @@ test("B30 session and connection URLs use canonical IDs with no first-row fallba
 
       // A missing session target must render unavailable, not select row one.
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/revoke?authorizationSessionId=${ulid()}`,
+        `${runtime.consoleUrl}/console/admin/sessions/revoke?authorizationSessionId=${ulid()}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -655,7 +655,7 @@ test("B30 session and connection URLs use canonical IDs with no first-row fallba
 
       // A missing connection target behaves the same way.
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/kick?attachmentId=${ulid()}`,
+        `${runtime.consoleUrl}/console/admin/sessions/kick?attachmentId=${ulid()}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
@@ -681,7 +681,7 @@ test("N03 query-only client navigation clears session and connection targets", a
       const page = await context.newPage();
       const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
-      await page.goto(`${runtime.trellisUrl}/console/admin/sessions/revoke`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/sessions/revoke`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -704,7 +704,7 @@ test("N03 query-only client navigation clears session and connection targets", a
           document.body.append(anchor);
           anchor.click();
           anchor.remove();
-        }, `${runtime.trellisUrl}/console${path}`);
+        }, `${runtime.consoleUrl}/console${path}`);
       };
       await navigate(
         `/admin/sessions/revoke?authorizationSessionId=${encodeURIComponent(sessionId)}`,
@@ -836,7 +836,7 @@ test("N03 switching targets during A confirmation revokes only B", async () => {
       assert.deepEqual(sessionA === sessionB, false);
 
       await pageA.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/revoke?authorizationSessionId=${sessionA}`,
+        `${runtime.consoleUrl}/console/admin/sessions/revoke?authorizationSessionId=${sessionA}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(pageA);
@@ -859,7 +859,7 @@ test("N03 switching targets during A confirmation revokes only B", async () => {
         document.body.append(anchor);
         anchor.click();
         anchor.remove();
-      }, `${runtime.trellisUrl}/console/admin/sessions/revoke?authorizationSessionId=${sessionB}`);
+      }, `${runtime.consoleUrl}/console/admin/sessions/revoke?authorizationSessionId=${sessionB}`);
       await runtime.waitFor(
         async () =>
           (await pageA.getByLabel("Session", { exact: true }).inputValue()) ===
@@ -915,7 +915,7 @@ test("B31 cancelling a revoke confirmation keeps its session active", async () =
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
 
-      await page.goto(`${runtime.trellisUrl}/console/admin/sessions/revoke`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin/sessions/revoke`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -1005,7 +1005,7 @@ test("B33 kicking a connection leaves the session valid", async () => {
       assert.ok(connectionB);
 
       await pageA.goto(
-        `${runtime.trellisUrl}/console/admin/sessions/kick?attachmentId=${connectionB}`,
+        `${runtime.consoleUrl}/console/admin/sessions/kick?attachmentId=${connectionB}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(pageA);
@@ -1036,7 +1036,7 @@ test("B33 kicking a connection leaves the session valid", async () => {
         },
         { timeoutMs: 30_000 },
       );
-      await pageA.goto(`${runtime.trellisUrl}/console/admin/sessions/revoke`, {
+      await pageA.goto(`${runtime.consoleUrl}/console/admin/sessions/revoke`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(pageA);

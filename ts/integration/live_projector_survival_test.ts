@@ -35,7 +35,7 @@ async function connectProvider(runtime: Runtime, name: string) {
     contract: participants.Provider.participant,
   });
   return await TrellisService.connect({
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     participant: participants.Provider.participant,
     name,
     seed: identity.seed,
@@ -164,7 +164,7 @@ test("BI06 closing a public observer leaves built-in Jobs and Events projectors 
       );
 
       // The runtime stayed healthy through ordinary use.
-      const ready = await fetch(`${runtime.trellisUrl}/readyz`);
+      const ready = await fetch(`${runtime.consoleUrl}/readyz`);
       assert(
         ready.ok,
         `/readyz must stay healthy after observer close: ${ready.status}`,

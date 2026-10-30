@@ -30,7 +30,7 @@ test("device enrollment and independent companion consent survive restart withou
       contract: participants.ChildProvider.participant,
     });
     const provider = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.ChildProvider.participant,
       seed: providerIdentity.seed,
     }).orThrow();
@@ -55,13 +55,13 @@ test("device enrollment and independent companion consent survive restart withou
     assert(provisioned.provisioningSecret);
     const rootSecret = crypto.getRandomValues(new Uint8Array(32));
     const activationOptions = {
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant,
       rootSecret,
       provisioningSecret: provisioned.provisioningSecret,
       statePath: join(runtime.workdir, "activation.json"),
     };
-    const server = (await discoverNativeOAuth(runtime.oauthIssuer)).orThrow();
+    const server = (await discoverNativeOAuth(runtime.trellisUrl)).orThrow();
     const identity = await deriveDeviceIdentity(rootSecret);
     const connectOptions = {
       servers: [...server.natsServers],
@@ -122,7 +122,7 @@ test("device enrollment and independent companion consent survive restart withou
       await prepared.session.close();
       const credentialCustody = new MemoryNativeOAuthCustody();
       const login = await loginNativeTestClient({
-        issuer: runtime.oauthIssuer,
+        issuer: runtime.trellisUrl,
         custody: credentialCustody,
         clientId: `trellis.device.${deployment.deploymentId}.companion`,
         request,

@@ -17,7 +17,7 @@ test("orders caller invokes the real service", async () => {
     const service = await TrellisService.connect({
       participant: participants.OrdersService.participant,
       name: "orders-service",
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       seed: identity.seed,
     }).orThrow();
     let exit: Promise<unknown> | undefined;

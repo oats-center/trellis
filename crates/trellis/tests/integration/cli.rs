@@ -292,7 +292,7 @@ async fn cli_server_managed_nats() {
             "generated",
             "--out",
             bundle.to_str().expect("UTF-8 bundle path"),
-            "--trellis-port",
+            "--console-port",
             &runtime_port.to_string(),
             "--nats-port",
             &nats_port.to_string(),
@@ -304,9 +304,9 @@ async fn cli_server_managed_nats() {
             BOGUS_NATS_URL,
             "--nats-websocket-url",
             BOGUS_WS_URL,
-            "--oauth-origin",
+            "--trellis-origin",
             &format!("https://127.0.0.1:{oauth_port}"),
-            "--oauth-port",
+            "--trellis-port",
             &oauth_port.to_string(),
         ])
         .output()
@@ -579,8 +579,10 @@ async fn cli_server_managed_nats() {
             "generated",
             "--out",
             broken_bundle.to_str().expect("UTF-8 broken bundle path"),
-            "--trellis-port",
+            "--console-port",
             &runtime_port.to_string(),
+            "--trellis-port",
+            &oauth_port.to_string(),
             "--nats-port",
             &nats_port.to_string(),
             "--nats-monitor-port",
@@ -954,7 +956,7 @@ fn first_start_creates_the_default_installation_only_when_asked() {
 }
 
 #[test]
-fn server_rejects_reserved_oauth_origins_before_starting_listeners() {
+fn server_rejects_a_console_on_the_trellis_origin_before_starting_listeners() {
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("reserved-origin");
     let initialized = server_command(&workdir.0)
@@ -969,35 +971,31 @@ fn server_rejects_reserved_oauth_origins_before_starting_listeners() {
     );
     let path = bundle.join("config.toml");
     let original = fs::read_to_string(&path).unwrap();
-    // Equal public origins are observable even when listener ports differ,
-    // including an application allowlist entry behind a reverse proxy.
-    for configured in [
+    // Sign-in's origin is reserved: the Console, an app like any other,
+    // can't share it even on another port.
+    fs::write(
+        &path,
         original.replace(
-            "public_origin = \"https://localhost:3000\"",
-            "public_origin = \"https://localhost:3001\"",
+            "origin = \"https://localhost:3001\"",
+            "origin = \"https://localhost:3000\"",
         ),
-        original.replace(
-            "origins = [\"https://localhost:3000\"]",
-            "origins = [\"https://localhost:3000\", \"https://localhost:3001\"]",
-        ),
-    ] {
-        fs::write(&path, configured).unwrap();
-        let output = server_command(&workdir.0)
-            .args(["all", "--config"])
-            .arg(&path)
-            .output()
-            .expect("run ordinary production startup");
-        assert!(
-            !output.status.success(),
-            "reserved OAuth origin started successfully"
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr)
-                .contains("differ from every configured application origin"),
-            "startup did not report the reserved-origin error: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    )
+    .unwrap();
+    let output = server_command(&workdir.0)
+        .args(["all", "--config"])
+        .arg(&path)
+        .output()
+        .expect("run ordinary production startup");
+    assert!(
+        !output.status.success(),
+        "a Console on the Trellis origin started successfully"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("invalid runtime config section [console]: origin must differ"),
+        "startup did not report the reserved-origin error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[tokio::test]
@@ -1015,7 +1013,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         .arg(&bundle)
         .arg("--external-nats")
         .args([
-            "--trellis-port",
+            "--console-port",
             &http.to_string(),
             "--nats-port",
             &nats.to_string(),
@@ -1023,11 +1021,11 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
             &monitor.to_string(),
             "--nats-ws-port",
             &websocket.to_string(),
-            "--oauth-port",
+            "--trellis-port",
             &oauth.to_string(),
-            "--public-origin",
+            "--console-origin",
             &format!("https://127.0.0.1:{http}"),
-            "--oauth-origin",
+            "--trellis-origin",
             &format!("https://localhost:{oauth}"),
             "--nats-server-url",
             &format!("tls://127.0.0.1:{nats}"),

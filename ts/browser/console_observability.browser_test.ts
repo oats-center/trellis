@@ -42,7 +42,7 @@ async function seedProvider(runtime: TrellisTestRuntime, label: string) {
     acknowledgeSharedApis: true,
   });
   const service = await TrellisService.connect({
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     participant: participants.Provider.participant,
     name: displayName,
     seed: key.seed,
@@ -106,7 +106,7 @@ test("B37 Jobs renders a real primary result and type summary", async () => {
         await openConsoleAsRuntimeAdmin(page, runtime);
         await assertNoBrowserErrors(errors);
 
-        await page.goto(`${runtime.trellisUrl}/console/admin/jobs`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/jobs`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
@@ -178,7 +178,7 @@ test("B38 job state summary excludes the focused state filter", async () => {
       try {
         const page = await context.newPage();
         await openConsoleAsRuntimeAdmin(page, runtime);
-        await page.goto(`${runtime.trellisUrl}/console/admin/jobs`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/jobs`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
@@ -216,7 +216,7 @@ test("B41 Events renders its primary query table", async () => {
         const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
         await assertNoBrowserErrors(errors);
-        await page.goto(`${runtime.trellisUrl}/console/admin/events`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/events`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
@@ -266,7 +266,7 @@ test("N13 Events refreshes a verified provider event during continuous publicati
         const page = await context.newPage();
         await openConsoleAsRuntimeAdmin(page, runtime);
         await page.goto(
-          `${runtime.trellisUrl}/console/admin/events?focus=all`,
+          `${runtime.consoleUrl}/console/admin/events?focus=all`,
           {
             waitUntil: "domcontentloaded",
           },
@@ -348,7 +348,7 @@ test("B44 Health renders its real participant query", async () => {
         const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
         await assertNoBrowserErrors(errors);
-        await page.goto(`${runtime.trellisUrl}/console/admin/health-events`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/health-events`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
@@ -385,7 +385,7 @@ test("B45 a completed job appears during continuous updates", async () => {
       try {
         const page = await context.newPage();
         await openConsoleAsRuntimeAdmin(page, runtime);
-        await page.goto(`${runtime.trellisUrl}/console/admin/jobs`, {
+        await page.goto(`${runtime.consoleUrl}/console/admin/jobs`, {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
@@ -503,7 +503,7 @@ test("B47 overview refresh shows a service that connected after the first load",
       const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
       await assertNoBrowserErrors(errors);
-      await page.goto(`${runtime.trellisUrl}/console/admin`, {
+      await page.goto(`${runtime.consoleUrl}/console/admin`, {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
@@ -555,7 +555,7 @@ test("Z10 Events visibility recovery refreshes a retained notification", async (
         const page = await context.newPage();
         await openConsoleAsRuntimeAdmin(page, runtime);
         await page.goto(
-          `${runtime.trellisUrl}/console/admin/events?focus=all`,
+          `${runtime.consoleUrl}/console/admin/events?focus=all`,
           { waitUntil: "domcontentloaded" },
         );
         await waitForConsoleShell(page);
@@ -681,7 +681,7 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
 
         await assertNoBrowserErrors(errors);
         await page.goto(
-          `${runtime.trellisUrl}/console/admin/events?focus=all`,
+          `${runtime.consoleUrl}/console/admin/events?focus=all`,
           { waitUntil: "domcontentloaded" },
         );
         await waitForConsoleShell(page);
@@ -764,7 +764,7 @@ test("Z07 deferred page refresh stays single-flight under live invalidation", as
           await openConsoleAsRuntimeAdmin(page, runtime);
           await assertNoBrowserErrors(errors);
           await page.goto(
-            `${runtime.trellisUrl}/console/admin/events?focus=all`,
+            `${runtime.consoleUrl}/console/admin/events?focus=all`,
             { waitUntil: "domcontentloaded" },
           );
           await waitForConsoleShell(page);
@@ -888,7 +888,7 @@ test("Z08 page discards superseded results and drains the latest query", async (
           await openConsoleAsRuntimeAdmin(page, runtime);
           await assertNoBrowserErrors(errors);
           await page.goto(
-            `${runtime.trellisUrl}/console/admin/events?focus=all`,
+            `${runtime.consoleUrl}/console/admin/events?focus=all`,
             { waitUntil: "domcontentloaded" },
           );
           await waitForConsoleShell(page);
@@ -979,7 +979,7 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
       acknowledgeSharedApis: true,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.EventService.participant,
       name: displayName,
       seed: key.seed,
@@ -1066,7 +1066,7 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
         try {
           await openConsoleAsRuntimeAdmin(page, runtime);
           await assertNoBrowserErrors(errors);
-          await page.goto(`${runtime.trellisUrl}/console/admin/events`, {
+          await page.goto(`${runtime.consoleUrl}/console/admin/events`, {
             waitUntil: "domcontentloaded",
           });
           await waitForConsoleShell(page);
@@ -1177,7 +1177,7 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
             { timeoutMs: 60_000 },
           );
           await assertNoBrowserErrors(errors);
-          await page.goto(`${runtime.trellisUrl}/console/admin/events`, {
+          await page.goto(`${runtime.consoleUrl}/console/admin/events`, {
             waitUntil: "domcontentloaded",
           });
           await waitForConsoleShell(page);

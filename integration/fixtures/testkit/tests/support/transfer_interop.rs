@@ -42,7 +42,7 @@ async fn rust_upload_to_typescript_reads_persisted_bytes() {
         .write_all(
             format!(
                 "{}\n",
-                json!({"trellisUrl":runtime.oauth_origin(),"seed":identity.seed()})
+                json!({"trellisUrl":runtime.trellis_url(),"seed":identity.seed()})
             )
             .as_bytes(),
         )
@@ -303,7 +303,7 @@ async fn typescript_upload_cancellation_and_live_renewal_reduction_against_rust(
         .unwrap();
     let mut input = caller.stdin.take().unwrap();
     input.write_all(format!("{}\n", json!({
-        "issuer":runtime.oauth_origin(),
+        "issuer":runtime.trellis_url(),
         "username":user.account.as_ref().unwrap().username,
         "password":password,
         "clientId":client_id,

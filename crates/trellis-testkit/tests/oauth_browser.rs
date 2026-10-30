@@ -12,7 +12,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
     let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
-    assert_eq!(server.issuer, runtime.oauth_origin().trim_end_matches('/'));
+    assert_eq!(server.issuer, runtime.trellis_url().trim_end_matches('/'));
     let native = NativeOAuthClient::open(
         runtime.workdir().join("browser-admin"),
         NativeCredentialScope {
@@ -75,8 +75,8 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
     let result = std::process::Command::new("node")
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .args(["--test", "ts/browser/oauth_accounts.browser_driver.ts"])
-        .env("TRELLIS_TEST_CONSOLE_URL", runtime.trellis_url())
-        .env("TRELLIS_TEST_OAUTH_ORIGIN", runtime.oauth_origin())
+        .env("TRELLIS_TEST_CONSOLE_URL", runtime.console_url())
+        .env("TRELLIS_TEST_OAUTH_ORIGIN", runtime.trellis_url())
         // The browser trusts the installation CA through a private NSS store
         // and Node through its standard extra-CA setting.
         .env("TRELLIS_TEST_CA_CERTIFICATE", &runtime.trust_roots()[0])
@@ -92,7 +92,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
         "development": false, "impliedConsent": [], "expectedRevision": "0",
         "idempotencyKey": ulid::Ulid::new().to_string()
     })).unwrap()).await.unwrap();
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let native = NativeOAuthClient::open(

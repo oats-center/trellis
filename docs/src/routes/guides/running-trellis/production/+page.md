@@ -13,42 +13,43 @@ Trellis serves everything over TLS, and its certificates have to name the
 hostnames you give `trellis-server init`. Changing them later means a new
 installation. A production install usually has three:
 
-- the Console, for example `https://console.example.com`
-- the sign-in (OAuth) page, on a hostname of its own such as
-  `https://auth.example.com`, so login cookies never reach anything else
-- NATS, for example `tls://nats.example.com:4222` for services and
-  `wss://nats.example.com` for browsers
+- Trellis itself, for example `https://trellis.example.com`. Sign-in lives
+  here, and it's the address the CLI, services, devices and apps connect to.
+- the Console, on a hostname of its own such as `https://console.example.com`.
+  It's an app like any other, so it never shares sign-in's origin.
+- NATS, for example `tls://nats.example.com:4222` for services, and a
+  WebSocket for browsers
 
 These `init` flags set them; `--host` changes the hostname in every default at
 once:
 
-| Flag                                            | Default                     | Sets                                                                     |
-| ----------------------------------------------- | --------------------------- | ------------------------------------------------------------------------ |
-| `--public-origin https://console.example.com`   | `https://<host>:3000`       | The Console's address                                                    |
-| `--oauth-origin https://auth.example.com`       | `https://<host>:3001`       | The sign-in page's address                                               |
-| `--nats-server-url tls://nats.example.com:4222` | `tls://<host>:4222`         | Where services connect to NATS                                           |
-| `--nats-websocket-url wss://nats.example.com`   | relayed through the Console | Where browsers connect to NATS directly (with `--nats-websocket direct`) |
-| `--trellis-port`, `--oauth-port`                | `3000`, `3001`              | The Console's and sign-in's ports                                        |
+| Flag                                            | Default                        | Sets                                                                     |
+| ----------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------ |
+| `--trellis-origin https://trellis.example.com`  | `https://<host>:3000`          | Trellis's address: sign-in, and where clients connect                    |
+| `--console-origin https://console.example.com`  | `https://<host>:3001`          | The Console's address                                                    |
+| `--nats-server-url tls://nats.example.com:4222` | `tls://<host>:4222`            | Where services connect to NATS                                           |
+| `--nats-websocket-url wss://nats.example.com`   | relayed through Trellis's port | Where browsers connect to NATS directly (with `--nats-websocket direct`) |
+| `--trellis-port`, `--console-port`              | `3000`, `3001`                 | Trellis's and the Console's ports                                        |
 
 ## Bring certificates people already trust
 
 A production installation serves certificates every browser and service
 already trusts: from a public CA such as Let's Encrypt, or from your
-organization's own CA. Get one for the Console and sign-in hostnames and one
+organization's own CA. Get one for the Trellis and Console hostnames and one
 for the NATS hostnames, then give them to `init`:
 
 ```sh
 trellis-server init --tls supplied \
-  --tls-certificate-chain console.crt --tls-private-key console.key \
+  --tls-certificate-chain trellis.crt --tls-private-key trellis.key \
   --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
-  --public-origin https://console.example.com \
-  --oauth-origin https://auth.example.com \
+  --trellis-origin https://trellis.example.com \
+  --console-origin https://console.example.com \
   --nats-server-url tls://nats.example.com:4222
 ```
 
 If your organization runs the CA, add `--tls-ca-certificate <its certificate>`
 so Trellis trusts it when it connects to NATS. Behind a proxy that terminates
-HTTPS, leave out the Console pair; see
+HTTPS, leave out the Trellis and Console pair; see
 [Behind your own HTTPS proxy](#behind-your-own-https-proxy).
 
 For a lab or test installation that nobody else depends on, `--tls generated`
@@ -116,11 +117,10 @@ private installation first, with your real hostnames and
 ```sh
 install -d -m 0700 "$HOME/trellis" "$HOME/trellis/data"
 trellis-server init --out "$HOME/trellis/config" --external-nats \
-  --tls supplied \
-  --tls-certificate-chain auth.crt --tls-private-key auth.key \
+  --tls supplied --trusted-proxy 10.89.70.0/24 \
   --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
-  --public-origin https://console.example.com \
-  --oauth-origin https://auth.example.com \
+  --trellis-origin https://trellis.example.com \
+  --console-origin https://console.example.com \
   --nats-server-url tls://nats.example.com:4222 \
   --nats-websocket-url wss://nats.example.com
 ```
@@ -155,17 +155,17 @@ the administrator's password, the same as in
 The containers publish to loopback only, so a proxy in front does the
 public-facing work:
 
-| Public address                | Forward to              | How                                     |
-| ----------------------------- | ----------------------- | --------------------------------------- |
-| `https://console.example.com` | `http://127.0.0.1:3000` | terminate TLS, keep the `Host` header   |
-| `https://auth.example.com`    | `127.0.0.1:3001`        | TLS passthrough (Trellis terminates it) |
-| `nats.example.com:4222`       | `127.0.0.1:4222`        | TLS passthrough (NATS terminates it)    |
-| `wss://nats.example.com`      | `127.0.0.1:8080`        | TLS passthrough (NATS terminates it)    |
+| Public address                | Forward to              | How                                   |
+| ----------------------------- | ----------------------- | ------------------------------------- |
+| `https://trellis.example.com` | `http://127.0.0.1:3000` | terminate TLS, keep the `Host` header |
+| `https://console.example.com` | `http://127.0.0.1:3001` | terminate TLS, keep the `Host` header |
+| `nats.example.com:4222`       | `127.0.0.1:4222`        | TLS passthrough (NATS terminates it)  |
+| `wss://nats.example.com`      | `127.0.0.1:8080`        | TLS passthrough (NATS terminates it)  |
 
 NATS monitoring on port 8222 stays on loopback. The example trusts the fixed
 `trellis.network` subnet as the proxy. If your proxy connects from somewhere
 else, Trellis refuses the request and logs the peer's address; add it to
-`[http.transport] trusted_proxies`.
+`trusted_proxies` under `[http.transport]` and `[console.transport]`.
 
 When you restart, reuse the same installation folder and data folder. Add
 services through the normal administrator flow, never by handing an application
@@ -221,7 +221,7 @@ names your certificates carry.
 
 ## Behind your own HTTPS proxy
 
-Console and the sign-in page can also run as plain HTTP behind a proxy that
+Trellis and the Console can also run as plain HTTP behind a proxy that
 terminates TLS. Create the installation with `--trusted-proxy 10.0.0.2/32` (the
 proxy's network) and `--tls supplied` with only the NATS certificate, or set it
 in `config.toml`:
@@ -234,18 +234,18 @@ trusted_proxies = ["10.0.0.2/32"]
 
 Trellis then answers only connections from those networks, gives everyone else
 `403`, and rate-limits clients by the proxy's `X-Forwarded-For` header. The
-proxy has to keep the original `Host` header. `[auth.oauth.transport]` takes the same
-settings for the sign-in listener.
+proxy has to keep the original `Host` header. `[console.transport]` takes the
+same settings for the Console's port.
 
 You can't run all of Trellis as plain HTTP. Sign-in cookies only work over
 HTTPS in a browser, so something has to terminate TLS. NATS's native port
 always serves its own TLS and can't sit behind a TLS-terminating proxy; only
 its WebSocket port can (`--nats-websocket-behind-proxy`).
 
-For the proxy's health checks, both the Console and sign-in ports answer
-`/healthz` and `/readyz`, whatever `Host` header the check sends. `/readyz`
-returns `503` until the server has finished starting. Every other sign-in
-page answers only its own hostname.
+For the proxy's health checks, both ports answer `/healthz` and `/readyz`,
+whatever `Host` header the check sends. `/readyz` returns `503` until the
+server has finished starting. Every sign-in page answers only its own
+hostname.
 
 ### Only HTTPS in public
 
@@ -255,31 +255,40 @@ it, so nothing but HTTPS has to reach the internet. `--nats-server-url` is then
 only where Trellis itself reaches NATS, so leave it at its `localhost` default
 when Trellis runs NATS.
 
-For example, behind an AWS Application Load Balancer that holds the
-certificate for `trellis.example.com` and `auth.example.com`, with the
-instance in a VPC whose range is `172.31.0.0/16`:
+The WebSocket can share Trellis's hostname: the proxy sends every request that
+asks for a WebSocket upgrade to NATS, and everything else to Trellis. For
+example, behind an AWS Application Load Balancer holding a certificate for
+`*.example.com`, with the instance in a VPC whose range is `172.31.0.0/16`:
 
 ```sh
 trellis-server init --tls generated \
   --trusted-proxy 172.31.0.0/16 \
-  --public-origin https://trellis.example.com \
-  --oauth-origin https://auth.example.com \
+  --trellis-origin https://trellis.example.com \
+  --console-origin https://console.example.com \
+  --nats-websocket-url wss://trellis.example.com \
+  --nats-websocket-behind-proxy \
   --nats-websocket-only
 ```
 
-The load balancer then needs one HTTPS listener with two host rules:
+The load balancer's HTTPS listener then has these rules, in this order:
 
-| Host                  | Forward to | Health check |
-| --------------------- | ---------- | ------------ |
-| `trellis.example.com` | HTTP 3000  | `/readyz`    |
-| `auth.example.com`    | HTTP 3001  | `/readyz`    |
+| Condition                                                  | Forward to | Health check            |
+| ---------------------------------------------------------- | ---------- | ----------------------- |
+| Host `trellis.example.com` and header `Upgrade: websocket` | HTTP 8080  | `/healthz` on port 8222 |
+| Host `trellis.example.com`                                 | HTTP 3000  | `/readyz`               |
+| Host `console.example.com`                                 | HTTP 3001  | `/readyz`               |
 
-Browsers and clients reach NATS at `wss://trellis.example.com/nats`, through
-the same rule as the Console. Raise the load balancer's idle timeout above its
-60-second default, or it cuts quiet NATS connections. Allow ports 3000 and
-3001 only from the load balancer. Here `--tls generated` only covers
-Trellis's own connection to NATS on the instance; people only ever see the
-load balancer's certificate.
+NATS's WebSocket port doesn't answer plain requests, so its health check asks
+NATS's monitoring port instead. Raise the load balancer's idle timeout above
+its 60-second default, or it cuts quiet NATS connections. Allow ports 3000,
+3001, 8080 and 8222 only from the load balancer. Here `--tls generated` only
+covers Trellis's own connection to NATS on the instance; people only ever see
+the load balancer's certificate.
+
+Without a WebSocket rule in the proxy, leave out `--nats-websocket-url` and
+`--nats-websocket-behind-proxy`: Trellis's own port then applies the same rule,
+handing every WebSocket upgrade to NATS, and the proxy forwards everything for
+`trellis.example.com` to port 3000.
 
 A listener that serves its own certificate looks like this in `config.toml`:
 
@@ -292,10 +301,6 @@ mode = "tls"
 certificate_chain = "./tls/runtime.crt"
 private_key = "./tls/runtime.key"
 ```
-
-`[http] origins` lists extra browser origins allowed to talk to Trellis, such
-as an app you're developing on another port. It never changes how Console or
-the sign-in page are served.
 
 ## Back it up as one piece
 

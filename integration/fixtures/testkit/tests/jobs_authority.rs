@@ -40,7 +40,7 @@ async fn node_worker_recovers_and_reconstructs_signed_job_history() {
         .write_all(
             format!(
                 "{}\n",
-                json!({"trellisUrl":runtime.oauth_origin(),"seed":identity.seed()})
+                json!({"trellisUrl":runtime.trellis_url(),"seed":identity.seed()})
             )
             .as_bytes(),
         )
@@ -157,7 +157,7 @@ async fn private_jobs_execute_and_history_is_deployment_scoped() {
         .await
         .is_err());
     let server =
-        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        trellis_rs::auth::discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
     let raw = TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {

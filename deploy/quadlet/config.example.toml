@@ -17,21 +17,32 @@ jobs = "./live-providers/jobs.seed"
 events = "./live-providers/events.seed"
 
 # Present when `trellis-server init` generated the installation CA; the
-# runtime and Console then warn with its fingerprint. Omit with supplied TLS.
+# runtime warns with its fingerprint. Omit with supplied TLS.
 [tls]
 generated_ca_certificate = "./tls/ca.crt"
 
+# The Trellis listener: sign-in, discovery and health, where clients connect.
 [http]
 bind_address = "0.0.0.0"
 port = 3000
-public_origin = "https://console.example.com"
-origins = ["https://console.example.com"]
+public_origin = "https://trellis.example.com"
 
-# Console is served as plaintext only to the external HTTPS proxy, which reaches
-# it through the published loopback port and the trellis.network subnet. Peers
-# outside it are refused and logged with their address. Use mode = "tls" with
-# the bundle certificate to terminate TLS here instead.
+# Trellis and the Console are served as plaintext only to the external HTTPS
+# proxy, which reaches them through the published loopback ports and the
+# trellis.network subnet. Peers outside it are refused and logged with their
+# address. Use mode = "tls" with the bundle certificate to terminate TLS here
+# instead.
 [http.transport]
+mode = "proxy"
+trusted_proxies = ["10.89.70.0/24"]
+
+# The Console, an app on its own origin beside Trellis.
+[console]
+origin = "https://console.example.com"
+bind_address = "0.0.0.0"
+port = 3001
+
+[console.transport]
 mode = "proxy"
 trusted_proxies = ["10.89.70.0/24"]
 
@@ -54,19 +65,6 @@ sentinel_public_key_file = "./nats/secrets/auth-sentinel.pub"
 [auth]
 instance_id = "RETAIN_YOUR_GENERATED_AUTH_INSTANCE_ID"
 oauth_storage_key_file = "./auth/oauth-storage.key"
-
-[auth.oauth]
-origin = "https://auth.example.com"
-bind_address = "0.0.0.0"
-port = 3001
-# Behind a reverse proxy, list its addresses so request admission budgets each
-# forwarded client rather than the proxy. Forwarding headers are otherwise ignored.
-# trusted_proxies = ["10.0.0.5/32"]
-
-[auth.oauth.transport]
-mode = "tls"
-certificate_chain = "./tls/runtime.crt"
-private_key = "./tls/runtime.key"
 
 [auth.authorization]
 issuer_signing_seed_file = "./auth/authorization-issuer.seed"

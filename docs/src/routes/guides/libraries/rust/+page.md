@@ -99,7 +99,7 @@ to obtain a `NativeOAuthSession`; a generated user participant wraps the public
 use trellis_rs::auth::{discover_native_oauth, NativeOAuthClient};
 use trellis_rs::client::UserConnectOptions;
 
-let server = discover_native_oauth("https://auth.example.com").await?;
+let server = discover_native_oauth("https://trellis.example.com").await?;
 let client = NativeOAuthClient::open(custody_dir, scope, server.trust.clone()).await?;
 let device = client.start_device(&authorization_details).await?;
 // The complete URI already carries the code; the page shows it to compare.

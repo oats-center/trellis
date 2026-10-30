@@ -78,7 +78,7 @@ test("CLI login authorizes independent runtime keys through one durable login", 
       // No system root vouches for the generated CA, so a first login stops and
       // names the CA it was offered rather than trusting it.
       const untrusted = await runCli(
-        ["--format", "json", "login", runtime.oauthIssuer],
+        ["--format", "json", "login", runtime.trellisUrl],
         configHome,
       );
       assert.notEqual(untrusted.code, 0);
@@ -91,7 +91,7 @@ test("CLI login authorizes independent runtime keys through one durable login", 
           "--format",
           "json",
           "login",
-          runtime.oauthIssuer,
+          runtime.trellisUrl,
           "--ca-fingerprint",
           Array(32).fill("00").join(":"),
         ],
@@ -106,7 +106,7 @@ test("CLI login authorizes independent runtime keys through one durable login", 
           "--format",
           "json",
           "login",
-          runtime.oauthIssuer,
+          runtime.trellisUrl,
           "--ca-fingerprint",
           ca,
         ],
@@ -133,7 +133,7 @@ test("CLI login authorizes independent runtime keys through one durable login", 
             .find((line) => line.includes("loginUrl"))!,
         );
         const loginUrl = new URL(challenge.loginUrl);
-        assert.equal(loginUrl.origin, runtime.oauthIssuer);
+        assert.equal(loginUrl.origin, runtime.trellisUrl);
         // The printed link and QR code carry the code, so nothing is typed.
         assert.equal(
           loginUrl.searchParams.get("user_code"),
@@ -197,7 +197,7 @@ test("CLI login authorizes independent runtime keys through one durable login", 
         // it without being told, and a different pinned CA is a hard error.
         const again = spawnTracked(
           cliBinary(),
-          ["--format", "json", "login", runtime.oauthIssuer],
+          ["--format", "json", "login", runtime.trellisUrl],
           { env: { ...process.env, XDG_CONFIG_HOME: configHome } },
         );
         let againProgress = "";
@@ -212,7 +212,7 @@ test("CLI login authorizes independent runtime keys through one durable login", 
         const pins = join(configHome, "trellis/trusted-ca");
         const [pin] = await readdir(pins);
         assert(pin);
-        const issuer = new URL(runtime.oauthIssuer);
+        const issuer = new URL(runtime.trellisUrl);
         const leaf = await new Promise<Buffer>((resolve, reject) => {
           const socket = connect({
             host: issuer.hostname,
@@ -228,7 +228,7 @@ test("CLI login authorizes independent runtime keys through one durable login", 
         });
         await writeFile(join(pins, pin), new X509Certificate(leaf).toString());
         const replaced = await runCli(
-          ["--format", "json", "login", runtime.oauthIssuer],
+          ["--format", "json", "login", runtime.trellisUrl],
           configHome,
         );
         assert.notEqual(replaced.code, 0);

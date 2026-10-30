@@ -17,7 +17,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         .start()
         .await
         .unwrap();
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let native = NativeOAuthClient::open(
@@ -145,7 +145,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
     ])).await.unwrap();
     // The ordinary local-user portal establishes this non-administrator's login
     // and consent; no fixture inserts an OAuth grant or a verified context.
-    let origin = runtime.oauth_origin();
+    let origin = runtime.trellis_url();
     let http = runtime
         .https_client_builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -402,7 +402,7 @@ async fn connect_caller(
     runtime: &mut trellis_testkit::TrellisTestRuntime,
     name: &str,
 ) -> TrellisClient {
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let native = NativeOAuthClient::open(

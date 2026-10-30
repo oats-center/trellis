@@ -50,7 +50,7 @@ for (const grow of [false, true]) {
           writeFileSync(nodeEffects, "");
           writeFileSync(rustEffects, "");
           const service = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: contract,
             seed: nodeIdentity.seed,
           }).orThrow();
@@ -97,7 +97,7 @@ for (const grow of [false, true]) {
             {
               env: {
                 ...process.env,
-                TRELLIS_URL: runtime.oauthIssuer,
+                TRELLIS_URL: runtime.trellisUrl,
                 TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
                 TRELLIS_IDENTITY_SEED: nativeIdentity.seed,
                 RPC_EFFECTS_FILE: rustEffects,

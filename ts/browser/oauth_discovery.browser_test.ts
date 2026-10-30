@@ -119,11 +119,11 @@ test("first-contact browser discovery does not require a registered application 
               forbidden,
             };
           },
-          { issuer: runtime.oauthIssuer, origin },
+          { issuer: runtime.trellisUrl, origin },
         );
         assert.equal(
           new URL(result.selectedIssuer).origin,
-          new URL(runtime.oauthIssuer).origin,
+          new URL(runtime.trellisUrl).origin,
         );
         assert.equal(result.chainStatus, 200);
         assert(result.chainBody);

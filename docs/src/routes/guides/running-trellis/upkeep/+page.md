@@ -42,7 +42,7 @@ Give it its own folder and its own ports:
 
 ```sh
 trellis-server init --out ~/trellis-two --tls loopback-development \
-  --trellis-port 3100 --oauth-port 3101 \
+  --trellis-port 3100 --console-port 3101 \
   --nats-port 4223 --nats-monitor-port 8223 --nats-ws-port 8081
 trellis-server --config ~/trellis-two/config.toml
 ```

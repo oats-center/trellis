@@ -29,7 +29,7 @@ test("a Rust upload cancellation settles within the client timeout when its prov
         {
           env: {
             ...process.env,
-            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_URL: runtime.trellisUrl,
             TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             TRELLIS_IDENTITY_SEED: identity.seed,
           },
@@ -41,7 +41,7 @@ test("a Rust upload cancellation settles within the client timeout when its prov
       const caller = spawnTracked(callerArgv[0], callerArgv.slice(1), {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_CALLER_MODE: "cancel-unresponsive-upload",
           XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),

@@ -36,7 +36,7 @@ test("services registered without a deployment each connect, and a second instan
       [replica, participants.Provider.participant, "provider replica"],
     ] as const) {
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant,
         name,
         seed: identity.seed,

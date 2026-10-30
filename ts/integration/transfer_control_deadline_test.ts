@@ -18,7 +18,7 @@ for (const exchange of ["activation", "cancellation"] as const) {
           contract,
         });
         const provider = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: contract,
           name: "deadline-provider",
           seed: identity.seed,

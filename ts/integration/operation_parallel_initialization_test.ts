@@ -27,7 +27,7 @@ test("concurrent operation registration succeeds and runs the operation once", a
       contract,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: contract,
       name: "parallel-init-provider",
       seed: instance.seed,

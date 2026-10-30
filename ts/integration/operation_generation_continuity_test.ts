@@ -31,7 +31,7 @@ test("accepted and fresh Operations retain control and observation across capabi
         idempotencyKey: ulid(),
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: instance.seed,
       }).orThrow();

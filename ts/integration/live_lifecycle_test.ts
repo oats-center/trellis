@@ -77,7 +77,7 @@ async function startProvider(
     contract: participants.Provider.participant,
   });
   const service = await TrellisService.connect({
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     participant: participants.Provider.participant,
     name: `live-lifecycle-${crypto.randomUUID()}`,
     seed: identity.seed,

@@ -19,7 +19,7 @@ test("V3 Operation observation delivers typed updates then terminal", async () =
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();
@@ -214,7 +214,7 @@ test("an operation watch is fenced by its connection close", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();

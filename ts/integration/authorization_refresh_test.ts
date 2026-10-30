@@ -79,7 +79,7 @@ test("verified short-lived authority remains usable after delayed admission", as
         await hold.release();
         const identity = await registering;
         const service = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           name: "delayed-short-authority",
           seed: identity.seed,
@@ -131,7 +131,7 @@ async function startContinuousProvider(
     contract: participants.Provider.participant,
   });
   const service = await TrellisService.connect({
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     participant: participants.Provider.participant,
     name: `refresh-live-${ulid()}`,
     seed: identity.seed,
@@ -158,7 +158,7 @@ test("authorization refresh keeps a live RPC client connected and unsuspended", 
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: `refresh-rpc-${ulid()}`,
       seed: identity.seed,
@@ -322,7 +322,7 @@ test("a Rust provider live session renews its authorization in place without int
       const process = spawnTracked("setsid", rustFixtureArgv("live_probe"), {
         env: {
           ...env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(
@@ -522,7 +522,7 @@ test("a real native NATS outage recovers after authorization refresh and resumes
     const process = spawnTracked("setsid", rustFixtureArgv("live_probe"), {
       env: {
         ...env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         // Keep a refresh/reconnect alive across the deliberately unavailable

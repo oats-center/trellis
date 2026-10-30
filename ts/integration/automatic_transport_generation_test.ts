@@ -21,7 +21,7 @@ test("a grown finite capability adopts a new generation without disrupting in-fl
         contract: participants.TransportGrowthTarget.participant,
       });
       const target = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.TransportGrowthTarget.participant,
         seed: identity.seed,
       }).orThrow();

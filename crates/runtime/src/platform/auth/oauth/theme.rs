@@ -50,19 +50,12 @@ pub(super) async fn view(
     let Ok(Ok(theme)) = view else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let base = engine
-        .server
-        .store()
-        .authority
-        .settings
-        .oauth_path()
-        .to_owned();
     let logo = theme.logo_owner.map(|owner| match owner {
         Some(client) => format!(
-            "{base}/portal-theme/logo?client={}",
+            "/portal-theme/logo?client={}",
             url::form_urlencoded::byte_serialize(client.as_bytes()).collect::<String>()
         ),
-        None => format!("{base}/portal-theme/logo"),
+        None => "/portal-theme/logo".to_owned(),
     });
     let mut response = Json(ThemeView {
         name: theme.name,

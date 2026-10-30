@@ -29,7 +29,7 @@ for (const scenario of ["outage", "expiry", "cancelled-renewal"] as const) {
           contract,
         });
         const service = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: contract,
           seed: identity.seed,
           // Keep the cancelled broker request outstanding across the supported
@@ -494,7 +494,7 @@ test("a granted optional RPC waits for coverage rather than being classified as 
         contract,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: contract,
         seed: identity.seed,
       }).orThrow();

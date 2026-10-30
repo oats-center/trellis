@@ -22,8 +22,8 @@ and this project adheres to
   CLI, Rust and TypeScript services, native apps and devices now connect over
   the WebSocket whenever a Trellis offers no native NATS address, so a Trellis
   behind a load balancer needs only HTTPS in public.
-- The sign-in port answers `/healthz` and `/readyz`, and both ports answer them
-  whatever `Host` header a load balancer's health check sends.
+- Both HTTP ports answer `/healthz` and `/readyz` whatever `Host` header a
+  load balancer's health check sends.
 
 ### Changed
 
@@ -32,9 +32,31 @@ and this project adheres to
   connections, and is now titled "Manage sign-in and services". Grant
   `accounts.manage` to whoever manages accounts. The Administrator role's
   group includes both.
+- Breaking: Trellis and the Console are now separate origins. The Trellis
+  origin (`--trellis-origin`, `--trellis-port`, default port 3000) serves
+  sign-in and is the one address the CLI, services, devices and apps connect
+  to. The Console is an app like any other on its own origin
+  (`--console-origin`, `--console-port`, default port 3001), and `[auth.oauth]`
+  is replaced by `[console]`. `--public-origin`, `--oauth-origin` and
+  `--oauth-port` are gone. Create installations afresh.
+- Breaking: the NATS WebSocket relay no longer uses a `/nats` path. When
+  Trellis relays it, the Trellis port hands every WebSocket upgrade to NATS,
+  the same rule a proxy in front can apply, and advertises
+  `wss://<trellis host>`.
+- Breaking: development mode no longer serves sign-in under `/auth` on the
+  Console's port. It uses the same two ports as any installation, with one
+  generated certificate naming both.
+- Breaking: `--extra-origin` and `[http] origins` are gone. They never let an
+  app talk to Trellis; browser origins are trusted from registered clients'
+  redirect URIs.
 - `trellis-server init` and `tls status` no longer tell you browsers will warn
-  about a generated certificate when a proxy serves Console and sign-in; they
-  say it's only used for NATS.
+  about a generated certificate when a proxy serves Trellis and the Console;
+  they say it's only used for NATS.
+
+### Fixed
+
+- A SIGTERM that arrived while the server was still starting could kill it
+  outright instead of stopping it cleanly.
 
 ## [0.100.0-rc.17] - 2026-10-29
 

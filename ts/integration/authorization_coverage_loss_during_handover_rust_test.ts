@@ -90,7 +90,7 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
           contract: participants.TransportGrowthTarget.participant,
         });
         const target = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.TransportGrowthTarget.participant,
           seed: targetIdentity.seed,
         }).orThrow();
@@ -130,7 +130,7 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
                   ([key]) => !key.startsWith("OTEL_"),
                 ),
               ),
-              TRELLIS_URL: runtime.oauthIssuer,
+              TRELLIS_URL: runtime.trellisUrl,
               TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
               TRELLIS_IDENTITY_SEED: identity.seed,
               OTEL_SDK_DISABLED: "false",

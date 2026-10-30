@@ -97,11 +97,8 @@ pub(crate) struct AuthSettings {
     pub(crate) administration: crate::config::AdministrationConfig,
     pub(crate) instance_id: String,
     pub(crate) account: String,
-    /// Sign-in's issuer: its own origin, or the Console origin plus
-    /// [`crate::config::DEVELOPMENT_SIGN_IN_PATH`] in development mode.
+    /// Sign-in's issuer: the Trellis origin.
     pub(crate) oauth_issuer: String,
-    /// Development mode serves sign-in on the Console's origin.
-    pub(crate) development: bool,
     /// Origin that serves the Console, for links administrators open.
     pub(crate) console_origin: String,
     pub(crate) upstream_tls_roots_pem: Vec<String>,
@@ -120,30 +117,17 @@ impl AuthSettings {
             .unwrap_or_default()
     }
 
-    /// The path sign-in is served under: empty on its own origin, `/auth` in
-    /// development mode.
-    pub(crate) fn oauth_path(&self) -> &str {
-        &self.oauth_issuer[self.oauth_origin().len().min(self.oauth_issuer.len())..]
-    }
-
-    /// Whether the issuer is exactly an origin, or in development mode that
-    /// origin plus the sign-in path, with nothing a client could read
-    /// differently.
+    /// Whether the issuer is exactly an origin, with nothing a client could
+    /// read differently.
     pub(crate) fn canonical_issuer(&self) -> bool {
         let origin = self.oauth_origin();
-        !origin.is_empty()
-            && !origin.ends_with("://null")
-            && (self.oauth_issuer == origin
-                || (self.development
-                    && self.oauth_issuer
-                        == format!("{origin}{}", crate::config::DEVELOPMENT_SIGN_IN_PATH)))
+        !origin.is_empty() && !origin.ends_with("://null") && self.oauth_issuer == origin
     }
 
     /// Whether `origin` is sign-in's own and so can't hold an application's
-    /// callback. Development mode serves sign-in on the Console's origin on
-    /// purpose, so nothing is reserved there.
+    /// callback.
     pub(crate) fn reserves_origin(&self, origin: &str) -> bool {
-        !self.development && origin == self.oauth_origin()
+        origin == self.oauth_origin()
     }
 }
 
@@ -424,8 +408,8 @@ impl SqliteAuthorizationStore {
         let authorization = config
             .resolve_authorization()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-        let oauth = config
-            .resolve_oauth_listener()
+        let console = config
+            .resolve_console_listener()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         let instance_id = config
             .auth
@@ -454,9 +438,8 @@ impl SqliteAuthorizationStore {
                 .unwrap_or_default(),
             instance_id,
             account: account.into(),
-            oauth_issuer: oauth.origin.clone(),
-            development: config.development(),
-            console_origin: config.public_origin(),
+            oauth_issuer: config.public_origin(),
+            console_origin: console.origin.clone(),
             upstream_tls_roots_pem: Vec::new(),
             authority_lifetime_seconds: u32::try_from(authorization.context_lifetime_seconds)
                 .map_err(|_| {

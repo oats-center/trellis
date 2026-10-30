@@ -165,7 +165,7 @@ authenticated administration remains on NATS.
 Fresh administrator initialization uses `trellis-server init admin --config <path>`.
 `--username` defaults to `admin`; `--password` or `--password-stdin` sets initial
 credentials. With neither, the command returns a one-time password-setup URL on
-the isolated OAuth origin. Runtime startup offers corresponding
+the Trellis origin. Runtime startup offers corresponding
 `--admin-username`, `--admin-password`, and `--admin-password-stdin` options and
 uses the same atomic initialization. Existing administrator credentials are never
 overwritten by these options. `--reset-admin` is explicit local recovery using
@@ -188,13 +188,16 @@ trellis-server upgrade [--check] [--prerelease]
 ```
 
 Options go after the subcommand, and each subcommand takes only its own. Those that report a result accept `--format json` for scripts. Initialization creates ordinary secure directories only when absent and rejects
-unsafe paths. `trellis-server init` selects listener security with `--tls
+unsafe paths. `trellis-server init` takes `--trellis-origin` and
+`--trellis-port` for the Trellis listener (sign-in, and where clients connect)
+and `--console-origin` and `--console-port` for the Console's own listener. It
+selects listener security with `--tls
 generated|supplied|loopback-development` (required unless `--dev`, which
 generates), `--trusted-proxy` (supplied TLS then needs only the NATS
 certificate), and `--nats-websocket-behind-proxy` or
 `--nats-websocket relay|direct` (relay, the default with generated TLS unless a
-WebSocket URL or external proxy is given, has the runtime serve `/nats` on the
-Console origin from the broker's plaintext WebSocket listener), and
+WebSocket URL or external proxy is given, has the Trellis port send every
+WebSocket upgrade to the broker's plaintext WebSocket listener), and
 `--nats-websocket-only` (clients are offered only the WebSocket and native NATS
 stays private; `--nats-server-url` is then only where the runtime reaches the
 broker), validates that every

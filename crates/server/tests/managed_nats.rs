@@ -13,7 +13,7 @@ async fn managed_nats_is_advertised_at_its_configured_address() {
     let root = directory.path();
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let server = env!("CARGO_BIN_EXE_trellis-server");
-    let reserved: Vec<_> = (0..4)
+    let reserved: Vec<_> = (0..5)
         .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
         .collect();
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
@@ -22,6 +22,7 @@ async fn managed_nats_is_advertised_at_its_configured_address() {
         .args(["init", "--dev", "--out"])
         .arg(&config_dir)
         .args(["--trellis-port", &ports[0].to_string()])
+        .args(["--console-port", &ports[4].to_string()])
         .args(["--nats-port", &ports[1].to_string()])
         .args(["--nats-monitor-port", &ports[2].to_string()])
         .args(["--nats-ws-port", &ports[3].to_string()])
@@ -50,7 +51,7 @@ async fn managed_nats_is_advertised_at_its_configured_address() {
         .unwrap();
     let group = running.id().unwrap() as i32;
 
-    let issuer = format!("https://localhost:{}/auth", ports[0]);
+    let issuer = format!("https://localhost:{}", ports[0]);
     let roots = [config_dir.join("tls/ca.crt")];
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     let discovered = loop {

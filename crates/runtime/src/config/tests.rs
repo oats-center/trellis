@@ -31,12 +31,12 @@ sentinel_public_key_file = "./nats/auth-sentinel.pub"
 instance_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 oauth_storage_key_file = "./auth/oauth-storage.key"
 
-[auth.oauth]
+[console]
 origin = "http://localhost:3001"
 bind_address = "127.0.0.1"
 port = 3001
 
-[auth.oauth.transport]
+[console.transport]
 mode = "loopback_development"
 
 [auth.authorization]
@@ -323,10 +323,10 @@ future_lease_option = { enabled = true }
 }
 
 #[test]
-fn oauth_listener_requires_stable_identity_distinct_origins_and_explicit_loopback_transport() {
+fn console_listener_requires_stable_identity_distinct_origins_and_explicit_loopback_transport() {
     RuntimeConfig::from_toml_str(COMPLETE_CONFIG)
         .unwrap()
-        .resolve_oauth_listener()
+        .resolve_console_listener()
         .unwrap();
     for (before, after) in [
         ("instance_id = \"01ARZ3NDEKTSV4RRFFQ69G5FAV\"", ""),
@@ -345,7 +345,7 @@ fn oauth_listener_requires_stable_identity_distinct_origins_and_explicit_loopbac
         let input = COMPLETE_CONFIG.replace(before, after);
         let config = RuntimeConfig::from_toml_str(&input).unwrap();
         assert!(
-            config.resolve_oauth_listener().is_err(),
+            config.resolve_console_listener().is_err(),
             "accepted unsafe configuration: {before} -> {after}"
         );
     }

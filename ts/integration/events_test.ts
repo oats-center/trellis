@@ -222,7 +222,7 @@ test("runtime Events transports Health.StatusChanged on its qualified subject", 
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
       runtime: { health: { publishIntervalMs: 1000 } },
@@ -388,7 +388,7 @@ test("Rust durable events match registrations and retain unhandled messages", as
         spawnTracked(eventsArgv[0], eventsArgv.slice(1), {
           env: {
             ...env,
-            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_URL: runtime.trellisUrl,
             TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             TRELLIS_IDENTITY_SEED: identity.seed,
             REVERSE: String(reverse),
@@ -630,7 +630,7 @@ for (const sdk of ["rust", "typescript"] as const) {
           return spawnTracked(eventsArgv[0], eventsArgv.slice(1), {
             env: {
               ...env,
-              TRELLIS_URL: runtime.oauthIssuer,
+              TRELLIS_URL: runtime.trellisUrl,
               TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
               TRELLIS_IDENTITY_SEED: identity.seed,
               REVERSE: "false",
@@ -649,7 +649,7 @@ for (const sdk of ["rust", "typescript"] as const) {
                 import.meta.url,
               ),
             ),
-            runtime.oauthIssuer,
+            runtime.trellisUrl,
             identity.seed,
           ],
           {
@@ -868,7 +868,7 @@ test("explicit ephemeral delivery works alongside a declared durable consumer", 
       contract: participants.EventServiceBoth.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.EventServiceBoth.participant,
       seed: identity.seed,
     }).orThrow();
@@ -921,7 +921,7 @@ test("a declared durable consumer without Event Subscribe rejects explicit ephem
       contract: participants.EventServiceConsumerOnly.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.EventServiceConsumerOnly.participant,
       seed: identity.seed,
     }).orThrow();
@@ -963,7 +963,7 @@ test("Rust consumer-only service rejects explicit ephemeral at the runtime bound
     const process = spawnTracked(eventsArgv[0], eventsArgv.slice(1), {
       env: {
         ...env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CONSUMER_ONLY: "true",
@@ -1009,7 +1009,7 @@ test("a subscriber-only service receives explicit ephemeral delivery with no dur
       contract: participants.EventSubscriberService.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.EventSubscriberService.participant,
       seed: identity.seed,
     }).orThrow();

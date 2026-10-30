@@ -77,7 +77,7 @@ for (const rustFirst of [true, false]) {
                   {
                     env: {
                       ...process.env,
-                      TRELLIS_URL: runtime.oauthIssuer,
+                      TRELLIS_URL: runtime.trellisUrl,
                       TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
                       TRELLIS_IDENTITY_SEED: identities[0].seed,
                     },
@@ -110,7 +110,7 @@ for (const rustFirst of [true, false]) {
               }
               runtime.nativeTransportGate().arm(boundSubject);
               const service = await TrellisService.connect({
-                trellisUrl: runtime.oauthIssuer,
+                trellisUrl: runtime.trellisUrl,
                 participant: participants.OperationProvider.participant,
                 seed: identities[1].seed,
               }).orThrow();

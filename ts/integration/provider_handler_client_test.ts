@@ -35,7 +35,7 @@ test("provider handler client works across job, live, event, resources and prepa
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name,
       seed: identity.seed,
@@ -158,7 +158,7 @@ test("selected external event subscription receives a flat provider client", asy
       contract: participants.EventService.participant,
     });
     const eventService = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.EventService.participant,
       name: serviceName,
       seed: serviceIdentity.seed,
@@ -188,7 +188,7 @@ test("selected external event subscription receives a flat provider client", asy
         deployment: "event-client-deployment",
       });
       const eventClient = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.EventClient.participant,
         name: clientName,
         seed: clientIdentity.seed,

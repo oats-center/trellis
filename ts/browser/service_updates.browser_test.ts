@@ -30,7 +30,7 @@ test("an administrator approves a waiting service update from its review link", 
     });
     // The new build asks for a KV the deployment never had, so it waits.
     const connecting = TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: extendedParticipants.Provider.participant,
       seed: instance.seed,
     }).orThrow();
@@ -89,7 +89,7 @@ test("an administrator adds a service that introduced itself from its review lin
       idempotencyKey: ulid(),
     });
     const connecting = TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: seed.toString("base64url"),
     }).orThrow();

@@ -44,7 +44,7 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
       const child = spawnTracked(argv[0], argv.slice(1), {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: instance.seed,
           TRELLIS_TEST_HEALTH_HEARTBEAT_MS: "2000",
@@ -299,7 +299,7 @@ test("Rust fresh RPC is fenced during loss and resumes only after broker-ready i
         contract: targetContract,
       });
       const target = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: targetContract,
         name: "fresh-stage-target",
         seed: targetInstance.seed,
@@ -330,7 +330,7 @@ test("Rust fresh RPC is fenced during loss and resumes only after broker-ready i
       const child = spawnTracked(argv[0], argv.slice(1), {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: instance.seed,
         },

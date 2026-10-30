@@ -106,7 +106,7 @@ test("native Rust worker starts on a provisioned queue and retries cleanup beyon
     const child = spawnTracked(command, args, {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
       },
@@ -164,7 +164,7 @@ for (const terminal of ["failed", "dead"] as const) {
           return held;
         };
         let service = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           seed: identity.seed,
         }).orThrow();
@@ -203,7 +203,7 @@ for (const terminal of ["failed", "dead"] as const) {
           await runtime.waitFor(() => performance.now() >= due);
           drop = false;
           service = await TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: participants.Provider.participant,
             seed: identity.seed,
           }).orThrow();
@@ -271,7 +271,7 @@ test("native worker killed after key persistence but before Started recovers exp
         contract: participants.Provider.participant,
       });
       const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed: submitterIdentity.seed,
       }).orThrow();
@@ -292,7 +292,7 @@ test("native worker killed after key persistence but before Started recovers exp
         const child = spawnTracked(command, args, {
           env: {
             ...process.env,
-            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_URL: runtime.trellisUrl,
             TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             TRELLIS_IDENTITY_SEED: identity.seed,
             TRELLIS_PRE_STARTED_WORK: "1",
@@ -468,7 +468,7 @@ test("native failed retry and dead-letter replay execute again while historical 
     const child = spawnTracked(command, args, {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         TRELLIS_REPLAY_WORK: "1",
@@ -1230,7 +1230,7 @@ test("jobs rerun automatically after a handler failure and after their worker di
       contract: participants.Provider.participant,
     });
     const submitter = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: submitterIdentity.seed,
     }).orThrow();
@@ -1240,7 +1240,7 @@ test("jobs rerun automatically after a handler failure and after their worker di
       const child = spawnTracked(command, args, {
         env: {
           ...process.env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: seed,
           TRELLIS_RESTART_WORK: role,
@@ -1342,7 +1342,7 @@ test("a rejected Jobs event at the stream tail does not stall key lookups", asyn
       contract: apps.JobsAdmin.request,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
     }).orThrow();

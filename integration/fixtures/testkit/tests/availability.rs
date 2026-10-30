@@ -41,7 +41,7 @@ async fn login(
     password: &str,
     approved: Option<&[&str]>,
 ) -> UserConnectOptions<'static> {
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let oauth = NativeOAuthClient::open(
@@ -66,7 +66,7 @@ async fn login(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let origin = runtime.oauth_origin();
+    let origin = runtime.trellis_url();
     let cookies = |response: &reqwest::Response| {
         response
             .headers()
@@ -686,7 +686,7 @@ async fn generated_kv_is_usable_after_readiness_and_reconnection_preserves_data(
         "title":"replacement incarnation",
         "idempotencyKey":ulid::Ulid::new().to_string()
     }))).await.unwrap();
-    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
         .unwrap();
     let mut replacement = Participant::connect(trellis_rs::service::ServiceConnectOptions::new(

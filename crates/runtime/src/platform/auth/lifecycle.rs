@@ -232,13 +232,11 @@ impl SqliteAuthorizationStore {
                     {
                         return Err(AuthError::Invalid("unsafe redirect".into()));
                     }
-                    if !self.settings.development {
-                        super::warn_oauth_cookie_isolation(
-                            &url::Url::parse(&self.settings.oauth_issuer)
-                                .map_err(|_| AuthError::Denied)?,
-                            &uri,
-                        );
-                    }
+                    super::warn_oauth_cookie_isolation(
+                        &url::Url::parse(&self.settings.oauth_issuer)
+                            .map_err(|_| AuthError::Denied)?,
+                        &uri,
+                    );
                 }
                 for name in &registration.implied_capabilities {
                     capability(connection, name)?;

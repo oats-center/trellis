@@ -10,7 +10,7 @@ async fn completed_typescript_activation_does_not_create_another_review() {
         .args([
             "--experimental-transform-types",
             "integration/fixtures/runtime/activation_recheck.ts",
-            runtime.oauth_origin(),
+            runtime.trellis_url(),
             runtime.admin_username(),
             runtime.admin_password(),
         ])

@@ -35,7 +35,7 @@ type KeyState = {
 
 type ProviderRuntime = Pick<
   TrellisTestRuntime,
-  "oauthIssuer" | "caCertificate" | "registerService"
+  "trellisUrl" | "caCertificate" | "registerService"
 >;
 
 function delay(ms: number): Promise<void> {
@@ -54,7 +54,7 @@ async function startTsProvider(
       contract: participants.LiveProbeProvider.participant,
     }));
   const service = await TrellisService.connect({
-    trellisUrl: runtime.oauthIssuer,
+    trellisUrl: runtime.trellisUrl,
     participant: participants.LiveProbeProvider.participant,
     name: replica?.name,
     seed: identity.seed,
@@ -312,7 +312,7 @@ test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
     const process = spawnTracked("setsid", rustFixtureArgv("live_probe"), {
       env: {
         ...env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CARGO_TARGET_DIR: fileURLToPath(
@@ -384,7 +384,7 @@ async function runRustLiveProbeCaller(
   const child = spawnTracked("setsid", rustFixtureArgv("live_probe_caller"), {
     env: {
       ...process.env,
-      TRELLIS_URL: runtime.oauthIssuer,
+      TRELLIS_URL: runtime.trellisUrl,
       TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
       CARGO_TARGET_DIR: fileURLToPath(new URL("../../target", import.meta.url)),
@@ -414,7 +414,7 @@ async function runRustLiveProbeCaller(
           verificationUri: z.string().url(),
         })
         .parse(JSON.parse(line.slice(loginMarker.length)));
-      assert.equal(new URL(login.verificationUri).origin, runtime.oauthIssuer);
+      assert.equal(new URL(login.verificationUri).origin, runtime.trellisUrl);
       await runtime.authorizeNativeUserCode({
         clientId: login.clientId,
         userCode: login.userCode,
@@ -463,7 +463,7 @@ function startRustProvider(runtime: ProviderRuntime): {
       const child = spawnTracked("setsid", rustFixtureArgv("live_probe"), {
         env: {
           ...env,
-          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(

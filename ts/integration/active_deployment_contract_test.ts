@@ -85,7 +85,7 @@ test("active contract replacement keeps covered connections and drops uncovered 
         contract: removedParticipants.Provider.participant,
       });
       const serviceA = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: removedParticipants.Provider.participant,
         name: "provider-a",
         seed: instanceA.seed,
@@ -131,7 +131,7 @@ test("active contract replacement keeps covered connections and drops uncovered 
             );
 
             const reconnected = await TrellisService.connect({
-              trellisUrl: runtime.oauthIssuer,
+              trellisUrl: runtime.trellisUrl,
               participant: removedParticipants.Provider.participant,
               name: "provider-a-reconnected",
               seed: instanceA.seed,
@@ -160,7 +160,7 @@ test("active contract replacement keeps covered connections and drops uncovered 
               gate.connections().map(({ id }) => id),
             );
             const serviceB = await TrellisService.connect({
-              trellisUrl: runtime.oauthIssuer,
+              trellisUrl: runtime.trellisUrl,
               participant: participants.Provider.participant,
               name: "provider-b",
               seed: instanceB.seed,
@@ -265,7 +265,7 @@ test("active contract replacement keeps covered connections and drops uncovered 
         );
 
         const denied = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: removedParticipants.Provider.participant,
           name: "provider-a",
           seed: instanceA.seed,
@@ -285,7 +285,7 @@ test("active contract replacement keeps covered connections and drops uncovered 
           idempotencyKey: ulid(),
         });
         const serviceAEnabled = await TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: removedParticipants.Provider.participant,
           name: "provider-a",
           seed: instanceA.seed,

@@ -97,7 +97,7 @@ async function withOperationProviderLeg(
     {
       env: {
         ...process.env,
-        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_URL: runtime.trellisUrl,
         TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: seed,
         TRELLIS_RAW_CONSUMER: options.rawConsumer ? "1" : "0",

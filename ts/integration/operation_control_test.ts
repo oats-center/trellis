@@ -24,7 +24,7 @@ test("Operation reads retain committed progress after an oversized persistence f
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "committed-progress-read",
       seed: identity.seed,
@@ -113,7 +113,7 @@ test("serialized references keep controls on their deployment when a canonical s
     });
     const connect = (seed: typeof firstIdentity.seed, name: string) =>
       TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed,
         name,
@@ -188,7 +188,7 @@ test("a handler's own reference resumes its operation", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       seed: identity.seed,
       name: "self-reference-owner",
@@ -240,7 +240,7 @@ test("restarted provider recovers nonterminal work among retained terminal histo
     });
     const connect = () =>
       TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
+        trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         name: "recovery-history",
         seed: identity.seed,
@@ -331,7 +331,7 @@ test("generated operation control requires the local owner fence", async () => {
     const services = await Promise.all(
       [firstIdentity, secondIdentity].map((identity) =>
         TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           name: "operation-control-replicas",
           seed: identity.seed,
@@ -418,7 +418,7 @@ test("generated reconciliation routes to the fenced owner", async () => {
     const services = await Promise.all(
       [firstIdentity, secondIdentity].map((identity) =>
         TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
+          trellisUrl: runtime.trellisUrl,
           participant: participants.Provider.participant,
           name: "operation-reconciliation-replicas",
           seed: identity.seed,
@@ -477,7 +477,7 @@ test("handler cancellation stays nonterminal until cleanup returns", async () =>
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "operation-cleanup",
       seed: identity.seed,
@@ -540,7 +540,7 @@ test("interrupted cancellation recovers through cleanup without rerunning busine
       const services = await Promise.all(
         [firstIdentity, secondIdentity].map((identity) =>
           TrellisService.connect({
-            trellisUrl: runtime.oauthIssuer,
+            trellisUrl: runtime.trellisUrl,
             participant: participants.Provider.participant,
             name: "operation-interrupted-cancel-replicas",
             seed: identity.seed,
@@ -637,7 +637,7 @@ test("cancellation request serializes with handler completion", async () => {
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "operation-cancel-race",
       seed: identity.seed,
@@ -685,7 +685,7 @@ test("cancel-first admission retains failed cleanup and replays terminal cancell
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: "operation-cancel-first",
       seed: identity.seed,

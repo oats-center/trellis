@@ -105,7 +105,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         .arg(&config_dir)
         .arg("--external-nats")
         .args([
-            "--trellis-port",
+            "--console-port",
             &ports[0].to_string(),
             "--nats-port",
             &ports[2].to_string(),
@@ -113,8 +113,12 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
             &ports[3].to_string(),
             "--nats-ws-port",
             &ports[4].to_string(),
-            "--public-origin",
+            "--console-origin",
             &origin,
+            "--trellis-origin",
+            &oauth_origin,
+            "--trellis-port",
+            &ports[1].to_string(),
             "--tls",
             "loopback-development",
             "--bind-address",
@@ -128,7 +132,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         "bootstrap failed: {}",
         String::from_utf8_lossy(&generated.stderr)
     );
-    let (mut config, _) = crate::RuntimeConfig::load_from_path_with_defaults(
+    let (config, _) = crate::RuntimeConfig::load_from_path_with_defaults(
         config_dir.join("config.toml"),
         crate::RuntimePathDefaults {
             data: root.join("data"),
@@ -139,9 +143,6 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         },
     )
     .unwrap();
-    let oauth = config.auth.as_mut().unwrap().oauth.as_mut().unwrap();
-    oauth.origin = oauth_origin.clone();
-    oauth.port = ports[1];
     std::fs::write(
         config_dir.join("config.toml"),
         toml::to_string_pretty(&config).unwrap(),
@@ -463,12 +464,13 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         .unwrap();
 }
 
-/// A development installation serves sign-in under `/auth` on the Console's
-/// one TLS port: a native client accepts its certificate by fingerprint and
+/// A development installation serves sign-in on the Trellis port with its
+/// generated certificate: a native client accepts it by fingerprint and
 /// discovers it there, the Portal signs the administrator in and approves a
-/// device login through it, and that login connects and calls Trellis.
+/// device login through it, that login connects and calls Trellis, and a
+/// WebSocket upgrade on the same origin reaches NATS.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn development_mode_signs_in_through_the_console_port() {
+async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -476,7 +478,7 @@ async fn development_mode_signs_in_through_the_console_port() {
     let server = std::env::var_os("TRELLIS_TEST_SERVER_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join("target/release/trellis-server"));
-    let reserved: Vec<_> = (0..4)
+    let reserved: Vec<_> = (0..5)
         .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
         .collect();
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
@@ -486,6 +488,7 @@ async fn development_mode_signs_in_through_the_console_port() {
         .arg(&config_dir)
         .args(["--external-nats", "--dev"])
         .args(["--trellis-port", &ports[0].to_string()])
+        .args(["--console-port", &ports[4].to_string()])
         .args(["--nats-port", &ports[1].to_string()])
         .args(["--nats-monitor-port", &ports[2].to_string()])
         .args(["--nats-ws-port", &ports[3].to_string()])
@@ -514,7 +517,7 @@ async fn development_mode_signs_in_through_the_console_port() {
     let mut broker = start_broker(root, &config_dir, [ports[1], ports[2], ports[3]]).await;
     let ca = config_dir.join("tls/ca.crt");
     let origin = format!("https://localhost:{}", ports[0]);
-    let issuer = format!("{origin}/auth");
+    let issuer = origin.clone();
     let (stop, mut runtime) = start_runtime(&config, &origin, std::slice::from_ref(&ca)).await;
 
     // No CA file is installed: the client accepts the development
@@ -580,7 +583,7 @@ async fn development_mode_signs_in_through_the_console_port() {
         .await
         .unwrap();
 
-    // The Portal, as a browser drives it, on the Console's origin.
+    // The Portal, as a browser drives it, on the Trellis origin.
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
@@ -641,12 +644,10 @@ async fn development_mode_signs_in_through_the_console_port() {
         .await
         .unwrap();
     assert!(response.status().is_redirection(), "{}", response.status());
-    // Its redirect stays under the sign-in path.
     let location = url::Url::parse(&issuer)
         .unwrap()
         .join(response.headers()["location"].to_str().unwrap())
         .unwrap();
-    assert!(location.path().starts_with("/auth/"), "{location}");
     let transaction = location
         .query_pairs()
         .find(|(key, _)| key == "transaction")
@@ -701,8 +702,25 @@ async fn development_mode_signs_in_through_the_console_port() {
         .await
         .unwrap();
     assert!(me.to_string().contains(&principal), "{me}");
-
     drop(client);
+
+    // A WebSocket upgrade on the Trellis origin, at its root like any path,
+    // reaches the broker. Upgrades are an HTTP/1.1 mechanism.
+    let upgraded = reqwest::Client::builder()
+        .no_proxy()
+        .http1_only()
+        .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(&ca).unwrap()).unwrap())
+        .build()
+        .unwrap()
+        .get(format!("{origin}/"))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upgraded.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
 
     // A server whose certificate no longer comes from the accepted issuer,
     // such as another installation's, is refused.

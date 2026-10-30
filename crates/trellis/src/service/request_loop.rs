@@ -1701,7 +1701,7 @@ mod tests {
             .register_service_sharing_apis::<Participant>("event-proof-health")
             .await
             .unwrap();
-        let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
         let publisher =

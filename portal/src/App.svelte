@@ -75,10 +75,7 @@
   }
 
   const query = new URL(window.location.href).searchParams;
-  // A development installation serves sign-in under a path on the Console's
-  // origin. The server names that path here, and every path below is under it.
-  const base = document.documentElement.dataset.base ?? "";
-  const path = window.location.pathname.slice(base.length);
+  const path = window.location.pathname;
 
   /** Uppercases a typed device code and groups it as `XXXX-XXXX`. */
   function formatDeviceCode(value: string): string {
@@ -137,7 +134,7 @@
     enrollmentError = "";
     sessionStorage.setItem(codeKey, enrollmentCode);
     try {
-      const response = await fetch(`${base}/portal/device-review/inspect`, {
+      const response = await fetch(`/portal/device-review/inspect`, {
         method: "POST",
         credentials: "same-origin",
         cache: "no-store",
@@ -215,7 +212,7 @@
       }
     };
     void fetch(
-      `${base}/portal/theme${transaction ? `?transaction=${encodeURIComponent(transaction)}` : ""}`,
+      `/portal/theme${transaction ? `?transaction=${encodeURIComponent(transaction)}` : ""}`,
       { credentials: "same-origin", signal: controller.signal },
     )
       .then((response) => (response.ok ? response.json() : null))
@@ -365,7 +362,7 @@
     signOutFailed = false;
     try {
       if (csrf) {
-        const response = await fetch(`${base}/portal/logout`, {
+        const response = await fetch(`/portal/logout`, {
           method: "POST",
           credentials: "same-origin",
           body: new URLSearchParams({ csrf, request_id: decisionKey }),
@@ -403,7 +400,7 @@
       )
         enrollmentStep = "login";
       else if (enrollmentCode) void inspectEnrollment();
-      void fetch(`${base}/portal/providers`, {
+      void fetch(`/portal/providers`, {
         credentials: "same-origin",
         cache: "no-store",
       })
@@ -424,7 +421,7 @@
     const controller = new AbortController();
     if (login) {
       void fetch(
-        `${base}/portal/providers?transaction=${encodeURIComponent(transaction)}`,
+        `/portal/providers?transaction=${encodeURIComponent(transaction)}`,
         {
           signal: controller.signal,
           credentials: "same-origin",
@@ -444,14 +441,11 @@
         });
       return () => controller.abort();
     }
-    void fetch(
-      `${base}/portal/authorization/${encodeURIComponent(transaction)}`,
-      {
-        signal: controller.signal,
-        credentials: "same-origin",
-        cache: "no-store",
-      },
-    )
+    void fetch(`/portal/authorization/${encodeURIComponent(transaction)}`, {
+      signal: controller.signal,
+      credentials: "same-origin",
+      cache: "no-store",
+    })
       .then(async (response) => {
         if (!response.ok) throw new Error("authorization_unavailable");
         const result: Consent = await response.json();
@@ -567,7 +561,7 @@
           link.
         </p>
       {:else}
-        <form method="post" action={`${base}/portal/device-review/decide`}>
+        <form method="post" action={`/portal/device-review/decide`}>
           <input type="hidden" name="csrf" value={csrf} />
           <input type="hidden" name="review_id" value={reviewId} />
           <input type="hidden" name="code" value={enrollmentCode} />
@@ -607,7 +601,7 @@
           {#each providers as provider (provider.providerId)}
             <a
               class="button block"
-              href={`${base}/portal/oidc/${encodeURIComponent(provider.providerId)}/begin?review=${encodeURIComponent(reviewId)}`}
+              href={`/portal/oidc/${encodeURIComponent(provider.providerId)}/begin?review=${encodeURIComponent(reviewId)}`}
             >
               Continue with {provider.displayName}
             </a>
@@ -617,7 +611,7 @@
       {/if}
       {#if localIdentity}<form
           method="post"
-          action={`${base}/portal/device-review/login`}
+          action={`/portal/device-review/login`}
         >
           <input type="hidden" name="csrf" value={csrf} />
           <input type="hidden" name="review_id" value={reviewId} />
@@ -685,7 +679,7 @@
   <main class="card narrow">
     <h1>Connect a device</h1>
     <p class="muted">Enter the code shown on your device.</p>
-    <form method="post" action={`${base}/portal/device`}>
+    <form method="post" action={`/portal/device`}>
       <input type="hidden" name="csrf" value={csrf} />
       <label class="field" for="user-code">Code</label>
       <input
@@ -726,7 +720,7 @@
         Your account wasn't created. Try again.
       </p>
     {/if}
-    <form method="post" action={`${base}/portal/sign-up`}>
+    <form method="post" action={`/portal/sign-up`}>
       <input type="hidden" name="csrf" value={csrf} />
       <input type="hidden" name="request_id" value={transaction} />
       <label class="field" for="name">Name</label>
@@ -783,7 +777,7 @@
         {#each providers as provider (provider.providerId)}
           <a
             class="button block"
-            href={`${base}/portal/oidc/${encodeURIComponent(provider.providerId)}/begin?transaction=${encodeURIComponent(transaction)}`}
+            href={`/portal/oidc/${encodeURIComponent(provider.providerId)}/begin?transaction=${encodeURIComponent(transaction)}`}
           >
             Continue with {provider.displayName}
           </a>
@@ -794,7 +788,7 @@
     {#if providerError}<p class="alert" role="status">
         Company sign-in is unavailable right now.
       </p>{/if}
-    {#if localIdentity}<form method="post" action={`${base}/portal/login`}>
+    {#if localIdentity}<form method="post" action={`/portal/login`}>
         <input type="hidden" name="csrf" value={csrf} />
         <input type="hidden" name="request_id" value={transaction} />
         <label class="field" for="username">Username</label>
@@ -865,7 +859,7 @@
       </p>
     {/if}
 
-    <form method="post" action={`${base}/portal/approve`}>
+    <form method="post" action={`/portal/approve`}>
       <input type="hidden" name="csrf" value={csrf} />
       <input type="hidden" name="transaction" value={transaction} />
       <input type="hidden" name="presentation" value={view.presentationId} />

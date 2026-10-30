@@ -8,7 +8,7 @@ pub const DEFAULT_SYSTEM_ACCOUNT: &str = "SYS";
 pub const DEFAULT_AUTH_ACCOUNT: &str = "AUTH";
 /// Default Trellis runtime account name.
 pub const DEFAULT_TRELLIS_ACCOUNT: &str = "TRELLIS";
-/// Default Trellis HTTP port.
+/// Default Trellis listener port: sign-in, discovery and health.
 pub const DEFAULT_TRELLIS_PORT: u16 = 3000;
 /// Default native NATS server URL.
 pub const DEFAULT_NATS_SERVER_URL: &str = "tls://localhost:4222";
@@ -22,7 +22,7 @@ pub const DEFAULT_NATS_WEBSOCKET_PORT: u16 = 8080;
 pub const DEFAULT_NATS_WEBSOCKET_URL: &str = "wss://localhost:8080";
 /// Default Trellis public HTTPS origin.
 pub const DEFAULT_PUBLIC_ORIGIN: &str = "https://localhost:3000";
-/// Default dedicated OAuth listener port.
-pub const DEFAULT_OAUTH_PORT: u16 = 3001;
-/// Default dedicated OAuth public origin.
-pub const DEFAULT_OAUTH_ORIGIN: &str = "https://localhost:3001";
+/// Default Console listener port.
+pub const DEFAULT_CONSOLE_PORT: u16 = 3001;
+/// Default Console public origin.
+pub const DEFAULT_CONSOLE_ORIGIN: &str = "https://localhost:3001";

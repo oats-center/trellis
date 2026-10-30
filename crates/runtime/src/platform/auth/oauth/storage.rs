@@ -1558,7 +1558,6 @@ mod tests {
                     instance_id: ulid::Ulid::new().to_string(),
                     account: "cimd-retention".into(),
                     oauth_issuer: "https://auth.example".into(),
-                    development: false,
                     console_origin: "https://trellis.example".into(),
                     upstream_tls_roots_pem: Vec::new(),
                     authority_lifetime_seconds: 300,

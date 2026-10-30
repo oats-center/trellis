@@ -30,7 +30,7 @@ test("T03 a consumption pause fills the window and resumes in order", async () =
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: `live-flow-${crypto.randomUUID()}`,
       seed: identity.seed,
@@ -90,7 +90,7 @@ test("T12 large bodies stay ordered under the bounded byte window", async () => 
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant: participants.Provider.participant,
       name: `live-flow-${crypto.randomUUID()}`,
       seed: identity.seed,

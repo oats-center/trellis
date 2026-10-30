@@ -31,7 +31,7 @@ test("an administrator approves a device from its activation link", async () => 
     });
     assert(provisioned.provisioningSecret);
     const activation = await checkDeviceActivation({
-      trellisUrl: runtime.oauthIssuer,
+      trellisUrl: runtime.trellisUrl,
       participant,
       rootSecret: crypto.getRandomValues(new Uint8Array(32)),
       provisioningSecret: provisioned.provisioningSecret,
