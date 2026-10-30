@@ -181,6 +181,12 @@ pub(crate) struct InitConfigArgs {
     /// proxy. Native NATS always terminates its own TLS.
     pub(crate) nats_websocket_behind_proxy: bool,
 
+    #[arg(long)]
+    /// Advertise only the NATS WebSocket, so every client connects through it
+    /// and native NATS stays private. --nats-server-url is then only where
+    /// Trellis itself reaches NATS.
+    pub(crate) nats_websocket_only: bool,
+
     #[arg(long, value_enum)]
     /// How browsers reach NATS WebSockets. `relay` serves them on the Console
     /// origin at `/nats` through the runtime, so one certificate covers both;
@@ -387,6 +393,7 @@ pub(crate) fn init_config(
     options.runtime.trusted_proxies = args.trusted_proxy.clone();
     options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
     options.runtime.nats_websocket_via_runtime = relay;
+    options.runtime.nats_websocket_only = args.nats_websocket_only;
     options.runtime.extra_origins = args.extra_origin.clone();
     options.runtime.bind_address = args.bind_address;
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
@@ -478,6 +485,7 @@ pub(crate) fn init_config(
             &tls.ca_certificate,
             &tls.ca_sha256_fingerprint,
             tls.leaf_not_after,
+            !options.runtime.trusted_proxies.is_empty(),
         );
     }
     Ok(())
@@ -525,12 +533,26 @@ fn rfc3339(value: time::OffsetDateTime) -> String {
         .unwrap_or_else(|_| value.to_string())
 }
 
-/// Always-on warning for installations serving their generated CA.
+/// Always-on warning for installations serving their generated CA. Behind a
+/// proxy, browsers get the proxy's certificate and only NATS serves this one.
 fn warn_generated_tls(
     ca: &std::path::Path,
     fingerprint: &str,
     leaf_not_after: time::OffsetDateTime,
+    behind_proxy: bool,
 ) {
+    if behind_proxy {
+        eprintln!(
+            "note: Trellis generated a CA ({}) for NATS. Console and sign-in use your \
+            proxy's certificate, so browsers never see it.\n  Anything that connects to \
+            native NATS directly accepts it only with this SHA-256 fingerprint:\n  \
+            {fingerprint}\n  Leaf certificates expire {}; renew them with `trellis-server \
+            tls renew`.",
+            ca.display(),
+            rfc3339(leaf_not_after),
+        );
+        return;
+    }
     eprintln!(
         "warning: this installation uses certificates Trellis generated itself, which \
         suit development only.\n  Browsers warn the first time and `trellis login` asks; \
@@ -627,6 +649,10 @@ pub(crate) fn tls(command: TlsSubcommand) -> miette::Result<()> {
                             .leaf
                             .as_ref()
                             .map_or(notice.ca.not_after, |leaf| leaf.not_after),
+                        matches!(
+                            config.http_transport(),
+                            trellis_runtime::ListenerTransport::Proxy { .. }
+                        ),
                     );
                 }
                 None => println!("this installation does not use Trellis-generated TLS"),

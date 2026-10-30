@@ -578,6 +578,8 @@ pub(crate) struct RuntimeContext {
     /// Fixed owner contexts for selected runtime subsystems.
     owners: BTreeMap<OwnerGroup, OwnerContext>,
     http_router: std::sync::Mutex<axum::Router>,
+    /// Whether startup has completed, reported by every listener's `/readyz`.
+    pub(crate) http_ready: Arc<std::sync::atomic::AtomicBool>,
     /// Platform-owned aggregate store; other modes may only read provisioned identity.
     pub(crate) authorization_store:
         std::sync::OnceLock<Arc<crate::platform::auth::SqliteAuthorizationStore>>,
@@ -785,6 +787,7 @@ async fn run_owned(
         trellis_nats,
         owners: ownership.contexts(),
         http_router: std::sync::Mutex::new(axum::Router::new()),
+        http_ready: Arc::default(),
         authorization_store: std::sync::OnceLock::new(),
         live_providers: crate::platform::LiveProviderSlots::new(),
     };
@@ -836,7 +839,7 @@ async fn supervise_owned(
     }
     // Readiness stays false until built-in live providers have finished their
     // bootstrap, so callers never begin work against half-started routes.
-    let http_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let http_ready = std::sync::Arc::clone(&context.http_ready);
     // Register the OS shutdown signal before the HTTP listener becomes
     // observable. A host can connect to the bound port immediately, so a
     // SIGTERM delivered during startup must already be observed cooperatively

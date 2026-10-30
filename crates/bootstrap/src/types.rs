@@ -115,6 +115,9 @@ pub struct TrellisRuntimeBootstrapConfig {
     /// The broker's WebSocket listener then serves plaintext for the runtime,
     /// and `nats_websocket_url` is not used.
     pub nats_websocket_via_runtime: bool,
+    /// Advertise only the WebSocket to clients; `nats_server_url` is then only
+    /// where the runtime itself reaches NATS.
+    pub nats_websocket_only: bool,
     /// Development mode: the Console listener also serves sign-in under
     /// `/auth`, so one certificate covers everything a browser reaches.
     pub development: bool,
@@ -153,6 +156,7 @@ impl Default for TrellisRuntimeBootstrapConfig {
             trusted_proxies: Vec::new(),
             nats_websocket_behind_proxy: false,
             nats_websocket_via_runtime: false,
+            nats_websocket_only: false,
             development: false,
             name: DEFAULT_TRELLIS_NAME.to_string(),
             trellis_port: DEFAULT_TRELLIS_PORT,

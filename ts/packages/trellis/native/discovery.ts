@@ -64,6 +64,7 @@ function issuerOf(address: string): string {
 /** Explicit selected issuer, native transport addresses, and initial trust pin. */
 export type NativeOAuthServer = Readonly<{
   issuer: string;
+  /** Native NATS addresses, or the WebSocket ones when the Trellis advertises only those. */
   natsServers: readonly string[];
   trust: RuntimeAuthorizationTrust;
   /** The token endpoint's current DPoP nonce, when the issuer offers it, so the first token request needs no challenge. */
@@ -153,9 +154,13 @@ export async function discoverNativeOAuth(
       )
         throw new AuthError({ reason: "InvalidIssuer" });
     }
-    const nativeServers = metadata.trellis.natsEndpoints.filter((server) =>
+    // Native NATS is preferred; a Trellis that keeps it private advertises
+    // only its WebSocket. One connection can't mix the two.
+    const native = metadata.trellis.natsEndpoints.filter((server) =>
       /^(nats|tls):/.test(server),
     );
+    const nativeServers =
+      native.length > 0 ? native : [...metadata.trellis.natsEndpoints];
     if (nativeServers.length === 0)
       throw new AuthError({ reason: "InvalidIssuer" });
     return ok({

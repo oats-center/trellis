@@ -242,6 +242,45 @@ HTTPS in a browser, so something has to terminate TLS. NATS's native port
 always serves its own TLS and can't sit behind a TLS-terminating proxy; only
 its WebSocket port can (`--nats-websocket-behind-proxy`).
 
+For the proxy's health checks, both the Console and sign-in ports answer
+`/healthz` and `/readyz`, whatever `Host` header the check sends. `/readyz`
+returns `503` until the server has finished starting. Every other sign-in
+page answers only its own hostname.
+
+### Only HTTPS in public
+
+`--nats-websocket-only` keeps native NATS private. Clients are offered only
+the WebSocket, and the `trellis` CLI, services and devices all connect over
+it, so nothing but HTTPS has to reach the internet. `--nats-server-url` is then
+only where Trellis itself reaches NATS, so leave it at its `localhost` default
+when Trellis runs NATS.
+
+For example, behind an AWS Application Load Balancer that holds the
+certificate for `trellis.example.com` and `auth.example.com`, with the
+instance in a VPC whose range is `172.31.0.0/16`:
+
+```sh
+trellis-server init --tls generated \
+  --trusted-proxy 172.31.0.0/16 \
+  --public-origin https://trellis.example.com \
+  --oauth-origin https://auth.example.com \
+  --nats-websocket-only
+```
+
+The load balancer then needs one HTTPS listener with two host rules:
+
+| Host                  | Forward to | Health check |
+| --------------------- | ---------- | ------------ |
+| `trellis.example.com` | HTTP 3000  | `/readyz`    |
+| `auth.example.com`    | HTTP 3001  | `/readyz`    |
+
+Browsers and clients reach NATS at `wss://trellis.example.com/nats`, through
+the same rule as the Console. Raise the load balancer's idle timeout above its
+60-second default, or it cuts quiet NATS connections. Allow ports 3000 and
+3001 only from the load balancer. Here `--tls generated` only covers
+Trellis's own connection to NATS on the instance; people only ever see the
+load balancer's certificate.
+
 A listener that serves its own certificate looks like this in `config.toml`:
 
 ```toml

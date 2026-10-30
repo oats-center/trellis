@@ -127,7 +127,11 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         client: Some(ClientConfig {
             ws_nats_servers: (!options.runtime.nats_websocket_via_runtime)
                 .then(|| vec![options.runtime.nats_websocket_url.clone()]),
-            nats_servers: Some(vec![options.runtime.nats_server_url.clone()]),
+            nats_servers: Some(if options.runtime.nats_websocket_only {
+                Vec::new()
+            } else {
+                vec![options.runtime.nats_server_url.clone()]
+            }),
         }),
         leases: Some(LeasesConfig {
             bucket: Some("trellis_runtime_leases".to_string()),

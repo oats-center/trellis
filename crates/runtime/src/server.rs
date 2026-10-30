@@ -105,20 +105,24 @@ pub async fn serve_http_listener(
     let listener = crate::listener::LoadedListener::load(listener, origin, transport)
         .await
         .map_err(ServerError::Transport)?;
-    let state = HttpState {
-        version: build_version_info(mode),
-        ready,
-    };
-    let router = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/readyz", get(readyz))
-        .with_state(state)
-        .merge(application_router);
+    let router = health_router(mode, ready).merge(application_router);
 
     listener
         .serve(router, shutdown)
         .await
         .map_err(ServerError::Serve)
+}
+
+/// Answers `/healthz` and `/readyz` for one runtime listener, whatever `Host`
+/// a load balancer's health check sends.
+pub(crate) fn health_router(mode: RuntimeMode, ready: Arc<AtomicBool>) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .with_state(HttpState {
+            version: build_version_info(mode),
+            ready,
+        })
 }
 
 /// Runs the runtime readiness HTTP server until `shutdown` resolves.

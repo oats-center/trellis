@@ -267,7 +267,13 @@ HTTPS-terminating proxy. The runtime can be that proxy: with
 upgrades on `/nats` to the broker's plaintext WebSocket listener and advertises
 `wss://<public origin>/nats` instead of configured WebSocket hints, so a browser
 trusts one host and certificate. Production deployments with publicly trusted
-certificates can still expose the broker's WebSocket listener directly. Runtime startup selects its rustls provider before
+certificates can still expose the broker's WebSocket listener directly. A
+deployment that keeps native NATS private advertises an empty `[client]
+nats_servers`, so discovery lists only WebSocket endpoints; Rust and TypeScript
+native clients use native endpoints when any are advertised and otherwise the
+WebSocket ones, never a mix in one connection. Both HTTP listeners answer
+`/healthz` and `/readyz` before any `Host` check, so a load balancer that
+addresses a target directly can probe them. Runtime startup selects its rustls provider before
 opening NATS. `[nats] ca_certificate` names a private CA the runtime trusts for
 its own broker connections, built-in providers, and split-role Auth discovery;
 publicly trusted brokers omit it.

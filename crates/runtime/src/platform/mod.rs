@@ -201,7 +201,12 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         })?;
     context.register_http_router(console::router(&context.config)?)?;
     let listener = match listener {
-        Some(listener) => Some((listener, router)),
+        // Health checks address the listener directly, so they're answered
+        // before sign-in's Host check.
+        Some(listener) => Some((
+            listener,
+            crate::server::health_router(context.mode, context.http_ready.clone()).merge(router),
+        )),
         None => {
             context.register_http_router(axum::Router::new().nest(
                 crate::config::DEVELOPMENT_SIGN_IN_PATH,

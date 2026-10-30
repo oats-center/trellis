@@ -24,7 +24,8 @@ use crate::client::{RuntimeAuthorizationTrust, SessionAuth};
 pub struct NativeOAuthServer {
     /// Selected canonical OAuth issuer origin.
     pub issuer: String,
-    /// Native NATS/TLS transport endpoints advertised by that origin.
+    /// Native NATS endpoints advertised by that origin, or its WebSocket ones
+    /// when it advertises only those.
     pub nats_servers: Vec<String>,
     /// Initial installation trust; for existing credentials this is only a
     /// successor hint that must be authenticated from their retained issuer pin.
@@ -142,7 +143,7 @@ pub async fn discover_native_oauth(
     {
         return Err(NativeOAuthError::InvalidResponse);
     }
-    let mut nats_servers = Vec::new();
+    let (mut nats_servers, mut websocket_servers) = (Vec::new(), Vec::new());
     for endpoint in &metadata.nats_endpoints {
         let parsed = url::Url::parse(endpoint).map_err(|_| NativeOAuthError::InvalidResponse)?;
         if !matches!(parsed.scheme(), "nats" | "tls" | "ws" | "wss")
@@ -157,12 +158,19 @@ pub async fn discover_native_oauth(
         {
             return Err(NativeOAuthError::InvalidResponse);
         }
+        endpoint
+            .parse::<async_nats::ServerAddr>()
+            .map_err(|_| NativeOAuthError::InvalidResponse)?;
         if matches!(parsed.scheme(), "nats" | "tls") {
-            endpoint
-                .parse::<async_nats::ServerAddr>()
-                .map_err(|_| NativeOAuthError::InvalidResponse)?;
             nats_servers.push(endpoint.clone());
+        } else {
+            websocket_servers.push(endpoint.clone());
         }
+    }
+    // Native NATS is preferred; a Trellis that keeps it private advertises
+    // only its WebSocket. One connection can't mix the two.
+    if nats_servers.is_empty() {
+        nats_servers = websocket_servers;
     }
     if nats_servers.is_empty() {
         return Err(NativeOAuthError::InvalidResponse);

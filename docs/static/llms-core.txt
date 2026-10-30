@@ -250,7 +250,9 @@ directly. A pinned CA that changes is a hard error. Browsers trust the CA
 through the operating system or browser trust store. With generated TLS,
 `trellis-server init` has the runtime relay NATS WebSockets at
 `wss://<console host>/nats` by default (`--nats-websocket direct` opts out), so
-one host and certificate cover both.
+one host and certificate cover both. `trellis-server init --nats-websocket-only`
+offers clients only the WebSocket; the CLI, services and devices then connect
+over it, so only HTTPS needs to be public.
 
 ### OAuth portal and issuer custody
 

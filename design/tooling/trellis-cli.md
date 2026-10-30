@@ -194,7 +194,10 @@ generates), `--trusted-proxy` (supplied TLS then needs only the NATS
 certificate), and `--nats-websocket-behind-proxy` or
 `--nats-websocket relay|direct` (relay, the default with generated TLS unless a
 WebSocket URL or external proxy is given, has the runtime serve `/nats` on the
-Console origin from the broker's plaintext WebSocket listener), validates that every
+Console origin from the broker's plaintext WebSocket listener), and
+`--nats-websocket-only` (clients are offered only the WebSocket and native NATS
+stays private; `--nats-server-url` is then only where the runtime reaches the
+broker), validates that every
 endpoint can be protected before writing, and writes a generated CA's private
 key to the bundle's `tls-ca/` folder, to `<out>-tls-ca/` with `--system`, or to
 `--tls-ca-dir`. It always warns

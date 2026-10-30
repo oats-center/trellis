@@ -58,6 +58,7 @@ pub struct TrellisTestRuntimeBuilder {
     timeouts: TestTimeouts,
     timeouts_explicit: bool,
     extra_origins: Vec<String>,
+    nats_websocket_only: bool,
     admin_username: Option<String>,
     admin_password: Option<String>,
 }
@@ -72,6 +73,7 @@ impl Default for TrellisTestRuntimeBuilder {
             timeouts: TestTimeouts::default(),
             timeouts_explicit: false,
             extra_origins: Vec::new(),
+            nats_websocket_only: false,
             admin_username: None,
             admin_password: None,
         }
@@ -122,6 +124,13 @@ impl TrellisTestRuntimeBuilder {
         self.extra_origins.push(origin.into());
         self
     }
+    /// Advertises only the NATS WebSocket, as a Trellis that keeps native NATS
+    /// private does, so every client connects over WebSocket.
+    #[must_use]
+    pub fn nats_websocket_only(mut self) -> Self {
+        self.nats_websocket_only = true;
+        self
+    }
     /// Pins the sandbox administrator's local username; defaults to `trellis-testkit-admin`.
     #[must_use]
     pub fn admin_username(mut self, username: impl Into<String>) -> Self {
@@ -170,6 +179,14 @@ impl TrellisTestRuntimeBuilder {
             .workdir_parent
             .clone()
             .unwrap_or_else(std::env::temp_dir);
+        // Installation choices the builder adds to `trellis-server init`.
+        let mut init_args = Vec::new();
+        for origin in &self.extra_origins {
+            init_args.extend(["--extra-origin".to_owned(), origin.clone()]);
+        }
+        if self.nats_websocket_only {
+            init_args.push("--nats-websocket-only".to_owned());
+        }
         let sandbox = Sandbox::create(&parent, self.retention)?;
         let workdir = sandbox.root().to_owned();
         match tokio::time::timeout(
@@ -181,7 +198,7 @@ impl TrellisTestRuntimeBuilder {
                 timeouts,
                 username,
                 &password,
-                &self.extra_origins,
+                &init_args,
             ),
         )
         .await
@@ -271,7 +288,7 @@ async fn start_once(
     timeouts: TestTimeouts,
     username: &str,
     password: &str,
-    extra_origins: &[String],
+    init_args: &[String],
 ) -> Result<TrellisTestRuntime, TrellisTestError> {
     let mut infrastructure = Infrastructure {
         sandbox: Some(sandbox),
@@ -352,9 +369,7 @@ async fn start_once(
                 "--nats-data-dir",
             ])
             .arg(workdir.join("state/nats/data"));
-        for origin in extra_origins {
-            command.arg("--extra-origin").arg(origin);
-        }
+        command.args(init_args);
         crate::process::run(
             &mut command,
             &workdir.join("logs/bootstrap.log"),

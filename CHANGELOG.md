@@ -18,6 +18,12 @@ and this project adheres to
 - `Auth.Users.Delete`, `trellis users delete` and a Delete account button on
   the Console's user page. A deleted account is signed out everywhere, its
   sign-ins, profile and access are removed, and its username is free again.
+- `trellis-server init --nats-websocket-only` keeps native NATS private. The
+  CLI, Rust and TypeScript services, native apps and devices now connect over
+  the WebSocket whenever a Trellis offers no native NATS address, so a Trellis
+  behind a load balancer needs only HTTPS in public.
+- The sign-in port answers `/healthz` and `/readyz`, and both ports answer them
+  whatever `Host` header a load balancer's health check sends.
 
 ### Changed
 
@@ -26,6 +32,9 @@ and this project adheres to
   connections, and is now titled "Manage sign-in and services". Grant
   `accounts.manage` to whoever manages accounts. The Administrator role's
   group includes both.
+- `trellis-server init` and `tls status` no longer tell you browsers will warn
+  about a generated certificate when a proxy serves Console and sign-in; they
+  say it's only used for NATS.
 
 ## [0.100.0-rc.17] - 2026-10-29
 
