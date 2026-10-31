@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.19] - 2026-10-31
+
 ### Fixed
 
 - `--nats-websocket-behind-proxy` now works with a proxy or load balancer on
