@@ -259,8 +259,10 @@ directly. A pinned CA that changes is a hard error. Browsers trust the CA
 through the operating system or browser trust store. With generated TLS,
 `trellis-server init` has the Trellis port hand every WebSocket upgrade to NATS,
 advertising `wss://<trellis host>` (`--nats-websocket direct` opts out), so one
-host and certificate cover both. A proxy in front can apply the same rule
-(`--nats-websocket-url wss://<trellis host> --nats-websocket-behind-proxy`). `trellis-server init --nats-websocket-only`
+host and certificate cover both. A proxy in front, even on another machine, can
+apply the same rule (`--nats-websocket-url wss://<trellis host>
+--nats-websocket-behind-proxy`); NATS then serves its plaintext WebSocket on
+every interface, so firewall that port to the proxy. `trellis-server init --nats-websocket-only`
 offers clients only the WebSocket; the CLI, services and devices then connect
 over it, so only HTTPS needs to be public.
 

@@ -760,8 +760,13 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                     }
                 }
             };
+            let relayed = config
+                .http
+                .as_ref()
+                .is_some_and(|http| http.nats_websocket_upstream.is_some());
             let server = LocalNats::builder()
                 .binary(source)
+                .relayed_websocket(relayed)
                 .source(managed_paths.source)
                 .state(managed_paths.state)
                 .ports(nats_ports)

@@ -274,16 +274,19 @@ The load balancer's HTTPS listener then has these rules, in this order:
 
 | Condition                                                  | Forward to | Health check            |
 | ---------------------------------------------------------- | ---------- | ----------------------- |
-| Host `trellis.example.com` and header `Upgrade: websocket` | HTTP 8080  | `/healthz` on port 8222 |
+| Host `trellis.example.com` and header `Upgrade: websocket` | HTTP 8080  | `/`, success code `400` |
 | Host `trellis.example.com`                                 | HTTP 3000  | `/readyz`               |
 | Host `console.example.com`                                 | HTTP 3001  | `/readyz`               |
 
-NATS's WebSocket port doesn't answer plain requests, so its health check asks
-NATS's monitoring port instead. Raise the load balancer's idle timeout above
-its 60-second default, or it cuts quiet NATS connections. Allow ports 3000,
-3001, 8080 and 8222 only from the load balancer. Here `--tls generated` only
-covers Trellis's own connection to NATS on the instance; people only ever see
-the load balancer's certificate.
+With `--nats-websocket-behind-proxy`, NATS serves its WebSocket as plain HTTP
+on every interface, so a load balancer on another machine reaches it. That
+port answers a plain request with `400`, which is what its health check
+expects; NATS's monitoring port stays on loopback. Raise the load balancer's
+idle timeout above its 60-second default, or it cuts quiet NATS connections.
+Allow ports 3000, 3001 and 8080 only from the load balancer: nothing else may
+reach the plaintext WebSocket. Here `--tls generated` only covers Trellis's
+own connection to NATS on the instance; people only ever see the load
+balancer's certificate.
 
 Without a WebSocket rule in the proxy, leave out `--nats-websocket-url` and
 `--nats-websocket-behind-proxy`: Trellis's own port then applies the same rule,

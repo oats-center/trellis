@@ -12,8 +12,19 @@ pub struct NatsTlsFiles {
     pub certificate: String,
     /// PEM private key.
     pub private_key: String,
-    /// Serve WebSockets as plaintext behind an HTTPS-terminating proxy.
-    pub websocket_behind_proxy: bool,
+    /// How the WebSocket listener is reached.
+    pub websocket: NatsWebsocket,
+}
+
+/// How clients reach the broker's WebSocket listener.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NatsWebsocket {
+    /// The broker terminates TLS itself.
+    Tls,
+    /// Plaintext for an HTTPS-terminating proxy, which may run on another host.
+    BehindProxy,
+    /// Plaintext for the Trellis runtime on the same host, which relays it.
+    Relayed,
 }
 
 /// Renders the native `tls` block and the WebSocket TLS setting.
@@ -29,10 +40,10 @@ fn render_tls_blocks(tls: Option<&NatsTlsFiles>) -> (String, String) {
                 quote_nats_path(&files.certificate),
                 quote_nats_path(&files.private_key)
             );
-            let websocket = if files.websocket_behind_proxy {
-                "  no_tls: true".to_owned()
-            } else {
+            let websocket = if files.websocket == NatsWebsocket::Tls {
                 format!("  tls {{\n  {}\n  }}", block.replace('\n', "\n  "))
+            } else {
+                "  no_tls: true".to_owned()
             };
             (format!("tls {{\n{block}\n}}\n\n"), websocket)
         }
@@ -431,9 +442,10 @@ fn quote_nats_path(value: &str) -> String {
 
 /// Render a host-run NATS server config with host-path JetStream store and JWT config.
 ///
-/// Monitoring always binds loopback. With `tls`, native and TLS WebSocket
-/// listeners bind every interface; a WebSocket behind a proxy, and every
-/// listener without TLS, binds loopback only.
+/// Monitoring always binds loopback. With `tls`, native and WebSocket
+/// listeners bind every interface, so a proxy on another host reaches the
+/// WebSocket; a relayed WebSocket, and every listener without TLS, binds
+/// loopback only.
 #[must_use]
 pub fn render_local_nats_config(
     server_name: &str,
@@ -451,7 +463,7 @@ pub fn render_local_nats_config(
     } else {
         "127.0.0.1"
     };
-    let websocket_bind = if tls.is_some_and(|files| !files.websocket_behind_proxy) {
+    let websocket_bind = if tls.is_some_and(|files| files.websocket != NatsWebsocket::Relayed) {
         "0.0.0.0"
     } else {
         "127.0.0.1"

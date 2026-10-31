@@ -194,10 +194,12 @@ and `--console-origin` and `--console-port` for the Console's own listener. It
 selects listener security with `--tls
 generated|supplied|loopback-development` (required unless `--dev`, which
 generates), `--trusted-proxy` (supplied TLS then needs only the NATS
-certificate), and `--nats-websocket-behind-proxy` or
-`--nats-websocket relay|direct` (relay, the default with generated TLS unless a
-WebSocket URL or external proxy is given, has the Trellis port send every
-WebSocket upgrade to the broker's plaintext WebSocket listener), and
+certificate), and `--nats-websocket-behind-proxy` (the broker's plaintext
+WebSocket listens on every interface for a proxy that may run on another host)
+or `--nats-websocket relay|direct` (relay, the default with generated TLS
+unless a WebSocket URL or external proxy is given, has the Trellis port send
+every WebSocket upgrade to the broker's plaintext WebSocket listener, which
+then stays on loopback), and
 `--nats-websocket-only` (clients are offered only the WebSocket and native NATS
 stays private; `--nats-server-url` is then only where the runtime reaches the
 broker), validates that every

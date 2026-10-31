@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::constants::DEFAULT_TRELLIS_NAME;
 use crate::error::BootstrapError;
-use crate::nats_config::{render_nats_config, resolved_server_name, NatsTlsFiles};
+use crate::nats_config::{render_nats_config, resolved_server_name, NatsTlsFiles, NatsWebsocket};
 use crate::nats_material::generate_nats_material;
 use crate::output::{create_layout, write_nats_material, write_private_file};
 use crate::runtime_config::render_trellis_config;
@@ -126,8 +126,13 @@ pub fn generate_trellis_bootstrap(
         (options.runtime.tls != BootstrapTls::LoopbackDevelopment).then(|| NatsTlsFiles {
             certificate: "/etc/nats/tls/nats.crt".into(),
             private_key: "/etc/nats/tls/nats.key".into(),
-            websocket_behind_proxy: options.runtime.nats_websocket_behind_proxy
-                || options.runtime.nats_websocket_via_runtime,
+            websocket: if options.runtime.nats_websocket_via_runtime {
+                NatsWebsocket::Relayed
+            } else if options.runtime.nats_websocket_behind_proxy {
+                NatsWebsocket::BehindProxy
+            } else {
+                NatsWebsocket::Tls
+            },
         });
     generate_nats_bootstrap_inner(&nats_options, &options.runtime.name, nats_tls.as_ref())?;
     let summary = match &options.runtime.tls {

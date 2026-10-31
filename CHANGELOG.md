@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `--nats-websocket-behind-proxy` now works with a proxy or load balancer on
+  another machine. A server running its own NATS used to keep the plaintext
+  WebSocket on loopback, so the proxy timed out; it now listens on every
+  interface. A WebSocket that Trellis relays itself stays on loopback.
+
 ## [0.100.0-rc.18] - 2026-10-30
 
 ### Added

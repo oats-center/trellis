@@ -200,7 +200,7 @@ fn nats_config_render_round_trips_custom_ports() {
         Some(&NatsTlsFiles {
             certificate: "/etc/nats/tls/nats.crt".into(),
             private_key: "/etc/nats/tls/nats.key".into(),
-            websocket_behind_proxy: false,
+            websocket: NatsWebsocket::Tls,
         }),
     );
 
@@ -226,7 +226,7 @@ fn local_nats_config_render_round_trips_custom_ports() {
         Some(&NatsTlsFiles {
             certificate: "/tmp/trellis/nats/tls/nats.crt".into(),
             private_key: "/tmp/trellis/nats/tls/nats.key".into(),
-            websocket_behind_proxy: true,
+            websocket: NatsWebsocket::BehindProxy,
         }),
     );
 

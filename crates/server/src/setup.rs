@@ -426,7 +426,13 @@ pub(crate) fn init_config(
                     .then(|| trellis_bootstrap::NatsTlsFiles {
                         certificate: nats.join("tls/nats.crt").display().to_string(),
                         private_key: nats.join("tls/nats.key").display().to_string(),
-                        websocket_behind_proxy: args.nats_websocket_behind_proxy || relay,
+                        websocket: if relay {
+                            trellis_bootstrap::NatsWebsocket::Relayed
+                        } else if args.nats_websocket_behind_proxy {
+                            trellis_bootstrap::NatsWebsocket::BehindProxy
+                        } else {
+                            trellis_bootstrap::NatsWebsocket::Tls
+                        },
                     })
                     .as_ref(),
             ),

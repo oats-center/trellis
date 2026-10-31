@@ -689,9 +689,19 @@ pub struct LocalNatsBuilder {
     cache_dir: Option<PathBuf>,
     pid_file: Option<PathBuf>,
     output: Option<NatsOutput>,
+    relayed_websocket: bool,
 }
 
 impl LocalNatsBuilder {
+    /// Keep a plaintext WebSocket listener on loopback because a runtime on
+    /// this host relays it. Otherwise a plaintext WebSocket is for a
+    /// TLS-terminating proxy and listens on every interface.
+    #[must_use]
+    pub fn relayed_websocket(mut self, relayed: bool) -> Self {
+        self.relayed_websocket = relayed;
+        self
+    }
+
     /// Select where the managed nats-server executable comes from.
     #[must_use]
     pub fn binary(mut self, source: NatsBinarySource) -> Self {
@@ -820,7 +830,13 @@ impl LocalNatsBuilder {
             .then(|| trellis_bootstrap::NatsTlsFiles {
                 certificate: source.join("tls/nats.crt").display().to_string(),
                 private_key: source.join("tls/nats.key").display().to_string(),
-                websocket_behind_proxy: authored_config_websocket_plaintext(&authored_config),
+                websocket: if !authored_config_websocket_plaintext(&authored_config) {
+                    trellis_bootstrap::NatsWebsocket::Tls
+                } else if self.relayed_websocket {
+                    trellis_bootstrap::NatsWebsocket::Relayed
+                } else {
+                    trellis_bootstrap::NatsWebsocket::BehindProxy
+                },
             });
         let config = state.join("nats.conf");
         fs::write(
@@ -853,8 +869,10 @@ impl LocalNatsBuilder {
         )?;
         drop(reservations);
         let (native, websocket) = match &tls {
-            Some(files) if files.websocket_behind_proxy => ("tls", "ws"),
-            Some(_) => ("tls", "wss"),
+            Some(files) if files.websocket == trellis_bootstrap::NatsWebsocket::Tls => {
+                ("tls", "wss")
+            }
+            Some(_) => ("tls", "ws"),
             None => ("nats", "ws"),
         };
         Ok(LocalNats {
