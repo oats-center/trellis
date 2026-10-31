@@ -38,7 +38,12 @@ jobs:
           site_root="/${GITHUB_REPOSITORY#*/}"
           pages_root="${RUNNER_TEMP}/pages"
           release_root="${GITHUB_WORKSPACE}"
-          latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
+          # The released docs follow the newest stable tag, or the newest
+          # prerelease until a stable release exists.
+          latest_tag="$(git tag --list 'v*' --sort=-version:refname | grep -v -- - | head -n 1 || true)"
+          if [ -z "${latest_tag}" ]; then
+            latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
+          fi
 
           # Tags before 23cd10af fail to build (no mermaid grammar) and link to
           # API docs the site no longer generates.

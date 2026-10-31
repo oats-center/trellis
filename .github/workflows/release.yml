@@ -1483,3 +1483,19 @@ jobs:
             skopeo copy --all --dest-authfile "$auth" \
               "oci-archive:$RUNNER_TEMP/image/$IMAGE.tar" "docker://$REGISTRY/$owner/$IMAGE:$tag"
           done
+
+  publish-docs:
+    name: Publish the docs site
+    needs: [release-metadata, publish-crates, publish-npm, publish-images]
+    # The site follows `latest`: stable releases, and prereleases until the
+    # first stable release exists.
+    if: needs.release-metadata.outputs.latest == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Deploy the site from the new release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main
