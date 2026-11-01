@@ -556,6 +556,41 @@ mod tests {
             client.redirect_uris,
             vec!["http://localhost:3000/console/login"]
         );
+        // Turned off, the Console signs no one in, whatever answers its callback.
+        let thumbprint = oauth_as::jwt::EcdsaP256Key::generate("console")
+            .public_jwk()
+            .thumbprint();
+        let challenge = URL_SAFE_NO_PAD.encode(<sha2::Sha256 as sha2::Digest>::digest(
+            b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+        ));
+        let console_sign_in = [
+            ("response_type", "code"),
+            ("client_id", CONSOLE_CLIENT_ID),
+            ("redirect_uri", "http://localhost:3000/console/login"),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+            ("dpop_jkt", thumbprint.as_str()),
+        ];
+        let request = oauth_as::authorization::AuthorizationRequest::from_pairs(console_sign_in);
+        let mut without_console = config.clone();
+        without_console.console = Some(crate::ConsoleConfig {
+            enabled: Some(false),
+            origin: None,
+        });
+        for (config, accepted) in [(&config, true), (&without_console, false)] {
+            let store = Arc::new(
+                SqliteAuthorizationStore::open(&database, config, "test-account").unwrap(),
+            );
+            let engine = OAuthEngine::new(OAuthStorage::new(store, &[17u8; 32]).unwrap()).unwrap();
+            assert_eq!(
+                engine
+                    .server
+                    .validate_authorization_request(&request)
+                    .await
+                    .is_ok(),
+                accepted
+            );
+        }
         let cli_id = ClientId::new(CLI_CLIENT_ID);
         let engine =
             OAuthEngine::new(OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap()).unwrap();

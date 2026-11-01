@@ -2,16 +2,19 @@
 
 set -eu
 
-auth_url=${VITE_TRELLIS_AUTH_URL:-http://localhost:3000}
-nats_servers=${VITE_TRELLIS_NATS_SERVERS:-ws://localhost:8080}
+# The Console signs in with Trellis, which registered it at the origin this
+# container serves (`trellis-server init --console-origin`).
+: "${TRELLIS_ORIGIN:?set TRELLIS_ORIGIN to the Trellis origin, such as https://trellis.example.com}"
+: "${CONSOLE_ORIGIN:?set CONSOLE_ORIGIN to the origin this container is reached at}"
 
 js_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  printf '%s' "${1%/}" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-cat > /usr/share/nginx/html/assets/web/runtime-config.js <<EOF
-window.__TRELLIS_RUNTIME_CONFIG__ = {
-  authUrl: "$(js_escape "$auth_url")",
-  natsServers: "$(js_escape "$nats_servers")"
+cat > /usr/share/nginx/html/assets/web/runtime-config.js <<SCRIPT
+globalThis.__TRELLIS_RUNTIME_CONFIG__ = {
+  authUrl: "$(js_escape "$TRELLIS_ORIGIN")",
+  clientId: "trellis.console",
+  callbackUri: "$(js_escape "$CONSOLE_ORIGIN")/console/login"
 };
-EOF
+SCRIPT

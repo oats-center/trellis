@@ -14,6 +14,9 @@ use axum::{
 static ASSETS: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/web_assets.rs"));
 
 pub(super) fn router(config: &RuntimeConfig) -> Result<Router, RuntimeError> {
+    if !config.console_enabled() {
+        return Ok(Router::new());
+    }
     let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
     let origin = config
         .resolve_console_origin()
@@ -204,6 +207,29 @@ mod tests {
             get("/assets/web/missing.js").await.unwrap().status(),
             StatusCode::NOT_FOUND
         );
+    }
+
+    #[tokio::test]
+    async fn a_turned_off_console_serves_nothing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let trellis = format!("http://{}", listener.local_addr().unwrap());
+        let _server = serve(
+            serde_json::json!({
+                "http":{"public_origin":trellis},
+                "console":{"enabled":false},
+                "auth":{"instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","oauth_storage_key_file":"./auth/oauth.key"}
+            }),
+            listener,
+        );
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        for path in ["/", "/console/", "/assets/web/runtime-config.js"] {
+            let response = client.get(format!("{trellis}{path}")).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
     }
 
     /// The Console's own hostname serves its pages; the Trellis hostname,

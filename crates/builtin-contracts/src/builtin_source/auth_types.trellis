@@ -773,7 +773,7 @@ model AuthServiceUpdate {
   participantDigest: AuthDigest;
   state: AuthServiceUpdateState;
   changes: AuthServiceUpdateChanges;
-  reviewUrl: string;
+  reviewUrl?: string;
   requestedAt: timestamp;
   decidedAt?: timestamp;
   revision: AuthRevision;

@@ -550,12 +550,13 @@ impl ExhaustionAdvisoryHandle {
 
     /// Wait for advisory processing to terminate.
     pub async fn wait(&mut self) -> Result<(), ServerError> {
-        match self.task.as_mut() {
-            Some(task) => task
-                .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
-            None => Ok(()),
-        }
+        let Some(task) = self.task.as_mut() else {
+            return Ok(());
+        };
+        // Joined once: a later stop must not poll the finished task again.
+        let joined = task.await;
+        self.task = None;
+        joined.map_err(|error| ServerError::Nats(error.to_string()))?
     }
 }
 

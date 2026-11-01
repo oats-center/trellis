@@ -69,11 +69,9 @@ impl RuntimeLoops {
     async fn wait_for_failure(&mut self) -> Result<(), RuntimeError> {
         let (name, result) = tokio::select! {
             result = self.projector.wait() => {
-                self.projector.discard_completed();
                 ("projector", result)
             },
             result = self.worker_presence.wait() => {
-                self.worker_presence.discard_completed();
                 ("worker presence", result)
             },
         };

@@ -981,6 +981,12 @@ impl Storage for OAuthStorage {
         let client_id = client_id.clone();
         super::super::sqlite::blocking(move || {
             let client_id = &client_id;
+            // A turned-off Console signs no one in, whatever answers its callback.
+            if client_id.as_str() == super::super::CONSOLE_CLIENT_ID
+                && this.authority.settings.console_origin.is_none()
+            {
+                return Ok(None);
+            }
             let connection = this.authority.writer().map_err(failure)?;
             let registered: Option<(String, String, String, String, String)> = connection
                 .query_row(
@@ -1558,7 +1564,7 @@ mod tests {
                     instance_id: ulid::Ulid::new().to_string(),
                     account: "cimd-retention".into(),
                     oauth_issuer: "https://auth.example".into(),
-                    console_origin: "https://trellis.example".into(),
+                    console_origin: Some("https://trellis.example".into()),
                     upstream_tls_roots_pem: Vec::new(),
                     authority_lifetime_seconds: 300,
                     clock_skew_seconds: 30,

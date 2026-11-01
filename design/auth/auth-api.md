@@ -21,8 +21,8 @@ device-connect APIs, and no HTTP bootstrap or context-refresh endpoints.
 
 All routes are served only by the Trellis listener (`[http]`), beside
 `/healthz`, `/readyz`, and the bundled Console at `/console` (or on its own
-`[console] origin`, a second hostname the same listener answers). No other
-application router is mounted there.
+`[console] origin`, a second hostname the same listener answers; none with
+`[console] enabled = false`). No other application router is mounted there.
 
 | Method | Route                                     | Purpose                                                                                         |
 | ------ | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |

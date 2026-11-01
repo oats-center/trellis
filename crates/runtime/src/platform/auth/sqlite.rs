@@ -99,8 +99,9 @@ pub(crate) struct AuthSettings {
     pub(crate) account: String,
     /// Sign-in's issuer: the Trellis origin.
     pub(crate) oauth_issuer: String,
-    /// Origin that serves the Console, for links administrators open.
-    pub(crate) console_origin: String,
+    /// Origin that serves the Console, for links administrators open; absent
+    /// when the Console is turned off, which also refuses its client.
+    pub(crate) console_origin: Option<String>,
     pub(crate) upstream_tls_roots_pem: Vec<String>,
     pub(crate) authority_lifetime_seconds: u32,
     pub(crate) clock_skew_seconds: u32,
@@ -439,7 +440,7 @@ impl SqliteAuthorizationStore {
             instance_id,
             account: account.into(),
             oauth_issuer: config.public_origin(),
-            console_origin,
+            console_origin: config.console_enabled().then_some(console_origin),
             upstream_tls_roots_pem: Vec::new(),
             authority_lifetime_seconds: u32::try_from(authorization.context_lifetime_seconds)
                 .map_err(|_| {

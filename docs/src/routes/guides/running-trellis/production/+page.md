@@ -320,6 +320,21 @@ same port, through your proxy or DNS. Trellis serves the Console there and
 sends anyone who opens `/console` on `trellis.example.com` to it. The
 certificate has to name both hostnames.
 
+## Without the Console
+
+An installation you run entirely from the `trellis` CLI can leave the Console
+out. Add this to `config.toml` and restart:
+
+```toml
+[console]
+enabled = false
+```
+
+Trellis then serves no Console pages, and sign-in turns the Console away even
+if something else answers at its address. A service waiting for approval
+prints the `trellis svc <deployment-id> approve` command instead of a link.
+Remove the setting to bring the Console back.
+
 ## Back it up as one piece
 
 Trellis ties its database to the NATS data it was created with. Point a

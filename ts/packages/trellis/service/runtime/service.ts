@@ -3311,20 +3311,23 @@ async function awaitServiceUpdate(
     if (update.state === "applied") return;
     if (update.state === "rejected")
       throw new Error(
-        `An administrator rejected this build's update (${update.reviewUrl})`,
+        `An administrator rejected this build's update (${update.reviewUrl ?? `trellis svc ${update.deploymentId} updates`})`,
       );
     if (update.state === "superseded") {
       update = await submit();
       continue;
     }
-    if (shown !== update.reviewUrl) {
-      shown = update.reviewUrl;
+    if (shown !== update.updateId) {
+      shown = update.updateId;
+      const reviewUrl = update.reviewUrl;
       log.warn(
-        { participant: participant.identity, reviewUrl: shown },
+        { participant: participant.identity, reviewUrl },
         "This build asks for new access; waiting for an administrator to approve it",
       );
       console.error(
-        `\n${participant.identity} needs an administrator to approve its update.\nOpen ${shown}\nor scan:\n${renderUnicodeCompact(shown)}`,
+        reviewUrl === undefined
+          ? `\n${participant.identity} needs an administrator to approve its update with\n  trellis svc ${update.deploymentId} approve`
+          : `\n${participant.identity} needs an administrator to approve its update.\nOpen ${reviewUrl}\nor scan:\n${renderUnicodeCompact(reviewUrl)}`,
       );
     }
     await new Promise<void>((resolve, reject) => {

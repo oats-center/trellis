@@ -94,7 +94,9 @@ checkbox). No client can install a shared API without it.
 ## Approval
 
 The review URL is
-`<origin>/console/admin/services/<deploymentId>?update=<updateId>`. The Console
+`<origin>/console/admin/services/<deploymentId>?update=<updateId>`, absent when
+the installation serves no Console; the SDK then prints the
+`trellis svc <deployment-id> approve` command instead. The Console
 opens the update over the service's page; the CLI shows the same changes with
 `trellis svc <deployment-id> updates` and decides with
 `trellis svc <deployment-id> approve|reject <update-id>`.

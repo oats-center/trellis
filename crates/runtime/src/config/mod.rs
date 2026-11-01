@@ -146,11 +146,20 @@ impl RuntimeConfig {
         Ok(())
     }
 
+    /// Whether Trellis serves the Console and signs people in to it.
+    pub fn console_enabled(&self) -> bool {
+        self.console
+            .as_ref()
+            .and_then(|console| console.enabled)
+            .unwrap_or(true)
+    }
+
     /// Resolves the Console's origin and checks installation identity.
     ///
     /// The Console is served at `/console` on the Trellis origin unless
     /// `[console] origin` names a hostname of its own, served by the same
-    /// listener.
+    /// listener. A disabled Console keeps the Trellis origin, where its client
+    /// stays registered for when it is turned back on.
     pub fn resolve_console_origin(&self) -> Result<String, ConfigError> {
         let auth = self
             .auth
@@ -184,11 +193,17 @@ impl RuntimeConfig {
         let invalid = |reason| ConfigError::InvalidConsole { reason };
         let trellis = Url::parse(&self.public_origin())
             .map_err(|_| invalid("needs a valid [http] public_origin beside it"))?;
-        let console = match &self.console {
-            None => trellis.origin().ascii_serialization(),
-            Some(console) => {
-                let origin = Url::parse(&console.origin)
-                    .map_err(|_| invalid("origin must be an absolute origin"))?;
+        let console = match self.console.as_ref() {
+            Some(ConsoleConfig {
+                enabled: Some(false),
+                origin: Some(_),
+            }) => return Err(invalid("origin names where a served Console runs; drop it")),
+            Some(ConsoleConfig {
+                origin: Some(origin),
+                ..
+            }) => {
+                let origin =
+                    Url::parse(origin).map_err(|_| invalid("origin must be an absolute origin"))?;
                 if origin.host().is_none()
                     || !origin.username().is_empty()
                     || origin.password().is_some()
@@ -206,13 +221,14 @@ impl RuntimeConfig {
                 }
                 if trellis.origin() == origin.origin() {
                     return Err(invalid(
-                        "origin must differ from the Trellis origin; leave [console] out to \
-                        serve the Console there",
+                        "origin must differ from the Trellis origin; leave it out to serve the \
+                        Console there",
                     ));
                 }
                 warn_oauth_cookie_isolation(&trellis, &origin);
                 origin.origin().ascii_serialization()
             }
+            _ => trellis.origin().ascii_serialization(),
         };
         if let Some(servers) = self.nats.as_ref().and_then(|nats| nats.servers.as_deref()) {
             for server in servers.split(',') {
@@ -1144,14 +1160,19 @@ pub struct AvatarConfig {
     pub external_fetch_enabled: bool,
 }
 
-/// The bundled Console's own origin. Without it, the Console is served at
-/// `/console` on the Trellis origin.
+/// Where the bundled Console is served. Without this section, the Console is
+/// served at `/console` on the Trellis origin.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConsoleConfig {
+    /// `false` serves no Console at all: its pages are absent and sign-in
+    /// refuses its client. Defaults to `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     /// A hostname of the Console's own, distinct from the Trellis origin and
     /// served by the Trellis listener. Its pages then run apart from sign-in.
-    pub origin: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// Transport for a runtime HTTP listener; failed TLS never becomes plaintext.

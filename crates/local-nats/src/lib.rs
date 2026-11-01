@@ -690,6 +690,7 @@ pub struct LocalNatsBuilder {
     pid_file: Option<PathBuf>,
     output: Option<NatsOutput>,
     relayed_websocket: bool,
+    own_process_group: bool,
 }
 
 impl LocalNatsBuilder {
@@ -699,6 +700,18 @@ impl LocalNatsBuilder {
     #[must_use]
     pub fn relayed_websocket(mut self, relayed: bool) -> Self {
         self.relayed_websocket = relayed;
+        self
+    }
+
+    /// Run the broker in a process group of its own, so a signal to the
+    /// caller's group (Ctrl-C in a terminal, a supervisor stopping the group)
+    /// reaches only the caller, which stops the broker once it is done with
+    /// it. On Linux the broker is then terminated if the calling thread exits
+    /// first, so only a thread that outlives the returned guard, such as the
+    /// main thread, should ask for this.
+    #[must_use]
+    pub fn own_process_group(mut self, own: bool) -> Self {
+        self.own_process_group = own;
         self
     }
 
@@ -861,11 +874,10 @@ impl LocalNatsBuilder {
         let server = ManagedNatsServer::start(
             &binary,
             &config,
-            ports.nats,
-            ports.monitor,
-            ports.websocket,
+            ports,
             &pid_file,
             &output,
+            self.own_process_group,
         )?;
         drop(reservations);
         let (native, websocket) = match &tls {
@@ -1393,24 +1405,29 @@ pub struct ManagedNatsServer {
 }
 
 impl ManagedNatsServer {
-    /// Spawn `nats-server -c <config_path>` and wait until `nats_port`, `http_port`, and
-    /// `ws_port` accept TCP connections (30 second timeout, 100 ms polling). The child's
+    /// Spawn `nats-server -c <config_path>` and wait until each of `ports` accepts TCP
+    /// connections (30 second timeout, 100 ms polling). The child's
     /// output follows the explicit `output` policy.
     ///
     /// The pid file is acquired as an exclusive lock before spawning. A pid file recording a
     /// live nats-server fails with [`LocalNatsError::AlreadyRunning`]; a stale pid file is
     /// removed and startup proceeds. A port that is already listening fails with
     /// [`LocalNatsError::PortInUse`]. Every failure after spawn kills and waits for the child
-    /// and removes the pid file before returning.
+    /// and removes the pid file before returning. `own_process_group` is
+    /// [`LocalNatsBuilder::own_process_group`].
     pub fn start(
         binary: &Path,
         config_path: &Path,
-        nats_port: u16,
-        http_port: u16,
-        ws_port: u16,
+        ports: LocalNatsPorts,
         pid_file: &Path,
         output: &NatsOutput,
+        own_process_group: bool,
     ) -> Result<Self, LocalNatsError> {
+        let LocalNatsPorts {
+            nats: nats_port,
+            monitor: http_port,
+            websocket: ws_port,
+        } = ports;
         let mut pid_lock = acquire_pid_file(pid_file, binary)?;
         for port in [nats_port, http_port, ws_port] {
             if TcpStream::connect(("127.0.0.1", port)).is_ok() {
@@ -1426,6 +1443,32 @@ impl ManagedNatsServer {
         let log = OpenOptions::new().create(true).append(true).open(path)?;
         let mut command = Command::new(binary);
         command.arg("-c").arg(config_path);
+        #[cfg(not(unix))]
+        let _ = own_process_group;
+        #[cfg(unix)]
+        if own_process_group {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+            #[cfg(target_os = "linux")]
+            {
+                let parent = std::process::id() as libc::pid_t;
+                // SAFETY: the closure runs between fork and exec and makes only
+                // async-signal-safe calls.
+                unsafe {
+                    command.pre_exec(move || {
+                        // Outside the caller's group, the broker still must not
+                        // outlive a caller that was killed outright.
+                        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        if libc::getppid() != parent {
+                            return Err(io::Error::from_raw_os_error(libc::ESRCH));
+                        }
+                        Ok(())
+                    });
+                }
+            }
+        }
         if *mirror {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
         } else {

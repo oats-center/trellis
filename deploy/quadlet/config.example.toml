@@ -37,7 +37,8 @@ mode = "proxy"
 trusted_proxies = ["10.89.70.0/24"]
 
 # Uncomment to give the Console a hostname of its own, pointed at the same
-# port, so its pages run apart from sign-in.
+# port, so its pages run apart from sign-in. `enabled = false` instead serves
+# no Console at all.
 # [console]
 # origin = "https://console.example.com"
 

@@ -46,6 +46,7 @@ test("an administrator approves a waiting service update from its review link", 
     try {
       const page = await admin.newPage();
       // The link the service printed, opened by a signed-out administrator.
+      assert(pending.reviewUrl);
       await page.goto(pending.reviewUrl, { waitUntil: "domcontentloaded" });
       await completeConsoleEntry(page, BROWSER_ADMIN);
       const review = page.getByRole("region", { name: "Service update" });
@@ -107,6 +108,7 @@ test("an administrator adds a service that introduced itself from its review lin
     const admin = await launchProfile(runtime);
     try {
       const page = await admin.newPage();
+      assert(pending.reviewUrl);
       await page.goto(pending.reviewUrl, { waitUntil: "domcontentloaded" });
       await completeConsoleEntry(page, BROWSER_ADMIN);
       await page.getByRole("heading", { name: "third-party-orders" }).waitFor();

@@ -21,17 +21,15 @@ impl DeadLetterProjectorHandle {
         }
     }
 
-    /// Drop a completed task after observing its result.
-    pub fn discard_completed(&mut self) {
-        self.task = None;
-    }
-
     /// Wait for the projector to terminate.
     pub async fn wait(&mut self) -> Result<(), ServerError> {
         let Some(task) = self.task.as_mut() else {
             return Ok(());
         };
-        match task.await {
+        // Joined once: a later stop must not poll the finished task again.
+        let joined = task.await;
+        self.task = None;
+        match joined {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
             Err(error) => Err(ServerError::Nats(format!(

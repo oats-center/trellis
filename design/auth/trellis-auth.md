@@ -212,7 +212,11 @@ so a script injected into the Console could drive the sign-in pages as the
 person viewing it. `[console] origin` moves it to a hostname of its own,
 answered by the same listener: that host serves the Console, sign-in pages
 refuse it, and Console paths on the Trellis host redirect there, so the
-browser isolates the two. The listener's transport is one of:
+browser isolates the two. `[console] enabled = false` serves no Console: its
+pages are absent and sign-in refuses `trellis.console` (authorization and
+refresh alike), whatever answers its callback. Its registration stays, so
+turning the Console back on needs no new installation. The listener's transport
+is one of:
 
 - `tls`: HTTPS with `certificate_chain` and `private_key` PEM paths resolved
   relative to the runtime configuration. The origin must be HTTPS. Startup

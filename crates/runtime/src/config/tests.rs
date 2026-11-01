@@ -339,6 +339,7 @@ fn console_serves_on_the_trellis_origin_or_a_distinct_one_of_the_same_scheme() {
         ("http://127.0.0.1:39123/", "http://localhost:39123"),
         ("http://127.0.0.1:39123/", "https://127.0.0.1:39123"),
         ("http://127.0.0.1:39123/", "http://127.0.0.1:39123/console"),
+        ("[console]\n", "[console]\nenabled = false\n"),
     ] {
         let config = RuntimeConfig::from_toml_str(&own.replace(before, after)).unwrap();
         assert!(

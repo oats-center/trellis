@@ -80,17 +80,15 @@ impl EventsProjectorHandle {
         let _ = task.await;
     }
 
-    /// Drop a completed projector task after observing its result.
-    pub fn discard_completed(&mut self) {
-        self.task = None;
-    }
-
     /// Wait for the projector task to finish.
     pub async fn wait(&mut self) -> Result<(), ServerError> {
         let Some(task) = self.task.as_mut() else {
             return Ok(());
         };
-        match task.await {
+        // Joined once: a later stop must not poll the finished task again.
+        let joined = task.await;
+        self.task = None;
+        match joined {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
             Err(error) => Err(ServerError::Nats(format!(

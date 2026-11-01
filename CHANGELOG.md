@@ -16,8 +16,28 @@ and this project adheres to
   Console's sign-in callback moved to `/console/login`. `--console-origin` is
   now optional: it gives the Console a hostname of its own, pointed at the
   same port, so its pages run apart from sign-in; Console paths on the Trellis
-  hostname then redirect there. `[console]` keeps only `origin`. Create
-  installations afresh.
+  hostname then redirect there. Create installations afresh.
+- Breaking: a service update's `reviewUrl` is optional; it is absent on an
+  installation without the Console. Rust's
+  `ServiceRuntimeError::UpdateRejected` now carries `review`.
+
+### Added
+
+- `[console] enabled = false` serves no Console. Sign-in then turns the
+  Console away, and a service waiting for approval prints the
+  `trellis svc <deployment-id> approve` command instead of a link.
+
+### Fixed
+
+- Stopping the server while it was still starting could take 30 seconds and
+  exit with an error, or panic with "JoinHandle polled after completion". The
+  signal also reached the server's own NATS, which then quit before Trellis
+  could let go of it. The server's NATS now runs in its own process group,
+  stops after Trellis, and still exits if the server is killed outright.
+- The standalone Console image (`web/Containerfile`) works again. It takes
+  `TRELLIS_ORIGIN` and `CONSOLE_ORIGIN`, which replace
+  `VITE_TRELLIS_AUTH_URL` and `VITE_TRELLIS_NATS_SERVERS`, and serves the
+  Console at `/console`.
 
 ## [0.100.0-rc.19] - 2026-10-31
 

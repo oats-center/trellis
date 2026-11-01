@@ -90,7 +90,10 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             .runtime
             .console_origin
             .clone()
-            .map(|origin| ConsoleConfig { origin }),
+            .map(|origin| ConsoleConfig {
+                enabled: None,
+                origin: Some(origin),
+            }),
         nats: Some(NatsConfig {
             managed: options.runtime.managed_nats,
             servers: Some(options.runtime.nats_server_url.clone()),

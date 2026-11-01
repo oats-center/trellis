@@ -180,7 +180,9 @@ fn print_service_update(update: &auth_types::AuthServiceUpdate) {
             .collect(),
     );
     if update.state == auth_types::AuthServiceUpdateState::Pending {
-        println!("  Review: {}", update.review_url);
+        if let Some(review_url) = &update.review_url {
+            println!("  Review: {review_url}");
+        }
     }
 }
 

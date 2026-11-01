@@ -1107,10 +1107,11 @@ fn read_update(
         participant_digest: digest.into(),
         state: serde_json::from_value(state.into())?,
         changes: decode(&changes)?,
-        review_url: format!(
-            "{}/console/admin/services/{deployment}?update={update}",
-            store.settings.console_origin
-        ),
+        review_url: store
+            .settings
+            .console_origin
+            .as_ref()
+            .map(|origin| format!("{origin}/console/admin/services/{deployment}?update={update}")),
         requested_at: timestamp(requested)?,
         decided_at: decided.map(timestamp).transpose()?,
         revision: AuthRevision(revision.into()),

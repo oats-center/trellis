@@ -502,7 +502,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 () = task_stop.stopped() => Ok(()),
                 result = &mut api_loop => result.map_err(runtime_error),
                 result = projector.wait() => {
-                    projector.discard_completed();
                     match result {
                         Ok(()) => Err(RuntimeError::Nats(
                             "Events projector loop exited unexpectedly".to_string(),
@@ -511,7 +510,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     }
                 },
                 result = dead_letter_projector.wait() => {
-                    dead_letter_projector.discard_completed();
                     match result {
                         Ok(()) => Err(RuntimeError::Nats(
                             "dead-letter projector loop exited unexpectedly".to_owned(),
@@ -520,7 +518,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     }
                 },
                 result = replay_dispatcher.wait() => {
-                    replay_dispatcher.discard_completed();
                     match result {
                         Ok(()) => Err(RuntimeError::Nats(
                             "replay dispatcher loop exited unexpectedly".to_owned(),

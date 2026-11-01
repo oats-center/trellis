@@ -269,10 +269,11 @@ pub enum ServiceRuntimeError {
     MissingBootstrapBinding,
 
     /// An administrator rejected this build's participant update.
-    #[error("an administrator rejected this build's update ({review_url})")]
+    #[error("an administrator rejected this build's update ({review})")]
     UpdateRejected {
-        /// Console page of the rejected update.
-        review_url: String,
+        /// Console page of the rejected update, or the CLI command that shows
+        /// it when the installation serves no Console.
+        review: String,
     },
 
     /// The service bootstrap binding could not be parsed as a core binding.
@@ -1629,34 +1630,52 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
     let mut shown = None;
     let mut delay = std::time::Duration::from_secs(1);
     loop {
-        let review_url = update["reviewUrl"].as_str().unwrap_or_default().to_owned();
+        let review_url = update["reviewUrl"].as_str().map(str::to_owned);
+        let deployment = update["deploymentId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
         match update["state"].as_str() {
             Some("applied") => return Ok(()),
-            Some("rejected") => return Err(ServiceRuntimeError::UpdateRejected { review_url }),
+            Some("rejected") => {
+                return Err(ServiceRuntimeError::UpdateRejected {
+                    review: review_url
+                        .unwrap_or_else(|| format!("trellis svc {deployment} updates")),
+                })
+            }
             Some("superseded") => {
                 update = submit().await?["update"].take();
                 continue;
             }
             _ => {}
         }
-        if shown.as_deref() != Some(review_url.as_str()) {
+        let update_id = update["updateId"].as_str().unwrap_or_default().to_owned();
+        if shown.as_deref() != Some(update_id.as_str()) {
             tracing::warn!(
                 participant = C::ID,
                 review_url,
                 "This build asks for new access; waiting for an administrator to approve it"
             );
-            let qr = qrcode::QrCode::new(review_url.as_bytes())
-                .map(|code| {
-                    code.render::<qrcode::render::unicode::Dense1x2>()
-                        .quiet_zone(true)
-                        .build()
-                })
-                .unwrap_or_default();
-            eprintln!(
-                "\n{} needs an administrator to approve its update.\nOpen {review_url}\nor scan:\n{qr}",
-                C::ID
-            );
-            shown = Some(review_url);
+            match &review_url {
+                Some(review_url) => {
+                    let qr = qrcode::QrCode::new(review_url.as_bytes())
+                        .map(|code| {
+                            code.render::<qrcode::render::unicode::Dense1x2>()
+                                .quiet_zone(true)
+                                .build()
+                        })
+                        .unwrap_or_default();
+                    eprintln!(
+                        "\n{} needs an administrator to approve its update.\nOpen {review_url}\nor scan:\n{qr}",
+                        C::ID
+                    );
+                }
+                None => eprintln!(
+                    "\n{} needs an administrator to approve its update with\n  trellis svc {deployment} approve",
+                    C::ID
+                ),
+            }
+            shown = Some(update_id);
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(std::time::Duration::from_secs(15));

@@ -337,7 +337,8 @@ accepting compatible new revisions of the APIs it already provides. A build that
 asks for more, including reattaching a resource an earlier build dropped or
 starting to provide an API, waits for an administrator: the SDK logs the Console review link
 (`/console/admin/services/<deploymentId>?update=<updateId>`) and prints it as a
-terminal QR code, and `trellis svc <deployment-id> updates|approve|reject` does
+terminal QR code (an installation without the Console has no link, so it prints
+`trellis svc <deployment-id> approve`), and `trellis svc <deployment-id> updates|approve|reject` does
 the same from the CLI. Dropping a resource only detaches it; its data stays until
 `Resources.Remove`, and an approved reattachment brings it back. A build that
 implements an API another deployment already serves needs an explicit

@@ -767,6 +767,8 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             let server = LocalNats::builder()
                 .binary(source)
                 .relayed_websocket(relayed)
+                // Started from the main thread, which outlives the broker.
+                .own_process_group(true)
                 .source(managed_paths.source)
                 .state(managed_paths.state)
                 .ports(nats_ports)

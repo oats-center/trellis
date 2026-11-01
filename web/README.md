@@ -20,6 +20,20 @@ Vite dev server. To try a change in the real runtime:
 
 Use `npm run check` in this directory for type and Svelte checks between builds.
 
+## The standalone image
+
+`trellis-server` already serves the Console. `web/Containerfile` builds an
+nginx image of the same app for an installation that wants the Console's
+hostname answered by its own containers. Create the installation with that
+hostname, `trellis-server init --console-origin https://console.example.com`,
+so Trellis registers the Console's sign-in there, and point the hostname at the
+image instead of Trellis. The image needs both origins:
+
+```sh
+docker run -e TRELLIS_ORIGIN=https://trellis.example.com \
+  -e CONSOLE_ORIGIN=https://console.example.com -p 8080:80 trellis-console
+```
+
 `trellis install` refreshes the locked contract artifacts and local SDK. The
 local Trellis context binds `createTrellisApp` to the console contract and
 derives `TrellisConsoleClient` with `TrellisClientFor<typeof contract>`, so

@@ -157,7 +157,9 @@ test("a Rust service waits for its update's approval, then connects under it", a
       { kind: "kv", name: "extended" },
     ]);
     // Waiting, it shows the administrator where to approve it.
-    await runtime.waitFor(() => errors.includes(pending.reviewUrl));
+    const reviewUrl = pending.reviewUrl;
+    assert(reviewUrl);
+    await runtime.waitFor(() => errors.includes(reviewUrl));
     assert(!output.includes("service update connected"), output);
     await runtime.callAdminRpc("authServiceUpdatesDecide", {
       updateId: pending.updateId,
@@ -469,7 +471,9 @@ test("a Rust service connecting to a claim waits for approval, then runs as the 
           update.deploymentId === claim.claimId && update.state === "pending",
       );
     });
-    await runtime.waitFor(() => errors.includes(pending.reviewUrl));
+    const reviewUrl = pending.reviewUrl;
+    assert(reviewUrl);
+    await runtime.waitFor(() => errors.includes(reviewUrl));
     assert(!output.includes("service update connected"), output);
     await runtime.callAdminRpc("authServiceUpdatesDecide", {
       updateId: pending.updateId,
