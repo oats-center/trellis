@@ -631,7 +631,7 @@ fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trus
     let ca_directory = temp.path().join("ca");
     let mut options = trellis_options(&out);
     options.runtime.public_origin = "https://eta.oats:3000".into();
-    options.runtime.console_origin = "https://console.eta.oats:3001".into();
+    options.runtime.console_origin = Some("https://console.eta.oats:3000".into());
     options.runtime.nats_server_url = "tls://192.0.2.10:4222".into();
     options.runtime.nats_websocket_url = "wss://nats.eta.oats:8080".into();
     options.runtime.tls = BootstrapTls::Generated {
@@ -663,8 +663,8 @@ fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trus
             .sha256_fingerprint,
         summary.ca_sha256_fingerprint
     );
-    verify_with_installation_ca(&ca, &runtime_leaf, "eta.oats").expect("Console host");
-    verify_with_installation_ca(&ca, &runtime_leaf, "console.eta.oats").expect("OAuth host");
+    verify_with_installation_ca(&ca, &runtime_leaf, "eta.oats").expect("Trellis host");
+    verify_with_installation_ca(&ca, &runtime_leaf, "console.eta.oats").expect("Console host");
     verify_with_installation_ca(&ca, &nats_leaf, "nats.eta.oats").expect("WebSocket host");
     verify_with_installation_ca(&ca, &nats_leaf, "192.0.2.10").expect("native broker IP");
     verify_with_installation_ca(&ca, &runtime_leaf, "other.example")
@@ -777,7 +777,6 @@ fn bundle_tls_modes_reject_endpoints_they_cannot_protect() {
     let mut remote_loopback = trellis_options(temp.path().join("remote-loopback"));
     remote_loopback.runtime.tls = BootstrapTls::LoopbackDevelopment;
     remote_loopback.runtime.public_origin = "http://eta.oats:3000".into();
-    remote_loopback.runtime.console_origin = "http://localhost:3001".into();
     remote_loopback.runtime.nats_server_url = "nats://localhost:4222".into();
     remote_loopback.runtime.nats_websocket_url = "ws://localhost:8080".into();
     assert!(matches!(

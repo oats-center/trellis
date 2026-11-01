@@ -558,9 +558,9 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
-    let listener = super::super::oauth::OriginListener::load(
+    let listener = crate::listener::LoadedListener::load(
         socket,
-        &origin,
+        &url::Url::parse(&origin).unwrap(),
         &super::super::oauth::OAuthTransport::LoopbackDevelopment,
     )
     .await
@@ -569,7 +569,10 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
     let stopped = stop.clone();
     let host = tokio::spawn(async move {
         listener
-            .run(super::super::oauth::router(engine, vec![]), stopped)
+            .serve(
+                super::super::oauth::router(engine, vec![]),
+                stopped.cancelled_owned(),
+            )
             .await
             .unwrap();
     });
@@ -635,9 +638,9 @@ async fn portal_sign_out_returns_only_to_an_origin_the_client_registered() {
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
     let engine =
         Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
-    let listener = super::super::oauth::OriginListener::load(
+    let listener = crate::listener::LoadedListener::load(
         socket,
-        &origin,
+        &url::Url::parse(&origin).unwrap(),
         &super::super::oauth::OAuthTransport::LoopbackDevelopment,
     )
     .await
@@ -646,7 +649,10 @@ async fn portal_sign_out_returns_only_to_an_origin_the_client_registered() {
     let stopped = stop.clone();
     let host = tokio::spawn(async move {
         listener
-            .run(super::super::oauth::router(engine, vec![]), stopped)
+            .serve(
+                super::super::oauth::router(engine, vec![]),
+                stopped.cancelled_owned(),
+            )
             .await
             .unwrap();
     });
@@ -769,9 +775,9 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );
-    let listener = super::super::oauth::OriginListener::load(
+    let listener = crate::listener::LoadedListener::load(
         socket,
-        &origin,
+        &url::Url::parse(&origin).unwrap(),
         &super::super::oauth::OAuthTransport::LoopbackDevelopment,
     )
     .await
@@ -781,7 +787,10 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     let hosted = engine.clone();
     let host = tokio::spawn(async move {
         listener
-            .run(super::super::oauth::router(hosted, vec![]), stopped)
+            .serve(
+                super::super::oauth::router(hosted, vec![]),
+                stopped.cancelled_owned(),
+            )
             .await
             .unwrap();
     });

@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Breaking: the Console is part of the Trellis origin again, served at
+  `/console` from the Trellis port, so an installation needs one hostname and
+  one port. `--console-port` and the Console's own listener are gone, and the
+  Console's sign-in callback moved to `/console/login`. `--console-origin` is
+  now optional: it gives the Console a hostname of its own, pointed at the
+  same port, so its pages run apart from sign-in; Console paths on the Trellis
+  hostname then redirect there. `[console]` keeps only `origin`. Create
+  installations afresh.
+
 ## [0.100.0-rc.19] - 2026-10-31
 
 ### Fixed

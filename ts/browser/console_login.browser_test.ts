@@ -21,9 +21,10 @@ test("Console sign-in recovery returns to the protected page it left", async () 
     try {
       const page = await context.newPage();
       // Auth recovery sends the Console here; with no session left, sign-in
-      // leaves for the authorization server and comes back to bare /login.
+      // leaves for the authorization server and comes back to bare
+      // /console/login.
       await page.goto(
-        `${runtime.consoleUrl}/login?redirectTo=${encodeURIComponent("/console/admin/users?search=admin")}`,
+        `${runtime.consoleUrl}/console/login?redirectTo=${encodeURIComponent("/console/admin/users?search=admin")}`,
         { waitUntil: "domcontentloaded" },
       );
       await completeConsoleEntry(page, {
@@ -80,7 +81,8 @@ test("a development installation signs the Console in and reaches NATS on the Tr
         const signIn: URL[] = [];
         page.on("framenavigated", (frame) => {
           const url = new URL(frame.url());
-          if (url.host === trellis.host) signIn.push(url);
+          if (url.host === trellis.host && url.pathname === "/login")
+            signIn.push(url);
         });
         const sockets: URL[] = [];
         page.on("websocket", (socket) => sockets.push(new URL(socket.url())));

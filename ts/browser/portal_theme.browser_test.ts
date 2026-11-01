@@ -66,13 +66,18 @@ test("themes saved in the Console brand the Portal at once, per installation and
     const context = await browser.newContext();
     try {
       const page = await context.newPage();
-      await page.goto(`${runtime.consoleUrl}/login`, {
+      await page.goto(`${runtime.consoleUrl}/console/login`, {
         waitUntil: "domcontentloaded",
       });
       // The Console's sign-in reaches the Portal with its own transaction.
-      await page.waitForURL((url) => url.origin === runtime.trellisUrl, {
-        timeout: 30_000,
-      });
+      await page.waitForURL(
+        (url) =>
+          url.origin === runtime.trellisUrl &&
+          url.searchParams.has("transaction"),
+        {
+          timeout: 30_000,
+        },
+      );
       const transaction = new URL(page.url()).searchParams.get("transaction");
       assert(transaction, "the Portal carries the authorization transaction");
       const brand = page.locator("header.brand span");

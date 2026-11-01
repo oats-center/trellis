@@ -31,14 +31,6 @@ sentinel_public_key_file = "./nats/auth-sentinel.pub"
 instance_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 oauth_storage_key_file = "./auth/oauth-storage.key"
 
-[console]
-origin = "http://localhost:3001"
-bind_address = "127.0.0.1"
-port = 3001
-
-[console.transport]
-mode = "loopback_development"
-
 [auth.authorization]
 issuer_signing_seed_file = "./auth/authorization-issuer.seed"
 context_lifetime_seconds = 300
@@ -323,29 +315,34 @@ future_lease_option = { enabled = true }
 }
 
 #[test]
-fn console_listener_requires_stable_identity_distinct_origins_and_explicit_loopback_transport() {
-    RuntimeConfig::from_toml_str(COMPLETE_CONFIG)
-        .unwrap()
-        .resolve_console_listener()
-        .unwrap();
+fn console_serves_on_the_trellis_origin_or_a_distinct_one_of_the_same_scheme() {
+    let config = RuntimeConfig::from_toml_str(COMPLETE_CONFIG).unwrap();
+    assert_eq!(
+        config.resolve_console_origin().unwrap(),
+        "http://localhost:39123"
+    );
+    let own = format!("{COMPLETE_CONFIG}\n[console]\norigin = \"http://127.0.0.1:39123/\"\n");
+    assert_eq!(
+        RuntimeConfig::from_toml_str(&own)
+            .unwrap()
+            .resolve_console_origin()
+            .unwrap(),
+        "http://127.0.0.1:39123"
+    );
     for (before, after) in [
         ("instance_id = \"01ARZ3NDEKTSV4RRFFQ69G5FAV\"", ""),
         ("01ARZ3NDEKTSV4RRFFQ69G5FAV", "01arz3ndektsv4rrffq69g5fav"),
-        ("bind_address = \"127.0.0.1\"", "bind_address = \"0.0.0.0\""),
-        ("http://localhost:3001", "http://auth.example.org:3001"),
         ("nats://127.0.0.1:4222", "nats://broker.example:4222"),
         ("nats://127.0.0.1:4222", "ws://broker.example:4222"),
         ("nats://127.0.0.1:4222", "nats://192.168.1.1:4222"),
         ("nats://127.0.0.1:4222", "https://broker.example:4222"),
-        (
-            "[http]",
-            "[http]\npublic_origin = \"http://localhost:3001\"",
-        ),
+        ("http://127.0.0.1:39123/", "http://localhost:39123"),
+        ("http://127.0.0.1:39123/", "https://127.0.0.1:39123"),
+        ("http://127.0.0.1:39123/", "http://127.0.0.1:39123/console"),
     ] {
-        let input = COMPLETE_CONFIG.replace(before, after);
-        let config = RuntimeConfig::from_toml_str(&input).unwrap();
+        let config = RuntimeConfig::from_toml_str(&own.replace(before, after)).unwrap();
         assert!(
-            config.resolve_console_listener().is_err(),
+            config.resolve_console_origin().is_err(),
             "accepted unsafe configuration: {before} -> {after}"
         );
     }

@@ -198,7 +198,7 @@ impl TrellisTestRuntimeBuilder {
 struct Infrastructure {
     sandbox: Option<Sandbox>,
     nats: Option<Process>,
-    port_ownership: Option<[UdpSocket; 5]>,
+    port_ownership: Option<[UdpSocket; 4]>,
     server: Option<Process>,
     starting: bool,
 }
@@ -289,8 +289,7 @@ async fn start_once(
         let ports = lease.ports()?;
         // A runtime serves certificates from its own test CA, as a production
         // installation serves ones browsers trust; clients trust only that CA.
-        let public_origin = format!("https://127.0.0.1:{}", ports.http);
-        let trellis_url = format!("https://127.0.0.1:{}", ports.oauth);
+        let trellis_url = format!("https://127.0.0.1:{}", ports.trellis);
         let nats_url = format!("tls://127.0.0.1:{}", ports.nats);
         let websocket_url = format!("wss://127.0.0.1:{}", ports.websocket);
         let config_dir = infrastructure
@@ -326,8 +325,6 @@ async fn start_once(
         }
         command
             .args([
-                "--console-port",
-                &ports.http.to_string(),
                 "--nats-port",
                 &ports.nats.to_string(),
                 "--nats-monitor-port",
@@ -338,12 +335,10 @@ async fn start_once(
                 &nats_url,
                 "--nats-websocket-url",
                 &websocket_url,
-                "--console-origin",
-                &public_origin,
                 "--trellis-origin",
                 &trellis_url,
                 "--trellis-port",
-                &ports.oauth.to_string(),
+                &ports.trellis.to_string(),
                 "--bind-address",
                 "127.0.0.1",
                 "--nats-data-dir",
@@ -459,7 +454,7 @@ async fn start_once(
             &workdir.join("logs/trellis-server.log"),
         )?);
         let trust_roots = vec![config_dir.join("tls/ca.crt")];
-        wait_for_readyz(&public_origin, &trust_roots, &mut infrastructure).await?;
+        wait_for_readyz(&trellis_url, &trust_roots, &mut infrastructure).await?;
         let admin = AdminSession::connect(
             &trellis_url,
             &trust_roots,
@@ -473,7 +468,7 @@ async fn start_once(
             workdir,
             distribution,
             config_path,
-            public_origin,
+            trellis_url.clone(),
             trellis_url,
             trust_roots,
             nats_url,
@@ -700,7 +695,8 @@ impl TrellisTestRuntime {
     pub fn trellis_url(&self) -> &str {
         &self.trellis_url
     }
-    /// The Console's origin, an app beside Trellis.
+    /// The Console's origin: the Trellis origin, where it is served at
+    /// `/console`.
     #[must_use]
     pub fn console_url(&self) -> &str {
         &self.console_url

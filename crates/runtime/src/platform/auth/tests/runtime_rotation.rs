@@ -93,32 +93,27 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join("target/release/trellis-server"));
     // Held until the listeners are up; see ReservedPort.
-    let reserved: Vec<_> = (0..5)
+    let reserved: Vec<_> = (0..4)
         .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
         .collect();
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
-    let origin = format!("http://127.0.0.1:{}", ports[0]);
-    let oauth_origin = format!("http://127.0.0.1:{}", ports[1]);
+    let oauth_origin = format!("http://127.0.0.1:{}", ports[0]);
     let config_dir = root.join("config");
     let generated = tokio::process::Command::new(&server)
         .args(["init", "--out"])
         .arg(&config_dir)
         .arg("--external-nats")
         .args([
-            "--console-port",
-            &ports[0].to_string(),
             "--nats-port",
-            &ports[2].to_string(),
+            &ports[1].to_string(),
             "--nats-monitor-port",
-            &ports[3].to_string(),
+            &ports[2].to_string(),
             "--nats-ws-port",
-            &ports[4].to_string(),
-            "--console-origin",
-            &origin,
+            &ports[3].to_string(),
             "--trellis-origin",
             &oauth_origin,
             "--trellis-port",
-            &ports[1].to_string(),
+            &ports[0].to_string(),
             "--tls",
             "loopback-development",
             "--bind-address",
@@ -151,8 +146,8 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     crate::platform::seed_admin_credentials(&config, "admin", "a strong bootstrap password")
         .await
         .unwrap();
-    let mut broker = start_broker(root, &config_dir, [ports[2], ports[3], ports[4]]).await;
-    let (mut stop, mut runtime) = start_runtime(&config, &origin, &[]).await;
+    let mut broker = start_broker(root, &config_dir, [ports[1], ports[2], ports[3]]).await;
+    let (mut stop, mut runtime) = start_runtime(&config, &oauth_origin, &[]).await;
     let discovered = discover_native_oauth(&oauth_origin, &[])
         .await
         .unwrap_or_else(|error| panic!("native discovery at {oauth_origin} failed: {error:?}"));
@@ -435,7 +430,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         })
         .await
         .unwrap();
-        (stop, runtime) = start_runtime(&config, &origin, &[]).await;
+        (stop, runtime) = start_runtime(&config, &oauth_origin, &[]).await;
         warm.refresh_authorization_context().await.unwrap();
         let warm_renewed = tokio::time::timeout(Duration::from_secs(30), async {
             let mut readiness = tokio::time::interval(Duration::from_millis(100));
@@ -478,7 +473,7 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
     let server = std::env::var_os("TRELLIS_TEST_SERVER_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join("target/release/trellis-server"));
-    let reserved: Vec<_> = (0..5)
+    let reserved: Vec<_> = (0..4)
         .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
         .collect();
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
@@ -488,7 +483,6 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
         .arg(&config_dir)
         .args(["--external-nats", "--dev"])
         .args(["--trellis-port", &ports[0].to_string()])
-        .args(["--console-port", &ports[4].to_string()])
         .args(["--nats-port", &ports[1].to_string()])
         .args(["--nats-monitor-port", &ports[2].to_string()])
         .args(["--nats-ws-port", &ports[3].to_string()])
@@ -591,6 +585,29 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
         .timeout(Duration::from_secs(30))
         .build()
         .unwrap();
+    // The Console is part of the same origin, at /console, and its sign-in
+    // returns there.
+    let landing = http.get(format!("{origin}/")).send().await.unwrap();
+    assert_eq!(landing.headers()[reqwest::header::LOCATION], "/console/");
+    let console = http
+        .get(format!("{origin}/console/admin"))
+        .send()
+        .await
+        .unwrap();
+    assert!(console.status().is_success());
+    assert!(console.text().await.unwrap().contains("runtime-config.js"));
+    let runtime_config = http
+        .get(format!("{origin}/assets/web/runtime-config.js"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        runtime_config.contains(&format!(r#""callbackUri":"{origin}/console/login""#)),
+        "{runtime_config}"
+    );
     let cookies = |response: &reqwest::Response| {
         response
             .headers()

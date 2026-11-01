@@ -1,5 +1,5 @@
 //! Live upstream interoperability with the unmodified production Dex binary.
-use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport, OriginListener};
+use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport};
 use super::*;
 use axum::response::IntoResponse as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -444,9 +444,9 @@ staticPasswords:
     )
     .unwrap();
     let engine = Arc::new(OAuthEngine::new(storage).unwrap());
-    let listener = OriginListener::load(
+    let listener = crate::listener::LoadedListener::load(
         portal_socket,
-        &origin,
+        &url::Url::parse(&origin).unwrap(),
         &OAuthTransport::Tls {
             certificate_chain: certificate.certificate.clone(),
             private_key: certificate.private_key.clone(),
@@ -455,9 +455,9 @@ staticPasswords:
     .await
     .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
-    let server = tokio::spawn(listener.run(
+    let server = tokio::spawn(listener.serve(
         super::super::oauth::router(engine.clone(), vec!["tls://127.0.0.1:4222".into()]),
-        shutdown.clone(),
+        shutdown.clone().cancelled_owned(),
     ));
     // Exercise the actual account-link forms and the same verified OIDC callback,
     // not a manufactured ID token or a trusted-context injection.

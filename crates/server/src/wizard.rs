@@ -61,7 +61,6 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
 
     let asked = [
         ("--trellis-port", "Trellis port (sign-in and clients)", 3000),
-        ("--console-port", "Console port", 3001),
         ("--nats-port", "NATS port for services", 4222),
         ("--nats-monitor-port", "NATS monitoring port", 8222),
         ("--nats-ws-port", "NATS WebSocket port", 8080),
@@ -101,33 +100,35 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
         args.extend(["--dev".into(), "--host".into(), host]);
         return Ok(args);
     }
-    let (trellis_port, console_port, nats_port) = (
-        ports["--trellis-port"],
-        ports["--console-port"],
-        ports["--nats-port"],
-    );
+    let (trellis_port, nats_port) = (ports["--trellis-port"], ports["--nats-port"]);
     let trellis = url_prompt(
         "Trellis address (sign-in, and where clients connect)",
         &format!("https://{host}:{trellis_port}"),
     )?;
-    let console = url_prompt(
-        "Console address (its own origin, ideally its own hostname)",
-        &format!("https://{host}:{console_port}"),
-    )?;
+    let console = if Confirm::new("Give the Console a hostname of its own?")
+        .with_help_message("Otherwise it's at /console on the Trellis address")
+        .with_default(false)
+        .prompt()
+        .map_err(cancelled)?
+    {
+        Some(url_prompt(
+            "Console address (another hostname that reaches the Trellis port)",
+            &format!("https://console.{host}"),
+        )?)
+    } else {
+        None
+    };
     let nats_default = if external_nats {
         format!("tls://{host}:4222")
     } else {
         format!("tls://{host}:{nats_port}")
     };
     let nats = url_prompt("NATS address services connect to", &nats_default)?;
-    args.extend([
-        "--trellis-origin".into(),
-        trellis,
-        "--console-origin".into(),
-        console,
-        "--nats-server-url".into(),
-        nats,
-    ]);
+    args.extend(["--trellis-origin".into(), trellis]);
+    if let Some(console) = console {
+        args.extend(["--console-origin".into(), console]);
+    }
+    args.extend(["--nats-server-url".into(), nats]);
 
     const SUPPLIED: &str = "I have certificate files browsers already trust";
     let certificates = Select::new(
@@ -139,11 +140,8 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
     args.extend(["--tls".into(), "supplied".into()]);
     if certificates == SUPPLIED {
         for (flag, label) in [
-            (
-                "--tls-certificate-chain",
-                "Trellis and Console certificate chain",
-            ),
-            ("--tls-private-key", "Trellis and Console private key"),
+            ("--tls-certificate-chain", "Trellis certificate chain"),
+            ("--tls-private-key", "Trellis private key"),
         ] {
             args.extend([flag.into(), path_prompt(label)?]);
         }

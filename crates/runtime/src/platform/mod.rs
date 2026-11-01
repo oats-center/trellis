@@ -57,12 +57,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .as_ref()
         .and_then(|auth| auth.oauth_storage_key_file.clone())
         .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
-    let console = context
+    let console_origin = context
         .config
-        .resolve_console_listener()
+        .resolve_console_origin()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let (opened, console_origin, keep_admin) =
-        (store.clone(), console.origin.clone(), !context.reset_admin);
+    let (opened, keep_admin) = (store.clone(), !context.reset_admin);
     let (engine, account_url) = auth::blocking(move || {
         let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
         opened.initialize_issuer(crate::clock::unix_now())?;
@@ -90,12 +89,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     if let Some(url) = account_url {
         println!("{}", serde_json::json!({"adminAccountUrl":url}));
     }
-    let socket = tokio::net::TcpListener::bind((console.bind_address, console.port))
-        .await
-        .map_err(|error| RuntimeError::Platform(format!("bind the Console listener: {error}")))?;
-    let listener = auth::OriginListener::load(socket, &console.origin, &console.transport)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let (native, websocket) =
         advertised_endpoints(&context.config, &nats, context.nats_override.as_ref());
     // Every Login Portal page shows the generated-CA notice for the
@@ -186,10 +179,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .map_err(|_| {
             RuntimeError::Platform("Platform authorization store is already installed".into())
         })?;
-    // Sign-in lives on the Trellis listener; the Console is an app on its own.
-    context.register_http_router(router)?;
-    let console_router = crate::server::health_router(context.mode, context.http_ready.clone())
-        .merge(console::router(&context.config)?);
+    // Sign-in and the Console share the Trellis listener.
+    context.register_http_router(router.merge(console::router(&context.config)?))?;
     let stop = StopHandle::new();
     let task_stop = stop.clone();
     let provider_store = store.clone();
@@ -203,13 +194,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut tasks = tokio::task::JoinSet::new();
-        let listener_cancel = cancel.clone();
-        tasks.spawn(async move {
-            listener
-                .run(console_router, listener_cancel)
-                .await
-                .map_err(|error| RuntimeError::Platform(error.to_string()))
-        });
         let callout_stop = task_stop.clone();
         tasks.spawn(async move { callout.run(callout_stop).await });
         let own_stop = task_stop.clone();
@@ -512,10 +496,8 @@ fn initialize_admin_credentials_in(
     password: Option<&str>,
 ) -> Result<(String, Option<String>), RuntimeError> {
     let console_origin = config
-        .resolve_console_listener()
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?
-        .origin
-        .clone();
+        .resolve_console_origin()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let crate::StorageBackend::Sqlite(storage) = config
         .platform_storage_backend()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;

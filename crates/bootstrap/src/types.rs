@@ -2,10 +2,10 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::{
-    DEFAULT_AUTH_ACCOUNT, DEFAULT_CONSOLE_ORIGIN, DEFAULT_CONSOLE_PORT, DEFAULT_NATS_MONITOR_PORT,
-    DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL, DEFAULT_NATS_WEBSOCKET_PORT,
-    DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OPERATOR_NAME, DEFAULT_PUBLIC_ORIGIN,
-    DEFAULT_SYSTEM_ACCOUNT, DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME, DEFAULT_TRELLIS_PORT,
+    DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
+    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OPERATOR_NAME,
+    DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT, DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME,
+    DEFAULT_TRELLIS_PORT,
 };
 
 /// Shared NATS bootstrap names.
@@ -98,13 +98,12 @@ impl NatsBootstrapOptions {
 pub struct TrellisRuntimeBootstrapConfig {
     /// Installation ULID generated once for this bootstrap bundle.
     pub instance_id: String,
-    /// The Console's public origin, distinct from the Trellis origin.
-    pub console_origin: String,
-    /// The Console's listener port.
-    pub console_port: u16,
+    /// The Console's own origin, served by the Trellis listener. Without it the
+    /// Console is at `/console` on the Trellis origin.
+    pub console_origin: Option<String>,
     /// Certificate source for every TLS listener in the bundle.
     pub tls: BootstrapTls,
-    /// Reverse-proxy networks; non-empty serves Trellis and the Console as plaintext
+    /// Reverse-proxy networks; non-empty serves the Trellis listener as plaintext
     /// behind an HTTPS-terminating proxy at those addresses.
     pub trusted_proxies: Vec<ipnet::IpNet>,
     /// Serve browser WebSockets as plaintext behind an HTTPS-terminating proxy.
@@ -145,8 +144,7 @@ impl Default for TrellisRuntimeBootstrapConfig {
     fn default() -> Self {
         Self {
             instance_id: ulid::Ulid::new().to_string(),
-            console_origin: DEFAULT_CONSOLE_ORIGIN.to_string(),
-            console_port: DEFAULT_CONSOLE_PORT,
+            console_origin: None,
             tls: BootstrapTls::Generated { ca_directory: None },
             trusted_proxies: Vec::new(),
             nats_websocket_behind_proxy: false,

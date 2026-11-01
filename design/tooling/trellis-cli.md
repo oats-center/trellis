@@ -189,8 +189,9 @@ trellis-server upgrade [--check] [--prerelease]
 
 Options go after the subcommand, and each subcommand takes only its own. Those that report a result accept `--format json` for scripts. Initialization creates ordinary secure directories only when absent and rejects
 unsafe paths. `trellis-server init` takes `--trellis-origin` and
-`--trellis-port` for the Trellis listener (sign-in, and where clients connect)
-and `--console-origin` and `--console-port` for the Console's own listener. It
+`--trellis-port` for the Trellis listener (sign-in, the Console at `/console`,
+and where clients connect), and `--console-origin` to give the Console a
+hostname of its own on that listener. It
 selects listener security with `--tls
 generated|supplied|loopback-development` (required unless `--dev`, which
 generates), `--trusted-proxy` (supplied TLS then needs only the NATS

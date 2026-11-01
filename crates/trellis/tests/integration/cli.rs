@@ -274,8 +274,8 @@ async fn cli_server_managed_nats() {
     let bundle = workdir.0.join("bundle");
     // Held outside the ephemeral range until the server is done; see ReservedPort.
     let reservations =
-        [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().expect("reserve port"));
-    let [runtime_port, nats_port, monitor_port, websocket_port, oauth_port] = reservations
+        [(); 4].map(|_| trellis_local_nats::ReservedPort::reserve().expect("reserve port"));
+    let [nats_port, monitor_port, websocket_port, oauth_port] = reservations
         .each_ref()
         .map(trellis_local_nats::ReservedPort::port);
     let managed_ports = [nats_port, monitor_port, websocket_port];
@@ -292,8 +292,6 @@ async fn cli_server_managed_nats() {
             "generated",
             "--out",
             bundle.to_str().expect("UTF-8 bundle path"),
-            "--console-port",
-            &runtime_port.to_string(),
             "--nats-port",
             &nats_port.to_string(),
             "--nats-monitor-port",
@@ -395,17 +393,10 @@ async fn cli_server_managed_nats() {
     )
     .await;
     wait_until(
-        || port_accepts(runtime_port),
-        &mut child,
-        &run_stderr,
-        "the runtime HTTP listener",
-    )
-    .await;
-    wait_until(
         || port_accepts(oauth_port),
         &mut child,
         &run_stderr,
-        "the separate OAuth listener",
+        "the Trellis listener",
     )
     .await;
     child.signal_term();
@@ -579,8 +570,6 @@ async fn cli_server_managed_nats() {
             "generated",
             "--out",
             broken_bundle.to_str().expect("UTF-8 broken bundle path"),
-            "--console-port",
-            &runtime_port.to_string(),
             "--trellis-port",
             &oauth_port.to_string(),
             "--nats-port",
@@ -877,7 +866,7 @@ async fn cli_server_managed_nats() {
     );
     external_child.set_nats(external);
     wait_until(
-        || port_accepts(runtime_port),
+        || port_accepts(oauth_port),
         &mut external_child,
         &external_stderr,
         "the runtime HTTP listener (external mode)",
@@ -955,66 +944,21 @@ fn first_start_creates_the_default_installation_only_when_asked() {
     }
 }
 
-#[test]
-fn server_rejects_a_console_on_the_trellis_origin_before_starting_listeners() {
-    let workdir = WorkdirGuard::new();
-    let bundle = workdir.0.join("reserved-origin");
-    let initialized = server_command(&workdir.0)
-        .args(["init", "--tls", "generated", "--out"])
-        .arg(&bundle)
-        .output()
-        .expect("initialize ordinary server bundle");
-    assert!(
-        initialized.status.success(),
-        "{}",
-        String::from_utf8_lossy(&initialized.stderr)
-    );
-    let path = bundle.join("config.toml");
-    let original = fs::read_to_string(&path).unwrap();
-    // Sign-in's origin is reserved: the Console, an app like any other,
-    // can't share it even on another port.
-    fs::write(
-        &path,
-        original.replace(
-            "origin = \"https://localhost:3001\"",
-            "origin = \"https://localhost:3000\"",
-        ),
-    )
-    .unwrap();
-    let output = server_command(&workdir.0)
-        .args(["all", "--config"])
-        .arg(&path)
-        .output()
-        .expect("run ordinary production startup");
-    assert!(
-        !output.status.success(),
-        "a Console on the Trellis origin started successfully"
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("invalid runtime config section [console]: origin must differ"),
-        "startup did not report the reserved-origin error: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 #[tokio::test]
 async fn server_serves_generated_installation_tls_and_reloads_renewed_certificates() {
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("tls");
     // Held outside the ephemeral range until the server is done; see ReservedPort.
-    let ports = [(); 5].map(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
-    let [http, nats, monitor, websocket, oauth] =
+    let ports = [(); 4].map(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
+    let [nats, monitor, websocket, oauth] =
         ports.each_ref().map(trellis_local_nats::ReservedPort::port);
     // Generated TLS makes the installation CA and every listener's
-    // certificate.
+    // certificate. The Console gets a hostname of its own on the Trellis port.
     let initialized = server_command(&workdir.0)
         .args(["init", "--format", "json", "--tls", "generated", "--out"])
         .arg(&bundle)
         .arg("--external-nats")
         .args([
-            "--console-port",
-            &http.to_string(),
             "--nats-port",
             &nats.to_string(),
             "--nats-monitor-port",
@@ -1024,7 +968,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
             "--trellis-port",
             &oauth.to_string(),
             "--console-origin",
-            &format!("https://127.0.0.1:{http}"),
+            &format!("https://127.0.0.1:{oauth}"),
             "--trellis-origin",
             &format!("https://localhost:{oauth}"),
             "--nats-server-url",
@@ -1099,7 +1043,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         "TLS Trellis server",
     );
     wait_until(
-        || port_accepts(http) && port_accepts(oauth),
+        || port_accepts(oauth),
         &mut server,
         &server_log,
         "runtime serving generated TLS",
@@ -1160,10 +1104,26 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         "the generated CA must not be trusted without explicit configuration"
     );
     // Every Console and Portal user is told the installation serves its own
-    // generated certificates.
+    // generated certificates. The Console answers on its own hostname, and
+    // the Trellis hostname sends people there.
+    let redirect = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .tls_certs_only([reqwest::Certificate::from_pem(&fs::read(&ca).unwrap()).unwrap()])
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap()
+        .get(format!("{oauth_origin}/console/admin"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        redirect.headers()[reqwest::header::LOCATION],
+        format!("https://127.0.0.1:{oauth}/console/admin").as_str()
+    );
     let console = client
         .get(format!(
-            "https://127.0.0.1:{http}/assets/web/runtime-config.js"
+            "https://127.0.0.1:{oauth}/assets/web/runtime-config.js"
         ))
         .send()
         .await
@@ -1197,7 +1157,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
 
     let served = |client: reqwest::Client| async move {
         let response = client
-            .get(format!("https://127.0.0.1:{http}/readyz"))
+            .get(format!("https://127.0.0.1:{oauth}/readyz"))
             .send()
             .await
             .unwrap();

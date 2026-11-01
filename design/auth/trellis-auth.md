@@ -202,13 +202,17 @@ Fresh initialization generates `auth.instance_id` as a canonical ULID. Retain it
 with the installation configuration and database across restarts and all key
 rotations; startup requires it rather than inventing a new identity.
 
-Trellis serves two HTTP listeners. `[http]` is the Trellis listener: its
-`public_origin` is sign-in's issuer and the address the CLI, services, devices
-and apps connect to, and it serves the OAuth routes, discovery, and health. No
-application code runs on that origin. `[console]` configures the bundled
-Console's own listener (`origin`, `bind_address`, `port`, and `transport`); the
-Console is an ordinary registered browser client on its own origin, so its
-scripts never share an origin with sign-in's cookies. Each transport is one of:
+Trellis serves one HTTP listener, `[http]`: its `public_origin` is sign-in's
+issuer and the address the CLI, services, devices and apps connect to, and it
+serves the OAuth routes, discovery, health, and the bundled Console. The
+Console is a registered browser client (`trellis.console`) served at
+`/console` on the Trellis origin, the one application that origin hosts; its
+callback is `/console/login`. Its scripts then share an origin with sign-in,
+so a script injected into the Console could drive the sign-in pages as the
+person viewing it. `[console] origin` moves it to a hostname of its own,
+answered by the same listener: that host serves the Console, sign-in pages
+refuse it, and Console paths on the Trellis host redirect there, so the
+browser isolates the two. The listener's transport is one of:
 
 - `tls`: HTTPS with `certificate_chain` and `private_key` PEM paths resolved
   relative to the runtime configuration. The origin must be HTTPS. Startup
@@ -226,15 +230,17 @@ scripts never share an origin with sign-in's cookies. Each transport is one of:
 
 There is no insecure-origin allow-list: a remote origin is served only over TLS
 or behind a trusted HTTPS proxy, because OAuth's `__Host-` `Secure` cookies and
-browser credential custody require a secure context. The Console origin must
-differ from the Trellis origin, and no client may register a callback on the
-Trellis origin. A shared hostname is allowed but logs a prominent cookie-scope
-warning, because cookies are not port-scoped. Browser origins are trusted from
-the redirect URIs of registered and URL-identified clients, never from server
-configuration. Development mode (`trellis-server init --dev`) uses the same two
-listeners with one generated certificate naming both.
+browser credential custody require a secure context. No client may register a
+callback on the Trellis origin except the Console at `/console/login`. A
+Console origin of its own must differ from the Trellis origin and share its
+scheme; one on the same hostname (another port behind a proxy) is allowed but
+logs a prominent cookie-scope warning, because cookies are not port-scoped.
+Browser origins are trusted from the redirect URIs of registered and
+URL-identified clients, never from server configuration. Development mode
+(`trellis-server init --dev`) uses the same listener with one generated
+certificate.
 
-The Console origin serves RFC 9728 protected resource metadata
+A Console on its own origin serves RFC 9728 protected resource metadata
 (`/.well-known/oauth-protected-resource`) naming the Trellis origin as its one
 authorization server. Native discovery given the Console's address, which
 answers authorization server metadata with no JSON document, follows that

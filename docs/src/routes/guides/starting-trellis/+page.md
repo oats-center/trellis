@@ -92,22 +92,20 @@ does the same without starting the server.
 
 ## Open the Console
 
-Go to `http://localhost:3001/console`. Signing in sends you to Trellis's
-sign-in page on port 3000 and back again. The Console is an app like any other,
-on a port of its own; both are part of `trellis-server`, so there's nothing
-else to start.
+Go to `http://localhost:3000/console`. Signing in takes you to Trellis's
+sign-in page and back again. The Console is part of `trellis-server`, so
+there's nothing else to start.
 
 The CLI logs in to Trellis itself: `trellis login http://localhost:3000`.
 
 These are the ports in use, all on `localhost` only:
 
-| Port   | Who uses it                                 |
-| ------ | ------------------------------------------- |
-| `3000` | Trellis: sign-in, and where clients connect |
-| `3001` | Console                                     |
-| `4222` | Services connecting to NATS                 |
-| `8080` | Browsers connecting to NATS                 |
-| `8222` | NATS monitoring (`/healthz`)                |
+| Port   | Who uses it                                              |
+| ------ | -------------------------------------------------------- |
+| `3000` | Trellis: sign-in, the Console, and where clients connect |
+| `4222` | Services connecting to NATS                              |
+| `8080` | Browsers connecting to NATS                              |
+| `8222` | NATS monitoring (`/healthz`)                             |
 
 If one is taken, create the installation with
 `trellis-server init --tls loopback-development` and the

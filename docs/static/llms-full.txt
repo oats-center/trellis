@@ -242,12 +242,13 @@ trust a generated or other private CA only explicitly, after verifying its
 SHA-256 fingerprint (`trellis-server tls status`) out of band: never disable
 certificate verification and never accept a CA from broker or metadata
 responses. Generated leaves expire after 90 days; `trellis-server tls renew --bundle <dir>` replaces them without changing
-client trust. An installation has two HTTP origins: the Trellis origin
-(`--trellis-origin`: sign-in, and the address the CLI, services, devices and
-apps connect to) and the Console's own origin (`--console-origin`); the Console
-is an ordinary app. Both may run behind an HTTPS-terminating proxy with
-`--trusted-proxy`; native NATS always terminates its own TLS. Both require
-HTTPS outside explicit loopback development. Browser origins are trusted from
+client trust. An installation has one HTTP listener at the Trellis origin
+(`--trellis-origin`: sign-in, the address the CLI, services, devices and apps
+connect to, and the bundled Console at `/console`). `--console-origin` gives the
+Console a hostname of its own, pointed at the same port, so its pages run apart
+from sign-in. It may run behind an HTTPS-terminating proxy with
+`--trusted-proxy`; native NATS always terminates its own TLS. It requires HTTPS
+outside explicit loopback development. Browser origins are trusted from
 registered clients' redirect URIs, never from server configuration.
 
 Rust participants put a private CA in `RuntimeAuthorizationTrust.root_certificates`
@@ -268,10 +269,9 @@ over it, so only HTTPS needs to be public.
 
 #### OAuth portal and issuer custody
 
-OAuth login and consent belong to a separate, required portal on its own origin,
-not a Console route. Origins must differ; a different hostname is recommended,
-not mandatory, and a shared hostname emits a prominent security warning because
-cookies are not port-scoped. Dex is an upstream OIDC integration-test dependency
+OAuth login and consent belong to Trellis's portal on the Trellis origin, never
+to an app; only the bundled Console shares that origin, at `/console`, unless it
+is given its own. Dex is an upstream OIDC integration-test dependency
 only, never a required Trellis deployment component. Administrators brand the
 portal per installation or per client from the Console's **Sign-in page** or
 `trellis theme show|set|remove [--client <id>]` (name, logo, palette, a few

@@ -75,7 +75,7 @@ test("the Console signs in without asking for access and uses the real authentic
       // The Console ships with Trellis, so it never shows a consent page.
       strictEqual(asked, false);
       strictEqual(callback?.origin, origin);
-      strictEqual(callback?.pathname, "/login");
+      strictEqual(callback?.pathname, "/console/login");
       await page.reload();
       await page
         .getByRole("cell", { name: username, exact: true })

@@ -66,7 +66,7 @@ pub(crate) struct InitConfigArgs {
     pub(crate) dev: bool,
 
     #[arg(long, default_value = "localhost")]
-    /// Hostname the default Trellis, Console and NATS addresses use.
+    /// Hostname the default Trellis and NATS addresses use.
     pub(crate) host: String,
 
     #[arg(long)]
@@ -134,13 +134,10 @@ pub(crate) struct InitConfigArgs {
     pub(crate) trellis_origin: Option<String>,
 
     #[arg(long)]
-    /// Public Console origin, distinct from the Trellis origin; defaults to
-    /// https://<host>:<console-port> (http:// in loopback development).
+    /// Give the Console an origin of its own, another hostname that reaches
+    /// the Trellis port, so its pages run apart from sign-in. Without it the
+    /// Console is at /console on the Trellis origin.
     pub(crate) console_origin: Option<String>,
-
-    #[arg(long, default_value_t = trellis_bootstrap::DEFAULT_CONSOLE_PORT)]
-    /// The Console's port.
-    pub(crate) console_port: u16,
 
     #[arg(long, value_enum)]
     /// Certificate source. Required without --dev, which generates them.
@@ -153,7 +150,8 @@ pub(crate) struct InitConfigArgs {
     pub(crate) tls_ca_dir: Option<PathBuf>,
 
     #[arg(long, requires = "tls_private_key")]
-    /// Supplied PEM certificate chain naming the Console and OAuth hosts;
+    /// Supplied PEM certificate chain naming the Trellis host (and the
+    /// Console's, with --console-origin);
     /// not needed behind a --trusted-proxy.
     pub(crate) tls_certificate_chain: Option<PathBuf>,
 
@@ -174,7 +172,7 @@ pub(crate) struct InitConfigArgs {
     pub(crate) tls_ca_certificate: Option<PathBuf>,
 
     #[arg(long = "trusted-proxy", value_name = "CIDR")]
-    /// Serve Console and OAuth as plaintext behind an HTTPS-terminating
+    /// Serve the Trellis port as plaintext behind an HTTPS-terminating
     /// reverse proxy at this network; repeatable. Public origins stay HTTPS.
     pub(crate) trusted_proxy: Vec<ipnet::IpNet>,
 
@@ -197,7 +195,7 @@ pub(crate) struct InitConfigArgs {
     /// --nats-websocket-behind-proxy is given, and to `direct` otherwise.
     pub(crate) nats_websocket: Option<InitWebsocketMode>,
 
-    /// Address Trellis and the Console listen on: an IP or a hostname that
+    /// Address Trellis listens on: an IP or a hostname that
     /// resolves to one of this machine's addresses.
     #[arg(long, value_name = "HOST", value_parser = parse_bind_address)]
     pub(crate) bind_address: Option<std::net::IpAddr>,
@@ -345,11 +343,7 @@ pub(crate) fn init_config(
             .trim_end_matches('/')
             .replacen("http", "ws", 1);
     }
-    options.runtime.console_origin = args
-        .console_origin
-        .clone()
-        .unwrap_or_else(|| format!("{http}://{host}:{}", args.console_port));
-    options.runtime.console_port = args.console_port;
+    options.runtime.console_origin = args.console_origin.clone();
     options.runtime.tls = match tls {
         // A system installation is the one roles mount, so its CA stays beside it.
         InitTlsMode::Generated => BootstrapTls::Generated {
@@ -441,6 +435,15 @@ pub(crate) fn init_config(
     }
     let trellis_config = out.join("config.toml");
     let nats_config = out.join("nats/nats.conf");
+    let console = format!(
+        "{}/console/",
+        options
+            .runtime
+            .console_origin
+            .as_deref()
+            .unwrap_or(&options.runtime.public_origin)
+            .trim_end_matches('/')
+    );
     if format == OutputFormat::Json {
         print_json(&json!({
             "generated": true,
@@ -451,7 +454,7 @@ pub(crate) fn init_config(
             "trellisOrigin": options.runtime.public_origin,
             "natsServer": options.runtime.nats_server_url,
             "natsWebsocket": options.runtime.nats_websocket_url,
-            "consoleOrigin": options.runtime.console_origin,
+            "console": console,
             "generatedTls": generated.as_ref().map(|tls| json!({
                 "caCertificate": tls.ca_certificate.display().to_string(),
                 "caSha256Fingerprint": tls.ca_sha256_fingerprint,
@@ -468,7 +471,7 @@ pub(crate) fn init_config(
     println!("trellisOrigin={}", options.runtime.public_origin);
     println!("natsServer={}", options.runtime.nats_server_url);
     println!("natsWebsocket={}", options.runtime.nats_websocket_url);
-    println!("consoleOrigin={}", options.runtime.console_origin);
+    println!("console={console}");
     if let Some(tls) = &generated {
         warn_generated_tls(
             &tls.ca_certificate,
@@ -532,7 +535,7 @@ fn warn_generated_tls(
 ) {
     if behind_proxy {
         eprintln!(
-            "note: Trellis generated a CA ({}) for NATS. Console and sign-in use your \
+            "note: Trellis generated a CA ({}) for NATS. The Console and sign-in use your \
             proxy's certificate, so browsers never see it.\n  Anything that connects to \
             native NATS directly accepts it only with this SHA-256 fingerprint:\n  \
             {fingerprint}\n  Leaf certificates expire {}; renew them with `trellis-server \

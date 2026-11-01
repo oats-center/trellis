@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// An installation `init` generated with `init_args`, running on reserved ports
-/// `[trellis, nats, monitor, websocket, console]`.
+/// `[trellis, nats, monitor, websocket]`.
 struct Installation {
     running: tokio::process::Child,
     ports: Vec<u16>,
@@ -20,7 +20,7 @@ impl Installation {
     async fn start(root: &Path, init_args: &[&str]) -> Self {
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let server = env!("CARGO_BIN_EXE_trellis-server");
-        let reserved: Vec<_> = (0..5)
+        let reserved: Vec<_> = (0..4)
             .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
             .collect();
         let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
@@ -31,7 +31,6 @@ impl Installation {
             .arg("--out")
             .arg(&config_dir)
             .args(["--trellis-port", &ports[0].to_string()])
-            .args(["--console-port", &ports[4].to_string()])
             .args(["--nats-port", &ports[1].to_string()])
             .args(["--nats-monitor-port", &ports[2].to_string()])
             .args(["--nats-ws-port", &ports[3].to_string()])
@@ -164,6 +163,35 @@ async fn managed_nats_websocket_behind_a_proxy_accepts_the_proxy() {
     )
     .await;
     installation.wait_for_websocket().await;
+    // Behind the trusted proxy the Trellis port serves plain HTTP; wait until
+    // the runtime is ready so stopping it later is an ordinary shutdown.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let ready = async {
+            let mut probe = tokio::net::TcpStream::connect(("127.0.0.1", installation.ports[0]))
+                .await
+                .ok()?;
+            probe
+                .write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .ok()?;
+            let mut status = [0; 12];
+            probe.read_exact(&mut status).await.ok()?;
+            (&status == b"HTTP/1.1 200").then_some(())
+        };
+        if ready.await.is_some() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the server never became ready"
+        );
+        assert!(
+            installation.running.try_wait().unwrap().is_none(),
+            "the server exited before becoming ready"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 
     let mut proxied = connect_from_elsewhere(installation.ports[3])
         .await

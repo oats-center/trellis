@@ -15,7 +15,6 @@ mod oidc;
 mod portal;
 mod storage;
 mod theme;
-mod transport;
 mod upstream_http;
 
 #[cfg(test)]
@@ -32,7 +31,6 @@ pub(crate) use engine::{TokenError, TrellisTokenResponse};
 pub(crate) use http::router;
 pub(super) use portal::ConsentPresentation;
 pub(crate) use storage::OAuthStorage;
-pub(crate) use transport::OriginListener;
 
 /// Run a handler's synchronous storage work on the blocking pool.
 pub(super) async fn with_store<T, E>(

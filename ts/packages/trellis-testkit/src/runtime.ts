@@ -86,7 +86,7 @@ function serverCommand(plan: LaunchPlan): ResolvedTrellisProcessCommand {
     plan.configPath,
     "--nats-download",
     "--isolated-process-group",
-    `--local-nats-ports=${plan.ports.slice(1, 4).join(",")}`,
+    `--local-nats-ports=${plan.ports.slice(0, 3).join(",")}`,
     `--local-nats-cache=${plan.cache}`,
   ];
   if (plan.advertisedNative) {
@@ -469,7 +469,10 @@ export class TcpProxy {
 export class TrellisTestRuntime implements AsyncDisposable {
   /** The Trellis origin: sign-in, discovery, and where clients connect. */
   readonly trellisUrl: string;
-  /** The Console's origin, an app beside Trellis. */
+  /**
+   * The Console's origin: the Trellis origin, where it is served at
+   * `/console`, unless started with `ownConsoleOrigin`.
+   */
   readonly consoleUrl: string;
   readonly natsUrl: string;
   /** NATS WebSocket endpoint for exercising the same broker with browser clients. */
@@ -736,10 +739,10 @@ export class TrellisTestRuntime implements AsyncDisposable {
         "trellis",
         "config.toml",
       );
-      for (let index = 0; index < 5; index++) {
+      for (let index = 0; index < 4; index++) {
         portLeases.push(await reserveLocalPort());
       }
-      const [port, nativePort, monitorPort, websocketPort, trellisPort] =
+      const [nativePort, monitorPort, websocketPort, trellisPort] =
         portLeases.map((lease) => lease.port);
       // A runtime serves certificates from its own test CA, as a production
       // installation serves ones browsers trust; this process trusts that CA
@@ -757,8 +760,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
           tls: () => readBrokerTls(workdir),
         });
       }
-      const consoleUrl = `https://localhost:${port}`;
       const trellisUrl = `https://localhost:${trellisPort}`;
+      // The test certificate names both loopback hostnames.
+      const consoleUrl = options.ownConsoleOrigin
+        ? `https://127.0.0.1:${trellisPort}`
+        : trellisUrl;
       const certificates = join(workdir, "certificates");
       if (!options.development) {
         await runBootstrapCommand(
@@ -783,8 +789,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
         "json",
         "--out",
         join(workdir, "config", "trellis"),
-        "--console-port",
-        String(port),
         "--nats-port",
         String(nativePort),
         "--nats-monitor-port",
@@ -812,8 +816,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
                 ? ["--nats-websocket", "relay"]
                 : ["--nats-websocket-url", websocketUrl]),
             ]),
-        "--console-origin",
-        consoleUrl,
+        ...(options.ownConsoleOrigin ? ["--console-origin", consoleUrl] : []),
         "--trellis-origin",
         trellisUrl,
         "--trellis-port",
@@ -885,7 +888,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         credsPath: bootstrap.trellisRuntimeCreds,
         environment,
         mode: options.trellis?.mode ?? "all",
-        ports: [port, nativePort, monitorPort, websocketPort, trellisPort],
+        ports: [nativePort, monitorPort, websocketPort, trellisPort],
         cache: trellisTestCacheDir(),
         advertisedNative: nativeProxy?.url,
         advertisedWebsocket: websocketProxy?.url,

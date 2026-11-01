@@ -1,6 +1,6 @@
 //! Persisted public Node and Chromium custody over the production OAuth HTTP adapter.
 
-use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport, OriginListener};
+use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport};
 use super::*;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -127,17 +127,17 @@ async fn sdk_rotation(mode: &str) {
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );
-    let listener = OriginListener::load(
+    let listener = crate::listener::LoadedListener::load(
         backend,
-        &backend_origin,
+        &url::Url::parse(&backend_origin).unwrap(),
         &OAuthTransport::LoopbackDevelopment,
     )
     .await
     .unwrap();
     let mut shutdown = tokio_util::sync::CancellationToken::new();
-    let mut server = tokio::spawn(listener.run(
+    let mut server = tokio::spawn(listener.serve(
         super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
-        shutdown.clone(),
+        shutdown.clone().cancelled_owned(),
     ));
     let mut child = tokio::process::Command::new("node")
         .args([
@@ -197,17 +197,17 @@ async fn sdk_rotation(mode: &str) {
                         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap())
                             .unwrap(),
                     );
-                    let listener = OriginListener::load(
+                    let listener = crate::listener::LoadedListener::load(
                         socket,
-                        &backend_origin,
+                        &url::Url::parse(&backend_origin).unwrap(),
                         &OAuthTransport::LoopbackDevelopment,
                     )
                     .await
                     .unwrap();
                     shutdown = tokio_util::sync::CancellationToken::new();
-                    server = tokio::spawn(listener.run(
+                    server = tokio::spawn(listener.serve(
                         super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
-                        shutdown.clone(),
+                        shutdown.clone().cancelled_owned(),
                     ));
                     let reply = serde_json::json!({"keyId":authority.issuer().unwrap().key_id});
                     input

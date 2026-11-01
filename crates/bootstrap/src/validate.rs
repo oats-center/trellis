@@ -100,12 +100,9 @@ pub(crate) fn validate_trellis_listener_collision(
         ("native", options.nats.nats_port),
         ("monitor", options.nats.monitor_port),
         ("websocket", options.nats.websocket_port),
-        ("Console", options.runtime.console_port),
     ];
     for (listener, port) in listeners {
-        if port == options.runtime.trellis_port
-            || (listener != "Console" && port == options.runtime.console_port)
-        {
+        if port == options.runtime.trellis_port {
             return Err(BootstrapError::TrellisListenerPortCollision { listener, port });
         }
     }

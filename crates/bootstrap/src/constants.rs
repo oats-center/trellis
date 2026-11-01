@@ -22,7 +22,3 @@ pub const DEFAULT_NATS_WEBSOCKET_PORT: u16 = 8080;
 pub const DEFAULT_NATS_WEBSOCKET_URL: &str = "wss://localhost:8080";
 /// Default Trellis public HTTPS origin.
 pub const DEFAULT_PUBLIC_ORIGIN: &str = "https://localhost:3000";
-/// Default Console listener port.
-pub const DEFAULT_CONSOLE_PORT: u16 = 3001;
-/// Default Console public origin.
-pub const DEFAULT_CONSOLE_ORIGIN: &str = "https://localhost:3001";

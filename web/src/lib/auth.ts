@@ -71,6 +71,6 @@ export function buildConsoleLoginUrl(options: {
     resolveConsolePath(options.redirectTo, location),
     location,
     options.authError,
-    resolve("/login"),
+    resolve("/console/login"),
   );
 }

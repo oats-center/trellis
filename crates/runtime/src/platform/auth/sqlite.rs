@@ -408,8 +408,8 @@ impl SqliteAuthorizationStore {
         let authorization = config
             .resolve_authorization()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-        let console = config
-            .resolve_console_listener()
+        let console_origin = config
+            .resolve_console_origin()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         let instance_id = config
             .auth
@@ -439,7 +439,7 @@ impl SqliteAuthorizationStore {
             instance_id,
             account: account.into(),
             oauth_issuer: config.public_origin(),
-            console_origin: console.origin.clone(),
+            console_origin,
             upstream_tls_roots_pem: Vec::new(),
             authority_lifetime_seconds: u32::try_from(authorization.context_lifetime_seconds)
                 .map_err(|_| {

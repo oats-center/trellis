@@ -27,24 +27,19 @@ bind_address = "0.0.0.0"
 port = 3000
 public_origin = "https://trellis.example.com"
 
-# Trellis and the Console are served as plaintext only to the external HTTPS
-# proxy, which reaches them through the published loopback ports and the
-# trellis.network subnet. Peers outside it are refused and logged with their
+# Trellis, with the Console at /console, is served as plaintext only to the
+# external HTTPS proxy, which reaches it through the published loopback port
+# and the trellis.network subnet. Peers outside it are refused and logged with their
 # address. Use mode = "tls" with the bundle certificate to terminate TLS here
 # instead.
 [http.transport]
 mode = "proxy"
 trusted_proxies = ["10.89.70.0/24"]
 
-# The Console, an app on its own origin beside Trellis.
-[console]
-origin = "https://console.example.com"
-bind_address = "0.0.0.0"
-port = 3001
-
-[console.transport]
-mode = "proxy"
-trusted_proxies = ["10.89.70.0/24"]
+# Uncomment to give the Console a hostname of its own, pointed at the same
+# port, so its pages run apart from sign-in.
+# [console]
+# origin = "https://console.example.com"
 
 [nats]
 servers = "tls://nats.example.com:4222"

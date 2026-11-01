@@ -30,7 +30,7 @@ test(
     );
     const natsBinary = process.env.TRELLIS_TEST_NATS_BIN ?? "nats-server";
     const ports: number[] = [];
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 4; index += 1) {
       const listener = createServer();
       listener.listen(0, "127.0.0.1");
       await once(listener, "listening");
@@ -39,7 +39,7 @@ test(
       ports.push(address.port);
       await new Promise<void>((done) => listener.close(() => done()));
     }
-    const [http, broker, monitor, websocket, oauth] = ports;
+    const [broker, monitor, websocket, oauth] = ports;
     const issuer = `https://127.0.0.1:${oauth}`;
     const children: ChildProcess[] = [];
     const connections: Array<() => Promise<unknown>> = [];
@@ -71,8 +71,6 @@ test(
         "--tls",
         "generated",
         "--external-nats",
-        "--console-port",
-        String(http),
         "--nats-port",
         String(broker),
         "--nats-monitor-port",
@@ -136,7 +134,7 @@ test(
         serverLog += chunk;
       });
       await waitFor("runtime readiness", async () =>
-        fetch(`https://localhost:${http}/readyz`).then(
+        fetch(`https://127.0.0.1:${oauth}/readyz`).then(
           (r) => r.ok,
           () => false,
         ),
@@ -227,7 +225,7 @@ test(
       await waitFor(
         "restarted runtime readiness",
         async () =>
-          fetch(`https://localhost:${http}/readyz`).then(
+          fetch(`https://127.0.0.1:${oauth}/readyz`).then(
             (r) => r.ok,
             () => false,
           ),

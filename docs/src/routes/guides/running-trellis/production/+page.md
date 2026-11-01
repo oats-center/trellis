@@ -11,14 +11,16 @@ them have to be made before you create it.
 
 Trellis serves everything over TLS, and its certificates have to name the
 hostnames you give `trellis-server init`. Changing them later means a new
-installation. A production install usually has three:
+installation. A production install usually has two:
 
 - Trellis itself, for example `https://trellis.example.com`. Sign-in lives
-  here, and it's the address the CLI, services, devices and apps connect to.
-- the Console, on a hostname of its own such as `https://console.example.com`.
-  It's an app like any other, so it never shares sign-in's origin.
+  here, it's the address the CLI, services, devices and apps connect to, and
+  the Console is part of it at `https://trellis.example.com/console/`.
 - NATS, for example `tls://nats.example.com:4222` for services, and a
   WebSocket for browsers
+
+The Console can have a hostname of its own too; see
+[The Console on its own hostname](#the-console-on-its-own-hostname).
 
 These `init` flags set them; `--host` changes the hostname in every default at
 once:
@@ -26,30 +28,29 @@ once:
 | Flag                                            | Default                        | Sets                                                                     |
 | ----------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------ |
 | `--trellis-origin https://trellis.example.com`  | `https://<host>:3000`          | Trellis's address: sign-in, and where clients connect                    |
-| `--console-origin https://console.example.com`  | `https://<host>:3001`          | The Console's address                                                    |
+| `--console-origin https://console.example.com`  | `/console` on Trellis's origin | The Console's own address, if it has one                                 |
 | `--nats-server-url tls://nats.example.com:4222` | `tls://<host>:4222`            | Where services connect to NATS                                           |
 | `--nats-websocket-url wss://nats.example.com`   | relayed through Trellis's port | Where browsers connect to NATS directly (with `--nats-websocket direct`) |
-| `--trellis-port`, `--console-port`              | `3000`, `3001`                 | Trellis's and the Console's ports                                        |
+| `--trellis-port`                                | `3000`                         | Trellis's port, which also serves the Console                            |
 
 ## Bring certificates people already trust
 
 A production installation serves certificates every browser and service
 already trusts: from a public CA such as Let's Encrypt, or from your
-organization's own CA. Get one for the Trellis and Console hostnames and one
-for the NATS hostnames, then give them to `init`:
+organization's own CA. Get one for the Trellis hostname (and the Console's,
+if it has its own) and one for the NATS hostnames, then give them to `init`:
 
 ```sh
 trellis-server init --tls supplied \
   --tls-certificate-chain trellis.crt --tls-private-key trellis.key \
   --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
   --trellis-origin https://trellis.example.com \
-  --console-origin https://console.example.com \
   --nats-server-url tls://nats.example.com:4222
 ```
 
 If your organization runs the CA, add `--tls-ca-certificate <its certificate>`
 so Trellis trusts it when it connects to NATS. Behind a proxy that terminates
-HTTPS, leave out the Trellis and Console pair; see
+HTTPS, leave out the Trellis pair; see
 [Behind your own HTTPS proxy](#behind-your-own-https-proxy).
 
 For a lab or test installation that nobody else depends on, `--tls generated`
@@ -120,7 +121,6 @@ trellis-server init --out "$HOME/trellis/config" --external-nats \
   --tls supplied --trusted-proxy 10.89.70.0/24 \
   --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
   --trellis-origin https://trellis.example.com \
-  --console-origin https://console.example.com \
   --nats-server-url tls://nats.example.com:4222 \
   --nats-websocket-url wss://nats.example.com
 ```
@@ -158,14 +158,13 @@ public-facing work:
 | Public address                | Forward to              | How                                   |
 | ----------------------------- | ----------------------- | ------------------------------------- |
 | `https://trellis.example.com` | `http://127.0.0.1:3000` | terminate TLS, keep the `Host` header |
-| `https://console.example.com` | `http://127.0.0.1:3001` | terminate TLS, keep the `Host` header |
 | `nats.example.com:4222`       | `127.0.0.1:4222`        | TLS passthrough (NATS terminates it)  |
 | `wss://nats.example.com`      | `127.0.0.1:8080`        | TLS passthrough (NATS terminates it)  |
 
 NATS monitoring on port 8222 stays on loopback. The example trusts the fixed
 `trellis.network` subnet as the proxy. If your proxy connects from somewhere
 else, Trellis refuses the request and logs the peer's address; add it to
-`trusted_proxies` under `[http.transport]` and `[console.transport]`.
+`trusted_proxies` under `[http.transport]`.
 
 When you restart, reuse the same installation folder and data folder. Add
 services through the normal administrator flow, never by handing an application
@@ -205,7 +204,7 @@ docker run --rm --user root --entrypoint chown \
 docker run --rm --name trellis --read-only --tmpfs /tmp \
   --tmpfs /run/trellis:uid=10001,gid=10001,mode=0700 \
   --tmpfs /var/log/trellis:uid=10001,gid=10001,mode=0700 \
-  --user 10001:10001 --publish 127.0.0.1:3000:3000 --publish 127.0.0.1:3001:3001 \
+  --user 10001:10001 --publish 127.0.0.1:3000:3000 \
   --volume trellis-bundle:/etc/trellis:ro,Z \
   --volume trellis-state:/var/lib/trellis:rw,Z \
   --entrypoint trellis-server ghcr.io/oats-center/trellis-server:latest \
@@ -221,7 +220,7 @@ names your certificates carry.
 
 ## Behind your own HTTPS proxy
 
-Trellis and the Console can also run as plain HTTP behind a proxy that
+Trellis can also run as plain HTTP behind a proxy that
 terminates TLS. Create the installation with `--trusted-proxy 10.0.0.2/32` (the
 proxy's network) and `--tls supplied` with only the NATS certificate, or set it
 in `config.toml`:
@@ -234,15 +233,14 @@ trusted_proxies = ["10.0.0.2/32"]
 
 Trellis then answers only connections from those networks, gives everyone else
 `403`, and rate-limits clients by the proxy's `X-Forwarded-For` header. The
-proxy has to keep the original `Host` header. `[console.transport]` takes the
-same settings for the Console's port.
+proxy has to keep the original `Host` header.
 
 You can't run all of Trellis as plain HTTP. Sign-in cookies only work over
 HTTPS in a browser, so something has to terminate TLS. NATS's native port
 always serves its own TLS and can't sit behind a TLS-terminating proxy; only
 its WebSocket port can (`--nats-websocket-behind-proxy`).
 
-For the proxy's health checks, both ports answer `/healthz` and `/readyz`,
+For the proxy's health checks, Trellis answers `/healthz` and `/readyz`,
 whatever `Host` header the check sends. `/readyz` returns `503` until the
 server has finished starting. Every sign-in page answers only its own
 hostname.
@@ -264,7 +262,6 @@ example, behind an AWS Application Load Balancer holding a certificate for
 trellis-server init --tls generated \
   --trusted-proxy 172.31.0.0/16 \
   --trellis-origin https://trellis.example.com \
-  --console-origin https://console.example.com \
   --nats-websocket-url wss://trellis.example.com \
   --nats-websocket-behind-proxy \
   --nats-websocket-only
@@ -276,14 +273,13 @@ The load balancer's HTTPS listener then has these rules, in this order:
 | ---------------------------------------------------------- | ---------- | ----------------------- |
 | Host `trellis.example.com` and header `Upgrade: websocket` | HTTP 8080  | `/`, success code `400` |
 | Host `trellis.example.com`                                 | HTTP 3000  | `/readyz`               |
-| Host `console.example.com`                                 | HTTP 3001  | `/readyz`               |
 
 With `--nats-websocket-behind-proxy`, NATS serves its WebSocket as plain HTTP
 on every interface, so a load balancer on another machine reaches it. That
 port answers a plain request with `400`, which is what its health check
 expects; NATS's monitoring port stays on loopback. Raise the load balancer's
 idle timeout above its 60-second default, or it cuts quiet NATS connections.
-Allow ports 3000, 3001 and 8080 only from the load balancer: nothing else may
+Allow ports 3000 and 8080 only from the load balancer: nothing else may
 reach the plaintext WebSocket. Here `--tls generated` only covers Trellis's
 own connection to NATS on the instance; people only ever see the load
 balancer's certificate.
@@ -304,6 +300,25 @@ mode = "tls"
 certificate_chain = "./tls/runtime.crt"
 private_key = "./tls/runtime.key"
 ```
+
+## The Console on its own hostname
+
+The Console runs at `/console` on Trellis's origin, beside the sign-in pages.
+A bug that let someone run their own script in the Console could then also
+act on those pages as whoever has the Console open, for example approving an
+app's access request. Give the Console a hostname of its own and the browser
+keeps the two apart; the Console then has only what it was granted:
+
+```sh
+trellis-server init ... \
+  --trellis-origin https://trellis.example.com \
+  --console-origin https://console.example.com
+```
+
+`console.example.com` is just another name for Trellis's port: point it at the
+same port, through your proxy or DNS. Trellis serves the Console there and
+sends anyone who opens `/console` on `trellis.example.com` to it. The
+certificate has to name both hostnames.
 
 ## Back it up as one piece
 

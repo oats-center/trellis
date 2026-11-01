@@ -23,7 +23,7 @@ function readRuntimeConfig(): RuntimeAppConfig {
   const callback = new URL(config.callbackUri);
   if (
     callback.origin !== location.origin ||
-    callback.pathname !== "/login" ||
+    callback.pathname !== "/console/login" ||
     callback.search ||
     callback.hash ||
     callback.username ||
@@ -79,7 +79,7 @@ export function buildAppLoginUrl(
   redirectTo: string,
   location: URL | Location = globalThis.location,
   authError?: string,
-  loginPath = "/login",
+  loginPath = "/console/login",
 ): string {
   const url = new URL(loginPath, toUrl(location).origin);
   url.searchParams.set("redirectTo", redirectTo);

@@ -31,7 +31,7 @@ pub struct RuntimeConfig {
     pub http: Option<HttpConfig>,
     /// The bundled Console's own listener, an app beside the Trellis origin.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub console: Option<ConsoleListenerConfig>,
+    pub console: Option<ConsoleConfig>,
     /// Installation TLS metadata shared by every runtime listener.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tls: Option<TlsConfig>,
@@ -137,7 +137,7 @@ impl RuntimeConfig {
             }
         }
         if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
-            self.resolve_console_listener()?;
+            self.resolve_console_origin()?;
         }
         if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
             self.resolve_authorization()?;
@@ -146,8 +146,12 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    /// Resolves the Console's listener and checks installation identity.
-    pub fn resolve_console_listener(&self) -> Result<&ConsoleListenerConfig, ConfigError> {
+    /// Resolves the Console's origin and checks installation identity.
+    ///
+    /// The Console is served at `/console` on the Trellis origin unless
+    /// `[console] origin` names a hostname of its own, served by the same
+    /// listener.
+    pub fn resolve_console_origin(&self) -> Result<String, ConfigError> {
         let auth = self
             .auth
             .as_ref()
@@ -177,35 +181,39 @@ impl RuntimeConfig {
                 "must identify the existing installation-owned OAuth key file",
             ));
         }
-        let console = self
-            .console
-            .as_ref()
-            .ok_or(ConfigError::MissingSection { section: "console" })?;
-        let invalid = |reason| ConfigError::InvalidConsoleListener { reason };
-        let origin = Url::parse(&console.origin)
-            .map_err(|_| invalid("origin must be an absolute origin"))?;
-        if origin.host().is_none()
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-            || console.port == 0
-        {
-            return Err(invalid(
-                "requires a nonzero port and an origin without credentials, path, query, \
-                or fragment",
-            ));
-        }
-        validate_listener_transport(&origin, console.bind_address, &console.transport)
-            .map_err(invalid)?;
-        // Sign-in lives on the Trellis origin; the Console is an app beside it.
+        let invalid = |reason| ConfigError::InvalidConsole { reason };
         let trellis = Url::parse(&self.public_origin())
             .map_err(|_| invalid("needs a valid [http] public_origin beside it"))?;
-        if trellis.origin() == origin.origin() {
-            return Err(invalid("origin must differ from the Trellis origin"));
-        }
-        warn_oauth_cookie_isolation(&trellis, &origin);
+        let console = match &self.console {
+            None => trellis.origin().ascii_serialization(),
+            Some(console) => {
+                let origin = Url::parse(&console.origin)
+                    .map_err(|_| invalid("origin must be an absolute origin"))?;
+                if origin.host().is_none()
+                    || !origin.username().is_empty()
+                    || origin.password().is_some()
+                    || origin.path() != "/"
+                    || origin.query().is_some()
+                    || origin.fragment().is_some()
+                {
+                    return Err(invalid(
+                        "origin must not contain credentials, a path, a query, or a fragment",
+                    ));
+                }
+                // One listener serves both, so they share its transport.
+                if origin.scheme() != trellis.scheme() {
+                    return Err(invalid("origin must use the Trellis origin's scheme"));
+                }
+                if trellis.origin() == origin.origin() {
+                    return Err(invalid(
+                        "origin must differ from the Trellis origin; leave [console] out to \
+                        serve the Console there",
+                    ));
+                }
+                warn_oauth_cookie_isolation(&trellis, &origin);
+                origin.origin().ascii_serialization()
+            }
+        };
         if let Some(servers) = self.nats.as_ref().and_then(|nats| nats.servers.as_deref()) {
             for server in servers.split(',') {
                 let endpoint = Url::parse(server.trim()).map_err(|_| {
@@ -406,16 +414,16 @@ impl RuntimeConfig {
             .unwrap_or_else(|| format!("http://localhost:{}", self.http_port()))
     }
 
-    /// Validates that the Trellis and Console listener transports can protect
-    /// their public origins and that broker endpoints use TLS outside loopback
-    /// development, without reading any referenced file.
+    /// Validates that the Trellis listener's transport can protect its public
+    /// origin and the Console's, and that broker endpoints use TLS outside
+    /// loopback development, without reading any referenced file.
     ///
     /// # Errors
     ///
     /// Returns [`ConfigError`] naming the listener or endpoint that is unsafe.
     pub fn validate_listeners(&self) -> Result<(), ConfigError> {
         self.validate_http_listener()?;
-        self.resolve_console_listener().map(|_| ())
+        self.resolve_console_origin().map(|_| ())
     }
 
     /// Rejects an application listener whose transport cannot protect its public origin.
@@ -607,18 +615,6 @@ impl RuntimeConfig {
 
         if let Some(auth) = &mut self.auth {
             resolve_path(base_dir, &mut auth.oauth_storage_key_file);
-        }
-        if let Some(ConsoleListenerConfig {
-            transport:
-                ListenerTransport::Tls {
-                    certificate_chain,
-                    private_key,
-                },
-            ..
-        }) = &mut self.console
-        {
-            resolve_required_path(base_dir, certificate_chain);
-            resolve_required_path(base_dir, private_key);
         }
         if let Some(authorization) = self
             .auth
@@ -1148,18 +1144,14 @@ pub struct AvatarConfig {
     pub external_fetch_enabled: bool,
 }
 
-/// The bundled Console's listener, an app on its own origin.
+/// The bundled Console's own origin. Without it, the Console is served at
+/// `/console` on the Trellis origin.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConsoleListenerConfig {
-    /// The Console's public origin, distinct from the Trellis origin.
+pub struct ConsoleConfig {
+    /// A hostname of the Console's own, distinct from the Trellis origin and
+    /// served by the Trellis listener. Its pages then run apart from sign-in.
     pub origin: String,
-    /// Address the Console listener binds to.
-    pub bind_address: IpAddr,
-    /// The Console's port.
-    pub port: u16,
-    /// TLS, reverse-proxy, or explicitly insecure loopback-only development transport.
-    pub transport: ListenerTransport,
 }
 
 /// Transport for a runtime HTTP listener; failed TLS never becomes plaintext.
@@ -1515,10 +1507,10 @@ pub enum ConfigError {
         /// Validation failure reason.
         reason: &'static str,
     },
-    /// The Console listener can't serve its origin safely.
+    /// The Console's own origin can't be served beside the Trellis origin.
     #[error("invalid runtime config section [console]: {reason}")]
-    InvalidConsoleListener {
-        /// Why the listener is refused.
+    InvalidConsole {
+        /// Why the origin is refused.
         reason: &'static str,
     },
     /// The configured HTTP public origin is not a valid absolute HTTP(S) origin.

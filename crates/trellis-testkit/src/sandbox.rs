@@ -44,13 +44,11 @@ pub(crate) fn ensure_supported_platform() -> Result<(), TrellisTestError> {
     }
 }
 
-/// The five loopback ports reserved for one startup attempt.
+/// The four loopback ports reserved for one startup attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PortSet {
-    /// Trellis HTTP listener.
-    pub http: u16,
-    /// Isolated OAuth listener.
-    pub oauth: u16,
+    /// Trellis listener: sign-in, the Console, and where clients connect.
+    pub trellis: u16,
     /// Managed NATS native listener.
     pub nats: u16,
     /// Managed NATS monitoring listener.
@@ -59,14 +57,13 @@ pub(crate) struct PortSet {
     pub websocket: u16,
 }
 
-/// Five TCP reservations with same-port UDP handoff ownership.
+/// Four TCP reservations with same-port UDP handoff ownership.
 ///
 /// Each TCP side is a bound, never-listening `SO_REUSEADDR` socket. A listening
 /// reservation would be inherited by a process another thread spawns, until it
 /// execs, and could keep accepting after the lease closed it.
 pub(crate) struct PortLease {
-    http: (socket2::Socket, UdpSocket),
-    oauth: (socket2::Socket, UdpSocket),
+    trellis: (socket2::Socket, UdpSocket),
     nats: (socket2::Socket, UdpSocket),
     monitor: (socket2::Socket, UdpSocket),
     websocket: (socket2::Socket, UdpSocket),
@@ -155,8 +152,7 @@ impl PortLease {
             )))
         };
         Ok(Self {
-            http: bind("HTTP")?,
-            oauth: bind("OAuth")?,
+            trellis: bind("Trellis")?,
             nats: bind("NATS")?,
             monitor: bind("monitor")?,
             websocket: bind("WebSocket")?,
@@ -182,8 +178,7 @@ impl PortLease {
                 })
         };
         Ok(PortSet {
-            http: port_of(&self.http.0, "HTTP")?,
-            oauth: port_of(&self.oauth.0, "OAuth")?,
+            trellis: port_of(&self.trellis.0, "Trellis")?,
             nats: port_of(&self.nats.0, "NATS")?,
             monitor: port_of(&self.monitor.0, "monitor")?,
             websocket: port_of(&self.websocket.0, "WebSocket")?,
@@ -191,15 +186,13 @@ impl PortLease {
     }
 
     /// Closes the TCP reservations, retaining exclusive ownership through startup.
-    pub(crate) fn release_for_spawn(self) -> [UdpSocket; 5] {
-        drop(self.http.0);
-        drop(self.oauth.0);
+    pub(crate) fn release_for_spawn(self) -> [UdpSocket; 4] {
+        drop(self.trellis.0);
         drop(self.nats.0);
         drop(self.monitor.0);
         drop(self.websocket.0);
         [
-            self.http.1,
-            self.oauth.1,
+            self.trellis.1,
             self.nats.1,
             self.monitor.1,
             self.websocket.1,
@@ -479,7 +472,7 @@ mod tests {
         let automatic = bounds[0]..=bounds[1];
         let lease = PortLease::reserve().expect("reserve listeners");
         let set = lease.ports().expect("reserved ports");
-        for port in [set.http, set.oauth, set.nats, set.monitor, set.websocket] {
+        for port in [set.trellis, set.nats, set.monitor, set.websocket] {
             // A readiness probe must never mistake the reservation for a server.
             assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_err());
             assert!(
@@ -500,7 +493,7 @@ mod tests {
                 .expect("occupy an automatic outbound port")
             })
             .collect();
-        let _listeners: Vec<_> = [set.http, set.oauth, set.nats, set.monitor, set.websocket]
+        let _listeners: Vec<_> = [set.trellis, set.nats, set.monitor, set.websocket]
             .into_iter()
             .map(|port| {
                 TcpListener::bind((Ipv4Addr::LOCALHOST, port))
@@ -512,7 +505,7 @@ mod tests {
     #[test]
     fn node_reservations_respect_rust_handoff_ownership() {
         let lease = PortLease::reserve().expect("reserve listeners");
-        let port = lease.ports().expect("reserved ports").http;
+        let port = lease.ports().expect("reserved ports").trellis;
         let mut ownership = Some(lease.release_for_spawn());
         let module = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../ts/packages/trellis-testkit/src/ports.ts")

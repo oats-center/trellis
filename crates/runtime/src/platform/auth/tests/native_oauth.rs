@@ -1,5 +1,5 @@
 //! Native SDK custody and refresh against the production OAuth HTTP engine.
-use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport, OriginListener};
+use super::super::oauth::{OAuthEngine, OAuthStorage, OAuthTransport};
 use super::*;
 use std::{
     sync::Arc,
@@ -243,13 +243,17 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );
-    let listener = OriginListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
-        .await
-        .unwrap();
+    let listener = crate::listener::LoadedListener::load(
+        socket,
+        &url::Url::parse(&backend).unwrap(),
+        &OAuthTransport::LoopbackDevelopment,
+    )
+    .await
+    .unwrap();
     let mut shutdown = tokio_util::sync::CancellationToken::new();
-    let mut server = tokio::spawn(listener.run(
+    let mut server = tokio::spawn(listener.serve(
         super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
-        shutdown.clone(),
+        shutdown.clone().cancelled_owned(),
     ));
 
     let client = NativeOAuthClient::open(custody.clone(), scope.clone(), trust.clone())
@@ -459,13 +463,17 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         let engine = Arc::new(
             OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
         );
-        let listener = OriginListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
-            .await
-            .unwrap();
+        let listener = crate::listener::LoadedListener::load(
+            socket,
+            &url::Url::parse(&backend).unwrap(),
+            &OAuthTransport::LoopbackDevelopment,
+        )
+        .await
+        .unwrap();
         shutdown = tokio_util::sync::CancellationToken::new();
-        server = tokio::spawn(listener.run(
+        server = tokio::spawn(listener.serve(
             super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
-            shutdown.clone(),
+            shutdown.clone().cancelled_owned(),
         ));
         session = match suspended {
             Some(mut warm) => {
@@ -568,13 +576,17 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
     let socket = tokio::net::TcpListener::bind(backend_address)
         .await
         .unwrap();
-    let listener = OriginListener::load(socket, &backend, &OAuthTransport::LoopbackDevelopment)
-        .await
-        .unwrap();
+    let listener = crate::listener::LoadedListener::load(
+        socket,
+        &url::Url::parse(&backend).unwrap(),
+        &OAuthTransport::LoopbackDevelopment,
+    )
+    .await
+    .unwrap();
     shutdown = tokio_util::sync::CancellationToken::new();
-    server = tokio::spawn(listener.run(
+    server = tokio::spawn(listener.serve(
         super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
-        shutdown.clone(),
+        shutdown.clone().cancelled_owned(),
     ));
     forward.send(()).unwrap();
     let (unverified, outcome) = tokio::time::timeout(Duration::from_secs(15), refresh)

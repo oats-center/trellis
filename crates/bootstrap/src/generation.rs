@@ -88,7 +88,7 @@ pub fn generate_trellis_bootstrap(
             && (supplied.certificate_chain.is_none() || supplied.private_key.is_none())
         {
             return Err(BootstrapError::InvalidTls(
-                "supplied TLS needs the Console's certificate chain and private key unless a \
+                "supplied TLS needs the Trellis certificate chain and private key unless a \
                 trusted proxy serves HTTPS"
                     .into(),
             ));
@@ -142,10 +142,11 @@ pub fn generate_trellis_bootstrap(
                     .map(|url| CertificateHost::from_url(url))
                     .collect::<Result<Vec<_>, _>>()
             };
-            let runtime_hosts = hosts(&[
-                &options.runtime.public_origin,
-                &options.runtime.console_origin,
-            ])?;
+            let runtime_hosts = hosts(
+                &std::iter::once(options.runtime.public_origin.as_str())
+                    .chain(options.runtime.console_origin.as_deref())
+                    .collect::<Vec<_>>(),
+            )?;
             // Managed brokers are reached over loopback by the co-located runtime.
             let mut nats_hosts = if options.runtime.nats_websocket_via_runtime {
                 hosts(&[&options.runtime.nats_server_url])?

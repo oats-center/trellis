@@ -44,7 +44,8 @@ never select them. The kernel enforces each reservation until startup, and
 outbound bootstrap connections cannot claim its port after release.
 
 `trellis_url()` is the Trellis origin: sign-in, the portal, and where clients
-connect. `console_url()` is the Console's own origin. Browser clients need
+connect. `console_url()` is the Console's origin, the same Trellis origin,
+where it is served at `/console`. Browser clients need
 ordinary registered callback metadata and user consent; their redirect origins
 are what Trellis trusts. `nats_websocket_only()` starts a runtime that
 advertises only its NATS WebSocket, as one that keeps native NATS private does.

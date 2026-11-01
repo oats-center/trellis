@@ -101,7 +101,7 @@ pub(crate) fn console_registration(origin: &str) -> Result<ClientRegistration, A
         kind: "browser".into(),
         display_name: "Trellis Console".into(),
         redirect_uris: vec![origin
-            .join("/login")
+            .join("/console/login")
             .map_err(|_| AuthError::Invalid("invalid Console callback".into()))?
             .to_string()],
         development: origin.scheme() == "http" && loopback,
@@ -132,13 +132,6 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<String, AuthError> {
         let registration = console_registration(origin)?;
-        let callback_origin = url::Url::parse(&registration.redirect_uris[0])
-            .map_err(|_| AuthError::Denied)?
-            .origin()
-            .ascii_serialization();
-        if self.settings.reserves_origin(&callback_origin) {
-            return Err(AuthError::Invalid("reserved_oauth_origin".into()));
-        }
         self.initialize_administrator(
             username,
             Some(password),
@@ -360,13 +353,6 @@ impl super::OAuthStorage {
         now: i64,
     ) -> Result<(String, Option<String>), AuthError> {
         let registration = console_registration(origin)?;
-        let console_origin = url::Url::parse(origin)
-            .map_err(|_| AuthError::Denied)?
-            .origin()
-            .ascii_serialization();
-        if self.authority.settings.reserves_origin(&console_origin) {
-            return Err(AuthError::Invalid("reserved_oauth_origin".into()));
-        }
         let initialized = self.authority.initialize_administrator(
             username,
             password,
@@ -479,8 +465,6 @@ mod tests {
         let config: RuntimeConfig = serde_json::from_value(serde_json::json!({
             "event_session_seed_file": directory.path().join("session.seed"),
             "http":{"public_origin":"http://localhost:3001","port":3001},
-            "console":{"origin":"http://localhost:3000","bind_address":"127.0.0.1","port":3000,
-                "transport":{"mode":"loopback_development"}},
             "auth":{
                 "instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV", "oauth_storage_key_file":sealing,
                 "authorization":{"issuer_signing_seed_file":issuer,"context_lifetime_seconds":300,
@@ -501,15 +485,6 @@ mod tests {
         let store =
             Arc::new(SqliteAuthorizationStore::open(&database, &config, "test-account").unwrap());
         store.initialize_issuer(1000).unwrap();
-        assert!(matches!(
-            store.seed_administrator_and_console(
-                "http://localhost:3001",
-                "administrator",
-                "initial-password",
-                1000
-            ),
-            Err(AuthError::Invalid(_))
-        ));
         let mut invalid = cli_registration();
         invalid
             .implied_capabilities
@@ -577,7 +552,10 @@ mod tests {
         let storage = OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap();
         let client_id = ClientId::new(CONSOLE_CLIENT_ID);
         let client = storage.get_client(&client_id).await.unwrap().unwrap();
-        assert_eq!(client.redirect_uris, vec!["http://localhost:3000/login"]);
+        assert_eq!(
+            client.redirect_uris,
+            vec!["http://localhost:3000/console/login"]
+        );
         let cli_id = ClientId::new(CLI_CLIENT_ID);
         let engine =
             OAuthEngine::new(OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap()).unwrap();
@@ -672,7 +650,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .redirect_uris,
-            vec!["https://console.example/login"]
+            vec!["https://console.example/console/login"]
         );
         let disable = PolicyMutation::ClientState {
             client_id: CONSOLE_CLIENT_ID.into(),

@@ -11,7 +11,7 @@ runtime never accepts artifacts uploaded by the service process itself.
 ## 1. Log in
 
 ```sh
-trellis login https://localhost:3001
+trellis login https://localhost:3000
 trellis whoami
 ```
 

@@ -55,11 +55,11 @@ mod telemetry;
 
 pub use config::{
     AdministrationConfig, AuthConfig, AuthorizationConfig, AvatarConfig, ClientConfig, ConfigError,
-    ConsoleListenerConfig, HttpConfig, LeasesConfig, ListenerTransport,
-    LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig,
-    ResolvedRuntimeNatsConfig, RuntimeConfig, RuntimePathDefaults, RuntimePathsConfig,
-    SqliteStorageConfig, StorageBackend, StorageConfig, SubsystemConfig, TlsConfig,
+    ConsoleConfig, HttpConfig, LeasesConfig, ListenerTransport, LiveProviderSeedFilesConfig,
+    LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig, NatsRuntimeConfig,
+    ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig, ResolvedRuntimeNatsConfig, RuntimeConfig,
+    RuntimePathDefaults, RuntimePathsConfig, SqliteStorageConfig, StorageBackend, StorageConfig,
+    SubsystemConfig, TlsConfig,
 };
 pub use mode::{RuntimeMode, RuntimeModeParseError, SubsystemName};
 pub use server::{

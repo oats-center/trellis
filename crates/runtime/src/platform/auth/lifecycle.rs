@@ -209,9 +209,15 @@ impl SqliteAuthorizationStore {
                         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
                         _ => false,
                     };
-                    if self
-                        .settings
-                        .reserves_origin(&uri.origin().ascii_serialization())
+                    // The bundled Console is the one app sign-in's origin
+                    // serves, and only at its own callback.
+                    let console_callback = registration.client_id == super::CONSOLE_CLIENT_ID
+                        && uri.path() == "/console/login"
+                        && uri.query().is_none();
+                    if !console_callback
+                        && self
+                            .settings
+                            .reserves_origin(&uri.origin().ascii_serialization())
                     {
                         return Err(AuthError::Invalid("reserved_oauth_origin".into()));
                     }

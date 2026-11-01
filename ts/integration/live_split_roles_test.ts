@@ -108,14 +108,10 @@ async function startSplitRole(
     // one of its own.
     delete nats.managed;
     assert("transport" in http);
-    const consoleListener = config.console as
-      Record<string, unknown> | undefined;
-    for (const listener of [http.transport, consoleListener?.transport]) {
-      assert(listener && typeof listener === "object");
-      const files = listener as Record<string, unknown>;
-      files.certificate_chain = bundlePath(files.certificate_chain);
-      files.private_key = bundlePath(files.private_key);
-    }
+    assert(http.transport && typeof http.transport === "object");
+    const files = http.transport as Record<string, unknown>;
+    files.certificate_chain = bundlePath(files.certificate_chain);
+    files.private_key = bundlePath(files.private_key);
     config.paths = {
       data: join(root, "data"),
       state: join(root, "state"),

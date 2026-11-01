@@ -16,12 +16,10 @@ trellis-server
 
 Trellis listens on `https://eta.oats:3000`: sign-in, and NATS for browsers and
 clients, which it hands to NATS whenever a request asks for a WebSocket. The
-Console is at `https://eta.oats:3001/console`. Trellis makes one certificate
-for both ports. The first time a browser opens either, it warns that it
-doesn't know who issued the certificate; check that the issuer's SHA-256
-fingerprint matches the one `trellis-server init` printed, and accept it.
-Firefox asks once per port, Chrome usually once per host. Nothing gets
-installed on the other machine.
+Console is at `https://eta.oats:3000/console`. The first time a browser opens
+it, it warns that it doesn't know who issued the certificate; check that the
+issuer's SHA-256 fingerprint matches the one `trellis-server init` printed,
+and accept it. Nothing gets installed on the other machine.
 
 The CLI does the same check. `trellis login https://eta.oats:3000` shows
 the fingerprint, asks whether to accept it, and remembers the answer.
@@ -48,17 +46,17 @@ certificates browsers already trust.
 
 These go on `trellis-server init --dev`:
 
-| Flag                                                   | Default                | Use it when                                               |
-| ------------------------------------------------------ | ---------------------- | --------------------------------------------------------- |
-| `--host eta.oats`                                      | `localhost`            | Other machines reach this one by that name                |
-| `--trellis-port`, `--console-port`                     | `3000`, `3001`         | Those ports are taken                                     |
-| `--nats-port`, `--nats-monitor-port`, `--nats-ws-port` | `4222`, `8222`, `8080` | Those ports are taken                                     |
-| `--bind-address eta.oats`                              | all interfaces         | Trellis and the Console should listen on one address only |
-| `--name "Lab Trellis"`                                 | `Trellis`              | You want a different display name                         |
-| `--out <folder>`                                       | `~/.config/trellis`    | You want a self-contained installation in its own folder  |
-| `--external-nats`                                      | Trellis runs NATS      | You run NATS yourself                                     |
+| Flag                                                   | Default                | Use it when                                              |
+| ------------------------------------------------------ | ---------------------- | -------------------------------------------------------- |
+| `--host eta.oats`                                      | `localhost`            | Other machines reach this one by that name               |
+| `--trellis-port`                                       | `3000`                 | That port is taken                                       |
+| `--nats-port`, `--nats-monitor-port`, `--nats-ws-port` | `4222`, `8222`, `8080` | Those ports are taken                                    |
+| `--bind-address eta.oats`                              | all interfaces         | Trellis should listen on one address only                |
+| `--name "Lab Trellis"`                                 | `Trellis`              | You want a different display name                        |
+| `--out <folder>`                                       | `~/.config/trellis`    | You want a self-contained installation in its own folder |
+| `--external-nats`                                      | Trellis runs NATS      | You run NATS yourself                                    |
 
 `--bind-address` takes a hostname or an IP and listens on the address of this
-machine it resolves to. It only covers the Trellis and Console ports; NATS
+machine it resolves to. It only covers the Trellis port; NATS
 listens on every interface. `init` refuses port `0` and the same port used
 twice.

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use trellis_runtime::{
-    AuthConfig, AuthorizationConfig, ClientConfig, ConsoleListenerConfig, HttpConfig, LeasesConfig,
+    AuthConfig, AuthorizationConfig, ClientConfig, ConsoleConfig, HttpConfig, LeasesConfig,
     ListenerTransport, LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig,
     NatsConfig, NatsRuntimeConfig, RuntimeConfig, RuntimePathsConfig, StorageConfig,
     SubsystemConfig, TlsConfig,
@@ -49,18 +49,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             .map(|_| bundle_path(BUNDLE_CA_CERTIFICATE)),
         BootstrapTls::LoopbackDevelopment => None,
     };
-    let console = ConsoleListenerConfig {
-        origin: options.runtime.console_origin.clone(),
-        bind_address: options.runtime.bind_address.unwrap_or(
-            if transport == ListenerTransport::LoopbackDevelopment {
-                std::net::Ipv4Addr::LOCALHOST.into()
-            } else {
-                std::net::Ipv4Addr::UNSPECIFIED.into()
-            },
-        ),
-        port: options.runtime.console_port,
-        transport: transport.clone(),
-    };
     RuntimeConfig {
         instance_name: Some(options.runtime.name.clone()),
         event_session_seed_file: Some(PathBuf::from("./session.seed")),
@@ -98,7 +86,11 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             // A proxy transport already presents the forwarded client.
             trusted_proxies: Vec::new(),
         }),
-        console: Some(console),
+        console: options
+            .runtime
+            .console_origin
+            .clone()
+            .map(|origin| ConsoleConfig { origin }),
         nats: Some(NatsConfig {
             managed: options.runtime.managed_nats,
             servers: Some(options.runtime.nats_server_url.clone()),

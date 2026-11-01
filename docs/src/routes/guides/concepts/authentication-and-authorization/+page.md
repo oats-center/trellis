@@ -200,8 +200,9 @@ capabilities and administrative checks.
 ## Browser login and the portal
 
 Browser applications use OAuth Authorization Code with PKCE and DPoP against
-the Trellis origin, which no application shares; even the Console is an app on
-its own origin. Trellis's portal on that origin
+the Trellis origin. No application shares it except Trellis's own Console at
+`/console`, which can be given an origin of its own instead. Trellis's portal
+on that origin
 performs local-password or OIDC sign-in and explicit capability consent under its
 own cookie and CSRF controls. The token response carries a signed Trellis
 admission for the browser's fresh runtime key; the client connects with it and
