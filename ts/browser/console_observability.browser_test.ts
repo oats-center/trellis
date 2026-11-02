@@ -51,6 +51,10 @@ async function seedProvider(runtime: TrellisTestRuntime, label: string) {
   service.jobs.work.handle(({ job }) =>
     Promise.resolve(Result.ok(job.payload)),
   );
+  // A job type whose every job fails, beside the one that succeeds.
+  service.jobs.replayWork.handle(() => {
+    throw new Error("replay work always fails");
+  });
   void service.wait().catch(() => {});
   return {
     deploymentId: key.deploymentId,
@@ -196,6 +200,63 @@ test("B38 job state summary excludes the focused state filter", async () => {
           async () =>
             Number((await finished.locator("strong").innerText()).trim()) > 0,
           { timeoutMs: 30_000 },
+        );
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await seeded.stop();
+    }
+  }, browserRuntimeOptions());
+});
+
+test("B48 returning to the Jobs overview shows every job type again", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const seeded = await seedProvider(runtime, "b48-provider");
+    try {
+      await (
+        await seeded.service.jobs.work.create({ value: "b48-ok" }).orThrow()
+      )
+        .wait()
+        .orThrow();
+      await (
+        await seeded.service.jobs.replayWork
+          .create({ value: "b48-fails" })
+          .orThrow()
+      ).wait();
+
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.consoleUrl}/console/admin/jobs`, {
+          waitUntil: "domcontentloaded",
+        });
+        await waitForConsoleShell(page);
+        const main = page.locator("main");
+        const attention = main
+          .locator('[aria-label="Jobs status summary"] button')
+          .filter({ hasText: "Needs attention" });
+        await attention
+          .filter({ hasText: "failed" })
+          .waitFor({ state: "visible", timeout: 30_000 });
+
+        // Open the healthy type, then come back: the overview covers every
+        // type again, so the failing one still needs attention.
+        await main.getByRole("button", { name: "Work", exact: true }).click();
+        await main
+          .locator(".trellis-chip.active", { hasText: "Work" })
+          .waitFor({ state: "visible", timeout: 15_000 });
+        await main.getByRole("tab", { name: "Overview" }).click();
+        await main
+          .getByRole("tab", { name: "Overview", selected: true })
+          .waitFor({ state: "visible", timeout: 15_000 });
+        await attention
+          .filter({ hasText: "failed" })
+          .waitFor({ state: "visible", timeout: 15_000 });
+        assert.equal(
+          await attention.filter({ hasText: "All good" }).count(),
+          0,
         );
       } finally {
         await context.close();

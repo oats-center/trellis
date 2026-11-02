@@ -97,6 +97,8 @@
 
   afterNavigate(() => {
     view = viewOf(page.url);
+    // The overview always covers every job type; only the list narrows to one.
+    if (view === "overview" && selectedJobType !== null) selectJobType(null);
     const value = page.url.searchParams.get("focus");
     if (value === handledFocusParam) return;
     handledFocusParam = value;

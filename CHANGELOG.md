@@ -33,6 +33,10 @@ and this project adheres to
   at its first start, could fail one of them with "No such file or directory",
   because both staged the certificate under the same file name. Each
   acceptance now stages its own, in Rust and TypeScript.
+- The Console's Jobs overview kept the job type picked from it after going
+  back from the job list. Its status cards and chart then covered only that
+  type while the totals beside them covered every type, so a failing type
+  could hide behind "All good". The overview now always covers every type.
 
 ## [0.100.0-rc.20] - 2026-11-02
 
