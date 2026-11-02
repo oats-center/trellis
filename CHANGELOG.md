@@ -12,6 +12,13 @@ and this project adheres to
 
 - The testkit's `callAdminRpc` accepts `authApisList`.
 
+### Changed
+
+- Breaking (Rust): `RuntimeAuthorizationTrust` has a `nats_server_name` field,
+  the name the broker's certificate must carry when the configured servers
+  reach it by another address. Set it to `None` to check each server's own
+  host, as before.
+
 ### Fixed
 
 - A Rust service stopped for good when it needed a new session while the
