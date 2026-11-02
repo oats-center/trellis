@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.20] - 2026-11-02
+
 ### Changed
 
 - Breaking: the Console is part of the Trellis origin again, served at
@@ -79,6 +81,9 @@ renew`, `tls status` and the new `nats` command take it like the server.
   authority it has left, as TypeScript services do. A service whose fresh
   connection is refused, for example because its deployment was disabled, now
   stops with an error instead of retrying forever.
+- A service waiting for approval sometimes failed to start when an
+  administrator approved its update just as it was submitted. It now
+  reconnects and starts as the approved build.
 
 ## [0.100.0-rc.19] - 2026-10-31
 

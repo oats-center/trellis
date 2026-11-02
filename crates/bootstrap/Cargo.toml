@@ -20,7 +20,7 @@ url.workspace = true
 ulid.workspace = true
 thiserror.workspace = true
 toml = "1.1.2"
-trellis-runtime = { path = "../runtime", version = "0.100.0-rc.19" }
+trellis-runtime = { path = "../runtime", version = "0.100.0-rc.20" }
 base64.workspace = true
 rand.workspace = true
 miette.workspace = true
