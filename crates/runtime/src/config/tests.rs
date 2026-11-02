@@ -796,3 +796,36 @@ fn secrets_others_could_read_or_swap_are_refused() {
     std::os::unix::fs::symlink(&elsewhere, &secrets).unwrap();
     assert!(matches!(load(), Err(ConfigError::Secrets { .. })));
 }
+
+/// A mistyped `secrets.toml` is rejected without its keys reaching the error,
+/// which goes to the terminal and the journal, yet the error still says where.
+#[test]
+fn a_malformed_secrets_file_is_reported_without_its_keys() {
+    const MARKER: &str = "SUPERSECRETSEEDMARKER";
+    let directory = tempdir().expect("create temp directory");
+    let path = directory.path().join("secrets.toml");
+    for (source, line) in [
+        // The closing quote is missing.
+        (
+            format!("oauth_storage_key = \"x\"\nauthorization_issuer_seed = \"{MARKER}\n"),
+            2,
+        ),
+        // A seed where a user's table belongs.
+        (format!("[nats.users]\n\ntrellis = \"{MARKER}\"\n"), 3),
+    ] {
+        fs::write(&path, source).expect("write secrets");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
+        }
+        let error = Secrets::load(&path)
+            .expect_err("malformed secrets load")
+            .to_string();
+        assert!(!error.contains(MARKER), "the error exposed a key: {error}");
+        assert!(
+            error.contains(&format!("line {line}")),
+            "no location: {error}"
+        );
+    }
+}

@@ -26,6 +26,9 @@ and this project adheres to
   from another machine but never connect. Supplied certificates now relay the
   WebSocket through the Trellis port by default, as generated ones do, and the
   wizard passes on the hostname it asks for.
+- A syntax or type error in `secrets.toml` printed the offending line, and with
+  it the key on that line, into the server's error and the journal. The error
+  now gives the line, the column and what is wrong, without quoting the file.
 
 ## [0.100.0-rc.20] - 2026-11-02
 
