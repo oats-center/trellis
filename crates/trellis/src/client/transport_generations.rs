@@ -66,8 +66,6 @@ impl GenerationState {
 pub(crate) enum LogicalTerminalCause {
     /// The owner explicitly closed the logical connection.
     Closed,
-    /// The broker refused fresh admission for this credential.
-    AdmissionRefused,
 }
 
 impl LogicalTerminalCause {
@@ -77,9 +75,6 @@ impl LogicalTerminalCause {
         match self {
             Self::Closed => TrellisClientError::TransportUnavailable(
                 "logical transport connection is closed".into(),
-            ),
-            Self::AdmissionRefused => TrellisClientError::NatsConnect(
-                "the broker refused fresh admission for this credential".into(),
             ),
         }
     }
@@ -1012,25 +1007,6 @@ impl ManagerInner {
         self.work.send_replace(next);
     }
 
-    /// Latch an authoritative terminal cause; the first cause wins.
-    fn publish_terminal(&self, cause: LogicalTerminalCause) {
-        // First wins atomically: `send_if_modified` runs the predicate under the
-        // watch's own lock, so concurrent writers (an explicit close and an
-        // authoritative auth failure) can never overwrite each other's cause.
-        let published = self.terminal.send_if_modified(|value| {
-            if value.is_some() {
-                false
-            } else {
-                *value = Some(cause.clone());
-                true
-            }
-        });
-        if published {
-            self.request_work();
-            self.signal_state();
-        }
-    }
-
     /// Adopt every registered framework owner on `generation` under **one**
     /// absolute connection-budget deadline shared across all owners. A failed,
     /// timed-out, or cancelled adoption retires any partial installation and
@@ -1416,7 +1392,21 @@ impl TransportGenerationManager {
     /// Latch an authoritative terminal cause. The first cause wins: a later
     /// stale result never overwrites it.
     pub(crate) fn publish_terminal(&self, cause: LogicalTerminalCause) {
-        self.inner.publish_terminal(cause);
+        // First wins atomically: `send_if_modified` runs the predicate under the
+        // watch's own lock, so concurrent writers (an explicit close and an
+        // authoritative auth failure) can never overwrite each other's cause.
+        let published = self.inner.terminal.send_if_modified(|value| {
+            if value.is_some() {
+                false
+            } else {
+                *value = Some(cause.clone());
+                true
+            }
+        });
+        if published {
+            self.inner.request_work();
+            self.inner.signal_state();
+        }
     }
 
     /// Subscribe to the retained publication identity.
@@ -2716,13 +2706,6 @@ async fn open_generation(
         Ok(nats) => nats,
         Err(error) => {
             inner.clear_opening(id);
-            // Fresh admission expects no prior context, so a broker refusal is
-            // a refusal of the credential itself: nothing left can recover it.
-            if snapshot.is_none()
-                && error.kind() == async_nats::ConnectErrorKind::AuthorizationViolation
-            {
-                inner.publish_terminal(LogicalTerminalCause::AdmissionRefused);
-            }
             return Err(TrellisClientError::NatsConnect(error.to_string()));
         }
     };

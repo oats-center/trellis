@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A Rust service stopped for good when it needed a new session while the
+  Trellis runtime was restarting or briefly unavailable, because rc.20 treated
+  a refused fresh connection as permanent. NATS reports an unavailable Auth the
+  same way as a refused credential, so the service now keeps retrying. A
+  service whose deployment is disabled waits and resumes once it's enabled
+  again.
+
 ## [0.100.0-rc.20] - 2026-11-02
 
 ### Changed

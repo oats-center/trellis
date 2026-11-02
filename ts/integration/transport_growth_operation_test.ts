@@ -88,7 +88,7 @@ async function withOperationProviderLeg(
   seed: string,
   deadlineMs: number,
   body: (leg: OperationLeg) => Promise<void>,
-  options: { allowTerminalError?: boolean; rawConsumer?: boolean } = {},
+  options: { rawConsumer?: boolean } = {},
 ): Promise<void> {
   const child = spawnTracked(
     "setsid",
@@ -237,32 +237,20 @@ async function withOperationProviderLeg(
 
   try {
     await body(leg);
-    const terminalError = lines.some((line) =>
-      line.startsWith("OPERATION_PROVIDER_ERROR "),
-    );
     if (!lines.includes("OPERATION_PROVIDER_DONE") && !exited) {
-      if (options.allowTerminalError && terminalError) {
-        // The leg is shutting down after a terminal error. Release its command
-        // reader so the fixture's blocking stdin read can finish and the process
-        // can exit; without this the harness holds the pipe open forever.
-        await closeStdin();
-      } else {
-        await leg.send("EXIT");
-        await leg.waitFor("OPERATION_PROVIDER_DONE");
-      }
+      await leg.send("EXIT");
+      await leg.waitFor("OPERATION_PROVIDER_DONE");
     }
     await runtime.waitFor(() => (exited ? true : undefined), {
       timeoutMs: remainingMs(),
       intervalMs: 50,
     });
     const finalStatus = await status;
-    if (!options.allowTerminalError) {
-      assert.equal(
-        finalStatus.code,
-        0,
-        `Rust operation provider leg failed: ${output}`,
-      );
-    }
+    assert.equal(
+      finalStatus.code,
+      0,
+      `Rust operation provider leg failed: ${output}`,
+    );
   } catch (cause) {
     // Snapshot only what was observed before cleanup; awaiting a pending status
     // here would hang on a provider still waiting for a harness command.
@@ -1304,45 +1292,67 @@ test("Rust durable event intake recovers when its held delivery's attachment is 
 });
 
 /**
- * A supported terminal deployment action (native deployment disable) must make
- * the durable event intake surface its terminal transport error instead of
- * keeping the service runtime alive on a revoked transport. The fixture reports
- * that error on exit, which is the observable asserted here. Presence records
- * are ephemeral admission bookkeeping, so they are not asserted.
+ * NATS reports a refused credential and an unavailable Auth the same way, so a
+ * refused fresh admission must not end the service. Disabling the deployment
+ * refuses it; enabling it again must let the same process resume serving.
  */
-test("Rust durable event intake surfaces terminal transport loss after deployment disable", async () => {
+test("Rust provider keeps retrying while its deployment is disabled and resumes in the same process once it is enabled", async () => {
   await withTrellisRuntime(async (runtime) => {
     const providerInstance = await prepareOperationProvider(runtime);
+    const providerId =
+      participants.TransportGrowthOperationProvider.participant.identity;
+    const attachments = () =>
+      readRuntimeServiceAttachments(runtime, providerId);
+    const caller = await runtime.connectClient({
+      name: "tg-op-caller-disable",
+      contract: apps.TransportGrowthCaller.request,
+    });
 
     await withOperationProviderLeg(
       runtime,
       providerInstance.seed,
-      120_000,
+      150_000,
       async (leg) => {
         await leg.waitFor("OPERATION_PROVIDER_READY");
-        // A supported terminal native action: disabling the deployment
-        // terminates its connections and denies new native bootstrap.
+        const original = await attachments();
+        assert.equal(original.length, 1);
+        const deploymentId = codecs.ulid.decode(providerInstance.deploymentId);
         const current = await runtime.callAdminRpc("authDeploymentsGet", {
-          deploymentId: codecs.ulid.decode(providerInstance.deploymentId),
+          deploymentId,
         });
-        await runtime.callAdminRpc("authDeploymentsDisable", {
-          deploymentId: codecs.ulid.decode(providerInstance.deploymentId),
+        const disabled = await runtime.callAdminRpc("authDeploymentsDisable", {
+          deploymentId,
           expectedRevision: current.deployment.revision,
           idempotencyKey: ulid(),
           reason: null,
         });
-        // Primary acceptance: the service runtime surfaces the terminal
-        // transport error rather than retrying a dead authority forever.
         await runtime.waitFor(
-          () => (leg.error() !== undefined ? true : undefined),
-          { timeoutMs: 90_000, intervalMs: 250 },
+          async () => ((await attachments()).length === 0 ? true : undefined),
+          { timeoutMs: 30_000, intervalMs: 200 },
         );
-        assert(
-          leg.error() !== undefined,
-          "the service runtime must surface a terminal transport error",
+        // Disabled, the provider refuses work but keeps running.
+        const refused = await caller.advance({});
+        assert(refused.isErr());
+        assert.equal(leg.error(), undefined);
+
+        await runtime.callAdminRpc("authDeploymentsEnable", {
+          deploymentId,
+          expectedRevision: disabled.deployment.revision,
+          idempotencyKey: ulid(),
+        });
+        const resumed = await runtime.waitFor(
+          async () => {
+            const now = await attachments();
+            return now.length === 1 ? now : undefined;
+          },
+          { timeoutMs: 60_000, intervalMs: 200 },
+        );
+        assert.equal(resumed[0].runtimeId, original[0].runtimeId);
+        assert.equal(leg.error(), undefined);
+        await runtime.waitFor(async () =>
+          (await caller.advance({})).isOk() ? true : undefined,
         );
       },
-      { allowTerminalError: true },
     );
-  });
+  }, runtimeOptions);
 });

@@ -1693,7 +1693,7 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
     };
     match waited.await {
         // Approval retires this session, sometimes before Submit's reply
-        // arrives, and may refuse its credential's fresh admission.
+        // arrives, and its replacement may not be admitted yet.
         // Connecting again shows whether the update installed; if not,
         // Submit returns the same update.
         Err(ServiceRuntimeError::Client(

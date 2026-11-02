@@ -690,8 +690,10 @@ can acquire an admitted carrier while application use remains fenced; only a
 complete authenticated snapshot on the current generation restores usability. A
 retired session remains denied, but fresh ordinary admission may replace it
 under a still-valid credential. Explicit close or terminal credential failure
-stops recovery; the broker refusing fresh admission, such as for a disabled
-deployment, is a terminal credential failure. Explicit native authority refresh and scheduled renewal share
+stops recovery. The broker refusing fresh admission is not terminal: NATS
+reports an unavailable Auth the same way as a refused credential, so a disabled
+deployment's service keeps retrying and resumes once the deployment is enabled
+again. Explicit native authority refresh and scheduled renewal share
 one custody worker and await authenticated publication and mirror coverage. If
 the own signed authority expires during mirror loss, restoring the snapshot
 alone does not restore application usability. The retained runtime key proves a
