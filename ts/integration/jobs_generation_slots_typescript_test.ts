@@ -1,7 +1,5 @@
 /** Logical Jobs capacity and receiving ownership across transport growth. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -44,9 +42,7 @@ test("managed Jobs keeps two execution slots and receives new work after generat
       const system = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       const releases = new Map<

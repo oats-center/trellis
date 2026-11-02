@@ -8,7 +8,6 @@ import {
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { TypedKV } from "../packages/trellis/kv.ts";
 import { fixedTransportProvider } from "../packages/trellis/transport/generations.ts";
@@ -35,9 +34,7 @@ test("typed KV records one bounded storage duration per caller operation", async
       const nats = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       try {
@@ -133,9 +130,7 @@ test("typed KV CAS remains intact with telemetry disabled", async () => {
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await readFile(
-          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-        ),
+        await runtime.natsCredentials("trellis"),
       ),
     });
     try {

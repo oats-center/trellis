@@ -61,19 +61,16 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
 
     // The production runtime's operational credentials administer the broker.
     // Publications and their verifier use separate ordinary provisioned clients.
-    let config = trellis_runtime::RuntimeConfig::load_from_path(
-        runtime.workdir().join("config/config.toml"),
-    )
-    .unwrap();
-    let credentials = config.resolve_nats_runtime().unwrap();
-    let observer =
-        async_nats::ConnectOptions::with_credentials_file(&credentials.trellis_creds_path)
-            .await
-            .unwrap()
-            .add_root_certificates(runtime.trust_roots()[0].clone())
-            .connect(runtime.nats_url())
-            .await
-            .unwrap();
+    let creds = runtime
+        .nats_creds(trellis_testkit::TestNatsUser::Trellis)
+        .await
+        .unwrap();
+    let observer = async_nats::ConnectOptions::with_credentials(&creds)
+        .unwrap()
+        .add_root_certificates(runtime.trust_roots()[0].clone())
+        .connect(runtime.nats_url())
+        .await
+        .unwrap();
     let context = async_nats::jetstream::new(observer.clone());
     let mut stream = context.get_stream("trellis").await.unwrap();
     let projection_path = runtime.workdir().join("projector.sqlite");

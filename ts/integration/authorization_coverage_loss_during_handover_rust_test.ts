@@ -1,8 +1,6 @@
 /** Shared retirement-coverage loss fences accepted work while replacement replay is stalled. */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
 import { deadline } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
@@ -190,12 +188,7 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
               const privileged = await connect({
                 servers: runtime.natsUrl,
                 authenticator: credsAuthenticator(
-                  await readFile(
-                    join(
-                      runtime.workdir,
-                      "config/trellis/nats/creds/trellis-auth.creds",
-                    ),
-                  ),
+                  await runtime.natsCredentials("trellis"),
                 ),
               });
               const js = await jetstreamManager(privileged);

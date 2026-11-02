@@ -34,8 +34,8 @@ also names `localhost`, so a service on the same machine can connect locally.
 
 Already started once for `localhost`? Then there's an installation in the way.
 [Start over](/guides/running-trellis/upkeep#start-over) first, or create the
-new one somewhere else with `--out <folder>` and start it with
-`trellis-server --config <folder>/config.toml`.
+new one somewhere else with `--bundle <folder>` and start it with
+`trellis-server <folder>`.
 
 A development installation's certificate is one Trellis made itself, which is
 fine for people you trust on your network. For anything else, set up a
@@ -53,7 +53,7 @@ These go on `trellis-server init --dev`:
 | `--nats-port`, `--nats-monitor-port`, `--nats-ws-port` | `4222`, `8222`, `8080` | Those ports are taken                                    |
 | `--bind-address eta.oats`                              | all interfaces         | Trellis should listen on one address only                |
 | `--name "Lab Trellis"`                                 | `Trellis`              | You want a different display name                        |
-| `--out <folder>`                                       | `~/.config/trellis`    | You want a self-contained installation in its own folder |
+| `--bundle <folder>`                                    | `~/.config/trellis`    | You want a self-contained installation in its own folder |
 | `--external-nats`                                      | Trellis runs NATS      | You run NATS yourself                                    |
 
 `--bind-address` takes a hostname or an IP and listens on the address of this

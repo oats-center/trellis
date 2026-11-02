@@ -1,6 +1,5 @@
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Value } from "typebox/value";
 import { TypedKV } from "../packages/trellis/kv.ts";
@@ -17,9 +16,7 @@ test("NATS KV outbox claims recover with CAS-fenced completion", async () => {
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await readFile(
-          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-        ),
+        await runtime.natsCredentials("trellis"),
       ),
     });
     try {

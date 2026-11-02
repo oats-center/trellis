@@ -5908,6 +5908,7 @@ dependencies = [
  "miette",
  "nats-jwt-rs",
  "nkeys",
+ "rand 0.10.1",
  "rcgen",
  "rustls",
  "serde",
@@ -5916,7 +5917,6 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "toml",
- "trellis-local-bootstrap",
  "trellis-runtime",
  "ulid",
  "url",
@@ -6066,15 +6066,6 @@ dependencies = [
  "trellis-protocol",
  "trellis-rs",
  "trellis-runtime-apis",
-]
-
-[[package]]
-name = "trellis-local-bootstrap"
-version = "0.100.0-rc.19"
-dependencies = [
- "base64 0.22.1",
- "rand 0.10.1",
- "tempfile",
 ]
 
 [[package]]
@@ -6230,7 +6221,6 @@ dependencies = [
  "trellis-events-runtime",
  "trellis-idl",
  "trellis-jobs-runtime",
- "trellis-local-bootstrap",
  "trellis-local-nats",
  "trellis-protocol",
  "trellis-rs",

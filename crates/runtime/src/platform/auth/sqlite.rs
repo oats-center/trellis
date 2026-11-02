@@ -344,6 +344,16 @@ pub(crate) fn read_custody_key(
     file.take(128)
         .read_to_string(&mut encoded)
         .map_err(unreadable)?;
+    decode_custody_key(&encoded, &format!("custody key '{}'", path.display()))
+}
+
+/// Decodes a canonical base64url 32-byte key; `name` says which key in errors.
+pub(crate) fn decode_custody_key(
+    encoded: &str,
+    name: &str,
+) -> Result<[u8; 32], crate::supervisor::RuntimeError> {
+    let invalid =
+        |reason: &str| crate::supervisor::RuntimeError::Platform(format!("{name} {reason}"));
     let encoded = encoded.trim();
     let bytes = URL_SAFE_NO_PAD
         .decode(encoded)
@@ -354,6 +364,28 @@ pub(crate) fn read_custody_key(
     bytes
         .try_into()
         .map_err(|_| invalid("must contain exactly 32 bytes"))
+}
+
+/// The authorization issuer's signing seed from `secrets.toml`.
+pub(crate) fn issuer_signing_key(
+    config: &crate::RuntimeConfig,
+) -> Result<[u8; 32], crate::supervisor::RuntimeError> {
+    let seed = crate::config::secrets_require(
+        config.secrets.authorization_issuer_seed.as_ref(),
+        "authorization_issuer_seed",
+    )?;
+    decode_custody_key(seed, "authorization_issuer_seed in secrets.toml")
+}
+
+/// The OAuth storage sealing key from `secrets.toml`.
+pub(crate) fn oauth_storage_key(
+    config: &crate::RuntimeConfig,
+) -> Result<[u8; 32], crate::supervisor::RuntimeError> {
+    let key = crate::config::secrets_require(
+        config.secrets.oauth_storage_key.as_ref(),
+        "oauth_storage_key",
+    )?;
+    decode_custody_key(key, "oauth_storage_key in secrets.toml")
 }
 
 impl SqliteAuthorizationStore {
@@ -417,8 +449,7 @@ impl SqliteAuthorizationStore {
             .as_ref()
             .and_then(|auth| auth.instance_id.clone())
             .ok_or_else(|| RuntimeError::Platform("auth.instance_id is required".into()))?;
-        let signer =
-            SigningKey::from_bytes(&read_custody_key(&authorization.issuer_signing_seed_file)?);
+        let signer = SigningKey::from_bytes(&issuer_signing_key(config)?);
         let local_identity = config
             .auth
             .as_ref()

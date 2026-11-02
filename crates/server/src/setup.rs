@@ -48,13 +48,6 @@ pub(crate) enum InitTlsMode {
 /// Generate Trellis runtime config and NATS bootstrap material.
 pub(crate) struct InitConfigArgs {
     #[arg(long)]
-    /// Output directory for a self-contained installation that also keeps its
-    /// data and logs. Omitted, the installation goes where the server looks by
-    /// default (~/.config/trellis, or /etc/trellis with --system) and its data
-    /// goes to the profile's data, state, cache and log folders.
-    pub(crate) out: Option<PathBuf>,
-
-    #[arg(long)]
     /// Connect to a NATS server you run from the generated files instead of
     /// having trellis-server start one.
     pub(crate) external_nats: bool,
@@ -145,7 +138,8 @@ pub(crate) struct InitConfigArgs {
 
     #[arg(long)]
     /// Directory receiving the generated CA private key; defaults to the
-    /// installation's `tls-ca` folder, or `<out>-tls-ca` with `--system`.
+    /// installation's `tls-ca` folder, or `/etc/trellis-tls-ca` with
+    /// `--system`.
     /// Keep it out of every runtime and broker mount.
     pub(crate) tls_ca_dir: Option<PathBuf>,
 
@@ -242,11 +236,10 @@ pub(crate) struct TlsIssueArgs {
 #[derive(Debug, clap::Args)]
 /// Renew generated leaf certificates without changing client trust.
 pub(crate) struct TlsRenewArgs {
-    /// Bundle directory written by `trellis-server init --out`.
-    #[arg(long)]
-    pub(crate) bundle: PathBuf,
-    /// CA directory holding the private key; defaults to the bundle's
-    /// `tls-ca` folder, else `<bundle>-tls-ca`.
+    #[command(flatten)]
+    pub(crate) profile: crate::InstallationArgs,
+    /// CA directory holding the private key; defaults to the installation's
+    /// `tls-ca` folder, else the `-tls-ca` folder beside it.
     #[arg(long)]
     pub(crate) ca_dir: Option<PathBuf>,
     /// Print the result as text or JSON.
@@ -258,7 +251,7 @@ pub(crate) struct TlsRenewArgs {
 /// Report an installation's generated certificates.
 pub(crate) struct TlsStatusArgs {
     #[command(flatten)]
-    pub(crate) profile: crate::ProfileArgs,
+    pub(crate) profile: crate::InstallationArgs,
     /// Print the result as text or JSON.
     #[arg(long, value_enum, default_value_t)]
     pub(crate) format: OutputFormat,
@@ -267,10 +260,10 @@ pub(crate) struct TlsStatusArgs {
 pub(crate) fn init_config(
     format: OutputFormat,
     args: &InitConfigArgs,
-    system: bool,
-    default_out: PathBuf,
+    location: &crate::Location,
+    out: PathBuf,
 ) -> miette::Result<()> {
-    let out = args.out.clone().unwrap_or(default_out);
+    let system = *location == crate::Location::System;
     let mut options = TrellisBootstrapOptions::new(out.clone());
     options.force = args.force;
     options.runtime.name = args.name.clone();
@@ -364,9 +357,6 @@ pub(crate) fn init_config(
         }),
         InitTlsMode::LoopbackDevelopment => BootstrapTls::LoopbackDevelopment,
     };
-    // A `--system` server keeps its mutable files in FHS locations, and the
-    // default installation uses the profile's folders like the server does.
-    options.runtime.bundle_paths = !system && args.out.is_some();
     options.runtime.managed_nats = !args.external_nats;
     options.runtime.trusted_proxies = args.trusted_proxy.clone();
     options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
@@ -396,30 +386,24 @@ pub(crate) fn init_config(
     }
     let generated = generate_trellis_bootstrap(&options).map_err(bootstrap_report)?;
     if let Some(data) = &args.nats_data_dir {
-        let nats = out.join("nats");
         std::fs::create_dir_all(data.join("jwt")).into_diagnostic()?;
-        let jwt = std::fs::read_to_string(nats.join("jwt.conf")).into_diagnostic()?;
+        let authored = std::fs::read_to_string(out.join("nats.conf")).into_diagnostic()?;
         std::fs::write(
-            nats.join("jwt.conf"),
-            trellis_bootstrap::render_local_jwt_config(
-                &jwt,
-                &data.join("jwt").display().to_string(),
-            ),
-        )
-        .into_diagnostic()?;
-        std::fs::write(
-            nats.join("nats.conf"),
+            out.join("nats.conf"),
             trellis_bootstrap::render_local_nats_config(
                 args.server_name.as_deref().unwrap_or("trellis"),
                 &data.display().to_string(),
-                "./jwt.conf",
+                &trellis_bootstrap::nats_accounts(
+                    &authored,
+                    &data.join("jwt").display().to_string(),
+                ),
                 args.nats_port,
                 args.nats_ws_port,
                 args.nats_monitor_port,
                 (!loopback)
                     .then(|| trellis_bootstrap::NatsTlsFiles {
-                        certificate: nats.join("tls/nats.crt").display().to_string(),
-                        private_key: nats.join("tls/nats.key").display().to_string(),
+                        certificate: out.join("tls/nats.crt").display().to_string(),
+                        private_key: out.join("tls/nats.key").display().to_string(),
                         websocket: if relay {
                             trellis_bootstrap::NatsWebsocket::Relayed
                         } else if args.nats_websocket_behind_proxy {
@@ -434,7 +418,13 @@ pub(crate) fn init_config(
         .into_diagnostic()?;
     }
     let trellis_config = out.join("config.toml");
-    let nats_config = out.join("nats/nats.conf");
+    let nats_config = out.join("nats.conf");
+    // How to start what was just written.
+    let start = match location {
+        crate::Location::User => "trellis-server".to_owned(),
+        crate::Location::System => "trellis-server --system".to_owned(),
+        crate::Location::Bundle(_) => format!("trellis-server {}", out.display()),
+    };
     let console = format!(
         "{}/console/",
         options
@@ -450,7 +440,7 @@ pub(crate) fn init_config(
             "out": out.display().to_string(),
             "trellisConfig": trellis_config.display().to_string(),
             "natsConfig": nats_config.display().to_string(),
-            "trellisRuntimeCreds": out.join("nats/creds/trellis-auth.creds").display().to_string(),
+            "start": start,
             "trellisOrigin": options.runtime.public_origin,
             "natsServer": options.runtime.nats_server_url,
             "natsWebsocket": options.runtime.nats_websocket_url,
@@ -472,6 +462,7 @@ pub(crate) fn init_config(
     println!("natsServer={}", options.runtime.nats_server_url);
     println!("natsWebsocket={}", options.runtime.nats_websocket_url);
     println!("console={console}");
+    println!("start={start}");
     if let Some(tls) = &generated {
         warn_generated_tls(
             &tls.ca_certificate,
@@ -560,11 +551,15 @@ pub(crate) fn tls(command: TlsSubcommand) -> miette::Result<()> {
     match command {
         TlsSubcommand::Renew(args) => {
             let format = args.format;
+            let bundle = args
+                .profile
+                .paths(|name| std::env::var_os(name))?
+                .config_root;
             let ca_dir = args
                 .ca_dir
                 .clone()
-                .unwrap_or_else(|| trellis_bootstrap::bundle_ca_directory(&args.bundle));
-            let renewed = trellis_bootstrap::renew_generated_certificates(&args.bundle, &ca_dir)
+                .unwrap_or_else(|| trellis_bootstrap::bundle_ca_directory(&bundle));
+            let renewed = trellis_bootstrap::renew_generated_certificates(&bundle, &ca_dir)
                 .map_err(bootstrap_report)?;
             if format == OutputFormat::Json {
                 print_json(&json!({
@@ -610,8 +605,12 @@ pub(crate) fn tls(command: TlsSubcommand) -> miette::Result<()> {
             Ok(())
         }
         TlsSubcommand::Status(TlsStatusArgs { profile, format }) => {
-            let path = profile.paths(|name| std::env::var_os(name))?.config;
-            let config = trellis_runtime::RuntimeConfig::load_from_path(&path).into_diagnostic()?;
+            let paths = profile.paths(|name| std::env::var_os(name))?;
+            let (config, _) = trellis_runtime::RuntimeConfig::load_from_path_with_defaults(
+                &paths.config,
+                paths.defaults(),
+            )
+            .into_diagnostic()?;
             let notice = trellis_runtime::tls::GeneratedTlsNotice::from_config(
                 &config,
                 config.http_transport(),
@@ -652,6 +651,123 @@ pub(crate) fn tls(command: TlsSubcommand) -> miette::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Which NATS user `trellis-server nats` connects as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum NatsRole {
+    /// The system account: servers, accounts and connections.
+    System,
+    /// The Trellis account, where services and clients run: streams, KV and
+    /// subjects.
+    Trellis,
+    /// The auth account, which answers auth callouts.
+    Auth,
+}
+
+#[derive(Debug, clap::Args)]
+/// Run the `nats` CLI as one of the installation's NATS users.
+pub(crate) struct NatsArgs {
+    /// An installation folder from `init --bundle`, or the config.toml in
+    /// it. Omitted, the user's installation, or the system's for root on
+    /// Linux.
+    #[arg(long, value_name = "INSTALLATION", conflicts_with_all = ["user", "system"])]
+    pub(crate) installation: Option<PathBuf>,
+    /// Use the user's installation (~/.config/trellis), even as root.
+    #[arg(long, conflicts_with = "system")]
+    pub(crate) user: bool,
+    /// Use the system installation (/etc/trellis), Linux only.
+    #[arg(long)]
+    pub(crate) system: bool,
+    /// Print the user's creds file instead of running `nats`, for a saved
+    /// `nats context` or another client.
+    #[arg(long, conflicts_with = "args")]
+    pub(crate) print: bool,
+    /// The NATS user to connect as.
+    #[arg(value_enum)]
+    pub(crate) role: NatsRole,
+    /// Arguments for the `nats` CLI, such as `stream ls`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub(crate) args: Vec<String>,
+}
+
+/// Runs `nats` with the installation's address, CA and the role's creds.
+/// The creds exist on disk only while `nats` runs, in the installation's
+/// private runtime folder.
+pub(crate) fn nats(args: NatsArgs) -> miette::Result<()> {
+    let location = match &args.installation {
+        Some(path) => crate::Location::Bundle(path.clone()),
+        None => crate::Location::profile(args.user, args.system),
+    };
+    let paths = crate::ServerPaths::resolve(&location, |name| std::env::var_os(name))?;
+    let (config, roots) = trellis_runtime::RuntimeConfig::load_from_path_with_defaults(
+        &paths.config,
+        paths.defaults(),
+    )
+    .into_diagnostic()?;
+    let users = &config.secrets.nats.users;
+    let (user, name) = match args.role {
+        NatsRole::System => (users.system.as_ref(), "system"),
+        NatsRole::Trellis => (users.trellis.as_ref(), "trellis"),
+        NatsRole::Auth => (users.auth.as_ref(), "auth"),
+    };
+    let creds = user
+        .ok_or_else(|| miette!("{} has no nats.users.{name}", trellis_runtime::SECRETS_FILE))?
+        .creds();
+    if args.print {
+        print!("{creds}");
+        return Ok(());
+    }
+    let nats = config
+        .nats
+        .as_ref()
+        .ok_or_else(|| miette!("the config has no [nats]"))?;
+    let servers = nats
+        .servers
+        .clone()
+        .ok_or_else(|| miette!("the config has no [nats] servers"))?;
+    crate::prepare_directory(&roots.runtime)?;
+    let file = roots
+        .runtime
+        .join(format!("nats-{name}-{}.creds", std::process::id()));
+    write_private(&file, &creds)?;
+    let mut command = std::process::Command::new("nats");
+    command
+        .args(&args.args)
+        .env("NATS_URL", servers)
+        .env("NATS_CREDS", &file)
+        .env_remove("NATS_CONTEXT");
+    if let Some(ca) = &nats.ca_certificate {
+        command.env("NATS_CA", ca);
+    }
+    let status = command.status();
+    let _ = std::fs::remove_file(&file);
+    let status = status.map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => miette!(
+            "the nats CLI is not on PATH; install it (https://github.com/nats-io/natscli) or \
+            use --print for the creds"
+        ),
+        _ => miette!("cannot run nats: {error}"),
+    })?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
+}
+
+fn write_private(path: &std::path::Path, contents: &str) -> miette::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .and_then(|mut file| file.write_all(contents.as_bytes()))
+        .into_diagnostic()
 }
 
 fn bootstrap_report(error: BootstrapError) -> miette::Report {
@@ -778,7 +894,7 @@ mod tests {
         ] {
             let out = temp.path().join(name);
             let args = init_config_args(&out, &flags);
-            init_config(OutputFormat::Json, &args, false, out.clone())
+            init_config(OutputFormat::Json, &args, &bundle(&out), out.clone())
                 .expect_err("invalid listener ports must be rejected");
             assert!(
                 !out.exists(),
@@ -787,12 +903,16 @@ mod tests {
         }
     }
 
+    fn bundle(out: &Path) -> crate::Location {
+        crate::Location::Bundle(out.to_path_buf())
+    }
+
     fn init_config_args(out: &Path, flags: &[&str]) -> InitConfigArgs {
         let out = out.to_str().expect("UTF-8 output path").to_string();
         let mut arguments = vec![
             "trellis-server".to_string(),
             "init".to_string(),
-            "--out".to_string(),
+            "--bundle".to_string(),
             out,
             "--tls".to_string(),
             "generated".to_string(),
@@ -812,11 +932,12 @@ mod tests {
         trellis_bootstrap::NatsListeners,
     ) {
         let args = init_config_args(out, flags);
-        init_config(OutputFormat::Json, &args, false, out.to_path_buf()).expect("generate bundle");
+        init_config(OutputFormat::Json, &args, &bundle(out), out.to_path_buf())
+            .expect("generate bundle");
         (
             trellis_runtime::RuntimeConfig::load_from_path(out.join("config.toml"))
                 .expect("load production runtime config"),
-            trellis_bootstrap::read_nats_listen_ports(&out.join("nats/nats.conf"))
+            trellis_bootstrap::read_nats_listen_ports(&out.join("nats.conf"))
                 .expect("resolve native listener configuration"),
         )
     }

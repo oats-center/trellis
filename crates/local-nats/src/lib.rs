@@ -722,7 +722,7 @@ impl LocalNatsBuilder {
         self
     }
 
-    /// Select the read-only directory containing `nats.conf` and `jwt.conf`.
+    /// Select the read-only directory containing `nats.conf` and, for TLS, `tls/nats.crt`.
     #[must_use]
     pub fn source(mut self, path: impl Into<PathBuf>) -> Self {
         self.source = Some(path.into());
@@ -827,14 +827,10 @@ impl LocalNatsBuilder {
             .lines()
             .find_map(|line| line.trim().strip_prefix("server_name:").map(str::trim))
             .unwrap_or("trellis");
-        let jwt_config = state.join("jwt.conf");
-        fs::write(
-            &jwt_config,
-            trellis_bootstrap::render_local_jwt_config(
-                &fs::read_to_string(source.join("jwt.conf"))?,
-                &state.join("data/jwt").display().to_string(),
-            ),
-        )?;
+        let accounts = trellis_bootstrap::nats_accounts(
+            &authored_config,
+            &state.join("data/jwt").display().to_string(),
+        );
         // A bundle with broker certificates always serves TLS; the managed
         // broker never downgrades it to plaintext.
         let tls = source
@@ -857,7 +853,7 @@ impl LocalNatsBuilder {
             trellis_bootstrap::render_local_nats_config(
                 server_name,
                 &state.join("data").display().to_string(),
-                "./jwt.conf",
+                &accounts,
                 ports.nats,
                 ports.websocket,
                 ports.monitor,

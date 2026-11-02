@@ -19,9 +19,7 @@
 import type { NatsConnection } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { join } from "node:path";
 
 import {
   brokerConnectionKey,
@@ -118,16 +116,7 @@ async function expectIdentityLeaves(
 test("a real NATS connection closed through the native proxy leaves the broker inventory", async () => {
   await withTrellisRuntime(
     async (runtime) => {
-      const systemCreds = await readFile(
-        join(
-          runtime.workdir,
-          "config",
-          "trellis",
-          "nats",
-          "creds",
-          "system.creds",
-        ),
-      );
+      const systemCreds = await runtime.natsCredentials("system");
       const system: NatsConnection = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(systemCreds),

@@ -2,9 +2,7 @@ import { credsAuthenticator } from "@nats-io/nats-core";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { env, execPath } from "node:process";
 import { Readable } from "node:stream";
@@ -161,9 +159,7 @@ test("Auth connection lifecycle events survive the fenced outbox", async () => {
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await readFile(
-          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-        ),
+        await runtime.natsCredentials("trellis"),
       ),
     });
     try {
@@ -310,9 +306,7 @@ test("Events projector retains rejected unsafe times and advances", async () => 
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await readFile(
-          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-        ),
+        await runtime.natsCredentials("trellis"),
       ),
     });
     try {
@@ -404,12 +398,7 @@ test("Rust durable events match registrations and retain unhandled messages", as
       const nats = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config/trellis/nats/creds/trellis-auth.creds",
-            ),
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       try {

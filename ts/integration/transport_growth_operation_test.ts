@@ -12,7 +12,6 @@
  */
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
 import { Readable, Writable } from "node:stream";
@@ -926,9 +925,7 @@ for (const rawConsumer of [false, true]) {
               const nats = await connect({
                 servers: runtime.natsUrl,
                 authenticator: credsAuthenticator(
-                  await readFile(
-                    `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-                  ),
+                  await runtime.natsCredentials("trellis"),
                 ),
               });
               try {
@@ -990,9 +987,7 @@ for (const rawConsumer of [false, true]) {
                   const system = await connect({
                     servers: runtime.natsUrl,
                     authenticator: credsAuthenticator(
-                      await readFile(
-                        `${runtime.workdir}/config/trellis/nats/creds/system.creds`,
-                      ),
+                      await runtime.natsCredentials("system"),
                     ),
                   });
                   try {

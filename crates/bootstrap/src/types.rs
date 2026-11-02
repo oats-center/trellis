@@ -131,10 +131,6 @@ pub struct TrellisRuntimeBootstrapConfig {
     pub bind_address: Option<IpAddr>,
     /// Authorization timing without access to generated signing material.
     pub authorization: BootstrapAuthorizationPolicy,
-    /// Write `[paths]` that keep data, state, cache, runtime files and logs in
-    /// folders inside the bundle. Off leaves them to the server's host profile,
-    /// as for a read-only bundle served with `--system`.
-    pub bundle_paths: bool,
     /// `trellis-server` runs the generated NATS server itself. Off, it
     /// connects to a NATS server the operator runs from the generated files.
     pub managed_nats: bool,
@@ -157,7 +153,6 @@ impl Default for TrellisRuntimeBootstrapConfig {
             public_origin: DEFAULT_PUBLIC_ORIGIN.to_string(),
             bind_address: None,
             authorization: BootstrapAuthorizationPolicy::default(),
-            bundle_paths: true,
             managed_nats: true,
         }
     }
@@ -236,7 +231,7 @@ impl TrellisBootstrapOptions {
 /// Non-secret identity metadata emitted with generated NATS bootstrap material.
 ///
 /// This metadata records account and user public keys plus the account names
-/// needed by runtime config and auth-callout environment rendering. It excludes
+/// needed by runtime config rendering. It excludes
 /// user seeds, signing seeds, and other secret material.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GeneratedMetadata {

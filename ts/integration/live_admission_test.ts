@@ -11,9 +11,7 @@ import { headers as natsHeaders, type Msg } from "@nats-io/nats-core";
 import { credsAuthenticator } from "@nats-io/nats-core";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { join } from "node:path";
 import type { SessionRequest } from "@oatscenter/trellis/auth";
 import { connectNativeClient } from "@oatscenter/trellis/native";
 import { ulid } from "ulid";
@@ -157,11 +155,7 @@ async function firstLiveOfferWithin(
 async function platformConnection(runtime: Runtime): Promise<NatsConnection> {
   return await connect({
     servers: runtime.natsUrl,
-    authenticator: credsAuthenticator(
-      await readFile(
-        join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-      ),
-    ),
+    authenticator: credsAuthenticator(await runtime.natsCredentials("trellis")),
   });
 }
 

@@ -56,12 +56,13 @@ Leave the terminal open. Ctrl-C stops Trellis and NATS together. Add
 
 The installation's settings and keys are in `~/.config/trellis`:
 
-| Path           | What it is                                        |
-| -------------- | ------------------------------------------------- |
-| `config.toml`  | The server's settings                             |
-| `auth/`        | Keys and state for signing people and services in |
-| `session.seed` | A private key referenced from `config.toml`       |
-| `nats/`        | NATS's config, accounts and credentials           |
+| Path           | What it is                                                  |
+| -------------- | ----------------------------------------------------------- |
+| `config.toml`  | The server's settings                                       |
+| `secrets.toml` | Every private key Trellis reads. Only you can read it.      |
+| `nats.conf`    | The NATS server's settings and accounts                     |
+| `tls/`         | Certificates, when the installation serves HTTPS            |
+| `tls-ca/`      | The private key of a CA Trellis generated, when it made one |
 
 Everything the server writes while it runs lives in your user's usual
 folders: databases and NATS data in `~/.local/share/trellis` and

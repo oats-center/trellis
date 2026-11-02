@@ -214,7 +214,8 @@ where
         .map_err(|error| BootstrapError::Jwt(error.to_string()))
 }
 
-pub(crate) fn render_jwt_config(material: &NatsMaterial) -> String {
+/// The accounts block that ends a generated `nats.conf`.
+pub(crate) fn render_nats_accounts(material: &NatsMaterial) -> String {
     format!(
         r#"operator: {operator_jwt}
 system_account: {system_account}

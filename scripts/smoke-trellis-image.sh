@@ -65,7 +65,7 @@ docker run --rm --user 10001:10001 --entrypoint trellis-server \
   tls issue --out /var/lib/trellis/certificates --host localhost --host 127.0.0.1
 docker run --rm --user 10001:10001 --entrypoint trellis-server \
   -v "${state_volume}":/var/lib/trellis "${image}" \
-  init --system --out /var/lib/trellis/bundle --tls supplied \
+  init --bundle /var/lib/trellis/bundle --tls supplied \
   --tls-ca-certificate /var/lib/trellis/certificates/ca.crt \
   --tls-certificate-chain /var/lib/trellis/certificates/server.crt \
   --tls-private-key /var/lib/trellis/certificates/server.key \
@@ -74,7 +74,7 @@ docker run --rm --user 10001:10001 --entrypoint trellis-server \
 docker run --rm --user root --entrypoint cp \
   -v "${state_volume}":/from:ro -v "${bundle_volume}":/to "${image}" \
   -a /from/bundle/. /to/
-# The bundle's creds/secrets are 0o600 and generated as 10001, but the copy
+# The bundle's secrets.toml is 0o600 and generated as 10001, but the copy
 # helper runs as root and the bundle volume root is root-owned: the run
 # container uid must own the bundle contents to read them.
 docker run --rm --user root --entrypoint chown \
@@ -108,7 +108,7 @@ docker run --detach --name "${container}" --read-only --tmpfs /tmp \
          exit 1
        fi
      done
-     exec trellis-server --system all --local-nats=/usr/local/bin/nats-server'
+     exec trellis-server --system --local-nats=/usr/local/bin/nats-server'
 
 # 4. Wait for runtime readiness on the published port.
 runtime_port="$(docker port "${container}" 3000/tcp | cut -d: -f2)"
@@ -186,13 +186,10 @@ docker run --rm --entrypoint sh \
   -v "${state_volume}":/var/lib/trellis:rw,Z "${image}" -c '
     set -eu
     test -f /var/lib/trellis/nats/nats.conf
-    test -f /var/lib/trellis/nats/jwt.conf
     test -d /var/lib/trellis/nats/data/jwt
     test -d /var/lib/trellis/nats/data/jetstream
     test ! -e /var/lib/trellis/nats/nats-server.pid
-    test ! -e /etc/trellis/nats/nats.local.conf
-    test ! -e /etc/trellis/nats/jwt.local.conf
     test -f /var/lib/trellis/platform.sqlite
-    test ! -e /etc/trellis/platform.sqlite
+    test ! -e /etc/trellis/var
   '
 echo "managed NATS image smoke passed"

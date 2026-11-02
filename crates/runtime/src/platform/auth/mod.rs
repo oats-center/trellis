@@ -56,7 +56,7 @@ pub(crate) use policy::{CapabilitySelection, PolicyMutation};
 pub(crate) use revocation::EnforcementScope;
 #[cfg(test)]
 use sqlite::AuthSettings;
-pub(crate) use sqlite::{blocking, read_custody_key};
+pub(crate) use sqlite::{blocking, issuer_signing_key, oauth_storage_key};
 pub(crate) use sqlite::{AuthError, Mutation, SqliteAuthorizationStore};
 
 use crate::config::warn_oauth_cookie_isolation;

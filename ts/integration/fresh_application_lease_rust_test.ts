@@ -1,6 +1,5 @@
 /** Fresh application work must not use a live carrier with lost own coverage. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
@@ -33,9 +32,7 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
       const nats = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       const js = await jetstreamManager(nats);

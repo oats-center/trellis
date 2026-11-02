@@ -100,4 +100,4 @@ WORKDIR /var/lib/trellis
 EXPOSE 3000 3001
 
 ENTRYPOINT ["trellis-server"]
-CMD ["--system", "all"]
+CMD ["--system"]

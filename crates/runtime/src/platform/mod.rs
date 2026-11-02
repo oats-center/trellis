@@ -1,6 +1,6 @@
 //! Runtime ownership of the authoritative Auth store and its serving boundaries.
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 
 pub mod auth;
@@ -40,7 +40,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 .map(|value| value.runtime_servers.as_str()),
         )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let keys = callout_keys(&context.config, &nats)?;
+    let keys = callout_keys(&context.config)?;
     let (platform_store, config, account) = (
         context.stores.platform()?.clone(),
         context.config.clone(),
@@ -51,12 +51,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             .await?,
     );
     verify_jetstream_identity(&store, &context.trellis_nats).await?;
-    let custody = context
-        .config
-        .auth
-        .as_ref()
-        .and_then(|auth| auth.oauth_storage_key_file.clone())
-        .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
+    let custody = auth::oauth_storage_key(&context.config)?;
     let console_origin = context
         .config
         .resolve_console_origin()
@@ -147,8 +142,9 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     }
     let revocations = buckets.pop().expect("two Auth registries");
     let material = buckets.pop().expect("two Auth registries");
-    let auth_nats = connect_nats(&nats, &nats.auth_creds_path).await?;
-    let system = connect_nats(&nats, &nats.system_creds_path).await?;
+    let (auth_creds, system_creds) = nats.platform_creds()?;
+    let auth_nats = connect_nats(&nats, auth_creds).await?;
+    let system = connect_nats(&nats, system_creds).await?;
     let provider_seed = live_provider::load_live_provider_seed(
         &context.config,
         live_provider::LiveProviderRole::Platform,
@@ -391,30 +387,28 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     })
 }
 
-pub(crate) fn callout_keys(
-    config: &RuntimeConfig,
-    nats: &ResolvedRuntimeNatsConfig,
-) -> Result<CalloutKeys, RuntimeError> {
+pub(crate) fn callout_keys(config: &RuntimeConfig) -> Result<CalloutKeys, RuntimeError> {
     let callout = config
         .resolve_nats_auth_callout()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    CalloutKeys::from_files(
-        &callout.issuer_signing_seed_file,
-        &callout.target_signing_seed_file,
-        &callout.xkey_seed_file,
-        &callout.sentinel_public_key_file,
-        &nats.auth_creds_path,
-        &nats.trellis_creds_path,
+    let users = &config.secrets.nats.users;
+    let jwt = |user: Option<&crate::NatsUser>, name| {
+        user.map(|user| user.jwt.clone())
+            .ok_or(crate::ConfigError::MissingSecret { name })
+    };
+    CalloutKeys::from_secrets(
+        &callout,
+        &jwt(users.auth.as_ref(), "nats.users.auth")?,
+        &jwt(users.trellis.as_ref(), "nats.users.trellis")?,
     )
     .map_err(|error| RuntimeError::Platform(error.to_string()))
 }
 
 async fn connect_nats(
     nats: &ResolvedRuntimeNatsConfig,
-    credentials: &Path,
+    credentials: &str,
 ) -> Result<async_nats::Client, RuntimeError> {
-    let mut options = async_nats::ConnectOptions::with_credentials_file(credentials)
-        .await
+    let mut options = async_nats::ConnectOptions::with_credentials(credentials)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     if let Some(ca) = &nats.ca_certificate {
         options = options.add_root_certificates(ca.clone());
@@ -505,10 +499,7 @@ fn initialize_admin_credentials_in(
     store
         .migrate()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let nats = config
-        .resolve_nats_runtime_with(None)
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let keys = callout_keys(config, &nats)?;
+    let keys = callout_keys(config)?;
     let auth = Arc::new(SqliteAuthorizationStore::open(
         &store,
         config,
@@ -528,12 +519,8 @@ fn initialize_admin_credentials_in(
             "administrator password does not meet configured minimum length".into(),
         ));
     }
-    let custody = config
-        .auth
-        .as_ref()
-        .and_then(|auth| auth.oauth_storage_key_file.as_deref())
-        .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
-    let storage = auth::OAuthStorage::open(auth.clone(), custody)
+    let custody = auth::oauth_storage_key(config)?;
+    let storage = auth::OAuthStorage::open(auth.clone(), &custody)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let initialized: bool = auth
         .has_administrator()

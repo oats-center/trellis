@@ -1,7 +1,5 @@
 /** Retained JobRefs resolve against the current carrier after their original socket is reaped. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Result } from "@oatscenter/trellis";
@@ -43,9 +41,7 @@ test("retained Jobs refs get, wait and cancel after broker-confirmed original so
       const system = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       const release = Promise.withResolvers<void>();

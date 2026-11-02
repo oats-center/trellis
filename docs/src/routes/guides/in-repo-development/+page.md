@@ -36,8 +36,8 @@ download NATS. `cargo run -p trellis-server -- --init --nats-download` skips
 the questions and creates a localhost development installation over plain
 HTTP.
 If that folder already holds an installation from a released Trellis, keep
-them apart: `cargo run -p trellis-server -- init --out ~/trellis-dev` once,
-then `cargo run -p trellis-server -- --config ~/trellis-dev/config.toml`.
+them apart: `cargo run -p trellis-server -- init --bundle ~/trellis-dev` once,
+then `cargo run -p trellis-server -- ~/trellis-dev`.
 
 Once it's up, Console is at `http://localhost:3000/console`. To check on it:
 

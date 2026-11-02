@@ -1,7 +1,5 @@
 /** RPC leases survive authority growth, then ordinary renewal reuses the new socket. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Result } from "@oatscenter/trellis";
@@ -52,9 +50,7 @@ test("a service drains accepted RPCs across growth and renews in place after rea
       const system = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       const release = Promise.withResolvers<void>();

@@ -170,7 +170,7 @@ pub async fn check(
     let trellis_nats = match check_nats_connection(
         &nats.servers,
         nats.ca_certificate.as_deref(),
-        &nats.trellis_creds_path,
+        &nats.trellis_creds,
     )
     .await
     {
@@ -246,31 +246,22 @@ pub async fn check(
         ),
     }
     if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
-        let keys = crate::platform::callout_keys(&config, &nats)?;
-        let authorization = config.resolve_authorization()?;
-        if let Err(error) =
-            crate::platform::auth::read_custody_key(&authorization.issuer_signing_seed_file)
-        {
+        let keys = crate::platform::callout_keys(&config)?;
+        config.resolve_authorization()?;
+        if let Err(error) = crate::platform::auth::issuer_signing_key(&config) {
             report.push(
-                "authorization.issuer_file",
+                "authorization.issuer",
                 RuntimeCheckStatus::Error,
                 error.to_string(),
             );
             return Ok(report);
         }
         report.push(
-            "authorization.issuer_file",
+            "authorization.issuer",
             RuntimeCheckStatus::Ok,
             "configured issuer signing material is valid",
         );
-        let custody = config
-            .auth
-            .as_ref()
-            .and_then(|auth| auth.oauth_storage_key_file.as_deref())
-            .ok_or_else(|| {
-                RuntimeError::Platform("auth.oauth_storage_key_file is required".into())
-            })?;
-        if let Err(error) = crate::platform::auth::read_custody_key(custody) {
+        if let Err(error) = crate::platform::auth::oauth_storage_key(&config) {
             report.push(
                 "authorization.oauth_custody",
                 RuntimeCheckStatus::Error,
@@ -344,10 +335,8 @@ pub async fn check(
                 Err(error) => report.push(&check, RuntimeCheckStatus::Missing, error.to_string()),
             }
         }
-        for (name, credentials) in [
-            ("nats.auth", &nats.auth_creds_path),
-            ("nats.system", &nats.system_creds_path),
-        ] {
+        let (auth_creds, system_creds) = nats.platform_creds()?;
+        for (name, credentials) in [("nats.auth", auth_creds), ("nats.system", system_creds)] {
             match check_nats_connection(&nats.servers, nats.ca_certificate.as_deref(), credentials)
                 .await
             {
@@ -373,11 +362,10 @@ pub async fn check(
 async fn check_nats_connection(
     servers: &str,
     ca_certificate: Option<&std::path::Path>,
-    credentials: &std::path::Path,
+    credentials: &str,
 ) -> Result<async_nats::Client, RuntimeError> {
     let mut options = async_nats::ConnectOptions::new()
-        .credentials_file(credentials)
-        .await
+        .credentials(credentials)
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
     if let Some(ca) = ca_certificate {
         options = options.add_root_certificates(ca.to_path_buf());
@@ -678,8 +666,7 @@ pub async fn run_with_stop(
     )?;
     let leases = config.resolve_leases()?;
     let mut trellis_options = async_nats::ConnectOptions::new()
-        .credentials_file(&nats.trellis_creds_path)
-        .await
+        .credentials(&nats.trellis_creds)
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
     if let Some(ca) = &nats.ca_certificate {
         trellis_options = trellis_options.add_root_certificates(ca.clone());

@@ -373,17 +373,6 @@ pub(crate) fn create_private_dir(path: &Path) -> Result<(), TrellisTestError> {
     })
 }
 
-/// Rejects a sandbox path that cannot be represented in UTF-8 configuration.
-pub(crate) fn require_utf8_path(path: &Path, role: &str) -> Result<String, TrellisTestError> {
-    path.to_str().map(str::to_owned).ok_or_else(|| {
-        TrellisTestError::new(
-            TrellisTestErrorKind::InvalidConfiguration,
-            TrellisTestStage::ConfigGeneration,
-            format!("the {role} path is not representable as UTF-8"),
-        )
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,63 +45,74 @@ async function issueDownload(
 export function providerRpcHandlers(
   provider: ConnectedTrellisService<ProviderContract>,
 ): { [K in RpcName<ProviderContract>]: RpcHandler<ProviderContract, K> } {
-  const download: RpcHandler<ProviderContract, "Download"> = async (
-    { input, context },
-  ) => ok({
-    ...input,
-    transfer: await issueDownload(provider, context, input.value),
-  });
+  const download: RpcHandler<ProviderContract, "Download"> = async ({
+    input,
+    context,
+  }) =>
+    ok({
+      ...input,
+      transfer: await issueDownload(provider, context, input.value),
+    });
   return { Echo: echoHandler, Download: download, Generate: download };
 }
 
 /** Owned operation handler that completes with a transformed value. */
-export const workHandler: OperationHandler<ProviderContract, "Work"> = async (
-  { input, op },
-) => {
+export const workHandler: OperationHandler<ProviderContract, "Work"> = async ({
+  input,
+  op,
+}) => {
   await op.started().orThrow();
   return await op.complete({ value: `work:${input.value}` }).orThrow();
 };
 
 /** Owned Live handler that reaches back through its injected client. */
-export const watchHandler: LiveHandler<ProviderContract, "Watch"> = async (
-  { client, emit },
-) => {
+export const watchHandler: LiveHandler<ProviderContract, "Watch"> = async ({
+  client,
+  emit,
+}) => {
   const echoed = await client.echo({ value: "live" }).orThrow();
   await emit({ value: echoed.value }).orThrow();
 };
 
 /** Owned Changed listener persisting through its injected client's KV. */
-export const changedListener: ServiceEventHandler<ProviderContract, "Changed"> =
-  async ({ event, client }) => {
-    await client.kv.records.put("event", { value: event.value }).orThrow();
-    return ok(undefined);
-  };
+export const changedListener: ServiceEventHandler<
+  ProviderContract,
+  "Changed"
+> = async ({ event, client }) => {
+  await client.kv.records.put("event", { value: event.value }).orThrow();
+  return ok(undefined);
+};
 
 /**
  * Owned job handler that drives the whole flat handler client: availability,
  * transient updates, outbound operation invocation, KV, and prepared publish.
  */
-export const workJobHandler: JobHandler<ProviderContract, "work"> = async (
-  { job, client },
-) => {
+export const workJobHandler: JobHandler<ProviderContract, "work"> = async ({
+  job,
+  client,
+}) => {
   const availability = client.watchAvailability()[Symbol.asyncIterator]();
   await availability.next();
   await availability.return?.();
   const releaseDeadline = Date.now() + 4_000;
-  while (!await client.kv.records.get(`release-${job.ref.id}`).orThrow()) {
+  while (!(await client.kv.records.get(`release-${job.ref.id}`).orThrow())) {
     if (job.signal.aborted || Date.now() >= releaseDeadline) {
       throw new Error("Job update subscription was not released in time");
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  await job.emitUpdate({
-    value: job.payload.value,
-    nested: {
-      count: 9_007_199_254_740_993n,
-      payload: new Uint8Array([0, 128, 255]),
-    },
-  }).orThrow();
-  const operation = await client.work({ value: job.payload.value }).start()
+  await job
+    .emitUpdate({
+      value: job.payload.value,
+      nested: {
+        count: 9_007_199_254_740_993n,
+        payload: new Uint8Array([0, 128, 255]),
+      },
+    })
+    .orThrow();
+  const operation = await client
+    .work({ value: job.payload.value })
+    .start()
     .orThrow();
   const terminal = await operation.wait().orThrow();
   const completed = terminal.output;

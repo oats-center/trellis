@@ -19,7 +19,6 @@
 import type { NatsConnection } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
-import { readFile } from "node:fs/promises";
 
 /** Marker the Trellis Auth Callout writes into the authenticated user field. */
 const ATTACHMENT_MARKER_PREFIX = "trellis.auth.v1:";
@@ -460,16 +459,13 @@ export async function completeBrokerInventory(
  * inventory.
  */
 export async function readRuntimeBrokerInventory(
-  runtime: Pick<TrellisTestRuntime, "workdir" | "natsUrl">,
+  runtime: Pick<TrellisTestRuntime, "natsCredentials" | "natsUrl">,
   options: BrokerInventoryOptions = {},
 ): Promise<BrokerConnection[]> {
-  const creds = await readFile(
-    `${runtime.workdir}/config/trellis/nats/creds/system.creds`,
-    "utf8",
-  );
+  const creds = await runtime.natsCredentials("system");
   const connection = await connect({
     servers: runtime.natsUrl,
-    authenticator: credsAuthenticator(new TextEncoder().encode(creds)),
+    authenticator: credsAuthenticator(creds),
   });
   try {
     const serverId = connection.info?.server_id;

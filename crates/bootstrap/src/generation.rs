@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::constants::DEFAULT_TRELLIS_NAME;
 use crate::error::BootstrapError;
 use crate::nats_config::{render_nats_config, resolved_server_name, NatsTlsFiles, NatsWebsocket};
-use crate::nats_material::generate_nats_material;
+use crate::nats_material::{generate_nats_material, render_nats_accounts, NatsMaterial};
 use crate::output::{create_layout, write_nats_material, write_private_file};
 use crate::runtime_config::render_trellis_config;
 use crate::tls::{
@@ -23,15 +23,19 @@ pub fn generate_nats_bootstrap(options: &NatsBootstrapOptions) -> Result<(), Boo
     validate_nats_listener_ports(&options.config)?;
     prepare_output_dir(&options.out, options.force)?;
 
-    generate_nats_bootstrap_inner(options, DEFAULT_TRELLIS_NAME, None)
+    create_layout(&options.out)?;
+    let material = generate_nats_material(&options.config.names)?;
+    write_nats_conf(options, DEFAULT_TRELLIS_NAME, None, &material)?;
+    write_nats_material(&options.out, &material)?;
+    Ok(())
 }
 
-fn generate_nats_bootstrap_inner(
+fn write_nats_conf(
     options: &NatsBootstrapOptions,
     trellis_name: &str,
     tls: Option<&NatsTlsFiles>,
+    material: &NatsMaterial,
 ) -> Result<(), BootstrapError> {
-    create_layout(&options.out)?;
     fs::write(
         options.out.join("nats.conf"),
         render_nats_config(
@@ -40,11 +44,17 @@ fn generate_nats_bootstrap_inner(
             options.config.monitor_port,
             options.config.websocket_port,
             tls,
+            &render_nats_accounts(material),
         ),
     )?;
-    let material = generate_nats_material(&options.config.names)?;
-    write_nats_material(&options.out, &material)?;
     Ok(())
+}
+
+/// A fresh canonical base64url 32-byte key.
+fn generate_key() -> String {
+    use base64::Engine as _;
+    let key: [u8; 32] = rand::random();
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key)
 }
 
 /// Generate a complete Trellis bootstrap bundle.
@@ -116,9 +126,8 @@ pub fn generate_trellis_bootstrap(
         prepare_output_dir(ca_directory, options.force)?;
     }
 
-    let nats_out = options.out.join("nats");
     let trellis_out = &options.out;
-    let mut nats_options = NatsBootstrapOptions::new(&nats_out);
+    let mut nats_options = NatsBootstrapOptions::new(trellis_out);
     nats_options.force = false;
     nats_options.config = options.nats.clone();
 
@@ -134,7 +143,14 @@ pub fn generate_trellis_bootstrap(
                 NatsWebsocket::Tls
             },
         });
-    generate_nats_bootstrap_inner(&nats_options, &options.runtime.name, nats_tls.as_ref())?;
+    fs::create_dir_all(trellis_out)?;
+    let material = generate_nats_material(&nats_options.config.names)?;
+    write_nats_conf(
+        &nats_options,
+        &options.runtime.name,
+        nats_tls.as_ref(),
+        &material,
+    )?;
     let summary = match &options.runtime.tls {
         BootstrapTls::Generated { .. } => {
             let hosts = |urls: &[&str]| {
@@ -175,13 +191,12 @@ pub fn generate_trellis_bootstrap(
             )?)
         }
         BootstrapTls::Supplied(supplied) => {
-            for directory in [trellis_out.join("tls"), trellis_out.join("nats/tls")] {
-                fs::create_dir_all(&directory)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt as _;
-                    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-                }
+            let directory = trellis_out.join("tls");
+            fs::create_dir_all(&directory)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
             }
             for (source, target, private) in [
                 (
@@ -212,26 +227,43 @@ pub fn generate_trellis_bootstrap(
         }
         BootstrapTls::LoopbackDevelopment => None,
     };
-    let authorization_directory = trellis_out.join("auth");
-    trellis_local_bootstrap::generate_local_authorization_issuer(&authorization_directory)
-        .map_err(|error| BootstrapError::AuthorizationTrust(error.to_string()))?;
-    trellis_local_bootstrap::generate_local_oauth_storage_key(&authorization_directory)
-        .map_err(|error| BootstrapError::AuthorizationTrust(error.to_string()))?;
     fs::write(
         trellis_out.join("config.toml"),
         render_trellis_config(options),
     )?;
+    let user = |jwt: &str, seed: &str| {
+        Some(trellis_runtime::NatsUser {
+            jwt: jwt.to_owned(),
+            seed: seed.to_owned(),
+        })
+    };
+    let secrets = trellis_runtime::Secrets {
+        oauth_storage_key: Some(generate_key()),
+        authorization_issuer_seed: Some(generate_key()),
+        live_providers: trellis_runtime::LiveProviderSeeds {
+            platform: Some(generate_key()),
+            health: Some(generate_key()),
+            jobs: Some(generate_key()),
+            events: Some(generate_key()),
+        },
+        nats: trellis_runtime::NatsSecrets {
+            users: trellis_runtime::NatsUsers {
+                system: user(&material.system_user_jwt, &material.system_user_seed),
+                auth: user(&material.auth_user_jwt, &material.auth_user_seed),
+                trellis: user(&material.trellis_user_jwt, &material.trellis_user_seed),
+            },
+            auth_callout: trellis_runtime::AuthCalloutSecrets {
+                issuer_signing_seed: Some(material.auth_issuer_signing_seed.clone()),
+                target_signing_seed: Some(material.auth_target_signing_seed.clone()),
+                xkey_seed: Some(material.auth_callout_xkey_seed.clone()),
+                sentinel_public_key: Some(material.metadata.auth_sentinel_public_key.clone()),
+            },
+        },
+    };
     write_private_file(
-        options.out.join("session.seed"),
-        format!("{}\n", trellis_local_bootstrap::generate_session_seed()),
+        trellis_out.join(trellis_runtime::SECRETS_FILE),
+        secrets.to_toml(),
     )?;
-    // The built-in live providers' identity seeds are provisioned material that
-    // ships inside the (possibly read-only) bundle, so generate them here rather
-    // than letting the runtime create them next to the session seed at startup.
-    trellis_local_bootstrap::generate_local_live_provider_seeds(
-        &options.out.join("live-providers"),
-    )
-    .map_err(|error| BootstrapError::AuthorizationTrust(error.to_string()))?;
     Ok(summary)
 }
 

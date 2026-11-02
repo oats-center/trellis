@@ -448,30 +448,17 @@ mod tests {
     #[tokio::test]
     async fn seeded_clients_authenticate_and_preserve_operator_changes_on_reopen() {
         let directory = tempfile::tempdir().unwrap();
-        trellis_local_bootstrap::generate_local_live_provider_seeds(
-            &directory.path().join("live-providers"),
-        )
-        .unwrap();
-        let issuer = directory.path().join("issuer.key");
-        let sealing = directory.path().join("oauth.key");
-        for (path, bytes) in [(&issuer, [13u8; 32]), (&sealing, [17u8; 32])] {
-            std::fs::write(path, URL_SAFE_NO_PAD.encode(bytes)).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-            }
-        }
-        let config: RuntimeConfig = serde_json::from_value(serde_json::json!({
-            "event_session_seed_file": directory.path().join("session.seed"),
+        let mut config: RuntimeConfig = serde_json::from_value(serde_json::json!({
             "http":{"public_origin":"http://localhost:3001","port":3001},
             "auth":{
-                "instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV", "oauth_storage_key_file":sealing,
-                "authorization":{"issuer_signing_seed_file":issuer,"context_lifetime_seconds":300,
-                    "allowed_clock_skew_seconds":30}
+                "instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "authorization":{"context_lifetime_seconds":300,"allowed_clock_skew_seconds":30}
             }
         }))
         .unwrap();
+        config.secrets.authorization_issuer_seed = Some(URL_SAFE_NO_PAD.encode([13u8; 32]));
+        config.secrets.oauth_storage_key = Some(URL_SAFE_NO_PAD.encode([17u8; 32]));
+        config.secrets.live_providers.platform = Some(URL_SAFE_NO_PAD.encode([19u8; 32]));
         let database = SqliteStore::new(
             SubsystemName::Platform,
             SqliteStorageConfig {

@@ -1,14 +1,50 @@
 use std::fs;
-use std::path::PathBuf;
 
 use tempfile::tempdir;
 
-use super::{ConfigError, RuntimeConfig, RuntimePathDefaults, SqliteStorageConfig, StorageBackend};
+use super::{
+    AuthCalloutSecrets, ConfigError, NatsSecrets, NatsUser, NatsUsers, RuntimeConfig,
+    RuntimePathDefaults, Secrets, SqliteStorageConfig, StorageBackend,
+};
 use crate::RuntimeMode;
+
+/// Every secret an installation needs, as placeholders config resolution
+/// carries through without checking.
+fn secrets() -> Secrets {
+    let user = |name: &str| {
+        Some(NatsUser {
+            jwt: format!("{name}.jwt"),
+            seed: format!("{name}.seed"),
+        })
+    };
+    Secrets {
+        nats: NatsSecrets {
+            users: NatsUsers {
+                system: user("system"),
+                auth: user("auth"),
+                trellis: user("trellis"),
+            },
+            auth_callout: AuthCalloutSecrets {
+                issuer_signing_seed: Some("issuer".into()),
+                target_signing_seed: Some("target".into()),
+                xkey_seed: Some("xkey".into()),
+                sentinel_public_key: Some("sentinel".into()),
+            },
+        },
+        ..Secrets::default()
+    }
+}
+
+/// Parses `source` as an installation whose `secrets.toml` has every secret.
+fn from_toml(source: &str) -> Result<RuntimeConfig, ConfigError> {
+    RuntimeConfig::from_toml_str(source).map(|mut config| {
+        config.secrets = secrets();
+        config
+    })
+}
 
 const COMPLETE_CONFIG: &str = r#"
 instance_name = "Trellis"
-event_session_seed_file = "./session.seed"
 
 [http]
 port = 39123
@@ -16,23 +52,10 @@ port = 39123
 [nats]
 servers = "nats://127.0.0.1:4222"
 
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
-
-[nats.auth_callout]
-issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
-target_signing_seed_file = "./nats/trellis-target-signing.seed"
-xkey_seed_file = "./nats/auth-callout-xkey.seed"
-sentinel_public_key_file = "./nats/auth-sentinel.pub"
-
 [auth]
 instance_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
-oauth_storage_key_file = "./auth/oauth-storage.key"
 
 [auth.authorization]
-issuer_signing_seed_file = "./auth/authorization-issuer.seed"
 context_lifetime_seconds = 300
 allowed_clock_skew_seconds = 30
 
@@ -68,10 +91,6 @@ fn loads_toml_config_from_path() {
     let config = RuntimeConfig::load_from_path(&path).expect("load config");
 
     assert_eq!(config.instance_name.as_deref(), Some("Trellis"));
-    assert_eq!(
-        config.event_session_seed_file,
-        Some(directory.path().join("./session.seed"))
-    );
     assert_eq!(config.http_port(), 39123);
     assert_eq!(
         config
@@ -222,7 +241,7 @@ kind = "sqlite"
 #[test]
 fn rejects_shared_sqlite_paths_across_subsystems() {
     let source = COMPLETE_CONFIG.replace("./data/health.sqlite", "./data/platform.sqlite");
-    let config = RuntimeConfig::from_toml_str(&source).expect("parse config");
+    let config = from_toml(&source).expect("parse config");
 
     assert!(matches!(
         config.validate_for_mode(RuntimeMode::All),
@@ -234,7 +253,7 @@ fn rejects_shared_sqlite_paths_across_subsystems() {
     ));
 
     let source = COMPLETE_CONFIG.replace("./data/health.sqlite", "./data/./platform.sqlite");
-    let config = RuntimeConfig::from_toml_str(&source).expect("parse equivalent path config");
+    let config = from_toml(&source).expect("parse equivalent path config");
     assert!(matches!(
         config.validate_for_mode(RuntimeMode::All),
         Err(ConfigError::SharedSqlitePath { .. })
@@ -258,7 +277,7 @@ fn rejects_shared_sqlite_inode_and_dangling_symlink_aliases() {
             "./data/health.sqlite",
             alias.to_str().expect("UTF-8 alias path"),
         );
-    let config = RuntimeConfig::from_toml_str(&source).expect("parse symlink config");
+    let config = from_toml(&source).expect("parse symlink config");
     assert!(matches!(
         config.validate_for_mode(RuntimeMode::All),
         Err(ConfigError::SharedSqlitePath { .. })
@@ -271,7 +290,7 @@ fn rejects_shared_sqlite_inode_and_dangling_symlink_aliases() {
         alias.to_str().expect("UTF-8 alias path"),
         second_alias.to_str().expect("UTF-8 second alias path"),
     );
-    let config = RuntimeConfig::from_toml_str(&source_with_chain).expect("parse symlink chain");
+    let config = from_toml(&source_with_chain).expect("parse symlink chain");
     assert!(matches!(
         config.validate_for_mode(RuntimeMode::All),
         Err(ConfigError::SharedSqlitePath { .. })
@@ -281,7 +300,7 @@ fn rejects_shared_sqlite_inode_and_dangling_symlink_aliases() {
     std::fs::remove_file(&alias).expect("remove symlink");
     std::fs::write(&target, []).expect("create target");
     std::fs::hard_link(&target, &alias).expect("create hard link");
-    let config = RuntimeConfig::from_toml_str(&source).expect("parse hard-link config");
+    let config = from_toml(&source).expect("parse hard-link config");
     assert!(matches!(
         config.validate_for_mode(RuntimeMode::All),
         Err(ConfigError::SharedSqlitePath { .. })
@@ -316,17 +335,14 @@ future_lease_option = { enabled = true }
 
 #[test]
 fn console_serves_on_the_trellis_origin_or_a_distinct_one_of_the_same_scheme() {
-    let config = RuntimeConfig::from_toml_str(COMPLETE_CONFIG).unwrap();
+    let config = from_toml(COMPLETE_CONFIG).unwrap();
     assert_eq!(
         config.resolve_console_origin().unwrap(),
         "http://localhost:39123"
     );
     let own = format!("{COMPLETE_CONFIG}\n[console]\norigin = \"http://127.0.0.1:39123/\"\n");
     assert_eq!(
-        RuntimeConfig::from_toml_str(&own)
-            .unwrap()
-            .resolve_console_origin()
-            .unwrap(),
+        from_toml(&own).unwrap().resolve_console_origin().unwrap(),
         "http://127.0.0.1:39123"
     );
     for (before, after) in [
@@ -341,7 +357,7 @@ fn console_serves_on_the_trellis_origin_or_a_distinct_one_of_the_same_scheme() {
         ("http://127.0.0.1:39123/", "http://127.0.0.1:39123/console"),
         ("[console]\n", "[console]\nenabled = false\n"),
     ] {
-        let config = RuntimeConfig::from_toml_str(&own.replace(before, after)).unwrap();
+        let config = from_toml(&own.replace(before, after)).unwrap();
         assert!(
             config.resolve_console_origin().is_err(),
             "accepted unsafe configuration: {before} -> {after}"
@@ -350,89 +366,43 @@ fn console_serves_on_the_trellis_origin_or_a_distinct_one_of_the_same_scheme() {
 }
 
 #[test]
-fn resolves_required_runtime_sections_and_lease_defaults() {
-    let config = RuntimeConfig::from_toml_str(
-        r#"
-[nats]
-servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
-
-[nats.auth_callout]
-issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
-target_signing_seed_file = "./nats/trellis-target-signing.seed"
-xkey_seed_file = "./nats/auth-callout-xkey.seed"
-sentinel_public_key_file = "./nats/auth-sentinel.pub"
-
-[leases]
-replicas = 1
-"#,
-    )
-    .expect("parse config");
-
+fn a_managed_broker_replaces_only_the_configured_servers() {
+    let config = from_toml("[nats]\nservers = \"nats://127.0.0.1:4222\"\n").expect("parse config");
     let nats = config.resolve_nats_runtime().expect("resolve nats");
-    assert_eq!(nats.servers, "nats://127.0.0.1:4222");
-    assert_eq!(
-        nats.auth_creds_path,
-        PathBuf::from("./nats/auth-runtime.creds")
-    );
-
     let overridden = config
         .resolve_nats_runtime_with(Some("nats://127.0.0.1:4223"))
         .expect("resolve nats with override");
     assert_eq!(overridden.servers, "nats://127.0.0.1:4223");
-    assert_eq!(
-        overridden.auth_creds_path, nats.auth_creds_path,
-        "override replaces only the server list"
-    );
-    assert_eq!(
-        config
-            .resolve_nats_runtime_with(None)
-            .expect("resolve nats without override")
-            .servers,
-        "nats://127.0.0.1:4222",
-        "None keeps the configured servers"
-    );
-
-    let auth_callout = config
-        .resolve_nats_auth_callout()
-        .expect("resolve auth callout");
-    assert_eq!(
-        auth_callout.xkey_seed_file,
-        PathBuf::from("./nats/auth-callout-xkey.seed")
-    );
-
-    let leases = config.resolve_leases().expect("resolve leases");
-    assert_eq!(leases.bucket, "trellis_runtime_leases");
-    assert_eq!(leases.replicas, 1);
-    assert_eq!(leases.ttl_ms, 30_000);
-    assert_eq!(leases.renew_ms, 5_000);
+    assert_eq!(overridden.trellis_creds, nats.trellis_creds);
 }
 
 #[test]
 fn resolves_relative_paths_against_config_directory() {
-    let directory = tempdir().expect("create temp directory");
-    let path = directory.path().join("trellis.toml");
+    // Named relative to the working directory, as `--config dir/config.toml`.
+    let working = std::env::current_dir().expect("working directory");
+    let directory = tempfile::tempdir_in(&working).expect("create temp directory");
+    let path = directory
+        .path()
+        .strip_prefix(&working)
+        .expect("relative")
+        .join("trellis.toml");
+    let directory = std::path::absolute(directory.path()).expect("absolute");
     fs::write(
         &path,
         r#"
+[paths]
+data = "./data"
+
 [nats]
 servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth.creds"
+ca_certificate = "./tls/ca.crt"
 
 [auth.authorization]
-issuer_signing_seed_file = "./auth/issuer.seed"
 context_lifetime_seconds = 300
 allowed_clock_skew_seconds = 30
 
 [platform.storage]
 kind = "sqlite"
-path = "./data/platform.sqlite"
 "#,
     )
     .expect("write config");
@@ -442,7 +412,7 @@ path = "./data/platform.sqlite"
     assert_eq!(
         config.platform_storage_backend().expect("storage"),
         StorageBackend::Sqlite(SqliteStorageConfig {
-            path: directory.path().join("./data/platform.sqlite"),
+            path: directory.join("data/platform.sqlite"),
             journal_mode: None,
             busy_timeout_ms: None,
             single_writer: None,
@@ -452,23 +422,16 @@ path = "./data/platform.sqlite"
         config
             .nats
             .as_ref()
-            .and_then(|nats| nats.runtime.as_ref())
-            .and_then(|runtime| runtime.auth_creds_path.as_ref()),
-        Some(&directory.path().join("./nats/auth.creds"))
-    );
-    let authorization = config.resolve_authorization().expect("authorization");
-    assert_eq!(
-        authorization.issuer_signing_seed_file,
-        directory.path().join("./auth/issuer.seed")
+            .and_then(|nats| nats.ca_certificate.as_ref()),
+        Some(&directory.join("tls/ca.crt"))
     );
 }
 
 #[test]
 fn authorization_config_rejects_root_seed_and_invalid_policy() {
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [auth.authorization]
-issuer_signing_seed_file = "issuer.seed"
 context_lifetime_seconds = 30
 allowed_clock_skew_seconds = 30
 "#,
@@ -487,7 +450,6 @@ allowed_clock_skew_seconds = 30
 fn oauth_admission_lifetime_defaults_and_enforces_bounds() {
     let source = r#"
 [auth.authorization]
-issuer_signing_seed_file = "issuer.seed"
 context_lifetime_seconds = 60
 allowed_clock_skew_seconds = 2
 "#;
@@ -496,7 +458,7 @@ allowed_clock_skew_seconds = 2
             Some(seconds) => format!("{source}\noauth_admission_lifetime_seconds = {seconds}"),
             None => source.to_owned(),
         };
-        let config = RuntimeConfig::from_toml_str(&configured).expect("valid TOML");
+        let config = from_toml(&configured).expect("valid TOML");
         config
             .resolve_authorization()
             .map(|auth| auth.oauth_admission_lifetime_seconds)
@@ -527,24 +489,12 @@ fn rejects_non_toml_config_path() {
 
 #[test]
 fn validates_selected_mode_storage_only() {
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
 
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
-
-[nats.auth_callout]
-issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
-target_signing_seed_file = "./nats/trellis-target-signing.seed"
-xkey_seed_file = "./nats/auth-callout-xkey.seed"
-sentinel_public_key_file = "./nats/auth-sentinel.pub"
-
 [auth.authorization]
-issuer_signing_seed_file = "./auth/issuer.seed"
 context_lifetime_seconds = 300
 allowed_clock_skew_seconds = 30
 
@@ -571,27 +521,16 @@ replicas = 1
 
 #[test]
 fn all_mode_requires_every_subsystem_storage() {
-    let config = RuntimeConfig::from_toml_str(COMPLETE_CONFIG).expect("parse config");
+    let config = from_toml(COMPLETE_CONFIG).expect("parse config");
 
     config
         .validate_for_mode(RuntimeMode::All)
         .expect("all config is valid");
 
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
-
-[nats.auth_callout]
-issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
-target_signing_seed_file = "./nats/trellis-target-signing.seed"
-xkey_seed_file = "./nats/auth-callout-xkey.seed"
-sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
 [platform.storage]
 kind = "sqlite"
@@ -611,15 +550,10 @@ replicas = 1
 
 #[test]
 fn rejects_postgres_until_backend_is_implemented() {
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
 
 [events.storage]
 kind = "postgres"
@@ -642,15 +576,10 @@ replicas = 1
 
 #[test]
 fn rejects_invalid_storage_fields() {
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
 
 [health.storage]
 kind = ""
@@ -670,15 +599,10 @@ replicas = 1
         })
     ));
 
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
 
 [health.storage]
 kind = "postgres"
@@ -700,52 +624,14 @@ replicas = 1
 }
 
 #[test]
-fn rejects_missing_nats_runtime_paths() {
-    let config = RuntimeConfig::from_toml_str(
-        r#"
+fn every_mode_needs_its_nats_users_and_platform_needs_callout_keys() {
+    let source = r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
 
 [jobs.storage]
 kind = "sqlite"
 path = "./data/jobs.sqlite"
-
-[leases]
-replicas = 1
-"#,
-    )
-    .expect("parse config");
-
-    assert!(matches!(
-        config.validate_for_mode(RuntimeMode::Jobs),
-        Err(ConfigError::InvalidNatsConfig {
-            section: "nats.runtime",
-            field: "trellis_creds_path",
-            reason: "must not be missing or empty"
-        })
-    ));
-}
-
-#[test]
-fn platform_modes_require_auth_callout_seed_paths() {
-    let config = RuntimeConfig::from_toml_str(
-        r#"
-[nats]
-servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
-
-[nats.auth_callout]
-issuer_signing_seed_file = "./nats/auth-issuer-signing.seed"
-target_signing_seed_file = "./nats/trellis-target-signing.seed"
-sentinel_public_key_file = "./nats/auth-sentinel.pub"
 
 [platform.storage]
 kind = "sqlite"
@@ -753,55 +639,39 @@ path = "./data/platform.sqlite"
 
 [leases]
 replicas = 1
-"#,
-    )
-    .expect("parse config");
-
+"#;
+    let mut config = from_toml(source).expect("parse config");
+    config.secrets.nats.users.trellis = None;
     assert!(matches!(
-        config.validate_for_mode(RuntimeMode::Platform),
-        Err(ConfigError::InvalidNatsConfig {
-            section: "nats.auth_callout",
-            field: "xkey_seed_file",
-            reason: "must not be missing or empty"
+        config.validate_for_mode(RuntimeMode::Jobs),
+        Err(ConfigError::MissingSecret {
+            name: "nats.users.trellis"
         })
     ));
-}
 
-#[test]
-fn non_platform_split_modes_do_not_require_auth_callout_seed_paths() {
-    let config = RuntimeConfig::from_toml_str(
-        r#"
-[nats]
-servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
-
-[health.storage]
-kind = "sqlite"
-path = "./data/health.sqlite"
-
-[leases]
-replicas = 1
-"#,
-    )
-    .expect("parse config");
-
-    config
-        .validate_for_mode(RuntimeMode::Health)
-        .expect("health config is valid");
+    // A split role elsewhere holds only the Trellis user; the platform also
+    // needs the auth and system users and the callout keys.
+    for missing in ["nats.users.system", "nats.auth_callout.xkey_seed"] {
+        let mut config = from_toml(source).expect("parse config");
+        match missing {
+            "nats.users.system" => config.secrets.nats.users.system = None,
+            _ => config.secrets.nats.auth_callout.xkey_seed = None,
+        }
+        config
+            .validate_for_mode(RuntimeMode::Jobs)
+            .expect("jobs needs neither");
+        assert!(matches!(
+            config.validate_for_mode(RuntimeMode::Platform),
+            Err(ConfigError::MissingSecret { name }) if name == missing
+        ));
+    }
 }
 
 #[test]
 fn all_modes_require_nats_servers() {
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
+[nats]
 
 [jobs.storage]
 kind = "sqlite"
@@ -822,15 +692,10 @@ path = "./data/jobs.sqlite"
 
 #[test]
 fn runtime_modes_require_leases_section_and_replicas_field() {
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
 
 [jobs.storage]
 kind = "sqlite"
@@ -844,15 +709,10 @@ path = "./data/jobs.sqlite"
         Err(ConfigError::MissingSection { section: "leases" })
     ));
 
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
-
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
 
 [jobs.storage]
 kind = "sqlite"
@@ -876,18 +736,12 @@ bucket = "trellis_runtime_leases"
 
 #[test]
 fn lease_replica_validation_requires_presence_only() {
-    let config = RuntimeConfig::from_toml_str(
+    let config = from_toml(
         r#"
 [nats]
 servers = "nats://127.0.0.1:4222"
 
-[nats.runtime]
-auth_creds_path = "./nats/auth-runtime.creds"
-trellis_creds_path = "./nats/trellis-runtime.creds"
-system_creds_path = "./nats/system-runtime.creds"
-
 [auth.authorization]
-issuer_signing_seed_file = "./auth/issuer.seed"
 context_lifetime_seconds = 300
 allowed_clock_skew_seconds = 30
 
@@ -904,4 +758,41 @@ replicas = 0
     config
         .validate_for_mode(RuntimeMode::Jobs)
         .expect("replica acceptability is delegated to NATS");
+}
+
+#[cfg(unix)]
+#[test]
+fn secrets_others_could_read_or_swap_are_refused() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = tempdir().expect("create temp directory");
+    let config = directory.path().join("config.toml");
+    fs::write(&config, "").expect("write config");
+    let secrets = directory.path().join(super::SECRETS_FILE);
+    fs::write(&secrets, "oauth_storage_key = \"key\"\n").expect("write secrets");
+    let load = || RuntimeConfig::load_from_path(&config);
+
+    for mode in [0o644, 0o640] {
+        fs::set_permissions(&secrets, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(
+            matches!(load(), Err(ConfigError::Secrets { .. })),
+            "{mode:o}"
+        );
+    }
+    fs::set_permissions(&secrets, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        load().unwrap().secrets.oauth_storage_key.as_deref(),
+        Some("key")
+    );
+
+    // A second name lets someone else's file stand in for it.
+    let alias = directory.path().join("alias.toml");
+    fs::hard_link(&secrets, &alias).unwrap();
+    assert!(matches!(load(), Err(ConfigError::Secrets { .. })));
+    fs::remove_file(&alias).unwrap();
+
+    let elsewhere = directory.path().join("elsewhere.toml");
+    fs::rename(&secrets, &elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &secrets).unwrap();
+    assert!(matches!(load(), Err(ConfigError::Secrets { .. })));
 }

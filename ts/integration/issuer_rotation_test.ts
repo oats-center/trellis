@@ -168,16 +168,16 @@ test("startup refuses replaced OAuth custody and restored custody retains client
         idempotencyKey: ulid(),
       })
     ).user;
-    const key = join(
-      runtime.workdir,
-      "config",
-      "trellis",
-      "auth",
-      "oauth-storage.key",
-    );
-    const original = await readFile(key);
+    const key = join(runtime.workdir, "config", "trellis", "secrets.toml");
+    const original = await readFile(key, "utf8");
     try {
-      await writeFile(key, `${randomBytes(32).toString("base64url")}\n`);
+      await writeFile(
+        key,
+        original.replace(
+          /^oauth_storage_key = ".*"$/m,
+          `oauth_storage_key = "${randomBytes(32).toString("base64url")}"`,
+        ),
+      );
       await assert.rejects(runtime.restart());
       await writeFile(key, original);
       await runtime.restart();

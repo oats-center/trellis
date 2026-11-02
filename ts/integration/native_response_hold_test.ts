@@ -14,9 +14,7 @@
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { headers as natsHeaders } from "@nats-io/nats-core";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { join } from "node:path";
 
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
@@ -87,16 +85,7 @@ test("the readiness barrier holds sequential physical connections independently"
         servers: proxyUrl,
         timeout: REQUEST_TIMEOUT_MS,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config",
-              "trellis",
-              "nats",
-              "creds",
-              "system.creds",
-            ),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       };
       const gate = runtime.nativeTransportGate();
@@ -243,16 +232,7 @@ test("closed physical connections discard retained PONGs and replies without dis
         servers: proxyUrl,
         timeout: REQUEST_TIMEOUT_MS,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config",
-              "trellis",
-              "nats",
-              "creds",
-              "system.creds",
-            ),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       };
       const gate = runtime.nativeTransportGate();
@@ -376,16 +356,7 @@ test("the response barrier withholds only the targeted request's reply", async (
       const nc = await connect({
         servers: proxyUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config",
-              "trellis",
-              "nats",
-              "creds",
-              "system.creds",
-            ),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       const gate = runtime.nativeTransportGate();
@@ -474,16 +445,7 @@ test("the response barrier selects the withheld request by its reply body", asyn
       const nc = await connect({
         servers: proxyUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config",
-              "trellis",
-              "nats",
-              "creds",
-              "system.creds",
-            ),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       const gate = runtime.nativeTransportGate();
@@ -569,16 +531,7 @@ test("the response barrier matches the exact reply body behind real NATS headers
       const nc = await connect({
         servers: proxyUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config",
-              "trellis",
-              "nats",
-              "creds",
-              "system.creds",
-            ),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       // A unique subject space keeps this hold disjoint from the broker's own
@@ -701,16 +654,7 @@ test("a throwing reply predicate rejects that hold, forwards the reply, and neve
       const nc = await connect({
         servers: proxyUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config",
-              "trellis",
-              "nats",
-              "creds",
-              "system.creds",
-            ),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       const prefix = `hold.throw.${crypto.randomUUID()}`;

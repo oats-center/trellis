@@ -356,12 +356,12 @@ async fn ephemeral_events_authenticate_before_yielding_typed_payloads() {
             .unwrap(),
     );
     let api = caller.trellis_test_fixture_echo_v1();
-    let broker = async_nats::ConnectOptions::with_credentials_file(
-        runtime
-            .workdir()
-            .join("config/nats/creds/trellis-auth.creds"),
+    let broker = async_nats::ConnectOptions::with_credentials(
+        &runtime
+            .nats_creds(trellis_testkit::TestNatsUser::Trellis)
+            .await
+            .unwrap(),
     )
-    .await
     .unwrap()
     .add_root_certificates(runtime.trust_roots()[0].clone())
     .connect(runtime.nats_url())
@@ -970,7 +970,7 @@ async fn t16_cancelling_start_does_not_orphan_infrastructure() {
                 else {
                     continue;
                 };
-                let Ok(nats) = std::fs::read_to_string(root.join("config/nats/nats.conf")) else {
+                let Ok(nats) = std::fs::read_to_string(root.join("config/nats.conf")) else {
                     continue;
                 };
                 // Read the generated listener addresses, not a process command line.

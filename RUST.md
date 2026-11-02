@@ -16,7 +16,7 @@ external live-test harness). The testkit runs the linked production runtime and
 real managed NATS; neither `trellis` nor `trellis-server` is needed to start it.
 
 Cargo also distributes `trellis-runtime-apis`, `trellis-idl`,
-`trellis-local-bootstrap`, `trellis-events-runtime`, `trellis-jobs-runtime`,
+`trellis-events-runtime`, `trellis-jobs-runtime`,
 `trellis-runtime`, `trellis-bootstrap`, and `trellis-local-nats` in lockstep.
 These implementation crates are not supported service-author APIs and are not
 added to the public Rustdoc landing surface.
@@ -36,7 +36,6 @@ added to the public Rustdoc landing surface.
 | `trellis-codegen-ts`      | Internal TypeScript SDK code generation                          |
 | `trellis-idl`             | Native Trellis IDL compiler                                      |
 | `trellis-core-bootstrap`  | Internal bootstrap helpers for infrastructure state              |
-| `trellis-local-bootstrap` | Internal local Trellis/NATS bootstrap bundle generation          |
 | `trellis-service`         | Unpublished compatibility/test package for `trellis_rs::service` |
 | `trellis-events-runtime`  | Internal built-in Events runtime                                 |
 | `trellis-jobs-runtime`    | Internal built-in Jobs admin runtime                             |

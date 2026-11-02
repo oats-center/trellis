@@ -3,7 +3,7 @@ use std::net::Ipv6Addr;
 use std::path::Path;
 
 use crate::error::NatsConfigError;
-use crate::types::{GeneratedMetadata, NatsBootstrapNames, NatsListeners};
+use crate::types::{NatsBootstrapNames, NatsListeners};
 
 /// Broker TLS files, as paths the NATS process can open.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,7 +50,8 @@ fn render_tls_blocks(tls: Option<&NatsTlsFiles>) -> (String, String) {
     }
 }
 
-/// Render the container-facing NATS server config for a bundle.
+/// Render the container-facing NATS server config for a bundle, ending with
+/// its `accounts`.
 ///
 /// With `tls`, native clients always use TLS and listeners bind every
 /// interface so the container can publish them; without it, the broker is
@@ -62,6 +63,7 @@ pub fn render_nats_config(
     monitor_port: u16,
     websocket_port: u16,
     tls: Option<&NatsTlsFiles>,
+    accounts: &str,
 ) -> String {
     let bind = if tls.is_some() {
         "0.0.0.0"
@@ -90,8 +92,7 @@ jetstream {{
   store_dir: /data
 }}
 
-include ./jwt.conf
-"#
+{accounts}"#
     )
 }
 
@@ -440,7 +441,8 @@ fn quote_nats_path(value: &str) -> String {
     quoted
 }
 
-/// Render a host-run NATS server config with host-path JetStream store and JWT config.
+/// Render a host-run NATS server config with a host-path JetStream store,
+/// ending with `accounts` from [`nats_accounts`].
 ///
 /// Monitoring always binds loopback. With `tls`, native and WebSocket
 /// listeners bind every interface, so a proxy on another host reaches the
@@ -450,14 +452,13 @@ fn quote_nats_path(value: &str) -> String {
 pub fn render_local_nats_config(
     server_name: &str,
     store_dir: &str,
-    jwt_config_path: &str,
+    accounts: &str,
     nats_port: u16,
     websocket_port: u16,
     monitor_port: u16,
     tls: Option<&NatsTlsFiles>,
 ) -> String {
     let store_dir = quote_nats_path(store_dir);
-    let jwt_config_path = quote_nats_path(jwt_config_path);
     let native_bind = if tls.is_some() {
         "0.0.0.0"
     } else {
@@ -490,26 +491,28 @@ jetstream {{
   store_dir: {store_dir}
 }}
 
-include {jwt_config_path}
-"#
+{accounts}"#
     )
 }
 
-/// Render a generated JWT resolver config with mutable resolver data in `resolver_dir`.
+/// The accounts that end a generated `nats.conf`, from its `operator:` line
+/// on, with the JWT resolver keeping its data in `resolver_dir`.
 #[must_use]
-pub fn render_local_jwt_config(config: &str, resolver_dir: &str) -> String {
+pub fn nats_accounts(config: &str, resolver_dir: &str) -> String {
     let resolver_dir = quote_nats_path(resolver_dir);
-    config
+    let mut accounts = String::new();
+    for line in config
         .lines()
-        .map(|line| {
-            if line.trim_start().starts_with("dir:") {
-                format!("dir: {resolver_dir}")
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .skip_while(|line| !line.starts_with("operator:"))
+    {
+        if line.trim_start().starts_with("dir:") {
+            accounts.push_str(&format!("  dir: {resolver_dir}"));
+        } else {
+            accounts.push_str(line);
+        }
+        accounts.push('\n');
+    }
+    accounts
 }
 
 /// Builds the default NATS server-name slug from the Trellis name.
@@ -545,31 +548,4 @@ pub(crate) fn resolved_server_name(names: &NatsBootstrapNames, trellis_name: &st
         .server_name
         .as_ref()
         .map_or_else(|| slug_from_name(trellis_name), Clone::clone)
-}
-
-/// Render the auth callout environment file without seed material in the manifest.
-#[must_use]
-pub fn render_auth_callout_env(generated: &GeneratedMetadata) -> String {
-    format!(
-        r#"AUTH_ACCOUNT={auth_account}
-AUTH_ACCOUNT_PUBLIC_KEY={auth_public}
-TRELLIS_ACCOUNT={trellis_account}
-TRELLIS_ACCOUNT_PUBLIC_KEY={trellis_public}
-AUTH_USER_PUBLIC_KEY={auth_user}
-AUTH_SENTINEL_PUBLIC_KEY={auth_sentinel}
-TRELLIS_USER_PUBLIC_KEY={trellis_user}
-AUTH_ISSUER_SIGNING_SEED_FILE=./secrets/auth-issuer-signing.seed
-AUTH_TARGET_SIGNING_SEED_FILE=./secrets/auth-target-signing.seed
-AUTH_CALLOUT_XKEY_SEED_FILE=./secrets/auth-sx.seed
-AUTH_SERVICE_CREDS_FILE=./creds/auth-auth.creds
-TRELLIS_SERVICE_CREDS_FILE=./creds/trellis-auth.creds
-"#,
-        auth_account = generated.auth_account_name,
-        auth_public = generated.auth_account_public_key,
-        trellis_account = generated.trellis_account_name,
-        trellis_public = generated.trellis_account_public_key,
-        auth_user = generated.auth_user_public_key,
-        auth_sentinel = generated.auth_sentinel_public_key,
-        trellis_user = generated.trellis_user_public_key,
-    )
 }

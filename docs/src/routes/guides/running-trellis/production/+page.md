@@ -58,8 +58,8 @@ makes Trellis create its own CA instead. Browsers and services then accept it
 by its fingerprint, as in
 [development mode](/guides/running-trellis/other-machines). The CA lives in
 the installation's `tls-ca` folder. With `--system` it goes next to the
-installation instead, in `<folder>-tls-ca`, so its private key stays out of
-anything mounted into a container. `--tls-ca-dir <folder>` puts it anywhere
+installation instead, in `/etc/trellis-tls-ca`, so its private key stays out
+of anything mounted into a container. `--tls-ca-dir <folder>` puts it anywhere
 else outside the installation.
 
 To test the production layout without a real CA,
@@ -70,17 +70,40 @@ runs.
 
 ## Where an installation keeps its files
 
-`trellis-server init` with no `--out` creates the installation where the server
-looks by default: `~/.config/trellis`, or `/etc/trellis` with `--system`. Its
-data then goes to the profile's folders: your XDG folders, or `/var/lib/trellis`,
-`/var/cache/trellis`, `/run/trellis` and `/var/log/trellis` with `--system`.
+`trellis-server init` writes four things, and the server reads nothing else
+from the installation:
 
-`trellis-server init --out <folder>` makes a self-contained installation
-instead. Its `config.toml` gets a `[paths]` section that keeps databases, NATS
-data, logs and caches in folders next to it, so one folder is one
-installation and several can share a host. Start it with
-`trellis-server --config <folder>/config.toml`. Point any of those folders
-somewhere else by editing `[paths]`:
+| Path           | What it is                                                     |
+| -------------- | -------------------------------------------------------------- |
+| `config.toml`  | The settings. No keys, so it's safe to read, share and diff.   |
+| `secrets.toml` | Every private key Trellis reads, owner-only. Back it up.       |
+| `nats.conf`    | The NATS server's settings and accounts, in NATS's own format. |
+| `tls/`         | The certificates the Trellis port and NATS serve.              |
+
+Where the installation goes, and where the server keeps what it writes while
+it runs, depends on the kind you ask for:
+
+| `init` flag         | Installation        | Databases, NATS data, logs                             | Start it with             |
+| ------------------- | ------------------- | ------------------------------------------------------ | ------------------------- |
+| `--user`            | `~/.config/trellis` | `~/.local/share/trellis`, `~/.local/state/trellis`     | `trellis-server`          |
+| `--system`          | `/etc/trellis`      | `/var/lib/trellis`, `/run/trellis`, `/var/log/trellis` | `trellis-server --system` |
+| `--bundle <folder>` | `<folder>`          | `<folder>/var`                                         | `trellis-server <folder>` |
+
+`--user` is the default, except for root on Linux, where it's `--system`. A
+bundle is a whole installation in one folder, for development, tests and
+several Trellis on one machine. Delete its `var` folder and it's back to just
+after `init`. Every kind shares the NATS download, in `~/.cache/trellis` or
+`/var/cache/trellis`. Naming a bundle and also passing `--user` or `--system`
+is an error.
+
+In a container, the installation is one read-only volume at `/etc/trellis` and
+everything else one writable volume at `/var/lib/trellis`. To put NATS's data
+on another filesystem, mount a third volume at `/var/lib/trellis/nats`.
+Trellis logs to standard output. The log of the NATS it runs goes to
+`/var/log/trellis`: give that a `tmpfs`, or set `[paths] logs` to a folder on
+the data volume.
+
+To keep some of it somewhere else, add `[paths]` to `config.toml`:
 
 ```toml
 [paths]
@@ -92,12 +115,28 @@ logs = "/srv/trellis/log"
 ```
 
 Relative paths resolve from the folder holding `config.toml`. Leave a line out
-and the server uses the profile's folder for it. Database files you don't name
+and the server uses the default for it. Database files you don't name
 explicitly get fixed names under the data folder.
+
+### Using the `nats` CLI
+
+`trellis-server nats <user>` runs the [`nats` CLI](https://github.com/nats-io/natscli)
+as one of the installation's NATS users, with its address and CA already set:
+
+```sh
+trellis-server nats system server report jetstream
+trellis-server nats trellis stream ls
+trellis-server nats --installation ~/trellis-two trellis kv ls
+```
+
+`system` sees servers, accounts and connections. `trellis` is the account
+services run in, with its streams and buckets. The credentials exist on disk
+only while `nats` runs. `--print` writes them to standard output instead, for
+a saved `nats context`.
 
 ## Who runs NATS
 
-By default `trellis-server` starts the NATS server described by `nats/nats.conf`
+By default `trellis-server` starts the NATS server described by `nats.conf`
 and stops it again on exit; `config.toml` says so with `managed = true` in its
 `[nats]` section. For NATS you run yourself, in another container or as a
 cluster, create the installation with `trellis-server init --external-nats`, or
@@ -117,7 +156,7 @@ private installation first, with your real hostnames and
 
 ```sh
 install -d -m 0700 "$HOME/trellis" "$HOME/trellis/data"
-trellis-server init --out "$HOME/trellis/config" --external-nats \
+trellis-server init --bundle "$HOME/trellis/config" --external-nats \
   --tls supplied --trusted-proxy 10.89.70.0/24 \
   --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
   --trellis-origin https://trellis.example.com \
@@ -139,7 +178,7 @@ A few things about the units:
 - In `trellis-nats.container`, replace `nats.example.com` in `NetworkAlias`
   with your NATS hostname, so Trellis checks the same broker certificate from
   inside the network as clients do from outside. That container only mounts
-  `nats/tls/`, never the sign-in keys.
+  `nats.conf` and the NATS certificate, never `secrets.toml`.
 - They expect rootless Podman with `keep-id`, mapping your user to the
   runtime's UID 10001. Keep private folders readable by you alone. Trellis
   refuses to start on unsafe permissions, and loosening a folder with `chmod`
@@ -184,7 +223,7 @@ docker volume create trellis-state
 docker run --rm --user 10001:10001 --entrypoint trellis-server \
   --volume trellis-state:/var/lib/trellis --volume "$PWD/certs":/certs:ro \
   ghcr.io/oats-center/trellis-server:latest \
-  init --system --out /var/lib/trellis/bundle --tls supplied \
+  init --bundle /var/lib/trellis/bundle --tls supplied \
   --tls-certificate-chain /certs/trellis.crt --tls-private-key /certs/trellis.key \
   --nats-tls-certificate-chain /certs/trellis.crt \
   --nats-tls-private-key /certs/trellis.key
@@ -196,7 +235,7 @@ docker run --rm --user root --entrypoint sh \
 docker run --rm --user root --entrypoint cp \
   --volume trellis-state:/from:ro --volume trellis-bundle:/to ghcr.io/oats-center/trellis-server:latest \
   -a /from/bundle/. /to/
-# Its keys are readable by their owner only, so the run user must own them:
+# secrets.toml is readable by its owner only, so the run user must own it:
 docker run --rm --user root --entrypoint chown \
   --volume trellis-bundle:/to ghcr.io/oats-center/trellis-server:latest \
   -R 10001:10001 /to
@@ -208,7 +247,7 @@ docker run --rm --name trellis --read-only --tmpfs /tmp \
   --volume trellis-bundle:/etc/trellis:ro,Z \
   --volume trellis-state:/var/lib/trellis:rw,Z \
   --entrypoint trellis-server ghcr.io/oats-center/trellis-server:latest \
-  --system all --local-nats=/usr/local/bin/nats-server
+  --system --local-nats=/usr/local/bin/nats-server
 ```
 
 Trellis reads its config, keys and certificates from `/etc/trellis` and runs
@@ -345,10 +384,10 @@ restore them together:
 - the data folder, including `platform.sqlite` and the `platform.issuer-keys/`
   folder beside it, which holds the sign-in signing keys
 - the NATS JetStream data
-- the installation folder: `config.toml`, `session.seed`, `auth/`,
-  `live-providers/`, `nats/` and `tls/`
-- with `--tls generated`, the CA folder (`tls-ca/`, or `<name>-tls-ca/` next
-  to a `--system` installation), kept separately and never mounted into a
+- the installation folder: `config.toml`, `secrets.toml`, `nats.conf` and
+  `tls/`
+- with `--tls generated`, the CA folder (`tls-ca/`, or `/etc/trellis-tls-ca/`
+  for a `--system` installation), kept separately and never mounted into a
   container
 
 If a signing key in `platform.issuer-keys/` goes missing, restore it from a

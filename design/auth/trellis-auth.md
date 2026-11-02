@@ -322,17 +322,15 @@ mapped onto one origin.
 
 ### OAuth storage key custody (`oauth/storage.rs`)
 
-Fresh initialization provisions `auth/oauth-storage.key`, independently of the
-online issuer, as an owner-only `0600` file containing a base64url 32-byte key.
-`auth.oauth_storage_key_file` selects it; relative paths resolve against the
-runtime configuration file. Retain and back up this key together with Auth's
-database. Issuer rotation does not replace it. Bootstrap refuses to overwrite
-existing material. The OAuth adapter refuses missing, malformed, symlinked, or
-non-private key files and authenticates existing encrypted OAuth material before
-accepting new writes. Key files must be owned by the process user, have no other
-hard links, and fit the bounded encoded-key format. Opening refuses symlinks
-without following them. Production startup uses this custody loader and never
-generates a replacement key.
+Fresh initialization provisions `oauth_storage_key` in `secrets.toml`,
+independently of the online issuer, as a canonical base64url 32-byte key.
+Retain and back up this key together with Auth's database. Issuer rotation does
+not replace it. The runtime refuses a `secrets.toml` that is a symlink, has
+other hard links, is not owned by the process user, is readable by anyone else,
+or exceeds its size bound, opening it without following links. The OAuth
+adapter refuses a missing or malformed key and authenticates existing encrypted
+OAuth material before accepting new writes. Startup never generates a
+replacement key.
 
 ### Authorization HTTP boundary and Portal (`oauth/http.rs`, `oauth/portal.rs`, `portal/`)
 
@@ -1036,12 +1034,11 @@ the directory authorization boundary; unavailable optional fields are omitted.
 
 ### Deployments, resources, and split roles (`deployments.rs`, `resources.rs`, `rpc_resource_bindings.rs`)
 
-Both local/container and native fresh-bootstrap generators provision the four
-built-in provider identity files under the existing `live-providers/` custody
-paths. They create private files without replacing existing material. Normal
-startup only reads those seeds and fails on missing, unsafe, or corrupt custody;
-it does not generate replacement identities or persist private seeds in Auth
-SQL.
+Fresh initialization provisions the four built-in provider identity seeds as
+`[live_providers]` in `secrets.toml`. Normal startup only reads those seeds and
+fails on missing or corrupt custody; it does not generate replacement
+identities or persist private seeds in Auth SQL. A role started apart from the
+platform holds only its own seed and the Trellis NATS user.
 
 The Auth-owning host provisions its selected generated built-in provider
 descriptors through ordinary API acceptance and deployment approval, using

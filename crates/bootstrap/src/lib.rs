@@ -24,8 +24,8 @@ pub use generation::{
     bundle_ca_directory, generate_nats_bootstrap, generate_trellis_bootstrap, BUNDLE_CA_DIRECTORY,
 };
 pub use nats_config::{
-    read_nats_listen_ports, render_auth_callout_env, render_local_jwt_config,
-    render_local_nats_config, render_nats_config, slug_from_name, NatsTlsFiles, NatsWebsocket,
+    nats_accounts, read_nats_listen_ports, render_local_nats_config, render_nats_config,
+    slug_from_name, NatsTlsFiles, NatsWebsocket,
 };
 pub use runtime_config::{render_trellis_config, trellis_runtime_config};
 pub use tls::{

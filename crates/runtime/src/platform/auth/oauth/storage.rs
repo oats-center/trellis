@@ -207,10 +207,9 @@ impl OAuthStorage {
     /// generate or replace a key during startup: losing it loses stored secrets.
     pub(crate) fn open(
         authority: Arc<SqliteAuthorizationStore>,
-        path: &std::path::Path,
+        key: &[u8; 32],
     ) -> Result<Self, StorageError> {
-        let key = super::super::read_custody_key(path).map_err(failure)?;
-        let storage = Self::new(authority, &key)?;
+        let storage = Self::new(authority, key)?;
         // Authenticate real persisted ciphertext before accepting new secrets.
         // A replaced but well-formed key must not silently split installation
         // custody between two keys. No synthetic key-check record is needed.

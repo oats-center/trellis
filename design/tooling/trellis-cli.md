@@ -162,7 +162,7 @@ whether people may create their own account while signing in to one app. The sep
 OAuth portal owns interactive login, device-code confirmation and consent;
 authenticated administration remains on NATS.
 
-Fresh administrator initialization uses `trellis-server init admin --config <path>`.
+Fresh administrator initialization uses `trellis-server init admin [<installation>]`.
 `--username` defaults to `admin`; `--password` or `--password-stdin` sets initial
 credentials. With neither, the command returns a one-time password-setup URL on
 the Trellis origin. Runtime startup offers corresponding
@@ -178,14 +178,24 @@ Setting up the host that runs one belongs to the server binary, which already
 holds the runtime and storage code:
 
 ```text
-trellis-server [--init] [--nats-download | --local-nats=<path>] ...
-trellis-server init [--out <dir>] [--external-nats] [--dev] [--host <name>] ...
-trellis-server init admin [--config <config.toml>] [--system] ...
-trellis-server tls renew --bundle <dir> [--ca-dir <dir>]
+trellis-server [<installation> | --user | --system] [--mode <mode>] [--init] ...
+trellis-server check [<installation> | --user | --system] [--mode <mode>] ...
+trellis-server init [--user | --system | --bundle <dir>] [--external-nats] [--dev] ...
+trellis-server init admin [<installation> | --user | --system] ...
+trellis-server tls renew [<installation> | --user | --system] [--ca-dir <dir>]
 trellis-server tls issue --out <dir> --host <name>...
-trellis-server tls status [--config <config.toml>]
+trellis-server tls status [<installation> | --user | --system]
+trellis-server nats [--installation <path> | --user | --system] [--print] <user> [<nats args>...]
 trellis-server upgrade [--check] [--prerelease]
 ```
+
+An installation is one of three kinds. The user's lives in `~/.config/trellis`
+with its data in the XDG folders; the system's in `/etc/trellis` with its data
+in the FHS folders (Linux only); a bundle is a folder holding both, its data in
+`var/`. `--user` is the default, and `--system` for root on Linux. Every
+command names a bundle by its folder or its `config.toml`; naming one together
+with `--user` or `--system` is an error. `trellis-server nats` takes the path
+as `--installation`, since its trailing arguments belong to the `nats` CLI.
 
 Options go after the subcommand, and each subcommand takes only its own. Those that report a result accept `--format json` for scripts. Initialization creates ordinary secure directories only when absent and rejects
 unsafe paths. `trellis-server init` takes `--trellis-origin` and
@@ -205,8 +215,8 @@ then stays on loopback), and
 stays private; `--nats-server-url` is then only where the runtime reaches the
 broker), validates that every
 endpoint can be protected before writing, and writes a generated CA's private
-key to the bundle's `tls-ca/` folder, to `<out>-tls-ca/` with `--system`, or to
-`--tls-ca-dir`. It always warns
+key to the installation's `tls-ca/` folder, to `/etc/trellis-tls-ca/` with
+`--system`, or to `--tls-ca-dir`. It always warns
 with the CA fingerprint when it generated one. `trellis-server tls renew` reissues the
 bundle's leaves from that CA with unchanged names; `trellis-server tls status` reports
 the CA fingerprint and expiry and repeats the warning. `trellis-server tls
@@ -215,15 +225,19 @@ key it discards, writing `ca.crt`, `server.crt` and `server.key` for
 `--tls supplied`; the testkits and the image smoke use it to run the production
 layout.
 
-A bundle is the installation. `trellis-server init --out <dir>` writes `[paths]`
-that put data, state, cache, runtime files, and logs in folders inside the
-bundle, so servers started from different bundles on one host never share
-state. Without `--out`, `init` writes the bundle where the server looks by
-default (`~/.config/trellis`, or `/etc/trellis` with `--system`) and omits
-`[paths]`. The server itself has no bundle-relative default: an omitted root
-falls back to the user (XDG) or `--system` (FHS) profile.
+`init` writes `config.toml`, `secrets.toml` (every private key the runtime
+reads, owner-only), `nats.conf` (the broker's settings ending with its accounts)
+and `tls/`. The runtime reads keys only from `secrets.toml`, refusing it when
+it is a link or anyone else could read it. A role started apart from the
+platform needs only the Trellis NATS user and its own provider seed there.
+Everything the server writes goes to the kind's data folders, which
+`[paths]` overrides; the NATS download goes to the user or system cache for
+every kind, so bundles share it. `trellis-server nats <user>` runs the `nats`
+CLI with the installation's address and CA and that user's creds, written to
+the private runtime folder only while it runs; `--print` writes the creds to
+standard output instead.
 
-A first plain `trellis-server` in the user profile, with no `--config`, asks
+A first plain `trellis-server` in the user profile, naming no installation, asks
 what `init` would (who runs NATS, localhost development or other machines,
 then hostnames, ports and certificates), creates that bundle and prints the
 equivalent `init` command. `--init` creates a localhost development bundle
@@ -231,7 +245,7 @@ equivalent `init` command. `--init` creates a localhost development bundle
 stops with the flag to use. The bundle decides
 who runs NATS: `[nats] managed = true`, which `init` writes unless given
 `--external-nats`, makes the server start and stop the broker described by
-`nats/nats.conf`, using `nats-server` from `PATH` or, once the operator agrees
+`nats.conf`, using `nats-server` from `PATH` or, once the operator agrees
 or passes `--nats-download`, the pinned checksum-verified release. Without
 `managed`, the server connects to `[nats] servers` and never owns the broker.
 A start validates the whole config before it fetches or starts NATS.

@@ -45,28 +45,31 @@ struct Args {
     /// Issue a one-time password-reset URL for the sole active administrator.
     #[arg(long)]
     reset_admin: bool,
-    /// Runtime mode to run: all, platform, jobs, health, or events.
-    #[arg(default_value = "all", value_parser = parse_mode)]
+    /// Run only one part of Trellis: all, platform, jobs, health, or events.
+    #[arg(long, default_value = "all", value_parser = parse_mode)]
     mode: RuntimeMode,
     /// How a first-run installation reports its result.
     #[arg(long, value_enum, default_value_t)]
     format: setup::OutputFormat,
 }
 
-/// Parses the runtime mode. A subcommand name lands here when options came
-/// before it, so say where they go instead of listing the modes.
-fn parse_mode(value: &str) -> Result<RuntimeMode, String> {
+/// A subcommand name lands here when options came before it, so say where
+/// they go instead of looking for an installation by that name.
+fn parse_installation(value: &str) -> Result<PathBuf, String> {
     use clap::CommandFactory as _;
 
+    if !Path::new(value).exists() && Args::command().find_subcommand(value).is_some() {
+        return Err(format!(
+            "options go after the subcommand: trellis-server {value} [OPTIONS]"
+        ));
+    }
+    Ok(PathBuf::from(value))
+}
+
+fn parse_mode(value: &str) -> Result<RuntimeMode, String> {
     value
         .parse()
-        .map_err(|error: trellis_runtime::RuntimeModeParseError| {
-            if Args::command().find_subcommand(value).is_some() {
-                format!("options go after the subcommand: trellis-server {value} [OPTIONS]")
-            } else {
-                error.to_string()
-            }
-        })
+        .map_err(|error: trellis_runtime::RuntimeModeParseError| error.to_string())
 }
 
 #[derive(Debug, Subcommand)]
@@ -79,6 +82,8 @@ enum OperationArgs {
     /// Manage Trellis-generated TLS certificates.
     #[command(subcommand)]
     Tls(setup::TlsSubcommand),
+    /// Run the `nats` CLI as one of the installation's NATS users.
+    Nats(setup::NatsArgs),
     /// Replace this binary with the newest trellis-server release for this
     /// platform.
     Upgrade(UpgradeArgs),
@@ -103,7 +108,7 @@ struct InitArgs {
     #[command(subcommand)]
     admin: Option<InitSubcommand>,
     #[command(flatten)]
-    profile: ProfileArgs,
+    location: InitLocation,
     #[command(flatten)]
     config: setup::InitConfigArgs,
     /// Print the result as text or JSON.
@@ -120,7 +125,7 @@ enum InitSubcommand {
 #[derive(Debug, clap::Args)]
 struct InitAdminArgs {
     #[command(flatten)]
-    profile: ProfileArgs,
+    profile: InstallationArgs,
     #[command(flatten)]
     bootstrap: BootstrapAdminArgs,
     /// Print the result as text or JSON.
@@ -132,8 +137,8 @@ struct InitAdminArgs {
 struct CheckArgs {
     #[command(flatten)]
     server: ServerArgs,
-    /// Runtime mode to validate: all, platform, jobs, health, or events.
-    #[arg(default_value = "all")]
+    /// Check only one part of Trellis: all, platform, jobs, health, or events.
+    #[arg(long, default_value = "all", value_parser = parse_mode)]
     mode: RuntimeMode,
 }
 
@@ -151,26 +156,89 @@ struct BootstrapAdminArgs {
     password_stdin: bool,
 }
 
-/// Which installation to use.
+/// Which installation a command uses.
 #[derive(Debug, Default, clap::Args)]
-pub(crate) struct ProfileArgs {
-    /// Override the profile's config.toml.
-    #[arg(long)]
-    pub(crate) config: Option<PathBuf>,
-    /// Use Linux system/FHS paths instead of the default user profile.
-    #[arg(long)]
+pub(crate) struct InstallationArgs {
+    /// An installation folder from `init --bundle`, or the config.toml in
+    /// it. Omitted, the user's installation, or the system's for root on
+    /// Linux.
+    #[arg(value_name = "INSTALLATION", value_parser = parse_installation)]
+    pub(crate) installation: Option<PathBuf>,
+    /// Use the user's installation (~/.config/trellis), even as root.
+    #[arg(long, conflicts_with_all = ["installation", "system"])]
+    pub(crate) user: bool,
+    /// Use the system installation (/etc/trellis), Linux only.
+    #[arg(long, conflicts_with = "installation")]
     pub(crate) system: bool,
 }
 
-impl ProfileArgs {
+impl InstallationArgs {
+    fn location(&self) -> Location {
+        match &self.installation {
+            Some(path) => Location::Bundle(path.clone()),
+            None => Location::profile(self.user, self.system),
+        }
+    }
+
     fn paths(
-        self,
+        &self,
         get: impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> miette::Result<ServerPaths> {
-        if self.system {
-            ServerPaths::system(self.config)
+        ServerPaths::resolve(&self.location(), get)
+    }
+}
+
+/// Where `init` writes an installation.
+#[derive(Debug, Default, clap::Args)]
+#[group(multiple = false)]
+pub(crate) struct InitLocation {
+    /// Write the user's installation (~/.config/trellis), even as root. The
+    /// default for everyone but root on Linux.
+    #[arg(long)]
+    pub(crate) user: bool,
+    /// Write the system installation (/etc/trellis), Linux only. The default
+    /// for root.
+    #[arg(long)]
+    pub(crate) system: bool,
+    /// Write a self-contained installation to this folder, which also holds
+    /// everything the server creates, in its `var` folder. Start it with
+    /// `trellis-server <DIR>`.
+    #[arg(long, value_name = "DIR")]
+    pub(crate) bundle: Option<PathBuf>,
+}
+
+impl InitLocation {
+    fn location(&self) -> Location {
+        match &self.bundle {
+            Some(path) => Location::Bundle(path.clone()),
+            None => Location::profile(self.user, self.system),
+        }
+    }
+}
+
+/// An installation's kind and where it is.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Location {
+    /// `~/.config/trellis`, with data in the user's XDG folders.
+    User,
+    /// `/etc/trellis`, with data in the FHS folders.
+    System,
+    /// A self-contained folder, or the config.toml in one.
+    Bundle(PathBuf),
+}
+
+impl Location {
+    /// The named profile, or root's default: the system installation on Linux.
+    fn profile(user: bool, system: bool) -> Self {
+        #[cfg(target_os = "linux")]
+        // SAFETY: geteuid has no arguments or borrowed memory.
+        let root = unsafe { libc::geteuid() } == 0;
+        #[cfg(not(target_os = "linux"))]
+        let root = false;
+        if system || (root && !user) {
+            Self::System
         } else {
-            ServerPaths::user(self.config, get)
+            Self::User
         }
     }
 }
@@ -179,7 +247,7 @@ impl ProfileArgs {
 #[derive(Debug, Default, clap::Args)]
 struct ServerArgs {
     #[command(flatten)]
-    profile: ProfileArgs,
+    profile: InstallationArgs,
     /// Run this exact nats-server executable instead of the one on PATH, for an
     /// installation whose NATS this server runs.
     #[arg(long, value_name = "PATH", require_equals = true)]
@@ -235,8 +303,7 @@ struct StartupPolicy {
     operation: Operation,
     mode: RuntimeMode,
     paths: ServerPaths,
-    system: bool,
-    config_given: bool,
+    location: Location,
     init_missing: bool,
     nats_binary: NatsBinary,
     nats_ports: Option<LocalNatsPorts>,
@@ -250,7 +317,7 @@ struct StartupPolicy {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ServerPaths {
+pub(crate) struct ServerPaths {
     config_root: PathBuf,
     data_root: PathBuf,
     state_root: PathBuf,
@@ -302,16 +369,15 @@ impl StartupPolicy {
                     admin.format,
                 )
             }
-            Some(OperationArgs::Tls(_) | OperationArgs::Upgrade(_)) => {
+            Some(OperationArgs::Tls(_) | OperationArgs::Nats(_) | OperationArgs::Upgrade(_)) => {
                 return Err(miette!(
                     "this trellis-server command runs without a server policy"
                 ));
             }
             None => (Operation::Run, args.server, args.mode, None, args.format),
         };
-        let system = server.profile.system;
-        let config_given = server.profile.config.is_some();
-        let paths = server.profile.paths(get)?;
+        let location = server.profile.location();
+        let paths = ServerPaths::resolve(&location, get)?;
         let nats_binary = match (server.local_nats, server.nats_download) {
             (Some(_), true) => {
                 return Err(miette!(
@@ -371,8 +437,7 @@ impl StartupPolicy {
             operation,
             mode,
             paths,
-            system,
-            config_given,
+            location,
             init_missing: args.init,
             nats_binary,
             nats_ports,
@@ -392,49 +457,41 @@ impl StartupPolicy {
 fn load_runtime_config(
     policy: &StartupPolicy,
 ) -> miette::Result<(RuntimeConfig, RuntimePathDefaults)> {
-    RuntimeConfig::load_from_path_with_defaults(
-        &policy.paths.config,
-        RuntimePathDefaults {
-            data: policy.paths.data_root.clone(),
-            state: policy.paths.state_root.clone(),
-            cache: policy.paths.cache_root.clone(),
-            runtime: policy.paths.runtime_root.clone(),
-            logs: policy.paths.log_root.clone(),
-        },
-    )
-    .into_diagnostic()
+    RuntimeConfig::load_from_path_with_defaults(&policy.paths.config, policy.paths.defaults())
+        .into_diagnostic()
 }
 
 impl ServerPaths {
-    fn system(config: Option<PathBuf>) -> miette::Result<Self> {
+    pub(crate) fn resolve(
+        location: &Location,
+        get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> miette::Result<Self> {
+        match location {
+            Location::System => Self::system(),
+            Location::User => Self::user(get),
+            Location::Bundle(path) => Self::bundle(path, get),
+        }
+    }
+
+    fn system() -> miette::Result<Self> {
         let defaults = RuntimePathDefaults::system_profile().into_diagnostic()?;
         let config_root = PathBuf::from("/etc/trellis");
         Ok(Self::new(
             config_root.clone(),
-            defaults.data,
-            defaults.state,
-            defaults.cache,
-            defaults.runtime,
-            defaults.logs,
-            config.unwrap_or_else(|| config_root.join("config.toml")),
+            defaults,
+            config_root.join("config.toml"),
         ))
     }
 
-    fn user(
-        config: Option<PathBuf>,
-        get: impl Fn(&str) -> Option<std::ffi::OsString>,
-    ) -> miette::Result<Self> {
+    fn user(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> miette::Result<Self> {
         let home = get("HOME")
             .or_else(|| get("USERPROFILE"))
             .map(PathBuf::from)
             .ok_or_else(|| miette!("cannot resolve user profile: HOME is not set"))?;
-        let root = |variable: &str, fallback: &str| {
-            get(variable)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(fallback))
-                .join("trellis")
-        };
-        let config_root = root("XDG_CONFIG_HOME", ".config");
+        let config_root = get("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".config"))
+            .join("trellis");
         let defaults = RuntimePathDefaults::user_profile(&get).into_diagnostic()?;
         let runtime_fallback_root = if get("XDG_RUNTIME_DIR").is_none() {
             defaults.runtime.parent().map(Path::to_path_buf)
@@ -443,34 +500,75 @@ impl ServerPaths {
         };
         let mut paths = Self::new(
             config_root.clone(),
-            defaults.data,
-            defaults.state,
-            defaults.cache,
-            defaults.runtime,
-            defaults.logs,
-            config.unwrap_or_else(|| config_root.join("config.toml")),
+            defaults,
+            config_root.join("config.toml"),
         );
         paths.runtime_fallback_root = runtime_fallback_root;
         Ok(paths)
     }
 
-    fn new(
-        config_root: PathBuf,
-        data_root: PathBuf,
-        state_root: PathBuf,
-        cache_root: PathBuf,
-        runtime_root: PathBuf,
-        log_root: PathBuf,
-        config: PathBuf,
-    ) -> Self {
-        let config_root = config.parent().unwrap_or(&config_root).to_path_buf();
+    /// A self-contained installation keeps what the server creates in its
+    /// `var` folder, so deleting `var` returns it to just after `init`. The
+    /// NATS download goes in the shared cache, so bundles download it once.
+    fn bundle(
+        path: &Path,
+        get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> miette::Result<Self> {
+        let path = std::path::absolute(path).into_diagnostic()?;
+        let (root, config) = if path
+            .extension()
+            .is_some_and(|extension| extension == "toml")
+        {
+            let root = path.parent().unwrap_or(Path::new("/")).to_path_buf();
+            (root, path)
+        } else {
+            (path.clone(), path.join("config.toml"))
+        };
+        let var = root.join("var");
+        let cache = match Location::profile(false, false) {
+            Location::System => {
+                RuntimePathDefaults::system_profile()
+                    .into_diagnostic()?
+                    .cache
+            }
+            _ => {
+                RuntimePathDefaults::user_profile(&get)
+                    .into_diagnostic()?
+                    .cache
+            }
+        };
+        Ok(Self::new(
+            root,
+            RuntimePathDefaults {
+                data: var.clone(),
+                state: var.clone(),
+                cache,
+                runtime: var.join("run"),
+                logs: var.join("log"),
+            },
+            config,
+        ))
+    }
+
+    /// The data folders this installation uses unless its `[paths]` says otherwise.
+    pub(crate) fn defaults(&self) -> RuntimePathDefaults {
+        RuntimePathDefaults {
+            data: self.data_root.clone(),
+            state: self.state_root.clone(),
+            cache: self.cache_root.clone(),
+            runtime: self.runtime_root.clone(),
+            logs: self.log_root.clone(),
+        }
+    }
+
+    fn new(config_root: PathBuf, defaults: RuntimePathDefaults, config: PathBuf) -> Self {
         Self {
             config_root,
-            data_root,
-            state_root,
-            cache_root,
-            runtime_root,
-            log_root,
+            data_root: defaults.data,
+            state_root: defaults.state,
+            cache_root: defaults.cache,
+            runtime_root: defaults.runtime,
+            log_root: defaults.logs,
             config,
             runtime_fallback_root: None,
         }
@@ -480,7 +578,7 @@ impl ServerPaths {
 impl ManagedNatsPaths {
     fn resolve(config_root: &Path, paths: &RuntimePathDefaults) -> Self {
         Self {
-            source: config_root.join("nats"),
+            source: config_root.to_path_buf(),
             state: paths.state.join("nats"),
             cache: paths.cache.join("nats"),
             pid: paths.runtime.join("nats-server.pid"),
@@ -567,8 +665,8 @@ fn ensure_private_runtime_fallback(path: &Path) -> miette::Result<()> {
 async fn run(policy: StartupPolicy) -> miette::Result<()> {
     if !policy.paths.config.is_file() {
         // Only a plain start in the user profile offers a first installation;
-        // an explicit --config or a --system host names one that must exist.
-        if policy.config_given || policy.system || policy.operation != Operation::Run {
+        // a named or system installation must exist.
+        if policy.location != Location::User || policy.operation != Operation::Run {
             return Err(miette!(
                 "Trellis configuration file not found at {}",
                 policy.paths.config.display()
@@ -585,7 +683,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             return Err(miette!(
                 "no Trellis installation in {}; run `trellis-server` in a terminal to set \
                 one up, pass --init for a localhost development one, create one with \
-                `trellis-server init`, or name one with --config",
+                `trellis-server init`, or name one: `trellis-server <INSTALLATION>`",
                 folder.display()
             ));
         };
@@ -595,7 +693,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             args: setup::InitConfigArgs,
         }
         let init = Init::try_parse_from(&init).into_diagnostic()?.args;
-        setup::init_config(policy.format, &init, false, folder.clone())?;
+        setup::init_config(policy.format, &init, &Location::User, folder.clone())?;
     }
     let (mut config, paths) = load_runtime_config(&policy)?;
 
@@ -863,16 +961,17 @@ async fn main() -> miette::Result<()> {
     match args.operation {
         Some(OperationArgs::Init(init)) if init.admin.is_none() => {
             let InitArgs {
-                profile,
+                location,
                 config,
                 format,
                 ..
             } = *init;
-            let system = profile.system;
-            let root = profile.paths(|name| env::var_os(name))?.config_root;
-            return setup::init_config(format, &config, system, root);
+            let location = location.location();
+            let root = ServerPaths::resolve(&location, |name| env::var_os(name))?.config_root;
+            return setup::init_config(format, &config, &location, root);
         }
         Some(OperationArgs::Tls(command)) => return setup::tls(command),
+        Some(OperationArgs::Nats(nats)) => return setup::nats(nats),
         Some(OperationArgs::Upgrade(upgrade_args)) => return upgrade(&upgrade_args),
         _ => {}
     }
@@ -1027,19 +1126,26 @@ mod tests {
         assert!(Args::try_parse_from(["trellis-server", "--reset-admin", "check"]).is_err());
         assert!(Args::try_parse_from(["trellis-server", "check", "--reset-admin"]).is_err());
         assert!(Args::try_parse_from(["trellis-server", "upgrade", "--config", "x"]).is_err());
-        let parsed = Args::try_parse_from(["trellis-server", "--nats-download", "jobs"])
+        let parsed = Args::try_parse_from(["trellis-server", "--nats-download", "--mode", "jobs"])
             .expect("flag followed by mode");
         assert_eq!(parsed.mode, RuntimeMode::Jobs);
     }
 
     #[test]
     fn parses_run_and_check_operations_with_the_same_server_options() {
-        let run = policy(&["trellis-server", "--system", "--nats-download", "jobs"]);
+        let run = policy(&[
+            "trellis-server",
+            "--system",
+            "--nats-download",
+            "--mode",
+            "jobs",
+        ]);
         let check = policy(&[
             "trellis-server",
             "check",
             "--system",
             "--nats-download",
+            "--mode",
             "jobs",
         ]);
         assert_eq!(run.operation, Operation::Run);
@@ -1095,8 +1201,8 @@ kind = "sqlite"
         )
         .expect("write config");
         let config = config.to_string_lossy().into_owned();
-        let run = policy(&["trellis-server", "--config", &config]);
-        let check = policy(&["trellis-server", "check", "--config", &config]);
+        let run = policy(&["trellis-server", &config]);
+        let check = policy(&["trellis-server", "check", &config]);
         let (run_config, run_paths) = load_runtime_config(&run).expect("load run config");
         let (check_config, check_paths) = load_runtime_config(&check).expect("load check config");
 
@@ -1206,8 +1312,7 @@ kind = "sqlite"
             ("XDG_CACHE_HOME", "/cache"),
             ("XDG_RUNTIME_DIR", "/runtime"),
         ]);
-        let paths =
-            ServerPaths::user(None, |name| values.get(name).map(Into::into)).expect("user paths");
+        let paths = ServerPaths::user(|name| values.get(name).map(Into::into)).expect("user paths");
         assert_eq!(paths.config, PathBuf::from("/config/trellis/config.toml"));
         assert_eq!(paths.data_root, PathBuf::from("/data/trellis"));
         assert_eq!(paths.state_root, PathBuf::from("/state/trellis"));
@@ -1218,7 +1323,7 @@ kind = "sqlite"
 
         #[cfg(target_os = "linux")]
         {
-            let paths = ServerPaths::system(None).expect("system paths");
+            let paths = ServerPaths::system().expect("system paths");
             assert_eq!(paths.config, PathBuf::from("/etc/trellis/config.toml"));
             assert_eq!(paths.data_root, PathBuf::from("/var/lib/trellis"));
             assert_eq!(paths.state_root, PathBuf::from("/var/lib/trellis"));
@@ -1230,7 +1335,7 @@ kind = "sqlite"
 
     #[test]
     fn resolves_xdg_fallbacks_and_private_runtime() {
-        let paths = ServerPaths::user(None, |name| (name == "HOME").then(|| "/home/test".into()))
+        let paths = ServerPaths::user(|name| (name == "HOME").then(|| "/home/test".into()))
             .expect("fallback paths");
         assert_eq!(
             paths.config_root,
@@ -1250,51 +1355,33 @@ kind = "sqlite"
     }
 
     #[test]
-    fn explicit_config_selects_its_sibling_nats_source() {
+    fn a_bundle_is_named_by_its_folder_or_its_config_and_keeps_its_data_inside() {
         let values = HashMap::from([("HOME", "/home/test")]);
-        let paths = ServerPaths::user(Some(PathBuf::from("/profile/config.toml")), |name| {
-            values.get(name).map(Into::into)
-        })
-        .expect("user paths");
-        assert_eq!(paths.config, PathBuf::from("/profile/config.toml"));
-        assert_eq!(paths.config_root, PathBuf::from("/profile"));
-        assert_eq!(
-            paths.data_root,
-            PathBuf::from("/home/test/.local/share/trellis")
-        );
-    }
+        let get = |name: &str| values.get(name).map(Into::into);
+        let by_folder = ServerPaths::resolve(&Location::Bundle("/srv/dev1".into()), get).unwrap();
+        let by_config =
+            ServerPaths::resolve(&Location::Bundle("/srv/dev1/config.toml".into()), get).unwrap();
+        assert_eq!(by_folder, by_config);
+        assert_eq!(by_folder.config, PathBuf::from("/srv/dev1/config.toml"));
+        for root in [
+            &by_folder.data_root,
+            &by_folder.state_root,
+            &by_folder.runtime_root,
+            &by_folder.log_root,
+        ] {
+            assert!(root.starts_with("/srv/dev1/var"), "{}", root.display());
+        }
+        // Every bundle shares one download of NATS.
+        assert!(!by_folder.cache_root.starts_with("/srv/dev1"));
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn explicit_system_config_keeps_fhs_defaults() {
-        let paths = ServerPaths::system(Some(PathBuf::from("/opt/trellis/config.toml")))
-            .expect("system paths");
-        assert_eq!(paths.config_root, PathBuf::from("/opt/trellis"));
-        assert_eq!(paths.data_root, PathBuf::from("/var/lib/trellis"));
-        assert_eq!(paths.state_root, PathBuf::from("/var/lib/trellis"));
-        assert_eq!(paths.cache_root, PathBuf::from("/var/cache/trellis"));
-        assert_eq!(paths.runtime_root, PathBuf::from("/run/trellis"));
-        assert_eq!(paths.log_root, PathBuf::from("/var/log/trellis"));
-    }
-
-    #[test]
-    fn managed_nats_uses_selected_config_and_effective_roots() {
-        let roots = RuntimePathDefaults {
-            data: PathBuf::from("/roots/data"),
-            state: PathBuf::from("/roots/state"),
-            cache: PathBuf::from("/roots/cache"),
-            runtime: PathBuf::from("/roots/runtime"),
-            logs: PathBuf::from("/roots/logs"),
-        };
-        assert_eq!(
-            ManagedNatsPaths::resolve(Path::new("/selected/config"), &roots),
-            ManagedNatsPaths {
-                source: PathBuf::from("/selected/config/nats"),
-                state: PathBuf::from("/roots/state/nats"),
-                cache: PathBuf::from("/roots/cache/nats"),
-                pid: PathBuf::from("/roots/runtime/nats-server.pid"),
-                log: PathBuf::from("/roots/logs/nats-server.log"),
-            }
+        for profile in ["--user", "--system"] {
+            assert!(Args::try_parse_from(["trellis-server", profile, "/srv/dev1"]).is_err());
+            assert!(
+                Args::try_parse_from(["trellis-server", "check", profile, "/srv/dev1"]).is_err()
+            );
+        }
+        assert!(
+            Args::try_parse_from(["trellis-server", "init", "--user", "--bundle", "x"]).is_err()
         );
     }
 }

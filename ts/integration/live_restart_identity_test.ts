@@ -7,21 +7,19 @@
  */
 
 import assert from "node:assert/strict";
-import { globSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { apps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-/** Reads every managed live-provider seed file keyed by absolute path. */
-function seedBytes(workdir: string): Record<string, string> {
-  const seeds: Record<string, string> = {};
-  for (const entry of globSync("**/live-providers/*.seed", { cwd: workdir })) {
-    const path = join(workdir, entry);
-    seeds[path] = readFileSync(path, "utf8");
-  }
-  return seeds;
+/** Reads the installation's secrets, which hold the live-provider seeds. */
+function seedBytes(workdir: string): string {
+  return readFileSync(
+    join(workdir, "config", "trellis", "secrets.toml"),
+    "utf8",
+  );
 }
 
 test("BI05 live provider identity is stable across a control-plane restart", async () => {
@@ -37,8 +35,9 @@ test("BI05 live provider identity is stable across a control-plane restart", asy
     await client.connection.close();
 
     const before = seedBytes(runtime.workdir);
-    assert(
-      Object.keys(before).length > 0,
+    assert.match(
+      before,
+      /\[live_providers\]/,
       "managed live provider seeds must exist on disk",
     );
 

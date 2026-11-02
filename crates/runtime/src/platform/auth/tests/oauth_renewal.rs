@@ -337,14 +337,12 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
         .unwrap()
         .as_secs() as i64;
     let grant = approve(&f.store, &f.principal, &f.read, &f.write, now);
-    let key_directory = tempfile::tempdir().unwrap();
-    trellis_local_bootstrap::generate_local_oauth_storage_key(key_directory.path()).unwrap();
-    let sealing_key_file = key_directory.path().join("oauth-storage.key");
+    let sealing_key = [23u8; 32];
     let mut config = ServerConfig::new("https://auth.example", "https://auth.example/oauth/device");
     config.refresh_token_ttl = Some(std::time::Duration::from_secs(3600));
     let engine = AuthorizationServer::new(
         config.clone(),
-        super::super::oauth::OAuthStorage::open(f.store, &sealing_key_file).unwrap(),
+        super::super::oauth::OAuthStorage::open(f.store, &sealing_key).unwrap(),
     );
     let verifier = URL_SAFE_NO_PAD.encode([31; 32]);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -379,54 +377,7 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
     // Startup must not begin writing a second set of ciphertext after key loss
     // or replacement. Check against the OAuth records created by redemption.
     let authority = Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32])));
-    let key_bytes = std::fs::read(&sealing_key_file).unwrap();
-    assert!(
-        trellis_local_bootstrap::generate_local_oauth_storage_key(key_directory.path()).is_err()
-    );
-    std::fs::write(&sealing_key_file, URL_SAFE_NO_PAD.encode([84; 32])).unwrap();
-    assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
-    std::fs::write(&sealing_key_file, "invalid key").unwrap();
-    assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
-    std::fs::remove_file(&sealing_key_file).unwrap();
-    assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
-    #[cfg(unix)]
-    {
-        use std::io::Write as _;
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&sealing_key_file)
-            .unwrap();
-        file.write_all(&key_bytes).unwrap();
-        drop(file);
-        std::fs::set_permissions(&sealing_key_file, std::fs::Permissions::from_mode(0o644))
-            .unwrap();
-        assert!(
-            super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err()
-        );
-        std::fs::set_permissions(&sealing_key_file, std::fs::Permissions::from_mode(0o600))
-            .unwrap();
-        let link = key_directory.path().join("linked.key");
-        std::os::unix::fs::symlink(&sealing_key_file, &link).unwrap();
-        assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &link).is_err());
-        let alias = key_directory.path().join("hardlinked.key");
-        std::fs::hard_link(&sealing_key_file, &alias).unwrap();
-        assert!(
-            super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err()
-        );
-        std::fs::remove_file(alias).unwrap();
-        let mut oversized = key_bytes.clone();
-        oversized.extend(vec![b' '; 256]);
-        std::fs::write(&sealing_key_file, oversized).unwrap();
-        assert!(
-            super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err()
-        );
-        std::fs::write(&sealing_key_file, &key_bytes).unwrap();
-    }
-    #[cfg(not(unix))]
-    std::fs::write(&sealing_key_file, &key_bytes).unwrap();
+    assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &[84; 32]).is_err());
     drop(authority);
 
     // Reopen the real, migrated database through the production constructor.
@@ -435,7 +386,7 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
         config,
         super::super::oauth::OAuthStorage::open(
             Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32]))),
-            &sealing_key_file,
+            &sealing_key,
         )
         .unwrap(),
     );

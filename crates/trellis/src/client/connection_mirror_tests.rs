@@ -447,18 +447,17 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         .start()
         .await
         .unwrap();
-    let admin_nats = async_nats::ConnectOptions::new()
-        .credentials_file(
-            runtime
-                .workdir()
-                .join("config/nats/creds/trellis-auth.creds"),
-        )
-        .await
-        .unwrap()
-        .add_root_certificates(runtime.trust_roots()[0].clone())
-        .connect(runtime.nats_url())
-        .await
-        .unwrap();
+    let admin_nats = async_nats::ConnectOptions::with_credentials(
+        &runtime
+            .nats_creds(trellis_testkit::TestNatsUser::Trellis)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
     let js = jetstream::new(admin_nats.clone());
     let mut stream = js.get_stream("KV_TRELLIS_AUTH_REVOCATIONS").await.unwrap();
     let admin = connect_caller(&mut runtime, "mirror-controller").await;

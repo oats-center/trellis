@@ -71,8 +71,6 @@ async function startSplitRole(
   );
   const root = join(runtime.workdir, "split", role);
   await mkdir(root, { recursive: true, mode: 0o700 });
-  const seedFile = join(root, "identity.seed");
-  await writeFile(seedFile, seed, { mode: 0o600 });
   const reservation = await reserveLocalPort();
   try {
     const port = reservation.port;
@@ -82,21 +80,35 @@ async function startSplitRole(
     assert(http && typeof http === "object" && !Array.isArray(http));
     Object.assign(http, { port });
     const nats = config.nats;
-    assert(nats && typeof nats === "object" && "runtime" in nats);
-    const transport = nats.runtime;
-    assert(
-      transport &&
-        typeof transport === "object" &&
-        "trellis_creds_path" in transport,
+    assert(nats && typeof nats === "object" && "managed" in nats);
+    // A split role holds only the operational Trellis user and its own
+    // provider identity, not the installation's other keys.
+    const secrets = parse(
+      await readFile(join(configDir, "secrets.toml"), "utf8"),
     );
-    assert.equal(typeof transport.trellis_creds_path, "string");
-    const creds = join(root, "operational.creds");
+    const natsSecrets = secrets.nats;
+    assert(
+      natsSecrets &&
+        typeof natsSecrets === "object" &&
+        !Array.isArray(natsSecrets) &&
+        "users" in natsSecrets,
+    );
+    const users = natsSecrets.users;
+    assert(
+      users &&
+        typeof users === "object" &&
+        !Array.isArray(users) &&
+        "trellis" in users,
+      "secrets.toml names the Trellis NATS user",
+    );
     await writeFile(
-      creds,
-      await readFile(join(configDir, String(transport.trellis_creds_path))),
+      join(root, "secrets.toml"),
+      stringify({
+        live_providers: { [role]: seed },
+        nats: { users: { trellis: users.trellis } },
+      }),
       { mode: 0o600 },
     );
-    transport.trellis_creds_path = creds;
     // The copied configuration still names the installation's TLS files;
     // resolve them against the original bundle.
     const bundlePath = (value: unknown): string => {
@@ -129,22 +141,16 @@ async function startSplitRole(
         single_writer: true,
       },
     };
-    config.live_provider_seed_files = { [role]: seedFile };
     const auth = config.auth;
     assert(auth && typeof auth === "object" && !Array.isArray(auth));
     config.auth = Object.fromEntries(
       Object.entries(auth).filter(
-        ([key]) =>
-          ![
-            "authorization",
-            "oauth_storage_key_file",
-            "local_identity",
-          ].includes(key),
+        ([key]) => !["authorization", "local_identity"].includes(key),
       ),
     );
     await writeFile(configPath, stringify(config));
     await reservation.releaseForSpawn();
-    const child = spawnTracked(serverBinary(), ["--config", configPath, role], {
+    const child = spawnTracked(serverBinary(), [configPath, "--mode", role], {
       env: {
         PATH: process.env["PATH"] ?? "",
         HOME: join(root, "home"),

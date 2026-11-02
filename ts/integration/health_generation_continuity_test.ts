@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { Result } from "@oatscenter/trellis";
@@ -53,9 +51,7 @@ test("service health survives generation reaping and stop fences sampling", asyn
       const system = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       let releaseSample = Promise.withResolvers<void>();

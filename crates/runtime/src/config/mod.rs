@@ -8,21 +8,21 @@ use url::{Host, Url};
 
 use crate::{RuntimeMode, SubsystemName};
 
+mod secrets;
+pub(crate) use secrets::require as secrets_require;
+pub use secrets::{
+    AuthCalloutSecrets, LiveProviderSeeds, NatsSecrets, NatsUser, NatsUsers, Secrets, SECRETS_FILE,
+};
+
 /// TOML runtime configuration for `trellis-server`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimeConfig {
     /// Human-readable Trellis instance name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_name: Option<String>,
-    /// Session seed used to sign Trellis-owned runtime events.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event_session_seed_file: Option<PathBuf>,
     /// Authorization-context digest bound into Trellis-owned runtime event proofs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_context_digest_file: Option<PathBuf>,
-    /// Native identity seed files for built-in live providers, keyed by role.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub live_provider_seed_files: Option<LiveProviderSeedFilesConfig>,
     /// Host path-root overrides. Relative values resolve against this config file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<RuntimePathsConfig>,
@@ -59,6 +59,10 @@ pub struct RuntimeConfig {
     /// Event log subsystem configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events: Option<SubsystemConfig>,
+    /// Private keys from `secrets.toml` beside the config file; never written
+    /// back into `config.toml`.
+    #[serde(skip)]
+    pub secrets: Secrets,
 }
 
 impl RuntimeConfig {
@@ -67,7 +71,7 @@ impl RuntimeConfig {
     /// This function intentionally accepts only `.toml` paths. JSONC and other
     /// legacy runtime config formats are not supported by the Rust runtime.
     pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        let path = path.as_ref();
+        let path = absolute_config_path(path.as_ref())?;
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let defaults = RuntimePathDefaults {
             data: base_dir.to_path_buf(),
@@ -76,7 +80,7 @@ impl RuntimeConfig {
             runtime: base_dir.to_path_buf(),
             logs: base_dir.join("log"),
         };
-        Self::load_from_path_with_defaults(path, defaults).map(|(config, _)| config)
+        Self::load_from_path_with_defaults(&path, defaults).map(|(config, _)| config)
     }
 
     /// Loads a runtime configuration and applies host-selected defaults to omitted mutable paths.
@@ -97,10 +101,15 @@ impl RuntimeConfig {
         })?;
 
         let mut config = Self::from_toml_str(&contents)?;
+        // Defaults are joined to this folder and then resolved with every
+        // other path, so it must already be absolute or a relative --config
+        // is applied twice.
+        let path = absolute_config_path(path)?;
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let effective = config.resolve_path_defaults(base_dir, defaults);
         config.apply_mutable_path_defaults(&effective);
         config.resolve_relative_paths(base_dir);
+        config.secrets = Secrets::load(&base_dir.join(SECRETS_FILE))?;
         Ok((config, effective))
     }
 
@@ -114,9 +123,10 @@ impl RuntimeConfig {
     pub fn validate_for_mode(&self, mode: RuntimeMode) -> Result<(), ConfigError> {
         self.validate_distinct_sqlite_paths()?;
         self.validate_http_listener()?;
-        self.resolve_nats_runtime()?;
+        let nats = self.resolve_nats_runtime()?;
         self.resolve_leases()?;
         if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
+            nats.platform_creds()?;
             self.resolve_nats_auth_callout()?;
         }
 
@@ -178,16 +188,6 @@ impl RuntimeConfig {
             return Err(invalid_authorization(
                 "instance_id",
                 "must be a canonical installation ULID provisioned at initialization",
-            ));
-        }
-        if auth
-            .oauth_storage_key_file
-            .as_ref()
-            .is_none_or(|path| path.as_os_str().is_empty())
-        {
-            return Err(invalid_authorization(
-                "oauth_storage_key_file",
-                "must identify the existing installation-owned OAuth key file",
             ));
         }
         let invalid = |reason| ConfigError::InvalidConsole { reason };
@@ -484,7 +484,18 @@ impl RuntimeConfig {
             .nats
             .as_ref()
             .ok_or(ConfigError::MissingSection { section: "nats" })?;
-        nats.resolve_runtime()
+        let users = &self.secrets.nats.users;
+        Ok(ResolvedRuntimeNatsConfig {
+            servers: require_string("nats", "servers", nats.servers.as_deref())?,
+            ca_certificate: nats.ca_certificate.clone(),
+            trellis_creds: users.trellis.as_ref().map(NatsUser::creds).ok_or(
+                ConfigError::MissingSecret {
+                    name: "nats.users.trellis",
+                },
+            )?,
+            auth_creds: users.auth.as_ref().map(NatsUser::creds),
+            system_creds: users.system.as_ref().map(NatsUser::creds),
+        })
     }
 
     /// Resolves runtime NATS connection settings, optionally replacing the configured
@@ -502,13 +513,25 @@ impl RuntimeConfig {
         Ok(resolved)
     }
 
-    /// Resolves NATS auth-callout seed paths into required, non-optional values.
+    /// Resolves the NATS auth-callout keys from `secrets.toml`.
     pub fn resolve_nats_auth_callout(&self) -> Result<ResolvedNatsAuthCalloutConfig, ConfigError> {
-        let nats = self
-            .nats
-            .as_ref()
-            .ok_or(ConfigError::MissingSection { section: "nats" })?;
-        nats.resolve_auth_callout()
+        let callout = &self.secrets.nats.auth_callout;
+        let key = |value: Option<&String>, name| secrets::require(value, name).map(str::to_owned);
+        Ok(ResolvedNatsAuthCalloutConfig {
+            sentinel_public_key: key(
+                callout.sentinel_public_key.as_ref(),
+                "nats.auth_callout.sentinel_public_key",
+            )?,
+            issuer_signing_seed: key(
+                callout.issuer_signing_seed.as_ref(),
+                "nats.auth_callout.issuer_signing_seed",
+            )?,
+            target_signing_seed: key(
+                callout.target_signing_seed.as_ref(),
+                "nats.auth_callout.target_signing_seed",
+            )?,
+            xkey_seed: key(callout.xkey_seed.as_ref(), "nats.auth_callout.xkey_seed")?,
+        })
     }
 
     /// Resolves runtime lease settings with defaults applied.
@@ -576,30 +599,12 @@ impl RuntimeConfig {
     }
 
     fn resolve_relative_paths(&mut self, base_dir: &Path) {
-        resolve_path(base_dir, &mut self.event_session_seed_file);
         resolve_path(base_dir, &mut self.event_context_digest_file);
-        if let Some(seeds) = &mut self.live_provider_seed_files {
-            resolve_path(base_dir, &mut seeds.platform);
-            resolve_path(base_dir, &mut seeds.health);
-            resolve_path(base_dir, &mut seeds.jobs);
-            resolve_path(base_dir, &mut seeds.events);
-        }
         if let Some(tls) = &mut self.tls {
             resolve_path(base_dir, &mut tls.generated_ca_certificate);
         }
         if let Some(nats) = &mut self.nats {
             resolve_path(base_dir, &mut nats.ca_certificate);
-            if let Some(runtime) = &mut nats.runtime {
-                resolve_path(base_dir, &mut runtime.auth_creds_path);
-                resolve_path(base_dir, &mut runtime.trellis_creds_path);
-                resolve_path(base_dir, &mut runtime.system_creds_path);
-            }
-            if let Some(auth_callout) = &mut nats.auth_callout {
-                resolve_path(base_dir, &mut auth_callout.sentinel_public_key_file);
-                resolve_path(base_dir, &mut auth_callout.issuer_signing_seed_file);
-                resolve_path(base_dir, &mut auth_callout.target_signing_seed_file);
-                resolve_path(base_dir, &mut auth_callout.xkey_seed_file);
-            }
         }
         if let Some(ListenerTransport::Tls {
             certificate_chain,
@@ -627,17 +632,6 @@ impl RuntimeConfig {
         .flatten()
         {
             resolve_path(base_dir, &mut storage.path);
-        }
-
-        if let Some(auth) = &mut self.auth {
-            resolve_path(base_dir, &mut auth.oauth_storage_key_file);
-        }
-        if let Some(authorization) = self
-            .auth
-            .as_mut()
-            .and_then(|auth| auth.authorization.as_mut())
-        {
-            resolve_required_path(base_dir, &mut authorization.issuer_signing_seed_file);
         }
     }
 
@@ -882,7 +876,7 @@ impl CanonicalOrigin {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NatsConfig {
     /// `trellis-server` starts and stops the NATS server described by
-    /// `nats/nats.conf` beside the config file. Off, it connects to `servers`.
+    /// `nats.conf` beside the config file. Off, it connects to `servers`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub managed: bool,
     /// NATS server URL or comma-separated URLs.
@@ -894,134 +888,75 @@ pub struct NatsConfig {
     /// Trellis-generated installation CA. Publicly trusted brokers omit it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<PathBuf>,
-    /// Generated runtime credential paths.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<NatsRuntimeConfig>,
-    /// Auth-callout signing and xkey seed paths.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_callout: Option<NatsAuthCalloutConfig>,
-}
-
-/// Generated NATS credential paths used by the runtime.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NatsRuntimeConfig {
-    /// Auth-account runtime user creds path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth_creds_path: Option<PathBuf>,
-    /// Trellis-account runtime user creds path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trellis_creds_path: Option<PathBuf>,
-    /// System-account runtime user creds path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_creds_path: Option<PathBuf>,
-}
-
-/// NATS auth-callout signing and encryption material paths.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NatsAuthCalloutConfig {
-    /// Server-only identity of the non-expiring default sentinel.
-    pub sentinel_public_key_file: Option<PathBuf>,
-    /// Auth issuer signing seed file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer_signing_seed_file: Option<PathBuf>,
-    /// Trellis target signing seed file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_signing_seed_file: Option<PathBuf>,
-    /// Auth-callout xkey seed file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub xkey_seed_file: Option<PathBuf>,
-}
-
-impl NatsConfig {
-    /// Resolves this raw NATS section into runtime connection settings.
-    pub(crate) fn resolve_runtime(&self) -> Result<ResolvedRuntimeNatsConfig, ConfigError> {
-        let runtime = self.runtime.as_ref().ok_or(ConfigError::MissingSection {
-            section: "nats.runtime",
-        })?;
-
-        Ok(ResolvedRuntimeNatsConfig {
-            servers: require_string("nats", "servers", self.servers.as_deref())?,
-            ca_certificate: self.ca_certificate.clone(),
-            auth_creds_path: require_path(
-                "nats.runtime",
-                "auth_creds_path",
-                runtime.auth_creds_path.as_ref(),
-            )?,
-            trellis_creds_path: require_path(
-                "nats.runtime",
-                "trellis_creds_path",
-                runtime.trellis_creds_path.as_ref(),
-            )?,
-            system_creds_path: require_path(
-                "nats.runtime",
-                "system_creds_path",
-                runtime.system_creds_path.as_ref(),
-            )?,
-        })
-    }
-
-    /// Resolves this raw NATS section into auth-callout seed paths.
-    pub(crate) fn resolve_auth_callout(
-        &self,
-    ) -> Result<ResolvedNatsAuthCalloutConfig, ConfigError> {
-        let auth_callout = self
-            .auth_callout
-            .as_ref()
-            .ok_or(ConfigError::MissingSection {
-                section: "nats.auth_callout",
-            })?;
-
-        Ok(ResolvedNatsAuthCalloutConfig {
-            sentinel_public_key_file: require_path(
-                "nats.auth_callout",
-                "sentinel_public_key_file",
-                auth_callout.sentinel_public_key_file.as_ref(),
-            )?,
-            issuer_signing_seed_file: require_path(
-                "nats.auth_callout",
-                "issuer_signing_seed_file",
-                auth_callout.issuer_signing_seed_file.as_ref(),
-            )?,
-            target_signing_seed_file: require_path(
-                "nats.auth_callout",
-                "target_signing_seed_file",
-                auth_callout.target_signing_seed_file.as_ref(),
-            )?,
-            xkey_seed_file: require_path(
-                "nats.auth_callout",
-                "xkey_seed_file",
-                auth_callout.xkey_seed_file.as_ref(),
-            )?,
-        })
-    }
 }
 
 /// Resolved runtime NATS credential configuration.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ResolvedRuntimeNatsConfig {
     /// NATS server URL or comma-separated URLs.
     pub servers: String,
     /// Additional PEM CA trusted for NATS TLS connections.
     pub ca_certificate: Option<PathBuf>,
-    /// Auth-account runtime user creds path.
-    pub auth_creds_path: PathBuf,
-    /// Trellis-account runtime user creds path.
-    pub trellis_creds_path: PathBuf,
-    /// System-account runtime user creds path.
-    pub system_creds_path: PathBuf,
+    /// Trellis-account runtime user, as a `.creds` file's contents.
+    pub trellis_creds: String,
+    /// Auth-account runtime user, which only the platform role needs.
+    pub auth_creds: Option<String>,
+    /// System-account runtime user, which only the platform role needs.
+    pub system_creds: Option<String>,
 }
 
-/// Resolved NATS auth-callout signing and encryption material paths.
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl ResolvedRuntimeNatsConfig {
+    /// The auth and system users the platform role connects as.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::MissingSecret`] when `secrets.toml` lacks either.
+    pub fn platform_creds(&self) -> Result<(&str, &str), ConfigError> {
+        Ok((
+            self.auth_creds
+                .as_deref()
+                .ok_or(ConfigError::MissingSecret {
+                    name: "nats.users.auth",
+                })?,
+            self.system_creds
+                .as_deref()
+                .ok_or(ConfigError::MissingSecret {
+                    name: "nats.users.system",
+                })?,
+        ))
+    }
+}
+
+impl std::fmt::Debug for ResolvedRuntimeNatsConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedRuntimeNatsConfig")
+            .field("servers", &self.servers)
+            .field("ca_certificate", &self.ca_certificate)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Resolved NATS auth-callout signing and encryption keys.
+#[derive(Clone, Eq, PartialEq)]
 pub struct ResolvedNatsAuthCalloutConfig {
-    /// Server-only sentinel public key file.
-    pub sentinel_public_key_file: PathBuf,
-    /// Auth issuer signing seed file.
-    pub issuer_signing_seed_file: PathBuf,
-    /// Trellis target signing seed file.
-    pub target_signing_seed_file: PathBuf,
-    /// Auth-callout xkey seed file.
-    pub xkey_seed_file: PathBuf,
+    /// Public key of the sentinel user.
+    pub sentinel_public_key: String,
+    /// Auth issuer signing seed.
+    pub issuer_signing_seed: String,
+    /// Trellis target signing seed.
+    pub target_signing_seed: String,
+    /// Auth-callout xkey seed.
+    pub xkey_seed: String,
+}
+
+impl std::fmt::Debug for ResolvedNatsAuthCalloutConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedNatsAuthCalloutConfig")
+            .field("sentinel_public_key", &self.sentinel_public_key)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Browser/client connection hints emitted by the runtime.
@@ -1114,10 +1049,6 @@ pub struct AuthConfig {
     /// Stable installation ULID, provisioned once and retained across key rotations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
-    /// Installation-owned base64url 32-byte key sealing durable OAuth credentials.
-    /// Provision once; retain across restarts and issuer rotations.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth_storage_key_file: Option<PathBuf>,
     /// Local username/password identity configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_identity: Option<LocalIdentityConfig>,
@@ -1256,34 +1187,10 @@ pub struct TlsConfig {
     pub generated_ca_certificate: Option<PathBuf>,
 }
 
-/// Native identity seed files for built-in live providers.
-///
-/// These files hold long-lived provisioned native identity seeds, not
-/// per-observation records. The runtime derives each provider's normal
-/// provisioned identity and materialized authority from them; a connected
-/// process still receives a fresh runtime signing key and logical connection id
-/// through the ordinary bootstrap path.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct LiveProviderSeedFilesConfig {
-    /// Platform Operation provider identity seed file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform: Option<PathBuf>,
-    /// Health API live provider identity seed file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub health: Option<PathBuf>,
-    /// Jobs API live provider identity seed file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub jobs: Option<PathBuf>,
-    /// Events API live provider identity seed file.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub events: Option<PathBuf>,
-}
-
-/// File-backed authorization trust and context-runtime policy.
+/// Authorization context-runtime policy. The issuer's signing seed is
+/// `authorization_issuer_seed` in `secrets.toml`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AuthorizationConfig {
-    /// Active issuer's canonical unpadded base64url Ed25519 seed file.
-    pub issuer_signing_seed_file: PathBuf,
     /// Maximum newly issued context lifetime in seconds.
     pub context_lifetime_seconds: u64,
     /// Verification clock skew in seconds.
@@ -1299,12 +1206,6 @@ fn default_oauth_admission_lifetime_seconds() -> u64 {
 
 impl AuthorizationConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        if self.issuer_signing_seed_file.as_os_str().is_empty() {
-            return Err(invalid_authorization(
-                "issuer_signing_seed_file",
-                "must not be empty",
-            ));
-        }
         if self.context_lifetime_seconds == 0 || self.context_lifetime_seconds > 3_600 {
             return Err(invalid_authorization(
                 "context_lifetime_seconds",
@@ -1500,6 +1401,20 @@ pub enum ConfigError {
         /// Unsupported backend name.
         backend: &'static str,
     },
+    /// `secrets.toml` could not be read or parsed.
+    #[error("invalid secrets file {path}: {reason}")]
+    Secrets {
+        /// Path of the secrets file.
+        path: PathBuf,
+        /// What is wrong with it.
+        reason: String,
+    },
+    /// A secret this installation needs is not in `secrets.toml`.
+    #[error("secrets.toml has no {name}")]
+    MissingSecret {
+        /// Dotted name of the missing secret.
+        name: &'static str,
+    },
     /// A required NATS path field is missing or empty.
     #[error("invalid runtime config section [{section}]: {field} {reason}")]
     InvalidNatsConfig {
@@ -1553,6 +1468,13 @@ pub enum ConfigError {
     },
 }
 
+fn absolute_config_path(path: &Path) -> Result<PathBuf, ConfigError> {
+    std::path::absolute(path).map_err(|source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 fn resolve_path(base_dir: &Path, path: &mut Option<PathBuf>) {
     let Some(value) = path else {
         return;
@@ -1579,20 +1501,6 @@ fn storage_section_name(subsystem: SubsystemName) -> &'static str {
         SubsystemName::Health => "health.storage",
         SubsystemName::Events => "events.storage",
     }
-}
-
-fn require_path(
-    section: &'static str,
-    field: &'static str,
-    path: Option<&PathBuf>,
-) -> Result<PathBuf, ConfigError> {
-    path.filter(|path| !path.as_os_str().is_empty())
-        .cloned()
-        .ok_or(ConfigError::InvalidNatsConfig {
-            section,
-            field,
-            reason: "must not be missing or empty",
-        })
 }
 
 fn require_string(

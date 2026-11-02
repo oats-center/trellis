@@ -12,9 +12,7 @@
 import type { NatsConnection } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { join } from "node:path";
 
 import { completeBrokerInventory } from "./_support/broker_inventory.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
@@ -24,33 +22,19 @@ const CONNZ_SUFFIX = ".CONNZ";
 /** Opens a real NATS connection with one of the runtime's credentials. */
 async function connectWithCreds(
   url: string,
-  credsPath: string,
+  creds: Uint8Array,
 ): Promise<NatsConnection> {
   return await connect({
     servers: url,
-    authenticator: credsAuthenticator(await readFile(credsPath)),
+    authenticator: credsAuthenticator(creds),
   });
 }
 
 test("complete broker inventory is validated evidence, never a silent empty listing", async () => {
   await withTrellisRuntime(
     async (runtime) => {
-      const systemCreds = join(
-        runtime.workdir,
-        "config",
-        "trellis",
-        "nats",
-        "creds",
-        "system.creds",
-      );
-      const trellisCreds = join(
-        runtime.workdir,
-        "config",
-        "trellis",
-        "nats",
-        "creds",
-        "trellis-auth.creds",
-      );
+      const systemCreds = await runtime.natsCredentials("system");
+      const trellisCreds = await runtime.natsCredentials("trellis");
 
       // 1. The real system inventory validates: a non-empty listing for the
       //    connection's own broker, every record a real connection.

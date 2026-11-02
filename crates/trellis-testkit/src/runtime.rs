@@ -312,7 +312,7 @@ async fn start_once(
         .await?;
         let mut command = Command::new(&distribution.server);
         command
-            .args(["init", "--out"])
+            .args(["init", "--bundle"])
             .arg(&config_dir)
             .arg("--external-nats")
             .args(["--tls", "supplied", "--tls-ca-certificate"])
@@ -352,48 +352,9 @@ async fn start_once(
             TrellisTestStage::ConfigGeneration,
         )
         .await?;
-        let mut config: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path)?)
-            .map_err(|error| {
-                TrellisTestError::new(
-                    TrellisTestErrorKind::Bootstrap,
-                    TrellisTestStage::ConfigGeneration,
-                    error.to_string(),
-                )
-            })?;
-        let mut paths = toml::map::Map::new();
-        for name in ["data", "state", "cache", "runtime", "logs"] {
-            let path = workdir.join(name);
-            std::fs::create_dir_all(&path)?;
-            paths.insert(
-                name.to_owned(),
-                crate::sandbox::require_utf8_path(&path, name)?
-                    .to_owned()
-                    .into(),
-            );
-        }
-        config
-            .as_table_mut()
-            .ok_or_else(|| {
-                TrellisTestError::new(
-                    TrellisTestErrorKind::Bootstrap,
-                    TrellisTestStage::ConfigGeneration,
-                    "generated configuration is not a TOML table",
-                )
-            })?
-            .insert("paths".into(), toml::Value::Table(paths));
-        std::fs::write(
-            &config_path,
-            toml::to_string_pretty(&config).map_err(|error| {
-                TrellisTestError::new(
-                    TrellisTestErrorKind::Bootstrap,
-                    TrellisTestStage::ConfigGeneration,
-                    error.to_string(),
-                )
-            })?,
-        )?;
         crate::process::run(
             Command::new(&distribution.server)
-                .args(["init", "admin", "--config"])
+                .args(["init", "admin"])
                 .arg(&config_path)
                 .args(["--username", username, "--password-stdin"]),
             &workdir.join("logs/bootstrap.log"),
@@ -405,7 +366,7 @@ async fn start_once(
         infrastructure.nats = Some(Process::spawn(
             Command::new(&distribution.nats)
                 .arg("-c")
-                .arg(config_dir.join("nats/nats.conf"))
+                .arg(config_dir.join("nats.conf"))
                 .stdin(Stdio::null()),
             &workdir.join("logs/nats-server.log"),
         )?);
@@ -448,7 +409,6 @@ async fn start_once(
         }
         infrastructure.server = Some(Process::spawn(
             Command::new(&distribution.server)
-                .arg("--config")
                 .arg(&config_path)
                 .stdin(Stdio::null()),
             &workdir.join("logs/trellis-server.log"),
@@ -605,6 +565,15 @@ async fn wait_for_readyz(
     }
 }
 
+/// A NATS user of a test runtime's installation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TestNatsUser {
+    /// The system account's user: servers, accounts and connections.
+    System,
+    /// The Trellis account's user, which administers streams and KV.
+    Trellis,
+}
+
 /// A running production Trellis runtime owned by the calling test.
 pub struct TrellisTestRuntime {
     config: PathBuf,
@@ -650,7 +619,6 @@ impl TrellisTestRuntime {
         }
         self.infrastructure.server = Some(Process::spawn(
             Command::new(&self.distribution.server)
-                .arg("--config")
                 .arg(&self.config)
                 .stdin(Stdio::null()),
             &self.workdir.join("logs/trellis-server.log"),
@@ -737,6 +705,36 @@ impl TrellisTestRuntime {
     #[must_use]
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    /// One of this runtime's NATS users as a `.creds` file's contents, as
+    /// `trellis-server nats <user> --print` gives them to operators.
+    ///
+    /// # Errors
+    /// Returns a runtime error when the installation's server cannot print them.
+    pub async fn nats_creds(&self, user: TestNatsUser) -> Result<String, TrellisTestError> {
+        let failed = |message: String| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Runtime,
+                TrellisTestStage::RuntimeStart,
+                message,
+            )
+        };
+        let output = tokio::process::Command::new(&self.distribution.server)
+            .args(["nats", "--print", "--installation"])
+            .arg(&self.config)
+            .arg(match user {
+                TestNatsUser::System => "system",
+                TestNatsUser::Trellis => "trellis",
+            })
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|error| failed(error.to_string()))?;
+        if !output.status.success() {
+            return Err(failed(String::from_utf8_lossy(&output.stderr).into_owned()));
+        }
+        String::from_utf8(output.stdout).map_err(|error| failed(error.to_string()))
     }
     /// Sandbox administrator username.
     #[must_use]

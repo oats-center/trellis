@@ -18,10 +18,12 @@ The certificates Trellis generates last 90 days. `trellis-server tls status`
 shows when they expire and the CA's fingerprint. Renew well before then:
 
 ```sh
-trellis-server tls renew --bundle ~/.config/trellis
+trellis-server tls renew
 ```
 
-`--bundle` is the installation folder. Renewal reuses the CA, so nobody has to
+That renews the installation the server uses by default; name another one
+as you would to start it, for example `trellis-server tls renew ~/trellis-two`.
+Renewal reuses the CA, so nobody has to
 trust anything new. Trellis picks up its new certificate within seconds. NATS
 doesn't: restart `trellis-server`, or send NATS `nats-server --signal reload`
 if you run it yourself. A timer that runs the renewal needs read access to the
@@ -41,17 +43,18 @@ can't do it from the Console.
 Give it its own folder and its own ports:
 
 ```sh
-trellis-server init --out ~/trellis-two --tls loopback-development \
+trellis-server init --bundle ~/trellis-two --tls loopback-development \
   --trellis-port 3100 \
   --nats-port 4223 --nats-monitor-port 8223 --nats-ws-port 8081
-trellis-server --config ~/trellis-two/config.toml
+trellis-server ~/trellis-two
 ```
 
-An installation made with `--out` keeps its data, logs and NATS files inside
-its folder too, so the two never share anything. To move NATS to other ports
-for a single run without touching the installation,
-`--local-nats-ports=4223,8223,8081` (native, monitoring, WebSocket) overrides
-what's in `nats/nats.conf`.
+A bundle keeps everything the server writes in its `var/` folder: databases,
+NATS data, logs and the pid file. The two installations share nothing but the
+NATS download in `~/.cache/trellis`. Deleting `var/` returns a bundle to just
+after `init`. To move NATS to other ports for a single run without touching
+the installation, `--local-nats-ports=4223,8223,8081` (native, monitoring,
+WebSocket) overrides what's in its `nats.conf`.
 
 Never point one installation's database at another's NATS data. Trellis
 notices and refuses to start, but it's better not to find out that way.
@@ -66,6 +69,6 @@ rm -rf ~/.config/trellis \
   ~/.local/share/trellis ~/.local/state/trellis ~/.cache/trellis
 ```
 
-The next `trellis-server` asks how to set up a fresh one. An installation made
-with `--out` is one folder. A `--system` installation also has its CA in
-`<folder>-tls-ca` next to it.
+The next `trellis-server` asks how to set up a fresh one. A bundle is one
+folder. A `--system` installation keeps its data in `/var/lib/trellis` and its
+generated CA in `/etc/trellis-tls-ca`.

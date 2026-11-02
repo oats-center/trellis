@@ -31,10 +31,10 @@ pub(crate) const BUNDLE_CA_CERTIFICATE: &str = "tls/ca.crt";
 pub(crate) const RUNTIME_CERTIFICATE: &str = "tls/runtime.crt";
 /// Runtime HTTP and OAuth leaf private key inside the bundle.
 pub(crate) const RUNTIME_PRIVATE_KEY: &str = "tls/runtime.key";
-/// Broker leaf certificate inside the bundle's NATS directory.
-pub(crate) const NATS_CERTIFICATE: &str = "nats/tls/nats.crt";
-/// Broker leaf private key inside the bundle's NATS directory.
-pub(crate) const NATS_PRIVATE_KEY: &str = "nats/tls/nats.key";
+/// Broker leaf certificate inside the bundle.
+pub(crate) const NATS_CERTIFICATE: &str = "tls/nats.crt";
+/// Broker leaf private key inside the bundle.
+pub(crate) const NATS_PRIVATE_KEY: &str = "tls/nats.key";
 /// CA private key inside the CA directory.
 const CA_PRIVATE_KEY: &str = "ca.key";
 /// CA certificate inside the CA directory.
@@ -108,10 +108,8 @@ pub(crate) fn generate_installation_tls(
     set_private_directory(ca_directory)?;
     write_private_file(ca_directory.join(CA_PRIVATE_KEY), ca_key.serialize_pem())?;
     fs::write(ca_directory.join(CA_CERTIFICATE), ca.pem())?;
-    for directory in [bundle.join("tls"), bundle.join("nats/tls")] {
-        fs::create_dir_all(&directory)?;
-        set_private_directory(&directory)?;
-    }
+    fs::create_dir_all(bundle.join("tls"))?;
+    set_private_directory(&bundle.join("tls"))?;
     fs::write(bundle.join(BUNDLE_CA_CERTIFICATE), ca.pem())?;
 
     let ca_pem = ca.pem();

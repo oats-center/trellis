@@ -49,9 +49,7 @@ fn invalid_postgres_subsystem_config() -> crate::SubsystemConfig {
 fn runtime_config() -> RuntimeConfig {
     RuntimeConfig {
         instance_name: None,
-        event_session_seed_file: Some(PathBuf::from("session.seed")),
         event_context_digest_file: None,
-        live_provider_seed_files: None,
         paths: None,
         http: None,
         console: None,
@@ -60,17 +58,6 @@ fn runtime_config() -> RuntimeConfig {
             managed: false,
             servers: Some("nats://127.0.0.1:4222".to_owned()),
             ca_certificate: None,
-            runtime: Some(crate::NatsRuntimeConfig {
-                auth_creds_path: Some(PathBuf::from("auth.creds")),
-                trellis_creds_path: Some(PathBuf::from("trellis.creds")),
-                system_creds_path: Some(PathBuf::from("system.creds")),
-            }),
-            auth_callout: Some(crate::NatsAuthCalloutConfig {
-                sentinel_public_key_file: Some("sentinel.pub".into()),
-                issuer_signing_seed_file: Some(PathBuf::from("issuer.seed")),
-                target_signing_seed_file: Some(PathBuf::from("target.seed")),
-                xkey_seed_file: Some(PathBuf::from("xkey.seed")),
-            }),
         }),
         client: None,
         leases: Some(crate::LeasesConfig {
@@ -83,10 +70,8 @@ fn runtime_config() -> RuntimeConfig {
             avatar: None,
             administration: Default::default(),
             instance_id: None,
-            oauth_storage_key_file: None,
             local_identity: None,
             authorization: Some(crate::AuthorizationConfig {
-                issuer_signing_seed_file: PathBuf::from("authorization-issuer.seed"),
                 context_lifetime_seconds: 300,
                 allowed_clock_skew_seconds: 30,
                 oauth_admission_lifetime_seconds: 300,
@@ -96,6 +81,19 @@ fn runtime_config() -> RuntimeConfig {
         jobs: None,
         health: None,
         events: None,
+        secrets: crate::Secrets {
+            nats: crate::NatsSecrets {
+                users: crate::NatsUsers {
+                    trellis: Some(crate::NatsUser {
+                        jwt: "trellis.jwt".into(),
+                        seed: "trellis.seed".into(),
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        },
     }
 }
 

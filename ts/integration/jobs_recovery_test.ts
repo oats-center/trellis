@@ -3,13 +3,11 @@ import { Readable, Writable } from "node:stream";
 import { buffer } from "node:stream/consumers";
 import { TextDecoderStream } from "node:stream/web";
 import { spawnTracked } from "./_support/process.ts";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { AckPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { credsAuthenticator, deadline } from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
-import { join } from "node:path";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { Result } from "@oatscenter/trellis";
 import { codecs } from "@oatscenter/trellis/generated";
@@ -43,9 +41,7 @@ test("concurrent keyed admissions retain every accepted job across coordinators"
     const nc = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await readFile(
-          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-        ),
+        await runtime.natsCredentials("trellis"),
       ),
     });
     try {
@@ -279,12 +275,7 @@ test("native worker killed after key persistence but before Started recovers exp
       const nc = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config/trellis/nats/creds/trellis-auth.creds",
-            ),
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       const [command, ...args] = rustFixtureArgv("jobs");
@@ -459,9 +450,7 @@ test("native failed retry and dead-letter replay execute again while historical 
     const nc = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await readFile(
-          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-        ),
+        await runtime.natsCredentials("trellis"),
       ),
     });
     const [command, ...args] = rustFixtureArgv("jobs");
@@ -605,12 +594,7 @@ for (const ordering of [
         const nc = await connect({
           servers: runtime.natsUrl,
           authenticator: credsAuthenticator(
-            await readFile(
-              join(
-                runtime.workdir,
-                "config/trellis/nats/creds/trellis-auth.creds",
-              ),
-            ),
+            await runtime.natsCredentials("trellis"),
           ),
         });
         const finishA = Promise.withResolvers<{ key: string }>();
@@ -627,12 +611,7 @@ for (const ordering of [
           ? await connect({
               servers: proxy.url,
               authenticator: credsAuthenticator(
-                await readFile(
-                  join(
-                    runtime.workdir,
-                    "config/trellis/nats/creds/trellis-auth.creds",
-                  ),
-                ),
+                await runtime.natsCredentials("trellis"),
               ),
             })
           : nc;
@@ -999,9 +978,7 @@ test("expired work with a persisted pre-Started slot releases a block-policy key
     const nc = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await readFile(
-          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-        ),
+        await runtime.natsCredentials("trellis"),
       ),
     });
     try {
@@ -1355,9 +1332,7 @@ test("a rejected Jobs event at the stream tail does not stall key lookups", asyn
     const nc = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await readFile(
-          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-        ),
+        await runtime.natsCredentials("trellis"),
       ),
     });
     try {

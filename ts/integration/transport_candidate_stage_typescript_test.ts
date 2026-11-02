@@ -1,8 +1,6 @@
 /** Real TS no-carrier recovery and cancellation while registry warming is held. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstream } from "@nats-io/jetstream";
 import { Result, type SessionCaller } from "@oatscenter/trellis";
@@ -56,9 +54,7 @@ for (const closeWhileHeld of [false, true]) {
           const system = await connect({
             servers: runtime.natsUrl,
             authenticator: credsAuthenticator(
-              await readFile(
-                join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
-              ),
+              await runtime.natsCredentials("system"),
             ),
           });
           const gate = runtime.nativeTransportGate();

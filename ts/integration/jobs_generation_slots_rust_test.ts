@@ -1,6 +1,5 @@
 /** Real broker proof of two persistent Rust Jobs slots across publication. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
@@ -135,9 +134,7 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
       const nats = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       const manager = await jetstreamManager(nats);
@@ -802,9 +799,7 @@ test("Rust retained G1 JobRefs read wait and cancel after physical G1 reap", asy
       const nats = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       const manager = await jetstreamManager(nats);

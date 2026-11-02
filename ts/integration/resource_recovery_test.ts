@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { codecs } from "@oatscenter/trellis/generated";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { credsAuthenticator } from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
-import { join } from "node:path";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
@@ -95,12 +93,7 @@ for (const recovery of ["apply", "restart"] as const) {
       const nc = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config/trellis/nats/creds/trellis-auth.creds",
-            ),
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       try {

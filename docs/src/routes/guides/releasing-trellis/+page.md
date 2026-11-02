@@ -429,7 +429,7 @@ and run the same package-specific checks the pipeline uses:
 cargo xtask install
 cargo run --manifest-path xtask/Cargo.toml -- protocol-wasm
 cargo package --manifest-path Cargo.toml --workspace --allow-dirty \
-  --exclude trellis-local-bootstrap --exclude trellis-bootstrap \
+  --exclude trellis-bootstrap \
   --exclude trellis-local-nats --exclude trellis-jobs-runtime \
   --exclude trellis-events-runtime --exclude trellis-testkit \
   --exclude trellis-protocol-wasm --exclude trellis-codegen-ts \

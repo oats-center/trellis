@@ -290,7 +290,7 @@ async fn cli_server_managed_nats() {
             "json",
             "--tls",
             "generated",
-            "--out",
+            "--bundle",
             bundle.to_str().expect("UTF-8 bundle path"),
             "--nats-port",
             &nats_port.to_string(),
@@ -314,11 +314,12 @@ async fn cli_server_managed_nats() {
         "trellis-server init failed: {}",
         String::from_utf8_lossy(&init_output.stderr)
     );
-    // The generated config keeps every mutable root inside the bundle.
+    // A bundle keeps everything the server writes in its var folder, apart
+    // from the NATS download, which every installation shares.
     let config_path = bundle.join("config.toml");
-    let effective_root = bundle.clone();
+    let effective_root = bundle.join("var");
     // An empty private cache: explicit download acquires pinned NATS on first run.
-    let cache_dir = effective_root.join("cache/nats");
+    let cache_dir = workdir.0.join("cache/trellis/nats");
     fs::create_dir_all(&cache_dir).expect("create managed-NATS cache dir");
     fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
         .expect("make managed-NATS cache dir private");
@@ -326,7 +327,6 @@ async fn cli_server_managed_nats() {
         .args([
             "init",
             "admin",
-            "--config",
             config_path.to_str().expect("UTF-8 config path"),
             "--username",
             "managed-nats-admin",
@@ -340,21 +340,18 @@ async fn cli_server_managed_nats() {
         "bootstrap administrator: {}",
         String::from_utf8_lossy(&seeded.stderr)
     );
-    let authored_nats = fs::read(bundle.join("nats/nats.conf")).expect("read authored nats.conf");
-    let authored_jwt = fs::read(bundle.join("nats/jwt.conf")).expect("read authored jwt.conf");
+    let authored_nats = fs::read(bundle.join("nats.conf")).expect("read authored nats.conf");
 
     // 2. Managed-mode run: the first run downloads the binary, creates the stores the
     //    preflight report requires, and a clean SIGTERM shutdown stops the managed
     //    nats-server.
-    let pid_file = effective_root.join("runtime/nats-server.pid");
+    let pid_file = effective_root.join("run/nats-server.pid");
     let run_stdout = workdir.0.join("cli-run.stdout.log");
     let run_stderr = workdir.0.join("cli-run.stderr.log");
     let mut run_command = server_command(&workdir.0);
     let mut child = ChildGuard::spawn(
         run_command
             .args([
-                "all",
-                "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
                 "--local-nats-ports",
@@ -424,7 +421,7 @@ async fn cli_server_managed_nats() {
         !managed_ports.iter().any(|port| port_accepts(*port)),
         "managed ports still accept connections after shutdown"
     );
-    let nats_log = effective_root.join("logs/nats-server.log");
+    let nats_log = effective_root.join("log/nats-server.log");
     assert!(nats_log.is_file());
     assert!(
         fs::metadata(&nats_log)
@@ -433,7 +430,7 @@ async fn cli_server_managed_nats() {
             > 0,
         "managed NATS stdout and stderr must be captured in its dedicated log"
     );
-    assert!(effective_root.join("state/nats/nats.conf").is_file());
+    assert!(effective_root.join("nats/nats.conf").is_file());
     for database in [
         "platform.sqlite",
         "jobs.sqlite",
@@ -441,8 +438,8 @@ async fn cli_server_managed_nats() {
         "events.sqlite",
     ] {
         assert!(
-            effective_root.join("data").join(database).is_file(),
-            "omitted {database} path must use the configured data root"
+            effective_root.join(database).is_file(),
+            "omitted {database} path must use the bundle's var folder"
         );
         assert!(
             !bundle.join(database).exists(),
@@ -450,14 +447,9 @@ async fn cli_server_managed_nats() {
         );
     }
     assert_eq!(
-        fs::read(bundle.join("nats/nats.conf")).expect("reread authored nats.conf"),
+        fs::read(bundle.join("nats.conf")).expect("reread authored nats.conf"),
         authored_nats,
         "managed startup must not rewrite authored nats.conf"
-    );
-    assert_eq!(
-        fs::read(bundle.join("nats/jwt.conf")).expect("reread authored jwt.conf"),
-        authored_jwt,
-        "managed startup must not rewrite authored jwt.conf"
     );
 
     // 3. Managed-mode `check` after the first run: valid preflight report (proving
@@ -471,12 +463,10 @@ async fn cli_server_managed_nats() {
         check_command
             .args([
                 "check",
-                "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
                 "--local-nats-ports",
                 &ports_arg,
-                "all",
             ])
             .stdout(Stdio::from(
                 fs::File::create(&check_stdout).expect("create check stdout log"),
@@ -533,8 +523,6 @@ async fn cli_server_managed_nats() {
     let mut occupied_child = ChildGuard::spawn(
         occupied_command
             .args([
-                "all",
-                "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
             ])
@@ -568,7 +556,7 @@ async fn cli_server_managed_nats() {
             "init",
             "--tls",
             "generated",
-            "--out",
+            "--bundle",
             broken_bundle.to_str().expect("UTF-8 broken bundle path"),
             "--trellis-port",
             &oauth_port.to_string(),
@@ -586,7 +574,7 @@ async fn cli_server_managed_nats() {
         "trellis-server init failed: {}",
         String::from_utf8_lossy(&broken_init.stderr)
     );
-    fs::remove_file(broken_bundle.join("nats/nats.conf")).expect("remove authored nats.conf");
+    fs::remove_file(broken_bundle.join("nats.conf")).expect("remove authored nats.conf");
     let cached_binary =
         NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache_dir))
             .expect("cached nats-server binary");
@@ -598,7 +586,6 @@ async fn cli_server_managed_nats() {
         broken_command
             .args([
                 "check",
-                "--config",
                 broken_config.to_str().expect("UTF-8 broken config path"),
                 local_nats.as_str(),
             ])
@@ -633,8 +620,8 @@ async fn cli_server_managed_nats() {
     // a fresh store would be a different environment and must not start.
     let external = LocalNats::builder()
         .binary(NatsBinarySource::Path(binary))
-        .source(bundle.join("nats"))
-        .state(effective_root.join("state/nats"))
+        .source(&bundle)
+        .state(effective_root.join("nats"))
         .ports(LocalNatsPorts {
             nats: nats_port,
             monitor: monitor_port,
@@ -647,14 +634,25 @@ async fn cli_server_managed_nats() {
         })
         .start()
         .expect("spawn test-owned managed nats-server");
-    let nats = async_nats::ConnectOptions::new()
-        .credentials_file(bundle.join("nats/creds/trellis-auth.creds"))
-        .await
-        .expect("load Trellis NATS credentials")
-        .add_root_certificates(bundle.join("tls/ca.crt"))
-        .connect(external.nats_url())
-        .await
-        .expect("connect to external NATS");
+    let creds = server_command(&workdir.0)
+        .args(["nats", "--print", "--installation"])
+        .arg(&bundle)
+        .arg("trellis")
+        .output()
+        .expect("print Trellis NATS credentials");
+    assert!(
+        creds.status.success(),
+        "{}",
+        String::from_utf8_lossy(&creds.stderr)
+    );
+    let nats = async_nats::ConnectOptions::with_credentials(
+        &String::from_utf8(creds.stdout).expect("UTF-8 creds"),
+    )
+    .expect("load Trellis NATS credentials")
+    .add_root_certificates(bundle.join("tls/ca.crt"))
+    .connect(external.nats_url())
+    .await
+    .expect("connect to external NATS");
     let jetstream = jetstream::new(nats);
     // Dropping `managed` hands NATS to the operator: the same bundle now
     // connects to the server listed in [nats] servers.
@@ -719,11 +717,7 @@ async fn cli_server_managed_nats() {
         let mut failure_command = server_command(&workdir.0);
         let mut failure = ChildGuard::spawn(
             failure_command
-                .args([
-                    "all",
-                    "--config",
-                    config_path.to_str().expect("UTF-8 config path"),
-                ])
+                .args([config_path.to_str().expect("UTF-8 config path")])
                 .stdout(Stdio::null())
                 .stderr(Stdio::from(
                     fs::File::create(&failure_stderr).expect("create failed startup log"),
@@ -807,11 +801,7 @@ async fn cli_server_managed_nats() {
     let mut expansion_command = server_command(&workdir.0);
     let mut expansion = ChildGuard::spawn(
         expansion_command
-            .args([
-                "all",
-                "--config",
-                config_path.to_str().expect("UTF-8 config path"),
-            ])
+            .args([config_path.to_str().expect("UTF-8 config path")])
             .stdout(Stdio::null())
             .stderr(Stdio::from(
                 fs::File::create(&expansion_stderr).expect("create expansion startup log"),
@@ -851,11 +841,7 @@ async fn cli_server_managed_nats() {
     let mut external_command = server_command(&workdir.0);
     let mut external_child = ChildGuard::spawn(
         external_command
-            .args([
-                "all",
-                "--config",
-                config_path.to_str().expect("UTF-8 config path"),
-            ])
+            .args([config_path.to_str().expect("UTF-8 config path")])
             .stdout(Stdio::from(
                 fs::File::create(&external_stdout).expect("create external stdout log"),
             ))
@@ -955,7 +941,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     // Generated TLS makes the installation CA and every listener's
     // certificate. The Console gets a hostname of its own on the Trellis port.
     let initialized = server_command(&workdir.0)
-        .args(["init", "--format", "json", "--tls", "generated", "--out"])
+        .args(["init", "--format", "json", "--tls", "generated", "--bundle"])
         .arg(&bundle)
         .arg("--external-nats")
         .args([
@@ -997,7 +983,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     );
     let config = bundle.join("config.toml");
     let bootstrap = server_command(&workdir.0)
-        .args(["init", "admin", "--config"])
+        .args(["init", "admin"])
         .arg(&config)
         .args([
             "--username",
@@ -1017,7 +1003,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     let mut broker = ChildGuard::spawn(
         Command::new(binary)
             .arg("-c")
-            .arg(bundle.join("nats/nats.conf"))
+            .arg(bundle.join("nats.conf"))
             .stdout(Stdio::null())
             .stderr(Stdio::from(fs::File::create(&broker_log).unwrap())),
         "TLS NATS",
@@ -1035,7 +1021,6 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     let server_output = bundle.join("server.stdout.log");
     let mut server = ChildGuard::spawn(
         server_command(&workdir.0)
-            .args(["all", "--config"])
             .arg(&config)
             .env_remove("SSL_CERT_FILE")
             .stdout(Stdio::from(fs::File::create(&server_output).unwrap()))
@@ -1169,7 +1154,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     };
     let before = served(client.clone()).await;
     let renewed = server_command(&workdir.0)
-        .args(["tls", "renew", "--bundle"])
+        .args(["tls", "renew"])
         .arg(&bundle)
         .output()
         .unwrap();

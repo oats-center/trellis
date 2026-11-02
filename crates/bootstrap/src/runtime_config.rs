@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use trellis_runtime::{
     AuthConfig, AuthorizationConfig, ClientConfig, ConsoleConfig, HttpConfig, LeasesConfig,
-    ListenerTransport, LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig,
-    NatsConfig, NatsRuntimeConfig, RuntimeConfig, RuntimePathsConfig, StorageConfig,
+    ListenerTransport, LocalIdentityConfig, NatsConfig, RuntimeConfig, StorageConfig,
     SubsystemConfig, TlsConfig,
 };
 
@@ -29,6 +28,8 @@ pub fn render_trellis_config(options: &TrellisBootstrapOptions) -> String {
 #[must_use]
 pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfig {
     let bundle_path = |path: &str| PathBuf::from(format!("./{path}"));
+    // Keys are in secrets.toml, and the server picks the data folders for
+    // the kind of installation it runs.
     let transport = if !options.runtime.trusted_proxies.is_empty() {
         ListenerTransport::Proxy {
             trusted_proxies: options.runtime.trusted_proxies.clone(),
@@ -51,21 +52,8 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
     };
     RuntimeConfig {
         instance_name: Some(options.runtime.name.clone()),
-        event_session_seed_file: Some(PathBuf::from("./session.seed")),
         event_context_digest_file: None,
-        live_provider_seed_files: Some(LiveProviderSeedFilesConfig {
-            platform: Some(PathBuf::from("./live-providers/platform.seed")),
-            health: Some(PathBuf::from("./live-providers/health.seed")),
-            jobs: Some(PathBuf::from("./live-providers/jobs.seed")),
-            events: Some(PathBuf::from("./live-providers/events.seed")),
-        }),
-        paths: options.runtime.bundle_paths.then(|| RuntimePathsConfig {
-            data: Some(bundle_path("data")),
-            state: Some(bundle_path("state")),
-            cache: Some(bundle_path("cache")),
-            runtime: Some(bundle_path("runtime")),
-            logs: Some(bundle_path("logs")),
-        }),
+        paths: None,
         tls: matches!(options.runtime.tls, BootstrapTls::Generated { .. }).then(|| TlsConfig {
             generated_ca_certificate: Some(bundle_path(BUNDLE_CA_CERTIFICATE)),
         }),
@@ -98,21 +86,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             managed: options.runtime.managed_nats,
             servers: Some(options.runtime.nats_server_url.clone()),
             ca_certificate,
-            runtime: Some(NatsRuntimeConfig {
-                auth_creds_path: Some(PathBuf::from("./nats/creds/auth-auth.creds")),
-                trellis_creds_path: Some(PathBuf::from("./nats/creds/trellis-auth.creds")),
-                system_creds_path: Some(PathBuf::from("./nats/creds/system.creds")),
-            }),
-            auth_callout: Some(NatsAuthCalloutConfig {
-                sentinel_public_key_file: Some(PathBuf::from("./nats/secrets/auth-sentinel.pub")),
-                issuer_signing_seed_file: Some(PathBuf::from(
-                    "./nats/secrets/auth-issuer-signing.seed",
-                )),
-                target_signing_seed_file: Some(PathBuf::from(
-                    "./nats/secrets/auth-target-signing.seed",
-                )),
-                xkey_seed_file: Some(PathBuf::from("./nats/secrets/auth-sx.seed")),
-            }),
         }),
         client: Some(ClientConfig {
             ws_nats_servers: (!options.runtime.nats_websocket_via_runtime)
@@ -133,12 +106,10 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             avatar: None,
             administration: Default::default(),
             instance_id: Some(options.runtime.instance_id.clone()),
-            oauth_storage_key_file: Some(PathBuf::from("./auth/oauth-storage.key")),
             local_identity: Some(LocalIdentityConfig {
                 password_min_length: Some(8),
             }),
             authorization: Some(AuthorizationConfig {
-                issuer_signing_seed_file: PathBuf::from("./auth/authorization-issuer.seed"),
                 context_lifetime_seconds: options
                     .runtime
                     .authorization
@@ -184,6 +155,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_max_bytes: None,
             retention_days: Some(7),
         }),
+        secrets: Default::default(),
     }
 }
 

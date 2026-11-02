@@ -241,10 +241,13 @@ async fn kick_connection(runtime: &TrellisTestRuntime, before: &[u64]) {
             panic!("the connected fixture must have a broker socket: {connections}")
         });
     let cid = connection["cid"].as_u64().unwrap();
-    let system = async_nats::ConnectOptions::new()
-        .credentials_file(runtime.workdir().join("config/nats/creds/system.creds"))
-        .await
-        .unwrap()
+    let system = async_nats::ConnectOptions::with_credentials(
+        &runtime
+            .nats_creds(trellis_testkit::TestNatsUser::System)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
         .add_root_certificates(runtime.trust_roots()[0].clone())
         .connect(runtime.nats_url())
         .await

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { once } from "node:events";
 import { createWriteStream } from "node:fs";
-import { mkdir, open, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
@@ -828,28 +828,17 @@ try {
     const started = performance.now();
     // The raw Core NATS lower bound uses the same privileged runtime
     // credentials as the TypeScript lane's `runtime.connectNats()` observer.
-    const creds = (
-      await readdir(runtime.workdir, { recursive: true, withFileTypes: true })
-    )
-      .filter(
-        (entry) =>
-          entry.isFile() &&
-          entry.name === "trellis-auth.creds" &&
-          entry.parentPath.endsWith("/nats/creds"),
-      )
-      .map((entry) => `${entry.parentPath}/${entry.name}`);
-    if (creds.length !== 1) {
-      throw new Error(
-        `Expected one runtime NATS credential, found ${creds.length}`,
-      );
-    }
+    const creds = `${output}/trellis.creds`;
+    await writeFile(creds, await runtime.natsCredentials("trellis"), {
+      mode: 0o600,
+    });
     const child = await startWorker("rust", {
       ...options,
       role: "client",
       clientId: apps.Caller.request.id,
       httpUrl: z.url().parse(httpReady.httpUrl),
       natsUrl: runtime.natsUrl,
-      natsCreds: creds[0],
+      natsCreds: creds,
     });
     const loginOutput = await runtime.waitFor(async () => {
       const stdout = await readFile(`${output}/client.stdout.log`, "utf8");

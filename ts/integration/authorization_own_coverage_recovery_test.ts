@@ -1,7 +1,5 @@
 /** Coverage repair must not need application traffic or a replacement socket. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { test } from "node:test";
 import { ulid } from "ulid";
 import { deadline } from "@nats-io/nats-core";
@@ -47,9 +45,7 @@ for (const scenario of ["outage", "expiry", "cancelled-renewal"] as const) {
         const system = await connect({
           servers: runtime.natsUrl,
           authenticator: credsAuthenticator(
-            await readFile(
-              join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
-            ),
+            await runtime.natsCredentials("system"),
           ),
         });
         const gate = runtime.nativeTransportGate();
@@ -507,12 +503,7 @@ test("a granted optional RPC waits for coverage rather than being classified as 
       const broker = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(
-              runtime.workdir,
-              "config/trellis/nats/creds/trellis-auth.creds",
-            ),
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       const manager = await jetstreamManager(broker);

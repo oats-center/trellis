@@ -66,7 +66,7 @@ test(
     try {
       await exec(serverBinary, [
         "init",
-        "--out",
+        "--bundle",
         bundle,
         "--tls",
         "generated",
@@ -87,24 +87,26 @@ test(
       // The installation serves its generated TLS; this test trusts its CA.
       trustInstallationCa(`${bundle}/tls/ca.crt`);
       const configPath = `${bundle}/config.toml`;
-      const config = await readFile(configPath, "utf8");
+      const secretsPath = `${bundle}/secrets.toml`;
+      const secrets = await readFile(secretsPath, "utf8");
+      const trellisUser = /\[nats\.users\.trellis\]\n([^[]*)/.exec(secrets);
+      assert(trellisUser, "secrets.toml names the Trellis NATS user");
       // The broker accepts this operational credential, but it has no access to
       // the system-account connection-management responders. This is an ordinary
       // broker permission failure, not a substituted broker or runtime hook.
       await writeFile(
-        configPath,
-        config.replace(
-          'system_creds_path = "./nats/creds/system.creds"',
-          'system_creds_path = "./nats/creds/trellis-auth.creds"',
+        secretsPath,
+        secrets.replace(
+          /\[nats\.users\.system\]\n[^[]*/,
+          `[nats.users.system]\n${trellisUser[1]}`,
         ),
       );
-      const natsConfig = `${bundle}/nats/nats.conf`;
+      const natsConfig = `${bundle}/nats.conf`;
       const username = "enforcement-admin";
       const password = "enforcement-fixture-password";
       await exec(serverBinary, [
         "init",
         "admin",
-        "--config",
         configPath,
         "--username",
         username,
@@ -125,7 +127,7 @@ test(
           () => false,
         ),
       );
-      let server = spawn(serverBinary, ["all", "--config", configPath]);
+      let server = spawn(serverBinary, [configPath]);
       children.push(server);
       server.stdout.on("data", (chunk) => {
         serverLog += chunk;
@@ -213,8 +215,8 @@ test(
       );
       await sibling.sessionsList({}).orThrow();
       await stop(server);
-      await writeFile(configPath, config);
-      server = spawn(serverBinary, ["all", "--config", configPath]);
+      await writeFile(secretsPath, secrets);
+      server = spawn(serverBinary, [configPath]);
       children.push(server);
       server.stdout.on("data", (chunk) => {
         serverLog += chunk;

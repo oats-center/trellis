@@ -1,6 +1,5 @@
 /** Receipt maintenance must cover a stalled real-broker lifecycle preflight. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { once } from "node:events";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -31,9 +30,7 @@ test("Rust maintains the accepted Jobs receipt during stalled lifecycle prefligh
       const nats = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-          ),
+          await runtime.natsCredentials("trellis"),
         ),
       });
       const manager = await jetstreamManager(nats);

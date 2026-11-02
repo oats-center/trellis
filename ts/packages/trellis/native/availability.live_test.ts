@@ -36,9 +36,7 @@ test(
       const system = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await readFile(
-            join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
-          ),
+          await runtime.natsCredentials("system"),
         ),
       });
       close.push(() => system.close());

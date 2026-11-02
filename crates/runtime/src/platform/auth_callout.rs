@@ -1,6 +1,6 @@
 //! Store-backed NATS admission. Application authority is never a CONNECT token.
 
-use std::{fs, path::Path, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use crate::platform::auth::blocking;
 
@@ -72,23 +72,20 @@ pub(crate) struct CalloutKeys {
 }
 
 impl CalloutKeys {
-    pub(crate) fn from_files(
-        auth_signing_seed_file: &Path,
-        target_signing_seed_file: &Path,
-        xkey_seed_file: &Path,
-        sentinel_public_key_file: &Path,
-        auth_user_creds_file: &Path,
-        target_user_creds_file: &Path,
+    pub(crate) fn from_secrets(
+        callout: &crate::ResolvedNatsAuthCalloutConfig,
+        auth_user_jwt: &str,
+        target_user_jwt: &str,
     ) -> Result<Self, AuthError> {
-        let auth_signing_key = account_key(auth_signing_seed_file)?;
-        let target_signing_key = account_key(target_signing_seed_file)?;
-        let auth_account = issuer_account(&user_claims(auth_user_creds_file)?);
-        let target_account = issuer_account(&user_claims(target_user_creds_file)?);
-        let sentinel_public_key = read_secret(sentinel_public_key_file)?;
+        let auth_signing_key = account_key(&callout.issuer_signing_seed)?;
+        let target_signing_key = account_key(&callout.target_signing_seed)?;
+        let auth_account = issuer_account(&user_claims(auth_user_jwt)?);
+        let target_account = issuer_account(&user_claims(target_user_jwt)?);
+        let sentinel_public_key = callout.sentinel_public_key.clone();
         if !is_nkey(&sentinel_public_key, KeyPairType::User) {
             return Err(AuthError::Denied);
         }
-        let xkey = XKey::from_seed(&read_secret(xkey_seed_file)?).map_err(|_| AuthError::Denied)?;
+        let xkey = XKey::from_seed(&callout.xkey_seed).map_err(|_| AuthError::Denied)?;
         Ok(Self {
             auth_signing_key: Arc::new(auth_signing_key),
             target_signing_key: Arc::new(target_signing_key),
@@ -413,26 +410,14 @@ fn verify_nats_nonce_signature(nkey: &str, nonce: &str, signature: &str) -> Resu
 fn is_nkey(value: &str, kind: KeyPairType) -> bool {
     KeyPair::from_public_key(value).is_ok_and(|key| key.key_pair_type() == kind)
 }
-fn account_key(path: &Path) -> Result<KeyPair, AuthError> {
-    let key = KeyPair::from_seed(&read_secret(path)?).map_err(|_| AuthError::Denied)?;
+fn account_key(seed: &str) -> Result<KeyPair, AuthError> {
+    let key = KeyPair::from_seed(seed).map_err(|_| AuthError::Denied)?;
     if key.key_pair_type() != KeyPairType::Account {
         return Err(AuthError::Denied);
     }
     Ok(key)
 }
-fn read_secret(path: &Path) -> Result<String, AuthError> {
-    fs::read_to_string(path)
-        .map(|value| value.trim().into())
-        .map_err(|_| AuthError::Unavailable)
-}
-fn user_claims(path: &Path) -> Result<Claims<User>, AuthError> {
-    let contents = read_secret(path)?;
-    let jwt = contents
-        .lines()
-        .skip_while(|line| *line != "-----BEGIN NATS USER JWT-----")
-        .skip(1)
-        .find(|line| !line.trim().is_empty())
-        .ok_or(AuthError::Denied)?;
+fn user_claims(jwt: &str) -> Result<Claims<User>, AuthError> {
     Claims::<User>::decode(jwt).map_err(|_| AuthError::Denied)
 }
 fn issuer_account(claims: &Claims<User>) -> String {

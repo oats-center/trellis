@@ -8,7 +8,6 @@ import { isErr, Result } from "@oatscenter/trellis";
 import { TransportError } from "@oatscenter/trellis/errors";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
@@ -875,12 +874,7 @@ test("generated runtime workflows", async (t) => {
                     const nats = await connect({
                       servers: runtime.natsUrl,
                       authenticator: credsAuthenticator(
-                        await readFile(
-                          join(
-                            runtime.workdir,
-                            "config/trellis/nats/creds/trellis-auth.creds",
-                          ),
-                        ),
+                        await runtime.natsCredentials("trellis"),
                       ),
                     });
                     try {

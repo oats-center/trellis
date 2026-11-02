@@ -21,7 +21,8 @@ ulid.workspace = true
 thiserror.workspace = true
 toml = "1.1.2"
 trellis-runtime = { path = "../runtime", version = "0.100.0-rc.19" }
-trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.100.0-rc.19" }
+base64.workspace = true
+rand.workspace = true
 miette.workspace = true
 ipnet.workspace = true
 rcgen.workspace = true
@@ -30,5 +31,4 @@ time.workspace = true
 [dev-dependencies]
 async-nats.workspace = true
 rustls.workspace = true
-base64.workspace = true
 tempfile.workspace = true

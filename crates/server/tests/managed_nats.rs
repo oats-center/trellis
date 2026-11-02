@@ -28,7 +28,7 @@ impl Installation {
         let generated = tokio::process::Command::new(server)
             .arg("init")
             .args(init_args)
-            .arg("--out")
+            .arg("--bundle")
             .arg(&config_dir)
             .args(["--trellis-port", &ports[0].to_string()])
             .args(["--nats-port", &ports[1].to_string()])
@@ -43,8 +43,7 @@ impl Installation {
             String::from_utf8_lossy(&generated.stderr)
         );
         let running = tokio::process::Command::new(server)
-            .arg("--config")
-            .arg(config_dir.join("config.toml"))
+            .arg(&config_dir)
             .arg("--nats-download")
             .arg("--local-nats-cache")
             .arg(workspace.join("target/trellis-test-cache"))

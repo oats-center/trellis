@@ -1,7 +1,7 @@
 use super::*;
 use std::fs;
 use std::path::PathBuf;
-use trellis_runtime::{RuntimeConfig, RuntimeMode, StorageBackend};
+use trellis_runtime::{RuntimeConfig, RuntimeMode};
 
 #[test]
 fn validate_output_dir_rejects_non_empty_without_force() {
@@ -157,6 +157,42 @@ fn generated_nats_credentials_are_parseable_and_private() {
 }
 
 #[test]
+fn an_installation_keeps_its_keys_in_one_private_secrets_file() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let out = temp.path().join("bundle");
+    let mut options = trellis_options(&out);
+    options.runtime.tls = BootstrapTls::LoopbackDevelopment;
+    options.runtime.public_origin = "http://localhost:3000".into();
+    options.runtime.nats_server_url = "nats://localhost:4222".into();
+    options.runtime.nats_websocket_url = "ws://localhost:8080".into();
+    generate_trellis_bootstrap(&options).expect("generate bundle");
+
+    let config = RuntimeConfig::load_from_path(out.join("config.toml")).expect("load");
+    let nats = config.resolve_nats_runtime().expect("NATS users");
+    let (auth, system) = nats.platform_creds().expect("platform users");
+    for creds in [system, auth, &nats.trellis_creds] {
+        async_nats::ConnectOptions::with_credentials(creds).expect("parse generated creds");
+    }
+    config.resolve_nats_auth_callout().expect("callout keys");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let secrets = out.join(trellis_runtime::SECRETS_FILE);
+        assert_eq!(
+            fs::metadata(&secrets).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Anyone else able to read the keys makes the installation refuse them.
+        fs::set_permissions(&secrets, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(matches!(
+            RuntimeConfig::load_from_path(out.join("config.toml")),
+            Err(trellis_runtime::ConfigError::Secrets { .. })
+        ));
+    }
+}
+
+#[test]
 fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
     let temp = tempfile::tempdir().expect("temp dir");
     let mut options = trellis_options(temp.path());
@@ -165,12 +201,10 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
     options.runtime.nats_server_url = "tls://nats.example.test:4222".to_string();
     options.runtime.nats_websocket_url = "wss://nats.example.test/ws".to_string();
     options.runtime.public_origin = "https://trellis.example.test/".to_string();
-    let config = render_trellis_config(&options);
+    generate_trellis_bootstrap(&options).expect("generate bundle");
 
-    let temp = tempfile::tempdir().expect("config tempdir");
-    let config_path = temp.path().join("config.toml");
-    fs::write(&config_path, &config).expect("write runtime config");
-    let parsed = RuntimeConfig::load_from_path(&config_path).expect("load runtime config");
+    let parsed = RuntimeConfig::load_from_path(temp.path().join("config.toml"))
+        .expect("load runtime config");
     parsed
         .validate_for_mode(RuntimeMode::All)
         .expect("validate all mode");
@@ -183,11 +217,6 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
             .and_then(|client| client.ws_nats_servers.as_ref()),
         Some(&vec!["wss://nats.example.test/ws".to_string()])
     );
-    assert!(matches!(
-        parsed.platform_storage_backend().expect("platform storage"),
-        StorageBackend::Sqlite(storage)
-            if storage.path == temp.path().join("data/platform.sqlite")
-    ));
 }
 
 #[test]
@@ -202,6 +231,7 @@ fn nats_config_render_round_trips_custom_ports() {
             private_key: "/etc/nats/tls/nats.key".into(),
             websocket: NatsWebsocket::Tls,
         }),
+        "",
     );
 
     assert_eq!(
@@ -219,7 +249,7 @@ fn local_nats_config_render_round_trips_custom_ports() {
     let config = render_local_nats_config(
         "trellis",
         "/tmp/trellis/nats/data",
-        "/tmp/trellis/nats/jwt.local.conf",
+        "",
         4322,
         8180,
         8322,
@@ -445,7 +475,7 @@ fn generated_bundle_listeners_round_trip_through_managed_parser() {
     generate_trellis_bootstrap(&options).expect("generate Trellis");
 
     assert_eq!(
-        read_nats_listen_ports(&out.join("nats/nats.conf")).expect("read listeners"),
+        read_nats_listen_ports(&out.join("nats.conf")).expect("read listeners"),
         NatsListeners {
             native: 4333,
             monitor: 8333,
@@ -530,39 +560,6 @@ fn trellis_bootstrap_rejects_each_trellis_http_collision() {
     }
 }
 
-#[test]
-fn generated_session_and_authorization_seeds_are_decodable_and_private() {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine as _;
-
-    let temp = tempfile::tempdir().expect("temp dir");
-    let out = temp.path().join("bundle");
-    generate_trellis_bootstrap(&trellis_options(&out)).expect("generate Trellis");
-
-    for name in ["session.seed", "auth/authorization-issuer.seed"] {
-        let seed_path = out.join(name);
-        let contents = fs::read_to_string(&seed_path).expect("read generated seed");
-        let decoded = URL_SAFE_NO_PAD
-            .decode(contents.trim())
-            .expect("decode generated seed");
-        assert_eq!(decoded.len(), 32, "{name} must contain a 32-byte seed");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(
-                fs::metadata(&seed_path)
-                    .expect("seed metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600,
-                "{name} must be private"
-            );
-        }
-    }
-}
-
 fn parse_config(config: &str) -> Result<NatsListeners, NatsConfigError> {
     let temp = tempfile::tempdir().expect("temp dir");
     let path = temp.path().join("nats.conf");
@@ -583,17 +580,22 @@ fn local_nats_config_quotes_host_paths_with_spaces() {
     let config = render_local_nats_config(
         "trellis",
         "/tmp/trellis data/store dir",
-        "/tmp/trellis data/jwt config.conf",
+        "",
         4222,
         8080,
         8222,
         None,
     );
     assert!(config.contains("store_dir: \"/tmp/trellis data/store dir\""));
-    assert!(config.contains("include \"/tmp/trellis data/jwt config.conf\""));
 
-    let rendered = render_local_jwt_config("dir: ./resolver\n", "a\"b\\c");
-    assert_eq!(rendered, r#"dir: "a\"b\\c""#);
+    let rendered = nats_accounts(
+        "listen: 1\noperator: x\nresolver: {\n  dir: /data/jwt\n}\n",
+        "a\"b\\c",
+    );
+    assert_eq!(
+        rendered,
+        "operator: x\nresolver: {\n  dir: \"a\\\"b\\\\c\"\n}\n"
+    );
 }
 
 /// Verifies `certificate` for `host` with only the bundle CA trusted.
@@ -642,7 +644,7 @@ fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trus
         .expect("generated TLS summary");
     let ca = out.join("tls/ca.crt");
     let runtime_leaf = fs::read(out.join("tls/runtime.crt")).expect("runtime leaf");
-    let nats_leaf = fs::read(out.join("nats/tls/nats.crt")).expect("NATS leaf");
+    let nats_leaf = fs::read(out.join("tls/nats.crt")).expect("NATS leaf");
 
     // Every role-mounted path lacks the CA private key; only the CA directory has it.
     assert!(ca_directory.join("ca.key").is_file());
@@ -652,7 +654,7 @@ fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trus
                 .unwrap_or_default()
                 .contains("PRIVATE KEY")
                 || entry.ends_with("tls/runtime.key")
-                || entry.ends_with("nats/tls/nats.key"),
+                || entry.ends_with("tls/nats.key"),
             "{} must not hold the CA key",
             entry.display()
         );

@@ -8,7 +8,7 @@ import {
 import { recordTrellisDuration } from "@oatscenter/trellis/telemetry";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import {
   type Server,
   type Socket,
@@ -71,7 +71,8 @@ type RuntimeTimeouts = {
 type LaunchPlan = {
   server: string;
   configPath: string;
-  credsPath: string;
+  creds: Uint8Array;
+  timeoutMs: number;
   environment: Record<string, string>;
   mode: string;
   ports: readonly number[];
@@ -82,7 +83,6 @@ type LaunchPlan = {
 
 function serverCommand(plan: LaunchPlan): ResolvedTrellisProcessCommand {
   const args = [
-    "--config",
     plan.configPath,
     "--nats-download",
     "--isolated-process-group",
@@ -95,13 +95,29 @@ function serverCommand(plan: LaunchPlan): ResolvedTrellisProcessCommand {
   if (plan.advertisedWebsocket) {
     args.push("--advertise-nats-websocket", plan.advertisedWebsocket);
   }
-  args.push(plan.mode);
+  args.push("--mode", plan.mode);
   return {
     cmd: plan.server,
     args,
     env: plan.environment,
     isolatedProcessGroup: true,
   };
+}
+
+/** Prints a NATS user's creds the way an operator gets them. */
+async function printNatsCredentials(
+  server: string,
+  configPath: string,
+  user: "system" | "trellis",
+  environment: Record<string, string>,
+  timeoutMs: number,
+): Promise<Uint8Array> {
+  return await runBootstrapCommand(
+    server,
+    ["nats", "--print", "--installation", configPath, user],
+    environment,
+    timeoutMs,
+  );
 }
 
 async function runBootstrapCommand(
@@ -170,7 +186,7 @@ export type NativeProxyTls = { certificate: string; privateKey: string };
 
 /** Reads the bundle's broker certificate and key for a gated native proxy. */
 function readBrokerTls(workdir: string): NativeProxyTls {
-  const directory = join(workdir, "config", "trellis", "nats", "tls");
+  const directory = join(workdir, "config", "trellis", "tls");
   return {
     certificate: readFileSync(join(directory, "nats.crt"), "utf8"),
     privateKey: readFileSync(join(directory, "nats.key"), "utf8"),
@@ -787,7 +803,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         "init",
         "--format",
         "json",
-        "--out",
+        "--bundle",
         join(workdir, "config", "trellis"),
         "--nats-port",
         String(nativePort),
@@ -850,7 +866,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
       const bootstrap = z
         .object({
           trellisConfig: z.string(),
-          trellisRuntimeCreds: z.string(),
         })
         .parse(JSON.parse(new TextDecoder().decode(output)));
       environment.TRELLIS_CONFIG = bootstrap.trellisConfig;
@@ -871,7 +886,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
             "admin",
             "--format",
             "json",
-            "--config",
             bootstrap.trellisConfig,
             "--username",
             ADMIN_USERNAME,
@@ -885,7 +899,14 @@ export class TrellisTestRuntime implements AsyncDisposable {
       const launch: LaunchPlan = {
         server: native.server,
         configPath: bootstrap.trellisConfig,
-        credsPath: bootstrap.trellisRuntimeCreds,
+        creds: await printNatsCredentials(
+          native.server,
+          bootstrap.trellisConfig,
+          "trellis",
+          environment,
+          timeouts.startupMs,
+        ),
+        timeoutMs: timeouts.startupMs,
         environment,
         mode: options.trellis?.mode ?? "all",
         ports: [nativePort, monitorPort, websocketPort, trellisPort],
@@ -904,7 +925,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       controlPlane = startedControlPlane;
       nc = await connect({
         servers: natsUrl,
-        authenticator: credsAuthenticator(await readFile(launch.credsPath)),
+        authenticator: credsAuthenticator(launch.creds),
         timeout: timeouts.startupMs,
       });
       const deployment = options.deployment ?? "test";
@@ -1154,7 +1175,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       servers: this.natsUrl,
       timeout: this.#timeouts.startupMs,
       ...options,
-      authenticator: credsAuthenticator(await readFile(this.#launch.credsPath)),
+      authenticator: credsAuthenticator(this.#launch.creds),
     });
     if (this.#stopped) {
       await connection.close();
@@ -1162,6 +1183,23 @@ export class TrellisTestRuntime implements AsyncDisposable {
     }
     this.#observations.add(connection);
     return connection;
+  }
+
+  /**
+   * One of this runtime's NATS users as a `.creds` file's contents, as
+   * `trellis-server nats <user> --print` gives them to operators.
+   *
+   * @param user `system` for servers, accounts and connections; `trellis`
+   *   for the account services and clients run in.
+   */
+  async natsCredentials(user: "system" | "trellis"): Promise<Uint8Array> {
+    return await printNatsCredentials(
+      this.#launch.server,
+      this.#launch.configPath,
+      user,
+      this.#launch.environment,
+      this.#launch.timeoutMs,
+    );
   }
 
   /** Drains the underlying NATS connection. */
@@ -1212,9 +1250,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       });
       this.#nc = await connect({
         servers: this.natsUrl,
-        authenticator: credsAuthenticator(
-          await readFile(this.#launch.credsPath),
-        ),
+        authenticator: credsAuthenticator(this.#launch.creds),
         timeout: this.#timeouts.startupMs,
       });
     } catch (error) {

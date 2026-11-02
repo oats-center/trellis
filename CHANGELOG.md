@@ -17,12 +17,40 @@ and this project adheres to
   now optional: it gives the Console a hostname of its own, pointed at the
   same port, so its pages run apart from sign-in; Console paths on the Trellis
   hostname then redirect there. Create installations afresh.
+- Breaking: an installation is four things: `config.toml`, `secrets.toml`,
+  `nats.conf` and `tls/`. `secrets.toml` holds every private key Trellis reads
+  (owner-only, refused when anyone else can read it), replacing
+  `session.seed`, `live-providers/`, `auth/`, `nats/creds/` and
+  `nats/secrets/`; `config.toml` loses the keys that named those files
+  (`event_session_seed_file`, `[live_provider_seed_files]`, `[nats.runtime]`,
+  `[nats.auth_callout]`, `auth.oauth_storage_key_file` and
+  `auth.authorization.issuer_signing_seed_file`). `nats.conf` now ends with the
+  NATS accounts that `nats/jwt.conf` held, and the NATS certificate moved to
+  `tls/nats.crt`. A role started apart from the platform needs only the
+  Trellis NATS user and its own provider seed. Create installations afresh.
+- Breaking: every `trellis-server` command takes the installation the same
+  way: `trellis-server <folder or config.toml>`, `--user` or `--system`, with
+  `--user` the default and `--system` root's on Linux. `--config` is gone, the
+  runtime mode moved to `--mode` (`trellis-server --mode jobs`), and `init
+admin`, `tls renew` and `tls status` take the installation like the server.
+  `init` takes `--user`, `--system` or `--bundle <folder>`, which replaces
+  `--out`. A bundle keeps everything the server writes in its `var/` folder,
+  and every installation shares one NATS download in the user or system
+  cache. `init --format json` reports how to `start` the installation instead
+  of `trellisRuntimeCreds`.
+- The `trellis-local-bootstrap` crate is gone; `trellis-bootstrap` generates
+  the installation's keys itself.
 - Breaking: a service update's `reviewUrl` is optional; it is absent on an
   installation without the Console. Rust's
   `ServiceRuntimeError::UpdateRejected` now carries `review`.
 
 ### Added
 
+- `trellis-server nats <system|trellis|auth> <args>` runs the `nats` CLI as
+  one of the installation's NATS users, with its address and CA set; the
+  creds exist on disk only while it runs. `--print` prints the creds instead.
+  The testkits get them the same way: `TrellisTestRuntime::nats_creds` in
+  Rust and `natsCredentials()` in TypeScript.
 - `[console] enabled = false` serves no Console. Sign-in then turns the
   Console away, and a service waiting for approval prints the
   `trellis svc <deployment-id> approve` command instead of a link.
@@ -38,6 +66,10 @@ and this project adheres to
   `TRELLIS_ORIGIN` and `CONSOLE_ORIGIN`, which replace
   `VITE_TRELLIS_AUTH_URL` and `VITE_TRELLIS_NATS_SERVERS`, and serves the
   Console at `/console`.
+- A server started with a relative path to its config (`dir/config.toml`) put
+  its databases and event-context digest under `dir/dir/` instead of `dir/`.
+- `init` no longer writes `nats/auth-callout.env` or copies of the NATS account
+  JWTs to `nats/data/jwt/`. Nothing read them.
 
 ## [0.100.0-rc.19] - 2026-10-31
 
