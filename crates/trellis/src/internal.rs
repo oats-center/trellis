@@ -10,6 +10,7 @@ use crate::client::{AuthorizationOwner, PreparedTrellisEvent, TrellisClient, Tre
 use crate::jobs::JobsRuntime;
 use crate::service::{ConnectedServiceRuntime, EventsRuntime, LocalAuthVerifier};
 
+pub use crate::client::nats_tls::named_server_tls;
 pub use crate::service::internal::*;
 pub use crate::service::live_router::LiveProviderOwner;
 

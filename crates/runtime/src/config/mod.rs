@@ -495,6 +495,7 @@ impl RuntimeConfig {
             )?,
             auth_creds: users.auth.as_ref().map(NatsUser::creds),
             system_creds: users.system.as_ref().map(NatsUser::creds),
+            tls_server_name: None,
         })
     }
 
@@ -508,6 +509,19 @@ impl RuntimeConfig {
     ) -> Result<ResolvedRuntimeNatsConfig, ConfigError> {
         let mut resolved = self.resolve_nats_runtime()?;
         if let Some(servers) = servers_override {
+            // The managed broker's certificate names the host clients reach it
+            // by, not the loopback address the runtime dials.
+            resolved.tls_server_name = resolved
+                .servers
+                .split(',')
+                .next()
+                .and_then(|server| Url::parse(server.trim()).ok())
+                .filter(|server| server.scheme() == "tls")
+                .and_then(|server| match server.host()? {
+                    Host::Domain(name) => Some(name.to_owned()),
+                    Host::Ipv4(address) => Some(address.to_string()),
+                    Host::Ipv6(address) => Some(address.to_string()),
+                });
             resolved.servers = servers.to_string();
         }
         Ok(resolved)
@@ -903,6 +917,9 @@ pub struct ResolvedRuntimeNatsConfig {
     pub auth_creds: Option<String>,
     /// System-account runtime user, which only the platform role needs.
     pub system_creds: Option<String>,
+    /// The name the broker's certificate carries when `servers` reaches it by
+    /// another address: the configured host, for a managed broker at loopback.
+    pub tls_server_name: Option<String>,
 }
 
 impl ResolvedRuntimeNatsConfig {
@@ -933,6 +950,7 @@ impl std::fmt::Debug for ResolvedRuntimeNatsConfig {
             .debug_struct("ResolvedRuntimeNatsConfig")
             .field("servers", &self.servers)
             .field("ca_certificate", &self.ca_certificate)
+            .field("tls_server_name", &self.tls_server_name)
             .finish_non_exhaustive()
     }
 }

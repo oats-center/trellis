@@ -212,3 +212,110 @@ async fn managed_nats_websocket_behind_a_proxy_accepts_the_proxy() {
 
     installation.stop().await;
 }
+
+/// Writes a CA and leaf certificates for `[trellis_hosts, nats_hosts]` into
+/// `directory`, as an operator's own CA would issue them.
+fn issue_certificates(directory: &Path, trellis_hosts: &[&str], nats_hosts: &[&str]) {
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let mut ca = rcgen::CertificateParams::default();
+    ca.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca.key_usages = vec![
+        rcgen::KeyUsagePurpose::KeyCertSign,
+        rcgen::KeyUsagePurpose::DigitalSignature,
+    ];
+    std::fs::write(
+        directory.join("ca.crt"),
+        ca.self_signed(&ca_key).unwrap().pem(),
+    )
+    .unwrap();
+    let issuer = rcgen::Issuer::new(ca, ca_key);
+    for (name, hosts) in [("trellis", trellis_hosts), ("nats", nats_hosts)] {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let leaf = rcgen::CertificateParams::new(
+            hosts
+                .iter()
+                .map(|host| host.to_string())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .signed_by(&key, &issuer)
+        .unwrap();
+        std::fs::write(directory.join(format!("{name}.crt")), leaf.pem()).unwrap();
+        std::fs::write(directory.join(format!("{name}.key")), key.serialize_pem()).unwrap();
+    }
+}
+
+/// Whether `/readyz` on `https://localhost:port` answers 200, trusting `ca`.
+async fn ready_over_tls(port: u16, ca: PathBuf) -> bool {
+    tokio::task::spawn_blocking(move || {
+        use rustls::pki_types::pem::PemObject as _;
+        use std::io::{Read as _, Write as _};
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from_pem_file(ca).ok()?)
+            .ok()?;
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let connection =
+            rustls::ClientConnection::new(config.into(), "localhost".try_into().ok()?).ok()?;
+        let socket = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+        let mut stream = rustls::StreamOwned::new(connection, socket);
+        stream
+            .write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .ok()?;
+        let mut status = [0; 12];
+        stream.read_exact(&mut status).ok()?;
+        (&status == b"HTTP/1.1 200").then_some(())
+    })
+    .await
+    .unwrap()
+    .is_some()
+}
+
+/// An operator's NATS certificate names the host clients use, not loopback,
+/// yet the server reaches the broker it runs at loopback.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_nats_starts_with_a_certificate_naming_only_its_hostname() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let certificates = directory.path().join("certificates");
+    std::fs::create_dir(&certificates).unwrap();
+    issue_certificates(&certificates, &["localhost"], &["nats.example.test"]);
+    let file = |name: &str| certificates.join(name).display().to_string();
+    let mut installation = Installation::start(
+        directory.path(),
+        &[
+            "--tls",
+            "supplied",
+            "--tls-certificate-chain",
+            &file("trellis.crt"),
+            "--tls-private-key",
+            &file("trellis.key"),
+            "--nats-tls-certificate-chain",
+            &file("nats.crt"),
+            "--nats-tls-private-key",
+            &file("nats.key"),
+            "--tls-ca-certificate",
+            &file("ca.crt"),
+            "--nats-server-url",
+            "tls://nats.example.test:4222",
+        ],
+    )
+    .await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    while !ready_over_tls(installation.ports[0], certificates.join("ca.crt")).await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the server never became ready"
+        );
+        assert!(
+            installation.running.try_wait().unwrap().is_none(),
+            "the server exited before becoming ready"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    installation.stop().await;
+}

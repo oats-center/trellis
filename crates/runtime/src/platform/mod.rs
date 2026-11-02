@@ -182,6 +182,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let provider_store = store.clone();
     let provider_operational = context.trellis_nats.clone();
     let provider_roots: Vec<_> = nats.ca_certificate.iter().cloned().collect();
+    let provider_server_name = nats.tls_server_name.clone();
     let provider_servers = nats
         .servers
         .split(',')
@@ -267,7 +268,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 () = provider_stop.stopped() => return Ok(()),
                 result = bootstrap::connect_platform_provider(
                     provider_store, provider_oauth, provider_operational, provider_servers,
-                    provider_roots, &provider_seed,
+                    provider_roots, provider_server_name, &provider_seed,
                 ) => result?,
             };
             let owner = provider.runtime_native_owner();
@@ -408,12 +409,7 @@ async fn connect_nats(
     nats: &ResolvedRuntimeNatsConfig,
     credentials: &str,
 ) -> Result<async_nats::Client, RuntimeError> {
-    let mut options = async_nats::ConnectOptions::with_credentials(credentials)
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    if let Some(ca) = &nats.ca_certificate {
-        options = options.add_root_certificates(ca.clone());
-    }
-    options
+    crate::supervisor::nats_connect_options(nats, credentials)?
         .connect(&nats.servers)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))

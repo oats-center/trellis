@@ -167,13 +167,7 @@ pub async fn check(
             return Ok(report);
         }
     };
-    let trellis_nats = match check_nats_connection(
-        &nats.servers,
-        nats.ca_certificate.as_deref(),
-        &nats.trellis_creds,
-    )
-    .await
-    {
+    let trellis_nats = match check_nats_connection(&nats, &nats.trellis_creds).await {
         Ok(client) => {
             report.push(
                 "nats.trellis",
@@ -337,9 +331,7 @@ pub async fn check(
         }
         let (auth_creds, system_creds) = nats.platform_creds()?;
         for (name, credentials) in [("nats.auth", auth_creds), ("nats.system", system_creds)] {
-            match check_nats_connection(&nats.servers, nats.ca_certificate.as_deref(), credentials)
-                .await
-            {
+            match check_nats_connection(&nats, credentials).await {
                 Ok(client) => {
                     let _ = client.drain().await;
                     report.push(
@@ -359,18 +351,31 @@ pub async fn check(
     Ok(report)
 }
 
+/// Options for the runtime's own connections to `nats` as `credentials`.
+pub(crate) fn nats_connect_options(
+    nats: &crate::config::ResolvedRuntimeNatsConfig,
+    credentials: &str,
+) -> Result<async_nats::ConnectOptions, RuntimeError> {
+    let options = async_nats::ConnectOptions::with_credentials(credentials)
+        .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+    let roots: Vec<_> = nats.ca_certificate.iter().cloned().collect();
+    Ok(match &nats.tls_server_name {
+        Some(name) => options.tls_client_config(
+            trellis_rs::__internal::named_server_tls(&roots, name)
+                .map_err(|error| RuntimeError::Nats(error.to_string()))?,
+        ),
+        None => roots
+            .into_iter()
+            .fold(options, async_nats::ConnectOptions::add_root_certificates),
+    })
+}
+
 async fn check_nats_connection(
-    servers: &str,
-    ca_certificate: Option<&std::path::Path>,
+    nats: &crate::config::ResolvedRuntimeNatsConfig,
     credentials: &str,
 ) -> Result<async_nats::Client, RuntimeError> {
-    let mut options = async_nats::ConnectOptions::new()
-        .credentials(credentials)
-        .map_err(|error| RuntimeError::Nats(error.to_string()))?;
-    if let Some(ca) = ca_certificate {
-        options = options.add_root_certificates(ca.to_path_buf());
-    }
-    let client = tokio::time::timeout(Duration::from_secs(10), options.connect(servers))
+    let options = nats_connect_options(nats, credentials)?;
+    let client = tokio::time::timeout(Duration::from_secs(10), options.connect(&nats.servers))
         .await
         .map_err(|_| RuntimeError::Nats("connection timed out".to_owned()))?
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
@@ -665,13 +670,7 @@ pub async fn run_with_stop(
             .map(|o| o.runtime_servers.as_str()),
     )?;
     let leases = config.resolve_leases()?;
-    let mut trellis_options = async_nats::ConnectOptions::new()
-        .credentials(&nats.trellis_creds)
-        .map_err(|error| RuntimeError::Nats(error.to_string()))?;
-    if let Some(ca) = &nats.ca_certificate {
-        trellis_options = trellis_options.add_root_certificates(ca.clone());
-    }
-    let trellis_nats = trellis_options
+    let trellis_nats = nats_connect_options(&nats, &nats.trellis_creds)?
         .connect(&nats.servers)
         .await
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
@@ -1011,6 +1010,7 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
         }
     };
     trust.root_certificates = root_certificates;
+    trust.nats_server_name = nats.tls_server_name.clone();
     for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
         let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
         let deployment = if let Some(store) = store {

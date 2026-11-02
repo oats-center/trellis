@@ -16,6 +16,10 @@ and this project adheres to
   same way as a refused credential, so the service now keeps retrying. A
   service whose deployment is disabled waits and resumes once it's enabled
   again.
+- A server running its own NATS failed to start with a supplied NATS
+  certificate that named only the broker's hostname, because it reached the
+  broker at `127.0.0.1` and checked the certificate against that address. It
+  now checks the certificate against the host in `--nats-server-url`.
 
 ## [0.100.0-rc.20] - 2026-11-02
 

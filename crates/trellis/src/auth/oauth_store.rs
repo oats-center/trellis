@@ -154,6 +154,7 @@ impl NativeCredentialLease {
             issuer: stored.issuer.clone(),
             rotation_sequence: stored.rotation_sequence.get(),
             root_certificates: initial.root_certificates.clone(),
+            nats_server_name: initial.nats_server_name.clone(),
         })
     }
 

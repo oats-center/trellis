@@ -46,6 +46,7 @@ impl Selection {
                 issuer: self.issuer_key.clone(),
                 rotation_sequence: self.rotation_sequence,
                 root_certificates: self.root_certificates.clone(),
+                nats_server_name: None,
             },
         )
         .await

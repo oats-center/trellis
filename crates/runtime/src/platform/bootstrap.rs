@@ -37,11 +37,13 @@ pub(crate) async fn connect_platform_provider(
     operational: async_nats::Client,
     nats_servers: Vec<String>,
     root_certificates: Vec<std::path::PathBuf>,
+    nats_server_name: Option<String>,
     identity_seed: &str,
 ) -> Result<ConnectedServiceRuntime<Participant>, RuntimeError> {
     let reader = store.clone();
     let mut trust = super::auth::blocking(move || reader.runtime_authorization_trust()).await?;
     trust.root_certificates = root_certificates;
+    trust.nats_server_name = nats_server_name;
     let mut provider = ConnectedServiceRuntime::<Participant>::connect(ServiceConnectOptions::new(
         nats_servers,
         trust,

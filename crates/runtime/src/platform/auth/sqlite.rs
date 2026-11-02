@@ -636,6 +636,7 @@ impl SqliteAuthorizationStore {
             issuer,
             rotation_sequence,
             root_certificates: Vec::new(),
+            nats_server_name: None,
         })
     }
 

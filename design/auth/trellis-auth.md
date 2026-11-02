@@ -314,7 +314,11 @@ Clients trust a private installation CA only through explicit configuration:
 CA the user accepted by fingerprint and pinned), and the
 Node runtime's `NODE_EXTRA_CA_CERTS` for TypeScript participants. Non-empty Rust
 roots are the only trust anchors for that installation's OAuth and broker TLS. A
-broker or metadata response can never supply them. Observable configured origin
+broker or metadata response can never supply them. A runtime reaching the broker it
+manages at loopback still checks the broker's certificate in full, against the
+host in the configured NATS server URL
+(`RuntimeAuthorizationTrust.nats_server_name` for its own providers), so a
+supplied NATS certificate needs only the name clients use. Observable configured origin
 conflicts fail before binding a listener. Operators must also keep external
 reverse-proxy routes and aliases separate: the runtime cannot inspect an
 unconfigured proxy's routing table or discover that two public hostnames are

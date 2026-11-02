@@ -12,6 +12,7 @@ mod error;
 mod events;
 #[cfg(feature = "http")]
 mod http_error;
+pub(crate) mod nats_tls;
 mod operations;
 mod proof;
 mod resources;

@@ -269,6 +269,7 @@ mod tests {
                 issuer: issuer.clone(),
                 rotation_sequence: 0,
                 root_certificates: Vec::new(),
+                nats_server_name: None,
             },
             authority.unsigned.runtime_id.clone(),
             certificate.session_public_key.clone(),
@@ -535,6 +536,7 @@ mod tests {
                 issuer: issuer.clone(),
                 rotation_sequence: 0,
                 root_certificates: Vec::new(),
+                nats_server_name: None,
             },
             body.runtime_id.clone(),
             body.session_public_key.clone(),
@@ -762,6 +764,10 @@ pub struct RuntimeAuthorizationTrust {
     /// installation uses a private CA, such as the Trellis-generated
     /// installation CA. A broker or metadata response can never supply it.
     pub root_certificates: Vec<std::path::PathBuf>,
+    /// The name the broker's certificate must carry when the configured NATS
+    /// servers reach it by another address, such as a runtime dialling its own
+    /// broker at loopback. `None` checks each server's own host.
+    pub nats_server_name: Option<String>,
 }
 
 /// Retained-event evidence. Current consumer read authority is checked separately.

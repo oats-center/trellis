@@ -195,6 +195,7 @@ pub async fn discover_native_oauth(
             issuer: current.ok_or(NativeOAuthError::InvalidResponse)?,
             rotation_sequence: metadata.rotation_sequence.get(),
             root_certificates: root_certificates.to_vec(),
+            nats_server_name: None,
         },
         dpop_nonce,
     })

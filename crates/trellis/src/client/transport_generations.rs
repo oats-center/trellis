@@ -2697,11 +2697,17 @@ async fn open_generation(
         }
     })
     .custom_inbox_prefix(runtime.inbox_prefix.clone());
-    let options = native
-        .root_certificates
-        .iter()
-        .cloned()
-        .fold(options, ConnectOptions::add_root_certificates);
+    let options = match &native.server_name {
+        Some(name) => options.tls_client_config(crate::client::nats_tls::named_server_tls(
+            &native.root_certificates,
+            name,
+        )?),
+        None => native
+            .root_certificates
+            .iter()
+            .cloned()
+            .fold(options, ConnectOptions::add_root_certificates),
+    };
     let nats = match options.connect(native.nats_servers.clone()).await {
         Ok(nats) => nats,
         Err(error) => {

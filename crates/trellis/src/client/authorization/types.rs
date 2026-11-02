@@ -12,6 +12,10 @@ pub struct AuthorizationNativeTransport {
     /// Local PEM CA files trusted for these endpoints; never serialized.
     #[serde(skip)]
     pub root_certificates: Vec<std::path::PathBuf>,
+    /// The name these endpoints' certificates must carry, when not their own
+    /// hosts; never serialized.
+    #[serde(skip)]
+    pub server_name: Option<String>,
 }
 
 /// Available physical transports for one logical runtime.

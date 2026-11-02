@@ -30,6 +30,7 @@ trellis-runtime = { path = "../runtime", version = "0.100.0-rc.20" }
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.20", features = ["telemetry-otlp"] }
 
 [dev-dependencies]
+rcgen.workspace = true
 rustls.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "process"] }
 tempfile.workspace = true

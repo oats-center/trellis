@@ -1278,6 +1278,7 @@ impl TrellisClient {
                 native: Some(crate::client::AuthorizationNativeTransport {
                     nats_servers,
                     root_certificates: trust.root_certificates.clone(),
+                    server_name: trust.nats_server_name.clone(),
                 }),
                 websocket: None,
             },
@@ -1461,6 +1462,7 @@ impl TrellisClient {
                 native: Some(crate::client::AuthorizationNativeTransport {
                     nats_servers: opts.nats_servers,
                     root_certificates: session.trust.root_certificates.clone(),
+                    server_name: session.trust.nats_server_name.clone(),
                 }),
                 websocket: None,
             },
