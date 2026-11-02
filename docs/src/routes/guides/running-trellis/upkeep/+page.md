@@ -22,7 +22,7 @@ trellis-server tls renew
 ```
 
 That renews the installation the server uses by default; name another one
-as you would to start it, for example `trellis-server tls renew ~/trellis-two`.
+as you would to start it, for example `trellis-server tls renew --config ~/trellis-two`.
 Renewal reuses the CA, so nobody has to
 trust anything new. Trellis picks up its new certificate within seconds. NATS
 doesn't: restart `trellis-server`, or send NATS `nats-server --signal reload`
@@ -46,7 +46,7 @@ Give it its own folder and its own ports:
 trellis-server init --bundle ~/trellis-two --tls loopback-development \
   --trellis-port 3100 \
   --nats-port 4223 --nats-monitor-port 8223 --nats-ws-port 8081
-trellis-server ~/trellis-two
+trellis-server --config ~/trellis-two
 ```
 
 A bundle keeps everything the server writes in its `var/` folder: databases,

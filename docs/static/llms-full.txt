@@ -220,7 +220,7 @@ port. It is never a production setup. `init --user` (the default) and
 `init --system` (root's default on Linux) put data in the profile's XDG or FHS
 folders. `init --bundle <dir>` writes a self-contained installation that keeps
 everything the server writes in `<dir>/var`; start it with
-`trellis-server <dir>`. Several bundles can share a host. An installation is
+`trellis-server --config <dir>`. Several bundles can share a host. An installation is
 `config.toml`, `secrets.toml` (every private key, owner-only), `nats.conf` and
 `tls/`. `trellis-server nats <system|trellis> <args>` runs the `nats` CLI as
 that installation user; `--print` prints its creds instead.
@@ -245,7 +245,7 @@ production layout supply certificates from
 trust a generated or other private CA only explicitly, after verifying its
 SHA-256 fingerprint (`trellis-server tls status`) out of band: never disable
 certificate verification and never accept a CA from broker or metadata
-responses. Generated leaves expire after 90 days; `trellis-server tls renew [<installation>]` replaces them without changing
+responses. Generated leaves expire after 90 days; `trellis-server tls renew [--config <dir>]` replaces them without changing
 client trust. An installation has one HTTP listener at the Trellis origin
 (`--trellis-origin`: sign-in, the address the CLI, services, devices and apps
 connect to, and the bundled Console at `/console`). `--console-origin` gives the
@@ -302,7 +302,7 @@ password, startup emits `adminAccountUrl`, a one-time password-setup link on the
 Trellis origin that expires after five minutes; no default password
 exists. Startup flags `--admin-username`, `--admin-password`, and
 `--admin-password-stdin` configure fresh credentials. Explicit initialization
-uses `trellis-server init admin [<installation>]` with `--username` (default `admin`),
+uses `trellis-server init admin [--config <dir>]` with `--username` (default `admin`),
 optional `--password`, or `--password-stdin`. Until password setup, each startup
 prints a fresh link and invalidates prior links. After setup, restarts preserve
 credentials and print no link. Explicit `--reset-admin` issues a replacement

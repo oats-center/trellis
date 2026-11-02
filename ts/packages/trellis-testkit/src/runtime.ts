@@ -83,6 +83,7 @@ type LaunchPlan = {
 
 function serverCommand(plan: LaunchPlan): ResolvedTrellisProcessCommand {
   const args = [
+    "--config",
     plan.configPath,
     "--nats-download",
     "--isolated-process-group",
@@ -95,7 +96,7 @@ function serverCommand(plan: LaunchPlan): ResolvedTrellisProcessCommand {
   if (plan.advertisedWebsocket) {
     args.push("--advertise-nats-websocket", plan.advertisedWebsocket);
   }
-  args.push("--mode", plan.mode);
+  args.push(plan.mode);
   return {
     cmd: plan.server,
     args,
@@ -114,7 +115,7 @@ async function printNatsCredentials(
 ): Promise<Uint8Array> {
   return await runBootstrapCommand(
     server,
-    ["nats", "--print", "--installation", configPath, user],
+    ["nats", "--print", "--config", configPath, user],
     environment,
     timeoutMs,
   );
@@ -886,6 +887,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
             "admin",
             "--format",
             "json",
+            "--config",
             bootstrap.trellisConfig,
             "--username",
             ADMIN_USERNAME,

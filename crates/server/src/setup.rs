@@ -423,7 +423,7 @@ pub(crate) fn init_config(
     let start = match location {
         crate::Location::User => "trellis-server".to_owned(),
         crate::Location::System => "trellis-server --system".to_owned(),
-        crate::Location::Bundle(_) => format!("trellis-server {}", out.display()),
+        crate::Location::Bundle(_) => format!("trellis-server --config {}", out.display()),
     };
     let console = format!(
         "{}/console/",
@@ -671,8 +671,8 @@ pub(crate) struct NatsArgs {
     /// An installation folder from `init --bundle`, or the config.toml in
     /// it. Omitted, the user's installation, or the system's for root on
     /// Linux.
-    #[arg(long, value_name = "INSTALLATION", conflicts_with_all = ["user", "system"])]
-    pub(crate) installation: Option<PathBuf>,
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["user", "system"])]
+    pub(crate) config: Option<PathBuf>,
     /// Use the user's installation (~/.config/trellis), even as root.
     #[arg(long, conflicts_with = "system")]
     pub(crate) user: bool,
@@ -695,7 +695,7 @@ pub(crate) struct NatsArgs {
 /// The creds exist on disk only while `nats` runs, in the installation's
 /// private runtime folder.
 pub(crate) fn nats(args: NatsArgs) -> miette::Result<()> {
-    let location = match &args.installation {
+    let location = match &args.config {
         Some(path) => crate::Location::Bundle(path.clone()),
         None => crate::Location::profile(args.user, args.system),
     };

@@ -107,8 +107,8 @@ closes a healthy one.
 
 The Rust runtime has first-class `health` and `events` subsystems. In all-in-one
 mode both run with the platform and jobs subsystems. In split mode, operators
-run `trellis-server --mode health` for health projection and may omit
-`trellis-server --mode events` when projected event capture is not wanted.
+run `trellis-server health` for health projection and may omit
+`trellis-server events` when projected event capture is not wanted.
 
 Health subsystem rules:
 

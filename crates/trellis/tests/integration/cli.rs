@@ -327,6 +327,7 @@ async fn cli_server_managed_nats() {
         .args([
             "init",
             "admin",
+            "--config",
             config_path.to_str().expect("UTF-8 config path"),
             "--username",
             "managed-nats-admin",
@@ -352,6 +353,7 @@ async fn cli_server_managed_nats() {
     let mut child = ChildGuard::spawn(
         run_command
             .args([
+                "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
                 "--local-nats-ports",
@@ -463,6 +465,7 @@ async fn cli_server_managed_nats() {
         check_command
             .args([
                 "check",
+                "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
                 "--local-nats-ports",
@@ -523,6 +526,7 @@ async fn cli_server_managed_nats() {
     let mut occupied_child = ChildGuard::spawn(
         occupied_command
             .args([
+                "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
             ])
@@ -586,6 +590,7 @@ async fn cli_server_managed_nats() {
         broken_command
             .args([
                 "check",
+                "--config",
                 broken_config.to_str().expect("UTF-8 broken config path"),
                 local_nats.as_str(),
             ])
@@ -635,7 +640,7 @@ async fn cli_server_managed_nats() {
         .start()
         .expect("spawn test-owned managed nats-server");
     let creds = server_command(&workdir.0)
-        .args(["nats", "--print", "--installation"])
+        .args(["nats", "--print", "--config"])
         .arg(&bundle)
         .arg("trellis")
         .output()
@@ -717,7 +722,7 @@ async fn cli_server_managed_nats() {
         let mut failure_command = server_command(&workdir.0);
         let mut failure = ChildGuard::spawn(
             failure_command
-                .args([config_path.to_str().expect("UTF-8 config path")])
+                .args(["--config", config_path.to_str().expect("UTF-8 config path")])
                 .stdout(Stdio::null())
                 .stderr(Stdio::from(
                     fs::File::create(&failure_stderr).expect("create failed startup log"),
@@ -801,7 +806,7 @@ async fn cli_server_managed_nats() {
     let mut expansion_command = server_command(&workdir.0);
     let mut expansion = ChildGuard::spawn(
         expansion_command
-            .args([config_path.to_str().expect("UTF-8 config path")])
+            .args(["--config", config_path.to_str().expect("UTF-8 config path")])
             .stdout(Stdio::null())
             .stderr(Stdio::from(
                 fs::File::create(&expansion_stderr).expect("create expansion startup log"),
@@ -841,7 +846,7 @@ async fn cli_server_managed_nats() {
     let mut external_command = server_command(&workdir.0);
     let mut external_child = ChildGuard::spawn(
         external_command
-            .args([config_path.to_str().expect("UTF-8 config path")])
+            .args(["--config", config_path.to_str().expect("UTF-8 config path")])
             .stdout(Stdio::from(
                 fs::File::create(&external_stdout).expect("create external stdout log"),
             ))
@@ -983,7 +988,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     );
     let config = bundle.join("config.toml");
     let bootstrap = server_command(&workdir.0)
-        .args(["init", "admin"])
+        .args(["init", "admin", "--config"])
         .arg(&config)
         .args([
             "--username",
@@ -1021,6 +1026,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     let server_output = bundle.join("server.stdout.log");
     let mut server = ChildGuard::spawn(
         server_command(&workdir.0)
+            .arg("--config")
             .arg(&config)
             .env_remove("SSL_CERT_FILE")
             .stdout(Stdio::from(fs::File::create(&server_output).unwrap()))
@@ -1154,7 +1160,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     };
     let before = served(client.clone()).await;
     let renewed = server_command(&workdir.0)
-        .args(["tls", "renew"])
+        .args(["tls", "renew", "--config"])
         .arg(&bundle)
         .output()
         .unwrap();

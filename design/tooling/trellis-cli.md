@@ -162,7 +162,7 @@ whether people may create their own account while signing in to one app. The sep
 OAuth portal owns interactive login, device-code confirmation and consent;
 authenticated administration remains on NATS.
 
-Fresh administrator initialization uses `trellis-server init admin [<installation>]`.
+Fresh administrator initialization uses `trellis-server init admin [--config <path>]`.
 `--username` defaults to `admin`; `--password` or `--password-stdin` sets initial
 credentials. With neither, the command returns a one-time password-setup URL on
 the Trellis origin. Runtime startup offers corresponding
@@ -178,14 +178,14 @@ Setting up the host that runs one belongs to the server binary, which already
 holds the runtime and storage code:
 
 ```text
-trellis-server [<installation> | --user | --system] [--mode <mode>] [--init] ...
-trellis-server check [<installation> | --user | --system] [--mode <mode>] ...
+trellis-server [--config <path> | --user | --system] [--init] ... [<mode>]
+trellis-server check [--config <path> | --user | --system] ... [<mode>]
 trellis-server init [--user | --system | --bundle <dir>] [--external-nats] [--dev] ...
-trellis-server init admin [<installation> | --user | --system] ...
-trellis-server tls renew [<installation> | --user | --system] [--ca-dir <dir>]
+trellis-server init admin [--config <path> | --user | --system] ...
+trellis-server tls renew [--config <path> | --user | --system] [--ca-dir <dir>]
 trellis-server tls issue --out <dir> --host <name>...
-trellis-server tls status [<installation> | --user | --system]
-trellis-server nats [--installation <path> | --user | --system] [--print] <user> [<nats args>...]
+trellis-server tls status [--config <path> | --user | --system]
+trellis-server nats [--config <path> | --user | --system] [--print] <user> [<nats args>...]
 trellis-server upgrade [--check] [--prerelease]
 ```
 
@@ -193,9 +193,9 @@ An installation is one of three kinds. The user's lives in `~/.config/trellis`
 with its data in the XDG folders; the system's in `/etc/trellis` with its data
 in the FHS folders (Linux only); a bundle is a folder holding both, its data in
 `var/`. `--user` is the default, and `--system` for root on Linux. Every
-command names a bundle by its folder or its `config.toml`; naming one together
-with `--user` or `--system` is an error. `trellis-server nats` takes the path
-as `--installation`, since its trailing arguments belong to the `nats` CLI.
+command names a bundle with `--config`, given its folder or its `config.toml`;
+naming one together with `--user` or `--system` is an error. `<mode>` is
+`all` (the default), `platform`, `jobs`, `health` or `events`.
 
 Options go after the subcommand, and each subcommand takes only its own. Those that report a result accept `--format json` for scripts. Initialization creates ordinary secure directories only when absent and rejects
 unsafe paths. `trellis-server init` takes `--trellis-origin` and

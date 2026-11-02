@@ -43,6 +43,7 @@ impl Installation {
             String::from_utf8_lossy(&generated.stderr)
         );
         let running = tokio::process::Command::new(server)
+            .arg("--config")
             .arg(&config_dir)
             .arg("--nats-download")
             .arg("--local-nats-cache")

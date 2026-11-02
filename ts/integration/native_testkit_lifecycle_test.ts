@@ -31,8 +31,8 @@ test("native startup rejects another host's ready listener without disturbing th
             cmd: server,
             args: [
               "--isolated-process-group",
+              "--config",
               join(runtime.workdir, "config", "trellis", "config.toml"),
-              "--mode",
               "platform",
             ],
             cwd: runtime.workdir,

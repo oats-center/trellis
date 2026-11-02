@@ -150,7 +150,7 @@ async function startSplitRole(
     );
     await writeFile(configPath, stringify(config));
     await reservation.releaseForSpawn();
-    const child = spawnTracked(serverBinary(), [configPath, "--mode", role], {
+    const child = spawnTracked(serverBinary(), ["--config", configPath, role], {
       env: {
         PATH: process.env["PATH"] ?? "",
         HOME: join(root, "home"),

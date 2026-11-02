@@ -83,11 +83,11 @@ from the installation:
 Where the installation goes, and where the server keeps what it writes while
 it runs, depends on the kind you ask for:
 
-| `init` flag         | Installation        | Databases, NATS data, logs                             | Start it with             |
-| ------------------- | ------------------- | ------------------------------------------------------ | ------------------------- |
-| `--user`            | `~/.config/trellis` | `~/.local/share/trellis`, `~/.local/state/trellis`     | `trellis-server`          |
-| `--system`          | `/etc/trellis`      | `/var/lib/trellis`, `/run/trellis`, `/var/log/trellis` | `trellis-server --system` |
-| `--bundle <folder>` | `<folder>`          | `<folder>/var`                                         | `trellis-server <folder>` |
+| `init` flag         | Installation        | Databases, NATS data, logs                             | Start it with                      |
+| ------------------- | ------------------- | ------------------------------------------------------ | ---------------------------------- |
+| `--user`            | `~/.config/trellis` | `~/.local/share/trellis`, `~/.local/state/trellis`     | `trellis-server`                   |
+| `--system`          | `/etc/trellis`      | `/var/lib/trellis`, `/run/trellis`, `/var/log/trellis` | `trellis-server --system`          |
+| `--bundle <folder>` | `<folder>`          | `<folder>/var`                                         | `trellis-server --config <folder>` |
 
 `--user` is the default, except for root on Linux, where it's `--system`. A
 bundle is a whole installation in one folder, for development, tests and
@@ -126,7 +126,7 @@ as one of the installation's NATS users, with its address and CA already set:
 ```sh
 trellis-server nats system server report jetstream
 trellis-server nats trellis stream ls
-trellis-server nats --installation ~/trellis-two trellis kv ls
+trellis-server nats --config ~/trellis-two trellis kv ls
 ```
 
 `system` sees servers, accounts and connections. `trellis` is the account

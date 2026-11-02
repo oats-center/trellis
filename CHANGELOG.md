@@ -29,10 +29,9 @@ and this project adheres to
   `tls/nats.crt`. A role started apart from the platform needs only the
   Trellis NATS user and its own provider seed. Create installations afresh.
 - Breaking: every `trellis-server` command takes the installation the same
-  way: `trellis-server <folder or config.toml>`, `--user` or `--system`, with
-  `--user` the default and `--system` root's on Linux. `--config` is gone, the
-  runtime mode moved to `--mode` (`trellis-server --mode jobs`), and `init
-admin`, `tls renew` and `tls status` take the installation like the server.
+  way: `--config <folder or config.toml>`, `--user` or `--system`, with
+  `--user` the default and `--system` root's on Linux. `init admin`, `tls
+renew`, `tls status` and the new `nats` command take it like the server.
   `init` takes `--user`, `--system` or `--bundle <folder>`, which replaces
   `--out`. A bundle keeps everything the server writes in its `var/` folder,
   and every installation shares one NATS download in the user or system

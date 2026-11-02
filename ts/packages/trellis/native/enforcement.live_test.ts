@@ -107,6 +107,7 @@ test(
       await exec(serverBinary, [
         "init",
         "admin",
+        "--config",
         configPath,
         "--username",
         username,
@@ -127,7 +128,7 @@ test(
           () => false,
         ),
       );
-      let server = spawn(serverBinary, [configPath]);
+      let server = spawn(serverBinary, ["--config", configPath]);
       children.push(server);
       server.stdout.on("data", (chunk) => {
         serverLog += chunk;
@@ -216,7 +217,7 @@ test(
       await sibling.sessionsList({}).orThrow();
       await stop(server);
       await writeFile(secretsPath, secrets);
-      server = spawn(serverBinary, [configPath]);
+      server = spawn(serverBinary, ["--config", configPath]);
       children.push(server);
       server.stdout.on("data", (chunk) => {
         serverLog += chunk;

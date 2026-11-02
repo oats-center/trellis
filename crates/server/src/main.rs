@@ -45,31 +45,28 @@ struct Args {
     /// Issue a one-time password-reset URL for the sole active administrator.
     #[arg(long)]
     reset_admin: bool,
-    /// Run only one part of Trellis: all, platform, jobs, health, or events.
-    #[arg(long, default_value = "all", value_parser = parse_mode)]
+    /// Runtime mode to run: all, platform, jobs, health, or events.
+    #[arg(default_value = "all", value_parser = parse_mode)]
     mode: RuntimeMode,
     /// How a first-run installation reports its result.
     #[arg(long, value_enum, default_value_t)]
     format: setup::OutputFormat,
 }
 
-/// A subcommand name lands here when options came before it, so say where
-/// they go instead of looking for an installation by that name.
-fn parse_installation(value: &str) -> Result<PathBuf, String> {
+/// Parses the runtime mode. A subcommand name lands here when options came
+/// before it, so say where they go instead of listing the modes.
+fn parse_mode(value: &str) -> Result<RuntimeMode, String> {
     use clap::CommandFactory as _;
 
-    if !Path::new(value).exists() && Args::command().find_subcommand(value).is_some() {
-        return Err(format!(
-            "options go after the subcommand: trellis-server {value} [OPTIONS]"
-        ));
-    }
-    Ok(PathBuf::from(value))
-}
-
-fn parse_mode(value: &str) -> Result<RuntimeMode, String> {
     value
         .parse()
-        .map_err(|error: trellis_runtime::RuntimeModeParseError| error.to_string())
+        .map_err(|error: trellis_runtime::RuntimeModeParseError| {
+            if Args::command().find_subcommand(value).is_some() {
+                format!("options go after the subcommand: trellis-server {value} [OPTIONS]")
+            } else {
+                error.to_string()
+            }
+        })
 }
 
 #[derive(Debug, Subcommand)]
@@ -137,8 +134,8 @@ struct InitAdminArgs {
 struct CheckArgs {
     #[command(flatten)]
     server: ServerArgs,
-    /// Check only one part of Trellis: all, platform, jobs, health, or events.
-    #[arg(long, default_value = "all", value_parser = parse_mode)]
+    /// Runtime mode to validate: all, platform, jobs, health, or events.
+    #[arg(default_value = "all")]
     mode: RuntimeMode,
 }
 
@@ -162,19 +159,19 @@ pub(crate) struct InstallationArgs {
     /// An installation folder from `init --bundle`, or the config.toml in
     /// it. Omitted, the user's installation, or the system's for root on
     /// Linux.
-    #[arg(value_name = "INSTALLATION", value_parser = parse_installation)]
-    pub(crate) installation: Option<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    pub(crate) config: Option<PathBuf>,
     /// Use the user's installation (~/.config/trellis), even as root.
-    #[arg(long, conflicts_with_all = ["installation", "system"])]
+    #[arg(long, conflicts_with_all = ["config", "system"])]
     pub(crate) user: bool,
     /// Use the system installation (/etc/trellis), Linux only.
-    #[arg(long, conflicts_with = "installation")]
+    #[arg(long, conflicts_with = "config")]
     pub(crate) system: bool,
 }
 
 impl InstallationArgs {
     fn location(&self) -> Location {
-        match &self.installation {
+        match &self.config {
             Some(path) => Location::Bundle(path.clone()),
             None => Location::profile(self.user, self.system),
         }
@@ -202,7 +199,7 @@ pub(crate) struct InitLocation {
     pub(crate) system: bool,
     /// Write a self-contained installation to this folder, which also holds
     /// everything the server creates, in its `var` folder. Start it with
-    /// `trellis-server <DIR>`.
+    /// `trellis-server --config <DIR>`.
     #[arg(long, value_name = "DIR")]
     pub(crate) bundle: Option<PathBuf>,
 }
@@ -683,7 +680,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             return Err(miette!(
                 "no Trellis installation in {}; run `trellis-server` in a terminal to set \
                 one up, pass --init for a localhost development one, create one with \
-                `trellis-server init`, or name one: `trellis-server <INSTALLATION>`",
+                `trellis-server init`, or name one: `--config <PATH>`",
                 folder.display()
             ));
         };
@@ -1126,26 +1123,19 @@ mod tests {
         assert!(Args::try_parse_from(["trellis-server", "--reset-admin", "check"]).is_err());
         assert!(Args::try_parse_from(["trellis-server", "check", "--reset-admin"]).is_err());
         assert!(Args::try_parse_from(["trellis-server", "upgrade", "--config", "x"]).is_err());
-        let parsed = Args::try_parse_from(["trellis-server", "--nats-download", "--mode", "jobs"])
+        let parsed = Args::try_parse_from(["trellis-server", "--nats-download", "jobs"])
             .expect("flag followed by mode");
         assert_eq!(parsed.mode, RuntimeMode::Jobs);
     }
 
     #[test]
     fn parses_run_and_check_operations_with_the_same_server_options() {
-        let run = policy(&[
-            "trellis-server",
-            "--system",
-            "--nats-download",
-            "--mode",
-            "jobs",
-        ]);
+        let run = policy(&["trellis-server", "--system", "--nats-download", "jobs"]);
         let check = policy(&[
             "trellis-server",
             "check",
             "--system",
             "--nats-download",
-            "--mode",
             "jobs",
         ]);
         assert_eq!(run.operation, Operation::Run);
@@ -1201,8 +1191,8 @@ kind = "sqlite"
         )
         .expect("write config");
         let config = config.to_string_lossy().into_owned();
-        let run = policy(&["trellis-server", &config]);
-        let check = policy(&["trellis-server", "check", &config]);
+        let run = policy(&["trellis-server", "--config", &config]);
+        let check = policy(&["trellis-server", "check", "--config", &config]);
         let (run_config, run_paths) = load_runtime_config(&run).expect("load run config");
         let (check_config, check_paths) = load_runtime_config(&check).expect("load check config");
 
@@ -1375,10 +1365,17 @@ kind = "sqlite"
         assert!(!by_folder.cache_root.starts_with("/srv/dev1"));
 
         for profile in ["--user", "--system"] {
-            assert!(Args::try_parse_from(["trellis-server", profile, "/srv/dev1"]).is_err());
             assert!(
-                Args::try_parse_from(["trellis-server", "check", profile, "/srv/dev1"]).is_err()
+                Args::try_parse_from(["trellis-server", profile, "--config", "/srv/dev1"]).is_err()
             );
+            assert!(Args::try_parse_from([
+                "trellis-server",
+                "check",
+                profile,
+                "--config",
+                "/srv/dev1"
+            ])
+            .is_err());
         }
         assert!(
             Args::try_parse_from(["trellis-server", "init", "--user", "--bundle", "x"]).is_err()

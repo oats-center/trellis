@@ -35,7 +35,7 @@ also names `localhost`, so a service on the same machine can connect locally.
 Already started once for `localhost`? Then there's an installation in the way.
 [Start over](/guides/running-trellis/upkeep#start-over) first, or create the
 new one somewhere else with `--bundle <folder>` and start it with
-`trellis-server <folder>`.
+`trellis-server --config <folder>`.
 
 A development installation's certificate is one Trellis made itself, which is
 fine for people you trust on your network. For anything else, set up a

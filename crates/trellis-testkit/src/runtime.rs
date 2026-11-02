@@ -354,7 +354,7 @@ async fn start_once(
         .await?;
         crate::process::run(
             Command::new(&distribution.server)
-                .args(["init", "admin"])
+                .args(["init", "admin", "--config"])
                 .arg(&config_path)
                 .args(["--username", username, "--password-stdin"]),
             &workdir.join("logs/bootstrap.log"),
@@ -409,6 +409,7 @@ async fn start_once(
         }
         infrastructure.server = Some(Process::spawn(
             Command::new(&distribution.server)
+                .arg("--config")
                 .arg(&config_path)
                 .stdin(Stdio::null()),
             &workdir.join("logs/trellis-server.log"),
@@ -619,6 +620,7 @@ impl TrellisTestRuntime {
         }
         self.infrastructure.server = Some(Process::spawn(
             Command::new(&self.distribution.server)
+                .arg("--config")
                 .arg(&self.config)
                 .stdin(Stdio::null()),
             &self.workdir.join("logs/trellis-server.log"),
@@ -721,7 +723,7 @@ impl TrellisTestRuntime {
             )
         };
         let output = tokio::process::Command::new(&self.distribution.server)
-            .args(["nats", "--print", "--installation"])
+            .args(["nats", "--print", "--config"])
             .arg(&self.config)
             .arg(match user {
                 TestNatsUser::System => "system",
