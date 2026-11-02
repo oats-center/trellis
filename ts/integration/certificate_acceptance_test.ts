@@ -14,11 +14,16 @@ const native = pathToFileURL(
   join(import.meta.dirname, "../packages/trellis/native.ts"),
 ).href;
 
-/** A program that trusts nothing beyond the system store: it accepts, then discovers. */
+/**
+ * A program that trusts nothing beyond the system store: it accepts, as many
+ * times at once as it is told, then discovers.
+ */
 const program = `
 import { acceptServerCertificate, discoverNativeOAuth } from ${JSON.stringify(native)};
-const [issuer, directory] = process.argv.slice(1);
-const accepted = await acceptServerCertificate(issuer, { directory, interactive: false });
+const [issuer, directory, count = "1"] = process.argv.slice(1);
+const accepting = Array.from({ length: Number(count) }, () =>
+  acceptServerCertificate(issuer, { directory, interactive: false }));
+const accepted = (await Promise.all(accepting)).find((result) => result.isErr()) ?? (await accepting[0]);
 if (accepted.isErr()) {
   console.log(JSON.stringify({ reason: accepted.error.reason, message: accepted.error.message }));
 } else {
@@ -37,6 +42,7 @@ test("a program accepts a development installation's certificate by its fingerpr
         directory: string,
         env: Record<string, string> = {},
         address = runtime.trellisUrl,
+        count = 1,
       ): Promise<{ reason?: string; message?: string; issuer?: string }> => {
         const { NODE_EXTRA_CA_CERTS: _, ...inherited } = process.env;
         const { stdout } = await promisify(execFile)(
@@ -49,6 +55,7 @@ test("a program accepts a development installation's certificate by its fingerpr
             program,
             address,
             directory,
+            String(count),
           ],
           { env: { ...inherited, ...env } },
         );
@@ -77,6 +84,18 @@ test("a program accepts a development installation's certificate by its fingerpr
         runtime.consoleUrl,
       );
       assert.equal(selfSigned.issuer, runtime.trellisUrl);
+
+      // A program opening two connections at its first start accepts the
+      // same certificate twice at once; both must succeed.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const together = await run(
+          await mkdtemp(join(tmpdir(), "trellis-accepted-")),
+          { TRELLIS_CERTIFICATE_FINGERPRINT: fingerprint },
+          runtime.trellisUrl,
+          2,
+        );
+        assert.equal(together.issuer, runtime.trellisUrl, together.message);
+      }
     },
     { development: true },
   );

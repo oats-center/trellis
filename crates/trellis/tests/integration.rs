@@ -1,5 +1,7 @@
 #![allow(missing_docs)]
 
+#[path = "integration/certificate_acceptance.rs"]
+mod certificate_acceptance;
 #[path = "integration/cli.rs"]
 mod cli;
 #[path = "integration/jobs.rs"]

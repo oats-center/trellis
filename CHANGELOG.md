@@ -29,6 +29,10 @@ and this project adheres to
 - A syntax or type error in `secrets.toml` printed the offending line, and with
   it the key on that line, into the server's error and the journal. The error
   now gives the line, the column and what is wrong, without quoting the file.
+- A program that accepted a server's certificate for two connections at once,
+  at its first start, could fail one of them with "No such file or directory",
+  because both staged the certificate under the same file name. Each
+  acceptance now stages its own, in Rust and TypeScript.
 
 ## [0.100.0-rc.20] - 2026-11-02
 

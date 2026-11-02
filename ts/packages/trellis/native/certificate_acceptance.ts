@@ -9,7 +9,7 @@ import {
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { X509Certificate } from "node:crypto";
+import { randomUUID, X509Certificate } from "node:crypto";
 import {
   connect,
   getCACertificates,
@@ -145,8 +145,10 @@ export async function acceptServerCertificate(
 
   await mkdir(acceptance.directory, { recursive: true, mode: 0o700 });
   await chmod(acceptance.directory, 0o700);
-  const staged = `${file}.${process.pid}`;
-  await writeFile(staged, presented.pem, { mode: 0o600 });
+  // Unique to this attempt: another one in this process may be staging the
+  // same certificate.
+  const staged = `${file}.${randomUUID()}`;
+  await writeFile(staged, presented.pem, { mode: 0o600, flag: "wx" });
   await rename(staged, file);
   trust(presented.pem);
   return ok(undefined);
