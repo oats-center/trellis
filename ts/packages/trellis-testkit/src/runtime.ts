@@ -804,7 +804,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
         "init",
         "--format",
         "json",
-        "--bundle",
         join(workdir, "config", "trellis"),
         "--nats-port",
         String(nativePort),

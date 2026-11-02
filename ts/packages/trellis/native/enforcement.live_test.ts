@@ -66,7 +66,6 @@ test(
     try {
       await exec(serverBinary, [
         "init",
-        "--bundle",
         bundle,
         "--tls",
         "generated",

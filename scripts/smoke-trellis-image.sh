@@ -65,7 +65,7 @@ docker run --rm --user 10001:10001 --entrypoint trellis-server \
   tls issue --out /var/lib/trellis/certificates --host localhost --host 127.0.0.1
 docker run --rm --user 10001:10001 --entrypoint trellis-server \
   -v "${state_volume}":/var/lib/trellis "${image}" \
-  init --bundle /var/lib/trellis/bundle --tls supplied \
+  init /var/lib/trellis/bundle --tls supplied \
   --tls-ca-certificate /var/lib/trellis/certificates/ca.crt \
   --tls-certificate-chain /var/lib/trellis/certificates/server.crt \
   --tls-private-key /var/lib/trellis/certificates/server.key \

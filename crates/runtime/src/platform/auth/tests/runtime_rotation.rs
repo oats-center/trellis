@@ -100,7 +100,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     let oauth_origin = format!("http://127.0.0.1:{}", ports[0]);
     let config_dir = root.join("config");
     let generated = tokio::process::Command::new(&server)
-        .args(["init", "--bundle"])
+        .arg("init")
         .arg(&config_dir)
         .arg("--external-nats")
         .args([
@@ -479,7 +479,7 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
     let config_dir = root.join("config");
     let generated = tokio::process::Command::new(&server)
-        .args(["init", "--bundle"])
+        .arg("init")
         .arg(&config_dir)
         .args(["--external-nats", "--dev"])
         .args(["--trellis-port", &ports[0].to_string()])
@@ -743,7 +743,7 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
     // such as another installation's, is refused.
     let other = root.join("other");
     let generated = tokio::process::Command::new(&server)
-        .args(["init", "--bundle"])
+        .arg("init")
         .arg(&other)
         .args(["--external-nats", "--dev"])
         .output()

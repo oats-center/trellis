@@ -32,8 +32,8 @@ and this project adheres to
   way: `--config <folder or config.toml>`, `--user` or `--system`, with
   `--user` the default and `--system` root's on Linux. `init admin`, `tls
 renew`, `tls status` and the new `nats` command take it like the server.
-  `init` takes `--user`, `--system` or `--bundle <folder>`, which replaces
-  `--out`. A bundle keeps everything the server writes in its `var/` folder,
+  `init` takes `--user`, `--system` or a folder (`init <folder>`), which
+  replaces `--out <folder>`. A bundle keeps everything the server writes in its `var/` folder,
   and every installation shares one NATS download in the user or system
   cache. `init --format json` reports how to `start` the installation instead
   of `trellisRuntimeCreds`.

@@ -668,7 +668,7 @@ pub(crate) enum NatsRole {
 #[derive(Debug, clap::Args)]
 /// Run the `nats` CLI as one of the installation's NATS users.
 pub(crate) struct NatsArgs {
-    /// An installation folder from `init --bundle`, or the config.toml in
+    /// An installation folder from `init <DIR>`, or the config.toml in
     /// it. Omitted, the user's installation, or the system's for root on
     /// Linux.
     #[arg(long, value_name = "PATH", conflicts_with_all = ["user", "system"])]
@@ -912,7 +912,6 @@ mod tests {
         let mut arguments = vec![
             "trellis-server".to_string(),
             "init".to_string(),
-            "--bundle".to_string(),
             out,
             "--tls".to_string(),
             "generated".to_string(),

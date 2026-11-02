@@ -28,7 +28,6 @@ impl Installation {
         let generated = tokio::process::Command::new(server)
             .arg("init")
             .args(init_args)
-            .arg("--bundle")
             .arg(&config_dir)
             .args(["--trellis-port", &ports[0].to_string()])
             .args(["--nats-port", &ports[1].to_string()])

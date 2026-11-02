@@ -100,7 +100,11 @@ struct UpgradeArgs {
 }
 
 #[derive(Debug, clap::Args)]
-#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+#[command(
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true,
+    disable_help_subcommand = true
+)]
 struct InitArgs {
     #[command(subcommand)]
     admin: Option<InitSubcommand>,
@@ -156,7 +160,7 @@ struct BootstrapAdminArgs {
 /// Which installation a command uses.
 #[derive(Debug, Default, clap::Args)]
 pub(crate) struct InstallationArgs {
-    /// An installation folder from `init --bundle`, or the config.toml in
+    /// An installation folder from `init <DIR>`, or the config.toml in
     /// it. Omitted, the user's installation, or the system's for root on
     /// Linux.
     #[arg(long, value_name = "PATH")]
@@ -200,7 +204,7 @@ pub(crate) struct InitLocation {
     /// Write a self-contained installation to this folder, which also holds
     /// everything the server creates, in its `var` folder. Start it with
     /// `trellis-server --config <DIR>`.
-    #[arg(long, value_name = "DIR")]
+    #[arg(value_name = "DIR")]
     pub(crate) bundle: Option<PathBuf>,
 }
 
@@ -1377,8 +1381,6 @@ kind = "sqlite"
             ])
             .is_err());
         }
-        assert!(
-            Args::try_parse_from(["trellis-server", "init", "--user", "--bundle", "x"]).is_err()
-        );
+        assert!(Args::try_parse_from(["trellis-server", "init", "--user", "x"]).is_err());
     }
 }

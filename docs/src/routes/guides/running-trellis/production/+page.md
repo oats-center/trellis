@@ -83,11 +83,11 @@ from the installation:
 Where the installation goes, and where the server keeps what it writes while
 it runs, depends on the kind you ask for:
 
-| `init` flag         | Installation        | Databases, NATS data, logs                             | Start it with                      |
-| ------------------- | ------------------- | ------------------------------------------------------ | ---------------------------------- |
-| `--user`            | `~/.config/trellis` | `~/.local/share/trellis`, `~/.local/state/trellis`     | `trellis-server`                   |
-| `--system`          | `/etc/trellis`      | `/var/lib/trellis`, `/run/trellis`, `/var/log/trellis` | `trellis-server --system`          |
-| `--bundle <folder>` | `<folder>`          | `<folder>/var`                                         | `trellis-server --config <folder>` |
+| `init`          | Installation        | Databases, NATS data, logs                             | Start it with                      |
+| --------------- | ------------------- | ------------------------------------------------------ | ---------------------------------- |
+| `--user`        | `~/.config/trellis` | `~/.local/share/trellis`, `~/.local/state/trellis`     | `trellis-server`                   |
+| `--system`      | `/etc/trellis`      | `/var/lib/trellis`, `/run/trellis`, `/var/log/trellis` | `trellis-server --system`          |
+| `init <folder>` | `<folder>`          | `<folder>/var`                                         | `trellis-server --config <folder>` |
 
 `--user` is the default, except for root on Linux, where it's `--system`. A
 bundle is a whole installation in one folder, for development, tests and
@@ -156,7 +156,7 @@ private installation first, with your real hostnames and
 
 ```sh
 install -d -m 0700 "$HOME/trellis" "$HOME/trellis/data"
-trellis-server init --bundle "$HOME/trellis/config" --external-nats \
+trellis-server init "$HOME/trellis/config" --external-nats \
   --tls supplied --trusted-proxy 10.89.70.0/24 \
   --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
   --trellis-origin https://trellis.example.com \
@@ -223,7 +223,7 @@ docker volume create trellis-state
 docker run --rm --user 10001:10001 --entrypoint trellis-server \
   --volume trellis-state:/var/lib/trellis --volume "$PWD/certs":/certs:ro \
   ghcr.io/oats-center/trellis-server:latest \
-  init --bundle /var/lib/trellis/bundle --tls supplied \
+  init /var/lib/trellis/bundle --tls supplied \
   --tls-certificate-chain /certs/trellis.crt --tls-private-key /certs/trellis.key \
   --nats-tls-certificate-chain /certs/trellis.crt \
   --nats-tls-private-key /certs/trellis.key

@@ -212,7 +212,7 @@ installation other machines can use: one generated certificate covers the
 Trellis port (sign-in, and NATS for every WebSocket upgrade) and the Console's
 port. It is never a production setup. `init --user` (the default) and
 `init --system` (root's default on Linux) put data in the profile's XDG or FHS
-folders. `init --bundle <dir>` writes a self-contained installation that keeps
+folders. `init <dir>` writes a self-contained installation that keeps
 everything the server writes in `<dir>/var`; start it with
 `trellis-server --config <dir>`. Several bundles can share a host. An installation is
 `config.toml`, `secrets.toml` (every private key, owner-only), `nats.conf` and
@@ -382,7 +382,7 @@ records, so retain existing installations unchanged and use fresh
 development/test state. Unsupported records fail visibly; the runtime never
 deletes or recreates them as empty state.
 
-For multiple local managed-NATS servers, give each its own `init --bundle` installation
+For multiple local managed-NATS servers, give each its own `init <dir>` installation
 with its own HTTP and NATS ports; `--local-nats-ports=4223,8223,8081` overrides
 a bundle's NATS client, monitor, and WebSocket ports for one run. The default
 set is 4222/8222/8080; generated local configs use a 30-second owner lease

@@ -312,7 +312,7 @@ async fn start_once(
         .await?;
         let mut command = Command::new(&distribution.server);
         command
-            .args(["init", "--bundle"])
+            .arg("init")
             .arg(&config_dir)
             .arg("--external-nats")
             .args(["--tls", "supplied", "--tls-ca-certificate"])

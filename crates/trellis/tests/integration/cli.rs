@@ -290,7 +290,6 @@ async fn cli_server_managed_nats() {
             "json",
             "--tls",
             "generated",
-            "--bundle",
             bundle.to_str().expect("UTF-8 bundle path"),
             "--nats-port",
             &nats_port.to_string(),
@@ -560,7 +559,6 @@ async fn cli_server_managed_nats() {
             "init",
             "--tls",
             "generated",
-            "--bundle",
             broken_bundle.to_str().expect("UTF-8 broken bundle path"),
             "--trellis-port",
             &oauth_port.to_string(),
@@ -946,7 +944,7 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
     // Generated TLS makes the installation CA and every listener's
     // certificate. The Console gets a hostname of its own on the Trellis port.
     let initialized = server_command(&workdir.0)
-        .args(["init", "--format", "json", "--tls", "generated", "--bundle"])
+        .args(["init", "--format", "json", "--tls", "generated"])
         .arg(&bundle)
         .arg("--external-nats")
         .args([

@@ -43,7 +43,7 @@ can't do it from the Console.
 Give it its own folder and its own ports:
 
 ```sh
-trellis-server init --bundle ~/trellis-two --tls loopback-development \
+trellis-server init ~/trellis-two --tls loopback-development \
   --trellis-port 3100 \
   --nats-port 4223 --nats-monitor-port 8223 --nats-ws-port 8081
 trellis-server --config ~/trellis-two

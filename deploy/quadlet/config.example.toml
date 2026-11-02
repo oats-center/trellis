@@ -1,4 +1,4 @@
-# Apply these deployment settings to a fresh `trellis-server init --bundle`
+# Apply these deployment settings to a fresh `trellis-server init <folder>`
 # installation. Keep that installation's unique auth.instance_id and its
 # secrets.toml. This template intentionally does not provide a reusable
 # installation identity.
