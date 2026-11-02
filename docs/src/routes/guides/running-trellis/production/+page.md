@@ -149,65 +149,70 @@ it can see enough JetStream servers to hold three copies.
 
 ## Run it under systemd with Podman
 
-The repository's `deploy/quadlet` folder has Podman Quadlet units that run
-NATS and Trellis as two rootless containers managed by systemd. Create a
-private installation first, with your real hostnames and
-[certificates](#bring-certificates-people-already-trust):
+`init --quadlet` also writes [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
+units into the installation's `quadlet` folder. They run NATS and Trellis as
+two rootless containers under systemd, using the installation folder where it
+is: read-only, except its `var` folder, where the databases, logs and NATS
+data go.
 
 ```sh
-install -d -m 0700 "$HOME/trellis" "$HOME/trellis/data"
-trellis-server init "$HOME/trellis/config" --external-nats \
-  --tls supplied --trusted-proxy 10.89.70.0/24 \
+trellis-server init ~/trellis --quadlet --tls supplied \
+  --trusted-proxy 10.89.70.0/24 \
   --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
   --trellis-origin https://trellis.example.com \
   --nats-server-url tls://nats.example.com:4222 \
   --nats-websocket-url wss://nats.example.com
+cp ~/trellis/quadlet/* ~/.config/containers/systemd/
+systemctl --user daemon-reload
+systemctl --user start trellis
 ```
 
-Then adjust the generated `config.toml` using `deploy/quadlet/config.example.toml`
-as a guide: copy over its paths, origins and listener settings, and put your
-generated installation ID where the example has a placeholder. The example is
-a set of settings to apply, not an installation of its own. Never copy another
-installation's identity or private files.
+The units take the folder's name, so this one writes `trellis.container`,
+`trellis-nats.container` and `trellis.network`, and several installations can
+share a host. Starting Trellis starts its NATS. On first start Trellis prints a
+one-time link for setting the administrator's password, the same as in
+[Start Trellis](/guides/starting-trellis#set-the-administrator-password);
+`journalctl --user -u trellis` shows it.
 
-A few things about the units:
+For a lab, `trellis-server init ~/lab --quadlet --dev --host lab.example` is
+enough.
 
-- `trellis.container` runs `ghcr.io/oats-center/trellis-server:latest`, the
-  newest release. For a server that only changes when you decide, set
-  `Image=` to a version tag such as `v0.100.0-rc.12`.
-- In `trellis-nats.container`, replace `nats.example.com` in `NetworkAlias`
-  with your NATS hostname, so Trellis checks the same broker certificate from
-  inside the network as clients do from outside. That container only mounts
-  `nats.conf` and the NATS certificate, never `secrets.toml`.
-- They expect rootless Podman with `keep-id`, mapping your user to the
-  runtime's UID 10001. Keep private folders readable by you alone. Trellis
-  refuses to start on unsafe permissions, and loosening a folder with `chmod`
-  to get past that check defeats it.
-- Trellis gets `/run/trellis` from systemd's `RuntimeDirectory=trellis`.
+What `--quadlet` settles for you:
 
-Copy the units into `~/.config/containers/systemd/`, run
-`systemctl --user daemon-reload`, and start `trellis-nats.service` and
-`trellis.service`. On first start Trellis prints a one-time link for setting
-the administrator's password, the same as in
-[Start Trellis](/guides/starting-trellis#set-the-administrator-password).
+- NATS runs in its own container, so the installation uses
+  [external NATS](#who-runs-nats). Trellis reaches it over the containers'
+  network by the NATS hostname, the one its certificate names. That's why the
+  hostname can't be `localhost`: each container has a loopback of its own.
+- The images are pinned: Trellis to the version of `trellis-server` that ran
+  `init`, NATS to the version Trellis is tested with. Change `Image=` in the
+  units to upgrade.
+- Every port is published on all of the host's addresses, or the one
+  `--bind-address` names, except NATS monitoring and whatever sits behind your
+  proxy, which stay on loopback.
+- A proxy on the same host reaches Trellis through the containers' network,
+  so `--trusted-proxy` names that network, and the network is created with it
+  as its subnet.
+- A generated CA's private key goes beside the folder, in `~/trellis-tls-ca`,
+  never inside it, so no container can read it.
+  `trellis-server tls renew --config ~/trellis` finds it there.
+- The containers run rootless with `keep-id`, mapping you to the runtime's
+  user, with a read-only root and no capabilities. Keep the installation
+  readable by you alone. Trellis refuses to start on unsafe permissions, and
+  loosening a folder with `chmod` to get past that check defeats it.
 
-The containers publish to loopback only, so a proxy in front does the
-public-facing work:
+A proxy in front does the public-facing work for Trellis and the browser
+WebSocket. Native NATS clients connect to `nats.example.com:4222` directly.
 
 | Public address                | Forward to              | How                                   |
 | ----------------------------- | ----------------------- | ------------------------------------- |
 | `https://trellis.example.com` | `http://127.0.0.1:3000` | terminate TLS, keep the `Host` header |
-| `nats.example.com:4222`       | `127.0.0.1:4222`        | TLS passthrough (NATS terminates it)  |
 | `wss://nats.example.com`      | `127.0.0.1:8080`        | TLS passthrough (NATS terminates it)  |
 
-NATS monitoring on port 8222 stays on loopback. The example trusts the fixed
-`trellis.network` subnet as the proxy. If your proxy connects from somewhere
-else, Trellis refuses the request and logs the peer's address; add it to
-`trusted_proxies` under `[http.transport]`.
+If your proxy connects from somewhere other than the containers' network,
+Trellis refuses the request and logs the peer's address.
 
-When you restart, reuse the same installation folder and data folder. Add
-services through the normal administrator flow, never by handing an application
-the runtime's own provider keys.
+Add services through the normal administrator flow, never by handing an
+application the runtime's own provider keys.
 
 ## A single container
 

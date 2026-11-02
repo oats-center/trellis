@@ -24,7 +24,7 @@ docs/           Trellis documentation site (SvelteKit static site, published to 
 ts/             TypeScript client libraries, adapters, and browser integration tests
 web/            Official embedded Console and login portal
 generated/      Derived manifests and SDKs when generated locally (usually absent from a clean checkout)
-deploy/         Deployment assets, including quadlets and NATS templates
+deploy/         Deployment assets: NATS templates and observability
 design/         Trellis design docs
 ```
 

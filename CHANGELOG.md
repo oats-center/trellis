@@ -45,6 +45,10 @@ renew`, `tls status` and the new `nats` command take it like the server.
 
 ### Added
 
+- `trellis-server init <folder> --quadlet` also writes Podman Quadlet units
+  into the installation's `quadlet` folder: NATS and Trellis as two rootless
+  containers that use the folder in place, with images pinned to this release.
+  They replace the hand-edited units in `deploy/quadlet`, which are gone.
 - `trellis-server nats <system|trellis|auth> <args>` runs the `nats` CLI as
   one of the installation's NATS users, with its address and CA set; the
   creds exist on disk only while it runs. `--print` prints the creds instead.
