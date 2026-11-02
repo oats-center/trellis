@@ -1691,6 +1691,9 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
             .await
             .unwrap();
     });
+    // A pooled connection to the stopped server may not have seen its close
+    // yet, so reach the restarted one on fresh connections.
+    let http = reqwest::Client::new();
     let next_ephemeral = nkeys::KeyPair::new_user();
     let next_runtime = URL_SAFE_NO_PAD.encode([12; 16]);
     let refresh_request = TokenRequest::RefreshToken {
