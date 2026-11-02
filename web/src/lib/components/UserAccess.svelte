@@ -96,6 +96,12 @@
           )
         : results[0].items.map((grant) => grant.capability.capabilityId);
       grants = results[0].items;
+      // A pick given meanwhile, such as by a batch that stopped partway, is
+      // no longer waiting to be given.
+      picks = picks.filter(
+        (pick) =>
+          !grants.some((grant) => grant.capability.capabilityId === pick),
+      );
       assignments = results[1].items;
       capabilities = results[2].items;
       roles = results[3].items;
@@ -148,7 +154,7 @@
       const expiry = expiresAt
         ? { expiresAt: new Date(expiresAt).toISOString() }
         : {};
-      for (const capability of picks)
+      for (const capability of [...picks]) {
         await trellis
           .capabilityGrantsGrant(
             apis.auth.API.actions["rpc:CapabilityGrants.Grant"].input.decode({
@@ -160,8 +166,10 @@
             }),
           )
           .orThrow();
+        // Given: a retry after a later one fails must not give it again.
+        picks = picks.filter((pick) => pick !== capability);
+      }
       if (scope.disposed || scope.key !== route) return;
-      picks = [];
       adding = false;
       await load();
     } catch (cause) {

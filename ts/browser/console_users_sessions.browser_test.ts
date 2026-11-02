@@ -376,6 +376,85 @@ test("B27 a disabled user stays disabled after a metadata edit", async () => {
   }, browserRuntimeOptions());
 });
 
+test("a permission batch that partly fails finishes after Refresh without regranting", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const username = `ct-batch-${ulid()}`.toLowerCase();
+    const created = await runtime.callAdminRpc("authUsersCreate", {
+      email: "ct-batch@example.com",
+      idempotencyKey: ulid(),
+      image: null,
+      displayName: "Console batch",
+      username,
+    });
+    const userId = created.user.principalId;
+
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await waitForConsoleShell(page);
+      const main = page.locator("main");
+      await main
+        .getByRole("heading", { name: username, exact: true, level: 1 })
+        .waitFor({ state: "visible", timeout: 30_000 });
+      await main
+        .getByRole("button", { name: "Add permissions", exact: true })
+        .click();
+      await main.getByRole("checkbox", { name: /^Monitor health/ }).check();
+      await main.getByRole("checkbox", { name: /^Operate jobs/ }).check();
+      // Another administrator gives one of them first, so this batch can only
+      // partly succeed.
+      await runtime.callAdminRpc("authCapabilityGrantsGrant", {
+        principalId: userId,
+        capabilityId: "trellis.jobs.v1:operator",
+        expectedRevision: 0n,
+        idempotencyKey: ulid(),
+      });
+      await main
+        .getByRole("button", { name: "Give 2 permissions", exact: true })
+        .click();
+      const notice = main.locator(".alert-error, [role=alert]");
+      await notice.first().waitFor({ state: "visible", timeout: 30_000 });
+
+      await main.getByRole("button", { name: "Refresh", exact: true }).click();
+      const give = main.getByRole("button", {
+        name: /^Give \d* ?permissions?$/,
+      });
+      await give.waitFor({ state: "visible", timeout: 30_000 });
+      if (await give.isEnabled()) await give.click();
+      const granted = async () =>
+        (
+          await runtime.callAdminRpc("authCapabilityGrantsList", {
+            principalId: userId,
+          })
+        ).items
+          .map((grant) => grant.capability.capabilityId)
+          .sort();
+      assert.deepEqual(
+        await runtime.waitFor(async () => {
+          const ids = await granted();
+          return ids.length === 2 ? ids : undefined;
+        }),
+        ["trellis.health.v1:monitor", "trellis.jobs.v1:operator"],
+      );
+      // Nothing it already gave is offered again, and nothing failed.
+      await runtime.waitFor(async () =>
+        !(await give.isVisible()) || !(await give.isEnabled())
+          ? true
+          : undefined,
+      );
+      assert.equal(await notice.count(), 0);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 test("B28 user creation rotates the one-time setup receipt", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);

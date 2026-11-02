@@ -46,6 +46,10 @@ and this project adheres to
   the search: `Apis.List` matches its `search` against each API's title and
   description as well as its id, across the whole catalog, and the Console
   sends it when you press Enter.
+- Giving a user several permissions at once in the Console, when one of them
+  failed, kept the ones already given selected, so Refresh and retry gave
+  them again and failed on a conflict. Each permission now leaves the
+  selection once it's given, and Refresh drops any the user already has.
 
 ## [0.100.0-rc.20] - 2026-11-02
 
