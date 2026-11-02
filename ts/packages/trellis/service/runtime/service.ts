@@ -3304,56 +3304,57 @@ async function awaitServiceUpdate(
         packageEvidence: participant.packageEvidence,
       })
     ).update;
-  let update = await submit();
-  let shown: string | undefined;
-  let delay = 1_000;
-  for (;;) {
-    if (update.state === "applied") return;
-    if (update.state === "rejected")
-      throw new Error(
-        `An administrator rejected this build's update (${update.reviewUrl ?? `trellis svc ${update.deploymentId} updates`})`,
-      );
-    if (update.state === "superseded") {
-      update = await submit();
-      continue;
-    }
-    if (shown !== update.updateId) {
-      shown = update.updateId;
-      const reviewUrl = update.reviewUrl;
-      log.warn(
-        { participant: participant.identity, reviewUrl },
-        "This build asks for new access; waiting for an administrator to approve it",
-      );
-      console.error(
-        reviewUrl === undefined
-          ? `\n${participant.identity} needs an administrator to approve its update with\n  trellis svc ${update.deploymentId} approve`
-          : `\n${participant.identity} needs an administrator to approve its update.\nOpen ${reviewUrl}\nor scan:\n${renderUnicodeCompact(reviewUrl)}`,
-      );
-    }
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, delay);
-      signal?.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          reject(signal.reason);
-        },
-        { once: true },
-      );
-    });
-    delay = Math.min(delay * 2, 15_000);
-    try {
+  try {
+    let update = await submit();
+    let shown: string | undefined;
+    let delay = 1_000;
+    for (;;) {
+      if (update.state === "applied") return;
+      if (update.state === "rejected")
+        throw new Error(
+          `An administrator rejected this build's update (${update.reviewUrl ?? `trellis svc ${update.deploymentId} updates`})`,
+        );
+      if (update.state === "superseded") {
+        update = await submit();
+        continue;
+      }
+      if (shown !== update.updateId) {
+        shown = update.updateId;
+        const reviewUrl = update.reviewUrl;
+        log.warn(
+          { participant: participant.identity, reviewUrl },
+          "This build asks for new access; waiting for an administrator to approve it",
+        );
+        console.error(
+          reviewUrl === undefined
+            ? `\n${participant.identity} needs an administrator to approve its update with\n  trellis svc ${update.deploymentId} approve`
+            : `\n${participant.identity} needs an administrator to approve its update.\nOpen ${reviewUrl}\nor scan:\n${renderUnicodeCompact(reviewUrl)}`,
+        );
+      }
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, delay);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+      delay = Math.min(delay * 2, 15_000);
       update = (
         await client.requestServiceUpdate("ServiceUpdates.Status", {
           updateId: update.updateId,
         })
       ).update;
-    } catch (cause) {
-      // Approval retires this session. Connecting again shows whether the
-      // update installed; if not, Submit returns the same update.
-      if (cause instanceof TransportError) return;
-      throw cause;
     }
+  } catch (cause) {
+    // Approval retires this session, sometimes before Submit's reply arrives.
+    // Connecting again shows whether the update installed; if not, Submit
+    // returns the same update.
+    if (cause instanceof TransportError) return;
+    throw cause;
   }
 }
 

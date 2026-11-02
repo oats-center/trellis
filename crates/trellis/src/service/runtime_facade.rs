@@ -1626,37 +1626,38 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
             &body,
         )
     };
-    let mut update = submit().await?["update"].take();
-    let mut shown = None;
-    let mut delay = std::time::Duration::from_secs(1);
-    loop {
-        let review_url = update["reviewUrl"].as_str().map(str::to_owned);
-        let deployment = update["deploymentId"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        match update["state"].as_str() {
-            Some("applied") => return Ok(()),
-            Some("rejected") => {
-                return Err(ServiceRuntimeError::UpdateRejected {
-                    review: review_url
-                        .unwrap_or_else(|| format!("trellis svc {deployment} updates")),
-                })
+    let waited = async {
+        let mut update = submit().await?["update"].take();
+        let mut shown = None;
+        let mut delay = std::time::Duration::from_secs(1);
+        loop {
+            let review_url = update["reviewUrl"].as_str().map(str::to_owned);
+            let deployment = update["deploymentId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            match update["state"].as_str() {
+                Some("applied") => return Ok(()),
+                Some("rejected") => {
+                    return Err(ServiceRuntimeError::UpdateRejected {
+                        review: review_url
+                            .unwrap_or_else(|| format!("trellis svc {deployment} updates")),
+                    })
+                }
+                Some("superseded") => {
+                    update = submit().await?["update"].take();
+                    continue;
+                }
+                _ => {}
             }
-            Some("superseded") => {
-                update = submit().await?["update"].take();
-                continue;
-            }
-            _ => {}
-        }
-        let update_id = update["updateId"].as_str().unwrap_or_default().to_owned();
-        if shown.as_deref() != Some(update_id.as_str()) {
-            tracing::warn!(
-                participant = C::ID,
-                review_url,
-                "This build asks for new access; waiting for an administrator to approve it"
-            );
-            match &review_url {
+            let update_id = update["updateId"].as_str().unwrap_or_default().to_owned();
+            if shown.as_deref() != Some(update_id.as_str()) {
+                tracing::warn!(
+                    participant = C::ID,
+                    review_url,
+                    "This build asks for new access; waiting for an administrator to approve it"
+                );
+                match &review_url {
                 Some(review_url) => {
                     let qr = qrcode::QrCode::new(review_url.as_bytes())
                         .map(|code| {
@@ -1675,34 +1676,36 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
                     C::ID
                 ),
             }
-            shown = Some(update_id);
+                shown = Some(update_id);
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(std::time::Duration::from_secs(15));
+            update = client
+                .request_json_value(
+                    API,
+                    action("ServiceUpdates.Status"),
+                    "rpc.v1.auth.ServiceUpdates.Status",
+                    &serde_json::json!({ "updateId": update["updateId"] }),
+                )
+                .await?["update"]
+                .take();
         }
-        tokio::time::sleep(delay).await;
-        delay = (delay * 2).min(std::time::Duration::from_secs(15));
-        update = match client
-            .request_json_value(
-                API,
-                action("ServiceUpdates.Status"),
-                "rpc.v1.auth.ServiceUpdates.Status",
-                &serde_json::json!({ "updateId": update["updateId"] }),
-            )
-            .await
-        {
-            Ok(mut response) => response["update"].take(),
-            // Approval retires this session and may refuse its credential's
-            // fresh admission. Connecting again shows whether the update
-            // installed; if not, Submit returns the same update.
-            Err(
-                TrellisClientError::TransportUnavailable(_)
-                | TrellisClientError::NatsConnect(_)
-                | TrellisClientError::Timeout
-                | TrellisClientError::Protocol(trellis_protocol::ProtocolError::Authorization {
-                    code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
-                    ..
-                }),
-            ) => return Ok(()),
-            Err(error) => return Err(error.into()),
-        };
+    };
+    match waited.await {
+        // Approval retires this session, sometimes before Submit's reply
+        // arrives, and may refuse its credential's fresh admission.
+        // Connecting again shows whether the update installed; if not,
+        // Submit returns the same update.
+        Err(ServiceRuntimeError::Client(
+            TrellisClientError::TransportUnavailable(_)
+            | TrellisClientError::NatsConnect(_)
+            | TrellisClientError::Timeout
+            | TrellisClientError::Protocol(trellis_protocol::ProtocolError::Authorization {
+                code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
+                ..
+            }),
+        )) => Ok(()),
+        result => result,
     }
 }
 
