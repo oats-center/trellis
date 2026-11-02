@@ -721,10 +721,11 @@ async function revokeProviderExtension(
 
 /**
  * Withdrawing a capability retires the affected authorization session and every
- * attachment it admitted. A fresh connection using the same provisioned identity
- * can serve RPC under the remaining authority without reviving that session.
+ * attachment it admitted. The running provider keeps its provisioned identity,
+ * is admitted again under the remaining authority, and serves RPC without
+ * reviving the retired session.
  */
-test("Rust capability reduction retires the old session and a fresh provider serves requests", async () => {
+test("Rust capability reduction retires the old session and the provider serves requests under a fresh one", async () => {
   await withTrellisRuntime(async (runtime) => {
     const providerContract =
       participants.TransportGrowthOperationProvider.participant;
@@ -738,6 +739,22 @@ test("Rust capability reduction retires the old session and a fresh provider ser
       name: "tg-op-caller-reduce",
       contract: callerContract,
     });
+    // The process announces configuration before run() attaches intake.
+    // Advance is this fixture's stateless readiness RPC. Only wait through
+    // unavailable intake; authorization failures and deadlines remain fatal.
+    const advanced = () =>
+      runtime.waitFor(async () => {
+        const ready = await caller.advance({});
+        if (
+          ready.isErr() &&
+          !(
+            "code" in ready.error &&
+            ready.error.code === "trellis.request.unavailable"
+          )
+        )
+          ready.orThrow();
+        return ready.isOk() ? true : undefined;
+      });
 
     await runtime.callAdminRpc("authCapabilityGrantsGrant", {
       principalId: providerInstance.grantee,
@@ -754,49 +771,22 @@ test("Rust capability reduction retires the old session and a fresh provider ser
         await leg.waitFor("OPERATION_PROVIDER_READY");
         const original = await attachments();
         assert.deepEqual(original.length, 1);
+        await advanced();
 
-        await runtime.waitFor(async () => {
-          const ready = await caller.advance({});
-          if (
-            ready.isErr() &&
-            !(
-              "code" in ready.error &&
-              ready.error.code === "trellis.request.unavailable"
-            )
-          )
-            ready.orThrow();
-          return ready.isOk() ? true : undefined;
-        });
         await revokeProviderExtension(runtime, providerInstance);
-        await leg.waitFor("OPERATION_PROVIDER_ERROR");
-        await runtime.waitFor(
-          async () => ((await attachments()).length === 0 ? true : undefined),
+        const replaced = await runtime.waitFor(
+          async () => {
+            const current = await attachments();
+            return current.length === 1 &&
+              current[0].authorizationSessionId !==
+                original[0].authorizationSessionId
+              ? current
+              : undefined;
+          },
           { timeoutMs: 60_000, intervalMs: 200 },
         );
-      },
-      { allowTerminalError: true },
-    );
-    await withOperationProviderLeg(
-      runtime,
-      providerInstance.seed,
-      150_000,
-      async (leg) => {
-        await leg.waitFor("OPERATION_PROVIDER_READY");
-        // The process announces configuration before run() attaches intake.
-        // Advance is this fixture's stateless readiness RPC. Only wait through
-        // unavailable intake; authorization failures and deadlines remain fatal.
-        await runtime.waitFor(async () => {
-          const ready = await caller.advance({});
-          if (
-            ready.isErr() &&
-            !(
-              "code" in ready.error &&
-              ready.error.code === "trellis.request.unavailable"
-            )
-          )
-            ready.orThrow();
-          return ready.isOk() ? true : undefined;
-        });
+        assert.equal(replaced[0].runtimeId, original[0].runtimeId);
+        await advanced();
       },
     );
   }, runtimeOptions);

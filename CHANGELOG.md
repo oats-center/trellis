@@ -73,6 +73,12 @@ renew`, `tls status` and the new `nats` command take it like the server.
   its databases and event-context digest under `dir/dir/` instead of `dir/`.
 - `init` no longer writes `nats/auth-callout.env` or copies of the NATS account
   JWTs to `nats/data/jwt/`. Nothing read them.
+- A Rust service with a durable event consumer sometimes exited when one of its
+  capabilities was revoked, and sometimes kept running, depending on which part
+  of it noticed first. It now reconnects under a fresh session with the
+  authority it has left, as TypeScript services do. A service whose fresh
+  connection is refused, for example because its deployment was disabled, now
+  stops with an error instead of retrying forever.
 
 ## [0.100.0-rc.19] - 2026-10-31
 

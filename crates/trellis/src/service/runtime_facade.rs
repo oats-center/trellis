@@ -1689,10 +1689,12 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
             .await
         {
             Ok(mut response) => response["update"].take(),
-            // Approval retires this session. Connecting again shows whether
-            // the update installed; if not, Submit returns the same update.
+            // Approval retires this session and may refuse its credential's
+            // fresh admission. Connecting again shows whether the update
+            // installed; if not, Submit returns the same update.
             Err(
                 TrellisClientError::TransportUnavailable(_)
+                | TrellisClientError::NatsConnect(_)
                 | TrellisClientError::Timeout
                 | TrellisClientError::Protocol(trellis_protocol::ProtocolError::Authorization {
                     code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
@@ -2742,6 +2744,8 @@ fn durable_event_transport_error_is_retryable(error: &TrellisClientError) -> boo
     if is_missing_durable_event_consumer_error(error) {
         return false;
     }
+    // A retired session is replaced by fresh admission under the same
+    // credential; the logical connection decides whether that can recover.
     matches!(
         error,
         TrellisClientError::AuthorizationUnavailable(_)
@@ -2750,6 +2754,10 @@ fn durable_event_transport_error_is_retryable(error: &TrellisClientError) -> boo
             | TrellisClientError::NatsConnect(_)
             | TrellisClientError::NatsRequest(_)
             | TrellisClientError::Timeout
+            | TrellisClientError::Protocol(trellis_protocol::ProtocolError::Authorization {
+                code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
+                ..
+            })
     )
 }
 
