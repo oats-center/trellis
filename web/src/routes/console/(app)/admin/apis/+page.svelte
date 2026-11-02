@@ -75,14 +75,12 @@
   const reviewScope = new RequestScope("api-review");
   let catalog = $state.raw<apis.auth.ApisListOutput["items"]>([]);
   let search = $state("");
+  // The search the shown page answers; Trellis searches every API, not just
+  // this page.
+  let searched = $state("");
   const namespaces = $derived.by(() => {
     const byId = new Map<string, Api[]>();
-    const term = search.trim().toLowerCase();
-    for (const api of catalog.filter((item) =>
-      `${item.title} ${item.description} ${item.apiId}`
-        .toLowerCase()
-        .includes(term),
-    )) {
+    for (const api of catalog) {
       const id = namespaceOf(api.apiId);
       byId.set(id, [...(byId.get(id) ?? []), api]);
     }
@@ -109,7 +107,10 @@
     loading = true;
     try {
       const response = await trellis
-        .apisList({ page: { cursor, limit: 50 } })
+        .apisList({
+          page: { cursor, limit: 50 },
+          ...(searched === "" ? {} : { search: searched }),
+        })
         .orThrow();
       if (!scope.isCurrent(token)) return;
       catalog = response.items;
@@ -119,6 +120,13 @@
     } finally {
       if (scope.settle(token)) loading = false;
     }
+  }
+
+  function applySearch(): void {
+    searched = search.trim();
+    cursor = undefined;
+    history = [];
+    void load();
   }
 
   async function reviewCandidate(): Promise<void> {
@@ -213,15 +221,22 @@
   <input
     class="input w-full max-w-sm"
     type="search"
-    placeholder="Search APIs"
+    placeholder="Search by name, description, or id"
     aria-label="Search APIs"
     bind:value={search}
+    onkeydown={(event) => {
+      if (event.key === "Enter") applySearch();
+    }}
+    oninput={() => {
+      if (search.trim() === "" && searched !== "") applySearch();
+    }}
   />
   <div class="trellis-section min-w-0">
     {#if loading}<LoadingState label="Loading APIs" />{:else if !catalog.length}
-      <EmptyState class="m-4" title="No APIs installed" />
-    {:else if !namespaces.length}
-      <EmptyState class="m-4" title="No APIs match" />
+      <EmptyState
+        class="m-4"
+        title={searched ? "No APIs match" : "No APIs installed"}
+      />
     {:else}
       {#each namespaces as namespace (namespace.id)}
         <h3
@@ -267,24 +282,24 @@
           {/each}
         </ul>
       {/each}
-      {#if history.length || next}
-        <Pager
-          summary={`Showing ${catalog.length} APIs on this page`}
-          canPrevious={history.length > 0}
-          canNext={!!next}
-          busy={loading || busy}
-          onPrevious={() => {
-            cursor = history.at(-1);
-            history = history.slice(0, -1);
-            void load();
-          }}
-          onNext={() => {
-            history = [...history, cursor];
-            cursor = next;
-            void load();
-          }}
-        />
-      {/if}
+    {/if}
+    {#if !loading && (history.length || next)}
+      <Pager
+        summary={`Showing ${catalog.length} APIs on this page`}
+        canPrevious={history.length > 0}
+        canNext={!!next}
+        busy={loading || busy}
+        onPrevious={() => {
+          cursor = history.at(-1);
+          history = history.slice(0, -1);
+          void load();
+        }}
+        onNext={() => {
+          history = [...history, cursor];
+          cursor = next;
+          void load();
+        }}
+      />
     {/if}
   </div>
 

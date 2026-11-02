@@ -104,6 +104,13 @@ test("the Console signs in without asking for access and uses the real authentic
         .first()
         .waitFor();
       await page.goto(new URL("/console/admin/apis", origin).href);
+      // Trellis searches the whole catalog by what people read.
+      const search = page.getByLabel("Search APIs", { exact: true });
+      await search.fill("no such api anywhere");
+      await search.press("Enter");
+      await page.getByText("No APIs match", { exact: true }).waitFor();
+      await search.fill("trellis auth");
+      await search.press("Enter");
       await page.getByRole("link", { name: /^Trellis Auth\b/ }).click();
       await page
         .getByLabel("Find an action", { exact: true })

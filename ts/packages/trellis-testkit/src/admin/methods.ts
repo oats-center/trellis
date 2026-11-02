@@ -124,6 +124,10 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Deployments.Enable"],
     (client, input) => client.deploymentsEnable(input).orThrow(),
   ),
+  authApisList: adminMethod(
+    apis.auth.API.actions["rpc:Apis.List"],
+    (client, input) => client.apisList(input).orThrow(),
+  ),
   authApisReview: adminMethod(
     apis.auth.API.actions["rpc:Apis.Review"],
     (client, input) => client.apisReview(input).orThrow(),

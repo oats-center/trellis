@@ -1248,29 +1248,36 @@ pub(super) fn read_apis(
     input: &AuthPageRequest,
 ) -> Result<AuthApisListResponse, AuthError> {
     let (cursor, limit) = page_bounds(input.page.as_ref())?;
-    let mut statement = connection.prepare(
-        "SELECT api_id FROM auth_accepted_apis \
-        WHERE api_id>?1 AND (?2 IS NULL \
-        OR instr(lower(api_id),lower(?2))>0) \
-        ORDER BY api_id LIMIT ?3",
-    )?;
-    let mut ids = statement
-        .query_map(
-            params![
-                cursor,
-                input.search.as_ref().map(|value| value.as_ref()),
-                limit + 1
-            ],
-            |row| row.get::<_, String>(0),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let next_cursor = (ids.len() > limit).then(|| ids[limit - 1].clone());
-    ids.truncate(limit);
+    // A search matches what people read, the title and description, as well
+    // as the id; both live in the accepted definition, so match here.
+    let term = input
+        .search
+        .as_ref()
+        .map(|value| value.as_ref().trim().to_lowercase())
+        .filter(|term| !term.is_empty());
+    let mut statement = connection
+        .prepare("SELECT api_id FROM auth_accepted_apis WHERE api_id>?1 ORDER BY api_id")?;
+    let ids = statement.query_map([cursor], |row| row.get::<_, String>(0))?;
+    let (mut items, mut next_cursor) = (Vec::new(), None);
+    for id in ids {
+        let api = accepted_api(connection, &id?)?;
+        if term.as_ref().is_some_and(|term| {
+            !format!("{} {} {}", api.title, api.description, api.api_id)
+                .to_lowercase()
+                .contains(term.as_str())
+        }) {
+            continue;
+        }
+        if items.len() == limit {
+            next_cursor = items
+                .last()
+                .map(|last: &AuthAcceptedApi| last.api_id.to_string());
+            break;
+        }
+        items.push(api);
+    }
     Ok(CursorPage {
-        items: ids
-            .iter()
-            .map(|id| accepted_api(connection, id))
-            .collect::<Result<_, _>>()?,
+        items,
         page: CursorPageInfo { next_cursor },
     })
 }

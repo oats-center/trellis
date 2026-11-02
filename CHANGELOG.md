@@ -8,6 +8,10 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- The testkit's `callAdminRpc` accepts `authApisList`.
+
 ### Fixed
 
 - A Rust service stopped for good when it needed a new session while the
@@ -37,6 +41,11 @@ and this project adheres to
   back from the job list. Its status cards and chart then covered only that
   type while the totals beside them covered every type, so a failing type
   could hide behind "All good". The overview now always covers every type.
+- The Console's API search looked only at the 50 APIs on the current page, and
+  with no match there it also hid the buttons to other pages. Trellis now does
+  the search: `Apis.List` matches its `search` against each API's title and
+  description as well as its id, across the whole catalog, and the Console
+  sends it when you press Enter.
 
 ## [0.100.0-rc.20] - 2026-11-02
 
