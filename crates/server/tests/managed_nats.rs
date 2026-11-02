@@ -245,38 +245,47 @@ fn issue_certificates(directory: &Path, trellis_hosts: &[&str], nats_hosts: &[&s
     }
 }
 
-/// Whether `/readyz` on `https://localhost:port` answers 200, trusting `ca`.
-async fn ready_over_tls(port: u16, ca: PathBuf) -> bool {
+/// Sends `request` to `https://localhost:port`, trusting `ca`, and returns
+/// what arrives until the server closes or pauses.
+async fn tls_exchange(port: u16, ca: PathBuf, request: String) -> Vec<u8> {
     tokio::task::spawn_blocking(move || {
         use rustls::pki_types::pem::PemObject as _;
         use std::io::{Read as _, Write as _};
         let mut roots = rustls::RootCertStore::empty();
         roots
-            .add(rustls::pki_types::CertificateDer::from_pem_file(ca).ok()?)
-            .ok()?;
+            .add(rustls::pki_types::CertificateDer::from_pem_file(ca).unwrap())
+            .unwrap();
         let config = rustls::ClientConfig::builder()
             .with_root_certificates(roots)
             .with_no_client_auth();
         let connection =
-            rustls::ClientConnection::new(config.into(), "localhost".try_into().ok()?).ok()?;
-        let socket = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+            rustls::ClientConnection::new(config.into(), "localhost".try_into().unwrap()).unwrap();
+        let mut received = Vec::new();
+        let Ok(socket) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+            return received;
+        };
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut stream = rustls::StreamOwned::new(connection, socket);
-        stream
-            .write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-            .ok()?;
-        let mut status = [0; 12];
-        stream.read_exact(&mut status).ok()?;
-        (&status == b"HTTP/1.1 200").then_some(())
+        if stream.write_all(request.as_bytes()).is_err() {
+            return received;
+        }
+        let mut chunk = [0; 4096];
+        while let Ok(read @ 1..) = stream.read(&mut chunk) {
+            received.extend_from_slice(&chunk[..read]);
+        }
+        received
     })
     .await
     .unwrap()
-    .is_some()
 }
 
 /// An operator's NATS certificate names the host clients use, not loopback,
-/// yet the server reaches the broker it runs at loopback.
+/// yet the server reaches the broker it runs at loopback; and browsers reach
+/// NATS through Trellis's address, never the server's own loopback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn managed_nats_starts_with_a_certificate_naming_only_its_hostname() {
+async fn supplied_certificates_serve_nats_by_the_names_clients_use() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let directory = tempfile::tempdir().unwrap();
     let certificates = directory.path().join("certificates");
@@ -304,8 +313,16 @@ async fn managed_nats_starts_with_a_certificate_naming_only_its_hostname() {
     )
     .await;
 
+    let ca = certificates.join("ca.crt");
+    let port = installation.ports[0];
+    let get = |path: &str| {
+        format!("GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n")
+    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
-    while !ready_over_tls(installation.ports[0], certificates.join("ca.crt")).await {
+    while !tls_exchange(port, ca.clone(), get("/readyz"))
+        .await
+        .starts_with(b"HTTP/1.1 200")
+    {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the server never became ready"
@@ -316,6 +333,38 @@ async fn managed_nats_starts_with_a_certificate_naming_only_its_hostname() {
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+
+    // Browsers are sent to NATS through Trellis's own address, which the
+    // operator's Trellis certificate already covers.
+    let discovery = String::from_utf8(
+        tls_exchange(
+            port,
+            ca.clone(),
+            get("/.well-known/oauth-authorization-server"),
+        )
+        .await,
+    )
+    .unwrap();
+    let origin = format!("wss://localhost:{port}");
+    assert!(
+        discovery.contains(&format!("\"{origin}\"")),
+        "browsers aren't sent to {origin}: {discovery}"
+    );
+    let upgrade = tls_exchange(
+        port,
+        ca,
+        format!(
+            "GET / HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: Upgrade\r\n\
+            Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+            Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        ),
+    )
+    .await;
+    assert!(
+        upgrade.starts_with(b"HTTP/1.1 101"),
+        "the WebSocket upgrade didn't reach NATS: {}",
+        String::from_utf8_lossy(&upgrade)
+    );
 
     installation.stop().await;
 }

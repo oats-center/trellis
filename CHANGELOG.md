@@ -20,6 +20,12 @@ and this project adheres to
   certificate that named only the broker's hostname, because it reached the
   broker at `127.0.0.1` and checked the certificate against that address. It
   now checks the certificate against the host in `--nats-server-url`.
+- An installation initialized with `--tls supplied`, including every
+  production installation the first-start wizard creates, told browsers to
+  open NATS WebSockets at `wss://localhost:8080`, so the Console could sign in
+  from another machine but never connect. Supplied certificates now relay the
+  WebSocket through the Trellis port by default, as generated ones do, and the
+  wizard passes on the hostname it asks for.
 
 ## [0.100.0-rc.20] - 2026-11-02
 

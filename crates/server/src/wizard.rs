@@ -100,6 +100,7 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
         args.extend(["--dev".into(), "--host".into(), host]);
         return Ok(args);
     }
+    args.extend(["--host".into(), host.clone()]);
     let (trellis_port, nats_port) = (ports["--trellis-port"], ports["--nats-port"]);
     let trellis = url_prompt(
         "Trellis address (sign-in, and where clients connect)",

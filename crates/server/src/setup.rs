@@ -192,8 +192,9 @@ pub(crate) struct InitConfigArgs {
     /// How clients reach NATS WebSockets. `relay` has the Trellis port send
     /// every WebSocket upgrade to NATS, so one certificate covers both; the
     /// broker's WebSocket port then serves plaintext and must stay private.
-    /// Defaults to `relay` with generated TLS unless --nats-websocket-url or
-    /// --nats-websocket-behind-proxy is given, and to `direct` otherwise.
+    /// Defaults to `relay` unless --tls loopback-development,
+    /// --nats-websocket-url or --nats-websocket-behind-proxy is given, and to
+    /// `direct` otherwise.
     pub(crate) nats_websocket: Option<InitWebsocketMode>,
 
     /// Address Trellis listens on: an IP or a hostname that
@@ -337,11 +338,12 @@ pub(crate) fn init_config(
             true
         }
         Some(InitWebsocketMode::Direct) => false,
-        // Out of the box, a browser trusting the generated CA for the Console
-        // also reaches NATS; a separate WebSocket port would need its own trust.
+        // Out of the box, a browser that trusts the Console's certificate
+        // also reaches NATS; a separate WebSocket port would need its own
+        // certificate and hostname.
         None => {
             args.dev
-                || (tls == InitTlsMode::Generated
+                || (!loopback
                     && args.nats_websocket_url.is_none()
                     && !args.nats_websocket_behind_proxy)
         }

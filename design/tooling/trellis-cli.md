@@ -207,8 +207,8 @@ generated|supplied|loopback-development` (required unless `--dev`, which
 generates), `--trusted-proxy` (supplied TLS then needs only the NATS
 certificate), and `--nats-websocket-behind-proxy` (the broker's plaintext
 WebSocket listens on every interface for a proxy that may run on another host)
-or `--nats-websocket relay|direct` (relay, the default with generated TLS
-unless a WebSocket URL or external proxy is given, has the Trellis port send
+or `--nats-websocket relay|direct` (relay, the default with generated or
+supplied TLS unless a WebSocket URL or external proxy is given, has the Trellis port send
 every WebSocket upgrade to the broker's plaintext WebSocket listener, which
 then stays on loopback), and
 `--nats-websocket-only` (clients are offered only the WebSocket and native NATS
