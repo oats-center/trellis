@@ -812,6 +812,10 @@ fn a_malformed_secrets_file_is_reported_without_its_keys() {
         ),
         // A seed where a user's table belongs.
         (format!("[nats.users]\n\ntrellis = \"{MARKER}\"\n"), 3),
+        // The same, with quotes of its own.
+        (format!("[nats.users]\ntrellis = '\"{MARKER}\"'\n"), 2),
+        // A key pasted where a field name belongs.
+        (format!("oauth_storage_key = \"x\"\n{MARKER} = \"x\"\n"), 2),
     ] {
         fs::write(&path, source).expect("write secrets");
         #[cfg(unix)]

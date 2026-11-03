@@ -224,39 +224,27 @@ impl Secrets {
         file.take(MAX_SECRETS_BYTES)
             .read_to_string(&mut contents)
             .map_err(|error| invalid(format!("cannot be read: {error}")))?;
-        toml::from_str(&contents).map_err(|error| {
-            // The parser's own rendering quotes the offending line, and a type
-            // error quotes the string it found; either may be a key. Report
-            // where it is and what is wrong, without any quoted string. Names
-            // and expected tokens are in backticks.
-            let (mut reason, mut quoted, mut named) = (String::new(), false, false);
-            for c in error.message().chars() {
-                match c {
-                    '`' if !quoted => named = !named,
-                    '"' if !named => {
-                        quoted = !quoted;
-                        if quoted {
-                            reason.push_str("\"…\"");
-                        }
-                        continue;
-                    }
-                    _ => {}
-                }
-                if !quoted {
-                    reason.push(c);
-                }
-            }
-            if let Some(span) = error.span() {
+        // The parser's own messages may quote the file, and any part of it may
+        // be a key, so say only where the problem is and which kind it is.
+        let (problem, error) = match contents.parse::<toml::Table>() {
+            Err(error) => ("is not valid TOML", error),
+            Ok(_) => match toml::from_str(&contents) {
+                Ok(secrets) => return Ok(secrets),
+                Err(error) => ("does not match the secrets format", error),
+            },
+        };
+        Err(invalid(match error.span() {
+            Some(span) => {
                 let before = &contents[..span.start];
                 let line = before.matches('\n').count() + 1;
                 let column = before[before.rfind('\n').map_or(0, |at| at + 1)..]
                     .chars()
                     .count()
                     + 1;
-                reason = format!("line {line}, column {column}: {reason}");
+                format!("{problem} at line {line}, column {column}")
             }
-            invalid(format!("is not valid TOML for secrets: {reason}"))
-        })
+            None => problem.to_owned(),
+        }))
     }
 
     /// Renders these secrets as `secrets.toml`.

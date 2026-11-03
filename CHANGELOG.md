@@ -43,7 +43,8 @@ and this project adheres to
   wizard passes on the hostname it asks for.
 - A syntax or type error in `secrets.toml` printed the offending line, and with
   it the key on that line, into the server's error and the journal. The error
-  now gives the line, the column and what is wrong, without quoting the file.
+  now gives only the line, the column, and whether the file isn't TOML or
+  doesn't match the secrets format.
 - A program that accepted a server's certificate for two connections at once,
   at its first start, could fail one of them with "No such file or directory",
   because both staged the certificate under the same file name. Each
