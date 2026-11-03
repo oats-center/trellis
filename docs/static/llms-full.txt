@@ -637,7 +637,9 @@ presentation. Signed session authority has a shared 64 KiB issuer,
 verification, and parsing budget.
 
 Configured implied consent applies only to registered browser bindings and their
-bounded capability subset; a listed group allows its current members. Native and Device Code clients require explicit user
+bounded capability subset; a listed group allows its current members. Saving a
+client that allows an administrative capability without asking requires
+`trellis.auth.v1:platform.manage`. Native and Device Code clients require explicit user
 approval even when registered, and Device Code confirmation remains mandatory.
 
 Provisional CIMD client intake shares a 128-client/16 MiB budget and a

@@ -674,20 +674,32 @@ async fn approve_without_asking(
     let store = engine.server.store().clone();
     let implied: Vec<String> = blocking(move || {
         store.authority.read(|connection| {
-            let implied: Option<String> = connection
+            let implied: Option<(String, String)> = connection
                 .query_row(
-                    "SELECT implied_capabilities_json FROM auth_oauth_clients \
+                    "SELECT implied_capabilities_json,metadata_json FROM auth_oauth_clients \
                     WHERE client_id=?1 AND state='active' AND kind='browser'",
                     [&client],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
             implied
-                .map(|implied| {
-                    super::super::policy::with_members(
-                        connection,
-                        super::super::sqlite::decode(&implied)?,
-                    )
+                .map(|(implied, metadata)| {
+                    let mut implied: Vec<String> = super::super::sqlite::decode(&implied)?;
+                    // Administration is allowed without asking only where
+                    // someone who manages the platform allowed it.
+                    let metadata: Value = super::super::sqlite::decode(&metadata)?;
+                    if metadata.get(super::super::lifecycle::IMPLIED_ADMINISTRATION)
+                        != Some(&Value::Bool(true))
+                    {
+                        let mut kept = Vec::new();
+                        for id in implied {
+                            if !super::super::administration::administrative(connection, &id)? {
+                                kept.push(id);
+                            }
+                        }
+                        implied = kept;
+                    }
+                    super::super::policy::with_members(connection, implied)
                 })
                 .transpose()
         })

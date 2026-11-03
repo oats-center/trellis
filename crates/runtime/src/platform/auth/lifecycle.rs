@@ -14,6 +14,10 @@ use super::policy::{capability, entitlements, CapabilitySelection};
 use super::revocation::{enqueue_scope, EnforcementScope};
 use super::sqlite::{decode, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore};
 
+/// Client metadata marking that someone who manages the platform allowed its
+/// administrative capabilities without asking.
+pub(super) const IMPLIED_ADMINISTRATION: &str = "trellis_implied_administration";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ClientRegistration {
     pub(crate) client_id: String,
@@ -247,6 +251,26 @@ impl SqliteAuthorizationStore {
                 for name in &registration.implied_capabilities {
                     capability(connection, name)?;
                 }
+                // Allowing administration without asking hands it to whatever
+                // answers the client's callbacks, so saving such a client is
+                // itself managing the platform. The saved mark is what lets
+                // sign-in skip asking for it.
+                Self::require_platform_for(
+                    connection,
+                    &identity.actor,
+                    registration.implied_capabilities.iter().map(String::as_str),
+                )?;
+                let mut metadata = registration.metadata.clone();
+                let mut administrative = false;
+                for name in &registration.implied_capabilities {
+                    administrative |= super::administration::administrative(connection, name)?;
+                }
+                if let Some(fields) = metadata.as_object_mut() {
+                    fields.remove(IMPLIED_ADMINISTRATION);
+                    if administrative {
+                        fields.insert(IMPLIED_ADMINISTRATION.into(), Value::Bool(true));
+                    }
+                }
                 let current: Option<(u64, String)> = connection
                     .query_row(
                         "SELECT revision,kind FROM auth_oauth_clients WHERE client_id=?1",
@@ -284,7 +308,7 @@ impl SqliteAuthorizationStore {
                         json(&registration.redirect_uris)?,
                         registration.development,
                         json(&registration.implied_capabilities)?,
-                        json(&registration.metadata)?,
+                        json(&metadata)?,
                         registration.expected_revision + 1,
                         now
                     ],

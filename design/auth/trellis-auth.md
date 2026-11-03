@@ -414,7 +414,14 @@ group includes. A listed group allows its current members. A registered
 browser client whose implied capabilities cover everything it requests that
 the user holds
 signs in without a consent page, administration included: the administrator
-who allowed it confirmed it. The user's own holdings remain the limit; when
+who allowed it confirmed it. Allowing an administrative capability (or a group
+with one) without asking hands it to whatever answers the client's callbacks,
+so saving a client whose list includes one requires
+`trellis.auth.v1:platform.manage`, like changing who holds administration. That
+covers changing such a client's callbacks too. A client saved that way is
+marked in its metadata; sign-in asks for the administrative capabilities of a
+client without the mark, such as one saved before this rule. The user's own
+holdings remain the limit; when
 they lack something the client requires, or it asks for anything not implied,
 the ordinary consent page is shown. Administrators edit the Console's list like
 any other app's.

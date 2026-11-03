@@ -21,6 +21,15 @@ and this project adheres to
 
 ### Fixed
 
+- Security: anyone who could manage OAuth clients could let a browser app take
+  administrative capabilities without asking and point its callback at
+  themselves, so an administrator who signed in to it silently handed it their
+  administration. Saving a client that allows administration without asking,
+  or changing one that does, now requires `trellis.auth.v1:platform.manage`.
+  Clients saved before this release ask for their administrative capabilities
+  again, the Console included, until someone who manages the platform saves
+  them.
+
 - A Rust service stopped for good when it needed a new session while the
   Trellis runtime was restarting or briefly unavailable, because rc.20 treated
   a refused fresh connection as permanent. NATS reports an unavailable Auth the

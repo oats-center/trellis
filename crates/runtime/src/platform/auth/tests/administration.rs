@@ -198,3 +198,61 @@ fn an_administrators_confirmed_delegation_reaches_the_app_at_once() {
         .unwrap();
     assert!(authority_holds(&f, grant, roles));
 }
+
+#[test]
+fn only_platform_managers_let_a_client_take_administration_without_asking() {
+    let f = fixture();
+    let manager = create_user(&f.store, &f.admin, NOW);
+    administer(
+        &f.store,
+        &f.admin,
+        &manager,
+        &[Administration::ManageClients],
+        NOW,
+    );
+    let register = |actor: &str, client: &ClientRegistration| {
+        f.store.transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(actor, client),
+                client,
+                NOW,
+            )
+        })
+    };
+    let mut client = ClientRegistration {
+        client_id: "operations-app".into(),
+        kind: "browser".into(),
+        display_name: "Operations".into(),
+        redirect_uris: vec!["https://ops.example/callback".into()],
+        development: false,
+        implied_capabilities: vec![Administration::ManageRoles.capability_id().into()],
+        metadata: serde_json::json!({}),
+        expected_revision: 0,
+    };
+    assert!(matches!(
+        register(&manager, &client),
+        Err(AuthError::Denied)
+    ));
+    register(&f.admin, &client).unwrap();
+    // Pointing the administrator's sign-ins somewhere else is no different.
+    client.expected_revision = 1;
+    client.redirect_uris = vec!["https://manager.example/callback".into()];
+    assert!(matches!(
+        register(&manager, &client),
+        Err(AuthError::Denied)
+    ));
+    // Without administration in it, the client is the manager's to change.
+    client.implied_capabilities.clear();
+    register(&manager, &client).unwrap();
+    administer(
+        &f.store,
+        &f.admin,
+        &manager,
+        &[Administration::ManagePlatform],
+        NOW,
+    );
+    client.expected_revision = 2;
+    client.implied_capabilities = vec![Administration::ManageRoles.capability_id().into()];
+    register(&manager, &client).unwrap();
+}
