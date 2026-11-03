@@ -266,13 +266,16 @@ impl AvailabilitySnapshot {
     /// Test projected whole-capability membership for an API action.
     #[doc(hidden)]
     pub fn allows_action(&self, action: OptionalAction) -> bool {
-        self.usable
-            && self.actions.iter().any(|allowed| {
-                allowed.api_id == action.api_id
-                    && allowed.action.kind == action.surface
-                    && allowed.action.name == action.name
-                    && allowed.action.direction == action.action
-            })
+        self.usable && self.grants_action(action)
+    }
+
+    fn grants_action(&self, action: OptionalAction) -> bool {
+        self.actions.iter().any(|allowed| {
+            allowed.api_id == action.api_id
+                && allowed.action.kind == action.surface
+                && allowed.action.name == action.name
+                && allowed.action.direction == action.action
+        })
     }
 
     /// Test a whole capability whose signed identity and meaning match its accepted catalog.
@@ -286,13 +289,17 @@ impl AvailabilitySnapshot {
     }
 
     /// Reject an optional action absent from this installed snapshot.
+    ///
+    /// Only the grant decides. While a new transport generation's revocation
+    /// mirror is starting the snapshot is briefly unusable, and a granted call
+    /// then waits on the transport like any always-granted call.
     #[doc(hidden)]
     pub fn require_action(
         &self,
         optional_actions: &[OptionalAction],
         action: OptionalAction,
     ) -> Result<(), crate::client::TrellisClientError> {
-        if !optional_actions.contains(&action) || self.allows_action(action) {
+        if !optional_actions.contains(&action) || self.grants_action(action) {
             return Ok(());
         }
         Err(crate::client::TrellisClientError::AuthorizationUnavailable(
@@ -1751,6 +1758,35 @@ mod tests {
                 .to_string(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV"
         );
+    }
+
+    #[test]
+    fn granted_optional_actions_stay_callable_while_a_generation_cuts_over() {
+        use super::{AvailabilitySnapshot, CatalogActionProjection, OptionalAction};
+        let extend = OptionalAction::rpc("growth@v1", "Extend");
+        let other = OptionalAction::rpc("growth@v1", "Other");
+        let optional = [extend, other];
+        let granted = AvailabilitySnapshot::new(
+            vec![CatalogActionProjection {
+                api_id: "growth@v1".into(),
+                action: trellis_protocol::CatalogActionIdentity {
+                    kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                    name: "Extend".into(),
+                    direction: trellis_protocol::PermissionAction::Call,
+                },
+            }],
+            Default::default(),
+        );
+        let cutover = AvailabilitySnapshot::suspended(&granted);
+
+        assert!(granted.require_action(&optional, extend).is_ok());
+        assert!(cutover.require_action(&optional, extend).is_ok());
+        assert!(matches!(
+            cutover.require_action(&optional, other),
+            Err(crate::client::TrellisClientError::AuthorizationUnavailable(
+                _
+            ))
+        ));
     }
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]

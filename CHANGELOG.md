@@ -32,6 +32,10 @@ and this project adheres to
   the installation started but browser clients couldn't connect. It now uses
   the broker's host on `--nats-ws-port`, and the setup questions ask for the
   broker's WebSocket address.
+- A Rust client could refuse a granted optional call with
+  `AuthorizationUnavailable` if it ran while a new connection was taking
+  over, for example right after a capability was granted. The call now waits
+  for the connection like any other.
 
 ## [0.100.0-rc.21] - 2026-11-03
 
