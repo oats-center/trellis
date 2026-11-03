@@ -28,9 +28,8 @@ and this project adheres to
   another host, so the hop from the runtime to the broker, and the broker's
   WebSocket port, carried NATS credentials and traffic unencrypted across the
   network. A broker on another host now serves its own TLS WebSocket by
-  default, and asking to relay to one is refused. Installations initialized
-  that way should be initialized again, or have `[http] nats_websocket_upstream`
-  removed and the broker's WebSocket given TLS.
+  default, and asking to relay to one is refused. Initialize an installation
+  set up that way again.
 - Security: accepting a development installation's certificate in a
   TypeScript program added its issuer to the whole process's trust, so
   another address whose pin named a different issuer could be served by a
@@ -47,7 +46,6 @@ and this project adheres to
   Clients saved before this release ask for their administrative capabilities
   again, the Console included, until someone who manages the platform saves
   them.
-
 - A Rust service stopped for good when it needed a new session while the
   Trellis runtime was restarting or briefly unavailable, because rc.20 treated
   a refused fresh connection as permanent. NATS reports an unavailable Auth the
