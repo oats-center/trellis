@@ -108,7 +108,7 @@ export async function discoverNativeOAuth(
         throw new AuthError({ reason: "InvalidIssuer" });
       const address = issuer;
       issuer = issuerOf(resource.authorization_servers[0]);
-      trustNamedEndpoints(address, [issuer]);
+      await trustNamedEndpoints(address, [issuer]);
       response = await get(`${issuer}/.well-known/oauth-authorization-server`);
       if (response.status === 429) throw new AuthError({ reason: "OAuthBusy" });
       if (!response.ok) throw new AuthError({ reason: "OAuthUnavailable" });
@@ -160,7 +160,7 @@ export async function discoverNativeOAuth(
     }
     // Native NATS is preferred; a Trellis that keeps it private advertises
     // only its WebSocket. One connection can't mix the two.
-    trustNamedEndpoints(issuer, metadata.trellis.natsEndpoints);
+    await trustNamedEndpoints(issuer, metadata.trellis.natsEndpoints);
     const native = metadata.trellis.natsEndpoints.filter((server) =>
       /^(nats|tls):/.test(server),
     );

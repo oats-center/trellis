@@ -14,6 +14,7 @@ import { Readable } from "node:stream";
 import { connect, type DetailedPeerCertificate } from "node:tls";
 import { Agent, request, WebSocket as AgentWebSocket } from "undici";
 import { err, ok, type Result } from "@oatscenter/result";
+import { z } from "zod";
 
 import type { HttpRequest } from "../auth/oauth_core.ts";
 import { AuthError } from "../errors/AuthError.ts";
@@ -49,10 +50,23 @@ export function certificateAcceptanceFor(
 }
 
 /**
- * The issuers accepted for each endpoint (`host:port`), which only Trellis's
- * own connections to that endpoint trust. Nothing else in the process does.
+ * An installation this process accepted at one endpoint (`host:port`), or
+ * found the system trust store vouching for, with the endpoints it named
+ * itself, such as its sign-in and its NATS servers. Only Trellis's own
+ * connections to those endpoints trust its issuers; nothing else in the
+ * process does.
  */
-const acceptedIssuers = new Map<string, readonly string[]>();
+type Installation = {
+  readonly at: string;
+  /** None when the system trust store vouches for it. */
+  readonly issuers?: readonly string[];
+  readonly endpoints: Set<string>;
+  /** Where its issuer is saved; the endpoints it named are saved beside it. */
+  readonly file?: string;
+};
+
+/** By the endpoint each was accepted at. */
+const installations = new Map<string, Installation>();
 
 const defaultPorts: Record<string, string> = {
   "https:": "443",
@@ -69,30 +83,107 @@ function endpointOf(url: string | URL): string {
   return `${host}:${parsed.port || defaultPorts[parsed.protocol] || ""}`;
 }
 
-/**
- * Trusts the issuer accepted for `named`'s endpoint at `endpoints` too, which
- * that installation named itself, such as its sign-in and its NATS servers.
- * @internal
- */
-export function trustNamedEndpoints(
-  named: string,
-  endpoints: readonly string[],
-): void {
-  const issuers = acceptedIssuers.get(endpointOf(named));
-  if (issuers)
-    for (const endpoint of endpoints)
-      acceptedIssuers.set(endpointOf(endpoint), issuers);
+function installationAt(endpoint: string): Installation | undefined {
+  for (const installation of installations.values())
+    if (installation.endpoints.has(endpoint)) return installation;
+  return undefined;
+}
+
+function sameIssuers(
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean {
+  return a?.join("\n") === b?.join("\n");
+}
+
+function remember(
+  endpoint: string,
+  issuers: readonly string[] | undefined,
+  file?: string,
+): Installation {
+  const previous = installations.get(endpoint);
+  const installation = {
+    at: endpoint,
+    issuers,
+    endpoints:
+      previous && sameIssuers(previous.issuers, issuers)
+        ? previous.endpoints
+        : new Set([endpoint]),
+    file,
+  };
+  // What an endpoint presents itself outranks what another installation
+  // named it.
+  for (const other of installations.values())
+    if (other !== previous) other.endpoints.delete(endpoint);
+  installations.set(endpoint, installation);
+  return installation;
+}
+
+function namedFile(file: string): string {
+  return file.replace(/\.pem$/, ".endpoints.json");
 }
 
 /**
- * The issuers accepted for any of `servers`, for a connection to them.
+ * Trusts the issuer accepted for `named`'s installation at `endpoints` too,
+ * which that installation named itself. Refuses an endpoint another
+ * installation this process connects to already trusts differently.
+ * @internal
+ */
+export async function trustNamedEndpoints(
+  named: string,
+  endpoints: readonly string[],
+): Promise<void> {
+  const at = endpointOf(named);
+  await name(
+    installationAt(at) ?? remember(at, undefined),
+    endpoints.map(endpointOf),
+  );
+}
+
+async function name(
+  installation: Installation,
+  endpoints: readonly string[],
+): Promise<void> {
+  for (const endpoint of endpoints) {
+    const other = installationAt(endpoint);
+    if (
+      other &&
+      other !== installation &&
+      !sameIssuers(other.issuers, installation.issuers)
+    )
+      throw new AuthError({
+        reason: "CertificateConflict",
+        message: `${installation.at} names ${endpoint}, which another Trellis this program connects to trusts with a different certificate`,
+      });
+  }
+  const before = installation.endpoints.size;
+  for (const endpoint of endpoints) installation.endpoints.add(endpoint);
+  if (installation.file && installation.endpoints.size !== before) {
+    const file = namedFile(installation.file);
+    const staged = `${file}.${randomUUID()}`;
+    await writeFile(
+      staged,
+      JSON.stringify({
+        endpoint: installation.at,
+        endpoints: [...installation.endpoints],
+      }),
+      { mode: 0o600, flag: "wx" },
+    );
+    await rename(staged, file);
+  }
+}
+
+/**
+ * The issuers accepted for `servers`' installation, for a connection to them.
  * @internal
  */
 export function acceptedIssuersFor(
   servers: readonly string[],
 ): string[] | undefined {
   const issuers = new Set(
-    servers.flatMap((server) => acceptedIssuers.get(endpointOf(server)) ?? []),
+    servers.flatMap(
+      (server) => installationAt(endpointOf(server))?.issuers ?? [],
+    ),
   );
   return issuers.size ? [...issuers] : undefined;
 }
@@ -101,7 +192,7 @@ export function acceptedIssuersFor(
 const agents = new WeakMap<readonly string[], Agent>();
 
 function agentFor(url: string | URL): Agent | undefined {
-  const issuers = acceptedIssuers.get(endpointOf(url));
+  const issuers = installationAt(endpointOf(url))?.issuers;
   if (!issuers) return undefined;
   let agent = agents.get(issuers);
   if (!agent) {
@@ -213,7 +304,10 @@ export async function acceptServerCertificate(
         message: `${server} presents issuer fingerprint ${presented.fingerprint}, not the expected ${expected}`,
       }),
     );
-  if (presented.authorized) return ok(undefined);
+  if (presented.authorized) {
+    remember(server, undefined);
+    return ok(undefined);
+  }
 
   const accepted = await readFile(file, "utf8").catch(() => undefined);
   if (accepted !== undefined) {
@@ -225,7 +319,7 @@ export async function acceptServerCertificate(
           message: `${server} presents a different certificate than the one accepted for it (accepted ${fingerprint}, presented ${presented.fingerprint}); someone may be intercepting the connection. If the operator replaced it, delete ${file} and connect again`,
         }),
       );
-    acceptedIssuers.set(server, [accepted]);
+    remember(server, [accepted], file);
     return ok(undefined);
   }
 
@@ -271,7 +365,7 @@ export async function acceptServerCertificate(
   const staged = `${file}.${randomUUID()}`;
   await writeFile(staged, presented.pem, { mode: 0o600, flag: "wx" });
   await rename(staged, file);
-  acceptedIssuers.set(server, [presented.pem]);
+  remember(server, [presented.pem], file);
   return ok(undefined);
 }
 
@@ -292,9 +386,10 @@ export async function acceptServerCertificateFor(
 }
 
 /**
- * Trusts the certificates `participant` already accepted at `servers`, for a
- * connection that only reaches the broker. Activation, which reaches the
- * server's HTTPS address, accepts them first.
+ * Trusts the certificates `participant` already accepted at the `servers`
+ * their installations named, for a connection that only reaches the broker.
+ * Activation and discovery, which reach the server's HTTPS address, accept
+ * them and record what each installation names.
  */
 export async function trustAcceptedCertificatesFor(
   participant: string,
@@ -303,13 +398,29 @@ export async function trustAcceptedCertificatesFor(
   const { directory } = certificateAcceptanceFor(
     participantProgram(participant),
   );
-  const issuers: string[] = [];
-  for (const name of await readdir(directory).catch(() => []))
-    if (name.endsWith(".pem"))
-      issuers.push(await readFile(join(directory, name), "utf8"));
-  if (issuers.length)
-    for (const server of servers)
-      acceptedIssuers.set(endpointOf(server), issuers);
+  const wanted = new Set(servers.map(endpointOf));
+  for (const entry of await readdir(directory).catch(() => [])) {
+    if (!entry.endsWith(".pem")) continue;
+    const file = join(directory, entry);
+    const named = await readFile(namedFile(file), "utf8")
+      .then((text) =>
+        z
+          .object({ endpoint: z.string(), endpoints: z.array(z.string()) })
+          .parse(JSON.parse(text)),
+      )
+      .catch(() => undefined);
+    if (
+      !named ||
+      installations.has(named.endpoint) ||
+      !named.endpoints.some((endpoint) => wanted.has(endpoint))
+    )
+      continue;
+    // Already saved: only trusted again.
+    await name(
+      remember(named.endpoint, [await readFile(file, "utf8")]),
+      named.endpoints,
+    );
+  }
 }
 
 function participantProgram(participant: string): string {
