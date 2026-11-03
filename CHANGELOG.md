@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.21] - 2026-11-03
+
 ### Added
 
 - The testkit's `callAdminRpc` accepts `authApisList`.
