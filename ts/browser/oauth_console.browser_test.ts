@@ -109,6 +109,9 @@ test("the Console signs in without asking for access and uses the real authentic
       await search.fill("no such api anywhere");
       await search.press("Enter");
       await page.getByText("No APIs match", { exact: true }).waitFor();
+      // Emptying the box brings the whole catalog back.
+      await search.fill("");
+      await page.getByRole("link", { name: /^Trellis Auth\b/ }).waitFor();
       await search.fill("trellis auth");
       await search.press("Enter");
       await page.getByRole("link", { name: /^Trellis Auth\b/ }).click();
