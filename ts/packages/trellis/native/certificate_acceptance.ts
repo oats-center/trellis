@@ -10,14 +10,12 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { randomUUID, X509Certificate } from "node:crypto";
-import {
-  connect,
-  getCACertificates,
-  setDefaultCACertificates,
-  type DetailedPeerCertificate,
-} from "node:tls";
+import { Readable } from "node:stream";
+import { connect, type DetailedPeerCertificate } from "node:tls";
+import { Agent, request, WebSocket as AgentWebSocket } from "undici";
 import { err, ok, type Result } from "@oatscenter/result";
 
+import type { HttpRequest } from "../auth/oauth_core.ts";
 import { AuthError } from "../errors/AuthError.ts";
 
 /** Accepts only a certificate whose issuer has this SHA-256 fingerprint. */
@@ -51,16 +49,138 @@ export function certificateAcceptanceFor(
 }
 
 /**
- * Makes this process trust the certificate a Trellis at `url` presents,
- * accepting one nothing vouches for the way a browser would.
+ * The issuers accepted for each endpoint (`host:port`), which only Trellis's
+ * own connections to that endpoint trust. Nothing else in the process does.
+ */
+const acceptedIssuers = new Map<string, readonly string[]>();
+
+const defaultPorts: Record<string, string> = {
+  "https:": "443",
+  "wss:": "443",
+  "http:": "80",
+  "ws:": "80",
+  "tls:": "4222",
+  "nats:": "4222",
+};
+
+function endpointOf(url: string | URL): string {
+  const parsed = new URL(url);
+  const host = parsed.hostname.replace(/^\[|\]$/g, "");
+  return `${host}:${parsed.port || defaultPorts[parsed.protocol] || ""}`;
+}
+
+/**
+ * Trusts the issuer accepted for `named`'s endpoint at `endpoints` too, which
+ * that installation named itself, such as its sign-in and its NATS servers.
+ * @internal
+ */
+export function trustNamedEndpoints(
+  named: string,
+  endpoints: readonly string[],
+): void {
+  const issuers = acceptedIssuers.get(endpointOf(named));
+  if (issuers)
+    for (const endpoint of endpoints)
+      acceptedIssuers.set(endpointOf(endpoint), issuers);
+}
+
+/**
+ * The issuers accepted for any of `servers`, for a connection to them.
+ * @internal
+ */
+export function acceptedIssuersFor(
+  servers: readonly string[],
+): string[] | undefined {
+  const issuers = new Set(
+    servers.flatMap((server) => acceptedIssuers.get(endpointOf(server)) ?? []),
+  );
+  return issuers.size ? [...issuers] : undefined;
+}
+
+/** One connection pool per set of accepted issuers. */
+const agents = new WeakMap<readonly string[], Agent>();
+
+function agentFor(url: string | URL): Agent | undefined {
+  const issuers = acceptedIssuers.get(endpointOf(url));
+  if (!issuers) return undefined;
+  let agent = agents.get(issuers);
+  if (!agent) {
+    agent = new Agent({ connect: { ca: [...issuers] } });
+    agents.set(issuers, agent);
+  }
+  return agent;
+}
+
+/**
+ * `fetch`, trusting the issuer accepted for `input`'s endpoint when there is
+ * one.
+ * @internal
+ */
+export async function installationFetch(
+  input: string | URL,
+  init: HttpRequest = {},
+): Promise<Response> {
+  const dispatcher = agentFor(input);
+  if (!dispatcher) return await fetch(input, init);
+  const headers = { ...init.headers };
+  if (init.body instanceof URLSearchParams)
+    headers["content-type"] ??=
+      "application/x-www-form-urlencoded;charset=UTF-8";
+  const received = await request(input, {
+    dispatcher,
+    method: init.method ?? "GET",
+    headers,
+    body: init.body?.toString(),
+    signal: init.signal,
+  });
+  // Like fetch with `redirect: "error"`; undici follows none by default.
+  if (
+    received.statusCode >= 300 &&
+    received.statusCode < 400 &&
+    init.redirect === "error"
+  ) {
+    received.body.destroy();
+    throw new TypeError("fetch failed: redirect");
+  }
+  const responseHeaders = new Headers();
+  for (const [name, value] of Object.entries(received.headers))
+    for (const item of [value ?? []].flat()) responseHeaders.append(name, item);
+  const empty = [101, 204, 205, 304].includes(received.statusCode);
+  if (empty) received.body.destroy();
+  return new Response(
+    empty
+      ? null
+      : (Readable.toWeb(received.body) as ReadableStream<Uint8Array>),
+    { status: received.statusCode, headers: responseHeaders },
+  );
+}
+
+/**
+ * A WebSocket to `url`, trusting the issuer accepted for its endpoint when
+ * there is one.
+ * @internal
+ */
+export function installationWebSocket(url: string): WebSocket {
+  const dispatcher = agentFor(url);
+  // Node's own WebSocket is this class, from its bundled copy of undici.
+  return dispatcher
+    ? (new AgentWebSocket(url, { dispatcher }) as WebSocket)
+    : new WebSocket(url);
+}
+
+/**
+ * Makes Trellis's connections to the Trellis at `url` trust the certificate
+ * it presents, accepting one nothing vouches for the way a browser would.
  *
- * A server the system trust store vouches for needs nothing. Otherwise the
- * certificate accepted earlier for this server is trusted, and a different one
- * is refused. On first contact the issuer's SHA-256 fingerprint must match
- * `acceptance.fingerprint` (or `TRELLIS_CERTIFICATE_FINGERPRINT`), or
- * `TRELLIS_ACCEPT_SELF_SIGNED` must be `1`, or the operator accepts it on the
- * terminal. The accepted issuer is saved in `acceptance.directory` and added to
- * this process's TLS trust, which `fetch` and NATS connections use.
+ * A server the system trust store vouches for needs nothing, unless it fails
+ * an explicitly requested fingerprint. Otherwise the certificate accepted
+ * earlier for this server is trusted, and a different one is refused. On first
+ * contact the issuer's SHA-256 fingerprint must match `acceptance.fingerprint`
+ * (or `TRELLIS_CERTIFICATE_FINGERPRINT`), or `TRELLIS_ACCEPT_SELF_SIGNED` must
+ * be `1`, or the operator accepts it on the terminal. The accepted issuer is
+ * saved in `acceptance.directory`. Only this installation's endpoints trust
+ * it, through `discoverNativeOAuth` and the connections Trellis opens to
+ * them; the rest of the process, including `fetch`, does not.
  */
 export async function acceptServerCertificate(
   url: string,
@@ -82,6 +202,17 @@ export async function acceptServerCertificate(
   );
   const presented = await presentedIssuer(host, port);
   if (!presented) return err(new AuthError({ reason: "OAuthUnavailable" }));
+  const expected = (
+    acceptance.fingerprint ?? process.env[CERTIFICATE_FINGERPRINT_ENV]
+  )?.trim();
+  const normalize = (value: string) => value.replaceAll(":", "").toUpperCase();
+  if (expected && normalize(expected) !== normalize(presented.fingerprint))
+    return err(
+      new AuthError({
+        reason: "CertificateMismatch",
+        message: `${server} presents issuer fingerprint ${presented.fingerprint}, not the expected ${expected}`,
+      }),
+    );
   if (presented.authorized) return ok(undefined);
 
   const accepted = await readFile(file, "utf8").catch(() => undefined);
@@ -94,22 +225,12 @@ export async function acceptServerCertificate(
           message: `${server} presents a different certificate than the one accepted for it (accepted ${fingerprint}, presented ${presented.fingerprint}); someone may be intercepting the connection. If the operator replaced it, delete ${file} and connect again`,
         }),
       );
-    trust(accepted);
+    acceptedIssuers.set(server, [accepted]);
     return ok(undefined);
   }
 
-  const expected = (
-    acceptance.fingerprint ?? process.env[CERTIFICATE_FINGERPRINT_ENV]
-  )?.trim();
-  const normalize = (value: string) => value.replaceAll(":", "").toUpperCase();
   if (expected) {
-    if (normalize(expected) !== normalize(presented.fingerprint))
-      return err(
-        new AuthError({
-          reason: "CertificateMismatch",
-          message: `${server} presents issuer fingerprint ${presented.fingerprint}, not the expected ${expected}`,
-        }),
-      );
+    // Matched above.
   } else if (process.env[ACCEPT_SELF_SIGNED_ENV]?.trim() === "1") {
     process.stderr.write(
       `Accepting ${server}'s certificate because ${ACCEPT_SELF_SIGNED_ENV}=1; its issuer's SHA-256 fingerprint is\n  ${presented.fingerprint}\n`,
@@ -150,7 +271,7 @@ export async function acceptServerCertificate(
   const staged = `${file}.${randomUUID()}`;
   await writeFile(staged, presented.pem, { mode: 0o600, flag: "wx" });
   await rename(staged, file);
-  trust(presented.pem);
+  acceptedIssuers.set(server, [presented.pem]);
   return ok(undefined);
 }
 
@@ -171,29 +292,28 @@ export async function acceptServerCertificateFor(
 }
 
 /**
- * Trusts the certificates `participant` already accepted, for a connection
- * that only reaches the broker. Activation, which reaches the server's HTTPS
- * address, accepts them first.
+ * Trusts the certificates `participant` already accepted at `servers`, for a
+ * connection that only reaches the broker. Activation, which reaches the
+ * server's HTTPS address, accepts them first.
  */
 export async function trustAcceptedCertificatesFor(
   participant: string,
+  servers: readonly string[],
 ): Promise<void> {
   const { directory } = certificateAcceptanceFor(
     participantProgram(participant),
   );
+  const issuers: string[] = [];
   for (const name of await readdir(directory).catch(() => []))
     if (name.endsWith(".pem"))
-      trust(await readFile(join(directory, name), "utf8"));
+      issuers.push(await readFile(join(directory, name), "utf8"));
+  if (issuers.length)
+    for (const server of servers)
+      acceptedIssuers.set(endpointOf(server), issuers);
 }
 
 function participantProgram(participant: string): string {
   return participant.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-/** Adds `pem` to the CAs this process's TLS connections trust. */
-function trust(pem: string): void {
-  const current = getCACertificates("default");
-  if (!current.includes(pem)) setDefaultCACertificates([...current, pem]);
 }
 
 /**

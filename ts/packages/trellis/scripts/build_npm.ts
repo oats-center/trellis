@@ -50,6 +50,7 @@ await buildTypeScriptPackage(
         "@nats-io/nats-core",
         "@nats-io/nkeys",
         "@nats-io/transport-node",
+        "undici",
         "@noble/hashes/hkdf",
         "pino",
         "tweetnacl",

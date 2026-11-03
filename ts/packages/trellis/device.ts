@@ -1,6 +1,7 @@
 // Request-serving participants load the provider protocol build.
 import {
   acceptServerCertificateFor,
+  installationFetch,
   trustAcceptedCertificatesFor,
 } from "./native/certificate_acceptance.ts";
 import "./auth/protocol_wasm_provider.ts";
@@ -382,6 +383,7 @@ function createActivationSession<
         });
       }
       const enrollment = await requestDeviceEnrollment({
+        fetch: installationFetch,
         trellisUrl: args.trellisUrl,
         publicIdentityKey: args.identity.publicIdentityKey,
         identitySeed: args.identity.identitySeed,
@@ -433,6 +435,7 @@ export async function startDeviceActivationWithDeps<
   });
   const connectionId = ulid();
   const activation = await requestDeviceEnrollment({
+    fetch: installationFetch,
     trellisUrl: args.trellisUrl,
     publicIdentityKey: identity.publicIdentityKey,
     identitySeed: identity.identitySeed,
@@ -529,7 +532,10 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
   args: TrellisDeviceConnectArgs<TContract>,
   deps: DeviceConnectDeps,
 ): Promise<TrellisDeviceConnection<TContract>> {
-  await trustAcceptedCertificatesFor(args.participant.identity);
+  await trustAcceptedCertificatesFor(
+    args.participant.identity,
+    [args.servers].flat(),
+  );
   const connected = await connectProvisioned(
     args,
     "device",

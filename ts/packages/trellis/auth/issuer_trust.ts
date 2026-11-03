@@ -1,4 +1,5 @@
 import { AuthError } from "../errors/AuthError.ts";
+import type { HttpFetch } from "./oauth_core.ts";
 import { issuerChainSchema, signedBytes } from "./protocol_wasm.ts";
 import {
   SessionAuthorityOwner,
@@ -12,6 +13,7 @@ export async function authenticateIssuerChain(
   target: RuntimeAuthorizationTrust,
   signal?: AbortSignal,
   existingOwner?: SessionAuthorityOwner,
+  request: HttpFetch = fetch,
 ): Promise<SessionAuthorityOwner> {
   const owner =
     existingOwner ??
@@ -36,7 +38,7 @@ export async function authenticateIssuerChain(
         pinnedKeyId: anchor.issuer.keyId,
         targetKeyId: target.issuer.keyId,
       }).toString();
-      const response = await fetch(url, {
+      const response = await request(url, {
         credentials: "omit",
         redirect: "error",
         signal: AbortSignal.any([

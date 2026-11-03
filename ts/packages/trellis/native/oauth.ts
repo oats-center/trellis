@@ -15,6 +15,7 @@ import { base64urlEncode } from "../auth/utils.ts";
 import type { AppRequestDescriptor } from "../generated_support.ts";
 import { AuthError } from "../errors/AuthError.ts";
 import { authenticateIssuerChain } from "../auth/issuer_trust.ts";
+import { installationFetch } from "./certificate_acceptance.ts";
 import {
   MemoryNativeOAuthCustody,
   validateNativeScope,
@@ -356,6 +357,7 @@ export class NativeOAuthClient {
       },
       runtimeId: this.runtimeId,
       sessionPublicKey: this.auth.sessionKey,
+      fetch: installationFetch,
       signal: AbortSignal.any([
         AbortSignal.timeout(30000),
         ...(signal ? [signal] : []),
@@ -400,6 +402,7 @@ export class NativeOAuthClient {
       discovered.orThrow().trust,
       signal,
       this.#owner,
+      installationFetch,
     );
     try {
       await this.#retainTrust(owner);

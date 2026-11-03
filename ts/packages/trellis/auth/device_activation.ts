@@ -9,6 +9,7 @@ import { trellisCrypto } from "./crypto.ts";
 import { publicKeyBase64urlFromSeed } from "./keys.ts";
 import { createAuth } from "./session_auth.ts";
 import { base64urlDecode, base64urlEncode, sha256, utf8 } from "./utils.ts";
+import type { HttpFetch } from "./oauth_core.ts";
 
 const DEVICE_IDENTITY_HKDF_INFO = "trellis/device-identity/v1";
 const DEVICE_ACTIVATION_HKDF_INFO = "trellis/device-activate/v1";
@@ -290,6 +291,8 @@ export async function verifyDeviceConfirmationCode(input: {
 /** Submit one proof-bound device enrollment request. */
 export async function requestDeviceEnrollment(args: {
   trellisUrl: string;
+  /** Defaults to `fetch`. */
+  fetch?: HttpFetch;
   publicIdentityKey: string;
   identitySeed: Uint8Array | string;
   sessionIdentity: Awaited<ReturnType<typeof createAuth>>;
@@ -326,7 +329,7 @@ export async function requestDeviceEnrollment(args: {
           provisioningSecret: args.provisioningSecret,
         }),
   };
-  const response = await fetch(
+  const response = await (args.fetch ?? fetch)(
     new URL("/auth/device/enroll", args.trellisUrl),
     {
       method: "POST",

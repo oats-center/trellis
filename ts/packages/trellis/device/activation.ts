@@ -1,5 +1,8 @@
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { acceptServerCertificateFor } from "../native/certificate_acceptance.ts";
+import {
+  acceptServerCertificateFor,
+  installationFetch,
+} from "../native/certificate_acceptance.ts";
 import { dirname, join } from "node:path";
 import { env, platform } from "node:process";
 import type { StaticDecode } from "typebox";
@@ -488,6 +491,7 @@ export async function checkDeviceActivation<
       normalizeRootSecret(args.rootSecret),
     );
     const enrollment = await requestDeviceEnrollment({
+      fetch: installationFetch,
       trellisUrl: args.trellisUrl,
       publicIdentityKey: identity.publicIdentityKey,
       identitySeed: identity.identitySeed,

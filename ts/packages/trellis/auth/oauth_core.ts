@@ -108,6 +108,22 @@ export function usableNonce(value: string | null): string | undefined {
     : undefined;
 }
 
+/** The request options Trellis's own HTTPS requests use. @internal */
+export type HttpRequest = {
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string | URLSearchParams;
+  signal?: AbortSignal;
+  redirect?: RequestRedirect;
+  credentials?: RequestCredentials;
+};
+
+/** The part of `fetch` Trellis's own HTTPS requests use. @internal */
+export type HttpFetch = (
+  input: string | URL,
+  init?: HttpRequest,
+) => Promise<Response>;
+
 /**
  * POST a DPoP-bound form, answering a `use_dpop_nonce` challenge. Each attempt
  * signs a fresh proof; a challenge precedes any artifact consumption, so the
@@ -121,6 +137,8 @@ export async function postWithDpop(options: {
   sessionPublicKey: string;
   nonce?: string;
   signal: AbortSignal;
+  /** Defaults to `fetch`. */
+  fetch?: HttpFetch;
 }): Promise<TokenResponse> {
   let nonce = options.nonce;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -131,7 +149,7 @@ export async function postWithDpop(options: {
       options.sessionPublicKey,
       nonce,
     );
-    const response = await fetch(options.endpoint, {
+    const response = await (options.fetch ?? fetch)(options.endpoint, {
       method: "POST",
       body: options.form,
       headers: { DPoP: proof },

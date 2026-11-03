@@ -85,11 +85,25 @@ export async function loadDefaultRuntimeTransport(): Promise<RuntimeTransport> {
 
   return {
     connect: async (options) => {
+      // The issuer accepted for these servers' installation, and only it.
+      const { acceptedIssuersFor, installationWebSocket } =
+        await import("./native/certificate_acceptance.ts");
       if (usesWebSocketTransport(options.servers)) {
-        return await wsconnect(options);
+        return await wsconnect({
+          ...options,
+          wsFactory: async (url: string) => ({
+            socket: installationWebSocket(url),
+            encrypted: url.startsWith("wss://"),
+          }),
+        });
       }
       const { connect } = await import("@nats-io/transport-node");
-      return await connect(options);
+      const ca = acceptedIssuersFor(
+        Array.isArray(options.servers) ? options.servers : [options.servers],
+      );
+      return await connect(
+        ca ? { ...options, tls: { ca: ca.join("\n") } } : options,
+      );
     },
   };
 }

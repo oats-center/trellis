@@ -7,6 +7,10 @@ import { base64urlDecode, base64urlEncode, sha256 } from "../auth/utils.ts";
 import { codecs } from "../generated_support.ts";
 import { AuthError } from "../errors/AuthError.ts";
 import { boundedJson, usableNonce } from "../auth/oauth_core.ts";
+import {
+  installationFetch,
+  trustNamedEndpoints,
+} from "./certificate_acceptance.ts";
 
 const metadataSchema = z.object({
   issuer: z.string(),
@@ -78,7 +82,7 @@ export async function discoverNativeOAuth(
 ): Promise<Result<NativeOAuthServer, AuthError>> {
   try {
     const get = (url: string) =>
-      fetch(url, {
+      installationFetch(url, {
         redirect: "error",
         credentials: "omit",
         signal: AbortSignal.any([
@@ -102,7 +106,9 @@ export async function discoverNativeOAuth(
       const resource = resourceSchema.parse(await boundedJson(named));
       if (issuerOf(resource.resource) !== issuer)
         throw new AuthError({ reason: "InvalidIssuer" });
+      const address = issuer;
       issuer = issuerOf(resource.authorization_servers[0]);
+      trustNamedEndpoints(address, [issuer]);
       response = await get(`${issuer}/.well-known/oauth-authorization-server`);
       if (response.status === 429) throw new AuthError({ reason: "OAuthBusy" });
       if (!response.ok) throw new AuthError({ reason: "OAuthUnavailable" });
@@ -154,6 +160,7 @@ export async function discoverNativeOAuth(
     }
     // Native NATS is preferred; a Trellis that keeps it private advertises
     // only its WebSocket. One connection can't mix the two.
+    trustNamedEndpoints(issuer, metadata.trellis.natsEndpoints);
     const native = metadata.trellis.natsEndpoints.filter((server) =>
       /^(nats|tls):/.test(server),
     );

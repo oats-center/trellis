@@ -11,6 +11,8 @@ and this project adheres to
 ### Added
 
 - The testkit's `callAdminRpc` accepts `authApisList`.
+- The testkit's `websocketOnly` runtime option creates an installation that
+  offers clients only the NATS WebSocket.
 
 ### Changed
 
@@ -21,6 +23,14 @@ and this project adheres to
 
 ### Fixed
 
+- Security: accepting a development installation's certificate in a
+  TypeScript program added its issuer to the whole process's trust, so
+  another address whose pin named a different issuer could be served by a
+  certificate from the first, and an explicitly requested fingerprint was
+  skipped when the system already trusted the server. Accepted issuers now
+  apply only to Trellis's own connections to that installation, including its
+  NATS servers and WebSockets, and an explicit fingerprint is always checked.
+  `@oatscenter/trellis` now depends on `undici`.
 - Security: anyone who could manage OAuth clients could let a browser app take
   administrative capabilities without asking and point its callback at
   themselves, so an administrator who signed in to it silently handed it their

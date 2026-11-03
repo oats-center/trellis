@@ -69,6 +69,11 @@ export type TrellisTestRuntimeStartOptions = {
    */
   sameOriginWebsocket?: boolean;
   /**
+   * Offer clients only the NATS WebSocket (`trellis-server init
+   * --nats-websocket-only`), so services and devices connect over it.
+   */
+  websocketOnly?: boolean;
+  /**
    * Create a development installation (`trellis-server init --dev`): one
    * generated certificate, and the Trellis port relays NATS WebSockets.
    */

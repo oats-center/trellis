@@ -101,7 +101,10 @@ request: by `TRELLIS_CERTIFICATE_FINGERPRINT`, by `TRELLIS_ACCEPT_SELF_SIGNED=1`
 on first contact, or by asking on a terminal, remembered per participant under
 `$XDG_STATE_HOME/trellis/<participant>/servers`. Other Node programs call
 `acceptServerCertificate(issuer, certificateAcceptanceFor("my-tool"))` from
-`@oatscenter/trellis/native` before `discoverNativeOAuth`.
+`@oatscenter/trellis/native` before `discoverNativeOAuth`. Only Trellis's own
+connections to that installation trust the accepted certificate (its HTTPS
+endpoints and the NATS servers it advertises); the rest of the process,
+including the program's own `fetch`, does not.
 
 Node native applications import `@oatscenter/trellis/native`, not browser
 custody. Use `discoverNativeOAuth`, `NativeOAuthClient.open` with explicit scope
