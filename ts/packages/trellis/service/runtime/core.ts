@@ -536,6 +536,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   >();
   /** Closes shared operation intake queues, releasing any queued delivery pins. */
   #operationIntakeClosers = new Set<() => void>();
+  /** Lease renewal timers of executions this process owns; stopping ends them. */
+  #operationLeaseHeartbeats = new Set<ReturnType<typeof setInterval>>();
   #operationRecoverers = new Map<
     string,
     (record: DurableOperationRecord) => Promise<void>
@@ -3775,13 +3777,18 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           runtime: RuntimeOperationRecord,
           fence: RuntimeOperationFence,
         ) => {
+          const stopHeartbeat = () => {
+            clearInterval(leaseHeartbeat);
+            this.#operationLeaseHeartbeats.delete(leaseHeartbeat);
+          };
           const leaseHeartbeat = setInterval(() => {
             // Cancellation aborts the handler signal so cleanup can observe it,
             // but cleanup must keep renewing the lease until it finalizes. Only
-            // a terminal operation (or lost ownership, handled below) stops
-            // renewal, matching the owner-continues-renewing contract.
+            // a terminal operation, lost ownership (handled below) or stopping
+            // the service ends renewal, matching the owner-continues-renewing
+            // contract.
             if (runtime.terminal) {
-              clearInterval(leaseHeartbeat);
+              stopHeartbeat();
               return;
             }
             void this.#queueOperationFrame(runtime, async () => {
@@ -3832,9 +3839,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 this.#operations.delete(runtime.id);
               }
               this.#releaseOperationFence(runtime.id, fence);
-              clearInterval(leaseHeartbeat);
+              stopHeartbeat();
             });
           }, 10_000);
+          this.#operationLeaseHeartbeats.add(leaseHeartbeat);
         };
 
         const watchCancellation = (
@@ -4688,6 +4696,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       }
       this.#operationRecoverers.clear();
       this.#operationRecoveryIndexes.clear();
+      // A stopped process renews nothing; its leases expire for recovery.
+      for (const heartbeat of this.#operationLeaseHeartbeats) {
+        clearInterval(heartbeat);
+      }
+      this.#operationLeaseHeartbeats.clear();
       for (const close of this.#operationIntakeClosers) close();
       for (const drain of this.#operationIntakeDrains) {
         void drain().catch(() => undefined);

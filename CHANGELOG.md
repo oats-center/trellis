@@ -57,6 +57,10 @@ and this project adheres to
   failed, kept the ones already given selected, so Refresh and retry gave
   them again and failed on a conflict. Each permission now leaves the
   selection once it's given, and Refresh drops any the user already has.
+- A TypeScript service stopped while it owned an operation kept that
+  operation's lease-renewal timer running, which held its process open for up
+  to ten seconds after `stop()`. Stopping now ends every renewal, and the
+  leases expire for another instance to take over.
 
 ## [0.100.0-rc.20] - 2026-11-02
 
