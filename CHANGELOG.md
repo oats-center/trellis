@@ -23,6 +23,14 @@ and this project adheres to
 
 ### Fixed
 
+- Security: `trellis-server init --external-nats` with TLS relayed NATS
+  WebSockets through the Trellis port by default even when the broker was on
+  another host, so the hop from the runtime to the broker, and the broker's
+  WebSocket port, carried NATS credentials and traffic unencrypted across the
+  network. A broker on another host now serves its own TLS WebSocket by
+  default, and asking to relay to one is refused. Installations initialized
+  that way should be initialized again, or have `[http] nats_websocket_upstream`
+  removed and the broker's WebSocket given TLS.
 - Security: accepting a development installation's certificate in a
   TypeScript program added its issuer to the whole process's trust, so
   another address whose pin named a different issuer could be served by a

@@ -194,7 +194,8 @@ pub(crate) struct InitConfigArgs {
     /// broker's WebSocket port then serves plaintext and must stay private.
     /// Defaults to `relay` unless --tls loopback-development,
     /// --nats-websocket-url or --nats-websocket-behind-proxy is given, and to
-    /// `direct` otherwise.
+    /// `direct` otherwise. A broker that --external-nats reaches on another
+    /// host can't be relayed, since the relay's hop to it is plaintext.
     pub(crate) nats_websocket: Option<InitWebsocketMode>,
 
     /// Address Trellis listens on: an IP or a hostname that
@@ -327,6 +328,22 @@ pub(crate) fn init_config(
         .trellis_origin
         .clone()
         .unwrap_or_else(|| format!("{http}://{host}:{}", args.trellis_port));
+    // The relay reaches the broker's WebSocket in plaintext, so only on this
+    // machine or a Quadlet's own network; a broker elsewhere serves TLS itself.
+    let remote_nats = args.external_nats
+        && !args.quadlet
+        && url::Url::parse(&options.runtime.nats_server_url)
+            .ok()
+            .and_then(|url| {
+                url.host_str()
+                    .map(|host| host.trim_matches(['[', ']']).to_owned())
+            })
+            .is_none_or(|host| {
+                host != "localhost"
+                    && !host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback())
+            });
     let relay = match args.nats_websocket {
         Some(InitWebsocketMode::Relay) => {
             if args.nats_websocket_url.is_some() || args.nats_websocket_behind_proxy {
@@ -344,10 +361,19 @@ pub(crate) fn init_config(
         None => {
             args.dev
                 || (!loopback
+                    && !remote_nats
                     && args.nats_websocket_url.is_none()
                     && !args.nats_websocket_behind_proxy)
         }
     };
+    if relay && remote_nats {
+        return Err(miette!(
+            "relaying NATS WebSockets would send NATS traffic unencrypted to the external \
+            broker at {}; relay only to a broker on this machine, or pass \
+            --nats-websocket direct",
+            options.runtime.nats_server_url
+        ));
+    }
     if relay {
         // Reported for operators; the runtime derives the same URL itself.
         options.runtime.nats_websocket_url = options
@@ -1145,6 +1171,49 @@ mod tests {
             trellis_bootstrap::read_nats_listen_ports(&out.join("nats.conf"))
                 .expect("resolve native listener configuration"),
         )
+    }
+
+    #[test]
+    fn an_external_broker_elsewhere_serves_its_own_tls_websocket() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let remote = [
+            "--external-nats",
+            "--host",
+            "trellis.example.test",
+            "--nats-server-url",
+            "tls://nats.example.test:4222",
+        ];
+        // The relay's hop to the broker is plaintext, and this one crosses
+        // the network.
+        let out = temp.path().join("relayed");
+        let relayed = init_config_args(
+            &out,
+            &[&remote[..], &["--nats-websocket", "relay"]].concat(),
+        );
+        assert!(init_config(OutputFormat::Json, &relayed, &bundle(&out), out.clone()).is_err());
+
+        let (config, _) = generate_bundle(&temp.path().join("remote"), &remote);
+        assert_eq!(config.nats_websocket_upstream(), None);
+        assert_eq!(
+            config.client.as_ref().unwrap().ws_nats_servers.as_deref(),
+            Some(&["wss://trellis.example.test:8080".to_owned()][..])
+        );
+        let nats = std::fs::read_to_string(temp.path().join("remote/nats.conf")).unwrap();
+        assert!(
+            !nats.contains("no_tls"),
+            "the broker's WebSocket is plaintext:\n{nats}"
+        );
+
+        // A broker on this machine is relayed as before.
+        let (local, _) = generate_bundle(
+            &temp.path().join("local"),
+            &[
+                "--external-nats",
+                "--nats-server-url",
+                "tls://localhost:4222",
+            ],
+        );
+        assert!(local.nats_websocket_upstream().is_some());
     }
 
     #[test]

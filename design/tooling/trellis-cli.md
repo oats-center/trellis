@@ -210,7 +210,8 @@ WebSocket listens on every interface for a proxy that may run on another host)
 or `--nats-websocket relay|direct` (relay, the default with generated or
 supplied TLS unless a WebSocket URL or external proxy is given, has the Trellis port send
 every WebSocket upgrade to the broker's plaintext WebSocket listener, which
-then stays on loopback), and
+then stays on loopback; because that hop is plaintext, an `--external-nats`
+broker on another host defaults to direct and refuses relay), and
 `--nats-websocket-only` (clients are offered only the WebSocket and native NATS
 stays private; `--nats-server-url` is then only where the runtime reaches the
 broker), validates that every
