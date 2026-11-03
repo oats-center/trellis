@@ -156,21 +156,19 @@ async function name(
         message: `${installation.at} names ${endpoint}, which another Trellis this program connects to trusts with a different certificate`,
       });
   }
-  const before = installation.endpoints.size;
   for (const endpoint of endpoints) installation.endpoints.add(endpoint);
-  if (installation.file && installation.endpoints.size !== before) {
-    const file = namedFile(installation.file);
-    const staged = `${file}.${randomUUID()}`;
-    await writeFile(
-      staged,
-      JSON.stringify({
-        endpoint: installation.at,
-        endpoints: [...installation.endpoints],
-      }),
-      { mode: 0o600, flag: "wx" },
-    );
-    await rename(staged, file);
-  }
+  if (!installation.file) return;
+  // Saved even when it names only itself, as an installation that offers
+  // only its WebSocket on its own port does.
+  const file = namedFile(installation.file);
+  const saved = JSON.stringify({
+    endpoint: installation.at,
+    endpoints: [...installation.endpoints],
+  });
+  if ((await readFile(file, "utf8").catch(() => undefined)) === saved) return;
+  const staged = `${file}.${randomUUID()}`;
+  await writeFile(staged, saved, { mode: 0o600, flag: "wx" });
+  await rename(staged, file);
 }
 
 /**
