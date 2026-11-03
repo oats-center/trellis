@@ -3777,6 +3777,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           runtime: RuntimeOperationRecord,
           fence: RuntimeOperationFence,
         ) => {
+          // A recovery still in flight when the service stopped must not
+          // renew, or keep the process alive to try.
+          if (this.#operationRecoveryAbort.signal.aborted) return;
           const stopHeartbeat = () => {
             clearInterval(leaseHeartbeat);
             this.#operationLeaseHeartbeats.delete(leaseHeartbeat);
@@ -3849,6 +3852,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           runtime: RuntimeOperationRecord,
           fence: RuntimeOperationFence,
         ) => {
+          if (this.#operationRecoveryAbort.signal.aborted) return;
           let reading = false;
           let cleanupScheduled = !!runtime.cancelRequestedAt;
           const cancellationWatch = setInterval(() => {
@@ -3948,6 +3952,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 .openStagedOperation(runtime.uploadState.stagingKey, committed)
                 .take();
               if (isErr(staged)) return;
+              if (this.#operationRecoveryAbort.signal.aborted) return;
               startLeaseHeartbeat(runtime, fence);
               watchCancellation(runtime, fence);
               const transferSession = {
@@ -4002,6 +4007,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             runtime.snapshot.revision++;
             runtime.snapshot.updatedAt = now();
             await this.saveOperationRecord(runtime);
+            if (this.#operationRecoveryAbort.signal.aborted) return;
             startLeaseHeartbeat(runtime, fence);
             watchCancellation(runtime, fence);
             this.#operationTransferSessions.set(runtime.id, reopened);
@@ -4015,6 +4021,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             );
             return;
           }
+          if (this.#operationRecoveryAbort.signal.aborted) return;
           startLeaseHeartbeat(runtime, fence);
           watchCancellation(runtime, fence);
           void scheduleHandler(
