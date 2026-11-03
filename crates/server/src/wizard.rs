@@ -129,6 +129,18 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
     if let Some(console) = console {
         args.extend(["--console-origin".into(), console]);
     }
+    // Browsers can't use the relay to a broker elsewhere; they connect to
+    // its own WebSocket.
+    if let Some(nats_host) = external_nats
+        .then(|| crate::setup::remote_host(&nats))
+        .flatten()
+    {
+        let websocket = url_prompt(
+            "Your NATS server's WebSocket address, as browsers reach it",
+            &format!("wss://{nats_host}:{}", ports["--nats-ws-port"]),
+        )?;
+        args.extend(["--nats-websocket-url".into(), websocket]);
+    }
     args.extend(["--nats-server-url".into(), nats]);
 
     const SUPPLIED: &str = "I have certificate files browsers already trust";

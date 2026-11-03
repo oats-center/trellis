@@ -143,6 +143,13 @@ cluster, create the installation with `trellis-server init --external-nats`, or
 delete that line. The server then connects to the servers listed in
 `[nats] servers` and never starts or stops NATS.
 
+When that NATS runs on another machine, browsers connect to its WebSocket
+themselves, because Trellis's hop to the broker's WebSocket is unencrypted and
+Trellis only relays to a broker on the same machine. `init` sends browsers to
+the broker's host on `--nats-ws-port` (`wss://nats.example.com:8080` for
+`--nats-server-url tls://nats.example.com:4222`); pass `--nats-websocket-url`
+when browsers reach it at another address.
+
 On a single NATS server Trellis keeps one copy of each stream. Set
 `nats.jetstream.replicas` to choose, or leave it out and Trellis picks `3` once
 it can see enough JetStream servers to hold three copies.

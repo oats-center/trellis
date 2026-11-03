@@ -124,7 +124,8 @@ pub(crate) struct InitConfigArgs {
 
     #[arg(long)]
     /// Browser-facing NATS websocket URL for Trellis clients; defaults to
-    /// wss://localhost:<nats-ws-port> (ws:// in loopback development).
+    /// wss://<host>:<nats-ws-port> (ws:// in loopback development), or the
+    /// broker's own host for an external broker on another machine.
     pub(crate) nats_websocket_url: Option<String>,
 
     #[arg(long)]
@@ -320,30 +321,22 @@ pub(crate) fn init_config(
         .nats_server_url
         .clone()
         .unwrap_or_else(|| format!("{native}://{host}:{}", args.nats_port));
-    options.runtime.nats_websocket_url = args
-        .nats_websocket_url
-        .clone()
-        .unwrap_or_else(|| format!("{websocket}://{host}:{}", args.nats_ws_port));
     options.runtime.public_origin = args
         .trellis_origin
         .clone()
         .unwrap_or_else(|| format!("{http}://{host}:{}", args.trellis_port));
     // The relay reaches the broker's WebSocket in plaintext, so only on this
     // machine or a Quadlet's own network; a broker elsewhere serves TLS itself.
-    let remote_nats = args.external_nats
-        && !args.quadlet
-        && url::Url::parse(&options.runtime.nats_server_url)
-            .ok()
-            .and_then(|url| {
-                url.host_str()
-                    .map(|host| host.trim_matches(['[', ']']).to_owned())
-            })
-            .is_none_or(|host| {
-                host != "localhost"
-                    && !host
-                        .parse::<std::net::IpAddr>()
-                        .is_ok_and(|ip| ip.is_loopback())
-            });
+    let remote_nats = (args.external_nats && !args.quadlet)
+        .then(|| remote_host(&options.runtime.nats_server_url))
+        .flatten();
+    // Browsers reach a broker elsewhere at its own address.
+    let websocket_host = remote_nats.as_deref().unwrap_or(host);
+    options.runtime.nats_websocket_url = args
+        .nats_websocket_url
+        .clone()
+        .unwrap_or_else(|| format!("{websocket}://{websocket_host}:{}", args.nats_ws_port));
+    let remote_nats = remote_nats.is_some();
     let relay = match args.nats_websocket {
         Some(InitWebsocketMode::Relay) => {
             if args.nats_websocket_url.is_some() || args.nats_websocket_behind_proxy {
@@ -1010,6 +1003,19 @@ fn print_json(value: &serde_json::Value) {
     println!("{value}");
 }
 
+/// The host of `url` when it isn't this machine, as a URL host (IPv6 in
+/// brackets).
+pub(crate) fn remote_host(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    let host = url.host_str()?;
+    let bare = host.trim_matches(['[', ']']);
+    (bare != "localhost"
+        && !bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()))
+    .then(|| host.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{init_config, InitConfigArgs, OutputFormat};
@@ -1192,11 +1198,12 @@ mod tests {
         );
         assert!(init_config(OutputFormat::Json, &relayed, &bundle(&out), out.clone()).is_err());
 
+        // Browsers are sent to the broker's own WebSocket, not this machine.
         let (config, _) = generate_bundle(&temp.path().join("remote"), &remote);
         assert_eq!(config.nats_websocket_upstream(), None);
         assert_eq!(
             config.client.as_ref().unwrap().ws_nats_servers.as_deref(),
-            Some(&["wss://trellis.example.test:8080".to_owned()][..])
+            Some(&["wss://nats.example.test:8080".to_owned()][..])
         );
         let nats = std::fs::read_to_string(temp.path().join("remote/nats.conf")).unwrap();
         assert!(

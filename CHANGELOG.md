@@ -8,6 +8,31 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Security: in a TypeScript program connected to more than one Trellis, one
+  installation could name another's address as its own sign-in or NATS server,
+  and Trellis's connections to that address then trusted the first
+  installation's certificate instead. The first's own connections failed, and
+  whoever ran it could answer for the other. A device connecting without
+  discovery also trusted every certificate its program had ever accepted.
+  Each accepted certificate now applies only to its installation's own
+  addresses and the ones it named, an address that another installation
+  already trusts differently is refused with `CertificateConflict`, and a
+  device remembers what its installation named beside the certificate it
+  accepted.
+- A device on an installation it accepted by fingerprint never saw its
+  approval: waiting for the review checked with the ordinary `fetch`, which
+  doesn't trust that certificate, and kept retrying.
+- A TypeScript service that stopped while recovering an operation could still
+  start that operation's lease renewal and run its handler, keeping the
+  process alive until the next renewal.
+- `trellis-server init --external-nats` with a broker on another host sent
+  browsers to the Trellis host's WebSocket port instead of the broker's, so
+  the installation started but browser clients couldn't connect. It now uses
+  the broker's host on `--nats-ws-port`, and the setup questions ask for the
+  broker's WebSocket address.
+
 ## [0.100.0-rc.21] - 2026-11-03
 
 ### Added
