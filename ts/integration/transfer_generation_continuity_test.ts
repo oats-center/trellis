@@ -340,27 +340,41 @@ test("an in-flight upload transfer finishes with exact bytes across automatic gr
           // The old owner's lease can legitimately remain live after disconnect.
           // Observe fenced recovery resetting transfer progress before replay,
           // rather than assuming reconnect instantly grants a new upload attempt.
-          await runtime.waitFor(
-            async () => {
-              const snapshot = await interruptedOperation.get().orThrow();
-              assert(
-                snapshot.state !== "failed" &&
-                  snapshot.state !== "cancelled" &&
-                  snapshot.state !== "completed",
-                `interrupted upload terminated before lease-governed recovery: ${JSON.stringify(
-                  snapshot,
-                )}`,
+          // Each distinct snapshot seen while waiting, so a missed recovery
+          // shows whether the old lease was renewed or never taken over.
+          const waitStarted = Date.now();
+          const seen: string[] = [];
+          await runtime
+            .waitFor(
+              async () => {
+                const snapshot = await interruptedOperation.get().orThrow();
+                const seenNow = `${snapshot.state} revision ${snapshot.revision} transferred ${snapshot.transfer?.transferredBytes ?? "none"} updated ${snapshot.updatedAt}`;
+                if (seen.at(-1)?.endsWith(seenNow) !== true)
+                  seen.push(`+${Date.now() - waitStarted}ms ${seenNow}`);
+                assert(
+                  snapshot.state !== "failed" &&
+                    snapshot.state !== "cancelled" &&
+                    snapshot.state !== "completed",
+                  `interrupted upload terminated before lease-governed recovery: ${JSON.stringify(
+                    snapshot,
+                  )}`,
+                );
+                return (
+                  snapshot.revision > positiveProgressRevision &&
+                  snapshot.transfer === undefined
+                );
+              },
+              {
+                timeoutMs: 40_000,
+                intervalMs: 250,
+              },
+            )
+            .catch((cause: unknown) => {
+              throw new Error(
+                `the interrupted upload wasn't taken over; it went ${seen.join(" -> ")}`,
+                { cause },
               );
-              return (
-                snapshot.revision > positiveProgressRevision &&
-                snapshot.transfer === undefined
-              );
-            },
-            {
-              timeoutMs: 40_000,
-              intervalMs: 250,
-            },
-          );
+            });
           const recovered = await caller
             .upload({ value: "recovered-bytes" })
             .transfer(bytes)
