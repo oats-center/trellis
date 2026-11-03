@@ -372,6 +372,8 @@ export async function requestDeviceEnrollment(args: {
  */
 export async function waitForDeviceActivation(args: {
   trellisUrl: string;
+  /** Defaults to `fetch`. */
+  fetch?: HttpFetch;
   publicIdentityKey: string;
   identitySeed: Uint8Array | string;
   activationKey: Uint8Array | string;

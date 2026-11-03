@@ -350,6 +350,7 @@ function createActivationSession<
       }
 
       await waitForDeviceActivation({
+        fetch: installationFetch,
         trellisUrl: args.trellisUrl,
         publicIdentityKey: args.identity.publicIdentityKey,
         identitySeed: args.identity.identitySeed,

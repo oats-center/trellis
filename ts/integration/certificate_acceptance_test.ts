@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { rootCertificates } from "node:tls";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { ulid } from "ulid";
 
 import {
   apps,
   participants,
+  types,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
@@ -256,3 +259,254 @@ for (const websocketOnly of [false, true])
       { development: true, websocketOnly },
     );
   });
+
+const device = pathToFileURL(
+  join(import.meta.dirname, "../packages/trellis/device.ts"),
+).href;
+const auth = pathToFileURL(
+  join(import.meta.dirname, "../packages/trellis/auth/mod.ts"),
+).href;
+
+/**
+ * A device that trusts only what it accepted: activated and waiting for
+ * approval, or, in a later start, connecting with what it discovered then.
+ */
+const acceptingDevice = `
+import { checkDeviceActivation, TrellisDevice } from ${JSON.stringify(device)};
+import { deriveDeviceIdentity } from ${JSON.stringify(auth)};
+import { discoverNativeOAuth } from ${JSON.stringify(native)};
+import { participants } from ${JSON.stringify(fixture)};
+const [mode, trellisUrl, root, provisioningSecret, statePath, discovered] = process.argv.slice(1);
+const participant = participants.StateDevice.participant;
+const rootSecret = Buffer.from(root, "hex");
+if (mode === "activate") {
+  const activation = await checkDeviceActivation({ trellisUrl, participant, rootSecret, provisioningSecret, statePath });
+  console.log(JSON.stringify({ activationUrl: activation.activationUrl, confirmationCode: activation.confirmationCode }));
+  await activation.waitForOnlineApproval();
+  const server = (await discoverNativeOAuth(trellisUrl)).orThrow();
+  console.log(JSON.stringify({
+    servers: [...server.natsServers],
+    trellisInstanceId: server.trust.instanceId,
+    audienceNatsAccount: server.trust.account,
+    issuers: [server.trust.issuer],
+  }));
+} else {
+  const identity = await deriveDeviceIdentity(rootSecret);
+  const connected = await TrellisDevice.connect({
+    ...JSON.parse(discovered),
+    seed: identity.identitySeedBase64url,
+    participant,
+  }).orThrow();
+  console.log("CONNECTED");
+  await connected.connection.close();
+}
+`;
+
+test("a device on a development installation it accepted by fingerprint is approved, then connects", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const fingerprint = new X509Certificate(
+        await readFile(runtime.caCertificate),
+      ).fingerprint256;
+      const participant = participants.StateDevice.participant;
+      const deployment = await runtime.contracts.apply({
+        deployment: "accepting-device",
+        contract: participant,
+      });
+      assert(deployment.deploymentId);
+      const provisioned = await runtime.devices.provision({
+        deploymentId: types.AuthDeploymentGetRequestCodec.decode({
+          deploymentId: deployment.deploymentId,
+        }).deploymentId,
+        title: "Accepting device",
+        idempotencyKey: ulid(),
+      });
+      const provisioningSecret = provisioned.provisioningSecret;
+      assert(provisioningSecret);
+      const root = Buffer.from(
+        crypto.getRandomValues(new Uint8Array(32)),
+      ).toString("hex");
+      const { NODE_EXTRA_CA_CERTS: _, ...inherited } = process.env;
+      const env = {
+        ...inherited,
+        TRELLIS_CERTIFICATE_FINGERPRINT: fingerprint,
+        XDG_STATE_HOME: await mkdtemp(join(tmpdir(), "trellis-state-")),
+      };
+      const start = (mode: string, discovered = "") => {
+        const child = spawn(
+          process.execPath,
+          [
+            "--experimental-transform-types",
+            "--no-warnings",
+            "--input-type=module",
+            "-e",
+            acceptingDevice,
+            mode,
+            runtime.trellisUrl,
+            root,
+            provisioningSecret,
+            join(runtime.workdir, "accepting-device.json"),
+            discovered,
+          ],
+          {
+            cwd: join(import.meta.dirname, "../.."),
+            stdio: ["ignore", "pipe", "inherit"],
+            env,
+          },
+        );
+        const lines: string[] = [];
+        let partial = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          const text = partial + chunk.toString();
+          const complete = text.split("\n");
+          partial = complete.pop() ?? "";
+          lines.push(...complete);
+        });
+        const exited = new Promise<number | null>((resolve) =>
+          child.once("exit", (code) => resolve(code)),
+        );
+        return { child, lines, exited };
+      };
+
+      const activating = start("activate");
+      try {
+        const pending = JSON.parse(
+          await runtime.waitFor(
+            () =>
+              activating.lines[0] ??
+              (activating.child.exitCode !== null ? "{}" : undefined),
+            { timeoutMs: 60_000 },
+          ),
+        );
+        assert(pending.activationUrl, "the device didn't ask for activation");
+        const reviewId = types.AuthDeviceReviewGetRequestCodec.decode({
+          reviewId: new URL(pending.activationUrl).searchParams.get("reviewId"),
+          confirmationCode: pending.confirmationCode,
+        }).reviewId;
+        const { review } = await runtime.callAdminRpc("authDevicesReviewsGet", {
+          reviewId,
+          confirmationCode: pending.confirmationCode,
+        });
+        await runtime.callAdminRpc("authDevicesReviewsDecide", {
+          reviewId,
+          confirmationCode: pending.confirmationCode,
+          expectedRevision: review.revision,
+          decision: "approved",
+          idempotencyKey: ulid(),
+        });
+        // The device sees the approval over the same accepted certificate.
+        const code = await Promise.race([
+          activating.exited,
+          new Promise<"waiting">((resolve) =>
+            setTimeout(() => resolve("waiting"), 30_000),
+          ),
+        ]);
+        assert.equal(code, 0, "the device didn't see its approval");
+      } finally {
+        activating.child.kill();
+      }
+
+      // A later start connects with only what it remembered.
+      const connecting = start("connect", activating.lines[1] ?? "{}");
+      try {
+        assert.equal(await connecting.exited, 0);
+        assert.deepEqual(connecting.lines, ["CONNECTED"]);
+      } finally {
+        connecting.child.kill();
+      }
+    },
+    { development: true },
+  );
+});
+
+/**
+ * A program that connects to one installation, then to another that names the
+ * first's address as its own sign-in, then to the first again.
+ */
+const named = `
+import { acceptServerCertificate, discoverNativeOAuth } from ${JSON.stringify(native)};
+const [first, other, directory, firstFingerprint, otherFingerprint] = process.argv.slice(1);
+const discover = async (url) => {
+  const found = await discoverNativeOAuth(url);
+  return found.isErr() ? found.error.reason : found.orThrow().issuer;
+};
+(await acceptServerCertificate(first, { directory, fingerprint: firstFingerprint, interactive: false })).orThrow();
+const before = await discover(first);
+(await acceptServerCertificate(other, { directory, fingerprint: otherFingerprint, interactive: false })).orThrow();
+const claimed = await discover(other);
+console.log(JSON.stringify({ before, claimed, after: await discover(first) }));
+`;
+
+test("an installation can't make another's address trust its certificate", async () => {
+  await withTrellisRuntime(
+    async (first) => {
+      await withTrellisRuntime(
+        async (other) => {
+          // Another installation's certificate, answering at an address that
+          // names the first installation as its sign-in.
+          const tls = join(other.workdir, "config", "trellis", "tls");
+          const claiming = createServer(
+            {
+              cert: await readFile(join(tls, "nats.crt")),
+              key: await readFile(join(tls, "nats.key")),
+            },
+            (request, response) => {
+              if (request.url === "/.well-known/oauth-protected-resource") {
+                response.setHeader("Content-Type", "application/json");
+                response.end(
+                  JSON.stringify({
+                    resource: claimingUrl,
+                    authorization_servers: [first.trellisUrl],
+                  }),
+                );
+              } else {
+                response.statusCode = 404;
+                response.end();
+              }
+            },
+          );
+          await new Promise<void>((resolve) =>
+            claiming.listen(0, "127.0.0.1", resolve),
+          );
+          const address = claiming.address();
+          assert(address && typeof address === "object");
+          const claimingUrl = `https://127.0.0.1:${address.port}`;
+          try {
+            const fingerprintOf = async (runtime: { caCertificate: string }) =>
+              new X509Certificate(await readFile(runtime.caCertificate))
+                .fingerprint256;
+            const { NODE_EXTRA_CA_CERTS: _, ...inherited } = process.env;
+            const { stdout } = await promisify(execFile)(
+              process.execPath,
+              [
+                "--experimental-transform-types",
+                "--no-warnings",
+                "--input-type=module",
+                "-e",
+                named,
+                first.trellisUrl,
+                claimingUrl,
+                await mkdtemp(join(tmpdir(), "trellis-accepted-")),
+                await fingerprintOf(first),
+                await fingerprintOf(other),
+              ],
+              { env: inherited },
+            );
+            assert.deepEqual(
+              JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}"),
+              {
+                before: first.trellisUrl,
+                claimed: "CertificateConflict",
+                after: first.trellisUrl,
+              },
+            );
+          } finally {
+            claiming.close();
+          }
+        },
+        { development: true },
+      );
+    },
+    { development: true },
+  );
+});

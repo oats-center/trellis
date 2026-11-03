@@ -104,7 +104,12 @@ on first contact, or by asking on a terminal, remembered per participant under
 `@oatscenter/trellis/native` before `discoverNativeOAuth`. Only Trellis's own
 connections to that installation trust the accepted certificate (its HTTPS
 endpoints and the NATS servers it advertises); the rest of the process,
-including the program's own `fetch`, does not.
+including the program's own `fetch`, does not. An installation that names an
+address another installation in the process already trusts with a different
+certificate fails discovery with `CertificateConflict`. A device remembers the
+addresses its installation advertised beside the accepted certificate, so
+`TrellisDevice.connect` in a later start trusts it only there; run
+`discoverNativeOAuth` once after activation to record them.
 
 Node native applications import `@oatscenter/trellis/native`, not browser
 custody. Use `discoverNativeOAuth`, `NativeOAuthClient.open` with explicit scope
