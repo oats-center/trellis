@@ -9,6 +9,9 @@ import { ulid } from "ulid";
 import { codecs } from "@oatscenter/trellis/generated";
 import { API as authApi } from "../packages/trellis/internal_sdk/generated/apis/auth/mod.js";
 
+import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { participants as removed } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
+import { types } from "../packages/trellis-testkit/trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
@@ -449,6 +452,116 @@ test("a permission batch that partly fails finishes after Refresh without regran
           : undefined,
       );
       assert.equal(await notice.count(), 0);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
+test("a permission whose earlier version the user held is still given after Refresh", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const username = `ct-again-${ulid()}`.toLowerCase();
+    const created = await runtime.callAdminRpc("authUsersCreate", {
+      email: "ct-again@example.com",
+      idempotencyKey: ulid(),
+      image: null,
+      displayName: "Console again",
+      username,
+    });
+    const userId = created.user.principalId;
+    // The user holds Subscribe Alpha, which the API then drops and brings
+    // back: the grant they kept is for a version that no longer exists.
+    const alpha = "runtime-trellis.events.v1:alpha.subscribe";
+    await runtime.contracts.install({
+      contract: participants.EventService.participant,
+    });
+    await runtime.callAdminRpc("authCapabilityGrantsGrant", {
+      principalId: userId,
+      capabilityId: alpha,
+      expectedRevision: 0n,
+      idempotencyKey: ulid(),
+    });
+    for (const contract of [
+      removed.EventService.participant,
+      participants.EventService.participant,
+    ]) {
+      const { review } = await runtime.callAdminRpc("authApisReview", {
+        apiId: "runtime-trellis.events@v1",
+        packageEvidence: types.AuthPackageEvidenceCodec.decode(
+          contract.packageEvidence,
+        ),
+      });
+      await runtime.callAdminRpc("authApisForceReplace", {
+        reviewId: review.reviewId,
+        canonicalDigest: review.canonicalDigest,
+        expectedGeneration: review.currentGeneration ?? 0n,
+        expectedAcceptedRevision: review.currentAcceptedRevision ?? 0n,
+        acknowledgeBreakage: true,
+        acknowledgeConsentImpact: true,
+        roleEdits: [],
+        mappingEdits: [],
+        idempotencyKey: ulid(),
+      });
+    }
+    const current = (
+      await runtime.callAdminRpc("authCapabilitiesList", {
+        apiId: "runtime-trellis.events@v1",
+      })
+    ).items.find((item) => item.identity.capabilityId === alpha)?.identity;
+    assert(current, "the API brought Subscribe Alpha back");
+
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await waitForConsoleShell(page);
+      const main = page.locator("main");
+      await main
+        .getByRole("heading", { name: username, exact: true, level: 1 })
+        .waitFor({ state: "visible", timeout: 30_000 });
+      await main
+        .getByRole("button", { name: "Add permissions", exact: true })
+        .click();
+      await main.getByRole("checkbox", { name: /^Monitor health/ }).check();
+      await main.getByRole("checkbox", { name: /^Subscribe Alpha/ }).check();
+      // Another administrator gives the first one meanwhile, so the batch
+      // stops before Subscribe Alpha.
+      await runtime.callAdminRpc("authCapabilityGrantsGrant", {
+        principalId: userId,
+        capabilityId: "trellis.health.v1:monitor",
+        expectedRevision: 0n,
+        idempotencyKey: ulid(),
+      });
+      await main
+        .getByRole("button", { name: "Give 2 permissions", exact: true })
+        .click();
+      await main
+        .locator(".alert-error, [role=alert]")
+        .first()
+        .waitFor({ state: "visible", timeout: 30_000 });
+
+      await main.getByRole("button", { name: "Refresh", exact: true }).click();
+      await main
+        .getByRole("button", { name: "Give 1 permission", exact: true })
+        .click();
+      await runtime.waitFor(async () =>
+        (
+          await runtime.callAdminRpc("authCapabilityGrantsList", {
+            principalId: userId,
+          })
+        ).items.some(
+          (grant) =>
+            grant.capability.capabilityId === alpha &&
+            grant.capability.identityGeneration === current.identityGeneration,
+        )
+          ? true
+          : undefined,
+      );
     } finally {
       await context.close();
     }

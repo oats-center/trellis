@@ -96,14 +96,24 @@
           )
         : results[0].items.map((grant) => grant.capability.capabilityId);
       grants = results[0].items;
+      capabilities = results[2].items;
       // A pick given meanwhile, such as by a batch that stopped partway, is
-      // no longer waiting to be given.
+      // no longer waiting to be given. A grant of a version the API has since
+      // dropped doesn't count.
       picks = picks.filter(
         (pick) =>
-          !grants.some((grant) => grant.capability.capabilityId === pick),
+          !grants.some((grant) =>
+            capabilities.some(
+              (capability) =>
+                capability.identity.capabilityId === pick &&
+                capability.identity.capabilityId ===
+                  grant.capability.capabilityId &&
+                capability.identity.identityGeneration ===
+                  grant.capability.identityGeneration,
+            ),
+          ),
       );
       assignments = results[1].items;
-      capabilities = results[2].items;
       roles = results[3].items;
     } catch (cause) {
       if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
