@@ -658,11 +658,17 @@ async fn cli_server_managed_nats() {
     .expect("connect to external NATS");
     let jetstream = jetstream::new(nats);
     // Dropping `managed` hands NATS to the operator: the same bundle now
-    // connects to the server listed in [nats] servers.
+    // connects to the servers listed in [nats] servers. The first is down and
+    // its name isn't on the certificate, so the runtime only starts if it
+    // checks the second broker by that broker's own name.
     let external_config = fs::read_to_string(&config_path)
         .expect("read bundle config")
         .replace("managed = true\n", "")
-        .replace(BOGUS_NATS_URL, &format!("tls://127.0.0.1:{nats_port}"))
+        .replace(
+            &format!("servers = \"{BOGUS_NATS_URL}\""),
+            &format!("servers = \"tls://127.0.0.2:1,tls://localhost:{nats_port}\""),
+        )
+        .replace(BOGUS_NATS_URL, &format!("tls://localhost:{nats_port}"))
         .replace(BOGUS_WS_URL, &format!("wss://localhost:{websocket_port}"));
     fs::write(&config_path, external_config).expect("write external NATS config");
 
@@ -842,9 +848,11 @@ async fn cli_server_managed_nats() {
     let external_stdout = workdir.0.join("cli-external.stdout.log");
     let external_stderr = workdir.0.join("cli-external.stderr.log");
     let mut external_command = server_command(&workdir.0);
+    let advertised = format!("wss://localhost:{websocket_port}");
     let mut external_child = ChildGuard::spawn(
         external_command
             .args(["--config", config_path.to_str().expect("UTF-8 config path")])
+            .args(["--advertise-nats-websocket", &advertised])
             .stdout(Stdio::from(
                 fs::File::create(&external_stdout).expect("create external stdout log"),
             ))

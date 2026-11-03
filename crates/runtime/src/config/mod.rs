@@ -923,6 +923,14 @@ pub struct ResolvedRuntimeNatsConfig {
 }
 
 impl ResolvedRuntimeNatsConfig {
+    /// Each URL in `servers`, which a connection tries in turn.
+    pub fn server_urls(&self) -> Vec<String> {
+        self.servers
+            .split(',')
+            .map(|server| server.trim().to_owned())
+            .collect()
+    }
+
     /// The auth and system users the platform role connects as.
     ///
     /// # Errors

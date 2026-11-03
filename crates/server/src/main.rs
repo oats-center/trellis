@@ -799,7 +799,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             info!(config = %policy.paths.config.display(), "using configured external NATS");
             if policy.advertised_native.is_some() || policy.advertised_websocket.is_some() {
                 Some(NatsEndpointOverride {
-                    runtime_servers: config.resolve_nats_runtime().into_diagnostic()?.servers,
+                    runtime_servers: None,
                     advertised_native: policy.advertised_native.clone(),
                     advertised_websocket: policy.advertised_websocket.clone(),
                 })
@@ -900,7 +900,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             };
             managed = Some(server);
             Some(NatsEndpointOverride {
-                runtime_servers: servers.clone(),
+                runtime_servers: Some(servers.clone()),
                 advertised_native: policy
                     .advertised_native
                     .clone()
@@ -918,7 +918,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             config,
             nats_override
                 .as_ref()
-                .map(|value| value.runtime_servers.as_str()),
+                .and_then(|value| value.runtime_servers.as_deref()),
         )
         .await
         .into_diagnostic()?;

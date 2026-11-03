@@ -2687,9 +2687,10 @@ async fn open_generation(
         }
     })
     .connection_timeout(Duration::from_millis(inner.timeout_ms))
-    // Bound in-place reconnects: a lost generation is replaced by the manager,
-    // not repaired inside itself.
-    .max_reconnects(1)
+    // One try at each server, so a generation can open at any one of them.
+    // Once it has authenticated, the callback above refuses a reconnect: a lost
+    // generation is replaced by the manager, not repaired inside itself.
+    .max_reconnects(native.nats_servers.len().max(1))
     .event_callback(move |event| {
         let inner = event_inner.clone();
         async move {

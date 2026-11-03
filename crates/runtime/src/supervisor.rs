@@ -32,8 +32,9 @@ use crate::{
 /// Replacement for configured NATS endpoints used by managed `trellis-server` startup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NatsEndpointOverride {
-    /// Native NATS connectivity used by runtime internals, never a client proxy.
-    pub runtime_servers: String,
+    /// Native NATS connectivity used by runtime internals, never a client proxy;
+    /// omission dials the configured servers.
+    pub runtime_servers: Option<String>,
     /// Advertised native client endpoints; omission retains configured hints.
     pub advertised_native: Option<Vec<String>>,
     /// Advertised WebSocket client endpoints; omission retains configured hints.
@@ -375,7 +376,7 @@ async fn check_nats_connection(
     credentials: &str,
 ) -> Result<async_nats::Client, RuntimeError> {
     let options = nats_connect_options(nats, credentials)?;
-    let client = tokio::time::timeout(Duration::from_secs(10), options.connect(&nats.servers))
+    let client = tokio::time::timeout(Duration::from_secs(10), options.connect(nats.server_urls()))
         .await
         .map_err(|_| RuntimeError::Nats("connection timed out".to_owned()))?
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
@@ -667,11 +668,11 @@ pub async fn run_with_stop(
         options
             .nats_override
             .as_ref()
-            .map(|o| o.runtime_servers.as_str()),
+            .and_then(|o| o.runtime_servers.as_deref()),
     )?;
     let leases = config.resolve_leases()?;
     let trellis_nats = nats_connect_options(&nats, &nats.trellis_creds)?
-        .connect(&nats.servers)
+        .connect(nats.server_urls())
         .await
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
     let owner_id = format!(
@@ -987,7 +988,7 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
             context
                 .nats_override
                 .as_ref()
-                .map(|value| value.runtime_servers.as_str()),
+                .and_then(|value| value.runtime_servers.as_deref()),
         )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let store = context.authorization_store.get();
@@ -1030,11 +1031,7 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
             role,
             &identity_seed,
             crate::platform::BuiltinLiveProviderConnectOptions {
-                nats_servers: nats
-                    .servers
-                    .split(',')
-                    .map(|server| server.trim().to_owned())
-                    .collect(),
+                nats_servers: nats.server_urls(),
                 trust: trust.clone(),
                 timeout_ms: BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS,
             },

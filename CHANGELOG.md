@@ -31,6 +31,10 @@ and this project adheres to
   certificate that named only the broker's hostname, because it reached the
   broker at `127.0.0.1` and checked the certificate against that address. It
   now checks the certificate against the host in `--nats-server-url`.
+- A runtime given several external NATS servers in `[nats] servers` failed to
+  start, because it read the whole list as one URL, and a Rust service gave up
+  when the first server it tried was down. Both now try each server in turn,
+  and check each one's certificate against that server's own host.
 - An installation initialized with `--tls supplied`, including every
   production installation the first-start wizard creates, told browsers to
   open NATS WebSockets at `wss://localhost:8080`, so the Console could sign in

@@ -37,7 +37,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             context
                 .nats_override
                 .as_ref()
-                .map(|value| value.runtime_servers.as_str()),
+                .and_then(|value| value.runtime_servers.as_deref()),
         )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let keys = callout_keys(&context.config)?;
@@ -183,11 +183,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let provider_operational = context.trellis_nats.clone();
     let provider_roots: Vec<_> = nats.ca_certificate.iter().cloned().collect();
     let provider_server_name = nats.tls_server_name.clone();
-    let provider_servers = nats
-        .servers
-        .split(',')
-        .map(|server| server.trim().to_owned())
-        .collect();
+    let provider_servers = nats.server_urls();
     let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut tasks = tokio::task::JoinSet::new();
@@ -410,7 +406,7 @@ async fn connect_nats(
     credentials: &str,
 ) -> Result<async_nats::Client, RuntimeError> {
     crate::supervisor::nats_connect_options(nats, credentials)?
-        .connect(&nats.servers)
+        .connect(nats.server_urls())
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))
 }
@@ -425,7 +421,7 @@ fn advertised_endpoints(
             .client
             .as_ref()
             .and_then(|value| value.nats_servers.clone())
-            .unwrap_or_else(|| resolved.servers.split(',').map(str::to_owned).collect())
+            .unwrap_or_else(|| resolved.server_urls())
     };
     let websocket = || match config.same_origin_websocket_url() {
         Some(url) => vec![url],
