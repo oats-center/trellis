@@ -614,7 +614,11 @@ jobs:
 
       # Nextest runs every test binary in parallel instead of one binary at a
       # time; it does not run documentation examples, so those run separately.
+      # A failing test's output then says what its clients and fixtures were
+      # waiting on; nextest shows a test's output only when it fails.
       - name: Test Rust workspace
+        env:
+          RUST_LOG: warn,trellis_rs=debug
         run: bash scripts/check.sh rust
 
   typescript-checks:
