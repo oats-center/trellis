@@ -38,6 +38,10 @@ and this project adheres to
   `AuthorizationUnavailable` if it ran while a new connection was taking
   over, for example right after a capability was granted. The call now waits
   for the connection like any other.
+- Stopping a TypeScript testkit runtime whose host had hung or crashed could
+  fail with `ENOTEMPTY`, because its NATS broker was still writing while the
+  sandbox was removed. `stop()` now waits for the host's processes to exit
+  first.
 
 ## [0.100.0-rc.21] - 2026-11-03
 

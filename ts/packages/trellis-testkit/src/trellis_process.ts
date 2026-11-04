@@ -1,14 +1,17 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { once } from "node:events";
-import { open, type FileHandle } from "node:fs/promises";
+import { open, readdir, readFile, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 
 import type { ReservedPort } from "./ports.ts";
 
 const DEFAULT_OUTPUT_TAIL_CHARS = 8_192;
 const READINESS_POLL_INTERVAL_MS = 25;
 const READINESS_FETCH_TIMEOUT_MS = 250;
+const GROUP_EXIT_TIMEOUT_MS = 10_000;
+const GROUP_EXIT_POLL_MS = 10;
 
 /** @internal Resolved status of a spawned child process. */
 export type CommandStatus = {
@@ -180,16 +183,33 @@ class StartedTrellisProcess implements TrellisProcessHandle {
     // A killed or crashed host cannot run its managed-child destructors. Its
     // dedicated group remains ours even after the leader exits. Also reclaim
     // descendants before awaiting EOF on any inherited output pipes.
+    // SIGKILL is delivered asynchronously: wait until the group is gone, so
+    // a broker still writing its store can't race the sandbox removal. A
+    // zombie writes nothing, and an orphan's may never be reaped in a
+    // container without an init, so on Linux only living members count.
     if (this.#isolatedProcessGroup) {
-      try {
-        process.kill(-this.#processId, "SIGKILL");
-      } catch (error) {
-        if (!(
-          error instanceof Error &&
-          "code" in error &&
-          error.code === "ESRCH"
-        ))
+      const deadline = Date.now() + GROUP_EXIT_TIMEOUT_MS;
+      let signal: NodeJS.Signals | 0 = "SIGKILL";
+      while (true) {
+        try {
+          process.kill(-this.#processId, signal);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            "code" in error &&
+            error.code === "ESRCH"
+          )
+            break;
           throw error;
+        }
+        if (!(await groupHasLivingMember(this.#processId))) break;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Trellis process group ${this.#processId} still had members ${GROUP_EXIT_TIMEOUT_MS}ms after SIGKILL`,
+          );
+        }
+        signal = 0;
+        await delay(GROUP_EXIT_POLL_MS);
       }
     }
     await Promise.allSettled([this.#stdoutReader, this.#stderrReader]);
@@ -220,6 +240,34 @@ function timeoutValue<T>(
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     },
   };
+}
+
+/**
+ * Reports whether process group `groupId` has a member that isn't a zombie.
+ * Without `/proc` every member counts, so only an empty group is gone.
+ */
+async function groupHasLivingMember(groupId: number): Promise<boolean> {
+  let entries: string[];
+  try {
+    entries = await readdir("/proc");
+  } catch {
+    return true;
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    let stat: string;
+    try {
+      stat = await readFile(`/proc/${entry}/stat`, "utf8");
+    } catch {
+      continue;
+    }
+    // `pid (comm) state ppid pgrp ...`; comm may itself contain spaces or `)`.
+    const [state, , pgrp] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    if (Number(pgrp) === groupId && state !== "Z" && state !== "X") {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** @internal Resolves the status if the child already exited, else undefined. */

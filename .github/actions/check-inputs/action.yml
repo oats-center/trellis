@@ -20,20 +20,20 @@ runs:
   steps:
     - name: Download generated artifacts
       if: inputs.generated == 'true'
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: check-generated
 
     - name: Download protocol WASM
       if: inputs.protocol-wasm == 'true'
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: check-protocol-wasm
         path: ts/packages/trellis/auth/protocol_wasm
 
     - name: Download embedded browser apps
       if: inputs.portal == 'true'
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: check-portal
         path: crates/runtime/generated
