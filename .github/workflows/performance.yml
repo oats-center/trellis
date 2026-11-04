@@ -42,18 +42,18 @@ jobs:
         with:
           ref: ${{ steps.checked.outputs.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: check-generated
           run-id: ${{ inputs.check_run_id }}
           github-token: ${{ github.token }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: check-protocol-wasm
           run-id: ${{ inputs.check_run_id }}
           github-token: ${{ github.token }}
           path: ts/packages/trellis/auth/protocol_wasm
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: check-runtime-binaries
           run-id: ${{ inputs.check_run_id }}
@@ -78,7 +78,7 @@ jobs:
           cp target/release/trellis-performance dist/performance/
           npm run bench:runtime:browser:build
           cp benchmarks/runtime/browser.bundle.js dist/performance/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: performance-workloads
           path: dist/performance
@@ -93,17 +93,17 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: performance-workloads
           path: dist/performance
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: check-generated
           run-id: ${{ inputs.check_run_id }}
           github-token: ${{ github.token }}
           path: .
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: check-protocol-wasm
           run-id: ${{ inputs.check_run_id }}
@@ -128,7 +128,7 @@ jobs:
           if test -f benchmarks/runtime/results/ci/report.md; then
             cat benchmarks/runtime/results/ci/report.md >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: performance-${{ needs.prepare.outputs.sha }}
