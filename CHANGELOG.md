@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.22] - 2026-11-04
+
 ### Fixed
 
 - Security: in a TypeScript program connected to more than one Trellis, one
