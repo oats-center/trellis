@@ -140,7 +140,8 @@ capabilities do not become requirements merely because they overlap those
 actions. Operation selections include the operation lifecycle and signals.
 
 Capabilities are named `area.action`, such as `sessions.read` or
-`users.manage`; the ID is the API's prefix and that name,
+`users.manage`. The action may itself be dotted (`activation.confirmations.read`);
+the first part is always the area that Console groups capabilities under. The ID is the API's prefix and that name,
 `trellis.auth.v1:sessions.read`. Administrative Auth RPCs are allowed by
 administrative capabilities, declared with the `administrative;` marker. Only
 the built-in `trellis` package may use it, and Auth refuses any other API in

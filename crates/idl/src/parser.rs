@@ -792,10 +792,10 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| self.error_previous("quantity exceeds u64"))
     }
 
-    /// A capability's `area.action` name.
+    /// A capability's `area.action` name; the action may itself be dotted.
     fn capability_name(&mut self) -> miette::Result<String> {
         let name = self.path()?;
-        if name.split('.').count() != 2 {
+        if !name.contains('.') {
             return Err(
                 self.error_previous(format!("capability '{name}' must be named 'area.action'"))
             );

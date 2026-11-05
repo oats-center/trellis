@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- A capability's action may be dotted: `capability activation.confirmations.read`
+  compiles, where the IDL used to require exactly `area.action`. The first part
+  is still the area Console groups by, and Console labels the whole action.
+
 ## [0.100.0-rc.24] - 2026-11-05
 
 ### Added

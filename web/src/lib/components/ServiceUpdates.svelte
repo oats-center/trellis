@@ -111,7 +111,9 @@
     const title = titles.get(capabilityId);
     if (title) return title;
     const area = capabilityArea(capabilityId);
-    const action = capabilityId.split(".").at(-1) ?? capabilityId;
+    // Everything after the area is the action, which may itself be dotted.
+    const local = capabilityId.slice(capabilityId.indexOf(":") + 1);
+    const action = local.slice(local.indexOf(".") + 1);
     return `${area.title}: ${sentenceName(action).toLowerCase()} (${area.api})`;
   }
 

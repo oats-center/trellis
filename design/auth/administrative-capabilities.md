@@ -23,7 +23,7 @@ The built-in Auth contract declares them with the IDL `administrative;` marker,
 which only the built-in `trellis` package may use. Auth refuses to review or
 accept any API in the `trellis.` namespace other than the ones Trellis ships.
 Every capability is named `area.action` (`sessions.read`, `account.changePassword`,
-`users.manage`).
+`users.manage`), and the action may itself be dotted.
 
 They are ordinary capabilities otherwise: roles, direct grants, and
 identity-provider mappings can all carry them. Mapping administration to a role

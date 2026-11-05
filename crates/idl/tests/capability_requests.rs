@@ -301,3 +301,49 @@ fn selecting_a_group_selects_what_its_members_allow() {
         assert!(compile(&source).is_err(), "{wrong}");
     }
 }
+
+#[test]
+fn a_capability_action_may_be_dotted() {
+    let source = SOURCE
+        .replace(
+            "capability documents.export {",
+            "capability documents.exports.create {",
+        )
+        .replace(
+            "capability documents.export;",
+            "capability documents.exports.create;",
+        );
+    let graph = compile(&source).unwrap();
+    let selection = graph
+        .root_package()
+        .participants()
+        .values()
+        .next()
+        .unwrap()
+        .uses()
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        selection
+            .optional_capabilities
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["capability-fixture.documents.v1:documents.exports.create"]
+    );
+    let actions: Vec<_> = selection
+        .actions
+        .iter()
+        .map(|selected| selected.action.name.as_str())
+        .collect();
+    assert_eq!(actions, ["Export", "Get"]);
+    // A name without an action is refused where a capability is declared.
+    let refused = compile(&SOURCE.replace("capability documents.export {", "capability export {"))
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("must be named 'area.action'"),
+        "{refused:?}"
+    );
+}

@@ -80,7 +80,8 @@ its selected dependencies, and its runtime resources. Apps and agents instead
 author application request descriptors, exported through the generated `apps`
 namespace; they are not installable principals.
 
-A use body selects whole capabilities, named `area.action`:
+A use body selects whole capabilities, named `area.action`, where the action
+may itself be dotted (`activation.confirmations.read`):
 `required capability orders.read;` is required and `capability orders.export;`
 is optional. Required wins when a capability is repeated; `use Api;` selects
 nothing. `required group support;` selects an API's developer-defined group,
