@@ -1647,10 +1647,11 @@ variant; authored field `extra` or enum value `unknown` is rejected.
 
 #### Features
 
-`trellis-rs` enables `native-oauth` (native OAuth sign-in) and `device` (device
-enrollment and activation) by default. A service that connects only with its
-provisioned identity can build with `default-features = false`, which skips the
-HTTPS client and P-256. `telemetry-otlp` adds the OTLP exporter. Enable
+`trellis-rs` enables `native-oauth` (native OAuth sign-in and installation
+discovery) and `device` (device enrollment and activation) by default. Services
+need `native-oauth` for discovery; a service may build with
+`default-features = false, features = ["native-oauth"]` to drop `device`.
+`telemetry-otlp` adds the OTLP exporter. Enable
 `event-store-sqlite` for `SqliteInboxStore`/`SqliteOutboxStore` or
 `event-store-postgres` for `PostgresInboxStore`/`PostgresOutboxStore`;
 database-specific `EventStoreError` variants follow the same features, and
@@ -1663,19 +1664,38 @@ trust.
 
 ### Connection
 
-Service facades export `connect` and `ServiceConnectOptions`. Supply broker
-endpoints, pinned `RuntimeAuthorizationTrust`, and the provisioned identity
-seed. Name and timeout are optional builders:
+The generated crate is named after the `[package]` name. Each participant is a
+module joining package, participant, and (for APIs) major version, such as
+`participants::acme_orders_orders_service`, `apps::acme_orders_orders_caller`,
+and `apis::acme_orders_orders_v1`. A service module exports `Participant` and
+`Provider`. Discover the installation for its broker endpoints and pinned
+`RuntimeAuthorizationTrust`, then connect with the provisioned identity seed
+from `trellis_rs::service::ServiceConnectOptions`. Name and timeout are
+optional builders:
 
 ```rust
-let mut service = connect(
-    ServiceConnectOptions::new(nats_servers, runtime_trust, &identity_seed)
+use acme_orders::participants::acme_orders_orders_service::{Participant, Provider};
+use trellis_rs::auth::{discover_accepting_certificate, CertificateAcceptance};
+use trellis_rs::service::ServiceConnectOptions;
+
+let server = discover_accepting_certificate(
+    &trellis_url,
+    &CertificateAcceptance::for_program("orders-service"),
+)
+.await?;
+let mut service = Participant::connect(
+    ServiceConnectOptions::new(server.nats_servers, server.trust, &identity_seed)
         .with_name("orders-service")
         .with_timeout_ms(10_000),
-).await?;
+)
+.await?;
+Provider::new(&mut service)
+    .acme_orders_orders_v1()
+    .register_create(|_context, input| async move { create_order(input).await });
+service.run().await?;
 ```
 
-Discover the installation with
+The discovery call is
 `discover_accepting_certificate(issuer, &CertificateAcceptance::for_program("orders-service"))`
 (the Console's address works; it names the sign-in issuer). A certificate the platform trust store vouches for
 needs nothing. A development installation's own certificate is accepted like a
@@ -1741,11 +1761,14 @@ descriptor, native client, and exact OAuth grant.
 
 ### Typed Surfaces
 
-Use the participant's generated methods. Dependency aliases are accessors on
-`client()`; owned provider registration is under `handle()`. For the tutorial's
-`orders` alias selecting RPC `Orders.Create`, use the generated
-`connected.client().orders().orders_create(...)` method. Its argument type comes
-from the generated API crate; it need not share the authored model's name.
+Use the participant's generated methods. Each used API is an accessor named
+like its `apis` module, with one method per RPC: an app or agent calls
+`client.acme_orders_orders_v1().create(&input)`, a device calls the same
+accessor on its connected `Client`, and a service calls through
+`Provider::new(&mut service).client()`. A service registers what it implements
+through `Provider::new(&mut service).acme_orders_orders_v1().register_create(...)`.
+Argument and result types come from the generated crate; every model carries an
+`extra` map (`extra: Default::default()` when constructing one).
 
 Exact method and model names come from the generated crate. Match generated
 declared-error variants directly; transport and unknown remote failures remain

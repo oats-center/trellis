@@ -24,11 +24,14 @@ api orders@v1 {
 }
 
 service OrdersService { implements orders; }
-app OrdersCaller { use orders { required capability orders.create; } }
+agent OrdersCaller { use orders { required capability orders.create; } }
 ```
 
-The service implements the API. The app requires only `orders.create`, which
-allows `Create`; importing types alone grants nothing. Run `trellis install` and
+The service implements the API. `OrdersCaller` is an `agent`: a native caller,
+such as a script, a command-line tool or the live test later in this tutorial,
+that signs a user in and calls the service. (An `app` is a browser app, which
+the test can't sign in as.) It requires only `orders.create`, which allows
+`Create`; importing types alone grants nothing. Run `trellis install` and
 `trellis generate`, then use the configured package's generated `apis` and
 `participants`. Exact generated names are authoritative: the authored API token
 and generated path remain lowercase (`orders`), while generated language symbols

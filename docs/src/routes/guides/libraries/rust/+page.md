@@ -15,12 +15,23 @@ Verify exact generated names and signatures in the generated crate and the
 ## Generated package
 
 Set `[package]` identity and `[generate.rust].output` in `trellis.toml`, then
-run `trellis generate`.
+run `trellis install` and `trellis generate`. The generated crate takes the
+package's name, so a package named `acme-orders` with `output = "trellis"` is
+used as:
 
 ```toml
 [dependencies]
-orders-trellis = { path = "trellis" }
+acme-orders = { path = "trellis" }
+trellis-rs = "0.100.0"
+tokio = { version = "1", features = ["full"] }
 ```
+
+Use the `trellis-rs` version the generated `trellis/Cargo.toml` names. Each
+participant becomes a module under `participants` (services and devices) or
+`apps` (apps and agents), and each API becomes a module under `apis`. Module
+names join the package, the participant or API, and its major version:
+`participants::acme_orders_orders_service`, `apps::acme_orders_orders_caller`,
+`apis::acme_orders_orders_v1`. Check the generated crate for the exact names.
 
 The generated package embeds exact participant/package evidence. Callers never
 supply participant IDs, semantic digests, deployments, instances, grants,
@@ -28,107 +39,187 @@ resources, or transport endpoints as bootstrap assertions.
 
 ## Connect a service
 
-The default `trellis-rs` build includes prepared events, common inbox/outbox
-interfaces, and memory stores, but no SQL database drivers. Enable
-`event-store-sqlite` for `SqliteInboxStore`/`SqliteOutboxStore` or
-`event-store-postgres` for `PostgresInboxStore`/`PostgresOutboxStore`:
+A service first discovers the installation, which gives it the broker addresses
+and the installation's signing trust, then connects with the identity seed that
+`trellis svc <deployment> provision` printed. The examples use this contract,
+packaged as `acme-orders`:
 
-```toml
-[dependencies]
-trellis-rs = { version = "0.100.0", features = ["event-store-sqlite"] }
+```trellis
+model CreateOrderRequest { customerId: string; }
+model CreateOrderResponse { orderId: string; customerId: string; }
+model GetOrderRequest { orderId: string; }
+
+api orders@v1 {
+  title "Orders";
+  description "Orders for customers.";
+  rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
+  rpc Get { input GetOrderRequest; output CreateOrderResponse; }
+  capabilities {
+    capability orders.create {
+      title "Create orders";
+      description "Create and read orders.";
+      grants "The caller may create and read customer orders.";
+      allows { rpc Create; rpc Get; }
+    }
+  }
+}
+
+service OrdersService { implements orders; }
+agent OrdersCaller { use orders { required capability orders.create; } }
+device InspectionDevice { use orders { required capability orders.create; } }
 ```
-
-These additive features also expose the corresponding database-specific
-`EventStoreError` variants. Services using only RPCs, Live, events, or runtime
-resources do not need either feature.
-
-Two default features cover connections a service does not make:
-`native-oauth` (signing in as a user, `UserConnectOptions`, and a device's
-companion session) and `device` (device enrollment and activation, which
-implies `native-oauth`). A service that connects with its provisioned identity
-can turn them off and skip the HTTPS client and P-256 dependencies:
-
-```toml
-[dependencies]
-trellis-rs = { version = "0.100.0", default-features = false }
-```
-
-SDK HTTP connections and optional `telemetry-otlp` exporters preserve an
-application-installed Rustls provider. Otherwise they use ring locally without
-changing the process-wide provider, with platform certificate verification.
 
 ```rust
-use orders_trellis::participants::acme_orders_service::{
-    connect, ServiceConnectOptions,
-};
+use acme_orders::participants::acme_orders_orders_service::{Participant, Provider};
+use acme_orders::types::CreateOrderResponse;
+use trellis_rs::auth::{discover_accepting_certificate, CertificateAcceptance};
+use trellis_rs::service::ServiceConnectOptions;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let identity_seed = std::env::var("ORDERS_SERVICE_IDENTITY_SEED")?;
-    let mut service = connect(
-        ServiceConnectOptions::new("http://localhost:3000", &identity_seed)
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let trellis_url = std::env::var("TRELLIS_URL")?;
+    let identity_seed = std::env::var("TRELLIS_IDENTITY_SEED")?;
+    let server = discover_accepting_certificate(
+        &trellis_url,
+        &CertificateAcceptance::for_program("orders-service"),
+    )
+    .await?;
+    let mut service = Participant::connect(
+        ServiceConnectOptions::new(server.nats_servers, server.trust, &identity_seed)
             .with_name("orders-service")
             .with_timeout_ms(10_000),
     )
     .await?;
 
-    register_handlers(&mut service);
+    Provider::new(&mut service)
+        .acme_orders_orders_v1()
+        .register_create(|_context, input| async move {
+            Ok(CreateOrderResponse {
+                order_id: ulid::Ulid::new().to_string(),
+                customer_id: input.customer_id,
+                extra: Default::default(),
+            })
+        });
     service.run().await?;
     Ok(())
 }
 ```
 
+`TRELLIS_URL` is the Trellis address, such as `http://localhost:3000` for a
+development installation. A certificate the platform trust store vouches for
+needs nothing. A development installation's own certificate is accepted by its
+fingerprint: set `TRELLIS_CERTIFICATE_FINGERPRINT`, or
+`TRELLIS_ACCEPT_SELF_SIGNED=1` to accept it on first contact. If you have the
+CA file, `discover_native_oauth(&trellis_url, &[ca_path])` trusts it directly.
+
+Register every handler before `service.run()`, which runs the service until it
+stops or fails. Every generated model has an `extra` map for fields it doesn't
+know, so construct it with `extra: Default::default()`.
+
 NATS CONNECT carries a signed provisioned admission that proves the identity
-and a fresh session key; there is no HTTP bootstrap. Auth Callout resolves the
-deployment, installed participant, and resources, then returns signed session
-authority and exact transport permissions, which the runtime verifies.
-Authorization state remains in process memory and is refreshed proactively as
-SDK-owned maintenance. Renewing unchanged transport authority promotes the new
-session authority in place without replacing a healthy socket. Newly approved transport authority is
+and a fresh session key. Auth Callout resolves the deployment, installed
+participant, and resources, then returns signed session authority and exact
+transport permissions, which the runtime verifies. Authorization state remains
+in process memory and is refreshed proactively as SDK-owned maintenance.
+Renewing unchanged transport authority promotes the new session authority in
+place without replacing a healthy socket. Newly approved transport authority is
 adopted automatically, with no manual refresh API or upgrade notification. There
 is no authorization-context file.
 
+## Features
+
+`trellis-rs` enables `native-oauth` and `device` by default. Discovery
+(`discover_accepting_certificate` and `discover_native_oauth`) is part of
+`native-oauth`, so services keep it. A service can drop `device` (device
+enrollment and activation):
+
+```toml
+[dependencies]
+trellis-rs = { version = "0.100.0", default-features = false, features = ["native-oauth"] }
+```
+
+The default build includes prepared events, common inbox/outbox interfaces, and
+memory stores, but no SQL database drivers. Enable `event-store-sqlite` for
+`SqliteInboxStore`/`SqliteOutboxStore` or `event-store-postgres` for
+`PostgresInboxStore`/`PostgresOutboxStore`. These also expose the corresponding
+database-specific `EventStoreError` variants. Services using only RPCs, Live,
+events, or runtime resources need neither.
+
+SDK HTTP connections and optional `telemetry-otlp` exporters preserve an
+application-installed Rustls provider. Otherwise they use ring locally without
+changing the process-wide provider, with platform certificate verification.
+
 ## Connect an app or agent
 
-Native apps and agents authorize the user with OAuth Device Code. Discover the
-installation, open durable credential custody, and complete the user-facing code
-to obtain a `NativeOAuthSession`; a generated user participant wraps the public
-`UserConnectOptions` boundary:
+Native apps and agents sign the user in with OAuth Device Code: discover the
+installation, open durable credential custody for a registered native client,
+show the user the link and code, and connect with the resulting session.
+`client_id` is a native client registered with `trellis clients`.
 
 ```rust
-use trellis_rs::auth::{discover_native_oauth, NativeOAuthClient};
+use acme_orders::apps::acme_orders_orders_caller::{Client, Request};
+use acme_orders::types::GetOrderRequest;
+use std::path::PathBuf;
+use trellis_rs::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient};
 use trellis_rs::client::UserConnectOptions;
+use trellis_rs::generated::AppRequestDescriptor as _;
 
-let server = discover_native_oauth("https://trellis.example.com").await?;
-let client = NativeOAuthClient::open(custody_dir, scope, server.trust.clone()).await?;
-let device = client.start_device(&authorization_details).await?;
+let server = discover_native_oauth("https://trellis.example.com", &[]).await?;
+let scope = NativeCredentialScope {
+    issuer: server.issuer.clone(),
+    instance_id: server.trust.instance_id.clone(),
+    account: server.trust.account.clone(),
+    client_id: "orders-agent".into(),
+    credential_handle: ulid::Ulid::new(),
+};
+let login = NativeOAuthClient::open(PathBuf::from("orders-agent-login"), scope, server.trust.clone())
+    .await?;
+let device = login
+    .start_device(&serde_json::json!([{
+        "type": "trellis_capabilities",
+        "required": Request::REQUIRED_CAPABILITIES,
+        "optional": Request::OPTIONAL_CAPABILITIES,
+    }]))
+    .await?;
 // The complete URI already carries the code; the page shows it to compare.
 let link = device.verification_uri_complete().unwrap_or(device.verification_uri());
 println!("Open {link} and check the code is {}", device.user_code());
 let session = device.complete().await?;
-let options = UserConnectOptions::new(server.nats_servers, 30_000, session);
+
+let client = Client::from_generated(
+    trellis_rs::generated::Client::connect_user(UserConnectOptions::new(
+        server.nats_servers,
+        30_000,
+        session,
+    ))
+    .await?,
+);
 ```
 
-After a restart, `NativeOAuthClient::resume()` rotates the retained credential
-for a fresh runtime key instead of repeating consent. The connection presents
-the signed OAuth admission in CONNECT and then retrieves its signed authority.
-Do not assemble route credentials, NATS permissions, or semantic evidence
-manually.
+Keep `scope` (it holds no secret) to sign in again later: after a restart,
+`NativeOAuthClient::open` with the same scope and then `resume()` rotates the
+retained credential for a fresh runtime key instead of asking the user again.
+The connection presents the signed OAuth admission in CONNECT and then
+retrieves its signed authority. Do not assemble route credentials, NATS
+permissions, or semantic evidence manually.
 
 ## Connect a device
 
-Activated devices retain only their durable identity material. Generated device
-facades use the public `DeviceConnectOptions` shape:
+Activated devices retain only their durable identity material:
 
 ```rust
-use orders_trellis::participants::inspection_device::{
-    connect, DeviceConnectOptions,
-};
+use acme_orders::participants::acme_orders_inspection_device::{Client, Participant};
+use trellis_rs::auth::discover_native_oauth;
+use trellis_rs::client::DeviceConnectOptions;
 
-let connected = connect(
-    DeviceConnectOptions::new(
-        "http://127.0.0.1:8080",
-        identity_seed_base64url,
+let trellis_url = "https://trellis.example.com";
+let server = discover_native_oauth(trellis_url, &[]).await?;
+let device = Client::connect(
+    DeviceConnectOptions::<Participant>::new(
+        trellis_url,
+        &identity_seed_base64url,
+        server.nats_servers,
+        server.trust,
     )
     .with_timeout_ms(10_000),
 )
@@ -143,20 +234,22 @@ instance IDs are resolved server-side.
 
 ## Call RPCs
 
-Dependency aliases are the first facade boundary:
+A connected client has one accessor per API it uses, and one method per RPC:
 
 ```rust
-let order = connected
-    .client()
-    .orders()
-    .orders_get(&orders_trellis::apis::acme_orders::OrdersGetRequest {
+let order = client
+    .acme_orders_orders_v1()
+    .get(&GetOrderRequest {
         order_id: "ord_123".into(),
+        extra: Default::default(),
     })
     .await?;
 ```
 
-Generated declared errors are typed variants. Unknown remote and transport
-failures remain distinct call-error variants.
+A device calls the same way through `device.acme_orders_orders_v1()`, and a
+service through `Provider::new(&mut service).client()`. Generated declared
+errors are typed variants. Unknown remote and transport failures remain
+distinct call-error variants.
 
 ## Services and resources
 

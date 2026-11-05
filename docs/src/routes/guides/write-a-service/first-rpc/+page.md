@@ -34,7 +34,7 @@ containing the declared output. Keep database access in an application-owned
 closure instead of adding fields to the Trellis handler context.
 
 A caller requires the capability that allows the RPC,
-`app OrdersCaller { use orders { required capability orders.read; } }`, and
+`agent OrdersCaller { use orders { required capability orders.read; } }`, and
 regenerates. It can then call `client.get({ orderId })` without knowing
 the NATS subject or wire envelope. A selected surface still requires granted
 authority; generated methods are not an authorization bypass.

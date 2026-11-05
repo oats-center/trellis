@@ -122,11 +122,11 @@ trellis svc "$TRELLIS_DEPLOYMENT" provision --format json
 Provisioning prints private identity material; retain it securely, not in source
 control or logs.
 
-| Example environment variable | Value                                                 |
-| ---------------------------- | ----------------------------------------------------- |
-| `TRELLIS_URL`                | Runtime HTTP URL, for example `http://127.0.0.1:8080` |
-| `TRELLIS_DEPLOYMENT`         | Created `deployment.deploymentId`                     |
-| `TRELLIS_IDENTITY_SEED`      | Provision response `instanceSeed`                     |
+| Example environment variable | Value                                                |
+| ---------------------------- | ---------------------------------------------------- |
+| `TRELLIS_URL`                | Trellis address, for example `http://localhost:3000` |
+| `TRELLIS_DEPLOYMENT`         | Created `deployment.deploymentId`                    |
+| `TRELLIS_IDENTITY_SEED`      | Provision response `instanceSeed`                    |
 
 Deployment, instance, participant, grant, resource, and transport data are
 resolved by Trellis during bootstrap; do not duplicate them in service config.
