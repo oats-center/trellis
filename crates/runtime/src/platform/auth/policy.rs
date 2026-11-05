@@ -541,7 +541,7 @@ pub(super) fn apply_policy_in_transaction(
                 .optional()?
                 .ok_or(AuthError::NotFound)?;
             if kind == "user" {
-                SqliteAuthorizationStore::require_account_reach(
+                SqliteAuthorizationStore::require_account_access(
                     connection,
                     &identity.actor,
                     principal_id,

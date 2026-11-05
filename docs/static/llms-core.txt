@@ -671,6 +671,25 @@ use. Roles, direct grants, and identity-provider mappings can carry them;
 changing who holds one requires `trellis.auth.v1:platform.manage`. Auth rechecks
 current entitlements on every call.
 
+Services request them the same way, in the service's IDL:
+
+```trellis
+service AccountJanitor {
+  use auth { required capability accounts.manage; }
+}
+```
+
+The service then calls `Users.Find` and `Users.Delete` through the methods its
+`TrellisService` exposes. Deploying a service that selects an administrative
+capability requires `trellis.auth.v1:platform.manage`, which the initialized
+administrator holds; approval grants the capability to the deployment. An
+operator with it deploys the service with
+`trellis svc <name> create --source <package> --participant AccountJanitor`, or
+creates a claim with `trellis svc <name> create` and, once the service has
+connected and submitted itself, approves it with `trellis svc <claim-id> approve`.
+A running service whose new build adds an administrative capability waits for
+`trellis svc <deployment-id> approve` the same way.
+
 Apps request administrative capabilities like any other, through their generated
 required/optional selections; there is no separate privilege request. Optional
 administration is never preselected or remembered. Delegating one to an app has
@@ -730,9 +749,17 @@ inspect Trellis's internal authorization registry.
   unchanged; clear flags restore eligible linked-provider values. Manual choices
   survive OIDC login, and matching-sub bounded UserInfo enriches presentation
   only. Email equality never links identities.
-- `accounts.manage` permits `Users.Create/Update/Delete` and
-  `Users.PasswordReset.Create`, only for accounts holding no capability the
-  caller lacks. `Users.Update` checks lifecycle `expectedRevision`; omitted
+- `accounts.manage` permits `Users.Find/Create/Update/Delete` and
+  `Users.PasswordReset.Create` on every account but the default
+  administrator's, whatever the account holds. `Users.Find` takes exactly one
+  key, `userId` or `identity: { providerId, subject }` (the configured
+  provider's Trellis ID and the upstream `sub`, matched exactly; never email
+  or username), finds disabled accounts too, and returns `found` with the
+  `user` (lifecycle and revision in `user.account.principal`) and its linked
+  `identities`; a miss is an absent `found`, not an error. Check that the
+  identity is still listed before acting on the user. A
+  `Users.Delete` retry after a lost reply gets `AuthError` `not_found`; treat
+  that as done. `Users.Update` checks lifecycle `expectedRevision`; omitted
   profile fields are untouched, and intentional profile changes also require
   `expectedProfileRevision`. A stale combined save rolls back both.
   `Users.Delete` signs the account out everywhere and removes its sign-ins,

@@ -70,6 +70,8 @@ import {
   AuthSessionsMeResponse,
   AuthSessionsLogoutResponse,
   AuthLoginRevokeRequest,
+  AuthUserFindRequest,
+  AuthUserFindResponse,
   AuthUserGetRequest,
   AuthUserGetResponse,
   AuthUsersListResponse,
@@ -263,8 +265,10 @@ api auth@v1 {
   /// End one of an account's sign-ins.
   rpc Sessions.Revoke { input AuthLoginRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // trellis.auth.v1:accounts.manage, only for accounts whose access the caller
-  // holds too. Administrative account access grants no domain data.
+  // trellis.auth.v1:accounts.manage, for every account but the default
+  // administrator's. Administrative account access grants no domain data.
+  /// Find one person's account, enabled or not, by its user ID or by a linked company sign-in.
+  rpc Users.Find { input AuthUserFindRequest; output AuthUserFindResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Get one person's account.
   rpc Users.Get { input AuthUserGetRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// List people, optionally matching a search or status.
@@ -451,9 +455,9 @@ api auth@v1 {
     capability accounts.manage {
       administrative;
       title "Manage accounts";
-      description "Add, change and delete people's accounts and send them password reset links, but only for accounts with no access you lack.";
-      grants "Can create, change and delete accounts that have no more access than you.";
-      allows { rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.Delete; rpc Users.PasswordReset.Create; }
+      description "Find, add, change and delete people's accounts and send them password reset links.";
+      grants "Can create, change, sign out and delete any account except the default administrator's.";
+      allows { rpc Users.Find; rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.Delete; rpc Users.PasswordReset.Create; }
     }
     capability users.manage {
       administrative;

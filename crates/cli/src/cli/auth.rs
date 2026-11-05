@@ -229,6 +229,8 @@ pub enum UsersSubcommand {
     List,
     /// Show one user by Trellis user ID.
     Show(UserRefArgs),
+    /// Find the user a company sign-in belongs to, by provider ID and exact subject.
+    Find(UserFindArgs),
     /// Create one Trellis user.
     Create(UserCreateArgs),
     /// Edit one Trellis user.
@@ -334,6 +336,17 @@ pub struct RoleEditArgs {
 pub struct UserRefArgs {
     #[arg(value_name = "USER_ID")]
     pub user_id: String,
+}
+
+#[derive(Debug, Args)]
+/// Find a user by a linked company sign-in.
+pub struct UserFindArgs {
+    /// The sign-in provider's Trellis ID.
+    #[arg(long, value_name = "PROVIDER_ID")]
+    pub provider: String,
+    /// The provider's `sub` for the person, matched exactly.
+    #[arg(long, value_name = "SUBJECT")]
+    pub subject: String,
 }
 
 #[derive(Debug, Args)]

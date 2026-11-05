@@ -188,7 +188,7 @@ pub(crate) fn create_reset(
             if protected {
                 return Err(AuthError::Denied);
             }
-            SqliteAuthorizationStore::require_account_reach(connection, &identity.actor, &target)?;
+            SqliteAuthorizationStore::require_account_access(connection, &identity.actor, &target)?;
             let (username, version): (Option<String>, Option<u64>) = connection
                 .query_row(
                     "SELECT coalesce(c.normalized_username,(SELECT provider_subject \
@@ -506,7 +506,7 @@ pub(crate) fn complete_reset(
                     return Err(AuthError::Denied);
                 }
                 reset_requester(connection, &action.payload.actor, session, now)?;
-                SqliteAuthorizationStore::require_account_reach(
+                SqliteAuthorizationStore::require_account_access(
                     connection,
                     &action.payload.actor,
                     &action.target,

@@ -830,8 +830,8 @@ impl SqliteAuthorizationStore {
                     )?,
                     _ => false,
                 };
-                // Account managers end the sign-ins of accounts in their reach,
-                // as a password reset does.
+                // Account managers end the sign-ins of any account but the
+                // default administrator's, as a password reset does.
                 let reachable = match scope {
                     EnforcementScope::Login(login) if !owned => {
                         let user: Option<String> = connection
@@ -845,7 +845,7 @@ impl SqliteAuthorizationStore {
                             )
                             .optional()?;
                         match user.map(|user| {
-                            Self::require_account_reach(connection, &identity.actor, &user)
+                            Self::require_account_access(connection, &identity.actor, &user)
                         }) {
                             Some(Ok(())) => true,
                             None | Some(Err(AuthError::Denied)) => false,

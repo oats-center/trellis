@@ -143,9 +143,12 @@ remain separate actions.
 
 ### User Management
 
-Account management needs `trellis.auth.v1:accounts.manage` and reaches only
-accounts that hold no capability the caller lacks; the default administrator is
-never in reach. `Auth.Users.Delete` checks `expectedRevision`, revokes the
+Account management needs `trellis.auth.v1:accounts.manage` and reaches every
+account except the default administrator's, whatever the account holds.
+`Auth.Users.Find` takes exactly one of `userId` or `identity { providerId,
+subject }`, an exact match on a linked company sign-in (never email or
+username), finds disabled accounts too, and returns `found` with the user and
+its linked identities, or no `found` on a miss. `Auth.Users.Delete` checks `expectedRevision`, revokes the
 principal, and removes its sign-ins, profile, avatar, roles, direct grants,
 remembered consent, and pending account actions. Deleted accounts are gone from
 List/Get and their username is free.

@@ -52,6 +52,26 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         }
     });
     let users = Arc::clone(&store);
+    provider.register_users_find(move |context, input| {
+        let store = Arc::clone(&users);
+        async move {
+            let actor =
+                caller(&context, Some(Administration::ManageAccounts)).map_err(rpc_error)?;
+            blocking(move || {
+                store.transaction(|connection| {
+                    SqliteAuthorizationStore::require_administration(
+                        connection,
+                        &actor,
+                        Administration::ManageAccounts,
+                    )?;
+                    find_user(&store, connection, &input)
+                })
+            })
+            .await
+            .map_err(rpc_error)
+        }
+    });
+    let users = Arc::clone(&store);
     provider.register_users_resolve(move |context, _| {
         let store = Arc::clone(&users);
         async move {
@@ -588,6 +608,77 @@ pub(super) fn directory_account_access(
         Err(AuthError::Denied) => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+/// Find one user, enabled or not, by ID or by the exact provider and subject of
+/// a linked company sign-in. A miss is an empty result, not an error.
+pub(super) fn find_user(
+    store: &SqliteAuthorizationStore,
+    connection: &Connection,
+    input: &AuthUserFindRequest,
+) -> Result<AuthUserFindResponse, AuthError> {
+    let principal: Option<String> = match (&input.user_id, &input.identity) {
+        (Some(user), None) => Some(user.to_string()),
+        (None, Some(identity)) => connection
+            .query_row(
+                "SELECT principal_id FROM auth_provider_identities \
+                WHERE provider=?1 AND provider_subject=?2 AND provider!='local'",
+                params![identity.provider_id.to_string(), identity.subject],
+                |row| row.get(0),
+            )
+            .optional()?,
+        _ => {
+            return Err(AuthError::Invalid(
+                "give exactly one of userId and identity".into(),
+            ))
+        }
+    };
+    let user = match principal.map(|principal| read_user(store, connection, &principal, true)) {
+        None | Some(Err(AuthError::NotFound)) => None,
+        Some(user) => Some(user?),
+    };
+    let Some(user) = user else {
+        return Ok(AuthUserFindResponse {
+            found: None,
+            extra: Default::default(),
+        });
+    };
+    let mut statement = connection.prepare(
+        "SELECT i.identity_id,i.provider,o.issuer,i.provider_subject,i.linked_at \
+        FROM auth_provider_identities i \
+        JOIN auth_oidc_providers o ON o.provider_id=i.provider \
+        WHERE i.principal_id=?1 ORDER BY i.identity_id",
+    )?;
+    let identities = statement
+        .query_map([user.principal_id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .map(|row| {
+            let (identity, provider, issuer, subject, linked) = row?;
+            Ok(AuthUserIdentity {
+                identity_id: identity.parse().map_err(|_| AuthError::Unavailable)?,
+                provider_id: provider.parse().map_err(|_| AuthError::Unavailable)?,
+                issuer,
+                subject,
+                linked_at: timestamp(linked)?,
+                extra: Default::default(),
+            })
+        })
+        .collect::<Result<Vec<_>, AuthError>>()?;
+    Ok(AuthUserFindResponse {
+        found: Some(AuthUserFindMatch {
+            user,
+            identities,
+            extra: Default::default(),
+        }),
+        extra: Default::default(),
+    })
 }
 
 pub(super) fn read_user(

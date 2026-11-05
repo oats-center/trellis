@@ -177,6 +177,7 @@ service AdminService {
     required capability roles.manage;
   }
 }
+service AccountJanitor { use auth { required capability accounts.manage; } }
 service EventService {
   implements events;
   consumer events { title "Events"; description "Durable event acceptance values."; events [events.Alpha, events.Beta]; concurrency 1; replay new; retry { attempts 3; backoff [150ms, 300ms]; } }

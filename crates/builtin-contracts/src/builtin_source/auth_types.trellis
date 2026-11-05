@@ -596,6 +596,15 @@ model AuthUserAccountDetails {
   gravatarEnabled: bool;
 }
 model AuthUserGetRequest { userId: ulid; }
+/// Exactly one key: a user ID, or a company sign-in.
+model AuthUserFindRequest { userId?: ulid; identity?: AuthUserFindIdentity; }
+/// A company sign-in: the configured provider's ID and the provider's exact `sub`.
+model AuthUserFindIdentity { providerId: ulid; subject: string; }
+/// Absent when no account matches.
+model AuthUserFindResponse { found?: AuthUserFindMatch; }
+/// The account, with its state and revision in `user.account.principal`, and
+/// every company sign-in linked to it.
+model AuthUserFindMatch { user: AuthUser; identities: list<AuthUserIdentity>; }
 model AuthUserGetResponse { user: AuthUser; }
 type AuthUsersListResponse = CursorPage<AuthUser>;
 model AuthUserCreateRequest {

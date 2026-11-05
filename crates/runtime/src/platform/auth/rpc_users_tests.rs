@@ -1196,7 +1196,7 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
 }
 
 #[test]
-fn account_managers_reach_only_accounts_with_no_more_access_and_delete_them() {
+fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_administrator() {
     use crate::platform::auth::oauth::account::create_reset;
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[53; 32])));
@@ -1234,8 +1234,65 @@ fn account_managers_reach_only_accounts_with_no_more_access_and_delete_them() {
         crate::platform::auth::tests::apply_policy(&store, &mutation(&admin, &grant), &grant, NOW)
             .unwrap();
     }
-    let alice = create(&manager, "alice").unwrap();
+    let provider = AuthOIDCProviderPutRequest {
+        provider_id: None,
+        issuer: "https://identity.example".into(),
+        client_id: "trellis".into(),
+        title: "Company".to_string().into(),
+        scopes: vec!["openid".into()],
+        role_claim: "/roles".into(),
+        claim_freshness_seconds: 300.into(),
+        client_secret: None,
+        expected_revision: 0.into(),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let provider = put_provider(&storage, &mutation(&admin, &provider), &provider, NOW)
+        .unwrap()
+        .provider
+        .provider_id;
+    for (principal, subject) in [(&boss, "auth0|boss"), (&admin, "auth0|admin")] {
+        store
+            .transaction(|connection| {
+                SqliteAuthorizationStore::link_oidc_identity_in(
+                    connection,
+                    principal,
+                    &provider.to_string(),
+                    subject,
+                    NOW,
+                )
+            })
+            .unwrap();
+    }
+    let find = |user_id: Option<&str>, subject: Option<&str>| {
+        let input = AuthUserFindRequest {
+            user_id: user_id.map(|user| user.parse().unwrap()),
+            identity: subject.map(|subject| AuthUserFindIdentity {
+                provider_id: provider,
+                subject: subject.into(),
+                extra: Default::default(),
+            }),
+            extra: Default::default(),
+        };
+        store.transaction(|connection| find_user(&store, connection, &input))
+    };
     let account = |user: &AuthUser| user.account.as_ref().unwrap().principal.revision;
+
+    // The boss holds roles.manage, which the manager lacks. The manager still
+    // finds the boss by sign-in, disables, resets and deletes the account.
+    let found = find(None, Some("auth0|boss")).unwrap().found.unwrap();
+    assert_eq!(found.user.principal_id.to_string(), boss);
+    assert_eq!(found.identities.len(), 1);
+    assert_eq!(found.identities[0].provider_id, provider);
+    assert_eq!(found.identities[0].subject, "auth0|boss");
+    for miss in ["AUTH0|BOSS", "auth0|bos", "boss"] {
+        assert!(find(None, Some(miss)).unwrap().found.is_none(), "{miss}");
+    }
+    assert!(matches!(
+        find(Some(&boss), Some("auth0|boss")),
+        Err(AuthError::Invalid(_))
+    ));
+    assert!(matches!(find(None, None), Err(AuthError::Invalid(_))));
     let disable = |target: &AuthUser| AuthUserUpdateRequest {
         given_name: None,
         family_name: None,
@@ -1249,17 +1306,12 @@ fn account_managers_reach_only_accounts_with_no_more_access_and_delete_them() {
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    let boss_user = store
-        .transaction(|connection| read_user(&store, connection, &boss, true))
-        .unwrap();
-
-    // The boss can change roles, which the manager can't, so the manager can't
-    // disable, reset or delete the boss's account.
-    let input = disable(&boss_user);
-    assert!(matches!(
-        update_user(&store, &mutation(&manager, &input), &input, NOW + 1),
-        Err(AuthError::Denied)
-    ));
+    let input = disable(&found.user);
+    update_user(&store, &mutation(&manager, &input), &input, NOW + 1).unwrap();
+    let disabled = find(Some(&boss), None).unwrap().found.unwrap().user;
+    let details = disabled.account.as_ref().unwrap();
+    assert!(!details.principal.enabled);
+    assert!(details.principal.revision > account(&found.user));
     let session = reset_session(
         &store,
         &admin,
@@ -1281,7 +1333,7 @@ fn account_managers_reach_only_accounts_with_no_more_access_and_delete_them() {
             NOW + 1,
         )
     };
-    assert!(matches!(reset(&boss_user), Err(AuthError::Denied)));
+    let alice = create(&manager, "alice").unwrap();
     assert!(reset(&alice).is_ok());
     let delete = |target: &AuthUser| AuthUserDeleteRequest {
         user_id: target.principal_id,
@@ -1289,37 +1341,53 @@ fn account_managers_reach_only_accounts_with_no_more_access_and_delete_them() {
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    let input = delete(&boss_user);
-    assert!(matches!(
-        delete_user(&store, &mutation(&manager, &input), &input, NOW + 1),
-        Err(AuthError::Denied)
-    ));
-    let cookie = store.create_portal_session(NOW + 1).unwrap();
-    assert!(store
-        .portal_local_login(
-            &cookie.cookie,
-            &cookie.csrf,
-            &"b".repeat(43),
-            ("boss", "initial account password"),
-            &id(),
-            NOW + 1,
-        )
-        .is_ok());
-
-    // Alice has no access the manager lacks: her account is deleted, she can't
-    // sign in, and her username is free for a new account.
-    let input = delete(&alice);
+    let input = delete(&disabled);
     delete_user(&store, &mutation(&manager, &input), &input, NOW + 2).unwrap();
+    assert!(find(None, Some("auth0|boss")).unwrap().found.is_none());
+    assert!(find(Some(&boss), None).unwrap().found.is_none());
+    // A retry after a lost reply is a new request for an account that is gone.
+    let retry = delete(&disabled);
     assert!(matches!(
-        store.transaction(|connection| read_user(
-            &store,
-            connection,
-            &alice.principal_id.to_string(),
-            true
-        )),
+        delete_user(&store, &mutation(&manager, &retry), &retry, NOW + 3),
         Err(AuthError::NotFound)
     ));
-    let cookie = store.create_portal_session(NOW + 2).unwrap();
+    // The sign-in is free: the person's next company sign-in links a new account.
+    let fresh = create(&admin, "boss-again")
+        .unwrap()
+        .principal_id
+        .to_string();
+    store
+        .transaction(|connection| {
+            SqliteAuthorizationStore::link_oidc_identity_in(
+                connection,
+                &fresh,
+                &provider.to_string(),
+                "auth0|boss",
+                NOW + 3,
+            )
+        })
+        .unwrap();
+    let relinked = find(None, Some("auth0|boss")).unwrap().found.unwrap();
+    assert_eq!(relinked.user.principal_id.to_string(), fresh);
+
+    // Nobody but the default administrator acts on the default administrator.
+    let admin_user = find(None, Some("auth0|admin")).unwrap().found.unwrap().user;
+    let input = disable(&admin_user);
+    assert!(matches!(
+        update_user(&store, &mutation(&manager, &input), &input, NOW + 3),
+        Err(AuthError::Denied)
+    ));
+    assert!(matches!(reset(&admin_user), Err(AuthError::Denied)));
+    let input = delete(&admin_user);
+    assert!(matches!(
+        delete_user(&store, &mutation(&manager, &input), &input, NOW + 3),
+        Err(AuthError::Denied)
+    ));
+
+    // A deleted local account can't sign in, and its username is free.
+    let input = delete(&alice);
+    delete_user(&store, &mutation(&manager, &input), &input, NOW + 4).unwrap();
+    let cookie = store.create_portal_session(NOW + 4).unwrap();
     assert!(store
         .portal_local_login(
             &cookie.cookie,
@@ -1327,7 +1395,7 @@ fn account_managers_reach_only_accounts_with_no_more_access_and_delete_them() {
             &"c".repeat(43),
             ("alice", "initial account password"),
             &id(),
-            NOW + 2,
+            NOW + 4,
         )
         .is_err());
     let again = create(&manager, "alice").unwrap();

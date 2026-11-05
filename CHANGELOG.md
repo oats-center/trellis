@@ -8,6 +8,31 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `Auth.Users.Find` looks up one account, enabled or disabled, by its user ID
+  or by the exact provider ID and `sub` of a linked company sign-in. It returns
+  the user, its lifecycle state and revision, and its linked sign-ins; a miss is
+  an empty `found`, not an error. `trellis.auth.v1:accounts.manage` allows it,
+  and `trellis users find --provider <id> --subject <sub>` calls it from the
+  CLI.
+
+### Changed
+
+- `accounts.manage` now reaches every account except the default
+  administrator's. Since rc.18, `Users.Update`, `Users.Delete`,
+  `Users.PasswordReset.Create` (and its completion) and ending another user's
+  sign-ins refused any account holding a capability the caller lacked. That
+  stopped a service holding `accounts.manage` from deleting an ordinary app
+  user, and protected nothing, since account administrators are
+  administrators. The capability's consent text changed with it, so apps
+  holding it ask for consent again.
+
+### Documentation
+
+- How a service selects an administrative capability in its IDL, and how an
+  operator approves it with `trellis svc create` or `trellis svc approve`.
+
 ## [0.100.0-rc.23] - 2026-11-05
 
 ### Fixed

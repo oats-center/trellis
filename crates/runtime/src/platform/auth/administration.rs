@@ -70,13 +70,11 @@ impl SqliteAuthorizationStore {
         }
     }
 
-    /// Managing accounts never reaches past the manager's own access: `actor`
-    /// must hold `accounts.manage` and every capability the user `target`
-    /// holds, so it can never reset, disable or delete a more powerful
-    /// account. A holder of `roles.manage` can give itself any ordinary
-    /// capability, so for it only administrative capabilities count. The
-    /// default administrator is never in reach.
-    pub(super) fn require_account_reach(
+    /// Managing accounts reaches every user account except the default
+    /// administrator's, which only that administrator may act on. Holders of
+    /// `accounts.manage` are administrators: what the target account holds
+    /// does not limit them.
+    pub(super) fn require_account_access(
         connection: &Connection,
         actor: &str,
         target: &str,
@@ -89,15 +87,6 @@ impl SqliteAuthorizationStore {
         )?;
         if protected && target != actor {
             return Err(AuthError::Denied);
-        }
-        let mine = held(connection, actor)?;
-        let grants_ordinary = mine.contains(Administration::ManageRoles.capability_id());
-        for capability in held(connection, target)? {
-            if !mine.contains(&capability)
-                && (!grants_ordinary || administrative(connection, &capability)?)
-            {
-                return Err(AuthError::Denied);
-            }
         }
         Ok(())
     }

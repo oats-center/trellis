@@ -46,6 +46,7 @@ pub(super) async fn users(format: OutputFormat, command: UsersCommand) -> miette
     match command.command {
         UsersSubcommand::List => users_list_command(format).await,
         UsersSubcommand::Show(args) => users_show_command(format, &args).await,
+        UsersSubcommand::Find(args) => users_find_command(format, &args).await,
         UsersSubcommand::Create(args) => users_create_command(format, &args).await,
         UsersSubcommand::Edit(args) => users_edit_command(format, &args).await,
         UsersSubcommand::Delete(args) => users_delete_command(format, &args).await,
@@ -538,6 +539,42 @@ async fn users_show_command(format: OutputFormat, args: &UserRefArgs) -> miette:
             output::print_info(&format!("username={}", account.username));
             output::print_info(&format!("enabled={}", account.principal.enabled));
             output::print_info(&format!("revision={}", account.principal.revision.0 .0));
+        }
+    }
+    Ok(())
+}
+
+async fn users_find_command(format: OutputFormat, args: &UserFindArgs) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let found = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
+        .users_find(&auth_types::AuthUserFindRequest {
+            user_id: None,
+            identity: Some(auth_types::AuthUserFindIdentity {
+                provider_id: wire(&args.provider)?,
+                subject: args.subject.clone(),
+                extra: Default::default(),
+            }),
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .found
+        .ok_or_else(|| miette::miette!("no user has that sign-in"))?;
+    if output::is_json(format) {
+        output::print_json(&serde_json::to_value(found).into_diagnostic()?)?;
+    } else {
+        output::print_info(&format!("userId={}", found.user.principal_id));
+        output::print_info(&format!("name={}", found.user.display_name));
+        if let Some(account) = found.user.account {
+            output::print_info(&format!("enabled={}", account.principal.enabled));
+            output::print_info(&format!("revision={}", account.principal.revision.0 .0));
+        }
+        for identity in found.identities {
+            output::print_info(&format!(
+                "signIn={} {}",
+                identity.provider_id, identity.subject
+            ));
         }
     }
     Ok(())
