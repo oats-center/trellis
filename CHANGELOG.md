@@ -8,6 +8,20 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `trellis-rs` 0.100.0-rc.20 through rc.22 failed to compile from crates.io
+  with "generated Trellis model binding mismatch". The built-in contracts had
+  changed, but `trellis-models` stayed at 0.100.0-rc.18, so the release skipped
+  republishing it and crates.io kept serving models built from the old
+  contracts. A component whose contents change now always takes the release's
+  version, and a release whose crates differ from a version crates.io already
+  has fails before publishing anything.
+- The service tutorial declared its caller as a browser `app`, which the
+  testkit can't sign in as (it fails with `InvalidCredential`); the caller is
+  now an `agent`. The Rust library guide's service, app, device and RPC
+  examples now match the code `trellis generate` produces.
+
 ## [0.100.0-rc.22] - 2026-11-04
 
 ### Fixed

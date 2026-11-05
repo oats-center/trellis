@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use clap::Parser;
 use clap::Subcommand;
-use miette::{miette, IntoDiagnostic, Result};
+use miette::{miette, Result};
 
 mod changelog;
+mod components;
 mod github;
 mod package;
 mod runner;
@@ -42,19 +43,20 @@ pub(crate) enum ReleaseCommand {
         #[arg(long)]
         version: String,
     },
+    /// Require every packaged public crate already on crates.io to match it.
+    #[command(name = "check-published")]
+    CheckPublished {
+        /// Directory holding the packaged `.crate` archives.
+        #[arg(long)]
+        packages: PathBuf,
+    },
+    /// Move release-managed versions to the tag's version. The protocol,
+    /// models and built-in contracts move only when their contents changed
+    /// since they were published.
     #[command(name = "prepare")]
     Prepare {
         #[arg(long)]
         tag: Option<String>,
-        /// Publish a new protocol implementation instead of retaining its current version.
-        #[arg(long)]
-        protocol_version: Option<String>,
-        /// Publish a new model bundle instead of retaining its current version.
-        #[arg(long)]
-        models_version: Option<String>,
-        /// Advance native built-in contracts; requires an explicitly selected model bundle.
-        #[arg(long, requires = "models_version")]
-        contracts_version: Option<String>,
     },
     #[command(name = "bump")]
     Bump {
@@ -147,88 +149,29 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
             target,
             version,
         } => package::stage_testkit_bundle(&bundle, &output, &source_sha, &target, &version),
-        ReleaseCommand::Prepare {
-            tag,
-            protocol_version,
-            models_version,
-            contracts_version,
-        } => {
+        ReleaseCommand::CheckPublished { packages } => {
+            components::check_published(repo_root, &packages)
+        }
+        ReleaseCommand::Prepare { tag } => {
             let Some(tag) = tag.filter(|tag| !tag.trim().is_empty()) else {
                 println!("release tag is not set; skipping release version preparation.");
                 return Ok(());
             };
             let release = parse_release_tag(&tag)?;
-            for version in [&protocol_version, &models_version, &contracts_version]
-                .into_iter()
-                .flatten()
-            {
-                semver::Version::parse(version).into_diagnostic()?;
-            }
-            // A prerelease never publishes a component as a stable version:
-            // a component keeping its checked-in version must already be a
-            // prerelease, and a changed one needs an explicit prerelease.
-            if release.version.contains('-') {
-                for (name, path, flag, explicit) in [
-                    (
-                        "trellis-protocol",
-                        "crates/protocol/Cargo.toml",
-                        "--protocol-version",
-                        &protocol_version,
-                    ),
-                    (
-                        "trellis-models",
-                        "crates/models/Cargo.toml",
-                        "--models-version",
-                        &models_version,
-                    ),
-                    (
-                        "trellis",
-                        "crates/builtin-contracts/trellis.toml",
-                        "--contracts-version",
-                        &contracts_version,
-                    ),
-                ] {
-                    let version = match explicit {
-                        Some(version) => version.clone(),
-                        None => std::fs::read_to_string(repo_root.join(path))
-                            .into_diagnostic()?
-                            .parse::<toml_edit::DocumentMut>()
-                            .into_diagnostic()?["package"]["version"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_owned(),
-                    };
-                    if semver::Version::parse(&version)
-                        .into_diagnostic()?
-                        .pre
-                        .is_empty()
-                    {
-                        return Err(miette!(
-                            "prerelease {} would publish {name} as stable {version}; pass \
-                            {flag} with a prerelease version",
-                            release.version
-                        ));
-                    }
-                }
-            }
-            let mut changed = prepare_release(repo_root, &release)?;
-            for (name, path, version) in [
-                (
-                    "trellis-protocol",
-                    "crates/protocol/Cargo.toml",
-                    protocol_version,
-                ),
-                ("trellis-models", "crates/models/Cargo.toml", models_version),
-                (
-                    "trellis",
-                    "crates/builtin-contracts/trellis.toml",
-                    contracts_version,
-                ),
+            let components = components::changed_components(repo_root)?;
+            let changed = prepare_with_components(repo_root, &release, &components)?;
+            for component in [
+                components::CONTRACTS,
+                components::PROTOCOL,
+                components::MODELS,
             ] {
-                if let Some(version) = version {
-                    changed.extend(versioning::prepare_component(
-                        repo_root, name, path, &version,
-                    )?);
+                if components.contains(&component) {
+                    println!(
+                        "{} changed; it moves to {}.",
+                        component.name, release.version
+                    );
+                } else {
+                    println!("{} is unchanged; it keeps its version.", component.name);
                 }
             }
             write_github_env("TRELLIS_RELEASE_VERSION", &release.version)?;
@@ -286,6 +229,25 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
     }
 }
 
+/// Move release-managed versions to the release, and each changed component
+/// with them, updating what depends on it.
+fn prepare_with_components(
+    repo_root: &Path,
+    release: &versioning::ReleaseVersion,
+    components: &[components::Component],
+) -> Result<Vec<PathBuf>> {
+    let mut changed = prepare_release(repo_root, release)?;
+    for component in components {
+        changed.extend(versioning::prepare_component(
+            repo_root,
+            component.name,
+            component.manifest,
+            &release.version,
+        )?);
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::changelog::extract_changelog_section;
@@ -296,7 +258,7 @@ mod tests {
         rewrite_cargo_manifest_versions_for_release, rewrite_js_internal_npm_dependency_versions,
         rewrite_json_manifest_version, version_base, ReleaseVersion,
     };
-    use super::{parse_release_command, run_release, ReleaseCommand};
+    use super::{parse_release_command, ReleaseCommand};
     use std::fs;
 
     #[test]
@@ -314,22 +276,6 @@ mod tests {
                 to: "0.9.0".to_string(),
             }
         );
-    }
-
-    #[test]
-    fn native_contract_release_requires_explicit_model_bundle_selection() {
-        assert!(parse_release_command(
-            [
-                "prepare",
-                "--tag",
-                "v0.9.0-rc.1",
-                "--contracts-version",
-                "0.2.0"
-            ]
-            .into_iter()
-            .map(str::to_string)
-        )
-        .is_err());
     }
 
     #[test]
@@ -735,46 +681,6 @@ mod tests {
     }
 
     #[test]
-    fn prerelease_refuses_a_stable_component_version() {
-        let root = temp_repo_root();
-        for (path, contents) in [
-            (
-                "crates/protocol/Cargo.toml",
-                "[package]\nname = \"trellis-protocol\"\nversion = \"0.100.0-rc.3\"\n",
-            ),
-            (
-                "crates/models/Cargo.toml",
-                "[package]\nname = \"trellis-models\"\nversion = \"0.102.0-rc.4\"\n",
-            ),
-            (
-                "crates/builtin-contracts/trellis.toml",
-                "[package]\nname = \"trellis\"\nversion = \"0.100.0\"\n",
-            ),
-        ] {
-            let path = root.join(path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, contents).unwrap();
-        }
-        let error = run_release(
-            &root,
-            ReleaseCommand::Prepare {
-                tag: Some("v0.100.0-rc.4".into()),
-                protocol_version: Some("0.100.0-rc.4".into()),
-                models_version: None,
-                contracts_version: None,
-            },
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("--contracts-version"), "{error}");
-        // Nothing was written before the refusal.
-        assert!(fs::read_to_string(root.join("crates/protocol/Cargo.toml"))
-            .unwrap()
-            .contains("0.100.0-rc.3"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn prepare_moves_the_previous_prerelease_and_leaves_generated_packages() {
         let root = temp_repo_root();
         let generated = "benchmarks/runtime/packages/performance-trellis/package.json";
@@ -815,16 +721,32 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        run_release(
+        // The models changed since they were published; the protocol did not.
+        super::prepare_with_components(
             &root,
-            ReleaseCommand::Prepare {
-                tag: Some("v0.100.0-rc.4".into()),
-                protocol_version: None,
-                models_version: None,
-                contracts_version: None,
+            &ReleaseVersion {
+                version: "0.100.0-rc.4".to_string(),
+                base_version: "0.100.0".to_string(),
             },
+            &[super::components::MODELS],
         )
         .unwrap();
+        let version = |path: &str| {
+            fs::read_to_string(root.join(path))
+                .unwrap()
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap()["package"]["version"]
+                .as_str()
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            version("crates/models/Cargo.toml").as_deref(),
+            Some("0.100.0-rc.4")
+        );
+        assert_eq!(
+            version("crates/protocol/Cargo.toml").as_deref(),
+            Some("0.100.0-rc.3")
+        );
         let trellis: serde_json::Value = serde_json::from_str(
             &fs::read_to_string(root.join("ts/packages/trellis/package.json")).unwrap(),
         )

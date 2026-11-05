@@ -108,14 +108,17 @@ model metadata is not authority evidence and does not change runtime authorizati
 The CLI embeds its selected model bindings at build time; generation does not
 read the compiler producer's checkout at runtime.
 
-SDK-only release preparation preserves protocol, native-contract, and model
-versions. `release prepare` accepts explicit `--protocol-version`,
-`--models-version`, and `--contracts-version` component changes; contract changes
-require explicit model selection. A model snapshot change that alters generated
-Rust types is an incompatible Cargo change (`0.MINOR`, or `MAJOR` after 1.0),
-permitting old and new bundles to coexist; model serialization fixes can remain
-compatible patch releases. The release review chooses each component's bump, and
-Check runs `cargo-semver-checks` against each crate's latest stable release. Rust
+The protocol, native-contract, and model versions move only when their
+contents change. `release prepare` compares each with what was published (the
+crates with crates.io, the contracts with the release tag that published their
+version) and moves a changed one to the release's version; the models, which
+are generated from the contracts and depend on the protocol, move whenever
+either does. No one chooses a component's version, so a changed component can
+never ship under the version consumers already have. The Pipeline repeats the
+crate comparison before publishing anything. A model snapshot change that alters
+generated Rust types is an incompatible Cargo change (`0.MINOR`, or `MAJOR` after
+1.0); Check runs `cargo-semver-checks` against each crate's latest stable
+release, so a release carrying one needs a version that permits it. Rust
 package versions remain distinct from wire protocol family versions.
 
 `trellis-testkit` owns ordinary production CLI/server and NATS processes instead

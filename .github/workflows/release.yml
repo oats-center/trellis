@@ -1167,6 +1167,7 @@ jobs:
   release-metadata:
     name: Release metadata
     if: startsWith(github.ref, 'refs/heads/release/v')
+    needs: [rust-testkit-package]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -1209,6 +1210,18 @@ jobs:
           set -euo pipefail
           cargo xtask release check-metadata --version "${RELEASE_TAG#v}"
           cargo xtask release write-notes --tag "$RELEASE_TAG" --output dist/release-notes.md
+
+      - name: Download the verified public crates
+        uses: actions/download-artifact@v8
+        with:
+          name: rust-testkit-packages
+          path: ${{ runner.temp }}/crates
+
+      # Publication skips a version crates.io already has, so a crate whose
+      # contents changed under a kept version would never reach anyone. Every
+      # publish job waits on this job, so a mismatch publishes nothing.
+      - name: Require published crate versions to match
+        run: cargo xtask release check-published --packages "$RUNNER_TEMP/crates"
 
       - name: Upload release notes
         uses: actions/upload-artifact@v7

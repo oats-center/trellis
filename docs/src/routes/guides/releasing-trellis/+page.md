@@ -156,6 +156,7 @@ The `Pipeline` workflow runs the same Rust release tooling used locally:
 
 - `release prepare --tag <tag>` rewrites publishable versions for the tagged build
 - `release check-metadata` checks release metadata before expensive verification
+- `release check-published` refuses a packaged crate whose version crates.io already has with different contents
 - `release write-notes` extracts the matching `CHANGELOG.md` section for GitHub release notes
 
 After changing versions and regenerating consumers, refresh the committed locks
@@ -196,18 +197,12 @@ The published Rust crate set is:
 - `trellis-testkit`
 
 Publication follows this dependency order, waiting for each crate's actual
-version to enter the index before publishing its consumers. SDK-only releases
-retain protocol/model/native-contract versions; explicit component updates use
-the release preparation flags (`--protocol-version`, `--models-version`,
-`--contracts-version`). A prerelease never publishes a component as a stable
-version: `release prepare` refuses one whose retained or requested version has
-no prerelease suffix. A changed component needs a version newer than the one
-already published, because crates.io and `trellis publish` keep published
-versions. Component versions stay on the release's own version line (for
-example `0.100.0-rc.4`); never invent a minor version that no Trellis release
-has. The registries keep versions immutable but judge no compatibility, so
-choosing each component's version is a release decision (see
-[Choose component versions](#choose-component-versions)). The pipeline runs
+version to enter the index before publishing its consumers. The SDK packages
+always take the release's version. `trellis-protocol`, `trellis-models` and the
+built-in contracts keep their version until their contents change: `release
+prepare` compares each with what was published and moves a changed one to the
+release's version, along with everything that depends on it (see
+[Component versions](#component-versions)). The pipeline runs
 `cargo-semver-checks` for each public crate against its latest stable crates.io
 release, never against an earlier prerelease of the same line: an
 `0.100.0-rc.N` must be a semver-valid successor of the latest stable release.
@@ -307,23 +302,38 @@ Examples only:
 
 Use stable version numbers without the `v` prefix when passing `--version`, `--from`, or `--to`. Use tag names with the `v` prefix when passing `--since` or `--tag`.
 
-### Choose component versions
+### Component versions
 
-The SDK packages, `trellis-protocol`, `trellis-models`, and the built-in APIs
-version independently. Before preparing the release, review the changes since
-the previous release for each component and propose its version bump with the
-reason:
+Nobody picks the protocol, models or contracts versions. `release prepare`
+decides, and prints what it decided:
 
-- Breaking public API, wire, or model changes need an incompatible bump (`0.MINOR`
-  before 1.0, `MAJOR` after). Model snapshot changes that alter generated Rust
-  types are breaking for the clients bound to them.
-- Compatible additions and fixes take a patch (or minor after 1.0) bump.
-- An unchanged component keeps its version.
+- The protocol and models crates are packaged and compared file by file with
+  the crate crates.io has for their current version. Cargo's VCS record and
+  the packaged `Cargo.lock` don't count; they never reach a dependent.
+- The built-in contracts (their `trellis.toml`, `trellis.lock` and `.trellis`
+  sources) are compared with the release tag `v<version>` that published their
+  current version. Without that tag locally (fetch tags first), they count as
+  changed.
+- The models are generated from the contracts and depend on the protocol, so
+  they move whenever either does.
 
-A prerelease keeps every changed component on the release's prerelease line;
-no marker file records these decisions. `cargo-semver-checks` in the pipeline confirms
-the Rust public API against the latest stable release, but it cannot see wire,
-model-snapshot, or behavior changes, so the review remains required:
+A changed component takes the release's version. An unchanged one keeps its
+version and is not republished. The models comparison uses the generated files
+on disk, so run `cargo xtask install` first.
+
+Registries never replace a published version and publication skips a version
+that already exists, so a changed component left at its old version would
+silently never reach anyone. As a backstop, the Pipeline's release metadata job
+runs `cargo xtask release check-published` on the verified crates before any
+publish job starts, and fails the run if a crate version crates.io already has
+differs from what it would publish. `trellis publish` refuses a contracts
+version that already exists with different content, and it runs before any
+crate is published.
+
+`cargo-semver-checks` in the pipeline confirms the Rust public API against the
+latest stable release. A model snapshot change that alters generated Rust types
+is breaking for the clients bound to them, so a stable release carrying one
+needs an incompatible bump (`0.MINOR` before 1.0, `MAJOR` after):
 
 ```sh
 cargo semver-checks check-release -p <crate> --baseline-version <latest-stable>

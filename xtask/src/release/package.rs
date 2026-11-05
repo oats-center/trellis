@@ -9,8 +9,9 @@ use std::path::Path;
 use miette::{miette, IntoDiagnostic, Result};
 use sha2::{Digest, Sha256};
 
-/// The public crates a testkit verification bundle must carry.
-const BUNDLE_CRATES: [&str; 4] = [
+/// The public crates, in publication order; a testkit verification bundle
+/// carries each.
+pub(super) const PUBLIC_CRATES: [&str; 4] = [
     "trellis-protocol",
     "trellis-models",
     "trellis-rs",
@@ -82,6 +83,34 @@ pub(super) fn compare_crate(accepted: &Path, publication: &Path) -> Result<()> {
         accepted.display()
     );
     Ok(())
+}
+
+/// The files whose contents differ between a published `.crate` and a local
+/// package of the same version. Cargo's VCS record and the packaged lockfile
+/// differ between any two commits and never reach a dependent, so they don't
+/// count.
+pub(super) fn published_differences(published: &Path, packaged: &Path) -> Result<Vec<String>> {
+    let published = crate_contents(published)?;
+    let packaged = crate_contents(packaged)?;
+    let counts = |name: &&String| {
+        !matches!(
+            name.rsplit_once('/').map(|(_, file)| file),
+            Some(".cargo_vcs_info.json" | "Cargo.lock")
+        )
+    };
+    Ok(published
+        .keys()
+        .chain(packaged.keys())
+        .filter(counts)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|name| published.get(*name) != packaged.get(*name))
+        .map(|name| {
+            name.split_once('/')
+                .map_or(name.as_str(), |(_, file)| file)
+                .to_owned()
+        })
+        .collect())
 }
 
 /// The `[package]` name and version recorded in a `.crate` archive.
@@ -180,7 +209,7 @@ pub(super) fn stage_testkit_bundle(
             return Err(miette!("duplicate archive for {name}"));
         }
     }
-    for package in BUNDLE_CRATES {
+    for package in PUBLIC_CRATES {
         if !packages.contains_key(package) {
             return Err(miette!("missing {package} .crate in packages/"));
         }
@@ -218,25 +247,35 @@ mod tests {
     use super::*;
 
     fn crate_with(directory: &Path, name: &str, body: &[u8], mtime: u64) -> std::path::PathBuf {
+        crate_of(
+            directory,
+            name,
+            &[("trellis-runtime-1.0.0/generated/web/index.html", body)],
+            mtime,
+        )
+    }
+
+    fn crate_of(
+        directory: &Path,
+        name: &str,
+        files: &[(&str, &[u8])],
+        mtime: u64,
+    ) -> std::path::PathBuf {
         let path = directory.join(name);
         let file = fs::File::create(&path).unwrap();
         let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
             file,
             flate2::Compression::default(),
         ));
-        let mut header = tar::Header::new_gnu();
-        header.set_size(body.len() as u64);
-        header.set_mode(0o644);
-        // Recompression metadata is not application content.
-        header.set_mtime(mtime);
-        header.set_cksum();
-        archive
-            .append_data(
-                &mut header,
-                "trellis-runtime-1.0.0/generated/web/index.html",
-                body,
-            )
-            .unwrap();
+        for (entry, body) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            // Recompression metadata is not application content.
+            header.set_mtime(mtime);
+            header.set_cksum();
+            archive.append_data(&mut header, entry, *body).unwrap();
+        }
         archive.into_inner().unwrap().finish().unwrap();
         path
     }
@@ -258,5 +297,63 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("generated/web/index.html"), "{error}");
+    }
+
+    #[test]
+    fn a_republished_version_differs_only_by_what_reaches_dependents() {
+        let directory = tempfile::tempdir().unwrap();
+        let published = crate_of(
+            directory.path(),
+            "published.crate",
+            &[
+                (
+                    "trellis-models-1.0.0/.cargo_vcs_info.json",
+                    b"{\"sha1\":\"a\"}",
+                ),
+                ("trellis-models-1.0.0/Cargo.lock", b"old lock"),
+                ("trellis-models-1.0.0/src/lib.rs", b"pub mod generated;"),
+                (
+                    "trellis-models-1.0.0/generated/__types.rs",
+                    b"version: \"rc.18\"",
+                ),
+            ],
+            1,
+        );
+        let unchanged = crate_of(
+            directory.path(),
+            "unchanged.crate",
+            &[
+                (
+                    "trellis-models-1.0.0/.cargo_vcs_info.json",
+                    b"{\"sha1\":\"b\"}",
+                ),
+                ("trellis-models-1.0.0/Cargo.lock", b"new lock"),
+                ("trellis-models-1.0.0/src/lib.rs", b"pub mod generated;"),
+                (
+                    "trellis-models-1.0.0/generated/__types.rs",
+                    b"version: \"rc.18\"",
+                ),
+            ],
+            2,
+        );
+        assert!(published_differences(&published, &unchanged)
+            .unwrap()
+            .is_empty());
+        let regenerated = crate_of(
+            directory.path(),
+            "regenerated.crate",
+            &[
+                ("trellis-models-1.0.0/src/lib.rs", b"pub mod generated;"),
+                (
+                    "trellis-models-1.0.0/generated/__types.rs",
+                    b"version: \"rc.20\"",
+                ),
+            ],
+            1,
+        );
+        assert_eq!(
+            published_differences(&published, &regenerated).unwrap(),
+            ["generated/__types.rs"]
+        );
     }
 }
