@@ -1327,7 +1327,104 @@ staticPasswords:
     // Signing in again finds the same account rather than creating another.
     let (_, again) = company_sign_in().await;
     assert!(again.status().is_redirection());
-    assert_eq!(newcomer(), Some(created));
+    assert_eq!(newcomer(), Some(created.clone()));
+    // A service that deletes people upstream finds the account by the subject
+    // the IdP issues, deletes it, and the person's next sign-in starts over.
+    let (challenge, pkce) = openidconnect::PkceCodeChallenge::new_random_sha256();
+    let (authorization, _, nonce) = upstream
+        .authorize_url(
+            openidconnect::core::CoreAuthenticationFlow::AuthorizationCode,
+            openidconnect::CsrfToken::new_random,
+            openidconnect::Nonce::new_random,
+        )
+        .set_pkce_challenge(challenge)
+        .url();
+    let fresh_http = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .cookie_provider(Arc::new(reqwest::cookie::Jar::default()))
+        .add_root_certificate(reqwest::Certificate::from_pem(certificate.pem.as_bytes()).unwrap())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let code = dex_login(
+        &fresh_http,
+        authorization,
+        &issuer,
+        &callback,
+        "newcomer@example.com",
+    )
+    .await
+    .query_pairs()
+    .find(|(name, _)| name == "code")
+    .unwrap()
+    .1
+    .into_owned();
+    let newcomer_subject = upstream
+        .exchange_code(openidconnect::AuthorizationCode::new(code))
+        .unwrap()
+        .set_pkce_verifier(pkce)
+        .request_async(&upstream_http)
+        .await
+        .unwrap()
+        .id_token()
+        .unwrap()
+        .claims(&upstream.id_token_verifier(), &nonce)
+        .unwrap()
+        .subject()
+        .as_str()
+        .to_owned();
+    let find_newcomer = || {
+        let input = trellis_runtime_apis::__types::trellis::AuthUserFindRequest {
+            user_id: None,
+            identity: Some(
+                trellis_runtime_apis::__types::trellis::AuthUserFindIdentity {
+                    provider_id: provider.parse().unwrap(),
+                    subject: newcomer_subject.clone(),
+                    extra: Default::default(),
+                },
+            ),
+            extra: Default::default(),
+        };
+        authority
+            .transaction(|connection| {
+                super::super::rpc_users::find_user(&authority, connection, &input)
+            })
+            .unwrap()
+            .found
+    };
+    let found = find_newcomer().expect("the sign-in's subject finds its account");
+    assert_eq!(found.user.principal_id.to_string(), created);
+    assert_eq!(found.identities.len(), 1);
+    assert_eq!(found.identities[0].subject, newcomer_subject);
+    let delete = trellis_runtime_apis::__types::trellis::AuthUserDeleteRequest {
+        user_id: found.user.principal_id,
+        expected_revision: found.user.account.as_ref().unwrap().principal.revision,
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    super::super::rpc_users::delete_user(&authority, &mutation(&f.admin, &delete), &delete, now)
+        .unwrap();
+    assert!(find_newcomer().is_none());
+    let retry = trellis_runtime_apis::__types::trellis::AuthUserDeleteRequest {
+        idempotency_key: id().into(),
+        ..delete
+    };
+    assert!(matches!(
+        super::super::rpc_users::delete_user(&authority, &mutation(&f.admin, &retry), &retry, now),
+        Err(AuthError::NotFound)
+    ));
+    let (transaction, signed_up) = company_sign_in().await;
+    assert_eq!(
+        signed_up.headers()["location"].to_str().unwrap(),
+        format!("/consent?transaction={transaction}")
+    );
+    let recreated = newcomer().expect("the next sign-in creates a new account");
+    assert_ne!(recreated, created);
+    assert_eq!(
+        find_newcomer().unwrap().user.principal_id.to_string(),
+        recreated
+    );
     // With company sign-in turned off for the installation, even a linked
     // identity no longer signs in, and the Portal offers no provider.
     let off = trellis_runtime_apis::__types::trellis::AuthSignInSettingsUpdateRequest {
