@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.24] - 2026-11-05
+
 ### Added
 
 - `Auth.Users.Find` looks up one account, enabled or disabled, by its user ID
