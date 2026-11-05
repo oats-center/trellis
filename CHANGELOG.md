@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.23] - 2026-11-05
+
 ### Fixed
 
 - `trellis-rs` 0.100.0-rc.20 through rc.22 failed to compile from crates.io
