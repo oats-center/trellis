@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.25] - 2026-11-05
+
 ### Added
 
 - `trellis sign-in providers list|show|add|edit|disable|remove` manages company
