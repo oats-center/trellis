@@ -45,6 +45,11 @@ and this project adheres to
 
 ### Fixed
 
+- A browser app whose request gained a required capability kept refreshing the
+  grant approved for its older request, so every session lacked the new
+  capability and signing in again didn't help: the Portal's sign-out leaves app
+  grants alone. `TrellisClient.connect` now revokes a stored grant that doesn't
+  cover the app's required capabilities and asks the user to approve again.
 - `init --quadlet --nats-websocket-only` no longer publishes native NATS on the
   host, and plaintext behind a proxy is published only at `--bind-address`
   (loopback by default) instead of every address.

@@ -1566,6 +1566,11 @@ replaying a spent token; credential handles cannot silently switch to another
 principal, and refresh-successor checkpointing is restricted to actual refresh
 exchanges. Retained clients refresh discovery from durable cross-tab trust
 before consuming a refresh token, with no client recreation or page reload.
+A stored grant keeps the capabilities approved for it. When the app's request
+now requires one the grant lacks, `connect` revokes that grant and sends the
+user to approve again (`onAuthRequired`, or a redirect), instead of connecting
+with authority that can never cover the request. The approval screen keeps the
+user's earlier choices, so only the new capabilities need a decision.
 Browser IndexedDB version 3 persists only the initiating session seed, nullable
 login metadata, pending signed intent/intent ID, and generation tombstone, keyed
 by canonical origin plus stable participant ID; compare-and-swap fences prevent

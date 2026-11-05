@@ -189,6 +189,73 @@ test("browser consent renewal and incompatible API recovery retain the authentic
               }
             }
             await page.goto(origin);
+            if (variant === "base") {
+              // A returning user's stored grant covers the narrow app. The
+              // upgraded app requires more, so it asks to be approved again
+              // instead of connecting with a grant that can never cover it.
+              const returning = await page.evaluate(
+                async ({ issuer, origin, clientId }) => {
+                  const module: {
+                    TrellisClient: typeof import("../packages/trellis/client_connect.ts").TrellisClient;
+                    narrow: typeof import("../../integration/fixtures/client-upgrade-narrow/packages/client-upgrade/index.js").apps;
+                    base: typeof import("../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js").apps;
+                  } = await import(`${origin}/app.js`);
+                  const auth = { clientId, redirectTo: `${origin}/callback` };
+                  const unchanged = (
+                    await module.TrellisClient.connect({
+                      trellisUrl: issuer,
+                      request: module.narrow.BrowserCaller.request,
+                      auth,
+                    })
+                  ).unwrapOrElse((error) => {
+                    throw error;
+                  });
+                  const echoed = (
+                    await unchanged.echo({ value: "returning" })
+                  ).unwrapOrElse((error) => {
+                    throw error;
+                  });
+                  await unchanged.connection.close();
+                  const upgraded: string[] = [];
+                  const reasons: string[] = [];
+                  for (let load = 0; load < 2; load += 1) {
+                    const connected = await module.TrellisClient.connect({
+                      trellisUrl: issuer,
+                      request: module.base.BrowserCaller.request,
+                      auth,
+                      onAuthRequired: ({ loginUrl }) => {
+                        upgraded.push(loginUrl);
+                      },
+                    });
+                    reasons.push(
+                      !connected.isErr()
+                        ? "connected"
+                        : "reason" in connected.error
+                          ? connected.error.reason
+                          : connected.error.name,
+                    );
+                  }
+                  return { echoed, upgraded, reasons };
+                },
+                { issuer: runtime.trellisUrl, origin, clientId },
+              );
+              assert.deepEqual(returning.echoed, { value: "returning" });
+              // The second load asks too: the outdated grant was revoked.
+              assert.deepEqual(returning.reasons, [
+                "OAuthAuthorizationRequired",
+                "OAuthAuthorizationRequired",
+              ]);
+              for (const loginUrl of returning.upgraded) {
+                const [details] = JSON.parse(
+                  new URL(loginUrl).searchParams.get("authorization_details") ??
+                    "[]",
+                );
+                assert.deepEqual(
+                  details.required,
+                  apps.BrowserCaller.request.requiredCapabilities,
+                );
+              }
+            }
             const authorization = await page.evaluate(
               async ({ issuer, origin, clientId, variant }) => {
                 const module: {

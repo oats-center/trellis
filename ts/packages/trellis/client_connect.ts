@@ -184,12 +184,36 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           currentUrl.searchParams.has("state") &&
           (currentUrl.searchParams.has("code") ||
             currentUrl.searchParams.has("error"));
+        // A grant keeps the capabilities approved for it, so refreshing one
+        // that lacks a capability the app now requires never adds it. Such a
+        // grant is revoked and the user approves again; the approval screen
+        // keeps their earlier choices and asks only about what is new.
+        let outdated = false;
         const resumed = callback
           ? (await oauth.complete(currentUrl.href)).take()
-          : (await oauth.resume(connectOAuth)).take();
-        if (isErr(resumed)) {
+          : (
+              await oauth.resume(async (admission) => {
+                const granted = admission.authorizationDetails?.flatMap(
+                  (detail) => detail.required,
+                );
+                outdated =
+                  granted !== undefined &&
+                  args.request.requiredCapabilities.some(
+                    (capability) => !granted.includes(capability),
+                  );
+                if (!outdated) await connectOAuth(admission);
+              })
+            ).take();
+        if (!isErr(resumed) && outdated) {
+          const revoked = await oauth.revoke();
+          if (revoked.isErr()) return Result.err(revoked.error);
+        }
+        if (isErr(resumed) || outdated) {
           await connected?.manager.close();
-          if (resumed.error.reason !== "OAuthRecoveryRequired")
+          if (
+            isErr(resumed) &&
+            resumed.error.reason !== "OAuthRecoveryRequired"
+          )
             return Result.err(resumed.error);
           const authorization = (
             await oauth.authorize(args.auth.redirectTo, {
