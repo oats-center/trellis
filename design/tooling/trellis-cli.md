@@ -209,9 +209,10 @@ unsafe paths. `trellis-server init` takes `--trellis-origin` and
 and where clients connect), and `--console-origin` to give the Console a
 hostname of its own on that listener. It
 selects listener security with `--tls
-generated|supplied|loopback-development` (required unless `--dev`, which
+generated|supplied|proxy|loopback-development` (required unless `--dev`, which
 generates), `--trusted-proxy` (supplied TLS then needs only the NATS
-certificate), and `--nats-websocket-behind-proxy` (the broker's plaintext
+certificate; `proxy` needs none, keeps native NATS plaintext on loopback and
+requires `--nats-websocket-only`), and `--nats-websocket-behind-proxy` (the broker's plaintext
 WebSocket listens on every interface for a proxy that may run on another host)
 or `--nats-websocket relay|direct` (relay, the default with generated or
 supplied TLS unless a WebSocket URL or external proxy is given, has the Trellis port send
@@ -221,7 +222,8 @@ broker on another host defaults to direct, with browsers sent to that
 broker's own host on `--nats-ws-port`, and refuses relay), and
 `--nats-websocket-only` (clients are offered only the WebSocket and native NATS
 stays private; `--nats-server-url` is then only where the runtime reaches the
-broker), validates that every
+broker, which may be `wss://` through the proxy for a broker it doesn't run),
+validates that every
 endpoint can be protected before writing, and writes a generated CA's private
 key to the installation's `tls-ca/` folder, to `/etc/trellis-tls-ca/` with
 `--system`, or to `--tls-ca-dir`. It always warns

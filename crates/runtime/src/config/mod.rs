@@ -250,16 +250,14 @@ impl RuntimeConfig {
                     || !matches!(endpoint.path(), "" | "/")
                     || endpoint.query().is_some()
                     || endpoint.fragment().is_some()
+                    // Plaintext never leaves this machine: only another process here
+                    // could read loopback traffic, and it could read secrets.toml too.
                     || !(matches!(endpoint.scheme(), "tls" | "wss")
-                        || (matches!(
-                            self.http_transport(),
-                            ListenerTransport::LoopbackDevelopment
-                        ) && loopback
-                            && matches!(endpoint.scheme(), "nats" | "ws")))
+                        || (loopback && matches!(endpoint.scheme(), "nats" | "ws")))
                 {
                     return Err(invalid_authorization(
                         "nats.servers",
-                        "requires TLS; plaintext is restricted to explicit loopback development",
+                        "requires TLS; plaintext is restricted to loopback",
                     ));
                 }
             }

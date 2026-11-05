@@ -17,12 +17,37 @@ and this project adheres to
   which `trellis users find --provider` takes, and the callback URL to register
   with the provider. The client secret is read from `--client-secret-file`
   (`-` for standard input).
+- `trellis-server init --tls proxy` sets up an installation whose HTTPS proxy
+  holds every certificate. No certificates are generated: Trellis and the NATS
+  WebSocket serve plaintext to the `--trusted-proxy` networks, and native NATS
+  is plaintext on loopback only, where Trellis reaches it. It needs
+  `--nats-websocket-only`. The setup wizard offers it too.
+- `--nats-server-url wss://<host>` lets Trellis reach a NATS server it doesn't
+  run (`--external-nats`, `--quadlet`) through the proxy's WebSocket, trusting
+  the proxy's certificate as the system does.
 
 ### Changed
 
+- **Breaking:** `init --quadlet` runs NATS and Trellis in one Podman pod
+  (`<name>.pod`) instead of on a container network (`<name>.network`). On that
+  network, Podman's rootless port forwarding made every connection arrive from
+  the network's own address, so `--trusted-proxy` could only name the network
+  and per-client rate limits saw a single client. The pod's pasta networking
+  keeps real addresses: `--trusted-proxy` now names the proxy itself,
+  `127.0.0.1/32` for one on the same host. Trellis reaches NATS on the pod's
+  loopback, so `--host` is no longer required. Generate the units again for an
+  existing Quadlet installation.
+- Plaintext `nats://` in `[nats] servers` is accepted for loopback addresses in
+  every mode, not only loopback development.
 - A capability's action may be dotted: `capability activation.confirmations.read`
   compiles, where the IDL used to require exactly `area.action`. The first part
   is still the area Console groups by, and Console labels the whole action.
+
+### Fixed
+
+- `init --quadlet --nats-websocket-only` no longer publishes native NATS on the
+  host, and plaintext behind a proxy is published only at `--bind-address`
+  (loopback by default) instead of every address.
 
 ## [0.100.0-rc.24] - 2026-11-05
 

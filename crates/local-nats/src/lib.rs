@@ -839,14 +839,16 @@ impl LocalNatsBuilder {
             .then(|| trellis_bootstrap::NatsTlsFiles {
                 certificate: source.join("tls/nats.crt").display().to_string(),
                 private_key: source.join("tls/nats.key").display().to_string(),
-                websocket: if !authored_config_websocket_plaintext(&authored_config) {
-                    trellis_bootstrap::NatsWebsocket::Tls
-                } else if self.relayed_websocket {
-                    trellis_bootstrap::NatsWebsocket::Relayed
-                } else {
-                    trellis_bootstrap::NatsWebsocket::BehindProxy
-                },
             });
+        let websocket = if tls.is_some() && !authored_config_websocket_plaintext(&authored_config) {
+            trellis_bootstrap::NatsWebsocket::Tls
+        } else if self.relayed_websocket {
+            trellis_bootstrap::NatsWebsocket::Relayed
+        } else if tls.is_some() || authored_websocket_listens_everywhere(&authored_config) {
+            trellis_bootstrap::NatsWebsocket::BehindProxy
+        } else {
+            trellis_bootstrap::NatsWebsocket::Loopback
+        };
         let config = state.join("nats.conf");
         fs::write(
             &config,
@@ -854,10 +856,13 @@ impl LocalNatsBuilder {
                 server_name,
                 &state.join("data").display().to_string(),
                 &accounts,
-                ports.nats,
-                ports.websocket,
-                ports.monitor,
+                trellis_bootstrap::NatsListeners {
+                    native: ports.nats,
+                    monitor: ports.monitor,
+                    websocket: ports.websocket,
+                },
                 tls.as_ref(),
+                websocket,
             ),
         )?;
         let binary = NatsServerBinary::resolve(&binary_source, self.cache_dir.as_deref())?;
@@ -876,12 +881,11 @@ impl LocalNatsBuilder {
             self.own_process_group,
         )?;
         drop(reservations);
-        let (native, websocket) = match &tls {
-            Some(files) if files.websocket == trellis_bootstrap::NatsWebsocket::Tls => {
-                ("tls", "wss")
-            }
-            Some(_) => ("tls", "ws"),
-            None => ("nats", "ws"),
+        let native = if tls.is_some() { "tls" } else { "nats" };
+        let websocket = if websocket == trellis_bootstrap::NatsWebsocket::Tls {
+            "wss"
+        } else {
+            "ws"
         };
         Ok(LocalNats {
             server,
@@ -891,6 +895,19 @@ impl LocalNatsBuilder {
             _temporary_state: temporary_state,
         })
     }
+}
+
+/// Whether the authored bundle's WebSocket listens on every interface, as one
+/// behind a proxy on another host does.
+fn authored_websocket_listens_everywhere(config: &str) -> bool {
+    config
+        .split_once("websocket")
+        .and_then(|(_, websocket)| {
+            websocket
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("listen:"))
+        })
+        .is_some_and(|listen| listen.trim().starts_with("0.0.0.0:"))
 }
 
 /// Whether the authored bundle serves its WebSocket listener as plaintext

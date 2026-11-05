@@ -216,8 +216,10 @@ port. It is never a production setup. `init --user` (the default) and
 folders. `init <dir>` writes a self-contained installation that keeps
 everything the server writes in `<dir>/var`; start it with
 `trellis-server --config <dir>`; `init <dir> --quadlet` also writes Podman
-Quadlet units that run it as NATS and Trellis containers. Several bundles can
-share a host. An installation is
+Quadlet units that run it as NATS and Trellis containers in one pod. They
+share the pod's loopback, and its pasta networking shows Trellis each
+connection's real address, so `--trusted-proxy` names the proxy itself
+(`127.0.0.1/32` for one on the same host). Several bundles can share a host. An installation is
 `config.toml`, `secrets.toml` (every private key, owner-only), `nats.conf` and
 `tls/`. `trellis-server nats <system|trellis> <args>` runs the `nats` CLI as
 that installation user; `--print` prints its creds instead.
@@ -234,8 +236,12 @@ without asking and `--local-nats=<path>` names an exact binary.
 Trellis listeners use TLS. A production `trellis-server init` takes
 `--tls supplied` with certificates clients already trust; `--dev` and
 `--tls generated` (labs and tests) generate a name-constrained installation CA
-and short-lived certificates instead, and plaintext exists only in explicit
-loopback development (`--tls loopback-development`). Tests that need the
+and short-lived certificates instead. `--tls proxy` is for an HTTPS proxy that
+holds every certificate: `init` generates none, Trellis and the NATS WebSocket
+serve plaintext to the `--trusted-proxy` networks, and native NATS is
+plaintext on loopback only, so it needs `--nats-websocket-only`. Otherwise
+plaintext exists only in explicit loopback development
+(`--tls loopback-development`). Tests that need the
 production layout supply certificates from
 `trellis-server tls issue --out <dir> --host <name>`, which writes
 `server.crt`, `server.key` and the single-use `ca.crt` that issued them. Clients
@@ -248,7 +254,10 @@ client trust. An installation has one HTTP listener at the Trellis origin
 connect to, and the bundled Console at `/console`). `--console-origin` gives the
 Console a hostname of its own, pointed at the same port, so its pages run apart
 from sign-in. It may run behind an HTTPS-terminating proxy with
-`--trusted-proxy`; native NATS always terminates its own TLS. It requires HTTPS
+`--trusted-proxy`; native NATS terminates its own TLS or, with `--tls proxy`,
+stays on loopback. Trellis reaches a NATS server it doesn't run
+(`--external-nats`) through such a proxy with `--nats-server-url wss://<host>`,
+checking the proxy's certificate against the system trust store. It requires HTTPS
 outside explicit loopback development. Browser origins are trusted from
 registered clients' redirect URIs, never from server configuration.
 

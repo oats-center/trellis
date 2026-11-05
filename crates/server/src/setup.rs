@@ -40,6 +40,10 @@ pub(crate) enum InitTlsMode {
     Generated,
     /// Use operator-supplied PEM certificates and keys.
     Supplied,
+    /// Your HTTPS proxy holds every certificate. Trellis and the NATS
+    /// WebSocket serve plaintext to the --trusted-proxy networks, and Trellis
+    /// reaches NATS without TLS on this machine's loopback.
+    Proxy,
     /// Plaintext restricted to loopback origins and listeners.
     LoopbackDevelopment,
 }
@@ -118,8 +122,10 @@ pub(crate) struct InitConfigArgs {
     pub(crate) nats_data_dir: Option<PathBuf>,
 
     #[arg(long)]
-    /// Native NATS server URL for Trellis services; defaults to tls://localhost:<nats-port>
-    /// (nats:// in loopback development).
+    /// Where Trellis itself reaches NATS; defaults to tls://localhost:<nats-port>
+    /// (nats:// in loopback development and with --tls proxy). A wss:// URL
+    /// reaches a NATS that trellis-server doesn't run through your proxy's
+    /// WebSocket, like every other client.
     pub(crate) nats_server_url: Option<String>,
 
     #[arg(long)]
@@ -294,9 +300,10 @@ pub(crate) fn init_config(
         (None, true) => InitTlsMode::Generated,
         (None, false) => {
             return Err(miette!(
-                "choose where this installation's certificates come from: --tls supplied \
-                with certificates browsers already trust, --tls generated for a lab or test \
-                installation, or --dev for development"
+                "choose where this installation's certificates come from: --tls proxy when \
+                your HTTPS proxy holds them all, --tls supplied with certificates browsers \
+                already trust, --tls generated for a lab or test installation, or --dev for \
+                development"
             ))
         }
     };
@@ -312,15 +319,20 @@ pub(crate) fn init_config(
         ));
     }
     let host = &args.host;
+    let proxy = tls == InitTlsMode::Proxy;
     let (http, native, websocket) = if loopback {
         ("http", "nats", "ws")
+    } else if proxy {
+        ("https", "nats", "wss")
     } else {
         ("https", "tls", "wss")
     };
+    // Plaintext NATS stays on loopback, whatever --host names.
+    let nats_host = if proxy { "localhost" } else { host };
     options.runtime.nats_server_url = args
         .nats_server_url
         .clone()
-        .unwrap_or_else(|| format!("{native}://{host}:{}", args.nats_port));
+        .unwrap_or_else(|| format!("{native}://{nats_host}:{}", args.nats_port));
     options.runtime.public_origin = args
         .trellis_origin
         .clone()
@@ -394,6 +406,7 @@ pub(crate) fn init_config(
             nats_private_key: required_path(&args.nats_tls_private_key, "--nats-tls-private-key")?,
             ca_certificate: args.tls_ca_certificate.clone(),
         }),
+        InitTlsMode::Proxy => BootstrapTls::Proxy,
         InitTlsMode::LoopbackDevelopment => BootstrapTls::LoopbackDevelopment,
     };
     options.runtime.managed_nats = !args.external_nats && !args.quadlet;
@@ -409,7 +422,7 @@ pub(crate) fn init_config(
         args.bind_address
     };
     let quadlet = if args.quadlet {
-        Some(quadlet_plan(args, &out, &options.runtime.nats_server_url)?)
+        Some(quadlet_plan(&out, &options.runtime.nats_server_url)?)
     } else {
         None
     };
@@ -447,28 +460,32 @@ pub(crate) fn init_config(
                     &authored,
                     &data.join("jwt").display().to_string(),
                 ),
-                args.nats_port,
-                args.nats_ws_port,
-                args.nats_monitor_port,
-                (!loopback)
+                trellis_bootstrap::NatsListeners {
+                    native: args.nats_port,
+                    monitor: args.nats_monitor_port,
+                    websocket: args.nats_ws_port,
+                },
+                (!loopback && !proxy)
                     .then(|| trellis_bootstrap::NatsTlsFiles {
                         certificate: out.join("tls/nats.crt").display().to_string(),
                         private_key: out.join("tls/nats.key").display().to_string(),
-                        websocket: if relay {
-                            trellis_bootstrap::NatsWebsocket::Relayed
-                        } else if args.nats_websocket_behind_proxy {
-                            trellis_bootstrap::NatsWebsocket::BehindProxy
-                        } else {
-                            trellis_bootstrap::NatsWebsocket::Tls
-                        },
                     })
                     .as_ref(),
+                if relay {
+                    trellis_bootstrap::NatsWebsocket::Relayed
+                } else if args.nats_websocket_behind_proxy {
+                    trellis_bootstrap::NatsWebsocket::BehindProxy
+                } else if loopback {
+                    trellis_bootstrap::NatsWebsocket::Loopback
+                } else {
+                    trellis_bootstrap::NatsWebsocket::Tls
+                },
             ),
         )
         .into_diagnostic()?;
     }
     if let Some(plan) = &quadlet {
-        write_quadlet(plan, args, relay, loopback, &out)?;
+        write_quadlet(plan, args, relay, loopback || proxy, &out)?;
     }
     let trellis_config = out.join("config.toml");
     let nats_config = out.join("nats.conf");
@@ -531,20 +548,16 @@ pub(crate) fn init_config(
     Ok(())
 }
 
-/// What the Quadlet units are named and which network they share.
+/// What the Quadlet units are named, and the NATS hostname that resolves to
+/// the pod's own loopback.
 struct QuadletPlan {
     name: String,
-    nats_host: String,
-    subnet: Option<ipnet::Ipv4Net>,
+    nats_alias: Option<String>,
 }
 
 /// Checks that the installation can run as containers before anything is
 /// written.
-fn quadlet_plan(
-    args: &InitConfigArgs,
-    out: &std::path::Path,
-    nats_server_url: &str,
-) -> miette::Result<QuadletPlan> {
+fn quadlet_plan(out: &std::path::Path, nats_server_url: &str) -> miette::Result<QuadletPlan> {
     let name = std::path::absolute(out)
         .into_diagnostic()?
         .file_name()
@@ -560,52 +573,28 @@ fn quadlet_plan(
             only use letters, digits, '-', '_' and '.'"
         ));
     }
-    // Each container has its own loopback, so Trellis reaches NATS by the
-    // name its certificate carries, as a network alias.
-    let nats_host = url::Url::parse(nats_server_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_owned))
-        .unwrap_or_default();
-    let loopback_host = nats_host == "localhost"
-        || nats_host
-            .trim_matches(['[', ']'])
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if nats_host.is_empty() || loopback_host {
-        return Err(miette!(
-            "with --quadlet, Trellis reaches NATS in another container by its hostname; \
-            pass --host or --nats-server-url with a name other than localhost"
-        ));
-    }
-    // A proxy on the host reaches Trellis through the containers' network,
-    // so that network is the one to trust.
-    let subnet = match args.trusted_proxy.first() {
-        None => None,
-        Some(ipnet::IpNet::V4(net)) if args.trusted_proxy.len() == 1 && net.prefix_len() <= 29 => {
-            Some(net.trunc())
-        }
-        Some(_) => {
-            return Err(miette!(
-                "with --quadlet, a proxy on this host reaches Trellis through the \
-                containers' network, so give one --trusted-proxy naming that network, \
-                such as 10.89.70.0/24"
-            ))
-        }
-    };
-    Ok(QuadletPlan {
-        name,
-        nats_host,
-        subnet,
-    })
+    // Trellis and NATS share the pod's loopback. Trellis reaches NATS there by
+    // the name its certificate carries, unless it goes through the proxy.
+    let nats = url::Url::parse(nats_server_url).ok();
+    let nats_alias = nats
+        .filter(|url| url.scheme() != "wss")
+        .and_then(|_| remote_host(nats_server_url));
+    Ok(QuadletPlan { name, nats_alias })
 }
 
 /// Writes `<installation>/quadlet`: Trellis and NATS as rootless containers
-/// using the installation folder in place, with its `var` folder writable.
+/// in one pod, using the installation folder in place, with its `var` folder
+/// writable.
+///
+/// The pod uses pasta networking, which shows Trellis each connection's real
+/// address, so `--trusted-proxy` names the proxy itself; a proxy on this host
+/// arrives from loopback. The containers share the pod's loopback, where
+/// Trellis reaches NATS and native NATS needs no published port.
 fn write_quadlet(
     plan: &QuadletPlan,
     args: &InitConfigArgs,
     relay: bool,
-    loopback: bool,
+    plaintext: bool,
     out: &std::path::Path,
 ) -> miette::Result<()> {
     let folder = std::path::absolute(out).into_diagnostic()?;
@@ -627,9 +616,40 @@ fn write_quadlet(
         None => format!("PublishPort={port}:{port}\n"),
     };
     let local = Some(std::net::Ipv4Addr::LOCALHOST.into());
-    let behind_proxy = !args.trusted_proxy.is_empty();
-    let hardening = "UserNS=keep-id:uid=10001,gid=10001\nNoNewPrivileges=true\n\
-        DropCapability=all\nReadOnly=true\nTmpfs=/tmp:rw,noexec,nosuid,nodev,size=16m\n";
+    // Plaintext behind a proxy is published only where --bind-address says,
+    // loopback by default, so it never reaches the network by accident.
+    let behind_proxy = |proxied: bool| {
+        if proxied {
+            args.bind_address.or(local)
+        } else {
+            args.bind_address
+        }
+    };
+    let mut publish = published(
+        behind_proxy(!args.trusted_proxy.is_empty()),
+        args.trellis_port,
+    );
+    if !args.nats_websocket_only {
+        publish.push_str(&published(args.bind_address, args.nats_port));
+    }
+    if !relay {
+        publish.push_str(&published(
+            behind_proxy(args.nats_websocket_behind_proxy),
+            args.nats_ws_port,
+        ));
+    }
+    publish.push_str(&published(local, args.nats_monitor_port));
+    let add_host = plan
+        .nats_alias
+        .as_ref()
+        .map(|alias| format!("AddHost={alias}:127.0.0.1\n"))
+        .unwrap_or_default();
+    let pod = format!(
+        "[Pod]\nPodName={name}\nNetwork=pasta:--host-lo-to-ns-lo\n\
+        UserNS=keep-id:uid=10001,gid=10001\n{add_host}{publish}"
+    );
+    let hardening = "NoNewPrivileges=true\nDropCapability=all\nReadOnly=true\n\
+        Tmpfs=/tmp:rw,noexec,nosuid,nodev,size=16m\n";
     let service = "\n[Service]\nRestart=on-failure\nRestartSec=5\n\n\
         [Install]\nWantedBy=default.target\n";
 
@@ -638,30 +658,10 @@ fn write_quadlet(
         After={name}-nats.service\n\n[Container]\nContainerName={name}\n\
         Image=ghcr.io/oats-center/trellis-server:v{version}\nExec=--config /etc/trellis\n\
         Volume={folder}:/etc/trellis:ro,z\nVolume={folder}/var:/etc/trellis/var:rw,z\n\
-        {publish}Network={name}.network\n{hardening}{service}",
+        Pod={name}.pod\n{hardening}{service}",
         version = env!("CARGO_PKG_VERSION"),
-        publish = published(
-            if behind_proxy {
-                local
-            } else {
-                args.bind_address
-            },
-            args.trellis_port
-        ),
     );
-    let mut nats_publish = published(args.bind_address, args.nats_port);
-    if !relay {
-        nats_publish.push_str(&published(
-            if args.nats_websocket_behind_proxy {
-                local
-            } else {
-                args.bind_address
-            },
-            args.nats_ws_port,
-        ));
-    }
-    nats_publish.push_str(&published(local, args.nats_monitor_port));
-    let certificates = if loopback {
+    let certificates = if plaintext {
         String::new()
     } else {
         format!(
@@ -674,25 +674,15 @@ fn write_quadlet(
         Wants=network-online.target\n\n[Container]\nContainerName={name}-nats\n\
         Image=docker.io/library/nats:{version}-alpine\nExec=-c /etc/nats/nats.conf\n\
         Volume={folder}/nats.conf:/etc/nats/nats.conf:ro,z\n{certificates}\
-        Volume={folder}/var/nats:/data:rw,z\n{nats_publish}Network={name}.network\n\
-        NetworkAlias={alias}\n{hardening}{service}",
+        Volume={folder}/var/nats:/data:rw,z\nPod={name}.pod\n{hardening}{service}",
         version = trellis_local_nats::pinned_version().into_diagnostic()?,
-        alias = plan.nats_host,
-        hardening = hardening.replace("keep-id:uid=10001,gid=10001", "keep-id"),
     );
-    let network = match plan.subnet {
-        Some(subnet) => format!(
-            "[Network]\n# The proxy's connections arrive from this network, which \
-            config.toml trusts.\nSubnet={subnet}\n"
-        ),
-        None => "[Network]\n".to_owned(),
-    };
     let directory = out.join("quadlet");
     std::fs::create_dir_all(&directory).into_diagnostic()?;
     for (file, contents) in [
         (format!("{name}.container"), trellis),
         (format!("{name}-nats.container"), nats),
-        (format!("{name}.network"), network),
+        (format!("{name}.pod"), pod),
     ] {
         std::fs::write(directory.join(file), contents).into_diagnostic()?;
     }
@@ -1227,16 +1217,12 @@ mod tests {
     fn quadlet_units_run_the_installation_in_place_without_its_ca_key() {
         let temp = tempfile::tempdir().expect("temp dir");
         let out = temp.path().join("lab");
-        // Each container has its own loopback, so localhost can't reach NATS.
-        let localhost = init_config_args(&out, &["--dev", "--quadlet"]);
-        assert!(init_config(OutputFormat::Json, &localhost, &bundle(&out), out.clone()).is_err());
-
         let (config, _) = generate_bundle(&out, &["--dev", "--quadlet", "--host", "eta.test"]);
         let nats = config.nats.as_ref().expect("nats");
         assert!(!nats.managed, "NATS runs in its own container");
         let mut mounted = Vec::new();
-        let mut aliases = Vec::new();
-        for unit in ["lab.container", "lab-nats.container"] {
+        let mut loopback_hosts = vec!["localhost".to_owned()];
+        for unit in ["lab.container", "lab-nats.container", "lab.pod"] {
             let text = std::fs::read_to_string(out.join("quadlet").join(unit)).expect("unit");
             for line in text.lines() {
                 if let Some(volume) = line.strip_prefix("Volume=") {
@@ -1248,14 +1234,18 @@ mod tests {
                     );
                     mounted.push(source);
                 }
-                if let Some(alias) = line.strip_prefix("NetworkAlias=") {
-                    aliases.push(alias.to_owned());
+                if let Some(host) = line
+                    .strip_prefix("AddHost=")
+                    .and_then(|entry| entry.strip_suffix(":127.0.0.1"))
+                {
+                    loopback_hosts.push(host.to_owned());
                 }
             }
         }
-        // Trellis reaches NATS by the name in its config and NATS's certificate.
+        // The containers share the pod's loopback, where the name in Trellis's
+        // config and NATS's certificate leads.
         let servers = url::Url::parse(nats.servers.as_deref().expect("servers")).unwrap();
-        assert_eq!(aliases, [servers.host_str().unwrap()]);
+        assert!(loopback_hosts.contains(&servers.host_str().unwrap().to_owned()));
         // The CA key can issue certificates for any name; no container sees it.
         let ca_key = trellis_bootstrap::bundle_ca_directory(&out).join("ca.key");
         assert!(ca_key.is_file());

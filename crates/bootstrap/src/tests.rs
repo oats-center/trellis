@@ -229,8 +229,8 @@ fn nats_config_render_round_trips_custom_ports() {
         Some(&NatsTlsFiles {
             certificate: "/etc/nats/tls/nats.crt".into(),
             private_key: "/etc/nats/tls/nats.key".into(),
-            websocket: NatsWebsocket::Tls,
         }),
+        NatsWebsocket::Tls,
         "",
     );
 
@@ -250,14 +250,16 @@ fn local_nats_config_render_round_trips_custom_ports() {
         "trellis",
         "/tmp/trellis/nats/data",
         "",
-        4322,
-        8180,
-        8322,
+        NatsListeners {
+            native: 4322,
+            monitor: 8322,
+            websocket: 8180,
+        },
         Some(&NatsTlsFiles {
             certificate: "/tmp/trellis/nats/tls/nats.crt".into(),
             private_key: "/tmp/trellis/nats/tls/nats.key".into(),
-            websocket: NatsWebsocket::BehindProxy,
         }),
+        NatsWebsocket::BehindProxy,
     );
 
     assert_eq!(
@@ -581,10 +583,13 @@ fn local_nats_config_quotes_host_paths_with_spaces() {
         "trellis",
         "/tmp/trellis data/store dir",
         "",
-        4222,
-        8080,
-        8222,
+        NatsListeners {
+            native: 4222,
+            monitor: 8222,
+            websocket: 8080,
+        },
         None,
+        NatsWebsocket::Loopback,
     );
     assert!(config.contains("store_dir: \"/tmp/trellis data/store dir\""));
 

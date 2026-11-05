@@ -42,13 +42,17 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             private_key: bundle_path(RUNTIME_PRIVATE_KEY),
         }
     };
+    // Through the proxy, the runtime trusts the proxy's certificate as browsers
+    // do; a CA added here would replace the system's.
+    let through_proxy = options.runtime.nats_server_url.starts_with("wss://");
     let ca_certificate = match &options.runtime.tls {
+        BootstrapTls::Generated { .. } if through_proxy => None,
         BootstrapTls::Generated { .. } => Some(bundle_path(BUNDLE_CA_CERTIFICATE)),
         BootstrapTls::Supplied(supplied) => supplied
             .ca_certificate
             .as_ref()
             .map(|_| bundle_path(BUNDLE_CA_CERTIFICATE)),
-        BootstrapTls::LoopbackDevelopment => None,
+        BootstrapTls::Proxy | BootstrapTls::LoopbackDevelopment => None,
     };
     RuntimeConfig {
         instance_name: Some(options.runtime.name.clone()),

@@ -158,13 +158,13 @@ it can see enough JetStream servers to hold three copies.
 
 `init --quadlet` also writes [Podman Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
 units into the installation's `quadlet` folder. They run NATS and Trellis as
-two rootless containers under systemd, using the installation folder where it
-is: read-only, except its `var` folder, where the databases, logs and NATS
-data go.
+two rootless containers in one pod under systemd, using the installation
+folder where it is: read-only, except its `var` folder, where the databases,
+logs and NATS data go.
 
 ```sh
 trellis-server init ~/trellis --quadlet --tls supplied \
-  --trusted-proxy 10.89.70.0/24 \
+  --trusted-proxy 127.0.0.1/32 \
   --nats-tls-certificate-chain nats.crt --nats-tls-private-key nats.key \
   --trellis-origin https://trellis.example.com \
   --nats-server-url tls://nats.example.com:4222 \
@@ -175,7 +175,7 @@ systemctl --user start trellis
 ```
 
 The units take the folder's name, so this one writes `trellis.container`,
-`trellis-nats.container` and `trellis.network`, and several installations can
+`trellis-nats.container` and `trellis.pod`, and several installations can
 share a host. Starting Trellis starts its NATS. On first start Trellis prints a
 one-time link for setting the administrator's password, the same as in
 [Start Trellis](/guides/starting-trellis#set-the-administrator-password);
@@ -187,18 +187,24 @@ enough.
 What `--quadlet` settles for you:
 
 - NATS runs in its own container, so the installation uses
-  [external NATS](#who-runs-nats). Trellis reaches it over the containers'
-  network by the NATS hostname, the one its certificate names. That's why the
-  hostname can't be `localhost`: each container has a loopback of its own.
+  [external NATS](#who-runs-nats). The two containers share the pod's
+  loopback, where Trellis reaches NATS. A NATS hostname other than
+  `localhost`, the one an operator's certificate names, resolves to that
+  loopback inside the pod.
 - The images are pinned: Trellis to the version of `trellis-server` that ran
   `init`, NATS to the version Trellis is tested with. Change `Image=` in the
   units to upgrade.
 - Every port is published on all of the host's addresses, or the one
-  `--bind-address` names, except NATS monitoring and whatever sits behind your
-  proxy, which stay on loopback.
-- A proxy on the same host reaches Trellis through the containers' network,
-  so `--trusted-proxy` names that network, and the network is created with it
-  as its subnet.
+  `--bind-address` names, except NATS monitoring, which stays on loopback.
+  Whatever sits behind your proxy is published only at `--bind-address`, and
+  on loopback without it. With `--nats-websocket-only`, native NATS isn't
+  published at all.
+- The pod uses Podman's pasta networking, so Trellis sees each connection's
+  real address and `--trusted-proxy` names your proxy itself. A proxy on the
+  same host arrives from `127.0.0.1`. On an ordinary rootless container
+  network, every connection would arrive from the network's own address
+  (`10.89.1.3`, say), whoever sent it. The pod needs a pasta with
+  `--host-lo-to-ns-lo`; `pasta --help` shows whether yours has it.
 - A generated CA's private key goes beside the folder, in `~/trellis-tls-ca`,
   never inside it, so no container can read it.
   `trellis-server tls renew --config ~/trellis` finds it there.
@@ -215,7 +221,7 @@ WebSocket. Native NATS clients connect to `nats.example.com:4222` directly.
 | `https://trellis.example.com` | `http://127.0.0.1:3000` | terminate TLS, keep the `Host` header |
 | `wss://nats.example.com`      | `127.0.0.1:8080`        | TLS passthrough (NATS terminates it)  |
 
-If your proxy connects from somewhere other than the containers' network,
+If your proxy connects from an address `--trusted-proxy` doesn't name,
 Trellis refuses the request and logs the peer's address.
 
 Add services through the normal administrator flow, never by handing an
@@ -273,8 +279,10 @@ names your certificates carry.
 
 Trellis can also run as plain HTTP behind a proxy that
 terminates TLS. Create the installation with `--trusted-proxy 10.0.0.2/32` (the
-proxy's network) and `--tls supplied` with only the NATS certificate, or set it
-in `config.toml`:
+proxy's network) and `--tls supplied` with only the NATS certificate, or
+`--tls proxy` when the proxy also serves the NATS WebSocket and holds every
+certificate (see [Only HTTPS in public](#only-https-in-public)). Or set it in
+`config.toml`:
 
 ```toml
 [http.transport]
@@ -288,8 +296,9 @@ proxy has to keep the original `Host` header.
 
 You can't run all of Trellis as plain HTTP. Sign-in cookies only work over
 HTTPS in a browser, so something has to terminate TLS. NATS's native port
-always serves its own TLS and can't sit behind a TLS-terminating proxy; only
-its WebSocket port can (`--nats-websocket-behind-proxy`).
+can't sit behind a TLS-terminating proxy; only its WebSocket port can
+(`--nats-websocket-behind-proxy`). Native NATS either serves its own TLS or,
+with `--tls proxy`, stays plaintext on loopback, where only Trellis reaches it.
 
 For the proxy's health checks, Trellis answers `/healthz` and `/readyz`,
 whatever `Host` header the check sends. `/readyz` returns `503` until the
@@ -310,7 +319,7 @@ example, behind an AWS Application Load Balancer holding a certificate for
 `*.example.com`, with the instance in a VPC whose range is `172.31.0.0/16`:
 
 ```sh
-trellis-server init --tls generated \
+trellis-server init --tls proxy \
   --trusted-proxy 172.31.0.0/16 \
   --trellis-origin https://trellis.example.com \
   --nats-websocket-url wss://trellis.example.com \
@@ -331,9 +340,33 @@ port answers a plain request with `400`, which is what its health check
 expects; NATS's monitoring port stays on loopback. Raise the load balancer's
 idle timeout above its 60-second default, or it cuts quiet NATS connections.
 Allow ports 3000 and 8080 only from the load balancer: nothing else may
-reach the plaintext WebSocket. Here `--tls generated` only covers Trellis's
-own connection to NATS on the instance; people only ever see the load
-balancer's certificate.
+reach the plaintext WebSocket.
+
+`--tls proxy` says the load balancer holds every certificate, so `init`
+generates none. Native NATS listens on the instance's loopback without TLS,
+and Trellis reaches it there. The only plaintext on the network is the load
+balancer's hop to ports 3000 and 8080. Reading the loopback hop takes a
+process on the instance, and that process could read `secrets.toml` anyway.
+
+To run it under Podman, add `--quadlet` and `--bind-address` with the
+instance's own address, the one the load balancer forwards to. The Trellis
+and WebSocket ports are published only there, and native NATS isn't
+published at all:
+
+```sh
+trellis-server init ~/trellis --quadlet --tls proxy \
+  --bind-address 172.31.13.54 \
+  --trusted-proxy 172.31.0.0/16 \
+  --trellis-origin https://trellis.example.com \
+  --nats-websocket-url wss://trellis.example.com \
+  --nats-websocket-behind-proxy \
+  --nats-websocket-only
+```
+
+When Trellis doesn't run the NATS server (`--external-nats`), it can reach it
+through the load balancer like any other client:
+`--nats-server-url wss://trellis.example.com`. Trellis checks the load
+balancer's certificate against the system trust store.
 
 Without a WebSocket rule in the proxy, leave out `--nats-websocket-url` and
 `--nats-websocket-behind-proxy`: Trellis's own port then applies the same rule,

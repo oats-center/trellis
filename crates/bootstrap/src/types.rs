@@ -171,6 +171,10 @@ pub enum BootstrapTls {
     },
     /// Copy operator-supplied PEM files into the bundle.
     Supplied(SuppliedTls),
+    /// An HTTPS proxy holds every certificate. Trellis and the NATS WebSocket
+    /// serve plaintext to it, and native NATS is plaintext on loopback, where
+    /// Trellis reaches it.
+    Proxy,
     /// Plaintext restricted to loopback origins and listeners.
     LoopbackDevelopment,
 }

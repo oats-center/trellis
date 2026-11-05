@@ -119,16 +119,60 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
     } else {
         None
     };
+    args.extend(["--trellis-origin".into(), trellis.clone()]);
+    if let Some(console) = console {
+        args.extend(["--console-origin".into(), console]);
+    }
+
+    const SUPPLIED: &str = "I have certificate files browsers already trust";
+    const PROXY_ALL: &str =
+        "A proxy in front holds every certificate, for HTTPS and NATS's WebSocket";
+    let certificates = Select::new(
+        "Certificates",
+        vec![
+            SUPPLIED,
+            "A proxy in front terminates HTTPS; NATS has a certificate of its own",
+            PROXY_ALL,
+        ],
+    )
+    .prompt()
+    .map_err(cancelled)?;
+    let proxy_network = || {
+        CustomType::<ipnet::IpNet>::new("The proxy's network")
+            .with_help_message("For example 10.0.0.2/32")
+            .with_error_message("Enter a network such as 10.0.0.2/32")
+            .prompt()
+            .map_err(cancelled)
+    };
+    if certificates == PROXY_ALL {
+        // Everything public goes through the proxy; native NATS stays on loopback.
+        args.extend(["--tls".into(), "proxy".into()]);
+        args.extend(["--trusted-proxy".into(), proxy_network()?.to_string()]);
+        let websocket = url_prompt(
+            "NATS's WebSocket address, as the proxy serves it to clients",
+            &trellis.replacen("https", "wss", 1),
+        )?;
+        args.extend(["--nats-websocket-url".into(), websocket.clone()]);
+        args.extend([
+            "--nats-websocket-behind-proxy".into(),
+            "--nats-websocket-only".into(),
+        ]);
+        if external_nats {
+            let nats = url_prompt(
+                "Where Trellis reaches your NATS server: nats:// on this machine, or wss:// through the proxy",
+                &websocket,
+            )?;
+            args.extend(["--nats-server-url".into(), nats]);
+        }
+        return Ok(args);
+    }
+
     let nats_default = if external_nats {
         format!("tls://{host}:4222")
     } else {
         format!("tls://{host}:{nats_port}")
     };
     let nats = url_prompt("NATS address services connect to", &nats_default)?;
-    args.extend(["--trellis-origin".into(), trellis]);
-    if let Some(console) = console {
-        args.extend(["--console-origin".into(), console]);
-    }
     // Browsers can't use the relay to a broker elsewhere; they connect to
     // its own WebSocket.
     if let Some(nats_host) = external_nats
@@ -143,13 +187,6 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
     }
     args.extend(["--nats-server-url".into(), nats]);
 
-    const SUPPLIED: &str = "I have certificate files browsers already trust";
-    let certificates = Select::new(
-        "Certificates",
-        vec![SUPPLIED, "A proxy in front terminates HTTPS"],
-    )
-    .prompt()
-    .map_err(cancelled)?;
     args.extend(["--tls".into(), "supplied".into()]);
     if certificates == SUPPLIED {
         for (flag, label) in [
@@ -159,12 +196,7 @@ pub(crate) fn ask(folder: &Path) -> miette::Result<Vec<String>> {
             args.extend([flag.into(), path_prompt(label)?]);
         }
     } else {
-        let network = CustomType::<ipnet::IpNet>::new("The proxy's network")
-            .with_help_message("For example 10.0.0.2/32")
-            .with_error_message("Enter a network such as 10.0.0.2/32")
-            .prompt()
-            .map_err(cancelled)?;
-        args.extend(["--trusted-proxy".into(), network.to_string()]);
+        args.extend(["--trusted-proxy".into(), proxy_network()?.to_string()]);
     }
     // Services reach NATS directly, never through the proxy.
     for (flag, label) in [

@@ -25,7 +25,13 @@ pub fn generate_nats_bootstrap(options: &NatsBootstrapOptions) -> Result<(), Boo
 
     create_layout(&options.out)?;
     let material = generate_nats_material(&options.config.names)?;
-    write_nats_conf(options, DEFAULT_TRELLIS_NAME, None, &material)?;
+    write_nats_conf(
+        options,
+        DEFAULT_TRELLIS_NAME,
+        None,
+        NatsWebsocket::Loopback,
+        &material,
+    )?;
     write_nats_material(&options.out, &material)?;
     Ok(())
 }
@@ -34,6 +40,7 @@ fn write_nats_conf(
     options: &NatsBootstrapOptions,
     trellis_name: &str,
     tls: Option<&NatsTlsFiles>,
+    websocket: NatsWebsocket,
     material: &NatsMaterial,
 ) -> Result<(), BootstrapError> {
     fs::write(
@@ -44,6 +51,7 @@ fn write_nats_conf(
             options.config.monitor_port,
             options.config.websocket_port,
             tls,
+            websocket,
             &render_nats_accounts(material),
         ),
     )?;
@@ -131,24 +139,30 @@ pub fn generate_trellis_bootstrap(
     nats_options.force = false;
     nats_options.config = options.nats.clone();
 
-    let nats_tls =
-        (options.runtime.tls != BootstrapTls::LoopbackDevelopment).then(|| NatsTlsFiles {
-            certificate: "/etc/nats/tls/nats.crt".into(),
-            private_key: "/etc/nats/tls/nats.key".into(),
-            websocket: if options.runtime.nats_websocket_via_runtime {
-                NatsWebsocket::Relayed
-            } else if options.runtime.nats_websocket_behind_proxy {
-                NatsWebsocket::BehindProxy
-            } else {
-                NatsWebsocket::Tls
-            },
-        });
+    let nats_tls = matches!(
+        options.runtime.tls,
+        BootstrapTls::Generated { .. } | BootstrapTls::Supplied(_)
+    )
+    .then(|| NatsTlsFiles {
+        certificate: "/etc/nats/tls/nats.crt".into(),
+        private_key: "/etc/nats/tls/nats.key".into(),
+    });
+    let websocket = if options.runtime.nats_websocket_via_runtime {
+        NatsWebsocket::Relayed
+    } else if options.runtime.nats_websocket_behind_proxy {
+        NatsWebsocket::BehindProxy
+    } else if nats_tls.is_some() {
+        NatsWebsocket::Tls
+    } else {
+        NatsWebsocket::Loopback
+    };
     fs::create_dir_all(trellis_out)?;
     let material = generate_nats_material(&nats_options.config.names)?;
     write_nats_conf(
         &nats_options,
         &options.runtime.name,
         nats_tls.as_ref(),
+        websocket,
         &material,
     )?;
     let summary = match &options.runtime.tls {
@@ -225,7 +239,7 @@ pub fn generate_trellis_bootstrap(
             }
             None
         }
-        BootstrapTls::LoopbackDevelopment => None,
+        BootstrapTls::Proxy | BootstrapTls::LoopbackDevelopment => None,
     };
     fs::write(
         trellis_out.join("config.toml"),
@@ -315,22 +329,103 @@ fn resolve_path(path: &Path) -> Result<PathBuf, BootstrapError> {
     Ok(resolved)
 }
 
-/// Native NATS terminates its own TLS whenever the bundle uses TLS; only
-/// loopback development may use plaintext broker endpoints.
+/// Native NATS terminates its own TLS whenever the bundle has certificates.
+/// Plaintext native NATS stays on loopback, for loopback development and for an
+/// installation whose proxy holds every certificate. The runtime may instead
+/// reach a NATS it doesn't run through that proxy, over `wss://`.
 fn validate_nats_urls(options: &TrellisBootstrapOptions) -> Result<(), BootstrapError> {
-    let loopback = options.runtime.tls == BootstrapTls::LoopbackDevelopment;
-    let mut urls = vec![(&options.runtime.nats_server_url, "tls", "nats")];
-    if !options.runtime.nats_websocket_via_runtime {
-        urls.push((&options.runtime.nats_websocket_url, "wss", "ws"));
+    let runtime = &options.runtime;
+    let invalid = |message: String| Err(BootstrapError::InvalidTls(message));
+    let parse = |url: &str| {
+        url::Url::parse(url)
+            .map_err(|_| BootstrapError::InvalidTls(format!("'{url}' is not an absolute URL")))
+    };
+    let loopback = runtime.tls == BootstrapTls::LoopbackDevelopment;
+    let proxy = runtime.tls == BootstrapTls::Proxy;
+    if proxy {
+        if runtime.trusted_proxies.is_empty() {
+            return invalid(
+                "with the proxy holding every certificate, Trellis needs the proxy's network \
+                (--trusted-proxy)"
+                    .into(),
+            );
+        }
+        if !runtime.nats_websocket_only {
+            return invalid(
+                "with the proxy holding every certificate, native NATS has none and stays on \
+                loopback, so clients must use the WebSocket (--nats-websocket-only)"
+                    .into(),
+            );
+        }
+        if !runtime.nats_websocket_via_runtime && !runtime.nats_websocket_behind_proxy {
+            return invalid(
+                "with the proxy holding every certificate, the proxy serves the NATS WebSocket \
+                too (--nats-websocket-behind-proxy), or Trellis relays it"
+                    .into(),
+            );
+        }
     }
-    for (url, secure, plaintext) in urls {
-        let parsed = url::Url::parse(url)
-            .map_err(|_| BootstrapError::InvalidTls(format!("'{url}' is not an absolute URL")))?;
-        let expected = if loopback { plaintext } else { secure };
-        if parsed.scheme() != expected {
-            return Err(BootstrapError::InvalidTls(format!(
-                "NATS endpoint '{url}' must use {expected}:// in this TLS mode"
-            )));
+    let server = parse(&runtime.nats_server_url)?;
+    let on_loopback = match server.host() {
+        Some(url::Host::Domain(host)) => host == "localhost",
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    match server.scheme() {
+        "wss" if !loopback => {
+            if runtime.managed_nats {
+                return invalid(format!(
+                    "Trellis reaches the NATS it runs itself directly; '{}' can only reach a \
+                    NATS server it doesn't run",
+                    runtime.nats_server_url
+                ));
+            }
+            if !runtime.nats_websocket_only {
+                return invalid(format!(
+                    "Trellis reaching NATS at '{}' leaves no native NATS address to offer \
+                    clients, so they must use the WebSocket (--nats-websocket-only)",
+                    runtime.nats_server_url
+                ));
+            }
+            if runtime.nats_websocket_via_runtime {
+                return invalid(format!(
+                    "Trellis can't relay the WebSocket it reaches NATS through at '{}'; have \
+                    the proxy send WebSocket upgrades to NATS (--nats-websocket-behind-proxy)",
+                    runtime.nats_server_url
+                ));
+            }
+        }
+        "tls" if !loopback && !proxy => {}
+        "nats" if loopback || (proxy && on_loopback) => {}
+        "nats" if proxy => {
+            return invalid(format!(
+                "NATS endpoint '{}' is plaintext, which may only reach NATS on this machine's \
+                loopback; use wss:// to reach it through the proxy",
+                runtime.nats_server_url
+            ))
+        }
+        _ => {
+            let expected = if loopback {
+                "nats://"
+            } else if proxy {
+                "nats:// (on loopback) or wss://"
+            } else {
+                "tls:// or wss://"
+            };
+            return invalid(format!(
+                "NATS endpoint '{}' must use {expected} in this TLS mode",
+                runtime.nats_server_url
+            ));
+        }
+    }
+    if !runtime.nats_websocket_via_runtime {
+        let expected = if loopback { "ws" } else { "wss" };
+        if parse(&runtime.nats_websocket_url)?.scheme() != expected {
+            return invalid(format!(
+                "NATS endpoint '{}' must use {expected}:// in this TLS mode",
+                runtime.nats_websocket_url
+            ));
         }
     }
     Ok(())
