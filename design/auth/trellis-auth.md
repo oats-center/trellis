@@ -945,7 +945,8 @@ replayed or unreviewed handoffs cannot begin upstream linking.
 
 Which sign-in methods an installation offers is Auth state, edited live with
 `Auth.SignInSettings.Update` (`trellis.auth.v1:platform.manage`) from the
-Console's Sign-in methods page or `trellis sign-in set`; no restart and no
+Console's Sign-in methods page or `trellis sign-in set`, and providers with
+`trellis sign-in providers`; no restart and no
 configuration key. Local users (username and password) and company sign-in
 (active OIDC providers) each switch on and off. A fresh sign-in must stay
 possible: with local users off, company sign-in must be on with an active

@@ -53,6 +53,66 @@ pub enum SignInCommand {
     Show,
     /// Turn sign-in methods on or off; options you leave out keep their value.
     Set(SignInSetArgs),
+    /// Add and change the company identity providers people sign in with.
+    #[command(subcommand)]
+    Providers(ProvidersCommand),
+}
+
+/// Company identity providers (OpenID Connect).
+#[derive(Debug, Subcommand)]
+pub enum ProvidersCommand {
+    /// List every provider with its ID, which `trellis users find` takes.
+    List,
+    /// Show one provider and the callback URL to register with it.
+    Show { provider_id: String },
+    /// Add a provider and print its ID and the callback URL to register with it.
+    Add(ProviderAddArgs),
+    /// Change a provider; options you leave out keep their value.
+    Edit(ProviderEditArgs),
+    /// Turn a provider off, ending its sign-ins. It stays listed, and
+    /// cannot be turned back on.
+    Disable { provider_id: String },
+    /// Delete a provider, ending its sign-ins. Accounts keep their other ways in.
+    Remove { provider_id: String },
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderAddArgs {
+    /// Shown on the sign-in button.
+    #[arg(long)]
+    pub name: String,
+    /// The provider's issuer URL, such as `https://example.us.auth0.com/`.
+    #[arg(long)]
+    pub issuer: String,
+    /// The client ID the provider gave this Trellis.
+    #[arg(long)]
+    pub client_id: String,
+    /// File holding the client secret, or `-` to read it from standard input.
+    #[arg(long, value_name = "PATH")]
+    pub client_secret_file: Option<PathBuf>,
+    /// A scope to request; repeat for each. Defaults to openid, profile and email.
+    #[arg(long = "scope", value_name = "SCOPE")]
+    pub scopes: Vec<String>,
+    /// JSON pointer to the claim listing a person's groups, for giving roles.
+    #[arg(long, default_value = "/groups")]
+    pub groups_claim: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProviderEditArgs {
+    pub provider_id: String,
+    #[arg(long)]
+    pub name: Option<String>,
+    #[arg(long)]
+    pub client_id: Option<String>,
+    /// File holding a new client secret, or `-` to read it from standard input.
+    #[arg(long, value_name = "PATH")]
+    pub client_secret_file: Option<PathBuf>,
+    /// Replace the requested scopes; repeat for each.
+    #[arg(long = "scope", value_name = "SCOPE")]
+    pub scopes: Vec<String>,
+    #[arg(long)]
+    pub groups_claim: Option<String>,
 }
 
 #[derive(Debug, Args)]

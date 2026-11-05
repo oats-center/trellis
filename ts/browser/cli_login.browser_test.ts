@@ -193,6 +193,96 @@ test("CLI login authorizes independent runtime keys through one durable login", 
           login.principalId,
         );
 
+        // An operator adds a company sign-in provider and gets the ID that
+        // `users find` takes and the callback URL to register upstream. The
+        // secret comes from a file, never the command line.
+        const providers = async (...args: string[]) => {
+          const run = await runCli(
+            ["--format", "json", "sign-in", "providers", ...args],
+            configHome,
+          );
+          assert.equal(run.code, 0, run.stderr);
+          return jsonOutput(run.stdout);
+        };
+        const secret = join(configHome, "client-secret");
+        await writeFile(secret, "first secret\n");
+        const added = await providers(
+          "add",
+          "--name",
+          "Example company",
+          "--issuer",
+          "https://login.example.com/",
+          "--client-id",
+          "trellis-app",
+          "--client-secret-file",
+          secret,
+        );
+        assert.equal(
+          added["callbackUrl"],
+          `${runtime.trellisUrl}/portal/oidc/callback`,
+        );
+        const provider = types.AuthOIDCProviderCodec.decode(added["provider"]);
+        assert.equal(provider.title, "Example company");
+        assert.equal(provider.issuer, "https://login.example.com/");
+        assert.equal(provider.clientId, "trellis-app");
+        assert.equal(provider.hasClientSecret, true);
+        assert.deepEqual(provider.scopes, ["openid", "profile", "email"]);
+        assert.equal(provider.enabled, true);
+        const listed = async () => {
+          const items = (await providers("list"))["items"];
+          assert(Array.isArray(items));
+          return items.map((item) => types.AuthOIDCProviderCodec.decode(item));
+        };
+        assert.deepEqual(
+          (await listed()).map((item) => item.providerId),
+          [provider.providerId],
+        );
+        const edited = types.AuthOIDCProviderCodec.decode(
+          (
+            await providers(
+              "edit",
+              provider.providerId,
+              "--name",
+              "Example sign-in",
+              "--scope",
+              "openid",
+              "--scope",
+              "email",
+            )
+          )["provider"],
+        );
+        assert.equal(edited.title, "Example sign-in");
+        assert.deepEqual(edited.scopes, ["openid", "email"]);
+        // Options left out, the secret among them, keep their value.
+        assert.equal(edited.clientId, "trellis-app");
+        assert.equal(edited.hasClientSecret, true);
+        assert(edited.revision > provider.revision);
+        // The listed ID is the one `users find` looks sign-ins up under.
+        const find = await runCli(
+          [
+            "users",
+            "find",
+            "--provider",
+            provider.providerId,
+            "--subject",
+            "auth0|nobody",
+          ],
+          configHome,
+        );
+        assert.notEqual(find.code, 0);
+        assert.match(find.stderr, /no user has that sign-in/);
+        const disabled = types.AuthOIDCProviderCodec.decode(
+          (await providers("disable", provider.providerId))["provider"],
+        );
+        assert.equal(disabled.enabled, false);
+        assert.equal((await listed())[0]?.enabled, false);
+        const removed = await runCli(
+          ["sign-in", "providers", "remove", provider.providerId],
+          configHome,
+        );
+        assert.equal(removed.code, 0, removed.stderr);
+        assert.deepEqual(await listed(), []);
+
         // The accepted CA is pinned for this deployment: a later login trusts
         // it without being told, and a different pinned CA is a hard error.
         const again = spawnTracked(

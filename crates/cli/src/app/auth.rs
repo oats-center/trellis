@@ -274,10 +274,17 @@ pub(super) async fn apis(command: ApisCommand) -> miette::Result<()> {
     output::print_json(&result)
 }
 
-pub(super) async fn sign_in(command: SignInCommand) -> miette::Result<()> {
-    let (_selection, connected) = connect_authenticated_cli_client().await?;
+pub(super) async fn sign_in(format: OutputFormat, command: SignInCommand) -> miette::Result<()> {
+    let (selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
+    if let SignInCommand::Providers(command) = command {
+        let callback = format!(
+            "{}/portal/oidc/callback",
+            selection.scope.issuer.trim_end_matches('/')
+        );
+        return providers_command(format, &auth, &callback, command).await;
+    }
     let current = auth
         .sign_in_settings_get(&auth_types::AuthEmpty {
             extra: Default::default(),
@@ -286,6 +293,7 @@ pub(super) async fn sign_in(command: SignInCommand) -> miette::Result<()> {
         .into_diagnostic()?;
     let result = match command {
         SignInCommand::Show => current,
+        SignInCommand::Providers(_) => unreachable!("handled above"),
         SignInCommand::Set(args) => {
             let current = current.settings;
             let choose = |on: bool, off: bool, value: bool| on || (value && !off);
@@ -306,6 +314,185 @@ pub(super) async fn sign_in(command: SignInCommand) -> miette::Result<()> {
         }
     };
     output::print_json(&serde_json::to_value(result).into_diagnostic()?)
+}
+
+async fn providers_command(
+    format: OutputFormat,
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+    callback: &str,
+    command: ProvidersCommand,
+) -> miette::Result<()> {
+    let get = |provider_id: &str| {
+        let request = wire::<auth_types::AuthOIDCProviderGetRequest>(json!({
+            "providerId": provider_id,
+        }));
+        async move {
+            Ok::<_, miette::Report>(
+                auth.oidc_providers_get(&request?)
+                    .await
+                    .into_diagnostic()?
+                    .provider,
+            )
+        }
+    };
+    let mutation =
+        |provider: &auth_types::AuthOIDCProvider| auth_types::AuthOIDCProviderMutationRequest {
+            provider_id: provider.provider_id,
+            expected_revision: provider.revision,
+            idempotency_key: Ulid::new().to_string().into(),
+            extra: Default::default(),
+        };
+    let provider = match command {
+        ProvidersCommand::List => {
+            let mut providers = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = auth
+                    .oidc_providers_list(&auth_types::AuthPageRequest {
+                        search: None,
+                        page: Some(trellis_runtime_apis::CursorQuery {
+                            cursor,
+                            limit: Some(100),
+                        }),
+                        extra: Default::default(),
+                    })
+                    .await
+                    .into_diagnostic()?;
+                providers.extend(page.items);
+                match page.page.next_cursor {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+            if output::is_json(format) {
+                output::print_json(&json!({ "items": providers, "callbackUrl": callback }))?;
+            } else {
+                let rows = providers
+                    .iter()
+                    .map(|provider| {
+                        vec![
+                            provider.provider_id.to_string(),
+                            provider.title.clone(),
+                            provider.issuer.clone(),
+                            if provider.enabled { "on" } else { "off" }.to_owned(),
+                        ]
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    output::table(&["providerId", "name", "issuer", "status"], rows)
+                );
+                output::print_info(&format!("callbackUrl={callback}"));
+            }
+            return Ok(());
+        }
+        ProvidersCommand::Show { provider_id } => get(&provider_id).await?,
+        ProvidersCommand::Add(args) => {
+            let scopes = if args.scopes.is_empty() {
+                vec!["openid".into(), "profile".into(), "email".into()]
+            } else {
+                args.scopes
+            };
+            auth.oidc_providers_put(&auth_types::AuthOIDCProviderPutRequest {
+                provider_id: None,
+                issuer: args.issuer.trim().to_owned(),
+                client_id: args.client_id.trim().to_owned(),
+                title: wire(args.name.trim())?,
+                scopes,
+                role_claim: args.groups_claim.trim().to_owned(),
+                claim_freshness_seconds: wire(3600)?,
+                client_secret: read_client_secret(args.client_secret_file.as_deref())?,
+                expected_revision: 0u64.into(),
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?
+            .provider
+        }
+        ProvidersCommand::Edit(args) => {
+            let current = get(&args.provider_id).await?;
+            let keep = |value: Option<String>, current: String| {
+                value.map_or(current, |value| value.trim().to_owned())
+            };
+            auth.oidc_providers_put(&auth_types::AuthOIDCProviderPutRequest {
+                provider_id: Some(current.provider_id),
+                issuer: current.issuer,
+                client_id: keep(args.client_id, current.client_id),
+                title: wire(keep(args.name, current.title))?,
+                scopes: if args.scopes.is_empty() {
+                    current.scopes
+                } else {
+                    args.scopes
+                },
+                role_claim: keep(args.groups_claim, current.role_claim),
+                claim_freshness_seconds: current.claim_freshness_seconds,
+                // Left out, the provider keeps its secret.
+                client_secret: read_client_secret(args.client_secret_file.as_deref())?,
+                expected_revision: current.revision.0,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?
+            .provider
+        }
+        ProvidersCommand::Disable { provider_id } => {
+            let current = get(&provider_id).await?;
+            auth.oidc_providers_disable(&mutation(&current))
+                .await
+                .into_diagnostic()?;
+            get(&provider_id).await?
+        }
+        ProvidersCommand::Remove { provider_id } => {
+            let current = get(&provider_id).await?;
+            auth.oidc_providers_delete(&mutation(&current))
+                .await
+                .into_diagnostic()?;
+            output::print_info(&format!("removed provider {provider_id}"));
+            return Ok(());
+        }
+    };
+    if output::is_json(format) {
+        output::print_json(&json!({ "provider": provider, "callbackUrl": callback }))
+    } else {
+        output::print_info(&format!("providerId={}", provider.provider_id));
+        output::print_info(&format!("name={}", provider.title));
+        output::print_info(&format!("issuer={}", provider.issuer));
+        output::print_info(&format!("clientId={}", provider.client_id));
+        output::print_info(&format!(
+            "clientSecret={}",
+            if provider.has_client_secret {
+                "set"
+            } else {
+                "none"
+            }
+        ));
+        output::print_info(&format!("scopes={}", provider.scopes.join(" ")));
+        output::print_info(&format!("groupsClaim={}", provider.role_claim));
+        output::print_info(&format!(
+            "status={}",
+            if provider.enabled { "on" } else { "off" }
+        ));
+        output::print_info(&format!("callbackUrl={callback}"));
+        Ok(())
+    }
+}
+
+/// A client secret from a file, or from standard input for `-`, without its
+/// trailing newline, so it never appears in the shell history or process list.
+fn read_client_secret(path: Option<&std::path::Path>) -> miette::Result<Option<String>> {
+    let Some(path) = path else { return Ok(None) };
+    let secret = if path == std::path::Path::new("-") {
+        std::io::read_to_string(std::io::stdin()).into_diagnostic()?
+    } else {
+        std::fs::read_to_string(path).into_diagnostic()?
+    };
+    let secret = secret.trim_end_matches(['\r', '\n']).to_owned();
+    if secret.is_empty() {
+        return Err(miette::miette!("the client secret is empty"));
+    }
+    Ok(Some(secret))
 }
 
 pub(super) async fn theme(command: ThemeCommand) -> miette::Result<()> {

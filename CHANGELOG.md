@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis sign-in providers list|show|add|edit|disable|remove` manages company
+  identity providers from the CLI. `list` and `add` print each provider's ID,
+  which `trellis users find --provider` takes, and the callback URL to register
+  with the provider. The client secret is read from `--client-secret-file`
+  (`-` for standard input).
+
 ### Changed
 
 - A capability's action may be dotted: `capability activation.confirmations.read`

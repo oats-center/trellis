@@ -654,7 +654,12 @@ assignment an administrator can revoke; existing users are unchanged.
 Sign-in methods are Auth state changed live, never configuration: the Console's
 Sign-in methods page, `trellis sign-in set`, or `Auth.SignInSettings.Update`
 turn username-and-password sign-in, local self sign-up and company sign-in
-(OIDC providers, also managed on that page) on or off. People can create their
+(OIDC providers) on or off. Providers are managed on that page or with
+`trellis sign-in providers list|show|add|edit|disable|remove`; `add` prints the
+provider's ID, which `Auth.Users.Find` takes, and the callback URL
+(`<Trellis origin>/portal/oidc/callback`) to register with the provider, and
+reads the client secret from `--client-secret-file` (`-` for standard input).
+A disabled provider cannot be turned back on; add it again instead. People can create their
 own account only where the installation allows it and the app they are signing
 in to does too (`trellis clients sign-up <app> --password|--providers`, the
 Console app form, or `Auth.OAuthClients.SignUp.Update`). New accounts get the
