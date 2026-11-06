@@ -19,6 +19,8 @@ struct StoredTrust {
     account: String,
     issuer: trellis_protocol::AuthorityIssuerKey,
     rotation_sequence: trellis_protocol::live::U64s,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nats_sentinel: Option<String>,
 }
 
 /// Exact selected issuer, runtime, and app identity for one credential handle.
@@ -155,6 +157,10 @@ impl NativeCredentialLease {
             rotation_sequence: stored.rotation_sequence.get(),
             root_certificates: initial.root_certificates.clone(),
             nats_server_name: initial.nats_server_name.clone(),
+            nats_sentinel: stored
+                .nats_sentinel
+                .clone()
+                .or_else(|| initial.nats_sentinel.clone()),
         })
     }
 
@@ -181,6 +187,7 @@ impl NativeCredentialLease {
             account: trust.account.clone(),
             issuer: trust.issuer.clone(),
             rotation_sequence: trellis_protocol::live::U64s::new(trust.rotation_sequence),
+            nats_sentinel: trust.nats_sentinel.clone(),
         });
         self.commit()
     }

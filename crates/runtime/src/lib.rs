@@ -11,6 +11,7 @@
 
 /// Runtime configuration loading, defaults, and validation.
 pub mod config;
+pub mod installation;
 mod listener;
 /// Runtime mode parsing and subsystem selection.
 pub mod mode;

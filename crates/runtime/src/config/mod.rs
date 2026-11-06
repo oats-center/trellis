@@ -107,6 +107,7 @@ impl RuntimeConfig {
         let path = absolute_config_path(path)?;
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         let effective = config.resolve_path_defaults(base_dir, defaults);
+        config.fill_defaults();
         config.apply_mutable_path_defaults(&effective);
         config.resolve_relative_paths(base_dir);
         config.secrets = Secrets::load(&base_dir.join(SECRETS_FILE))?;
@@ -620,6 +621,8 @@ impl RuntimeConfig {
         }
         if let Some(nats) = &mut self.nats {
             resolve_path(base_dir, &mut nats.ca_certificate);
+            resolve_path(base_dir, &mut nats.system_credentials);
+            resolve_path(base_dir, &mut nats.operator_signing_key);
         }
         if let Some(ListenerTransport::Tls {
             certificate_chain,
@@ -672,6 +675,63 @@ impl RuntimeConfig {
             runtime: paths.runtime.clone().unwrap_or(defaults.runtime),
             logs: paths.logs.clone().unwrap_or(defaults.logs),
         }
+    }
+
+    /// Gives every section a person may leave out the value Trellis uses
+    /// when they do, so `config.toml` holds only what differs per installation.
+    pub fn fill_defaults(&mut self) {
+        let sqlite = || StorageConfig {
+            kind: "sqlite".to_string(),
+            path: None,
+            url: None,
+            journal_mode: Some("wal".to_string()),
+            busy_timeout_ms: Some(5_000),
+            single_writer: Some(true),
+        };
+        let subsystem =
+            |history: Option<u32>, hours: Option<u32>, bytes: Option<u64>, days: Option<u32>| {
+                SubsystemConfig {
+                    storage: Some(sqlite()),
+                    history_retention_days: history,
+                    transport_retention_hours: hours,
+                    transport_max_bytes: bytes,
+                    retention_days: days,
+                }
+            };
+        for (section, retention) in [
+            (&mut self.platform, (None, None, None, None)),
+            (&mut self.jobs, (None, None, None, None)),
+            (
+                &mut self.health,
+                (Some(30), Some(24), Some(1_073_741_824), None),
+            ),
+            (&mut self.events, (None, None, None, Some(7))),
+        ] {
+            let (history, hours, bytes, days) = retention;
+            let filled = section.get_or_insert_with(|| subsystem(history, hours, bytes, days));
+            filled.storage.get_or_insert_with(sqlite);
+        }
+        self.leases.get_or_insert_with(|| LeasesConfig {
+            bucket: Some("trellis_runtime_leases".to_string()),
+            replicas: Some(1),
+            ttl_ms: Some(30_000),
+            renew_ms: Some(5_000),
+        });
+        let auth = self.auth.get_or_insert_with(|| AuthConfig {
+            avatar: None,
+            instance_id: None,
+            local_identity: None,
+            authorization: None,
+            administration: AdministrationConfig::default(),
+        });
+        auth.local_identity.get_or_insert(LocalIdentityConfig {
+            password_min_length: Some(8),
+        });
+        auth.authorization.get_or_insert(AuthorizationConfig {
+            context_lifetime_seconds: 300,
+            allowed_clock_skew_seconds: 30,
+            oauth_admission_lifetime_seconds: 300,
+        });
     }
 
     fn apply_mutable_path_defaults(&mut self, paths: &RuntimePathDefaults) {
@@ -907,6 +967,15 @@ pub struct NatsConfig {
     /// as a Quadlet's container network, so it may be plaintext `nats://`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub private_network: bool,
+    /// The NATS system account user's `.creds` file. With
+    /// `operator_signing_key`, Trellis creates its own accounts and users on
+    /// the NATS servers when it starts, and updates them on later starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_credentials: Option<PathBuf>,
+    /// A NATS operator signing key seed (`SO...`) the operator made for
+    /// Trellis; it signs the accounts Trellis creates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator_signing_key: Option<PathBuf>,
 }
 
 /// Resolved runtime NATS credential configuration.
@@ -1152,12 +1221,21 @@ pub enum ListenerTransport {
     },
     /// Plaintext behind an HTTPS-terminating reverse proxy.
     ///
-    /// The public origin remains HTTPS. Only peers inside `trusted_proxies` are
-    /// served, and only their `X-Forwarded-For` entries identify the client.
+    /// The public origin remains HTTPS. With `trusted_proxies`, only peers
+    /// inside them are served, and only their `X-Forwarded-For` entries
+    /// identify the client. Without them, every peer is served and the client
+    /// is the last `X-Forwarded-For` entry, so the network in front must let
+    /// only the proxy reach the port.
     Proxy {
         /// Networks of the reverse proxies allowed to connect.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         trusted_proxies: Vec<ipnet::IpNet>,
     },
+    /// HTTPS with a CA and certificate Trellis creates and renews itself, in
+    /// `tls/` under the data folder. For development and tests only: browsers
+    /// and clients trust the CA only when told to, and Trellis warns about it
+    /// in its logs, the Console and the Portal.
+    Generated,
     /// Explicitly insecure development mode restricted to loopback.
     LoopbackDevelopment,
 }
@@ -1180,11 +1258,14 @@ pub(crate) fn validate_listener_transport(
                 return Err("tls requires an HTTPS origin and certificate/key paths");
             }
         }
-        ListenerTransport::Proxy { trusted_proxies } => {
-            if origin.scheme() != "https" || trusted_proxies.is_empty() {
-                return Err(
-                    "proxy requires an HTTPS public origin and at least one trusted proxy network",
-                );
+        ListenerTransport::Proxy { .. } => {
+            if origin.scheme() != "https" {
+                return Err("proxy requires an HTTPS public origin");
+            }
+        }
+        ListenerTransport::Generated => {
+            if origin.scheme() != "https" {
+                return Err("generated requires an HTTPS public origin");
             }
         }
         ListenerTransport::LoopbackDevelopment => {

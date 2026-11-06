@@ -289,6 +289,7 @@ if (mode === "activate") {
     trellisInstanceId: server.trust.instanceId,
     audienceNatsAccount: server.trust.account,
     issuers: [server.trust.issuer],
+ natsSentinel: server.natsSentinel,
   }));
 } else {
   const identity = await deriveDeviceIdentity(rootSecret);

@@ -14,9 +14,8 @@ use trellis_runtime::{
     NatsEndpointOverride, RuntimeConfig, RuntimeMode, RuntimeOptions, RuntimePathDefaults,
 };
 
-mod setup;
+mod commands;
 mod telemetry;
-mod wizard;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -38,10 +37,6 @@ struct Args {
     /// Read the starting administrator password from standard input.
     #[arg(long)]
     admin_password_stdin: bool,
-    /// Create a localhost installation in the default location without asking
-    /// when there is none yet.
-    #[arg(long)]
-    init: bool,
     /// Issue a one-time password-reset URL for the sole active administrator.
     #[arg(long)]
     reset_admin: bool,
@@ -50,7 +45,7 @@ struct Args {
     mode: RuntimeMode,
     /// How a first-run installation reports its result.
     #[arg(long, value_enum, default_value_t)]
-    format: setup::OutputFormat,
+    format: commands::OutputFormat,
 }
 
 /// Parses the runtime mode. A subcommand name lands here when options came
@@ -73,14 +68,17 @@ fn parse_mode(value: &str) -> Result<RuntimeMode, String> {
 enum OperationArgs {
     /// Validate configuration and runtime dependencies, then exit.
     Check(CheckArgs),
-    /// Set up this host: generate its configuration bundle, or with `admin`
-    /// seed the first administrator.
-    Init(Box<InitArgs>),
-    /// Manage Trellis-generated TLS certificates.
+    /// Create the first local administrator in the configured storage, then exit.
+    Admin(AdminArgs),
+    /// Configuration files.
     #[command(subcommand)]
-    Tls(setup::TlsSubcommand),
-    /// Run the `nats` CLI as one of the installation's NATS users.
-    Nats(setup::NatsArgs),
+    Config(commands::ConfigSubcommand),
+    /// Certificates: issue test certificates, or show generated TLS.
+    #[command(subcommand)]
+    Tls(commands::TlsSubcommand),
+    /// NATS: make an operator and cluster, or run the `nats` CLI as one of
+    /// the installation's users.
+    Nats(commands::NatsArgs),
     /// Replace this binary with the newest trellis-server release for this
     /// platform.
     Upgrade(UpgradeArgs),
@@ -96,42 +94,18 @@ struct UpgradeArgs {
     prerelease: bool,
     /// Print the result as text or JSON.
     #[arg(long, value_enum, default_value_t)]
-    format: setup::OutputFormat,
+    format: commands::OutputFormat,
 }
 
 #[derive(Debug, clap::Args)]
-#[command(
-    args_conflicts_with_subcommands = true,
-    subcommand_negates_reqs = true,
-    disable_help_subcommand = true
-)]
-struct InitArgs {
-    #[command(subcommand)]
-    admin: Option<InitSubcommand>,
-    #[command(flatten)]
-    location: InitLocation,
-    #[command(flatten)]
-    config: setup::InitConfigArgs,
-    /// Print the result as text or JSON.
-    #[arg(long, value_enum, default_value_t)]
-    format: setup::OutputFormat,
-}
-
-#[derive(Debug, Subcommand)]
-enum InitSubcommand {
-    /// Seed the first local administrator in the configured storage, then exit.
-    Admin(InitAdminArgs),
-}
-
-#[derive(Debug, clap::Args)]
-struct InitAdminArgs {
+struct AdminArgs {
     #[command(flatten)]
     profile: InstallationArgs,
     #[command(flatten)]
     bootstrap: BootstrapAdminArgs,
     /// Print the result as text or JSON.
     #[arg(long, value_enum, default_value_t)]
-    format: setup::OutputFormat,
+    format: commands::OutputFormat,
 }
 
 #[derive(Debug, clap::Args)]
@@ -160,9 +134,9 @@ struct BootstrapAdminArgs {
 /// Which installation a command uses.
 #[derive(Debug, Default, clap::Args)]
 pub(crate) struct InstallationArgs {
-    /// An installation folder from `init <DIR>`, or the config.toml in
-    /// it. Omitted, the user's installation, or the system's for root on
-    /// Linux.
+    /// An installation folder holding config.toml, which keeps what the
+    /// server creates in its `var` folder, or a config.toml. Omitted, the
+    /// user's installation, or the system's for root on Linux.
     #[arg(long, value_name = "PATH")]
     pub(crate) config: Option<PathBuf>,
     /// Use the user's installation (~/.config/trellis), even as root.
@@ -186,34 +160,6 @@ impl InstallationArgs {
         get: impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> miette::Result<ServerPaths> {
         ServerPaths::resolve(&self.location(), get)
-    }
-}
-
-/// Where `init` writes an installation.
-#[derive(Debug, Default, clap::Args)]
-#[group(multiple = false)]
-pub(crate) struct InitLocation {
-    /// Write the user's installation (~/.config/trellis), even as root. The
-    /// default for everyone but root on Linux.
-    #[arg(long)]
-    pub(crate) user: bool,
-    /// Write the system installation (/etc/trellis), Linux only. The default
-    /// for root.
-    #[arg(long)]
-    pub(crate) system: bool,
-    /// Write a self-contained installation to this folder, which also holds
-    /// everything the server creates, in its `var` folder. Start it with
-    /// `trellis-server --config <DIR>`.
-    #[arg(value_name = "DIR")]
-    pub(crate) bundle: Option<PathBuf>,
-}
-
-impl InitLocation {
-    fn location(&self) -> Location {
-        match &self.bundle {
-            Some(path) => Location::Bundle(path.clone()),
-            None => Location::profile(self.user, self.system),
-        }
     }
 }
 
@@ -249,6 +195,15 @@ impl Location {
 struct ServerArgs {
     #[command(flatten)]
     profile: InstallationArgs,
+    /// Run a development installation, created the first time: Trellis runs
+    /// its own NATS server, and serves plain HTTP on this machine, or with
+    /// --host HTTPS from a CA it makes. Kept in --config, or in the user's
+    /// data folder.
+    #[arg(long)]
+    dev: bool,
+    /// With --dev, the hostname other machines reach this one by.
+    #[arg(long, requires = "dev")]
+    host: Option<String>,
     /// Run this exact nats-server executable instead of the one on PATH, for an
     /// installation whose NATS this server runs.
     #[arg(long, value_name = "PATH", require_equals = true)]
@@ -305,7 +260,7 @@ struct StartupPolicy {
     mode: RuntimeMode,
     paths: ServerPaths,
     location: Location,
-    init_missing: bool,
+    dev: Option<Option<String>>,
     nats_binary: NatsBinary,
     nats_ports: Option<LocalNatsPorts>,
     nats_cache: Option<PathBuf>,
@@ -314,7 +269,7 @@ struct StartupPolicy {
     verbose: bool,
     reset_admin: bool,
     bootstrap_admin: Option<BootstrapAdminArgs>,
-    format: setup::OutputFormat,
+    format: commands::OutputFormat,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -355,29 +310,40 @@ impl StartupPolicy {
                 None,
                 args.format,
             ),
-            Some(OperationArgs::Init(init)) => {
-                let Some(InitSubcommand::Admin(admin)) = init.admin else {
-                    return Err(miette!("trellis-server init runs without a server policy"));
-                };
-                (
-                    Operation::BootstrapAdmin,
-                    ServerArgs {
-                        profile: admin.profile,
-                        ..ServerArgs::default()
-                    },
-                    args.mode,
-                    Some(admin.bootstrap),
-                    admin.format,
-                )
-            }
-            Some(OperationArgs::Tls(_) | OperationArgs::Nats(_) | OperationArgs::Upgrade(_)) => {
+            Some(OperationArgs::Admin(admin)) => (
+                Operation::BootstrapAdmin,
+                ServerArgs {
+                    profile: admin.profile,
+                    ..ServerArgs::default()
+                },
+                args.mode,
+                Some(admin.bootstrap),
+                admin.format,
+            ),
+            Some(
+                OperationArgs::Tls(_)
+                | OperationArgs::Nats(_)
+                | OperationArgs::Config(_)
+                | OperationArgs::Upgrade(_),
+            ) => {
                 return Err(miette!(
                     "this trellis-server command runs without a server policy"
                 ));
             }
             None => (Operation::Run, args.server, args.mode, None, args.format),
         };
-        let location = server.profile.location();
+        // A development installation is a bundle of its own, in the user's
+        // data folder unless --config names one.
+        let location = match (&server.profile.config, server.dev) {
+            (None, true) => Location::Bundle(
+                RuntimePathDefaults::user_profile(&get)
+                    .into_diagnostic()?
+                    .data
+                    .join("dev"),
+            ),
+            _ => server.profile.location(),
+        };
+        let dev = server.dev.then(|| server.host.clone());
         let paths = ServerPaths::resolve(&location, get)?;
         let nats_binary = match (server.local_nats, server.nats_download) {
             (Some(_), true) => {
@@ -439,7 +405,7 @@ impl StartupPolicy {
             mode,
             paths,
             location,
-            init_missing: args.init,
+            dev,
             nats_binary,
             nats_ports,
             nats_cache: server.local_nats_cache,
@@ -665,90 +631,23 @@ fn ensure_private_runtime_fallback(path: &Path) -> miette::Result<()> {
 
 async fn run(policy: StartupPolicy) -> miette::Result<()> {
     if !policy.paths.config.is_file() {
-        // Only a plain start in the user profile offers a first installation;
-        // a named or system installation must exist.
-        if policy.location != Location::User || policy.operation != Operation::Run {
-            return Err(miette!(
-                "Trellis configuration file not found at {}",
-                policy.paths.config.display()
-            ));
+        match &policy.dev {
+            Some(host) => {
+                commands::create_dev_installation(&policy.paths.config_root, host.as_deref())?;
+                info!(folder = %policy.paths.config_root.display(), "created a development installation");
+            }
+            None => {
+                return Err(miette!(
+                    "no Trellis configuration at {}; write one there (`trellis-server config \
+                    example` prints a commented starting point), name one with --config, or \
+                    try Trellis with `trellis-server --dev`",
+                    policy.paths.config.display()
+                ))
+            }
         }
-        let folder = &policy.paths.config_root;
-        let init = if policy.init_missing {
-            wizard::localhost_development()
-        } else if interactive() {
-            let init = wizard::ask(folder)?;
-            eprintln!("\nSame as: {}\n", wizard::command_line(&init));
-            init
-        } else {
-            return Err(miette!(
-                "no Trellis installation in {}; run `trellis-server` in a terminal to set \
-                one up, pass --init for a localhost development one, create one with \
-                `trellis-server init`, or name one: `--config <PATH>`",
-                folder.display()
-            ));
-        };
-        #[derive(Parser)]
-        struct Init {
-            #[command(flatten)]
-            args: setup::InitConfigArgs,
-        }
-        let init = Init::try_parse_from(&init).into_diagnostic()?.args;
-        setup::init_config(policy.format, &init, &Location::User, folder.clone())?;
     }
     let (mut config, paths) = load_runtime_config(&policy)?;
 
-    if let Some(bootstrap) = policy.bootstrap_admin.as_ref() {
-        let password =
-            resolve_bootstrap_password(bootstrap.password.as_deref(), bootstrap.password_stdin)?;
-        let (principal, account_url) = trellis_runtime::platform::initialize_admin_credentials(
-            &config,
-            &bootstrap.username,
-            password.as_deref(),
-        )
-        .await
-        .into_diagnostic()?;
-        if policy.format == setup::OutputFormat::Json {
-            println!(
-                "{}",
-                serde_json::json!({"principalId":principal,"adminAccountUrl":account_url})
-            );
-        } else {
-            println!("initialized administrator '{principal}'");
-            if let Some(url) = account_url {
-                println!("adminAccountUrl={url}");
-            }
-        }
-        return Ok(());
-    }
-    if policy.admin_username.is_some()
-        || policy.admin_password.is_some()
-        || policy.admin_password_stdin
-    {
-        if policy.operation != Operation::Run
-            || policy.reset_admin
-            || !matches!(policy.mode, RuntimeMode::All | RuntimeMode::Platform)
-        {
-            return Err(miette!(
-                "initial administrator options require a fresh platform startup and \
-                cannot be combined with --reset-admin"
-            ));
-        }
-        let password = resolve_bootstrap_password(
-            policy.admin_password.as_deref(),
-            policy.admin_password_stdin,
-        )?;
-        let (_, account_url) = trellis_runtime::platform::initialize_admin_credentials(
-            &config,
-            policy.admin_username.as_deref().unwrap_or("admin"),
-            password.as_deref(),
-        )
-        .await
-        .into_diagnostic()?;
-        if let Some(url) = account_url {
-            println!("{}", serde_json::json!({"adminAccountUrl":url}));
-        }
-    }
     if let Some(root) = &policy.paths.runtime_fallback_root {
         if paths.runtime.starts_with(root) {
             ensure_private_runtime_fallback(root)?;
@@ -769,13 +668,15 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         prepare_directory(&paths.runtime)?;
         prepare_directory(&paths.logs)?;
     }
-    // A start reports a broken config before it fetches or starts NATS; check
-    // reports one in its JSON report instead.
-    if policy.operation == Operation::Run {
-        config.validate_for_mode(policy.mode).into_diagnostic()?;
-    }
     let mut managed = None;
     let managed_nats = config.nats.as_ref().is_some_and(|nats| nats.managed);
+    if managed_nats && policy.dev.is_none() {
+        return Err(miette!(
+            "{} has [nats] managed, which only a development installation may: start it \
+            with --dev, or point [nats] servers at NATS servers you run",
+            policy.paths.config.display()
+        ));
+    }
     if !managed_nats {
         for (given, flag) in [
             (
@@ -911,6 +812,85 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         }
     };
 
+    // Keys, Trellis's NATS accounts and generated TLS, the first time and on
+    // every start after; the NATS servers are reachable by now.
+    trellis_runtime::installation::prepare(
+        &mut config,
+        &policy.paths.config_root,
+        &paths.data,
+        policy.mode,
+    )
+    .await
+    .into_diagnostic()?;
+    if policy.operation == Operation::Run {
+        config.validate_for_mode(policy.mode).into_diagnostic()?;
+    }
+    if let Some(bootstrap) = policy.bootstrap_admin.as_ref() {
+        let password =
+            resolve_bootstrap_password(bootstrap.password.as_deref(), bootstrap.password_stdin)?;
+        let (principal, account_url) = trellis_runtime::platform::initialize_admin_credentials(
+            &config,
+            &bootstrap.username,
+            password.as_deref(),
+        )
+        .await
+        .into_diagnostic()?;
+        if policy.format == commands::OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::json!({"principalId":principal,"adminAccountUrl":account_url})
+            );
+        } else {
+            println!("initialized administrator '{principal}'");
+            if let Some(url) = account_url {
+                println!("adminAccountUrl={url}");
+            }
+        }
+        return Ok(());
+    }
+    if policy.admin_username.is_some()
+        || policy.admin_password.is_some()
+        || policy.admin_password_stdin
+    {
+        if policy.operation != Operation::Run
+            || policy.reset_admin
+            || !matches!(policy.mode, RuntimeMode::All | RuntimeMode::Platform)
+        {
+            return Err(miette!(
+                "initial administrator options require a fresh platform startup and \
+                cannot be combined with --reset-admin"
+            ));
+        }
+        let password = resolve_bootstrap_password(
+            policy.admin_password.as_deref(),
+            policy.admin_password_stdin,
+        )?;
+        let (_, account_url) = trellis_runtime::platform::initialize_admin_credentials(
+            &config,
+            policy.admin_username.as_deref().unwrap_or("admin"),
+            password.as_deref(),
+        )
+        .await
+        .into_diagnostic()?;
+        if let Some(url) = account_url {
+            println!("{}", serde_json::json!({"adminAccountUrl":url}));
+        }
+    }
+    let renewal = (policy.operation == Operation::Run).then(|| {
+        let config = config.clone();
+        let data = paths.data.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(12 * 60 * 60));
+            loop {
+                interval.tick().await;
+                if let Err(renew_error) =
+                    trellis_runtime::installation::renew_generated_tls(&config, &data)
+                {
+                    error!(%renew_error, "failed to renew generated TLS");
+                }
+            }
+        })
+    });
     let result = if policy.operation == Operation::Check {
         let report = trellis_runtime::check(
             policy.mode,
@@ -941,6 +921,9 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         .await
         .into_diagnostic()
     };
+    if let Some(renewal) = renewal {
+        renewal.abort();
+    }
     if let Some(server) = managed.as_mut() {
         info!("stopping managed NATS");
         if let Err(stop_error) = server.stop() {
@@ -960,19 +943,12 @@ async fn main() -> miette::Result<()> {
     let args = Args::parse();
     // Generating a bundle and renewing certificates need no server policy.
     match args.operation {
-        Some(OperationArgs::Init(init)) if init.admin.is_none() => {
-            let InitArgs {
-                location,
-                config,
-                format,
-                ..
-            } = *init;
-            let location = location.location();
-            let root = ServerPaths::resolve(&location, |name| env::var_os(name))?.config_root;
-            return setup::init_config(format, &config, &location, root);
+        Some(OperationArgs::Config(commands::ConfigSubcommand::Example)) => {
+            print!("{}", commands::CONFIG_EXAMPLE);
+            return Ok(());
         }
-        Some(OperationArgs::Tls(command)) => return setup::tls(command),
-        Some(OperationArgs::Nats(nats)) => return setup::nats(nats),
+        Some(OperationArgs::Tls(command)) => return commands::tls(command),
+        Some(OperationArgs::Nats(nats)) => return commands::nats(nats),
         Some(OperationArgs::Upgrade(upgrade_args)) => return upgrade(&upgrade_args),
         _ => {}
     }
@@ -1018,7 +994,7 @@ fn upgrade(args: &UpgradeArgs) -> miette::Result<()> {
         "trellis-server",
         env!("CARGO_PKG_VERSION"),
     );
-    let json = args.format == setup::OutputFormat::Json;
+    let json = args.format == commands::OutputFormat::Json;
     let channel = ReleaseChannel::from_prerelease_flag(args.prerelease);
     if args.check {
         let check = check_for_update(TARGET, channel)?;

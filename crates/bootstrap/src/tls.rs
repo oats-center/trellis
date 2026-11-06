@@ -1,8 +1,7 @@
 //! Installation CA and leaf certificates for Trellis-generated TLS.
 //!
-//! The CA private key is written only to the CA directory, outside the bundle
-//! that runtime and broker roles mount. Leaf certificates are short-lived and
-//! renewed from that CA without changing what clients trust.
+//! Leaf certificates are short-lived and renewed from their CA without
+//! changing what clients trust.
 
 use std::fs;
 use std::net::IpAddr;
@@ -16,7 +15,7 @@ use rcgen::{
 use time::{Duration, OffsetDateTime};
 
 use crate::error::BootstrapError;
-use crate::output::write_private_file;
+use crate::files::write_private_file;
 
 /// Lifetime of the generated installation CA.
 const CA_VALIDITY: Duration = Duration::days(3650);
@@ -25,19 +24,13 @@ const LEAF_VALIDITY: Duration = Duration::days(90);
 /// Backdating that tolerates modest clock skew between hosts.
 const CLOCK_SKEW: Duration = Duration::hours(1);
 
-/// CA certificate path inside the bundle, readable by every role.
-pub(crate) const BUNDLE_CA_CERTIFICATE: &str = "tls/ca.crt";
-/// Runtime HTTP and OAuth leaf certificate inside the bundle.
-pub(crate) const RUNTIME_CERTIFICATE: &str = "tls/runtime.crt";
-/// Runtime HTTP and OAuth leaf private key inside the bundle.
-pub(crate) const RUNTIME_PRIVATE_KEY: &str = "tls/runtime.key";
-/// Broker leaf certificate inside the bundle.
-pub(crate) const NATS_CERTIFICATE: &str = "tls/nats.crt";
-/// Broker leaf private key inside the bundle.
-pub(crate) const NATS_PRIVATE_KEY: &str = "tls/nats.key";
-/// CA private key inside the CA directory.
+/// Server certificate inside a generated TLS directory.
+const SERVER_CERTIFICATE: &str = "trellis.crt";
+/// Server private key inside a generated TLS directory.
+const SERVER_PRIVATE_KEY: &str = "trellis.key";
+/// CA private key inside a generated TLS directory.
 const CA_PRIVATE_KEY: &str = "ca.key";
-/// CA certificate inside the CA directory.
+/// CA certificate inside a generated TLS directory.
 const CA_CERTIFICATE: &str = "ca.crt";
 
 /// A host a generated certificate must name.
@@ -48,23 +41,6 @@ pub(crate) enum CertificateHost {
 }
 
 impl CertificateHost {
-    /// Extracts the host of an absolute URL.
-    pub(crate) fn from_url(value: &str) -> Result<Self, BootstrapError> {
-        let url = url::Url::parse(value)
-            .map_err(|_| BootstrapError::InvalidTls(format!("'{value}' is not an absolute URL")))?;
-        match url.host() {
-            // Non-special schemes such as `tls://` leave IP literals as domains.
-            Some(url::Host::Domain(host)) => Ok(host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<IpAddr>()
-                .map_or_else(|_| Self::Dns(host.to_ascii_lowercase()), Self::Ip)),
-            Some(url::Host::Ipv4(ip)) => Ok(Self::Ip(ip.into())),
-            Some(url::Host::Ipv6(ip)) => Ok(Self::Ip(ip.into())),
-            None => Err(BootstrapError::InvalidTls(format!("'{value}' has no host"))),
-        }
-    }
-
     fn subject_alt_name(&self) -> Result<SanType, BootstrapError> {
         Ok(match self {
             Self::Dns(name) => {
@@ -75,66 +51,6 @@ impl CertificateHost {
             Self::Ip(ip) => SanType::IpAddress(*ip),
         })
     }
-}
-
-/// SHA-256 fingerprints and expiry of generated certificates.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GeneratedTlsSummary {
-    /// Installation CA fingerprint users verify before trusting it.
-    pub ca_sha256_fingerprint: String,
-    /// Bundle path of the CA certificate users install.
-    pub ca_certificate: PathBuf,
-    /// Earliest expiry among the issued leaf certificates.
-    pub leaf_not_after: OffsetDateTime,
-}
-
-/// Generates the installation CA plus runtime and broker leaves.
-///
-/// The CA may only issue for `runtime_hosts` and `nats_hosts`; its private key
-/// is written to `ca_directory`, never into `bundle`.
-pub(crate) fn generate_installation_tls(
-    bundle: &Path,
-    ca_directory: &Path,
-    ca_name: &str,
-    runtime_hosts: &[CertificateHost],
-    nats_hosts: &[CertificateHost],
-) -> Result<GeneratedTlsSummary, BootstrapError> {
-    let mut hosts: Vec<CertificateHost> = runtime_hosts.iter().chain(nats_hosts).cloned().collect();
-    hosts.sort();
-    hosts.dedup();
-    let (params, ca_key, ca) = new_ca(ca_name, &hosts)?;
-
-    fs::create_dir_all(ca_directory)?;
-    set_private_directory(ca_directory)?;
-    write_private_file(ca_directory.join(CA_PRIVATE_KEY), ca_key.serialize_pem())?;
-    fs::write(ca_directory.join(CA_CERTIFICATE), ca.pem())?;
-    fs::create_dir_all(bundle.join("tls"))?;
-    set_private_directory(&bundle.join("tls"))?;
-    fs::write(bundle.join(BUNDLE_CA_CERTIFICATE), ca.pem())?;
-
-    let ca_pem = ca.pem();
-    let issuer = Issuer::new(params, ca_key);
-    let leaf_not_after = issue_leaf(
-        &issuer,
-        &ca_pem,
-        runtime_hosts,
-        &bundle.join(RUNTIME_CERTIFICATE),
-        &bundle.join(RUNTIME_PRIVATE_KEY),
-    )?;
-    issue_leaf(
-        &issuer,
-        &ca_pem,
-        nats_hosts,
-        &bundle.join(NATS_CERTIFICATE),
-        &bundle.join(NATS_PRIVATE_KEY),
-    )?;
-    let summary = trellis_runtime::tls::inspect_certificate(&bundle.join(BUNDLE_CA_CERTIFICATE))
-        .map_err(|error| BootstrapError::InvalidTls(error.to_string()))?;
-    Ok(GeneratedTlsSummary {
-        ca_sha256_fingerprint: summary.sha256_fingerprint,
-        ca_certificate: bundle.join(BUNDLE_CA_CERTIFICATE),
-        leaf_not_after,
-    })
 }
 
 /// Files written by [`issue_certificates`].
@@ -190,7 +106,7 @@ pub fn issue_certificates(
         &certificate_chain,
         &private_key,
     )?;
-    let summary = trellis_runtime::tls::inspect_certificate(&ca_certificate)
+    let summary = crate::certificate::inspect_certificate(&ca_certificate)
         .map_err(|error| BootstrapError::InvalidTls(error.to_string()))?;
     Ok(IssuedCertificates {
         ca_certificate,
@@ -228,68 +144,107 @@ fn new_ca(
     Ok((params, ca_key, ca))
 }
 
-/// One leaf certificate replaced by [`renew_generated_certificates`].
+/// The files of TLS a Trellis server creates and renews for itself.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RenewedCertificate {
-    /// Replaced certificate file.
-    pub certificate: PathBuf,
-    /// Expiry of the replacement.
+pub struct GeneratedTls {
+    /// The CA's certificate, for clients to trust once told to.
+    pub ca_certificate: PathBuf,
+    /// The server certificate followed by the CA.
+    pub certificate_chain: PathBuf,
+    /// The server certificate's private key.
+    pub private_key: PathBuf,
+    /// Expiry of the server certificate.
     pub not_after: OffsetDateTime,
 }
 
-/// Reissues the bundle's generated leaf certificates from its installation CA.
+/// Makes sure `directory` holds a CA, named `ca_name`, and a certificate it
+/// issued for exactly `hosts` that is valid for longer than `renew_within`.
 ///
-/// Each replacement keeps the names of the certificate it replaces and gets a
-/// fresh key. Clients that trust the CA need no change. The runtime reloads
-/// replaced files automatically; the broker must be reloaded (for example
-/// `nats-server --signal reload`) to serve its replacement.
+/// The CA is created once and kept, so clients that trust it keep trusting
+/// the certificates it issues later. It is replaced only when `hosts` change,
+/// because it may only issue for the hosts it was made for. The CA's key stays
+/// in `directory`: this is for development and test installations, where a
+/// server that can issue its own certificates is acceptable.
 ///
 /// # Errors
 ///
-/// Returns [`BootstrapError`] when the CA material is missing or does not
-/// match the bundle, or a replacement cannot be written.
-pub fn renew_generated_certificates(
-    bundle: &Path,
-    ca_directory: &Path,
-) -> Result<Vec<RenewedCertificate>, BootstrapError> {
-    let ca_pem = fs::read_to_string(ca_directory.join(CA_CERTIFICATE))?;
-    if fs::read_to_string(bundle.join(BUNDLE_CA_CERTIFICATE))? != ca_pem {
-        return Err(BootstrapError::InvalidTls(format!(
-            "CA directory '{}' does not hold the CA for bundle '{}'",
-            ca_directory.display(),
-            bundle.display()
-        )));
-    }
-    let ca_key = KeyPair::from_pem(&fs::read_to_string(ca_directory.join(CA_PRIVATE_KEY))?)
-        .map_err(tls_error)?;
-    let issuer = Issuer::from_ca_cert_pem(&ca_pem, ca_key).map_err(tls_error)?;
-    let mut renewed = Vec::new();
-    for (certificate, private_key) in [
-        (RUNTIME_CERTIFICATE, RUNTIME_PRIVATE_KEY),
-        (NATS_CERTIFICATE, NATS_PRIVATE_KEY),
-    ] {
-        let certificate = bundle.join(certificate);
-        let current = trellis_runtime::tls::inspect_certificate(&certificate)
-            .map_err(|error| BootstrapError::InvalidTls(error.to_string()))?;
-        let hosts: Vec<CertificateHost> = current
+/// Returns [`BootstrapError`] when `hosts` is empty or holds an invalid name,
+/// or a file cannot be read or written.
+pub fn ensure_generated_tls(
+    directory: &Path,
+    ca_name: &str,
+    hosts: &[String],
+    renew_within: Duration,
+) -> Result<GeneratedTls, BootstrapError> {
+    let mut wanted: Vec<CertificateHost> = hosts
+        .iter()
+        .map(|host| {
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            host.parse::<IpAddr>().map_or_else(
+                |_| CertificateHost::Dns(host.to_ascii_lowercase()),
+                CertificateHost::Ip,
+            )
+        })
+        .collect();
+    wanted.sort();
+    wanted.dedup();
+    let files = GeneratedTls {
+        ca_certificate: directory.join(CA_CERTIFICATE),
+        certificate_chain: directory.join(SERVER_CERTIFICATE),
+        private_key: directory.join(SERVER_PRIVATE_KEY),
+        not_after: OffsetDateTime::UNIX_EPOCH,
+    };
+    fs::create_dir_all(directory)?;
+    set_private_directory(directory)?;
+    let current = crate::certificate::inspect_certificate(&files.certificate_chain).ok();
+    let named = current.as_ref().map(|leaf| {
+        let mut names: Vec<CertificateHost> = leaf
             .dns_names
-            .into_iter()
+            .iter()
+            .cloned()
             .map(CertificateHost::Dns)
-            .chain(current.ip_addresses.into_iter().map(CertificateHost::Ip))
+            .chain(leaf.ip_addresses.iter().copied().map(CertificateHost::Ip))
             .collect();
-        let not_after = issue_leaf(
-            &issuer,
-            &ca_pem,
-            &hosts,
-            &certificate,
-            &bundle.join(private_key),
-        )?;
-        renewed.push(RenewedCertificate {
-            certificate,
-            not_after,
+        names.sort();
+        names
+    });
+    let same_hosts = named.as_ref() == Some(&wanted);
+    if let Some(leaf) = current
+        .filter(|leaf| same_hosts && leaf.not_after - OffsetDateTime::now_utc() > renew_within)
+    {
+        return Ok(GeneratedTls {
+            not_after: leaf.not_after,
+            ..files
         });
     }
-    Ok(renewed)
+    let ca_key_path = directory.join(CA_PRIVATE_KEY);
+    let kept = same_hosts
+        .then(|| {
+            let pem = fs::read_to_string(&files.ca_certificate).ok()?;
+            let key = KeyPair::from_pem(&fs::read_to_string(&ca_key_path).ok()?).ok()?;
+            Some((pem, key))
+        })
+        .flatten();
+    let (ca_pem, issuer) = match kept {
+        Some((pem, key)) => {
+            let issuer = Issuer::from_ca_cert_pem(&pem, key).map_err(tls_error)?;
+            (pem, issuer)
+        }
+        None => {
+            let (params, key, ca) = new_ca(ca_name, &wanted)?;
+            write_private_file(&ca_key_path, key.serialize_pem())?;
+            fs::write(&files.ca_certificate, ca.pem())?;
+            (ca.pem(), Issuer::new(params, key))
+        }
+    };
+    let not_after = issue_leaf(
+        &issuer,
+        &ca_pem,
+        &wanted,
+        &files.certificate_chain,
+        &files.private_key,
+    )?;
+    Ok(GeneratedTls { not_after, ..files })
 }
 
 /// Issues one serverAuth leaf, replacing its key before its certificate so a

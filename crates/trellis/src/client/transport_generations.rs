@@ -2650,7 +2650,9 @@ async fn open_generation(
     let event_inner = inner.clone();
     let auth_state = state.clone();
     let authenticated = Arc::new(AtomicBool::new(false));
+    let nats_sentinel = inner.contexts.nats_sentinel();
     let options = ConnectOptions::with_auth_callback(move |nonce| {
+        let nats_sentinel = nats_sentinel.clone();
         let key_pair = key_pair.clone();
         let session_nkey = session_nkey.clone();
         let connect_token = connect_token.clone();
@@ -2679,7 +2681,7 @@ async fn open_generation(
             }
             let mut credentials = async_nats::Auth::new();
             credentials.nkey = Some(session_nkey);
-            credentials.jwt = None;
+            credentials.jwt = nats_sentinel.clone();
             credentials.signature =
                 Some(key_pair.sign(&nonce).map_err(async_nats::AuthError::new)?);
             credentials.token = Some(connect_token);

@@ -87,6 +87,13 @@ impl LoadedListener {
                 Mode::Proxy(trusted_proxies.as_slice().into())
             }
             ListenerTransport::LoopbackDevelopment => Mode::Plaintext,
+            // Start-up turns it into the certificate files it creates.
+            ListenerTransport::Generated => {
+                return Err(std::io::Error::other(
+                    "generated TLS has no certificate yet; start the server through \
+                    trellis-server, which creates it",
+                ))
+            }
         };
         Ok(Self {
             listener: listener.into_std()?,
@@ -266,6 +273,29 @@ async fn forward(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0.ip());
+    // A proxy transport naming no networks serves whoever reaches it, which
+    // the network in front decides. The client is then the entry the proxy
+    // appended last; earlier ones may be the client's own claims.
+    if refuse_untrusted && trusted.is_empty() {
+        let mut client = peer;
+        for value in request.headers().get_all("x-forwarded-for") {
+            let Ok(value) = value.to_str() else {
+                return StatusCode::BAD_REQUEST.into_response();
+            };
+            if let Some(last) = value.rsplit(',').next() {
+                let Ok(address) = last.trim().parse() else {
+                    return StatusCode::BAD_REQUEST.into_response();
+                };
+                client = Some(address);
+            }
+        }
+        if let Some(client) = client {
+            request
+                .extensions_mut()
+                .insert(ConnectInfo(SocketAddr::new(client, 0)));
+        }
+        return next.run(request).await;
+    }
     let Some(peer) = peer.filter(|peer| trusted.iter().any(|network| network.contains(peer)))
     else {
         if !refuse_untrusted {

@@ -161,6 +161,7 @@ test("an enrolled device uses an independently browser-consented native companio
             trellisInstanceId: server.trust.instanceId,
             audienceNatsAccount: server.trust.account,
             issuers: [server.trust.issuer],
+            natsSentinel: server.natsSentinel,
             seed: identity.identitySeedBase64url,
             companion: { session: resumedSession, servers: server.natsServers },
           }).orThrow();

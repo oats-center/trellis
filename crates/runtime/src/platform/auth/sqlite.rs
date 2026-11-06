@@ -103,6 +103,8 @@ pub(crate) struct AuthSettings {
     /// when the Console is turned off, which also refuses its client.
     pub(crate) console_origin: Option<String>,
     pub(crate) upstream_tls_roots_pem: Vec<String>,
+    /// The NATS sentinel user's JWT clients connect with before the callout.
+    pub(crate) nats_sentinel: Option<String>,
     pub(crate) authority_lifetime_seconds: u32,
     pub(crate) clock_skew_seconds: u32,
     pub(crate) oauth_admission_lifetime_seconds: u32,
@@ -473,6 +475,7 @@ impl SqliteAuthorizationStore {
             oauth_issuer: config.public_origin(),
             console_origin: config.console_enabled().then_some(console_origin),
             upstream_tls_roots_pem: Vec::new(),
+            nats_sentinel: config.secrets.nats.auth_callout.sentinel_jwt.clone(),
             authority_lifetime_seconds: u32::try_from(authorization.context_lifetime_seconds)
                 .map_err(|_| {
                     RuntimeError::Platform("authorization lifetime exceeds supported range".into())
@@ -637,6 +640,7 @@ impl SqliteAuthorizationStore {
             rotation_sequence,
             root_certificates: Vec::new(),
             nats_server_name: None,
+            nats_sentinel: self.settings.nats_sentinel.clone(),
         })
     }
 

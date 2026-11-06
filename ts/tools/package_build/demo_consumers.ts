@@ -224,7 +224,7 @@ import { discoverNativeOAuth } from "@oatscenter/trellis/native";
 import { participants } from "./device/trellis/index.js";
 const server = (await discoverNativeOAuth(process.argv[2])).orThrow();
 const identity = await deriveDeviceIdentity(base64urlDecode(process.argv[3]));
-const device = await TrellisDevice.connect({ participant: participants.Device.participant, seed: identity.identitySeedBase64url, servers: [...server.natsServers], trellisInstanceId: server.trust.instanceId, audienceNatsAccount: server.trust.account, issuers: [server.trust.issuer] }).orThrow();
+const device = await TrellisDevice.connect({ participant: participants.Device.participant, seed: identity.identitySeedBase64url, servers: [...server.natsServers], trellisInstanceId: server.trust.instanceId, audienceNatsAccount: server.trust.account, issuers: [server.trust.issuer], natsSentinel: server.natsSentinel }).orThrow();
 try {
   const assignments = await device.assignmentsList({ page: { limit: 50 } }).orThrow();
   assert(assignments.items.length > 0);

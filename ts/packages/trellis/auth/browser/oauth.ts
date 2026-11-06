@@ -29,6 +29,7 @@ const metadataSchema = z.object({
     audienceNatsAccount: z.string().min(1),
     rotationSequence: z.string().regex(/^(0|[1-9][0-9]*)$/),
     natsEndpoints: z.array(z.string().min(1)).min(1),
+    natsSentinel: z.string().min(1).nullish(),
     issuers: z
       .array(
         z.object({

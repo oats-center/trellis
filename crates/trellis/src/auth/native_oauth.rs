@@ -59,6 +59,8 @@ struct DiscoveryTrellis {
     issuers: Vec<trellis_protocol::AuthorityIssuerKey>,
     rotation_sequence: trellis_protocol::live::U64s,
     required_authorization_details_types: Vec<String>,
+    #[serde(default)]
+    nats_sentinel: Option<String>,
 }
 
 /// Discover initial trust only from the explicitly selected HTTPS OAuth origin
@@ -196,6 +198,7 @@ pub async fn discover_native_oauth(
             rotation_sequence: metadata.rotation_sequence.get(),
             root_certificates: root_certificates.to_vec(),
             nats_server_name: None,
+            nats_sentinel: metadata.nats_sentinel,
         },
         dpop_nonce,
     })

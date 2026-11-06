@@ -18,6 +18,9 @@ pub(super) struct Selection {
     /// Explicitly trusted installation CA files selected at login.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub root_certificates: Vec<PathBuf>,
+    /// The installation's NATS sentinel user JWT, published in its metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nats_sentinel: Option<String>,
 }
 
 pub(super) fn directory() -> miette::Result<PathBuf> {
@@ -47,6 +50,7 @@ impl Selection {
                 rotation_sequence: self.rotation_sequence,
                 root_certificates: self.root_certificates.clone(),
                 nats_server_name: None,
+                nats_sentinel: self.nats_sentinel.clone(),
             },
         )
         .await

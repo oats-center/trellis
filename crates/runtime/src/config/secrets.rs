@@ -13,11 +13,15 @@ pub const SECRETS_FILE: &str = "secrets.toml";
 /// Largest `secrets.toml` the runtime reads.
 const MAX_SECRETS_BYTES: u64 = 64 * 1024;
 
-/// Every private key Trellis itself reads. `trellis-server init` writes them
-/// once; the runtime only reads them.
+/// Every private key Trellis itself reads. Trellis creates each one the first
+/// time it starts without it, and keeps it here.
 #[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Secrets {
+    /// The installation's ULID, created on first start unless `[auth]
+    /// instance_id` names one. Not secret, but created with the keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
     /// Canonical base64url 32-byte key sealing durable OAuth credentials.
     /// Keep it across restarts and issuer rotations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,12 +59,33 @@ pub struct LiveProviderSeeds {
 #[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NatsSecrets {
+    /// Seeds of the accounts Trellis creates on the NATS servers.
+    #[serde(default)]
+    pub accounts: NatsAccountSeeds,
     /// The NATS users the runtime connects as.
     #[serde(default)]
     pub users: NatsUsers,
     /// Keys the runtime answers NATS auth callouts with.
     #[serde(default)]
     pub auth_callout: AuthCalloutSecrets,
+}
+
+/// Seeds of the NATS accounts Trellis owns.
+#[derive(Clone, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NatsAccountSeeds {
+    /// The auth account, whose connections Trellis's auth callout decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
+    /// The Trellis account, where services and clients run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trellis: Option<String>,
+}
+
+impl std::fmt::Debug for NatsAccountSeeds {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NatsAccountSeeds { .. }")
+    }
 }
 
 /// The runtime's NATS users, one per account.
@@ -120,6 +145,10 @@ pub struct AuthCalloutSecrets {
     /// Public key of the sentinel user clients connect with before a callout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sentinel_public_key: Option<String>,
+    /// The sentinel user's JWT. Not secret: it may do nothing until a callout
+    /// replaces it, so Trellis publishes it for clients to connect with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentinel_jwt: Option<String>,
 }
 
 impl std::fmt::Debug for Secrets {

@@ -167,6 +167,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
             audienceNatsAccount: admission.trust.account,
             issuers: [admission.trust.issuer],
             rotationSequence: admission.trust.rotationSequence,
+            natsSentinel: admission.metadata.trellis.natsSentinel ?? undefined,
             auth: admission.auth,
             runtimeId: admission.runtimeId,
             kind: "user",

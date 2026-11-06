@@ -80,6 +80,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                                 "trellisInstanceId": trust.instance_id,
                                 "audienceNatsAccount": trust.account,
                                 "natsEndpoints": endpoints,
+                                "natsSentinel": trust.nats_sentinel,
                                 "authorityFormat": trellis_protocol::SESSION_AUTHORITY_FORMAT_V1,
                                 "admissionFormat": trellis_protocol::OAUTH_ADMISSION_FORMAT_V1,
                                 "issuers": [trust.issuer],

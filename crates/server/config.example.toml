@@ -1,0 +1,62 @@
+# Trellis configuration. Copy this file to where trellis-server reads it:
+# ~/.config/trellis/config.toml, /etc/trellis/config.toml as root, or pass
+# --config <path>. Change what's marked, delete what you don't need.
+#
+# Keys are not set here. On its first start Trellis creates them in
+# secrets.toml beside this file, readable by its owner only. Back both up.
+
+# Shown in the Portal and the Console.
+instance_name = "Trellis"
+
+[http]
+# The address people and clients use: sign-in, the Console at /console, and
+# where services and apps connect. Must be HTTPS unless it's loopback.
+public_origin = "https://trellis.example.com"
+port = 3000
+# bind_address = "0.0.0.0"
+# Hand every WebSocket upgrade on this port to the NATS server's WebSocket
+# listener, so clients reach NATS at public_origin with its certificate.
+# nats_websocket_upstream = "127.0.0.1:8080"
+
+[http.transport]
+# Where the HTTPS certificate comes from. Pick one:
+#
+# Your own certificate files, reloaded when you replace them.
+mode = "tls"
+certificate_chain = "tls/trellis.crt"
+private_key = "tls/trellis.key"
+#
+# A proxy in front terminates HTTPS and talks plain HTTP to this port. List
+# the proxy's networks to accept only it; leave them out when your firewall
+# already lets only the proxy reach the port.
+# mode = "proxy"
+# trusted_proxies = ["10.0.0.2/32"]
+#
+# A CA and certificate Trellis creates and renews itself, for development
+# and tests only. Clients trust the CA only when told to, and Trellis warns
+# in its logs, the Console and the Portal.
+# mode = "generated"
+
+# The Console on a hostname of its own, pointed at the same port. Without it
+# the Console is at /console on public_origin.
+# [console]
+# origin = "https://console.example.com"
+
+[nats]
+# Where Trellis connects to NATS. tls:// for a server elsewhere; nats:// is
+# allowed only on this machine's loopback.
+servers = "tls://nats.example.com:4222"
+# The CA that issued the NATS servers' certificate, when it's private.
+# ca_certificate = "nats/ca.crt"
+# From your NATS operator: the system account user's credentials, and an
+# operator signing key made for Trellis. With them Trellis creates its own
+# NATS accounts when it first starts and keeps them up to date.
+# `trellis-server nats new` makes both for a new NATS cluster.
+system_credentials = "nats/system.creds"
+operator_signing_key = "nats/trellis-operator.nk"
+
+# What clients are told about NATS. Without it they're given [nats] servers,
+# and the WebSocket at public_origin when [http] relays one.
+# [client]
+# nats_servers = ["tls://nats.example.com:4222"]
+# ws_nats_servers = ["wss://nats.example.com"]

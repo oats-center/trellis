@@ -768,6 +768,10 @@ pub struct RuntimeAuthorizationTrust {
     /// servers reach it by another address, such as a runtime dialling its own
     /// broker at loopback. `None` checks each server's own host.
     pub nats_server_name: Option<String>,
+    /// The installation's NATS sentinel user JWT, which every connection
+    /// presents so the broker hands it to Trellis's auth callout. It is public:
+    /// the sentinel may do nothing, and the callout decides who connected.
+    pub nats_sentinel: Option<String>,
 }
 
 /// Retained-event evidence. Current consumer read authority is checked separately.

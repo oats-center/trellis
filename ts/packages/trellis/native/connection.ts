@@ -27,6 +27,7 @@ import type { OwnAuthorityView } from "../own_authority.ts";
 import { AuthError } from "../errors/AuthError.ts";
 import { TransportError } from "../errors/TransportError.ts";
 import type { NativeOAuthSession } from "./oauth.ts";
+import { discoverNativeOAuth } from "./discovery.ts";
 
 /** The shared admitted connection: one authority owner and ordinary generation manager. */
 export type NativeSessionConnection = Awaited<
@@ -43,6 +44,8 @@ export function connectNativeSession(
   options: ClientOpts & {
     session: NativeOAuthSession;
     servers: readonly string[];
+    /** Sentinel user JWT from discovery; read from the session's issuer when omitted. */
+    natsSentinel?: string;
   },
 ): AsyncResult<
   NativeSessionConnection,
@@ -58,12 +61,20 @@ export function connectNativeSession(
         custody = session.claimConnection();
         let admission = session.admission;
         const trust = session.trust;
+        const natsSentinel =
+          options.natsSentinel ??
+          (
+            await discoverNativeOAuth(session.scope.issuer, {
+              signal: options.signal,
+            })
+          ).unwrapOr(undefined)?.natsSentinel;
         connected = await connectAdmitted({
           servers: [...options.servers],
           trellisInstanceId: trust.instanceId,
           audienceNatsAccount: trust.account,
           issuers: [trust.issuer],
           rotationSequence: trust.rotationSequence,
+          natsSentinel,
           auth: session.auth,
           runtimeId: session.runtimeId,
           kind: "user",

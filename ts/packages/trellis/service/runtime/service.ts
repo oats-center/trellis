@@ -3129,6 +3129,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           audienceNatsAccount: server.trust.account,
           issuers: [server.trust.issuer],
           rotationSequence: server.trust.rotationSequence,
+          natsSentinel: server.natsSentinel,
           seed: args.seed,
           timeout: args.timeout,
           signal: args.signal,

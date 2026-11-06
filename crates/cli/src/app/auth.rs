@@ -1215,6 +1215,7 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
         issuer_key: server.trust.issuer,
         rotation_sequence: server.trust.rotation_sequence,
         root_certificates,
+        nats_sentinel: server.trust.nats_sentinel,
     };
     type Request = trellis_runtime_apis::apps::trellis_cli::Request;
     let challenge = selection

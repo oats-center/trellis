@@ -112,6 +112,11 @@ impl AuthorizationContextCache {
         })
     }
 
+    /// The sentinel user JWT every connection presents to the broker.
+    pub(crate) fn nats_sentinel(&self) -> Option<String> {
+        self.trust.nats_sentinel.clone()
+    }
+
     pub(crate) fn connect_token(&self, auth: &SessionAuth) -> Result<String, TrellisClientError> {
         let credential = self.credential.read().map_err(|_| unavailable())?;
         match &credential.0 {

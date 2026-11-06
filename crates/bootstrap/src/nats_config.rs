@@ -3,7 +3,7 @@ use std::net::Ipv6Addr;
 use std::path::Path;
 
 use crate::error::NatsConfigError;
-use crate::types::{NatsBootstrapNames, NatsListeners};
+use crate::types::NatsListeners;
 
 /// Broker TLS files, as paths the NATS process can open.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -440,7 +440,7 @@ fn malformed(path: &Path, line: usize, message: &'static str) -> NatsConfigError
 }
 
 /// Quotes a filesystem path for a NATS configuration value, escaping `"` and `\`.
-fn quote_nats_path(value: &str) -> String {
+pub(crate) fn quote_nats_path(value: &str) -> String {
     let mut quoted = String::with_capacity(value.len() + 2);
     quoted.push('"');
     for character in value.chars() {
@@ -555,11 +555,4 @@ pub fn slug_from_name(trellis_name: &str) -> String {
     } else {
         slug
     }
-}
-
-pub(crate) fn resolved_server_name(names: &NatsBootstrapNames, trellis_name: &str) -> String {
-    names
-        .server_name
-        .as_ref()
-        .map_or_else(|| slug_from_name(trellis_name), Clone::clone)
 }

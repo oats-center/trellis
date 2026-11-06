@@ -38,6 +38,8 @@ export type ProvisionedConnectionOptions = {
   trellisInstanceId: string;
   audienceNatsAccount: string;
   issuers: readonly AuthorityIssuerKey[];
+  /** Sentinel user JWT from the installation's metadata. */
+  natsSentinel?: string;
   seed: string;
   timeout?: number;
   signal?: AbortSignal;
@@ -126,6 +128,8 @@ export async function connectAdmitted(options: {
   audienceNatsAccount: string;
   issuers: readonly AuthorityIssuerKey[];
   rotationSequence?: string;
+  /** Sentinel user JWT from the installation's metadata. */
+  natsSentinel?: string;
   auth: TrellisAuth;
   runtimeId: string;
   kind: "user" | "service" | "device";
@@ -376,6 +380,7 @@ export async function connectAdmitted(options: {
     const connect = await options.auth.natsConnectOptions({
       inboxPrefix,
       admission,
+      natsSentinel: options.natsSentinel,
     });
     const prepared: TransportGenerationPrepared = {
       policy,
@@ -606,6 +611,7 @@ export async function connectAdmitted(options: {
     const authOptions = await options.auth.natsConnectOptions({
       inboxPrefix,
       admission: credential,
+      natsSentinel: options.natsSentinel,
     });
     nc = await transport.connect({
       servers: options.servers,

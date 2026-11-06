@@ -1565,6 +1565,7 @@ mod tests {
                     oauth_issuer: "https://auth.example".into(),
                     console_origin: Some("https://trellis.example".into()),
                     upstream_tls_roots_pem: Vec::new(),
+                    nats_sentinel: None,
                     authority_lifetime_seconds: 300,
                     clock_skew_seconds: 30,
                     oauth_admission_lifetime_seconds: 300,
