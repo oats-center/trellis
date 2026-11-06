@@ -12,6 +12,12 @@ trellis-server upgrade --prerelease
 Restart the server to run the new version. `trellis-server upgrade --check`
 reports whether there is one.
 
+If the new version changes one of Trellis's own services, the first start
+installs the new build under the same identity, and the Console lists it as an
+applied update. A version whose changes the installation can't take stops
+before serving anything and names the service. The installation is left as it
+was, so starting the version you had before still works.
+
 ## Generated certificates
 
 An installation with `mode = "generated"` serves a certificate Trellis made

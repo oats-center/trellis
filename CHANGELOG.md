@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Upgrading `trellis-server` over an existing installation no longer stops at
+  startup with "revision conflict" when the new version changes one of
+  Trellis's own services. Startup installs the new build as that service's
+  next revision under the same identity. An incompatible change stops startup
+  with an error naming the service and leaves the installation unchanged.
+
 ## [0.100.0-rc.25] - 2026-11-06
 
 ### Added

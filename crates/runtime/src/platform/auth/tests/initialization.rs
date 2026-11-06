@@ -323,3 +323,81 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         .iter()
         .any(|cap| cap.capability_id == "trellis.auth.v1:future.read"));
 }
+
+/// A server upgrade that changes what a built-in needs installs the new build
+/// at startup under the same identity, granting what the new build asks for.
+#[test]
+fn startup_installs_a_changed_builtin_under_its_existing_identity() {
+    use trellis_rs::generated::ParticipantDescriptor;
+    use trellis_runtime_apis::participants::trellis_platform::Participant;
+    const NEEDED: &str = "trellis.auth.v1:bindings.readJobs";
+    let f = fixture();
+    let seed = URL_SAFE_NO_PAD.encode([61; 32]);
+    let original = f
+        .store
+        .initialize_builtin_provider::<Participant>(&seed, NOW)
+        .unwrap();
+    let shipped: PackageEvidence =
+        serde_json::from_value(serde_json::to_value(Participant::package_evidence()).unwrap())
+            .unwrap();
+    let source = &shipped
+        .packages
+        .iter()
+        .find(|package| package.name == shipped.root_package)
+        .unwrap()
+        .source;
+    let platform = "service platform {\n  implements auth;\n";
+    assert!(source.contains(platform), "{source}");
+    let changed = package_evidence(
+        "trellis",
+        &source.replacen(
+            platform,
+            &format!("{platform}  use auth {{\n    required capability bindings.readJobs;\n  }}\n"),
+            1,
+        ),
+    );
+    let holds = |principal: &str| -> (u64, bool) {
+        f.store
+            .transaction(|connection| {
+                Ok((
+                    connection.query_row(
+                        "SELECT installed_revision FROM auth_instances WHERE principal_id=?1",
+                        [principal],
+                        |row| row.get(0),
+                    )?,
+                    connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM auth_direct_capabilities \
+                        WHERE principal_id=?1 AND capability_id=?2)",
+                        [principal, NEEDED],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .unwrap()
+    };
+    assert_eq!(holds(&original.principal_id), (1, false));
+
+    let upgraded = f
+        .store
+        .initialize_builtin(Participant::ID, changed.clone(), &seed, NOW + 1)
+        .unwrap();
+    assert_eq!(
+        (
+            &upgraded.principal_id,
+            &upgraded.deployment_id,
+            &upgraded.instance_id
+        ),
+        (
+            &original.principal_id,
+            &original.deployment_id,
+            &original.instance_id
+        )
+    );
+    assert_eq!(holds(&upgraded.principal_id), (2, true));
+
+    // Starting again on the build it now runs installs nothing more.
+    f.store
+        .initialize_builtin(Participant::ID, changed, &seed, NOW + 2)
+        .unwrap();
+    assert_eq!(holds(&upgraded.principal_id), (2, true));
+}

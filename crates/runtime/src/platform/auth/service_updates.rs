@@ -909,6 +909,54 @@ fn apply(
     Ok(())
 }
 
+/// Install a built-in's changed build for the instance holding `identity_key_id`,
+/// recorded as an update `administrator` applied, in the caller's transaction.
+pub(super) fn upgrade_builtin(
+    connection: &Connection,
+    store: &SqliteAuthorizationStore,
+    administrator: &str,
+    identity_key_id: &str,
+    evidence: &trellis_idl::PackageEvidence,
+    participant: &str,
+    now: i64,
+) -> Result<(), AuthError> {
+    let (deployment, instance): (String, String) = connection.query_row(
+        "SELECT deployment_id,instance_id FROM auth_provisioned_identities \
+        WHERE identity_key_id=?1",
+        [identity_key_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let candidate = Candidate::compile(evidence.clone(), participant)?;
+    let current = installed(connection, &deployment)?;
+    let changes = changes(connection, &deployment, &current, &candidate)?;
+    let update = id();
+    connection.execute(
+        "INSERT INTO auth_service_updates(update_id,deployment_id,instance_id,participant_id,\
+        participant_digest,evidence_json,base_binding_revision,changes_json,state,\
+        requested_at,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'pending',?9,1)",
+        params![
+            update,
+            deployment,
+            instance,
+            participant,
+            candidate.digest,
+            json(&candidate.evidence)?,
+            current.binding_revision,
+            json(&changes)?,
+            now
+        ],
+    )?;
+    let identity = Mutation {
+        actor: administrator.into(),
+        request_id: id(),
+        request_digest: digest(&update)?,
+        session: None,
+    };
+    apply(
+        connection, store, &identity, &update, &candidate, &changes, &current, now,
+    )
+}
+
 /// The capabilities an installed revision of this deployment selects for its
 /// instances, including those its declared resources imply.
 fn selected_capabilities(

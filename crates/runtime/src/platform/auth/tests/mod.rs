@@ -266,10 +266,15 @@ pub(super) fn oauth_family(
 }
 
 fn evidence(source: &str) -> PackageEvidence {
+    package_evidence("phase-two", source)
+}
+
+/// Compile native source into the evidence a participant presents.
+pub(super) fn package_evidence(name: &str, source: &str) -> PackageEvidence {
     let graph = compile_project(
         &PackageManifest {
             package: PackageMetadata {
-                name: "phase-two".into(),
+                name: name.into(),
                 version: "1.0.0".parse().unwrap(),
             },
             sources: BTreeMap::from([("main".into(), "main.trellis".into())]),

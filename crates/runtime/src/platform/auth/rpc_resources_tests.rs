@@ -63,46 +63,7 @@ async fn delay_request(
 
 // Compile a native package input, never a handwritten wire schema or resource DTO.
 fn evidence(source: String) -> trellis_idl::PackageEvidence {
-    use std::{collections::BTreeMap, path::PathBuf};
-    use trellis_idl::{
-        project::{GenerateConfig, PackageManifest, PackageMetadata},
-        CanonicalMode, SourceUnit,
-    };
-    let graph = trellis_idl::compile_project(
-        &PackageManifest {
-            package: PackageMetadata {
-                name: "trellis".into(),
-                version: "1.0.0".parse().unwrap(),
-            },
-            sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
-            dependencies: BTreeMap::new(),
-            generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
-        },
-        vec![SourceUnit {
-            alias: "main".into(),
-            path: PathBuf::from("main.trellis"),
-            source,
-        }],
-        BTreeMap::new(),
-    )
-    .unwrap();
-    trellis_idl::PackageEvidence {
-        root_package: graph.root().to_string(),
-        root_digest: graph.root_digest().into(),
-        packages: vec![trellis_idl::PackageSourceEvidence {
-            name: graph.root().to_string(),
-            version: graph.root_package().version().clone(),
-            digest: graph.root_digest().into(),
-            source: trellis_idl::canonical_package(
-                &graph,
-                graph.root(),
-                CanonicalMode::Presentation,
-            )
-            .unwrap(),
-        }],
-    }
+    super::super::tests::package_evidence("trellis", &source)
 }
 
 #[tokio::test]

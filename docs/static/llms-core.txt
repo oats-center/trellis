@@ -198,7 +198,10 @@ sh -s trellis` installs the CLI and `... | sh -s trellis-server` the server,
 from the newest release into `~/.local/bin` after checking the release
 checksum (`TRELLIS_VERSION` and `TRELLIS_INSTALL_DIR` override). Both update
 themselves: `trellis upgrade` and `trellis-server upgrade`
-(`--prerelease` before the first stable release), then restart the server. The server is also published as `ghcr.io/oats-center/trellis-server`.
+(`--prerelease` before the first stable release), then restart the server. A
+restart on a version that changed Trellis's own services installs their new
+builds under the same identities; one it can't take stops startup naming the
+service and leaves the installation unchanged. The server is also published as `ghcr.io/oats-center/trellis-server`.
 
 ### Installation and first start
 

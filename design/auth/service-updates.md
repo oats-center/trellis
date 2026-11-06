@@ -107,6 +107,25 @@ capability. Approval rechecks inside its transaction that the update is still
 pending and that the deployment's binding has not changed since submission; a
 changed binding supersedes the update and the service submits again.
 
+## Built-in services
+
+Trellis's own services (`trellis.platform`, `trellis.healthRuntime`,
+`trellis.jobsRuntime`, `trellis.eventsRuntime`) ship inside `trellis-server`.
+When a server upgrade changes one, startup finds its identity installed at a
+different participant digest and applies the new build as an update: it
+accepts the compatible API revisions, installs the next revision, and moves the
+existing instance onto it, under the same identity. The update is recorded as
+applied by the bootstrap administrator. It needs no approval, even when the new
+build asks for new capabilities or resources, because the operator chose the
+build by upgrading the server.
+
+Only the binary's own definitions of `trellis.*` APIs are ever accepted, so
+this path cannot install anything else. An incompatible change to a built-in
+API stops startup with an error naming the built-in, and the installation keeps
+the revision it had. Within an API version, built-in changes must therefore
+stay compatible; a breaking change is a new API version served alongside the
+old one.
+
 ## Service claims
 
 A claim is a service deployment for a service the administrator does not know

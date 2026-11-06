@@ -88,6 +88,8 @@ pub(crate) struct ProvisionedDeployment {
 }
 
 struct BuiltinProviderSource {
+    participant: String,
+    implements: Vec<String>,
     evidence: PackageEvidence,
     participant_digest: String,
     public_key: String,
@@ -95,19 +97,14 @@ struct BuiltinProviderSource {
 }
 
 impl BuiltinProviderSource {
-    fn from_seed<C: trellis_rs::generated::ParticipantDescriptor>(
-        seed: &str,
-    ) -> Result<Self, AuthError> {
-        C::validate().map_err(|error| AuthError::Invalid(error.to_string()))?;
-        let evidence: PackageEvidence =
-            serde_json::from_value(serde_json::to_value(C::package_evidence())?)?;
+    fn new(participant: &str, evidence: PackageEvidence, seed: &str) -> Result<Self, AuthError> {
         let graph = compile_evidence(evidence.clone())
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
         let definition = graph
             .root_package()
             .participants()
             .values()
-            .find(|definition| definition.identity().as_str() == C::ID)
+            .find(|definition| definition.identity().as_str() == participant)
             .ok_or(AuthError::NotFound)?;
         if definition.kind() != ParticipantKind::Service
             || definition.companion().is_some()
@@ -139,6 +136,12 @@ impl BuiltinProviderSource {
                 .map_err(|_| AuthError::Denied)?,
         ));
         Ok(Self {
+            participant: participant.into(),
+            implements: definition
+                .implements()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             evidence,
             participant_digest: expected_digest,
             public_key: public,
@@ -146,7 +149,9 @@ impl BuiltinProviderSource {
         })
     }
 
-    fn lookup<C: trellis_rs::generated::ParticipantDescriptor>(
+    /// The built-in's current identity. `Conflict` means it is installed at a
+    /// different build than this binary ships.
+    fn lookup(
         &self,
         connection: &crate::platform::auth::sqlite::Connection,
         now: i64,
@@ -201,7 +206,7 @@ impl BuiltinProviderSource {
             installed_digest,
         )) = row
         {
-            if participant != C::ID
+            if participant != self.participant
                 || state != "active"
                 || deployment_state != "active"
                 || revision != bound_revision
@@ -241,7 +246,22 @@ impl SqliteAuthorizationStore {
         seed: &str,
         now: i64,
     ) -> Result<ProvisionedDeployment, AuthError> {
-        let source = BuiltinProviderSource::from_seed::<C>(seed)?;
+        C::validate().map_err(|error| AuthError::Invalid(error.to_string()))?;
+        let evidence = serde_json::from_value(serde_json::to_value(C::package_evidence())?)?;
+        self.initialize_builtin(C::ID, evidence, seed, now)
+    }
+
+    /// Startup of the built-in `participant` as `evidence` declares it. A
+    /// server upgrade that changed it installs the new build as the
+    /// deployment's next revision, as an applied service update would.
+    pub(super) fn initialize_builtin(
+        &self,
+        participant: &str,
+        evidence: PackageEvidence,
+        seed: &str,
+        now: i64,
+    ) -> Result<ProvisionedDeployment, AuthError> {
+        let source = BuiltinProviderSource::new(participant, evidence, seed)?;
         let existing = self.transaction(|connection| {
             let admin: String = connection
                 .query_row(
@@ -252,9 +272,31 @@ impl SqliteAuthorizationStore {
                 .optional()?
                 .ok_or(AuthError::Denied)?;
             Self::require_administration(connection, &admin, Administration::ManagePrincipals)?;
-            match source.lookup::<C>(connection, now) {
+            match source.lookup(connection, now) {
                 Ok(existing) => Ok(Some(existing)),
                 Err(AuthError::NotFound) => Ok(None),
+                Err(AuthError::Conflict) => {
+                    // The operator chose this build by upgrading the server,
+                    // so it needs no approval; an incompatible API still fails.
+                    super::service_updates::upgrade_builtin(
+                        connection,
+                        self,
+                        &admin,
+                        &source.key_id,
+                        &source.evidence,
+                        participant,
+                        now,
+                    )
+                    .map_err(|error| match error {
+                        AuthError::Invalid(reason) => AuthError::Invalid(format!(
+                            "this server can't upgrade the installation's built-in \
+                            {participant}: {reason}. Start it with the server version that \
+                            created it, or create a new installation"
+                        )),
+                        error => error,
+                    })?;
+                    source.lookup(connection, now).map(Some)
+                }
                 Err(error) => Err(error),
             }
         })?;
@@ -272,10 +314,10 @@ impl SqliteAuthorizationStore {
                 .ok_or(AuthError::Denied)
         })?;
         let mut expected_api_generations = BTreeMap::new();
-        for api in C::IMPLEMENTED_API_IDS {
+        for api in &source.implements {
             match self.current_catalog(api) {
                 Ok(catalog) => {
-                    expected_api_generations.insert((*api).into(), catalog.generation.get());
+                    expected_api_generations.insert(api.clone(), catalog.generation.get());
                 }
                 Err(AuthError::NotFound) => {
                     let review = self.review_api(&admin, source.evidence.clone(), api, now)?;
@@ -295,14 +337,14 @@ impl SqliteAuthorizationStore {
                         session: None,
                     };
                     let catalog = self.accept_api(&command, &acceptance, now)?;
-                    expected_api_generations.insert((*api).into(), catalog.generation.get());
+                    expected_api_generations.insert(api.clone(), catalog.generation.get());
                 }
                 Err(error) => return Err(error),
             }
         }
         let input = DeploymentProvisioning {
             evidence: source.evidence.clone(),
-            participant_id: C::ID.into(),
+            participant_id: participant.into(),
             expected_api_generations,
             identity_public_key: source.public_key.clone(),
             resource_commitments: serde_json::json!({}),
@@ -310,8 +352,10 @@ impl SqliteAuthorizationStore {
         };
         // These are pending commitments, not an empty admitted binding. The
         // declaration-derived materializer must commit actual resources before CONNECT.
-        let request_hash =
-            Sha256::digest(format!("builtin:{}:{}", self.settings.instance_id, C::ID));
+        let request_hash = Sha256::digest(format!(
+            "builtin:{}:{}",
+            self.settings.instance_id, participant
+        ));
         let mut request_bytes = [0; 16];
         request_bytes.copy_from_slice(&request_hash[..16]);
         let provisioned = self.provision_deployment(
@@ -327,7 +371,7 @@ impl SqliteAuthorizationStore {
         // Ordinary mutation replay returns its historical result. Startup may
         // only use it if the provisioned identity still exists and is active.
         self.transaction(|connection| {
-            let current = source.lookup::<C>(connection, now)?;
+            let current = source.lookup(connection, now)?;
             if current.principal_id != provisioned.principal_id
                 || current.deployment_id != provisioned.deployment_id
                 || current.instance_id != provisioned.instance_id
