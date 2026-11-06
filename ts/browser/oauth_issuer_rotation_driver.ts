@@ -379,19 +379,18 @@ async function browser() {
     assert.equal(typeof authorization, "string");
     await page.goto(authorization as string);
     const signIn = page.getByRole("heading", { name: "Sign in", exact: true });
-    if (
-      await signIn.waitFor({ state: "visible", timeout: 2000 }).then(
-        () => true,
-        () => false,
-      )
-    ) {
+    const allow = page.getByRole("button", { name: "Allow", exact: true });
+    // The Portal shows sign-in, or the approval when already signed in. Wait
+    // for whichever it is; a guessed delay misreads a slow sign-in page.
+    await signIn.or(allow).first().waitFor();
+    if (await signIn.isVisible()) {
       await page.getByLabel("Username", { exact: true }).fill("admin");
       await page
         .getByLabel("Password", { exact: true })
         .fill("a strong bootstrap password");
       await page.getByRole("button", { name: "Sign in", exact: true }).click();
     }
-    await page.getByRole("button", { name: "Allow", exact: true }).click();
+    await allow.click();
     await page.waitForURL(
       (url) => url.origin === appOrigin && url.pathname === "/callback",
     );
