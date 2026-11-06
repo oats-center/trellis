@@ -244,14 +244,14 @@ nats_servers = []
 
 The units go in `~/.config/containers/systemd/`. `trellis.network`:
 
-```ini
+```toml
 [Network]
 NetworkName=trellis
 ```
 
 `trellis-nats-1.container`, and the same for `-2` and `-3`:
 
-```ini
+```toml
 [Container]
 ContainerName=trellis-nats-1
 Image=docker.io/library/nats:2.14.4-alpine
@@ -269,7 +269,7 @@ WantedBy=default.target
 
 `trellis.container`:
 
-```ini
+```toml
 [Unit]
 Requires=trellis-nats-1.service trellis-nats-2.service trellis-nats-3.service
 After=trellis-nats-1.service trellis-nats-2.service trellis-nats-3.service
