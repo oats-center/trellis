@@ -26,6 +26,15 @@ and this project adheres to
   run (`--external-nats`, `--quadlet`) through the proxy's WebSocket, trusting
   the proxy's certificate as the system does.
 
+- Browser apps ask for optional capabilities when they use them.
+  `TrellisClient.connect`'s `auth.approval` picks a redirect (the default) or a
+  popup. A popup approval widens the app's current grant, so the live connection
+  renews into it and the call goes through without leaving the page.
+  `auth.askForNewOptional` also asks on page load, once, about optional
+  capabilities the user hasn't been asked about. `/authorize` takes
+  `trellis_grant` to widen a grant, and token responses report each grant's
+  `requested_optional` capabilities.
+
 ### Changed
 
 - **Breaking:** `init --quadlet` runs NATS and Trellis in one Podman pod

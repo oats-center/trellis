@@ -306,11 +306,20 @@ type ParticipantAvailability<TContract extends GeneratedCaller> = Readonly<{
   resources: Readonly<Record<OptionalResource<TContract>, boolean>>;
 }>;
 
+/**
+ * Asks the user to approve optional capabilities an action needs, resolving
+ * true once the session holds them. Undefined when it can't ask.
+ */
+export type CallerApproval = (
+  capabilities: readonly string[],
+) => Promise<boolean> | undefined;
+
 /** Projects a private Trellis session into the selected flat caller vocabulary. */
 export function createCallerRuntime<TContract extends GeneratedCaller>(
   session: object,
   contract: TContract,
   resources: { kv?: object; store?: object } = {},
+  requestApproval?: CallerApproval,
 ): CallerRuntime<TContract> {
   const runtime = session as Trellis;
   const selections = getCallerRuntime(contract).actions;
@@ -380,6 +389,22 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
   for (const action of selections) {
     const unavailable = () =>
       selectedActionAvailabilityError(runtime.connection, action);
+    // An action needing an optional capability the user hasn't approved asks
+    // for it when the app has a way to, then runs once the session holds it.
+    // Nothing was sent before the ask, so running it then is not a retry.
+    const available = <T>(
+      run: () => AsyncResult<T, BaseError>,
+    ): AsyncResult<T, BaseError> => {
+      const error = unavailable();
+      if (!error) return run();
+      const asked = requestApproval?.(action.optionalCapabilities);
+      if (!asked) return AsyncResult.from(Promise.resolve(err(error)));
+      return AsyncResult.from(
+        asked.then(async (granted): Promise<Result<T, BaseError>> =>
+          granted && !unavailable() ? await run() : err(error),
+        ),
+      );
+    };
     switch (action.descriptor.kind) {
       case "rpc":
         {
@@ -395,14 +420,13 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
               input?: unknown,
               opts?: RequestOpts,
             ) => AsyncIterable<unknown>;
-          } = (input: unknown, opts?: RequestOpts) => {
-            const error = unavailable();
-            if (error) return AsyncResult.from(Promise.resolve(err(error)));
-            const response = runtime.request(action.name, input, opts);
-            return action.descriptor.download
-              ? AsyncResult.from(response.then(withReceiveGrant))
-              : response;
-          };
+          } = (input: unknown, opts?: RequestOpts) =>
+            available(() => {
+              const response = runtime.request(action.name, input, opts);
+              return action.descriptor.download
+                ? AsyncResult.from(response.then(withReceiveGrant))
+                : response;
+            });
           if (action.descriptor.pagination === "cursor") {
             request.pages = (input?: unknown, opts?: RequestOpts) =>
               cursorPages(request, input, opts);
@@ -424,21 +448,15 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
         caller[action.connectedName] = (
           input: unknown,
           opts?: LiveSubscribeOpts,
-        ) => {
-          const error = unavailable();
-          return error
-            ? AsyncResult.from(Promise.resolve(err(error)))
-            : runtime.liveHandle(action.name).input(input).subscribe(opts);
-        };
+        ) =>
+          available(() =>
+            runtime.liveHandle(action.name).input(input).subscribe(opts),
+          );
         break;
       case "event":
         if (action.direction === "publish") {
-          const publish = (event: Record<string, unknown>) => {
-            const error = unavailable();
-            return error
-              ? AsyncResult.from(Promise.resolve(err(error)))
-              : runtime.publish(action.name, event);
-          };
+          const publish = (event: Record<string, unknown>) =>
+            available(() => runtime.publish(action.name, event));
           publish.prepare = (event: Record<string, unknown>) =>
             runtime.prepare(action.name, event);
           caller[action.connectedName] = publish;
@@ -449,20 +467,18 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
               context: EventListenerContext,
             ) => unknown | Promise<unknown>,
             opts?: EventOpts,
-          ) => {
-            const error = unavailable();
-            return error
-              ? AsyncResult.from(Promise.resolve(err(error)))
-              : runtime.listenEvent(
-                  action.name,
-                  {},
-                  async (event, context) => {
-                    await handler(event, context);
-                    return ok(undefined);
-                  },
-                  opts,
-                );
-          };
+          ) =>
+            available(() =>
+              runtime.listenEvent(
+                action.name,
+                {},
+                async (event, context) => {
+                  await handler(event, context);
+                  return ok(undefined);
+                },
+                opts,
+              ),
+            );
         }
         break;
     }

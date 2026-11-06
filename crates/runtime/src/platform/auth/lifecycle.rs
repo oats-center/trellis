@@ -77,6 +77,10 @@ pub(crate) struct GrantApproval {
     pub(crate) remember: bool,
     pub(crate) remember_until: Option<i64>,
     pub(crate) expires_at: i64,
+    /// The app's current grant, which this approval widens instead of creating
+    /// another: same user, app, binding, DPoP key and Portal login. The app's
+    /// live sessions then renew into the wider authority without a new sign-in.
+    pub(crate) extends: Option<String>,
 }
 
 impl SqliteAuthorizationStore {
@@ -853,31 +857,97 @@ impl SqliteAuthorizationStore {
                     approved.push(cap);
                 }
             }
-            let grant = id();
-            connection.execute(
-                "INSERT INTO auth_oauth_grants(oauth_grant_id,principal_id,\
-                login_session_id,client_id,binding_kind,binding_value,\
-                durable_dpop_jkt,public_jwk_json,required_capabilities_json,\
-                optional_capabilities_json,approved_capabilities_json,\
-                consent_basis_json,created_at,expires_at,revoked_at,revision) \
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,1)",
-                params![
-                    grant,
-                    approval.principal_id,
-                    approval.login_session_id,
-                    approval.client_id,
-                    approval.binding_kind,
-                    approval.binding_value,
-                    approval.durable_dpop_jkt,
-                    json(&approval.public_jwk)?,
-                    json(&approval.selection.required)?,
-                    json(&approval.selection.optional)?,
-                    json(&approved)?,
-                    json(&consent_basis)?,
-                    now,
-                    approval.expires_at.min(login_expiry)
-                ],
-            )?;
+            let grant = if let Some(extended) = &approval.extends {
+                let current: Option<(String, String, String, String)> = connection
+                    .query_row(
+                        "SELECT required_capabilities_json,optional_capabilities_json,\
+                        approved_capabilities_json,consent_basis_json \
+                        FROM auth_oauth_grants \
+                        WHERE oauth_grant_id=?1 AND principal_id=?2 \
+                        AND login_session_id=?3 AND client_id=?4 \
+                        AND binding_kind=?5 AND binding_value=?6 \
+                        AND durable_dpop_jkt=?7 AND revoked_at IS NULL \
+                        AND expires_at>?8",
+                        params![
+                            extended,
+                            approval.principal_id,
+                            approval.login_session_id,
+                            approval.client_id,
+                            approval.binding_kind,
+                            approval.binding_value,
+                            approval.durable_dpop_jkt,
+                            now
+                        ],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    )
+                    .optional()?;
+                let (required, optional, held, basis) = current.ok_or(AuthError::Denied)?;
+                // Extending only adds. Everything the grant held stays, so its
+                // live sessions renew into wider authority and never lose any;
+                // disconnecting the app is how a user narrows it.
+                let mut required: Vec<String> = decode(&required)?;
+                for name in &approval.selection.required {
+                    if !required.contains(name) {
+                        required.push(name.clone());
+                    }
+                }
+                let mut optional: Vec<String> = decode(&optional)?;
+                optional.extend(approval.selection.optional.iter().cloned());
+                optional.retain(|name| !required.contains(name));
+                optional.sort();
+                optional.dedup();
+                let mut held: Vec<CapabilityAuthority> = decode(&held)?;
+                held.retain(|cap| {
+                    !approved
+                        .iter()
+                        .any(|added| added.capability_id == cap.capability_id)
+                });
+                held.extend(approved.iter().cloned());
+                let mut basis: BTreeMap<String, GrantConsentBasis> = decode(&basis)?;
+                basis.extend(consent_basis);
+                connection.execute(
+                    "UPDATE auth_oauth_grants \
+                    SET required_capabilities_json=?1,optional_capabilities_json=?2,\
+                    approved_capabilities_json=?3,consent_basis_json=?4,\
+                    revision=revision+1 \
+                    WHERE oauth_grant_id=?5",
+                    params![
+                        json(&required)?,
+                        json(&optional)?,
+                        json(&held)?,
+                        json(&basis)?,
+                        extended
+                    ],
+                )?;
+                extended.clone()
+            } else {
+                let grant = id();
+                connection.execute(
+                    "INSERT INTO auth_oauth_grants(oauth_grant_id,principal_id,\
+                    login_session_id,client_id,binding_kind,binding_value,\
+                    durable_dpop_jkt,public_jwk_json,required_capabilities_json,\
+                    optional_capabilities_json,approved_capabilities_json,\
+                    consent_basis_json,created_at,expires_at,revoked_at,revision) \
+                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,1)",
+                    params![
+                        grant,
+                        approval.principal_id,
+                        approval.login_session_id,
+                        approval.client_id,
+                        approval.binding_kind,
+                        approval.binding_value,
+                        approval.durable_dpop_jkt,
+                        json(&approval.public_jwk)?,
+                        json(&approval.selection.required)?,
+                        json(&approval.selection.optional)?,
+                        json(&approved)?,
+                        json(&consent_basis)?,
+                        now,
+                        approval.expires_at.min(login_expiry)
+                    ],
+                )?;
+                grant
+            };
             if approval.remember {
                 enqueue_scope(
                     connection,

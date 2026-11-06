@@ -78,7 +78,9 @@ stateDiagram-v2
 ```
 
 An OAuth grant is created when the user approves, lives until it expires or is
-revoked, and owns refresh families. Revoking a family retires every session
+revoked, and owns refresh families. An approval that names the app's current
+grant widens it instead (see `auth-protocol.md`): its approved capabilities only
+grow, and its revision advances. Revoking a family retires every session
 whose original family it was; revoking the grant revokes all of them.
 
 ## Entitlements

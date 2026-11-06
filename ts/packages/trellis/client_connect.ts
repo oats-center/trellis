@@ -23,7 +23,11 @@ import { getCallerRuntime } from "./participant_runtime/participant.ts";
 import type { AppRequestDescriptor } from "./generated_support.ts";
 import type { OwnAuthorityView } from "./own_authority.ts";
 import type { RuntimeApi } from "./participant_runtime/api.ts";
-import { createCallerRuntime, type CallerRuntime } from "./caller.ts";
+import {
+  createCallerRuntime,
+  type CallerApproval,
+  type CallerRuntime,
+} from "./caller.ts";
 import type { ClientOpts } from "./client.ts";
 import {
   Trellis,
@@ -41,6 +45,20 @@ export type ClientAuthOptions = {
   credentialHandle?: string;
   redirectTo: string;
   currentUrl?: string;
+  /**
+   * How to ask when the app uses an optional capability the user hasn't
+   * approved: leave for the approval page and come back (`"redirect"`, the
+   * default), or open it in a popup and carry on with the call once approved
+   * (`"popup"`). A blocked popup falls back to a redirect. Asks on page load
+   * always redirect.
+   */
+  approval?: "redirect" | "popup";
+  /**
+   * On page load, ask about optional capabilities the app requests that the
+   * user has never been asked about, such as ones a new version added. Off,
+   * they are asked for when the app first uses them.
+   */
+  askForNewOptional?: boolean;
 };
 /** Required authorization redirect, returned to the application's own navigation owner. */
 export type ClientAuthRequiredContext = { loginUrl: string; mode: "browser" };
@@ -112,6 +130,17 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
       try {
         if (args.request.kind !== "browser")
           throw new AuthError({ reason: "InvalidCredential" });
+        // An approval popup ends on the app's callback. The window that opened
+        // it holds the continuation and reads the outcome; this one only
+        // reports where it landed.
+        const landed = new URL(args.auth.currentUrl ?? location.href);
+        if (landed.searchParams.has("state") && sameOriginOpener()) {
+          window.opener.postMessage(
+            { type: APPROVAL_MESSAGE, href: landed.href },
+            location.origin,
+          );
+          return Result.err(new AuthError({ reason: "OAuthApprovalWindow" }));
+        }
         await initializeProtocolWasm();
         const opened = (
           await BrowserOAuthClient.open({
@@ -189,32 +218,53 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
         // grant is revoked and the user approves again; the approval screen
         // keeps their earlier choices and asks only about what is new.
         let outdated = false;
-        const resumed = callback
+        let unseen: string[] = [];
+        const install = async (admission: BrowserOAuthAdmission) => {
+          const details = admission.authorizationDetails;
+          const granted = details?.flatMap((detail) => detail.required);
+          outdated =
+            granted !== undefined &&
+            args.request.requiredCapabilities.some(
+              (capability) => !granted.includes(capability),
+            );
+          const requested = details?.every(
+            (detail) => detail.requested_optional !== undefined,
+          )
+            ? details.flatMap((detail) => detail.requested_optional ?? [])
+            : undefined;
+          if (!outdated && args.auth.askForNewOptional && requested) {
+            const asked = new Set([...requested, ...askedOptional(oauth)]);
+            unseen = args.request.optionalCapabilities.filter(
+              (capability) => !asked.has(capability),
+            );
+          }
+          if (!outdated && unseen.length === 0) await connectOAuth(admission);
+        };
+        let resumed = callback
           ? (await oauth.complete(currentUrl.href)).take()
-          : (
-              await oauth.resume(async (admission) => {
-                const granted = admission.authorizationDetails?.flatMap(
-                  (detail) => detail.required,
-                );
-                outdated =
-                  granted !== undefined &&
-                  args.request.requiredCapabilities.some(
-                    (capability) => !granted.includes(capability),
-                  );
-                if (!outdated) await connectOAuth(admission);
-              })
-            ).take();
+          : (await oauth.resume(install)).take();
+        // Declining more leaves the app as it was, on the grant already approved.
+        if (
+          callback &&
+          isErr(resumed) &&
+          resumed.error.reason === "OAuthAuthorizationDenied"
+        ) {
+          const kept = (await oauth.resume(install)).take();
+          if (!isErr(kept)) resumed = kept;
+        }
         if (!isErr(resumed) && outdated) {
           const revoked = await oauth.revoke();
           if (revoked.isErr()) return Result.err(revoked.error);
         }
-        if (isErr(resumed) || outdated) {
+        if (isErr(resumed) || outdated || unseen.length > 0) {
           await connected?.manager.close();
           if (
             isErr(resumed) &&
             resumed.error.reason !== "OAuthRecoveryRequired"
           )
             return Result.err(resumed.error);
+          // Asked once: declining leaves them unapproved without asking again.
+          if (unseen.length > 0) rememberAsked(oauth, unseen);
           const authorization = (
             await oauth.authorize(args.auth.redirectTo, {
               required: args.request.requiredCapabilities,
@@ -311,23 +361,87 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           await ownAuthority.refresh();
           if (!ownAuthority.current)
             throw new AuthError({ reason: "Unavailable" });
+          const request = {
+            required: args.request.requiredCapabilities,
+            optional: args.request.optionalCapabilities,
+          };
+          const redirectForApproval = async () => {
+            const url = (
+              await oauth.authorize(args.auth.redirectTo, request)
+            ).take();
+            if (isErr(url)) return;
+            if (args.onAuthRequired)
+              await args.onAuthRequired({ loginUrl: url, mode: "browser" });
+            else location.assign(url);
+          };
+          // The popup widens this session's own grant, so the live
+          // connection renews into the approved capabilities in place.
+          const approveInPopup = async (popup: Window): Promise<boolean> => {
+            try {
+              const lease = activeConnection.owner.own();
+              const grant = lease.authority.oauthGrantId;
+              lease.release();
+              if (!grant) return false;
+              const url = (
+                await oauth.authorize(args.auth.redirectTo, request, {
+                  extendGrant: grant,
+                })
+              ).take();
+              if (isErr(url)) return false;
+              popup.location.href = url;
+              const landed = await approvalCallback(
+                popup,
+                new URL(args.auth.redirectTo).pathname,
+              );
+              if (!landed) return false;
+              const approved = oauth.approvalOutcome(landed).take();
+              if (isErr(approved) || !approved) return false;
+              await activeConnection.refreshAuthority();
+              await ownAuthority.refresh();
+              return true;
+            } catch {
+              return false;
+            } finally {
+              popup.close();
+            }
+          };
+          let asking: Promise<boolean> | undefined;
+          const requestApproval: CallerApproval = () => {
+            if (asking) return asking;
+            // A popup only opens in the same turn as the user's action.
+            const popup =
+              args.auth.approval === "popup"
+                ? window.open("about:blank", APPROVAL_MESSAGE, POPUP_FEATURES)
+                : null;
+            if (!popup) {
+              void redirectForApproval();
+              return Promise.resolve(false);
+            }
+            asking = approveInPopup(popup).finally(() => {
+              asking = undefined;
+            });
+            return asking;
+          };
           return Result.ok(
-            Object.assign(createCallerRuntime(trellis, args.request), {
-              ownAuthority,
-              async logout(options?: ClientLogoutOptions) {
-                const revoked = await oauth.revoke();
-                if (revoked.isErr()) throw revoked.error;
-                await activeConnection.manager.close();
-                if (!options?.endPortalLogin) return;
-                const signOut = new URL(oauth.metadata.end_session_endpoint);
-                signOut.searchParams.set("client_id", args.auth.clientId);
-                signOut.searchParams.set(
-                  "post_logout_redirect_uri",
-                  options.returnTo ?? location.href,
-                );
-                location.assign(signOut);
+            Object.assign(
+              createCallerRuntime(trellis, args.request, {}, requestApproval),
+              {
+                ownAuthority,
+                async logout(options?: ClientLogoutOptions) {
+                  const revoked = await oauth.revoke();
+                  if (revoked.isErr()) throw revoked.error;
+                  await activeConnection.manager.close();
+                  if (!options?.endPortalLogin) return;
+                  const signOut = new URL(oauth.metadata.end_session_endpoint);
+                  signOut.searchParams.set("client_id", args.auth.clientId);
+                  signOut.searchParams.set(
+                    "post_logout_redirect_uri",
+                    options.returnTo ?? location.href,
+                  );
+                  location.assign(signOut);
+                },
               },
-            }),
+            ),
           );
         } catch (error) {
           await activeConnection.manager.close();
@@ -353,5 +467,100 @@ export class TrellisClient {
     args: TrellisClientConnectArgs<T>,
   ) {
     return connectClient(args);
+  }
+}
+
+/** Names the approval popup and the message it sends its opener. */
+const APPROVAL_MESSAGE = "trellis.approval";
+const POPUP_FEATURES = "popup,width=520,height=720";
+
+/** Whether this window was opened by another window of this app's origin. */
+function sameOriginOpener(): boolean {
+  try {
+    return (
+      window.opener !== null &&
+      window.opener !== window &&
+      window.opener.location.origin === location.origin
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolves with the app callback URL `popup` reaches, from its message or by
+ * watching it arrive, or undefined once the popup closes or the approval's
+ * ten minutes run out.
+ */
+function approvalCallback(
+  popup: Window,
+  path: string,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + 600_000;
+    const finish = (href: string | undefined) => {
+      clearInterval(timer);
+      removeEventListener("message", onMessage);
+      resolve(href);
+    };
+    const onMessage = (event: MessageEvent<unknown>) => {
+      const data = event.data;
+      if (
+        event.source === popup &&
+        event.origin === location.origin &&
+        typeof data === "object" &&
+        data !== null &&
+        "type" in data &&
+        data.type === APPROVAL_MESSAGE &&
+        "href" in data &&
+        typeof data.href === "string"
+      )
+        finish(data.href);
+    };
+    addEventListener("message", onMessage);
+    const timer = setInterval(() => {
+      if (popup.closed || Date.now() > deadline) return finish(undefined);
+      try {
+        const at = new URL(popup.location.href);
+        if (
+          at.origin === location.origin &&
+          at.pathname === path &&
+          at.searchParams.has("state")
+        )
+          finish(at.href);
+      } catch {
+        // Still on the approval page, another origin.
+      }
+    }, 200);
+  });
+}
+
+/** Where this app remembers the optional capabilities it has asked about. */
+function askedKey(oauth: BrowserOAuthClient): string {
+  const { issuer, clientId, credentialHandle } = oauth.scope;
+  return `trellis.askedOptional:${JSON.stringify([issuer, clientId, credentialHandle])}`;
+}
+
+function askedOptional(oauth: BrowserOAuthClient): string[] {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(askedKey(oauth)) ?? "[]",
+    );
+    return Array.isArray(value)
+      ? value.filter((item) => typeof item === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberAsked(oauth: BrowserOAuthClient, asked: string[]): void {
+  try {
+    localStorage.setItem(
+      askedKey(oauth),
+      JSON.stringify([...new Set([...askedOptional(oauth), ...asked])]),
+    );
+  } catch {
+    // Without storage the app asks again on its next load.
   }
 }

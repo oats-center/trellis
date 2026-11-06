@@ -44,8 +44,14 @@ distinct from arbitrary applications sharing a loopback origin.
 The Trellis origin, where no application runs, owns login cookies, local/OIDC authentication, and
 consent. An existing valid login can authenticate a new consent decision without
 another password or provider login. Consent does not create missing account
-entitlement, extend a login, or widen a retained grant. Revised capability meaning
-and incompatible application APIs require current eligibility and fresh consent.
+entitlement or extend a login. It widens a retained grant only when the app names
+that grant (`trellis_grant` on `/authorize`) and the user approves the request on
+the consent screen. The grant must belong to the same user, client, binding,
+DPoP key and login. Anything else is refused, never turned into a new grant.
+Widening only adds: the grant keeps what it held, so its sessions renew into the
+wider authority on the same refresh family and logical session. Revised
+capability meaning and incompatible application APIs require current eligibility
+and fresh consent.
 
 Native authorization uses Device Code and durable Node/Rust credential custody;
 browser custody uses IndexedDB. Bind every token exchange to the correct client,

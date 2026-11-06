@@ -476,6 +476,7 @@ pub(super) fn grant_request(
         remember: true,
         remember_until: None,
         expires_at: now + 3600,
+        extends: None,
     }
 }
 

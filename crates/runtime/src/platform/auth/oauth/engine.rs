@@ -563,13 +563,15 @@ impl OAuthEngine {
                         .iter()
                         .map(|capability| capability.capability_id.clone())
                         .collect();
+                    // An extended grant holds more than this approval chose.
                     let details = vec![serde_json::json!({
                         "type":"trellis_capabilities",
-                        "required":approval.selection.required,
+                        "required":current.selection.required,
                         "optional": approved
                                 .into_iter()
-                                .filter(|name| !approval.selection.required.contains(name))
-                                .collect::<Vec<_>>()
+                                .filter(|name| !current.selection.required.contains(name))
+                                .collect::<Vec<_>>(),
+                        "requested_optional":current.selection.optional
                     })];
                     Ok(serde_json::to_string(&details)?)
                 })
@@ -698,7 +700,10 @@ impl OAuthEngine {
                     "optional": approved
                             .into_iter()
                             .filter(|name| !current.selection.required.contains(name))
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<_>>(),
+                    // Declined optional capabilities too, so an app can tell
+                    // which of its optional capabilities the user hasn't seen.
+                    "requested_optional":current.selection.optional
                 })];
                 let actual = serde_json::Value::Array(actual);
                 Ok((signed, actual, expires))

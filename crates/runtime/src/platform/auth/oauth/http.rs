@@ -459,6 +459,15 @@ async fn authorize(
     if super::RequestedAuthority::parse(details).is_err() {
         return error(ErrorCode::InvalidRequest);
     }
+    // An app asking for more names its current grant, which approval widens.
+    let mut extended = pairs.iter().filter(|(key, _)| key == "trellis_grant");
+    if extended
+        .next()
+        .is_some_and(|(_, grant)| ulid::Ulid::from_string(grant).is_err())
+        || extended.next().is_some()
+    {
+        return error(ErrorCode::InvalidRequest);
+    }
     let mut keys = pairs.iter().filter(|(key, _)| key == "trellis_dpop_jwk");
     let Some((_, key)) = keys.next() else {
         return error(ErrorCode::InvalidRequest);
@@ -1204,6 +1213,13 @@ async fn complete_approval(
         remember,
         remember_until: None,
         expires_at: login.expires_at,
+        extends: match &flow.request {
+            super::portal::ConsentRequest::Authorization(pairs) => pairs
+                .iter()
+                .find(|(key, _)| key == "trellis_grant")
+                .map(|(_, grant)| grant.clone()),
+            super::portal::ConsentRequest::Device { .. } => None,
+        },
     };
     let digest = match super::super::sqlite::digest(&approval) {
         Ok(digest) => digest,

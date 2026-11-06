@@ -424,3 +424,65 @@ fn trusted_browser_preapproval_is_subset_bound_and_native_clients_need_explicit_
         "trust in the client cannot approve capabilities outside its configured subset"
     );
 }
+
+#[test]
+fn extending_a_grant_widens_its_live_session_only_from_the_same_login() {
+    let f = fixture();
+    let login = |principal: &str, now: i64| {
+        f.store
+            .transaction(|connection| {
+                SqliteAuthorizationStore::record_verified_login_in(
+                    connection,
+                    &VerifiedLogin {
+                        principal_id: principal.into(),
+                        provider_id: None,
+                        upstream_issuer: None,
+                        upstream_subject: None,
+                        verified_claims: None,
+                        expires_at: NOW + 3600,
+                    },
+                    now,
+                )
+            })
+            .unwrap()
+    };
+    let first = login(&f.principal, NOW);
+    let mut request = grant_request(&f.principal, &first, &f.read, &f.write, NOW);
+    request.approved = vec![f.read.clone()];
+    request.declined = vec![f.write.clone()];
+    let grant = f
+        .store
+        .approve_grant(&mutation(&f.principal, &request), &request, NOW)
+        .unwrap();
+    let mut admission = f.admission.clone();
+    admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
+    admission.credential = Credential::OAuthGrant(grant.clone());
+    let issued = issue_authority(&f.store, &admission, None, NOW).unwrap();
+    let session = issued.authority.unsigned.authorization_session_id.clone();
+    let holds_write = |capabilities: &[trellis_protocol::CapabilityAuthority]| {
+        capabilities.iter().any(|cap| cap.capability_id == f.write)
+    };
+    assert!(!holds_write(&issued.authority.unsigned.capabilities));
+    let widen = |principal: &str, login: &str| {
+        let mut wider = grant_request(principal, login, &f.read, &f.write, NOW + 1);
+        wider.extends = Some(grant.clone());
+        wider.remember = false;
+        f.store
+            .approve_grant(&mutation(principal, &wider), &wider, NOW + 1)
+    };
+    // A later sign-in of the same person can't widen it, nor can another
+    // person, and the session gains nothing from either attempt.
+    let later = login(&f.principal, NOW + 1);
+    assert!(matches!(
+        widen(&f.principal, &later),
+        Err(AuthError::Denied)
+    ));
+    assert!(widen(&f.admin, &login(&f.admin, NOW + 1)).is_err());
+    let unchanged = issue_authority(&f.store, &admission, Some(&session), NOW + 1).unwrap();
+    assert!(!holds_write(&unchanged.authority.unsigned.capabilities));
+    assert_eq!(widen(&f.principal, &first).unwrap(), grant);
+    // The same logical session renews into the wider authority.
+    let renewed = issue_authority(&f.store, &admission, Some(&session), NOW + 1).unwrap();
+    assert_eq!(renewed.authority.unsigned.authorization_session_id, session);
+    assert!(holds_write(&renewed.authority.unsigned.capabilities));
+}

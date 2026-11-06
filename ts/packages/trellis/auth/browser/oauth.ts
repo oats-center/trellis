@@ -52,6 +52,8 @@ const tokenSchema = z.object({
         type: z.literal("trellis_capabilities"),
         required: z.array(z.string()),
         optional: z.array(z.string()),
+        /** Every optional capability the grant asked for, declined ones too. */
+        requested_optional: z.array(z.string()).optional(),
       }),
     )
     .optional(),
@@ -202,10 +204,15 @@ export class BrowserOAuthClient {
     });
   }
 
-  /** Build a PKCE authorization URL and retain only this tab's continuation. */
+  /**
+   * Build a PKCE authorization URL and retain only this tab's continuation.
+   * With `extendGrant`, approval widens that grant of this app instead of
+   * creating another, so its live session gains what the user approves.
+   */
   async authorize(
     redirectUri: string,
     capabilities: BrowserCapabilityRequest,
+    options: { extendGrant?: string } = {},
   ): Promise<Result<string, AuthError>> {
     try {
       const redirect = new URL(redirectUri);
@@ -255,6 +262,7 @@ export class BrowserOAuthClient {
             optional: capabilities.optional,
           },
         ]),
+        ...(options.extendGrant ? { trellis_grant: options.extendGrant } : {}),
       }).toString();
       return ok(url.href);
     } catch {
@@ -305,6 +313,33 @@ export class BrowserOAuthClient {
       );
     } catch {
       return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+    }
+  }
+
+  /**
+   * Whether the user approved an extension whose callback reached another
+   * window, checked against this tab's continuation like {@link complete}.
+   * The code is not exchanged: the extended grant already holds the approval.
+   */
+  approvalOutcome(callback: string): Result<boolean, AuthError> {
+    try {
+      const raw = sessionStorage.getItem(this.#pendingKey());
+      if (!raw) return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+      const pending = pendingSchema.parse(JSON.parse(raw));
+      const url = new URL(callback);
+      const redirect = new URL(pending.redirectUri);
+      if (
+        Date.now() - pending.createdAt > 600_000 ||
+        url.origin !== redirect.origin ||
+        url.pathname !== redirect.pathname ||
+        url.searchParams.getAll("state").length !== 1 ||
+        url.searchParams.get("state") !== pending.state
+      )
+        return err(new AuthError({ reason: "InvalidOAuthCallback" }));
+      sessionStorage.removeItem(this.#pendingKey());
+      return ok(url.searchParams.has("code") && !url.searchParams.has("error"));
+    } catch {
+      return err(new AuthError({ reason: "InvalidOAuthCallback" }));
     }
   }
 

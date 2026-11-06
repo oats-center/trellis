@@ -1571,6 +1571,24 @@ now requires one the grant lacks, `connect` revokes that grant and sends the
 user to approve again (`onAuthRequired`, or a redirect), instead of connecting
 with authority that can never cover the request. The approval screen keeps the
 user's earlier choices, so only the new capabilities need a decision.
+
+Optional capabilities wait until the app uses them. Calling an RPC, live query
+or event whose optional capability the user hasn't approved asks then, set by
+`auth.approval`:
+
+- `"redirect"` (default): the call fails with `ActionUnavailable` and the page
+  goes to the approval screen (or `onAuthRequired`), returning to `redirectTo`.
+- `"popup"`: the approval screen opens in a popup. Once approved, the app's
+  current grant has widened, the live connection renews into it, and the same
+  call goes through; declined or closed, the call fails with `ActionUnavailable`.
+  A blocked popup falls back to a redirect. The popup lands on `redirectTo`,
+  where `connect` hands the result to the opening window and returns
+  `OAuthApprovalWindow`. Operations don't ask; check `availability()` first.
+
+`auth.askForNewOptional: true` also asks on page load about optional
+capabilities the user has never been asked about, such as ones a new app
+version added. It asks once: declining keeps the app on its current grant and
+doesn't ask again on later loads. Asks on page load always redirect.
 Browser IndexedDB version 3 persists only the initiating session seed, nullable
 login metadata, pending signed intent/intent ID, and generation tombstone, keyed
 by canonical origin plus stable participant ID; compare-and-swap fences prevent

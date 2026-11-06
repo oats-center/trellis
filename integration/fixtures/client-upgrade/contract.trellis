@@ -16,3 +16,6 @@ agent Caller {
 app BrowserCaller {
   use upgrade { required capability documents.read; }
 }
+app OptionalCaller {
+  use upgrade { required capability echo.call; capability documents.read; }
+}
