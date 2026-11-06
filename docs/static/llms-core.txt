@@ -202,66 +202,63 @@ themselves: `trellis upgrade` and `trellis-server upgrade`
 
 ### Installation and first start
 
-Plain `trellis-server` uses the installation in `~/.config/trellis` (or
-`/etc/trellis` with `--system`). When none exists it asks the questions
-`init` would (who runs NATS, localhost development or other machines, then
-hostnames, ports and certificates) and prints the matching `init` command;
-`--init` creates a localhost development installation (plain HTTP on loopback)
-without asking, and without a terminal it fails with a message instead. `trellis-server init` creates one with chosen
-hostnames and ports. `init --dev --host <name>` creates a development
-installation other machines can use: one generated certificate covers the
-Trellis port (sign-in, and NATS for every WebSocket upgrade) and the Console's
-port. It is never a production setup. `init --user` (the default) and
-`init --system` (root's default on Linux) put data in the profile's XDG or FHS
-folders. `init <dir>` writes a self-contained installation that keeps
-everything the server writes in `<dir>/var`; start it with
-`trellis-server --config <dir>`; `init <dir> --quadlet` also writes Podman
-Quadlet units that run it as rootless NATS and Trellis containers on a
-network of their own; Trellis reaches NATS there by the container's name,
-plaintext with `--tls proxy`. Rootless Podman hides the address of whoever
-connects, so behind a proxy Trellis accepts that network and the firewall
-must admit only the proxy to the published ports. Several bundles can share a
-host. An installation is
-`config.toml`, `secrets.toml` (every private key, owner-only), `nats.conf` and
-`tls/`. `trellis-server nats <system|trellis> <args>` runs the `nats` CLI as
-that installation user; `--print` prints its creds instead.
+An installation is a `config.toml` a person writes and the `secrets.toml`
+Trellis creates beside it on its first start (every private key, owner-only).
+`trellis-server config example` prints a commented `config.toml`. Plain
+`trellis-server` uses `~/.config/trellis` (`/etc/trellis` with `--system`,
+root's default on Linux), with data in the profile's XDG or FHS folders;
+`--config <dir>` names a folder installation, which keeps everything the
+server writes in `<dir>/var`. A start without `config.toml` stops and says so.
 
-`[nats] managed = true`, which `init` writes unless given `--external-nats`,
-makes `trellis-server` start and stop the NATS server described by the
-installation's `nats.conf`; without it the server connects to `[nats] servers`.
-A managed start uses `nats-server` from `PATH`, otherwise asks before
-downloading the pinned, checksum-verified release; `--nats-download` downloads
-without asking and `--local-nats=<path>` names an exact binary.
+NATS belongs to an operator. Trellis takes the system account user's creds
+(`[nats] system_credentials`) and an operator signing key seed
+(`[nats] operator_signing_key`), signs its own `AUTH` and `TRELLIS` accounts
+with the key, and sends them to the servers on every start, so the servers
+need a `full` resolver. `trellis-server nats new [--servers 3] [--hosts
+a,b,c] [--listen <ip>] --out <dir>` makes an operator and every server's config
+for a new cluster (a cluster needs three or more servers; `--servers 1` makes
+a single server) and prints the `[nats]` section. With `nsc`, `nsc edit
+operator --sk generate` makes the signing key and `nsc generate creds
+--account SYS` the system user. `[nats] servers` must be `tls://` unless it is
+loopback or `private_network = true` (a container network only the
+installation uses). `trellis-server nats <system|trellis|auth> <args>` runs the
+`nats` CLI as that user; `--print` prints its creds instead.
+`trellis-server admin [--config <dir>]` seeds the administrator without
+starting the server or NATS.
+
+`trellis-server --dev` runs a development installation in
+`<user data>/trellis/dev` (or `--config <dir>`), creating it the first time:
+plain HTTP on `localhost:3000`, or with `--host <name>` generated TLS for that
+name with clients offered only the WebSocket. Only a development installation
+runs its own NATS (`[nats] managed = true`): from `PATH`, otherwise it asks
+before downloading the pinned, checksum-verified release; `--nats-download`
+downloads without asking and `--local-nats=<path>` names an exact binary.
+`--local-nats-ports=4223,8223,8081` moves its NATS client, monitor and
+WebSocket ports for one run. It is never a production setup.
 
 ### TLS
 
-Trellis listeners use TLS. A production `trellis-server init` takes
-`--tls supplied` with certificates clients already trust; `--dev` and
-`--tls generated` (labs and tests) generate a name-constrained installation CA
-and short-lived certificates instead. `--tls proxy` is for an HTTPS proxy that
-holds every certificate: `init` generates none, Trellis and the NATS WebSocket
-serve plaintext to the `--trusted-proxy` networks, and native NATS is
-plaintext on loopback only, so it needs `--nats-websocket-only`. Otherwise
-plaintext exists only in explicit loopback development
-(`--tls loopback-development`). Tests that need the
-production layout supply certificates from
+`[http.transport] mode` is `tls` (supplied certificate files, reloaded when
+replaced), `proxy` (an HTTPS proxy in front sends plain HTTP; `trusted_proxies`
+optionally limits peers to its networks), `generated` (development and tests:
+a name-constrained CA and certificate Trellis makes in its data folder and
+renews within 30 days of expiry), or `loopback_development` (plain HTTP on
+loopback). `generated` warns in the log, the Console and the sign-in pages.
+Tests that need the production layout supply certificates from
 `trellis-server tls issue --out <dir> --host <name>`, which writes
-`server.crt`, `server.key` and the single-use `ca.crt` that issued them. Clients
-trust a generated or other private CA only explicitly, after verifying its
-SHA-256 fingerprint (`trellis-server tls status`) out of band: never disable
-certificate verification and never accept a CA from broker or metadata
-responses. Generated leaves expire after 90 days; `trellis-server tls renew [--config <dir>]` replaces them without changing
-client trust. An installation has one HTTP listener at the Trellis origin
-(`--trellis-origin`: sign-in, the address the CLI, services, devices and apps
-connect to, and the bundled Console at `/console`). `--console-origin` gives the
-Console a hostname of its own, pointed at the same port, so its pages run apart
-from sign-in. It may run behind an HTTPS-terminating proxy with
-`--trusted-proxy`; native NATS terminates its own TLS or, with `--tls proxy`,
-stays on loopback. Trellis reaches a NATS server it doesn't run
-(`--external-nats`) through such a proxy with `--nats-server-url wss://<host>`,
-checking the proxy's certificate against the system trust store. It requires HTTPS
-outside explicit loopback development. Browser origins are trusted from
-registered clients' redirect URIs, never from server configuration.
+`server.crt`, `server.key` and the single-use `ca.crt` that issued them.
+Clients trust a generated or other private CA only explicitly, after verifying
+its SHA-256 fingerprint (`trellis-server tls status`) out of band: never
+disable certificate verification and never accept a CA from broker or metadata
+responses. An installation has one HTTP listener at `[http] public_origin`
+(sign-in, the address the CLI, services, devices and apps connect to, and the
+bundled Console at `/console`). `[console] origin` gives the Console a hostname
+of its own, pointed at the same port, so its pages run apart from sign-in.
+NATS TLS is the NATS operator's; `[nats] ca_certificate` names a private CA
+Trellis trusts for it. Trellis reaches NATS through an HTTPS proxy with
+`servers = "wss://<host>"`, checking the proxy's certificate against the
+system trust store. Browser origins are trusted from registered clients'
+redirect URIs, never from server configuration.
 
 Rust participants put a private CA in `RuntimeAuthorizationTrust.root_certificates`
 or pass it to `discover_native_oauth(origin, &[ca_path])`. Node participants
@@ -269,15 +266,15 @@ start with `NODE_EXTRA_CA_CERTS=<ca path>`. `trellis login <trellis-origin>`
 shows an untrusted CA's fingerprint and pins it once accepted (prompt, or
 `--ca-fingerprint <sha256>`); `--ca-certificate <ca path>` trusts a CA file
 directly. A pinned CA that changes is a hard error. Browsers trust the CA
-through the operating system or browser trust store. With generated TLS,
-`trellis-server init` has the Trellis port hand every WebSocket upgrade to NATS,
-advertising `wss://<trellis host>` (`--nats-websocket direct` opts out), so one
-host and certificate cover both. A proxy in front, even on another machine, can
-apply the same rule (`--nats-websocket-url wss://<trellis host>
---nats-websocket-behind-proxy`); NATS then serves its plaintext WebSocket on
-every interface, so firewall that port to the proxy. `trellis-server init --nats-websocket-only`
-offers clients only the WebSocket; the CLI, services and devices then connect
-over it, so only HTTPS needs to be public.
+through the operating system or browser trust store. With
+`[http] nats_websocket_upstream = "<host>:<port>"`, the Trellis port hands every
+WebSocket upgrade to that NATS WebSocket listener and advertises
+`wss://<trellis host>`, so one host and certificate cover both. A proxy in
+front can apply the same rule itself. `[client] nats_servers = []` offers
+clients only the WebSocket; the CLI, services and devices then connect over
+it, so only HTTPS needs to be public. Every client presents the sentinel user
+JWT the OAuth metadata publishes as `trellis.natsSentinel`, so NATS hands the
+connection to Trellis's auth callout.
 
 ### OAuth portal and issuer custody
 
@@ -310,7 +307,7 @@ password, startup emits `adminAccountUrl`, a one-time password-setup link on the
 Trellis origin that expires after five minutes; no default password
 exists. Startup flags `--admin-username`, `--admin-password`, and
 `--admin-password-stdin` configure fresh credentials. Explicit initialization
-uses `trellis-server init admin [--config <dir>]` with `--username` (default `admin`),
+uses `trellis-server admin [--config <dir>]` with `--username` (default `admin`),
 optional `--password`, or `--password-stdin`. Until password setup, each startup
 prints a fresh link and invalidates prior links. After setup, restarts preserve
 credentials and print no link. Explicit `--reset-admin` issues a replacement
@@ -396,11 +393,10 @@ records, so retain existing installations unchanged and use fresh
 development/test state. Unsupported records fail visibly; the runtime never
 deletes or recreates them as empty state.
 
-For multiple local managed-NATS servers, give each its own `init <dir>` installation
-with its own HTTP and NATS ports; `--local-nats-ports=4223,8223,8081` overrides
-a bundle's NATS client, monitor, and WebSocket ports for one run. The default
-set is 4222/8222/8080; generated local configs use a 30-second owner lease
-renewed every 5 seconds.
+For several development installations on one machine, give each its own
+`--dev --config <dir>` folder, then its own `[http] port` and `nats.conf`
+ports. The development defaults are 3000/4222/8222/8080; installations use a
+30-second owner lease renewed every 5 seconds.
 
 ### Health
 

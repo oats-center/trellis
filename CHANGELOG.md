@@ -8,47 +8,63 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.100.0-rc.25] - 2026-11-05
+## [0.100.0-rc.25] - 2026-11-06
 
 ### Added
 
+- `trellis-server nats new [--servers 3] [--hosts a,b,c] --out <dir>` makes a
+  NATS operator and every server's config for a new cluster, plus the system
+  user (`system.creds`) and a signing key for Trellis
+  (`trellis-operator.nk`), and prints the `[nats]` section for Trellis.
+- `[nats] system_credentials` and `[nats] operator_signing_key` hand Trellis
+  the NATS operator's system user and a signing key. Trellis creates its
+  `AUTH` and `TRELLIS` accounts with them on its first start and sends them to
+  the servers on every start, so the servers need a `full` resolver.
+- `trellis-server config example` prints a commented `config.toml`.
+- `trellis-server --dev [--host <name>]` runs a development installation,
+  creating it in `<user data>/trellis/dev` (or `--config <dir>`) the first
+  time. It is the only kind where Trellis runs NATS.
+- `[http.transport] mode = "proxy"` serves plain HTTP behind an HTTPS proxy.
+  `trusted_proxies` is optional: without it every peer is served, for a
+  network that already admits only the proxy.
+- `[nats] servers` may name `wss://<host>`, so Trellis reaches NATS through a
+  proxy's WebSocket, trusting the proxy's certificate as the system does.
 - `trellis sign-in providers list|show|add|edit|disable|remove` manages company
   identity providers from the CLI. `list` and `add` print each provider's ID,
   which `trellis users find --provider` takes, and the callback URL to register
   with the provider. The client secret is read from `--client-secret-file`
   (`-` for standard input).
-- `trellis-server init --tls proxy` sets up an installation whose HTTPS proxy
-  holds every certificate. No certificates are generated: Trellis and the NATS
-  WebSocket serve plaintext to the `--trusted-proxy` networks, and native NATS
-  is plaintext on loopback only, where Trellis reaches it. It needs
-  `--nats-websocket-only`. The setup wizard offers it too.
-- `--nats-server-url wss://<host>` lets Trellis reach a NATS server it doesn't
-  run (`--external-nats`, `--quadlet`) through the proxy's WebSocket, trusting
-  the proxy's certificate as the system does.
-
 - Browser apps can ask for optional capabilities when the person uses them.
   With `TrellisClient.connect`'s `auth.approval` set to `"redirect"` or
-  `"popup"`, a call made from a click or key press asks; calls the app makes by
-  itself never do. A popup approval widens the app's current grant, so the live connection
-  renews into it and the call goes through without leaving the page.
-  `auth.askForNewOptional` also asks on page load, once, about optional
-  capabilities the user hasn't been asked about. `/authorize` takes
+  `"popup"`, a call made from a click or key press asks; calls the app makes
+  by itself never do. A popup approval widens the app's current grant, so the
+  live connection renews into it and the call goes through without leaving
+  the page. `auth.askForNewOptional` also asks on page load, once, about
+  optional capabilities the user hasn't been asked about. `/authorize` takes
   `trellis_grant` to widen a grant, and token responses report each grant's
   `requested_optional` capabilities.
+- `availability().declined` marks each optional capability the user was asked
+  about and didn't approve.
 
 ### Changed
 
-- `init --quadlet` picks a private range for the containers' network itself.
-  It used the `--trusted-proxy` range, so `--trusted-proxy 172.31.0.0/16` on
-  an AWS instance gave the network the VPC's own range. Behind a proxy
-  (`--tls proxy` or `--trusted-proxy`), Trellis now accepts connections from
-  that network: rootless Podman delivers every published connection from the
-  network's own address, so the firewall decides who reaches the ports.
-  Trellis reaches NATS by the container's name, so `--host` is no longer
-  required.
-- Plaintext `nats://` in `[nats] servers` is accepted for loopback addresses in
-  every mode, not only loopback development, and for any address with
-  `[nats] private_network = true`, which `init --quadlet --tls proxy` writes.
+- **Breaking:** `trellis-server init`, `init admin`, the first-start
+  questions, `--init` and `init --quadlet` are gone. A person writes
+  `config.toml`; the first start creates `secrets.toml` beside it.
+  `trellis-server admin` replaces `init admin` and runs without NATS. The
+  production guide has Podman Quadlet units for three NATS containers and
+  Trellis.
+- **Breaking:** `[nats] managed = true` only runs with `--dev`.
+- **Breaking:** clients present the NATS sentinel user, which the OAuth
+  metadata publishes as `trellis.natsSentinel`, and NATS servers carry no
+  `default_sentinel`. `TrellisDevice.connect` takes `natsSentinel`, from
+  `discoverNativeOAuth`.
+- **Breaking:** `mode = "generated"` keeps its CA in the data folder's `tls/`
+  and only covers the Trellis listener; NATS TLS is the operator's. The server
+  renews the certificate itself within 30 days of expiry, so
+  `trellis-server tls renew` is gone.
+- Plaintext `nats://` in `[nats] servers` is accepted for loopback addresses
+  in every mode, and for any address with `[nats] private_network = true`.
 - A capability's action may be dotted: `capability activation.confirmations.read`
   compiles, where the IDL used to require exactly `area.action`. The first part
   is still the area Console groups by, and Console labels the whole action.
@@ -60,9 +76,11 @@ and this project adheres to
   capability and signing in again didn't help: the Portal's sign-out leaves app
   grants alone. `TrellisClient.connect` now revokes a stored grant that doesn't
   cover the app's required capabilities and asks the user to approve again.
-- `init --quadlet --nats-websocket-only` no longer publishes native NATS on the
-  host, and plaintext behind a proxy is published only at `--bind-address`
-  (loopback by default) instead of every address.
+- `--local-nats-ports` moved the managed NATS server, but Trellis still
+  connected to the ports in `[nats] servers` while creating its accounts.
+- A development installation relaying NATS WebSockets served them over TLS
+  when its `nats.conf` named certificates, which the plaintext relay can't
+  reach.
 
 ## [0.100.0-rc.24] - 2026-11-05
 

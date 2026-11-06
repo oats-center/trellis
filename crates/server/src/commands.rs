@@ -175,7 +175,13 @@ pub(crate) struct NatsNewArgs {
     /// The operator's name.
     #[arg(long, default_value = "Trellis")]
     pub(crate) name: String,
-    /// Client port of the first server; each further server takes the next.
+    /// The hostname of each server, such as its container's name, one per
+    /// --servers. Each then listens on the same ports on its own host, and
+    /// the servers route to each other by these names.
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) hosts: Vec<String>,
+    /// Client port of the first server; without --hosts each further server
+    /// takes the next.
     #[arg(long, default_value_t = 4222)]
     pub(crate) client_port: u16,
     /// Cluster route port of the first server.
@@ -225,6 +231,7 @@ pub(crate) fn nats(args: NatsArgs) -> miette::Result<()> {
 /// The ports server `index` (from 0) of a `nats new` cluster listens on:
 /// client, cluster routes, WebSocket and monitoring.
 fn cluster_ports(args: &NatsNewArgs, index: u16) -> (u16, u16, u16, u16) {
+    let index = if args.hosts.is_empty() { index } else { 0 };
     (
         args.client_port + index,
         args.cluster_port + index,
@@ -236,6 +243,13 @@ fn cluster_ports(args: &NatsNewArgs, index: u16) -> (u16, u16, u16, u16) {
 fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
     if args.servers == 0 || args.servers > 32 {
         return Err(miette!("--servers must be between 1 and 32"));
+    }
+    if !args.hosts.is_empty() && args.hosts.len() != usize::from(args.servers) {
+        return Err(miette!(
+            "--hosts names {} servers, but --servers is {}",
+            args.hosts.len(),
+            args.servers
+        ));
     }
     if args.out.exists()
         && std::fs::read_dir(&args.out)
@@ -251,6 +265,13 @@ fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
     let host = match args.listen {
         std::net::IpAddr::V6(ip) => format!("[{ip}]"),
         ip => ip.to_string(),
+    };
+    // Where server `index` is reached: its own host, or the shared address.
+    let reach = |index: u16| {
+        args.hosts
+            .get(usize::from(index))
+            .cloned()
+            .unwrap_or_else(|| host.clone())
     };
     let tls = match (&args.tls_certificate, &args.tls_private_key) {
         (Some(certificate), Some(key)) => Some(format!(
@@ -275,7 +296,13 @@ fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
         let cluster_block = if args.servers > 1 {
             let routes = (0..args.servers)
                 .filter(|other| *other != index)
-                .map(|other| format!("nats-route://{host}:{}", cluster_ports(args, other).1))
+                .map(|other| {
+                    format!(
+                        "nats-route://{}:{}",
+                        reach(other),
+                        cluster_ports(args, other).1
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
@@ -311,7 +338,13 @@ fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
         .map_err(bootstrap_report)?;
     let scheme = if tls.is_some() { "tls" } else { "nats" };
     let servers = (0..args.servers)
-        .map(|index| format!("{scheme}://{host}:{}", cluster_ports(args, index).0))
+        .map(|index| {
+            format!(
+                "{scheme}://{}:{}",
+                reach(index),
+                cluster_ports(args, index).0
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     if args.format == OutputFormat::Json {

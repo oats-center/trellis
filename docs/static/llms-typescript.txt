@@ -109,7 +109,9 @@ address another installation in the process already trusts with a different
 certificate fails discovery with `CertificateConflict`. A device remembers the
 addresses its installation advertised beside the accepted certificate, so
 `TrellisDevice.connect` in a later start trusts it only there; run
-`discoverNativeOAuth` once after activation to record them.
+`discoverNativeOAuth` once after activation to record them. Pass the
+discovered `natsSentinel` to `TrellisDevice.connect` with its servers and
+trust; NATS needs it to hand the connection to Trellis.
 
 Node native applications import `@oatscenter/trellis/native`, not browser
 custody. Use `discoverNativeOAuth`, `NativeOAuthClient.open` with explicit scope
@@ -386,7 +388,9 @@ browser's user activation). Calls the app makes by itself, such as loading a
 page, never ask: they fail with `ActionUnavailable`, so an app can show "no
 permission" for a capability the user can't hold. Without `auth.approval`, no
 call asks. `availability()` and `watchAvailability()` say which optional
-capabilities the session holds.
+capabilities the session holds (`capabilities`) and which the user was asked
+about and didn't approve (`declined`). A declined capability is asked about
+again only from another click or key press.
 
 - `"redirect"`: the call fails with `ActionUnavailable` and the page goes to
   the approval screen (or `onAuthRequired`), returning to `redirectTo`.

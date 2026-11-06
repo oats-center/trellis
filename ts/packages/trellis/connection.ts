@@ -89,14 +89,20 @@ export type TrellisConnectionLifecycleLogOptions = {
   context: Record<string, unknown>;
 };
 
-/** Immutable installed availability for optional participant surfaces. */
+/**
+ * Immutable installed availability for optional participant surfaces.
+ * `declined` marks each optional capability the user was asked about and
+ * didn't approve; asking again takes the person's own action, such as a click.
+ */
 export type TrellisAvailability = Readonly<{
   capabilities: Readonly<Record<string, boolean>>;
+  declined: Readonly<Record<string, boolean>>;
   resources: Readonly<Record<string, boolean>>;
 }>;
 
 const EMPTY_AVAILABILITY: TrellisAvailability = Object.freeze({
   capabilities: Object.freeze({}),
+  declined: Object.freeze({}),
   resources: Object.freeze({}),
 });
 const installAvailability = Symbol("installAvailability");
@@ -133,6 +139,7 @@ function immutableAvailability(
 ): TrellisAvailability {
   return Object.freeze({
     capabilities: Object.freeze({ ...availability.capabilities }),
+    declined: Object.freeze({ ...availability.declined }),
     resources: Object.freeze({ ...availability.resources }),
   });
 }

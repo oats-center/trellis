@@ -92,10 +92,11 @@ against the checksum published with it; `TRELLIS_TEST_VERSION` selects another
 release, and `TRELLIS_TEST_SERVER_BIN` selects
 local binaries. It reports the `trellis-server` version it tests against.
 Automatic acquisition currently supports
-Linux x86-64 only; other native targets are not staged for release. Production
-`trellis-server init` generates configuration and accounts;
-`trellis-server --local-nats` owns the real broker. There is no `nsc` dependency
-or TypeScript configuration renderer. `TRELLIS_TEST_CACHE_DIR` shares only
+Linux x86-64 only; other native targets are not staged for release. Each runtime is
+built the way an operator builds one: `trellis-server nats new` makes the
+broker's operator and config, the testkit writes `config.toml`, and the first
+start creates the keys and NATS accounts. `trellis-server --dev` runs the real
+broker. There is no `nsc` dependency. `TRELLIS_TEST_CACHE_DIR` shares only
 verified native binaries; each runtime has private configuration, credentials,
 SQLite data, broker state, process files, and logs.
 

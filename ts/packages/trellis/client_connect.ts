@@ -221,6 +221,8 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
         // keeps their earlier choices and asks only about what is new.
         let outdated = false;
         let unseen: string[] = [];
+        // The optional capabilities the user was shown when approving this grant.
+        let grantAsked: readonly string[] = [];
         const install = async (admission: BrowserOAuthAdmission) => {
           const details = admission.authorizationDetails;
           const granted = details?.flatMap((detail) => detail.required);
@@ -234,6 +236,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           )
             ? details.flatMap((detail) => detail.requested_optional ?? [])
             : undefined;
+          grantAsked = requested ?? [];
           if (!outdated && args.auth.askForNewOptional && requested) {
             const asked = new Set([...requested, ...askedOptional(oauth)]);
             unseen = args.request.optionalCapabilities.filter(
@@ -408,7 +411,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
             }
           };
           let asking: Promise<boolean> | undefined;
-          const requestApproval: CallerApproval = () => {
+          const requestApproval: CallerApproval = (capabilities) => {
             // Only a person's action asks. A call the app makes by itself
             // would ask again on every load, even for a capability the user
             // can never hold.
@@ -420,6 +423,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
               args.auth.approval === "popup"
                 ? window.open("about:blank", APPROVAL_MESSAGE, POPUP_FEATURES)
                 : null;
+            rememberAsked(oauth, [...capabilities]);
             if (!popup) {
               void redirectForApproval();
               return Promise.resolve(false);
@@ -431,7 +435,13 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           };
           return Result.ok(
             Object.assign(
-              createCallerRuntime(trellis, args.request, {}, requestApproval),
+              createCallerRuntime(
+                trellis,
+                args.request,
+                {},
+                requestApproval,
+                () => [...grantAsked, ...askedOptional(oauth)],
+              ),
               {
                 ownAuthority,
                 async logout(options?: ClientLogoutOptions) {

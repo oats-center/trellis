@@ -1,6 +1,6 @@
 ---
 title: "Keep Trellis running"
-description: "Upgrade the server, renew certificates, reset the administrator password, run a second Trellis on one machine, and start over."
+description: "Upgrade the server, keep certificates current, reset the administrator password, run a second Trellis on one machine, and start over."
 ---
 
 ## Upgrade
@@ -12,22 +12,16 @@ trellis-server upgrade --prerelease
 Restart the server to run the new version. `trellis-server upgrade --check`
 reports whether there is one.
 
-## Renew the certificates
+## Generated certificates
 
-The certificates Trellis generates last 90 days. `trellis-server tls status`
-shows when they expire and the CA's fingerprint. Renew well before then:
+An installation with `mode = "generated"` serves a certificate Trellis made
+from its own CA. Trellis reissues it from the same CA when it has less than 30
+days left, checking twice a day, so nobody has to accept anything new. The
+listener picks up the new certificate within seconds.
+`trellis-server tls status` shows when it expires and the CA's fingerprint.
 
-```sh
-trellis-server tls renew
-```
-
-That renews the installation the server uses by default; name another one
-as you would to start it, for example `trellis-server tls renew --config ~/trellis-two`.
-Renewal reuses the CA, so nobody has to
-trust anything new. Trellis picks up its new certificate within seconds. NATS
-doesn't: restart `trellis-server`, or send NATS `nats-server --signal reload`
-if you run it yourself. A timer that runs the renewal needs read access to the
-CA folder (`~/.config/trellis/tls-ca/`).
+Certificates you supply (`mode = "tls"`) are yours to renew. Replace the files
+in place; Trellis reloads them by itself.
 
 ## Reset the administrator password
 
@@ -40,35 +34,37 @@ can't do it from the Console.
 
 ## Run a second Trellis on the same machine
 
-Give it its own folder and its own ports:
+Give it its own folder, then its own ports:
 
 ```sh
-trellis-server init ~/trellis-two --tls loopback-development \
-  --trellis-port 3100 \
-  --nats-port 4223 --nats-monitor-port 8223 --nats-ws-port 8081
-trellis-server --config ~/trellis-two
+trellis-server --dev --config ~/trellis-two
 ```
 
-A bundle keeps everything the server writes in its `var/` folder: databases,
-NATS data, logs and the pid file. The two installations share nothing but the
-NATS download in `~/.cache/trellis`. Deleting `var/` returns a bundle to just
-after `init`. To move NATS to other ports for a single run without touching
-the installation, `--local-nats-ports=4223,8223,8081` (native, monitoring,
-WebSocket) overrides what's in its `nats.conf`.
+The first start creates the folder with the usual ports, so if the first
+installation is running it stops at the port that's taken. Edit `port` under
+`[http]` and the ports in `nats.conf`, then start it again. For one run,
+`--local-nats-ports=4223,8223,8081` (native, monitoring, WebSocket) moves NATS
+without touching the installation.
+
+A folder installation keeps everything the server writes in its `var/` folder:
+databases, NATS data, logs and the pid file. Two installations share nothing
+but the NATS download in `~/.cache/trellis`.
 
 Never point one installation's database at another's NATS data. Trellis
 notices and refuses to start, but it's better not to find out that way.
 
 ## Start over
 
-To throw away the default installation and everything it stored, stop the
-server and delete its folders:
+To throw away the development installation and everything it stored, stop
+the server and delete its folder:
 
 ```sh
-rm -rf ~/.config/trellis \
-  ~/.local/share/trellis ~/.local/state/trellis ~/.cache/trellis
+rm -rf ~/.local/share/trellis/dev
 ```
 
-The next `trellis-server` asks how to set up a fresh one. A bundle is one
-folder. A `--system` installation keeps its data in `/var/lib/trellis` and its
-generated CA in `/etc/trellis-tls-ca`.
+The next `trellis-server --dev` creates a fresh one. Any other installation is
+the folder holding its `config.toml`, `secrets.toml` and `var/`. A `--system`
+installation keeps its data in `/var/lib/trellis` instead. Deleting a
+production installation's `secrets.toml` loses its keys, and every session and
+service registration with them; its NATS accounts stay on the NATS servers
+until the operator removes them.

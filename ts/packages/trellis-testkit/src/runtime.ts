@@ -831,6 +831,16 @@ export class TrellisTestRuntime implements AsyncDisposable {
           String(websocketPort),
           "--monitor-port",
           String(monitorPort),
+          // The broker serves native NATS and WebSockets with the test
+          // certificate, as clients are told to reach it.
+          ...(options.development
+            ? []
+            : [
+                "--tls-certificate",
+                join(certificates, "server.crt"),
+                "--tls-private-key",
+                join(certificates, "server.key"),
+              ]),
         ],
         environment,
         timeouts.startupMs,

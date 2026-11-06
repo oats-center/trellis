@@ -33,9 +33,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 `TRELLIS_TEST_CACHE_DIR` selects the owned private executable/archive cache;
 otherwise the platform cache is used. Only verified artifacts are shared, never
-credentials, broker state, databases, or logs. `trellis-server init` and
-`trellis-server init admin --password-stdin` perform normal installation/bootstrap;
-the administrator password is not passed in process arguments.
+credentials, broker state, databases, or logs. An installation is built the way an operator builds one:
+`trellis-server nats new` makes the broker's operator and config, the testkit
+writes `config.toml`, and `trellis-server admin --password-stdin` seeds the
+administrator, so the password is not passed in process arguments.
 Hosts default to two Tokio worker threads, matching the Node testkit;
 an explicit `TOKIO_WORKER_THREADS` setting is retained.
 

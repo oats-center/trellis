@@ -112,6 +112,11 @@ path.
 
 ## Issuance pipeline
 
+0. Every client presents the sentinel user's JWT, which the OAuth metadata
+   publishes as `trellis.natsSentinel`. The sentinel is a bearer user of the
+   `AUTH` account allowed nothing, and `AUTH` names Trellis's callout user, so
+   NATS hands the connection to the callout. Servers carry no
+   `default_sentinel`.
 1. The broker's Auth Callout receives a CONNECT, checks the server, account,
    expiry, and request key, and verifies the nonce signature with the
    connection's ephemeral NKey (`auth_callout.rs`).
@@ -243,8 +248,8 @@ scheme; one on the same hostname (another port behind a proxy) is allowed but
 logs a prominent cookie-scope warning, because cookies are not port-scoped.
 Browser origins are trusted from the redirect URIs of registered and
 URL-identified clients, never from server configuration. Development mode
-(`trellis-server init --dev`) uses the same listener with one generated
-certificate.
+(`trellis-server --dev`) uses the same listener, over loopback HTTP or, with
+`--host`, with one generated certificate.
 
 A Console on its own origin serves RFC 9728 protected resource metadata
 (`/.well-known/oauth-protected-resource`) naming the Trellis origin as its one
@@ -262,8 +267,11 @@ headers are ignored unless the TCP peer falls inside `[http] trusted_proxies`, a
 list of CIDR ranges (`/32` or `/128` for one address). For a trusted peer, the
 client is the right-most `X-Forwarded-For` hop outside those ranges, and a
 malformed header is rejected. Use it for a proxy in front of a TLS listener,
-such as one that re-encrypts; a `proxy` transport already admits only its own
-trusted proxies and presents the forwarded client. Both use the same walk.
+such as one that re-encrypts. A `proxy` transport with `trusted_proxies` admits
+only those peers and presents the forwarded client by the same walk. Without
+them it admits every peer and takes the client from the last
+`X-Forwarded-For` entry, for a network that already admits only the proxy,
+such as a rootless Podman network that rewrites source addresses.
 
 Remote deployments use native TLS NATS and WSS in addition to the HTTPS
 Trellis listener. Native NATS always terminates its own TLS, because its
@@ -289,21 +297,17 @@ publicly trusted brokers omit it.
 
 ### Installation TLS (`crates/bootstrap/src/tls.rs`, `tls.rs`)
 
-Production initialization takes operator-supplied certificates, or
-`--tls proxy` when an HTTPS proxy holds every certificate and native NATS stays
-plaintext on loopback. Development mode and `--tls generated`, for labs and
-tests, generate TLS material instead. Generation creates an installation CA whose
-name constraints permit only the configured Console, OAuth, NATS, and WebSocket
-hosts (plus loopback names for the co-located broker), and issues short-lived
-serverAuth leaves for the runtime and broker. Leaves carry their names only in
-SANs. A local installation keeps the CA private key in the bundle's own
-`tls-ca/` folder; a `--system` installation, the one roles mount, writes it
-beside the bundle (`<out>-tls-ca/`), so no runtime or broker role that mounts
-the bundle can mint certificates. `--tls-ca-dir` chooses any folder outside the
-bundle. Neither the runtime nor the broker ever reads the CA key. `trellis-server tls renew` reissues leaves with the same names
-and fresh keys from that CA; clients that trust the CA need no change. The
-runtime reloads its leaf automatically; the broker reloads on its ordinary
-reload signal.
+Production installations serve operator-supplied certificates (`mode = "tls"`)
+or sit behind an HTTPS proxy that holds them (`mode = "proxy"`). NATS TLS is
+the NATS operator's; Trellis only trusts it, through `[nats] ca_certificate`
+when it is private. `mode = "generated"`, for development and tests, makes an
+installation CA in the data folder's `tls/` whose name constraints permit only
+the public and Console hosts, and a short-lived serverAuth leaf carrying its
+names only in SANs. The running server reissues the leaf from the same CA
+within 30 days of its expiry, checking every 12 hours, and the listener
+reloads it; clients that trust the CA need no change. Changed names make a new
+CA. The server holds the CA key, which is why generated TLS is not for
+production.
 
 `[tls] generated_ca_certificate` marks an installation serving its generated
 CA. The runtime then warns operators at startup with the CA's SHA-256

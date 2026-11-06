@@ -79,10 +79,13 @@ native-IDL fixture; they do not construct substitute API descriptors. Prebuilt
 server and CLI paths are passed through the explicit native path source by the
 repository integration helper. The released TypeScript testkit defaults to the
 latest published CLI/server release, verified against its published checksum;
-production `trellis-server init`
-owns bootstrap, with certificates from `trellis-server tls issue` supplied the
-way a production installation supplies trusted ones (development-mode tests
-use generated TLS), and `trellis-server` runs the broker it describes (`--nats-download`). The private
+an installation is built the way an operator builds one:
+`trellis-server nats new` makes the broker's operator and config, the testkit
+writes `config.toml` with certificates from `trellis-server tls issue`
+(development-mode tests use generated TLS), `trellis-server admin` seeds the
+administrator, and the first start creates the keys and NATS accounts. The
+TypeScript testkit's `trellis-server --dev` runs that broker
+(`--nats-download`); the Rust testkit runs `nats-server` itself. The private
 sandbox retains config, data, state, and identity across full-host restart; only
 verified immutable binaries are shared. Seeded admin is the default, with an
 explicit browser-flow option for first-admin tests. Real broker adapters use an

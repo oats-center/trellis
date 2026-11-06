@@ -71,12 +71,16 @@ test("an app asks for an optional capability once on load, and when used, in pla
           onAuthRequired: ({ loginUrl }) => { asked.push(loginUrl); },
         })
       ).unwrapOrElse((error) => { throw error; });
+      const optional = module.base.OptionalCaller.request.optionalCapabilities;
+      const declined = () =>
+        optional.map((capability) => client.availability().declined[capability]);
       const run = async () => {
         const result = await client.extra({ value: params.get("approval") });
         return result.isOk()
           ? { value: result.unwrapOrElse((error) => { throw error; }),
-              grant: client.ownAuthority.current?.oauthGrantId }
-          : { failed: true };
+              grant: client.ownAuthority.current?.oauthGrantId,
+              declined: declined() }
+          : { failed: true, declined: declined() };
       };
       const automatic = await run();
       const button = document.createElement("button");
@@ -297,17 +301,24 @@ test("an app asks for an optional capability once on load, and when used, in pla
             return { ...loaded, page: use, clicked };
           };
 
-          // By redirect: the click's call fails and asks once, the automatic
-          // call before it not at all.
+          // The app sees the optional capability it was asked about on load,
+          // and left unapproved, as declined. By redirect: the click's call
+          // fails and asks once, the automatic call before it not at all.
           const redirecting = await openUse("redirect");
-          assert.deepEqual(redirecting.automatic, { failed: true });
+          assert.deepEqual(redirecting.automatic, {
+            failed: true,
+            declined: [true],
+          });
           await redirecting.page.click("#extra");
           await redirecting.page.waitForFunction(() => {
             const asked: unknown = Reflect.get(window, "asked");
             return Array.isArray(asked) && asked.length > 0;
           });
           const redirected = await redirecting.clicked();
-          assert.deepEqual(redirected.result, { failed: true });
+          assert.deepEqual(redirected.result, {
+            failed: true,
+            declined: [true],
+          });
           assert(Array.isArray(redirected.asked));
           assert.equal(redirected.asked.length, 1);
           assert.match(String(redirected.asked[0]), /authorization_details/);
@@ -315,7 +326,10 @@ test("an app asks for an optional capability once on load, and when used, in pla
           // By popup: the click's call asks in a popup and goes through once
           // approved, on the same grant and without leaving the page.
           const popping = await openUse("popup");
-          assert.deepEqual(popping.automatic, { failed: true });
+          assert.deepEqual(popping.automatic, {
+            failed: true,
+            declined: [true],
+          });
           assert(popping.grant);
           const opened = popping.page.waitForEvent("popup");
           await popping.page.click("#extra");
@@ -325,6 +339,7 @@ test("an app asks for an optional capability once on load, and when used, in pla
           assert.deepEqual(approved.result, {
             value: { value: "popup" },
             grant: popping.grant,
+            declined: [false],
           });
           assert.equal(new URL(approved.location).pathname, "/use");
           await popup

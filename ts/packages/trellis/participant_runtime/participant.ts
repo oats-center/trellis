@@ -606,6 +606,9 @@ export function participantAvailability(
 
   return Object.freeze({
     capabilities: Object.freeze(capabilities),
+    declined: Object.freeze(
+      Object.fromEntries(Object.keys(capabilities).map((id) => [id, false])),
+    ),
     resources: Object.freeze(resources),
   });
 }

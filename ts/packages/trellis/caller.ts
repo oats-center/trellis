@@ -303,6 +303,8 @@ type OptionalResource<TContract extends GeneratedCaller> = {
 }[keyof CallerResources<TContract>];
 type ParticipantAvailability<TContract extends GeneratedCaller> = Readonly<{
   capabilities: Readonly<Record<OptionalCapability<TContract>, boolean>>;
+  /** Asked about and not approved; another ask takes the person's own action. */
+  declined: Readonly<Record<OptionalCapability<TContract>, boolean>>;
   resources: Readonly<Record<OptionalResource<TContract>, boolean>>;
 }>;
 
@@ -314,12 +316,17 @@ export type CallerApproval = (
   capabilities: readonly string[],
 ) => Promise<boolean> | undefined;
 
-/** Projects a private Trellis session into the selected flat caller vocabulary. */
+/**
+ * Projects a private Trellis session into the selected flat caller
+ * vocabulary. `asked` lists the optional capabilities the user has been
+ * asked about, which availability reports as declined while unheld.
+ */
 export function createCallerRuntime<TContract extends GeneratedCaller>(
   session: object,
   contract: TContract,
   resources: { kv?: object; store?: object } = {},
   requestApproval?: CallerApproval,
+  asked: () => readonly string[] = () => [],
 ): CallerRuntime<TContract> {
   const runtime = session as Trellis;
   const selections = getCallerRuntime(contract).actions;
@@ -363,8 +370,15 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
                 );
           }
         }
+        const askedAbout = new Set(asked());
         return {
           capabilities,
+          declined: Object.fromEntries(
+            Object.entries(capabilities).map(([capability, held]) => [
+              capability,
+              !held && askedAbout.has(capability),
+            ]),
+          ),
           resources: Object.fromEntries(
             Object.entries(installed.resources).map(([name, available]) => [
               name,

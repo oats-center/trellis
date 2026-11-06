@@ -27,17 +27,13 @@ npm run browser:embedded
 ## Run the server
 
 ```sh
-cargo run -p trellis-server
+cargo run -p trellis-server -- --dev --config ~/trellis-src
 ```
 
-The first run asks a few questions to set up an installation in
-`~/.config/trellis` and, if `nats-server` isn't on your `PATH`, offers to
-download NATS. `cargo run -p trellis-server -- --init --nats-download` skips
-the questions and creates a localhost development installation over plain
-HTTP.
-If that folder already holds an installation from a released Trellis, keep
-them apart: `cargo run -p trellis-server -- init ~/trellis-dev` once,
-then `cargo run -p trellis-server -- --config ~/trellis-dev`.
+The first run creates a development installation in `~/trellis-src`, kept
+apart from any installation of a released Trellis, and, if `nats-server`
+isn't on your `PATH`, offers to download NATS. Add `--nats-download` to skip
+the question.
 
 Once it's up, Console is at `http://localhost:3000/console`. To check on it:
 

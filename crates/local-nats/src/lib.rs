@@ -840,10 +840,12 @@ impl LocalNatsBuilder {
                 certificate: source.join("tls/nats.crt").display().to_string(),
                 private_key: source.join("tls/nats.key").display().to_string(),
             });
-        let websocket = if tls.is_some() && !authored_config_websocket_plaintext(&authored_config) {
-            trellis_bootstrap::NatsWebsocket::Tls
-        } else if self.relayed_websocket {
+        // Trellis relays to a plaintext listener on loopback, whatever
+        // certificates the authored config names.
+        let websocket = if self.relayed_websocket {
             trellis_bootstrap::NatsWebsocket::Relayed
+        } else if tls.is_some() && !authored_config_websocket_plaintext(&authored_config) {
+            trellis_bootstrap::NatsWebsocket::Tls
         } else if tls.is_some() || authored_websocket_listens_everywhere(&authored_config) {
             trellis_bootstrap::NatsWebsocket::BehindProxy
         } else {
