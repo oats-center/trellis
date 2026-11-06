@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: Request::ID.into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )

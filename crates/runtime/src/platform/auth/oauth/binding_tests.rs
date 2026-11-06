@@ -37,7 +37,7 @@ async fn durable_proof_authenticates_only_its_signed_runtime_and_user_nkey() {
     let claims = json!({
         "htm": "POST", "htu": TOKEN_URI,
         "iat": now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
-        "jti": ulid::Ulid::new().to_string(),
+        "jti": ulid::Ulid::generate().to_string(),
         "nonce": URL_SAFE_NO_PAD.encode([9; 32]), "ath": "ignored-at-token-endpoint",
         "trellis_runtime_id": runtime, "trellis_nats_jkt": thumbprint
     });

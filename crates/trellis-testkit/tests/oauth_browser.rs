@@ -20,7 +20,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )
@@ -59,14 +59,14 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
     );
     let user = admin.users_create(&serde_json::from_value(serde_json::json!({
         "username": "browser-second-user", "displayName": "Browser second user",
-        "password": "a separate browser account password", "idempotencyKey": ulid::Ulid::new().to_string()
+        "password": "a separate browser account password", "idempotencyKey": ulid::Ulid::generate().to_string()
     })).unwrap()).await.unwrap();
     admin
         .capability_grants_grant(
             &serde_json::from_value(serde_json::json!({
                 "principalId": user.user.principal_id,
                 "capabilityId": "trellis.auth.v1:account.read",
-                "expectedRevision": "0", "idempotencyKey": ulid::Ulid::new().to_string()
+                "expectedRevision": "0", "idempotencyKey": ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -90,7 +90,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
         "clientId": "lifecycle-native", "kind": "native", "title": "Lifecycle native",
         "description": "Lifecycle acceptance", "redirectUris": ["http://127.0.0.1/callback"],
         "development": false, "impliedConsent": [], "expectedRevision": "0",
-        "idempotencyKey": ulid::Ulid::new().to_string()
+        "idempotencyKey": ulid::Ulid::generate().to_string()
     })).unwrap()).await.unwrap();
     let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
         .await
@@ -102,7 +102,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "lifecycle-native".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust.clone(),
     )
@@ -121,7 +121,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
         .o_auth_clients_disable(
             &serde_json::from_value(serde_json::json!({
                 "clientId": "lifecycle-native", "expectedRevision": client.client.revision,
-                "idempotencyKey": ulid::Ulid::new().to_string()
+                "idempotencyKey": ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -138,7 +138,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
         .o_auth_clients_delete(
             &serde_json::from_value(serde_json::json!({
                 "clientId": "lifecycle-native", "expectedRevision": disabled.revision,
-                "idempotencyKey": ulid::Ulid::new().to_string()
+                "idempotencyKey": ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )

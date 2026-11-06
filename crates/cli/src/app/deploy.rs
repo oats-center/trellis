@@ -1037,7 +1037,7 @@ fn prompt_for_typed_identifier(identifier: &str) -> miette::Result<bool> {
 }
 
 fn cli_idempotency_key() -> String {
-    ulid::Ulid::new().to_string()
+    ulid::Ulid::generate().to_string()
 }
 
 /// Resolve a CLI deployment identifier to a concrete deployment ID. The identifier may be a

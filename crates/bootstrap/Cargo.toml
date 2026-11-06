@@ -16,20 +16,14 @@ nats-jwt-rs = "0.1.1"
 nkeys = { version = "0.4.5", features = ["xkeys"] }
 serde.workspace = true
 serde_json.workspace = true
-url.workspace = true
 ulid.workspace = true
 thiserror.workspace = true
-toml = "1.1.2"
-base64.workspace = true
-rand.workspace = true
 miette.workspace = true
-ipnet.workspace = true
 rcgen.workspace = true
 time.workspace = true
 sha2.workspace = true
 x509-parser.workspace = true
 
 [dev-dependencies]
-async-nats.workspace = true
 rustls.workspace = true
 tempfile.workspace = true

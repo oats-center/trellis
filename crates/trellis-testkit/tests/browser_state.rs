@@ -25,7 +25,7 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )
@@ -60,19 +60,19 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
         .unwrap(),
     );
     let user = admin.users_create(&serde_json::from_value(serde_json::json!({
-        "username":"state-second","displayName":"State second","password":"separate state password","idempotencyKey":ulid::Ulid::new().to_string()
+        "username":"state-second","displayName":"State second","password":"separate state password","idempotencyKey":ulid::Ulid::generate().to_string()
     })).unwrap()).await.unwrap();
     for capability in ["read", "write", "delete"] {
         admin.capability_grants_grant(&serde_json::from_value(serde_json::json!({
             "principalId":user.user.principal_id,"capabilityId":format!("trellis.state.v1:values.{capability}"),
-            "expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()
+            "expectedRevision":"0","idempotencyKey":ulid::Ulid::generate().to_string()
         })).unwrap()).await.unwrap();
     }
     for id in ["state-browser", "state-browser-other"] {
         admin.o_auth_clients_put(&serde_json::from_value(serde_json::json!({
             "clientId":id,"kind":"browser","title":"State browser","description":"Browser State acceptance",
             "redirectUris":origins.iter().map(|origin| format!("{origin}/callback")).collect::<Vec<_>>(),
-            "development":true,"impliedConsent":[],"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()
+            "development":true,"impliedConsent":[],"expectedRevision":"0","idempotencyKey":ulid::Ulid::generate().to_string()
         })).unwrap()).await.unwrap();
     }
     drop(listeners);

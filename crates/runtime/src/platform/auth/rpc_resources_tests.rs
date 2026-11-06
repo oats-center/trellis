@@ -89,7 +89,7 @@ async fn detached_state_retains_values_and_delayed_destroy_cannot_erase_replacem
         "participantId":"trellis.RemovalDevice",
         "kind":"device",
         "title":"State removal",
-        "idempotencyKey":ulid::Ulid::new().to_string()
+        "idempotencyKey":ulid::Ulid::generate().to_string()
     }))
     .unwrap();
     let store = Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32])));
@@ -107,7 +107,7 @@ async fn detached_state_retains_values_and_delayed_destroy_cannot_erase_replacem
         "deploymentId":deployment,
         "identityPublicKey":URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[92;32]).verifying_key().as_bytes()),
         "title":"Device",
-        "idempotencyKey":ulid::Ulid::new().to_string()
+        "idempotencyKey":ulid::Ulid::generate().to_string()
     })).unwrap();
     super::super::rpc_deployments::provision_instance(
         &store,

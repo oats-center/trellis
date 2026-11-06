@@ -191,7 +191,7 @@ async fn state_acceptance() -> Result<(), Box<dyn std::error::Error>> {
         .await?,
     );
     let (state, _) = client
-        .saved_resource("0", ulid::Ulid::new().to_string().parse()?)
+        .saved_resource("0", ulid::Ulid::generate().to_string().parse()?)
         .await?;
     let created = state
         .create(&ResourceValue {

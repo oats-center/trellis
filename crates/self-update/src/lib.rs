@@ -1,3 +1,6 @@
+//! Replace a Trellis binary with a newer GitHub release: the CLI and the
+//! server both update themselves through this.
+
 use miette::IntoDiagnostic;
 use self_update::backends::github::ReleaseList;
 use self_update::update::Release;
@@ -5,6 +8,7 @@ use self_update::version::bump_is_greater;
 use self_update::{get_target, ArchiveKind, Compression, Download, Extract};
 use serde::Serialize;
 
+/// The binary to update and the GitHub repository whose releases carry it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SelfUpdateTarget {
     repo_owner: &'static str,
@@ -14,6 +18,8 @@ pub struct SelfUpdateTarget {
 }
 
 impl SelfUpdateTarget {
+    /// `bin_name` is the archive and executable name; `current_version` is
+    /// the running build's version.
     pub const fn new(
         repo_owner: &'static str,
         repo_name: &'static str,
@@ -28,31 +34,35 @@ impl SelfUpdateTarget {
         }
     }
 
-    pub const fn repo_owner(self) -> &'static str {
+    const fn repo_owner(self) -> &'static str {
         self.repo_owner
     }
 
-    pub const fn repo_name(self) -> &'static str {
+    const fn repo_name(self) -> &'static str {
         self.repo_name
     }
 
-    pub const fn bin_name(self) -> &'static str {
+    const fn bin_name(self) -> &'static str {
         self.bin_name
     }
 
-    pub const fn current_version(self) -> &'static str {
+    const fn current_version(self) -> &'static str {
         self.current_version
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+/// Which releases count as newer.
 #[serde(rename_all = "camelCase")]
 pub enum ReleaseChannel {
+    /// Stable releases only.
     Stable,
+    /// Stable releases and release candidates.
     Prerelease,
 }
 
 impl ReleaseChannel {
+    /// The channel a `--prerelease` flag selects.
     pub const fn from_prerelease_flag(prerelease: bool) -> Self {
         if prerelease {
             Self::Prerelease
@@ -68,20 +78,35 @@ impl ReleaseChannel {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// What a check found, without installing anything.
 pub struct UpdateCheck {
+    /// The channel checked.
     pub channel: ReleaseChannel,
+    /// The running build's version.
     pub current_version: String,
+    /// The newest release on the channel with an archive for this platform.
     pub latest_version: String,
+    /// Whether `latest_version` is newer than `current_version`.
     pub needs_update: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
+/// What an install did.
 pub enum UpdateResult {
-    UpToDate { version: String },
-    Updated { version: String },
+    /// Nothing newer exists; `version` is the running one.
+    UpToDate {
+        /// The running version.
+        version: String,
+    },
+    /// The executable was replaced by `version`.
+    Updated {
+        /// The installed version.
+        version: String,
+    },
 }
 
+/// Find the newest release on `channel` with an archive for this platform.
 pub fn check_for_update(
     target: SelfUpdateTarget,
     channel: ReleaseChannel,
@@ -97,6 +122,8 @@ pub fn check_for_update(
     })
 }
 
+/// Replace the running executable with the newest release on `channel`, when
+/// it is newer. A running process keeps its old binary until restarted.
 pub fn install_update(
     target: SelfUpdateTarget,
     channel: ReleaseChannel,
@@ -138,15 +165,13 @@ fn install_update_for_tag(
         target.repo_name()
     );
     let mut checksum = Vec::new();
-    Download::from_url(&format!(
-        "{base}/checksum-{version}-{platform}-{bin}.sha256"
-    ))
-    .download_to(&mut checksum)
-    .into_diagnostic()?;
-    let work = self_update::TempDir::new().into_diagnostic()?;
+    Download::from_url(format!("{base}/checksum-{version}-{platform}-{bin}.sha256"))
+        .download_to(&mut checksum)
+        .into_diagnostic()?;
+    let work = tempfile::TempDir::new().into_diagnostic()?;
     let archive = work.path().join(&archive_name);
-    Download::from_url(&format!("{base}/{archive_name}"))
-        .show_progress(true)
+    Download::from_url(format!("{base}/{archive_name}"))
+        .show_download_progress(true)
         .download_to(std::fs::File::create(&archive).into_diagnostic()?)
         .into_diagnostic()?;
     verify_checksum(
@@ -158,7 +183,7 @@ fn install_update_for_tag(
         .archive(ArchiveKind::Tar(Some(Compression::Gz)))
         .extract_file(work.path(), bin)
         .into_diagnostic()?;
-    self_update::self_replace::self_replace(work.path().join(bin)).into_diagnostic()?;
+    self_replace::self_replace(work.path().join(bin)).into_diagnostic()?;
     Ok(UpdateResult::Updated { version })
 }
 
@@ -167,7 +192,10 @@ fn install_update_for_tag(
 fn verify_checksum(listing: &str, archive_name: &str, archive: &[u8]) -> miette::Result<()> {
     use sha2::Digest as _;
 
-    let actual = format!("{:x}", sha2::Sha256::digest(archive));
+    let actual: String = sha2::Sha256::digest(archive)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     let listed = listing.lines().find_map(|line| {
         let mut fields = line.split_whitespace();
         let digest = fields.next()?;
@@ -188,7 +216,7 @@ fn latest_version(target: SelfUpdateTarget, channel: ReleaseChannel) -> miette::
     let releases = ReleaseList::configure()
         .repo_owner(target.repo_owner())
         .repo_name(target.repo_name())
-        .with_target(get_target())
+        .filter_target(get_target())
         .build()
         .into_diagnostic()?
         .fetch()
@@ -198,7 +226,7 @@ fn latest_version(target: SelfUpdateTarget, channel: ReleaseChannel) -> miette::
         releases
             .into_iter()
             .filter(|release| release_has_target_binary_asset(release, target))
-            .map(|release| release.version)
+            .map(|release| release.version().to_string())
             .filter(|version| channel.accepts(is_prerelease_version(version))),
         channel,
         target,
@@ -206,10 +234,9 @@ fn latest_version(target: SelfUpdateTarget, channel: ReleaseChannel) -> miette::
 }
 
 fn release_has_target_binary_asset(release: &Release, target: SelfUpdateTarget) -> bool {
-    release
-        .assets
-        .iter()
-        .any(|asset| asset.name.contains(get_target()) && asset_matches_binary(&asset.name, target))
+    release.assets().iter().any(|asset| {
+        asset.name().contains(get_target()) && asset_matches_binary(asset.name(), target)
+    })
 }
 
 fn asset_matches_binary(asset_name: &str, target: SelfUpdateTarget) -> bool {
@@ -284,6 +311,7 @@ fn candidate_target_version_tags(version: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use self_update::update::ReleaseAsset;
 
     #[test]
     fn updater_extracts_and_replaces_a_binary_from_the_linux_archive() {
@@ -317,8 +345,8 @@ mod tests {
             .unwrap();
         let installed = directory.path().join("trellis");
         std::fs::write(&installed, "old binary").unwrap();
-        self_update::Move::from_source(&staging.join("trellis"))
-            .replace_using_temp(&directory.path().join("previous"))
+        self_update::Move::from_source(staging.join("trellis"))
+            .replace_using_temp(directory.path().join("previous"))
             .to_dest(&installed)
             .unwrap();
         let output = std::process::Command::new(installed).output().unwrap();
@@ -408,10 +436,8 @@ mod tests {
     #[test]
     fn an_archive_installs_only_when_its_listed_checksum_matches() {
         let archive = b"trellis-server release bytes";
-        let digest = {
-            use sha2::Digest as _;
-            format!("{:x}", sha2::Sha256::digest(archive))
-        };
+        // `sha256sum` of the archive bytes.
+        let digest = "0b6dbb7911a83629474ca306cd35c242696dc80b0e183089d8571cbfdc250423";
         let name = "trellis-server-0.8.0-x86_64-unknown-linux-gnu.tar.gz";
         let listing = format!("{digest}  {name}\n");
         assert!(verify_checksum(&listing, name, archive).is_ok());
@@ -424,23 +450,18 @@ mod tests {
     #[test]
     fn release_asset_filter_requires_binary_name_and_target() {
         let target = SelfUpdateTarget::new("oats-center", "trellis", "trellis", "0.7.0");
-        let release = Release {
-            assets: vec![
-                self_update::update::ReleaseAsset {
-                    name: format!("other-binary-0.8.0-{}.tar.gz", get_target()),
-                    download_url: String::new(),
-                },
-                self_update::update::ReleaseAsset {
-                    name: "trellis-0.8.0-other-target.tar.gz".to_string(),
-                    download_url: String::new(),
-                },
-                self_update::update::ReleaseAsset {
-                    name: format!("checksum-0.8.0-{}-trellis.sha256", get_target()),
-                    download_url: String::new(),
-                },
-            ],
-            ..Release::default()
-        };
+        let release = Release::builder()
+            .version("0.8.0")
+            .assets([
+                ReleaseAsset::new(format!("other-binary-0.8.0-{}.tar.gz", get_target()), ""),
+                ReleaseAsset::new("trellis-0.8.0-other-target.tar.gz", ""),
+                ReleaseAsset::new(
+                    format!("checksum-0.8.0-{}-trellis.sha256", get_target()),
+                    "",
+                ),
+            ])
+            .build()
+            .unwrap();
 
         assert!(!release_has_target_binary_asset(&release, target));
     }
@@ -448,13 +469,14 @@ mod tests {
     #[test]
     fn release_asset_filter_accepts_matching_binary_name_and_target() {
         let target = SelfUpdateTarget::new("oats-center", "trellis", "trellis", "0.7.0");
-        let release = Release {
-            assets: vec![self_update::update::ReleaseAsset {
-                name: format!("trellis-0.8.0-{}.tar.gz", get_target()),
-                download_url: String::new(),
-            }],
-            ..Release::default()
-        };
+        let release = Release::builder()
+            .version("0.8.0")
+            .asset(ReleaseAsset::new(
+                format!("trellis-0.8.0-{}.tar.gz", get_target()),
+                "",
+            ))
+            .build()
+            .unwrap();
 
         assert!(release_has_target_binary_asset(&release, target));
     }

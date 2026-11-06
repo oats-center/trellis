@@ -599,7 +599,7 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root
         .join(".local/protocol-interop")
-        .join(ulid::Ulid::new().to_string());
+        .join(ulid::Ulid::generate().to_string());
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("response.json");
     fs::write(
@@ -1376,7 +1376,7 @@ fn issuer_metadata_authenticates_public_material_and_absence_for_one_exchange() 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root
         .join(".local/protocol-interop")
-        .join(ulid::Ulid::new().to_string());
+        .join(ulid::Ulid::generate().to_string());
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("metadata.json");
     fs::write(
@@ -1527,7 +1527,7 @@ fn native_signed_request_verifies_in_packaged_wasm() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root
         .join(".local/protocol-interop")
-        .join(ulid::Ulid::new().to_string());
+        .join(ulid::Ulid::generate().to_string());
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("request.json");
     fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();

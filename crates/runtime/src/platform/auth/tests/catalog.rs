@@ -301,7 +301,7 @@ fn acceptance_role_edits_need_platform_management_to_bundle_administration() {
         "rpc Export",
         "rpc Archive { input Document; output Document; } rpc Export",
     );
-    let role_id = ulid::Ulid::new().to_string();
+    let role_id = ulid::Ulid::generate().to_string();
     let accept_with = |actor: &str, capability: &str, now: i64| {
         let review = f
             .store

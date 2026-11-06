@@ -87,7 +87,7 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         .await
         .unwrap();
     let jetstream = async_nats::jetstream::new(client);
-    let bucket = format!("trellis_test_operations_{}", ulid::Ulid::new());
+    let bucket = format!("trellis_test_operations_{}", ulid::Ulid::generate());
     let store = jetstream
         .create_key_value(async_nats::jetstream::kv::Config {
             bucket: bucket.clone(),
@@ -97,7 +97,7 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         .await
         .unwrap();
     let repository = KvOperationRepository::new(store);
-    let operation = record(ulid::Ulid::new().to_string());
+    let operation = record(ulid::Ulid::generate().to_string());
     let operation_id = operation.invocation_id.clone();
     let created = repository.create(operation).await.unwrap();
     assert_eq!(
@@ -176,7 +176,7 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         .await
         .is_err());
 
-    let millisecond_fence_id = ulid::Ulid::new().to_string();
+    let millisecond_fence_id = ulid::Ulid::generate().to_string();
     repository
         .create(record(millisecond_fence_id.clone()))
         .await
@@ -310,7 +310,7 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         .await
         .is_err());
 
-    let capacity_id = ulid::Ulid::new().to_string();
+    let capacity_id = ulid::Ulid::generate().to_string();
     repository
         .create(record(capacity_id.clone()))
         .await
@@ -361,7 +361,7 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
     oversized_record.signals = (0..20)
         .map(|index| DurableOperationSignal {
             sequence: index + 1,
-            request_id: ulid::Ulid::new().to_string(),
+            request_id: ulid::Ulid::generate().to_string(),
             name: "resume".to_owned(),
             payload: json!("x".repeat(60 * 1024)),
             acknowledged: false,
@@ -390,7 +390,7 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
 
     // Production repositories are scoped by their deployment's provisioned KV
     // bucket. Identical invocation ids are not a cross-deployment dedupe key.
-    let other_bucket = format!("trellis_test_operations_{}", ulid::Ulid::new());
+    let other_bucket = format!("trellis_test_operations_{}", ulid::Ulid::generate());
     let other_store = jetstream
         .create_key_value(async_nats::jetstream::kv::Config {
             bucket: other_bucket.clone(),
@@ -400,7 +400,7 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         .await
         .unwrap();
     let other_repository = KvOperationRepository::new(other_store);
-    let shared_id = ulid::Ulid::new().to_string();
+    let shared_id = ulid::Ulid::generate().to_string();
     let deployment_a = repository.create(record(shared_id.clone())).await.unwrap();
     let mut other_operation = record(shared_id.clone());
     other_operation.deployment_id = "other-deployment".to_owned();

@@ -93,7 +93,7 @@ pub fn print_info(message: &str) {
 
 pub fn table(headers: &[&str], rows: Vec<Vec<String>>) -> String {
     let mut table = Table::new();
-    table.load_preset(UTF8_FULL);
+    table.load_style(UTF8_FULL);
     table.set_header(headers.iter().map(|header| Cell::new(*header)));
     for row in rows {
         table.add_row(row);

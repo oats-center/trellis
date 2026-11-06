@@ -3,7 +3,6 @@ use std::io;
 
 use crate::cli::*;
 use crate::package;
-use crate::self_update::{ReleaseChannel, SelfUpdateTarget};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use clap::{CommandFactory, Parser};
@@ -18,6 +17,7 @@ use trellis_rs::telemetry::{
     self, instruments::DurationFamily, lifecycle::Observation, KeyValue, TelemetryGuard,
     TelemetryIdentity, TelemetryRole,
 };
+use trellis_self_update::{ReleaseChannel, SelfUpdateTarget};
 
 mod auth;
 pub mod deploy;

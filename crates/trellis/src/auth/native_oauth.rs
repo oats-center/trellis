@@ -262,22 +262,12 @@ async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, Native
 
 /// Builds the non-redirecting OAuth HTTP client, trusting only `root_certificates` when given.
 fn oauth_http_client(root_certificates: &[PathBuf]) -> Result<reqwest::Client, NativeOAuthError> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let mut builder = reqwest::Client::builder()
+    crate::client::http_client_builder(root_certificates)
+        .map_err(|_| NativeOAuthError::InvalidResponse)?
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30));
-    if !root_certificates.is_empty() {
-        let mut certificates = Vec::new();
-        for path in root_certificates {
-            let pem = std::fs::read(path).map_err(NativeOAuthError::Custody)?;
-            certificates.extend(
-                reqwest::Certificate::from_pem_bundle(&pem)
-                    .map_err(|_| NativeOAuthError::InvalidResponse)?,
-            );
-        }
-        builder = builder.tls_certs_only(certificates);
-    }
-    builder.build().map_err(|_| NativeOAuthError::Unavailable)
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| NativeOAuthError::Unavailable)
 }
 
 /// Expected native OAuth failures. HTTP response bodies and credentials are never
@@ -733,7 +723,7 @@ impl NativeOAuthClient {
             .map_err(|_| NativeOAuthError::Unavailable)?
             .as_secs();
         let mut claims = serde_json::json!({
-            "htm":"POST", "htu":uri, "iat":now, "jti":ulid::Ulid::new().to_string(),
+            "htm":"POST", "htu":uri, "iat":now, "jti":ulid::Ulid::generate().to_string(),
             "trellis_runtime_id":self.runtime_id,
             "trellis_nats_jkt":URL_SAFE_NO_PAD.encode(Sha256::digest(jwk.as_bytes()))
         });

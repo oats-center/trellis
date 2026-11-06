@@ -10,24 +10,24 @@ publish = false
 performance-trellis = { path = "../crates/performance-trellis" }
 trellis-rs = { path = "../../../crates/trellis" }
 axum = "0.8.8"
-reqwest = { version = "0.13", features = ["json", "query", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["charset", "http2", "json", "query", "rustls-no-provider", "stream"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
-opentelemetry = { version = "0.32", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.32", features = ["metrics"] }
+opentelemetry = { version = "0.33", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.33", features = ["metrics"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "net", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-async-nats = "0.50"
-base64 = "0.22"
+sha2 = "0.11"
+async-nats = "0.52"
+base64 = "0.23"
 bytes = "1"
 ed25519-dalek = "2"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 time = { version = "0.3", features = ["formatting"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

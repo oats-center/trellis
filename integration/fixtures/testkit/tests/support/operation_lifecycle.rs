@@ -65,12 +65,15 @@ async fn transient_previews_preserve_durable_progress_through_completion() {
     let admin = administrator(&runtime).await;
     let me = admin.sessions_me(&wire(json!({}))).await.unwrap();
     for capability in Request::REQUIRED_CAPABILITIES {
-        admin.capability_grants_grant(&wire(json!({
-            "principalId":me.principal.principal_id,
-            "capabilityId":capability,
-            "expectedRevision":"0",
-            "idempotencyKey":ulid::Ulid::new().to_string()
-        }))).await.unwrap();
+        admin
+            .capability_grants_grant(&wire(json!({
+                "principalId":me.principal.principal_id,
+                "capabilityId":capability,
+                "expectedRevision":"0",
+                "idempotencyKey":ulid::Ulid::generate().to_string()
+            })))
+            .await
+            .unwrap();
     }
     let identity = runtime
         .register_client::<Request>("preview-caller")
@@ -141,7 +144,9 @@ async fn transient_previews_preserve_durable_progress_through_completion() {
             OperationEvent::Completed { snapshot } if snapshot.state == OperationState::Completed
         ));
         assert!(terminal_watch.next().await.is_none());
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     terminal_watch.close().await.unwrap();
     events.close().await.unwrap();
     serving.abort();
@@ -205,12 +210,15 @@ async fn signed_cancel_waits_for_the_handlers_joined_blocking_child() {
         .iter()
         .chain(Request::OPTIONAL_CAPABILITIES)
     {
-        admin.capability_grants_grant(&wire(json!({
-            "principalId":me.principal.principal_id,
-            "capabilityId":capability,
-            "expectedRevision":"0",
-            "idempotencyKey":ulid::Ulid::new().to_string()
-        }))).await.unwrap();
+        admin
+            .capability_grants_grant(&wire(json!({
+                "principalId":me.principal.principal_id,
+                "capabilityId":capability,
+                "expectedRevision":"0",
+                "idempotencyKey":ulid::Ulid::generate().to_string()
+            })))
+            .await
+            .unwrap();
     }
     let identity = runtime
         .register_client::<Request>("cancel-caller")
@@ -328,7 +336,7 @@ async fn rust_successor_resumes_interrupted_cancellation_before_terminal_acknowl
                 "principalId":me.principal.principal_id,
                 "capabilityId":capability,
                 "expectedRevision":"0",
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             })))
             .await
             .unwrap();
@@ -419,12 +427,15 @@ async fn cancelled_operation_recovers_cleanup_after_its_provider_process_is_kill
         .iter()
         .chain(Request::OPTIONAL_CAPABILITIES)
     {
-        admin.capability_grants_grant(&wire(json!({
-            "principalId":me.principal.principal_id,
-            "capabilityId":capability,
-            "expectedRevision":"0",
-            "idempotencyKey":ulid::Ulid::new().to_string()
-        }))).await.unwrap();
+        admin
+            .capability_grants_grant(&wire(json!({
+                "principalId":me.principal.principal_id,
+                "capabilityId":capability,
+                "expectedRevision":"0",
+                "idempotencyKey":ulid::Ulid::generate().to_string()
+            })))
+            .await
+            .unwrap();
     }
     let caller_identity = runtime
         .register_client::<Request>("recovery-caller")

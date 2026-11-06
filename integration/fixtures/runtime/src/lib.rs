@@ -67,7 +67,7 @@ pub async fn authorize_user<R: AppRequestDescriptor>(
         instance_id: server.trust.instance_id.clone(),
         account: server.trust.account.clone(),
         client_id: client_id.to_owned(),
-        credential_handle: ulid::Ulid::new(),
+        credential_handle: ulid::Ulid::generate(),
     };
     let client = NativeOAuthClient::open(
         PathBuf::from(std::env::var("XDG_CONFIG_HOME")?).join("native-oauth"),

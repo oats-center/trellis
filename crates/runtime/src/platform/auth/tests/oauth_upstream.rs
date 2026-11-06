@@ -272,14 +272,9 @@ staticPasswords:
 
     // Resolve the pre-linked subject through a genuine, independently initiated
     // OIDC exchange. Do not manufacture Dex's subject encoding or JWT claims.
-    let upstream_http = openidconnect::reqwest::Client::builder()
-        .no_proxy()
-        .redirect(openidconnect::reqwest::redirect::Policy::none())
-        .add_root_certificate(
-            openidconnect::reqwest::Certificate::from_pem(certificate.pem.as_bytes()).unwrap(),
-        )
-        .build()
-        .unwrap();
+    let upstream_http =
+        crate::platform::auth::oauth::oidc::http_client(std::slice::from_ref(&certificate.pem))
+            .unwrap();
     let metadata = openidconnect::core::CoreProviderMetadata::discover_async(
         openidconnect::IssuerUrl::new(issuer.to_string()).unwrap(),
         &upstream_http,

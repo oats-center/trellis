@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit as _, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::client::{fetch_device_activation, DeviceConnectOptions, TrellisClientError};
@@ -31,7 +31,7 @@ impl DeviceActivationAttempt {
         Ok(Self {
             session_key_seed_base64url,
             session_auth,
-            connection_id: ulid::Ulid::new().to_string(),
+            connection_id: ulid::Ulid::generate().to_string(),
         })
     }
 }

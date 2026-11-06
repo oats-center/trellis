@@ -13,7 +13,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Claims {
@@ -89,22 +89,53 @@ pub(super) struct UpstreamFlow {
     pub(super) request_id: String,
 }
 
+/// The upstream providers' HTTP client. openidconnect's own adapter is for an
+/// older reqwest, so this one keeps the server on a single HTTP stack.
+pub(in crate::platform::auth) struct UpstreamHttp(reqwest::Client);
+
+impl<'c> openidconnect::AsyncHttpClient<'c> for UpstreamHttp {
+    type Error = openidconnect::HttpClientError<reqwest::Error>;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<openidconnect::HttpResponse, Self::Error>> + Send + 'c>>;
+
+    fn call(&'c self, request: openidconnect::HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            let response = self
+                .0
+                .execute(request.try_into().map_err(Box::new)?)
+                .await
+                .map_err(Box::new)?;
+            let mut builder = openidconnect::http::Response::builder()
+                .status(response.status())
+                .version(response.version());
+            for (name, value) in response.headers() {
+                builder = builder.header(name, value);
+            }
+            builder
+                .body(response.bytes().await.map_err(Box::new)?.to_vec())
+                .map_err(openidconnect::HttpClientError::Http)
+        })
+    }
+}
+
 /// One pooled native client; redirects and ambient proxy selection cannot change
 /// the configured issuer/TLS boundary. Authentication failures remain private.
-pub(super) fn http_client(roots: &[String]) -> Result<openidconnect::reqwest::Client, AuthError> {
-    let mut builder = openidconnect::reqwest::Client::builder()
-        .redirect(openidconnect::reqwest::redirect::Policy::none())
+pub(in crate::platform::auth) fn http_client(roots: &[String]) -> Result<UpstreamHttp, AuthError> {
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .https_only(true)
         .no_proxy()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(15));
     for root in roots {
         builder = builder.add_root_certificate(
-            openidconnect::reqwest::Certificate::from_pem(root.as_bytes())
-                .map_err(|_| AuthError::Denied)?,
+            reqwest::Certificate::from_pem(root.as_bytes()).map_err(|_| AuthError::Denied)?,
         );
     }
-    builder.build().map_err(|_| AuthError::Unavailable)
+    builder
+        .build()
+        .map(UpstreamHttp)
+        .map_err(|_| AuthError::Unavailable)
 }
 
 impl ProviderSnapshot {
@@ -113,7 +144,7 @@ impl ProviderSnapshot {
         revision: u64,
         issuer: String,
         client_id: String,
-        http: &openidconnect::reqwest::Client,
+        http: &UpstreamHttp,
     ) -> Result<Self, AuthError> {
         let metadata = CoreProviderMetadata::discover_async(
             IssuerUrl::new(issuer.clone()).map_err(|_| AuthError::Denied)?,

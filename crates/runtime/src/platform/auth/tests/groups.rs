@@ -57,7 +57,7 @@ fn approve_editor(f: &Fixture, principal: &str, now: i64) -> String {
 
 fn app_holds(f: &Fixture, grant: String, now: i64) -> Vec<String> {
     let mut admission = f.admission.clone();
-    admission.runtime_id = URL_SAFE_NO_PAD.encode(ulid::Ulid::new().to_bytes());
+    admission.runtime_id = URL_SAFE_NO_PAD.encode(ulid::Ulid::generate().to_bytes());
     admission.refresh_family_id = Some(oauth_family(&f.store, &grant, now, now + 86400));
     admission.credential = Credential::OAuthGrant(grant);
     issue_authority(&f.store, &admission, None, now)
@@ -276,7 +276,7 @@ fn deploying_a_service_that_uses_an_unaccepted_api_names_that_api() {
             "participantId": reader.identity().as_str(),
             "kind": "service",
             "title": "Reader",
-            "idempotencyKey": ulid::Ulid::new().to_string()
+            "idempotencyKey": ulid::Ulid::generate().to_string()
         }))
         .unwrap();
     let refused = super::super::rpc_deployments::create_deployment(
@@ -295,7 +295,7 @@ fn deploying_a_service_that_uses_an_unaccepted_api_names_that_api() {
     // Once the API is accepted, the same deployment goes ahead.
     accept(&f.store, &f.admin, &source, false, NOW);
     let create = trellis_runtime_apis::types::AuthDeploymentCreateRequest {
-        idempotency_key: ulid::Ulid::new().to_string().into(),
+        idempotency_key: ulid::Ulid::generate().to_string().into(),
         ..create
     };
     super::super::rpc_deployments::create_deployment(

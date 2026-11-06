@@ -122,7 +122,7 @@ pub struct TrellisJobMetaSource;
 
 impl JobMetaSource for TrellisJobMetaSource {
     fn next_job_id(&self) -> String {
-        Ulid::new().to_string()
+        Ulid::generate().to_string()
     }
 
     fn now_iso(&self) -> String {

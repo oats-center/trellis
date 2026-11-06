@@ -628,6 +628,8 @@ fn credential_auth(
 }
 
 fn client(host: &str) -> Result<Client> {
+    // Reqwest needs a process provider for its own TLS setup.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let loopback = host.starts_with("localhost:") || host.starts_with("127.0.0.1:");
     Client::try_from(ClientConfig {
         protocol: if loopback {

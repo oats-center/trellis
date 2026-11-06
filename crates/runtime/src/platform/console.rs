@@ -157,6 +157,7 @@ mod tests {
         config: serde_json::Value,
         listener: tokio::net::TcpListener,
     ) -> tokio_util::task::AbortOnDropHandle<()> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let config: RuntimeConfig = serde_json::from_value(config).unwrap();
         let app = router(&config).unwrap();
         tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {

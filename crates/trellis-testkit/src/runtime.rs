@@ -489,6 +489,8 @@ async fn start_once(
 pub(crate) fn https_client_builder(
     trust_roots: &[PathBuf],
 ) -> Result<reqwest::ClientBuilder, std::io::Error> {
+    // Reqwest needs a process provider for its own TLS setup.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let builder = reqwest::Client::builder();
     if trust_roots.is_empty() {
         return Ok(builder);
@@ -978,7 +980,7 @@ impl TrellisTestRuntime {
         self.ensure_running()?;
         let username = format!(
             "user-{}",
-            ulid::Ulid::new().to_string().to_ascii_lowercase()
+            ulid::Ulid::generate().to_string().to_ascii_lowercase()
         );
         let password = generate_password();
         let user = self
@@ -1101,7 +1103,7 @@ impl TrellisTestRuntime {
                     .workdir
                     .join("credentials")
                     .join(&app.client_id)
-                    .join(ulid::Ulid::new().to_string()),
+                    .join(ulid::Ulid::generate().to_string()),
                 &app.client_id,
                 &serde_json::json!([
                     {

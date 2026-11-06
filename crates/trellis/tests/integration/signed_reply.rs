@@ -59,7 +59,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )
@@ -129,7 +129,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
             action: action.name.clone(),
             subject: Query::SUBJECT.into(),
             reply_subject: Some(caller_nats.new_inbox()),
-            request_id: ulid::Ulid::new().to_string(),
+            request_id: ulid::Ulid::generate().to_string(),
             issued_at: caller_owner.policy().now_unix_seconds,
         };
         let payload = Bytes::from_static(b"{}");
@@ -262,7 +262,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
                 .unwrap()
                 .parse()
                 .unwrap(),
-            idempotency_key: ulid::Ulid::new().to_string().into(),
+            idempotency_key: ulid::Ulid::generate().to_string().into(),
             extra: Default::default(),
         })
         .await
@@ -279,7 +279,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
         .unwrap();
         // A new, genuinely signed opening under the retired caller is denied.
         let fresh = trellis_protocol::SessionRequest {
-            request_id: ulid::Ulid::new().to_string(),
+            request_id: ulid::Ulid::generate().to_string(),
             ..opening.clone()
         };
         let (fresh_proof, _) = caller
@@ -382,7 +382,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
     auth.service_instances_remove(&AuthInstanceMutationRequest {
         instance_id: identity.instance_id().parse().unwrap(),
         expected_revision: trellis_runtime_apis::types::AuthRevision(1.into()),
-        idempotency_key: ulid::Ulid::new().to_string().into(),
+        idempotency_key: ulid::Ulid::generate().to_string().into(),
         extra: Default::default(),
     })
     .await

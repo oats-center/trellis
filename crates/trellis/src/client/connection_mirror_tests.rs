@@ -27,7 +27,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust.clone(),
     )
@@ -63,7 +63,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         username: "mirror-user".to_string().into(),
         display_name: "Mirror user".to_string().into(),
         password: Some("ordinary mirror user password".to_string().into()),
-        idempotency_key: ulid::Ulid::new().to_string().into(),
+        idempotency_key: ulid::Ulid::generate().to_string().into(),
         extra: Default::default(),
     };
     let user: AuthUserGetResponse = serde_json::from_value(
@@ -87,7 +87,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         capability_id: Query::CALLER_CAPABILITIES[0].to_string().into(),
         expected_revision: 0.into(),
         expires_at: None,
-        idempotency_key: ulid::Ulid::new().to_string().into(),
+        idempotency_key: ulid::Ulid::generate().to_string().into(),
         extra: Default::default(),
     };
     admin
@@ -108,7 +108,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         capability_id: inspect.clone().into(),
         expected_revision: 0.into(),
         expires_at: None,
-        idempotency_key: ulid::Ulid::new().to_string().into(),
+        idempotency_key: ulid::Ulid::generate().to_string().into(),
         extra: Default::default(),
     };
     let granted: AuthCapabilityGrantResponse = serde_json::from_value(
@@ -134,7 +134,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )
@@ -187,7 +187,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
             ("csrf", csrf.clone()),
             ("username", "mirror-user".into()),
             ("password", "ordinary mirror user password".into()),
-            ("request_id", ulid::Ulid::new().to_string()),
+            ("request_id", ulid::Ulid::generate().to_string()),
         ])
         .send()
         .await
@@ -301,7 +301,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
     let revoke = AuthCapabilityRevokeRequest {
         grant_id: granted.grant.grant_id,
         expected_revision: granted.grant.revision,
-        idempotency_key: ulid::Ulid::new().to_string().into(),
+        idempotency_key: ulid::Ulid::generate().to_string().into(),
         extra: Default::default(),
     };
     admin
@@ -365,7 +365,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
             .unwrap()
             .parse()
             .unwrap(),
-        idempotency_key: ulid::Ulid::new().to_string().into(),
+        idempotency_key: ulid::Ulid::generate().to_string().into(),
         extra: Default::default(),
     };
     admin
@@ -412,7 +412,7 @@ async fn connect_caller(
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )
@@ -502,7 +502,7 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         action: action.name.clone(),
         subject: Query::SUBJECT.into(),
         reply_subject: Some(peer.nats().new_inbox()),
-        request_id: ulid::Ulid::new().to_string(),
+        request_id: ulid::Ulid::generate().to_string(),
         issued_at: peer.authorization_owner().policy().now_unix_seconds,
     };
     let (proof, _) = peer.auth().create_request_proof(&opening, b"{}").unwrap();
@@ -557,7 +557,7 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
             .unwrap()
             .parse()
             .unwrap(),
-        idempotency_key: ulid::Ulid::new().to_string().into(),
+        idempotency_key: ulid::Ulid::generate().to_string().into(),
         extra: Default::default(),
     };
     admin
@@ -620,7 +620,7 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         .await
         .unwrap();
     let fresh = trellis_protocol::SessionRequest {
-        request_id: ulid::Ulid::new().to_string(),
+        request_id: ulid::Ulid::generate().to_string(),
         ..opening.clone()
     };
     let (proof, _) = peer.auth().create_request_proof(&fresh, b"{}").unwrap();
@@ -679,7 +679,7 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         .await
         .unwrap();
     let fresh = trellis_protocol::SessionRequest {
-        request_id: ulid::Ulid::new().to_string(),
+        request_id: ulid::Ulid::generate().to_string(),
         ..opening
     };
     let (proof, _) = peer.auth().create_request_proof(&fresh, b"{}").unwrap();

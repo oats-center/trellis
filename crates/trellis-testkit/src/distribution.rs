@@ -56,6 +56,7 @@ const LATEST_RELEASE_TTL: Duration = Duration::from_secs(3600);
 const RELEASES: &str = "https://github.com/oats-center/trellis/releases/download";
 
 async fn get(url: &str) -> Result<Vec<u8>, TrellisTestError> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut request = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .user_agent("trellis-testkit")
@@ -461,7 +462,7 @@ async fn install(
             std::fs::write(&path, &extracted[*name])?;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
         }
-        let quarantine = cache.join(format!(".corrupt-{}", ulid::Ulid::new()));
+        let quarantine = cache.join(format!(".corrupt-{}", ulid::Ulid::generate()));
         match std::fs::rename(&installed, &quarantine) {
             Ok(()) => {}
             Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => {}

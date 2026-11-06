@@ -34,7 +34,7 @@ fn request_roles(f: &Fixture, principal: &str) -> GrantApproval {
 
 fn authority_holds(f: &Fixture, grant: String, capability: &str) -> bool {
     let mut admission = f.admission.clone();
-    admission.runtime_id = URL_SAFE_NO_PAD.encode(ulid::Ulid::new().to_bytes());
+    admission.runtime_id = URL_SAFE_NO_PAD.encode(ulid::Ulid::generate().to_bytes());
     admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
     issue_authority(&f.store, &admission, None, NOW)

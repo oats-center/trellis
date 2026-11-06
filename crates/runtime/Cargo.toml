@@ -52,7 +52,6 @@ rusqlite = { workspace = true, optional = true, features = ["backup", "hooks"] }
 ref-cast = "1.0"
 refinery = { workspace = true, optional = true }
 reqwest.workspace = true
-x509-parser.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["net", "signal"] }
@@ -74,7 +73,7 @@ url.workspace = true
 [dev-dependencies]
 rcgen.workspace = true
 reqwest = { workspace = true, features = ["http2", "cookies"] }
-scraper = "0.25.0"
+scraper = "0.29.0"
 tokio = { workspace = true, features = ["process", "io-util"] }
 trellis-local-nats = { path = "../local-nats" }
 tempfile.workspace = true

@@ -12,6 +12,7 @@ This guide owns Trellis testing and release practice. Rust `xtask release ...` c
 - push access to the repository
 - [Node](https://nodejs.org) 24 and npm 11+
 - a Rust toolchain (`rustup`)
+- [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) (`cargo install --locked cargo-deny`), which `npm test` runs
 - Docker or Podman only if you want to locally verify image builds; the live
   integration gate runs NATS as a managed binary and needs no container runtime
 
@@ -270,6 +271,16 @@ The workspace installs that shared lock with `npm ci` during normal builds and t
 so concurrent commands cannot replace each other's resolution snapshots. For a
 deliberate dependency update, run `npm install` from the repository root and then
 verify the updated lock using `npm ci` and the normal checks.
+
+Rust dependencies follow `deny.toml`, which `cargo deny check` enforces in Lint:
+one version of each crate, permissive licenses, crates.io only, no open
+advisories, and ring as the only TLS crypto provider. A dependency that holds an
+older version of a crate Trellis also uses needs a `skip` entry naming it; when
+that dependency catches up, `cargo deny` reports the skip as unused and it
+should go. Before moving a dependency to a new major version, check that it
+doesn't bring a second copy of something already in the tree; when it does, stay
+on the version the rest of the tree shares, unless the newer one fixes an
+advisory.
 OpenTelemetry uses the matched 2.11/0.222 release family; advancing the family also
 requires verifying the Rust OTLP collector interoperability tests, which consume
 the installed exporter's protobuf decoder.

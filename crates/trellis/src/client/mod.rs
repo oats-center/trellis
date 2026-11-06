@@ -63,7 +63,7 @@ pub use events::{
 pub use events::{PostgresInboxStore, PostgresOutboxStore};
 #[cfg(feature = "event-store-sqlite")]
 pub use events::{SqliteInboxStore, SqliteOutboxStore};
-#[cfg(any(feature = "device", feature = "telemetry-otlp"))]
+#[cfg(feature = "http")]
 pub(crate) use http_error::http_client_builder;
 #[cfg(feature = "device")]
 pub(crate) use http_error::read_bounded_http_body;

@@ -1029,7 +1029,7 @@ where
     }
 
     fn start(&self, context: RequestContext, input: D::Input) -> AcceptedOperationFuture<D> {
-        self.start_invocation(context, ulid::Ulid::new().to_string(), input, None)
+        self.start_invocation(context, ulid::Ulid::generate().to_string(), input, None)
     }
 
     fn start_invocation(
@@ -2287,7 +2287,7 @@ where
             let mut record = current.record;
             let request_id = context
                 .request_id
-                .unwrap_or_else(|| ulid::Ulid::new().to_string());
+                .unwrap_or_else(|| ulid::Ulid::generate().to_string());
             if let Some(existing) = record
                 .signals
                 .iter()

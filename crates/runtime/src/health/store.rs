@@ -651,7 +651,7 @@ impl HealthStore {
         connection.execute(
             "INSERT OR IGNORE INTO health_projection_meta (singleton, projection_id)
              VALUES (1, ?1)",
-            [Ulid::new().to_string()],
+            [Ulid::generate().to_string()],
         )?;
         Ok(())
     }
@@ -738,7 +738,7 @@ fn insert_transition(
     identity: &HeartbeatIdentity,
     row: TransitionRow<'_>,
 ) -> Result<(), HealthStoreError> {
-    let event_id = Ulid::new().to_string();
+    let event_id = Ulid::generate().to_string();
     let changed_at = rfc3339(row.changed_at_ns)?;
     let event = HealthStatusChangedEvent {
         header: HealthStatusChangedEventHeader {

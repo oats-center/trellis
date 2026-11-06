@@ -332,7 +332,7 @@ impl NativeCredentialLease {
 
     /// Public RFC 7517 P-256 JWK for code binding and standards DPoP proofs.
     pub fn public_jwk(&self) -> serde_json::Value {
-        let point = self.signing_key.verifying_key().to_encoded_point(false);
+        let point = self.signing_key.verifying_key().to_sec1_point(false);
         let bytes = point.as_bytes();
         serde_json::json!({
             "kty":"EC",
@@ -459,7 +459,7 @@ impl NativeCredentialLease {
             use std::os::unix::fs::OpenOptionsExt;
             let staged = self
                 .path
-                .with_extension(format!("{}.tmp", ulid::Ulid::new()));
+                .with_extension(format!("{}.tmp", ulid::Ulid::generate()));
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)

@@ -659,7 +659,7 @@ impl BoundStoreResourceClient {
                 }));
             }
             let stream = format!("OBJ_{}", guard.bucket);
-            let name = format!("tr_store_{}", ulid::Ulid::new());
+            let name = format!("tr_store_{}", ulid::Ulid::generate());
             let mut state = StoreReadState {
                 runtime: tokio::runtime::Handle::current(),
                 subject: format!("$O.{}.C.{}", guard.bucket, info.nuid),

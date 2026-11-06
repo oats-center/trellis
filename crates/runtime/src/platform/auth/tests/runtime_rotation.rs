@@ -182,7 +182,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         instance_id: initial_trust.instance_id.clone(),
         account: initial_trust.account.clone(),
         client_id: "trellis.cli".into(),
-        credential_handle: ulid::Ulid::new(),
+        credential_handle: ulid::Ulid::generate(),
     };
     let custody = root.join("native-custody");
     let native = NativeOAuthClient::open(custody.clone(), scope.clone(), initial_trust.clone())
@@ -237,7 +237,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
             ("csrf", csrf.as_str()),
             ("username", "admin"),
             ("password", "a strong bootstrap password"),
-            ("request_id", &ulid::Ulid::new().to_string()),
+            ("request_id", &ulid::Ulid::generate().to_string()),
         ])
         .send()
         .await
@@ -564,7 +564,7 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
             instance_id: discovered.trust.instance_id.clone(),
             account: discovered.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         discovered.trust.clone(),
     )
@@ -645,7 +645,7 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
             ("csrf", csrf.as_str()),
             ("username", "admin"),
             ("password", "a strong bootstrap password"),
-            ("request_id", &ulid::Ulid::new().to_string()),
+            ("request_id", &ulid::Ulid::generate().to_string()),
         ])
         .send()
         .await

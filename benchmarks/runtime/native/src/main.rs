@@ -210,7 +210,12 @@ pub(crate) struct Hasher {
 }
 impl Hasher {
     pub(crate) fn digest(&self) -> String {
-        format!("{:x}", self.hash.clone().finalize())
+        self.hash
+            .clone()
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
     pub(crate) fn base64url(&self) -> String {
         base64::Engine::encode(
@@ -279,6 +284,7 @@ async fn snapshot_resources(options: &Options) -> Result<Vec<Value>, Error> {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)

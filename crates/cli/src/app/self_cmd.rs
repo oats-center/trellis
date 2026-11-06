@@ -1,7 +1,7 @@
 use crate::app::{release_channel, SELF_UPDATE_TARGET};
 use crate::cli::*;
 use crate::output;
-use crate::self_update::{check_for_update, install_update, ReleaseChannel, UpdateResult};
+use trellis_self_update::{check_for_update, install_update, ReleaseChannel, UpdateResult};
 pub(super) fn run_upgrade(format: OutputFormat, command: UpgradeCommand) -> miette::Result<()> {
     let channel = release_channel(command.prerelease);
     if !command.check {

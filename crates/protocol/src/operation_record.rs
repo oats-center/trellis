@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn codec_preserves_descriptor_values_and_rejects_inexact_framework_counters() {
-        let id = ulid::Ulid::new().to_string();
+        let id = ulid::Ulid::generate().to_string();
         let binding = SessionBinding::Browser {
             client_id: "caller".into(),
             origin: "https://example.test".into(),
@@ -508,7 +508,7 @@ mod tests {
             invocation_id: id.clone(),
             api_id: "example@v1".into(),
             operation: "run".into(),
-            deployment_id: ulid::Ulid::new().to_string(),
+            deployment_id: ulid::Ulid::generate().to_string(),
             creator_principal_id: "alice".into(),
             creator_binding: binding,
             caller_session_key: "retained-session".into(),

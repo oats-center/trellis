@@ -238,7 +238,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         instance_id: trust.instance_id.clone(),
         account: trust.account.clone(),
         client_id: registration.client_id,
-        credential_handle: ulid::Ulid::new(),
+        credential_handle: ulid::Ulid::generate(),
     };
     let custody = f.directory.path().join("native-oauth");
     let mut authority = f.store;

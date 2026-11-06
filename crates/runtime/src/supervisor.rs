@@ -678,7 +678,7 @@ pub async fn run_with_stop(
     let owner_id = format!(
         "{}-{}",
         config.instance_name.as_deref().unwrap_or("trellis-runtime"),
-        Ulid::new()
+        Ulid::generate()
     );
     let mut ownership =
         RuntimeOwnership::acquire(trellis_nats.clone(), &leases, owner_id, options.mode).await?;

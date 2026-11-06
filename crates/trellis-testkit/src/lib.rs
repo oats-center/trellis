@@ -430,7 +430,7 @@ mod tests {
         assert!(directory.user.account.is_none());
         let missing = auth
             .users_get(&trellis_runtime_apis::types::AuthUserGetRequest {
-                user_id: ulid::Ulid::new().to_string().parse().unwrap(),
+                user_id: ulid::Ulid::generate().to_string().parse().unwrap(),
                 extra: Default::default(),
             })
             .await

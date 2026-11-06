@@ -98,7 +98,7 @@ struct WorkdirGuard(PathBuf);
 
 impl WorkdirGuard {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("trellis-cli-live-{}", Ulid::new()));
+        let path = std::env::temp_dir().join(format!("trellis-cli-live-{}", Ulid::generate()));
         fs::create_dir_all(&path).expect("create CLI test workdir");
         Self(path)
     }

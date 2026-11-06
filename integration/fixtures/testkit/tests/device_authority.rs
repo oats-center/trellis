@@ -1,18 +1,21 @@
 //! Provisioned identity and independently consented user authority have separate lifecycles.
 
-use trellis_rs::__internal::RuntimeOwner as _;
-use trellis_test_fixture::apps::trellis_test_fixture_companion_device_companion as companion_app;
-use trellis_test_fixture::apps::trellis_test_fixture_optional_companion_device_companion as optional_companion_app;
 use serde_json::json;
+use trellis_rs::__internal::RuntimeOwner as _;
 use trellis_rs::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient};
 use trellis_rs::client::{DeviceConnectOptions, UserConnectOptions};
 use trellis_rs::generated::{AppRequestDescriptor, Client, ParticipantDescriptor};
 use trellis_runtime_apis::{
     apis::trellis_auth_v1::Client as AuthClient, apps::trellis_cli::Request,
 };
+use trellis_test_fixture::apps::trellis_test_fixture_companion_device_companion as companion_app;
+use trellis_test_fixture::apps::trellis_test_fixture_optional_companion_device_companion as optional_companion_app;
+use trellis_test_fixture::participants::{
+    trellis_test_fixture_companion_device, trellis_test_fixture_provider,
+    trellis_test_fixture_unsupported_device,
+};
 use trellis_test_fixture_unsupported_device::Participant as Device;
 use trellis_testkit::TrellisTestRuntime;
-use trellis_test_fixture::participants::{trellis_test_fixture_companion_device, trellis_test_fixture_provider, trellis_test_fixture_unsupported_device};
 
 async fn oauth(
     runtime: &mut TrellisTestRuntime,
@@ -24,13 +27,13 @@ async fn oauth(
     let native = NativeOAuthClient::open(
         runtime
             .workdir()
-            .join(format!("device-oauth-{}", ulid::Ulid::new())),
+            .join(format!("device-oauth-{}", ulid::Ulid::generate())),
         NativeCredentialScope {
             issuer: server.issuer,
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )
@@ -49,8 +52,7 @@ async fn oauth(
     } else {
         &[]
     };
-    let details =
-        json!([{"type":"trellis_capabilities","required":required,"optional":optional}]);
+    let details = json!([{"type":"trellis_capabilities","required":required,"optional":optional}]);
     let flow = native.start_device(&details).await.unwrap();
     runtime
         .approve_device_login("trellis.cli", flow.user_code())
@@ -99,14 +101,14 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
     let echo_task = tokio::spawn(async move { echo.run().await });
     let (controller, _) = oauth(&mut runtime, true).await;
     let admin = AuthClient::from_generated(Client::connect_user(controller).await.unwrap());
-    let password = ulid::Ulid::new().to_string();
+    let password = ulid::Ulid::generate().to_string();
     let user = admin
         .users_create(
             &serde_json::from_value(json!({
-                "username":format!("companion-{}",ulid::Ulid::new()),
+                "username":format!("companion-{}",ulid::Ulid::generate()),
                 "password":password,
                 "displayName":"Independent companion user",
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -114,13 +116,19 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
         .unwrap()
         .user;
     for capability in companion_app::Request::REQUIRED_CAPABILITIES {
-    admin.capability_grants_grant(&serde_json::from_value(json!({
-        "principalId":user.principal_id,
-        "capabilityId":capability,
-        "expectedRevision":"0",
-        "idempotencyKey":ulid::Ulid::new().to_string()
-    })).unwrap()).await.unwrap();
-}
+        admin
+            .capability_grants_grant(
+                &serde_json::from_value(json!({
+                    "principalId":user.principal_id,
+                    "capabilityId":capability,
+                    "expectedRevision":"0",
+                    "idempotencyKey":ulid::Ulid::generate().to_string()
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
     let (unprivileged, _) = oauth(&mut runtime, false).await;
     let unprivileged =
         AuthClient::from_generated(Client::connect_user(unprivileged).await.unwrap());
@@ -131,7 +139,7 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
                 "kind":"device",
                 "participantId":Required::ID,
                 "packageEvidence":Required::package_evidence(),
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -143,7 +151,7 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
             &serde_json::from_value(json!({
                 "deploymentId":deployment.deployment_id,
                 "title":"TypeScript parent",
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -209,7 +217,7 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
                             "confirmationCode":message["confirmationCode"],
                             "expectedRevision":review.revision,
                             "decision":"approved",
-                            "idempotencyKey":ulid::Ulid::new().to_string()
+                            "idempotencyKey":ulid::Ulid::generate().to_string()
                         }))
                         .unwrap(),
                     )
@@ -225,7 +233,7 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
                 let revoke = serde_json::from_value(json!({
                     "instanceId":message["instanceId"],
                     "expectedRevision":message["revision"],
-                    "idempotencyKey":ulid::Ulid::new().to_string()
+                    "idempotencyKey":ulid::Ulid::generate().to_string()
                 }))
                 .unwrap();
                 assert!(
@@ -255,12 +263,12 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retiring_companion_declarations_fences_new_consent_not_existing_grants() {
+    use companion_app::Request as Child;
     use std::{collections::BTreeMap, path::PathBuf};
     use trellis_idl::{
         project::{GenerateConfig, PackageManifest, PackageMetadata},
         CanonicalMode, SourceUnit,
     };
-    use companion_app::Request as Child;
     use trellis_test_fixture_companion_device::Participant as Required;
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
     runtime
@@ -279,7 +287,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
                 "principalId":user.principal.principal_id,
                 "capabilityId":"trellis-test-fixture.echo.v1:echo.invoke",
                 "expectedRevision":"0",
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -338,7 +346,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
                     "kind":"device",
                     "participantId":Required::ID,
                     "packageEvidence":Required::package_evidence(),
-                    "idempotencyKey":ulid::Ulid::new().to_string()
+                    "idempotencyKey":ulid::Ulid::generate().to_string()
                 }))
                 .unwrap(),
             )
@@ -351,11 +359,11 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: client_id.clone(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         };
         let path = runtime
             .workdir()
-            .join(format!("retirement-{}", ulid::Ulid::new()));
+            .join(format!("retirement-{}", ulid::Ulid::generate()));
         let existing = NativeOAuthClient::open(path.clone(), scope.clone(), server.trust.clone())
             .await
             .unwrap();
@@ -368,9 +376,9 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
         let pending = NativeOAuthClient::open(
             runtime
                 .workdir()
-                .join(format!("pending-{}", ulid::Ulid::new())),
+                .join(format!("pending-{}", ulid::Ulid::generate())),
             NativeCredentialScope {
-                credential_handle: ulid::Ulid::new(),
+                credential_handle: ulid::Ulid::generate(),
                 ..scope.clone()
             },
             server.trust.clone(),
@@ -386,7 +394,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
                     &serde_json::from_value(json!({
                         "deploymentId":deployment.deployment_id,
                         "expectedRevision":deployment.revision,
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )
@@ -399,7 +407,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
                     &serde_json::from_value(json!({
                         "deploymentId":deployment.deployment_id,
                         "expectedRevision":disabled.revision,
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )
@@ -411,7 +419,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
                 "deploymentId":deployment.deployment_id,
                 "expectedRevision":deployment.revision,
                 "packageEvidence":omitted,
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap();
             let applied = admin.deployments_apply(&apply).await.unwrap().deployment;
@@ -430,7 +438,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
                         "deploymentId":deployment.deployment_id,
                         "expectedRevision":deployment.revision,
                         "packageEvidence":omitted,
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap()
                 )
@@ -439,9 +447,11 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
             applied
         };
         let new = NativeOAuthClient::open(
-            runtime.workdir().join(format!("new-{}", ulid::Ulid::new())),
+            runtime
+                .workdir()
+                .join(format!("new-{}", ulid::Ulid::generate())),
             NativeCredentialScope {
-                credential_handle: ulid::Ulid::new(),
+                credential_handle: ulid::Ulid::generate(),
                 ..scope.clone()
             },
             server.trust.clone(),
@@ -467,7 +477,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
                         "deploymentId":deployment.deployment_id,
                         "expectedRevision":current.revision,
                         "packageEvidence":Required::package_evidence(),
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )
@@ -476,9 +486,9 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
             let new = NativeOAuthClient::open(
                 runtime
                     .workdir()
-                    .join(format!("restored-{}", ulid::Ulid::new())),
+                    .join(format!("restored-{}", ulid::Ulid::generate())),
                 NativeCredentialScope {
-                    credential_handle: ulid::Ulid::new(),
+                    credential_handle: ulid::Ulid::generate(),
                     ..scope
                 },
                 server.trust.clone(),
@@ -524,7 +534,7 @@ async fn enrolled_companions_require_their_own_consent_and_revoke_only_their_gra
                 "principalId":user.principal.principal_id,
                 "capabilityId":"trellis-test-fixture.echo.v1:echo.invoke",
                 "expectedRevision":"0",
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -574,7 +584,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
                     "kind":"device",
                     "participantId":P::ID,
                     "packageEvidence":P::package_evidence(),
-                    "idempotencyKey":ulid::Ulid::new().to_string()
+                    "idempotencyKey":ulid::Ulid::generate().to_string()
                 }))
                 .unwrap(),
             )
@@ -589,7 +599,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
             &serde_json::from_value(json!({
                 "deploymentId":deployment,
                 "title":"Enrolled parent",
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -666,7 +676,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
                 "confirmationCode":"00000000",
                 "decision":"approved",
                 "expectedRevision":review.revision,
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap()
         )
@@ -679,7 +689,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
                 "confirmationCode":pending.confirmation_code,
                 "decision":"approved",
                 "expectedRevision":review.revision,
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -703,7 +713,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         "reviewId":pending.review_id,
         "confirmationCode":pending.confirmation_code,
         "expectedRevision":review.revision,
-        "idempotencyKey":ulid::Ulid::new().to_string()
+        "idempotencyKey":ulid::Ulid::generate().to_string()
     });
     assert!(
         admin
@@ -715,13 +725,13 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
     let client_id = review.companion_client_id.unwrap().to_string();
     let path = runtime
         .workdir()
-        .join(format!("companion-{}", ulid::Ulid::new()));
+        .join(format!("companion-{}", ulid::Ulid::generate()));
     let scope = NativeCredentialScope {
         issuer: server.issuer.clone(),
         instance_id: server.trust.instance_id.clone(),
         account: server.trust.account.clone(),
         client_id: client_id.clone(),
-        credential_handle: ulid::Ulid::new(),
+        credential_handle: ulid::Ulid::generate(),
     };
     let native = NativeOAuthClient::open(path.clone(), scope.clone(), server.trust.clone())
         .await
@@ -806,13 +816,13 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         let parent_as_app = companion_app::Client::from_generated(parent.clone());
         assert!(
             parent_as_app
-                .saved("0", ulid::Ulid::new().to_string().parse().unwrap())
+                .saved("0", ulid::Ulid::generate().to_string().parse().unwrap())
                 .await
                 .is_err(),
             "device authority registered a user State declaration"
         );
         let (user_state, _) = user
-            .saved("0", ulid::Ulid::new().to_string().parse().unwrap())
+            .saved("0", ulid::Ulid::generate().to_string().parse().unwrap())
             .await
             .unwrap();
         device_state
@@ -865,7 +875,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
             &serde_json::from_value(json!({
                 "instanceId":instance.instance_id,
                 "expectedRevision":instance.revision,
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -878,7 +888,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
             &serde_json::from_value(json!({
                 "instanceId":instance.instance_id,
                 "expectedRevision":disabled.instance.revision,
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -889,7 +899,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         &serde_json::from_value(json!({
             "instanceId":instance.instance_id,
             "expectedRevision":association.revision,
-            "idempotencyKey":ulid::Ulid::new().to_string()
+            "idempotencyKey":ulid::Ulid::generate().to_string()
         }))
         .unwrap(),
     )
@@ -927,14 +937,14 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
     let admin = AuthClient::from_generated(Client::connect_user(controller).await.unwrap());
     let deployment = admin.deployments_create(&serde_json::from_value(json!({
         "title":"Independent device", "kind":"device", "participantId":Device::ID,
-        "packageEvidence":Device::package_evidence(), "idempotencyKey":ulid::Ulid::new().to_string()
+        "packageEvidence":Device::package_evidence(), "idempotencyKey":ulid::Ulid::generate().to_string()
     })).unwrap()).await.unwrap().deployment;
     let (seed, public_key) = trellis_rs::auth::generate_session_keypair();
     let instance = admin
         .devices_provision(
             &serde_json::from_value(json!({
                 "deploymentId":deployment.deployment_id, "title":"Independent device",
-                "identityPublicKey":public_key,"idempotencyKey":ulid::Ulid::new().to_string()
+                "identityPublicKey":public_key,"idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -1087,7 +1097,7 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
     admin
         .sessions_revoke(
             &serde_json::from_value(json!({
-                "loginSessionId":login_id,"idempotencyKey":ulid::Ulid::new().to_string()
+                "loginSessionId":login_id,"idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap(),
         )
@@ -1100,7 +1110,7 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
     let second_user = Client::connect_user(second_user).await.unwrap();
     let second_auth = AuthClient::from_generated(second_user.clone());
     admin.devices_disable(&serde_json::from_value(json!({
-        "instanceId":instance.instance_id,"expectedRevision":instance.revision,"idempotencyKey":ulid::Ulid::new().to_string()
+        "instanceId":instance.instance_id,"expectedRevision":instance.revision,"idempotencyKey":ulid::Ulid::generate().to_string()
     })).unwrap()).await.unwrap();
     assert!(device.refresh_authorization_context().await.is_err());
     second_user.refresh_authorization_context().await.unwrap();

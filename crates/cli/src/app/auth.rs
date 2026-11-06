@@ -339,7 +339,7 @@ async fn providers_command(
         |provider: &auth_types::AuthOIDCProvider| auth_types::AuthOIDCProviderMutationRequest {
             provider_id: provider.provider_id,
             expected_revision: provider.revision,
-            idempotency_key: Ulid::new().to_string().into(),
+            idempotency_key: Ulid::generate().to_string().into(),
             extra: Default::default(),
         };
     let provider = match command {
@@ -637,7 +637,7 @@ fn trimmed_optional(value: &Option<String>) -> Option<String> {
 }
 
 fn cli_idempotency_key() -> String {
-    Ulid::new().to_string()
+    Ulid::generate().to_string()
 }
 
 async fn users_list_command(format: OutputFormat) -> miette::Result<()> {
@@ -1209,7 +1209,7 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
             instance_id: server.trust.instance_id,
             account: server.trust.account,
             client_id: "trellis.cli".into(),
-            credential_handle: Ulid::new(),
+            credential_handle: Ulid::generate(),
         },
         nats_servers: server.nats_servers,
         issuer_key: server.trust.issuer,

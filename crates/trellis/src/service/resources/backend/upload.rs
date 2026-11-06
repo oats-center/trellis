@@ -62,7 +62,7 @@ pub(super) async fn write<R: AsyncRead + Unpin + Send>(
         Err(error) if error.kind() == InfoErrorKind::NotFound => None,
         Err(error) => return Err(nats_error(error)),
     };
-    let nuid = ulid::Ulid::new().to_string();
+    let nuid = ulid::Ulid::generate().to_string();
     let stream = guard
         .context
         .get_stream_no_info(format!("OBJ_{}", guard.bucket))
@@ -217,7 +217,7 @@ mod tests {
             .await
             .unwrap();
         let context = async_nats::jetstream::new(client.clone());
-        let bucket = format!("upload_{}", ulid::Ulid::new());
+        let bucket = format!("upload_{}", ulid::Ulid::generate());
         let native = context
             .create_object_store(async_nats::jetstream::object_store::Config {
                 bucket: bucket.clone(),

@@ -1,0 +1,101 @@
+# cargo deny check: run by Lint. One version of each crate, permissive
+# licenses, crates.io only, no known advisories. Every skip names the
+# dependency that holds the older version; drop the skip when it moves.
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "wasm32-unknown-unknown",
+]
+all-features = true
+
+[advisories]
+ignore = [
+  # No fixed rsa release exists. Trellis reaches rsa only through
+  # openidconnect, which verifies providers' RS256 signatures with public
+  # keys; the attack needs private-key operations.
+  { id = "RUSTSEC-2023-0071", reason = "rsa used only to verify signatures with public keys" },
+]
+
+[licenses]
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MIT-0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+[licenses.private]
+ignore = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+  { crate = "aws-lc-rs", reason = "Trellis uses ring; a second TLS provider doubles the crypto build" },
+  { crate = "aws-lc-sys", reason = "Trellis uses ring" },
+  { crate = "openssl-sys", reason = "Trellis uses rustls" },
+  { crate = "native-tls", reason = "Trellis uses rustls" },
+]
+skip = [
+  # The RustCrypto 0.10 generation. Trellis is on the next one, which fixes
+  # RUSTSEC-2026-0387 in crypto-bigint; nkeys (ed25519-dalek 2, which Trellis
+  # shares with it), oauth2, nats-jwt-rs, oauth-as and openidconnect's RSA keys
+  # are still on this one.
+  { crate = "sha2:<0.11", reason = "ed25519-dalek 2, nats-jwt-rs, oauth2, oauth-as, openidconnect" },
+  { crate = "digest:<0.11", reason = "RustCrypto 0.10 generation" },
+  { crate = "block-buffer:<0.12", reason = "RustCrypto 0.10 generation" },
+  { crate = "crypto-common:<0.2", reason = "RustCrypto 0.10 generation" },
+  { crate = "const-oid:<0.10", reason = "RustCrypto 0.10 generation" },
+  { crate = "cpufeatures:<0.3", reason = "RustCrypto 0.10 generation" },
+  { crate = "hmac:<0.13", reason = "openidconnect" },
+  { crate = "ed25519-dalek:<3", reason = "nkeys; openidconnect 4.1 is on 3" },
+  { crate = "ed25519:<3", reason = "ed25519-dalek 2" },
+  { crate = "curve25519-dalek:<5", reason = "ed25519-dalek 2, crypto_box through nkeys" },
+  { crate = "signature:<3", reason = "ed25519-dalek 2, rsa 0.9" },
+  { crate = "pkcs8:<0.11", reason = "rsa 0.9, through openidconnect" },
+  { crate = "spki:<0.8", reason = "rsa 0.9" },
+  { crate = "der:<0.8", reason = "rsa 0.9" },
+  { crate = "pem-rfc7468:<1", reason = "der 0.7" },
+  { crate = "rand_core:<0.10", reason = "RustCrypto 0.10 generation and rand 0.8/0.9" },
+  { crate = "rand:<0.10", reason = "nkeys, nuid, oauth2, openidconnect (0.8); opentelemetry_sdk (0.9)" },
+  { crate = "rand_chacha:<0.10", reason = "rand 0.8 and 0.9" },
+  { crate = "getrandom:<0.4", reason = "ring and rand_core 0.6 (0.2); ahash and oauth-as (0.3)" },
+  { crate = "base64:<0.23", reason = "async-nats, oauth2, oauth-as, oci-client, postgres-protocol" },
+  { crate = "itertools:<0.15", reason = "openidconnect, prost-derive" },
+  { crate = "thiserror:<2", reason = "oauth2, openidconnect, wasm-opt" },
+  { crate = "thiserror-impl:<2", reason = "thiserror 1" },
+  { crate = "unicode-width:<0.2", reason = "miette" },
+  { crate = "miniz_oxide:<0.9", reason = "png, through image" },
+  { crate = "num-bigint:<0.5", reason = "der-parser, through x509-parser; oxc is on 0.5" },
+  { crate = "strum:<0.28", reason = "oci-spec (0.27), wasm-opt (0.24)" },
+  { crate = "strum_macros:<0.28", reason = "strum 0.24 and 0.27" },
+  { crate = "darling:<0.24", reason = "derive_builder, through oci-client" },
+  { crate = "darling_core:<0.24", reason = "darling 0.20" },
+  { crate = "darling_macro:<0.24", reason = "darling 0.20" },
+  { crate = "syn:<3", reason = "most proc-macro crates are still on syn 2 (and strum_macros 0.24 on 1)" },
+  { crate = "synstructure:<0.14", reason = "asn1-rs-derive, through x509-parser" },
+  { crate = "heck:<0.5", reason = "strum_macros 0.24, through wasm-opt" },
+  # Build tooling and optional storage, not in the shipped binaries.
+  { crate = "fallible-iterator:<0.3", reason = "postgres, for trellis-rs event-store-postgres" },
+  { crate = "phf:<0.14", reason = "tokio-postgres" },
+  { crate = "phf_shared:<0.14", reason = "tokio-postgres" },
+  { crate = "gimli:<0.34", reason = "walrus, through wasm-bindgen-cli-support in xtask" },
+  { crate = "hashbrown:<0.17", reason = "wasmparser, through wasm-bindgen-cli-support in xtask" },
+]

@@ -35,7 +35,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 instance_id: server.trust.instance_id.clone(),
                 account: server.trust.account.clone(),
                 client_id: "trellis.cli".into(),
-                credential_handle: ulid::Ulid::new(),
+                credential_handle: ulid::Ulid::generate(),
             },
             server.trust.clone(),
         )
@@ -82,7 +82,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                     "principalId": user.user.principal_id,
                     "capabilityId":capability,
                     "expectedRevision":"0",
-                    "idempotencyKey":ulid::Ulid::new().to_string()
+                    "idempotencyKey":ulid::Ulid::generate().to_string()
                 }))
                 .unwrap(),
             )
@@ -96,7 +96,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 instance_id: server.trust.instance_id.clone(),
                 account: server.trust.account.clone(),
                 client_id: "trellis.cli".into(),
-                credential_handle: ulid::Ulid::new(),
+                credential_handle: ulid::Ulid::generate(),
             },
             server.trust,
         )
@@ -365,7 +365,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                             "resourceId":consumer.resource_id,
                             "deadLetterId":row.dead_letter_id,
                             "expectedRevision":row.revision,
-                            "requestId":ulid::Ulid::new().to_string()
+                            "requestId":ulid::Ulid::generate().to_string()
                         }))
                         .unwrap()
                     )
@@ -380,7 +380,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                             "resourceId":consumer.resource_id,
                             "deadLetterId":row.dead_letter_id,
                             "expectedRevision":row.revision,
-                            "requestId":ulid::Ulid::new().to_string()
+                            "requestId":ulid::Ulid::generate().to_string()
                         }))
                         .unwrap()
                     )
@@ -411,7 +411,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                         "resourceId":consumer.resource_id,
                         "deadLetterId":row.dead_letter_id,
                         "expectedRevision":row.revision,
-                        "requestId":ulid::Ulid::new().to_string()
+                        "requestId":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )
@@ -505,7 +505,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                             "resourceId":consumer.resource_id,
                             "deadLetterId":row.dead_letter_id,
                             "expectedRevision":row.revision,
-                            "requestId":ulid::Ulid::new().to_string()
+                            "requestId":ulid::Ulid::generate().to_string()
                         }))
                         .unwrap(),
                     )
@@ -613,7 +613,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                         "resourceId":consumer.resource_id,
                         "deadLetterId":row.dead_letter_id,
                         "expectedRevision":row.revision,
-                        "requestId":ulid::Ulid::new().to_string()
+                        "requestId":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )
@@ -720,7 +720,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                             // Another deployment of this participant already
                             // serves the API in this runtime.
                             "acknowledgeSharedApis":true,
-                            "idempotencyKey":ulid::Ulid::new().to_string()
+                            "idempotencyKey":ulid::Ulid::generate().to_string()
                         }))
                         .unwrap(),
                     )
@@ -733,7 +733,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                         "deploymentId":deployment.deployment_id,
                         "title":"consumer lifecycle instance",
                         "identityPublicKey":key,
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )
@@ -788,7 +788,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                             "deploymentId":deployment.deployment_id,
                             "packageEvidence":P::package_evidence(),
                             "expectedRevision":deployment.revision,
-                            "idempotencyKey":ulid::Ulid::new().to_string()
+                            "idempotencyKey":ulid::Ulid::generate().to_string()
                         }))
                         .unwrap(),
                     )
@@ -801,7 +801,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                         "deploymentId":deployment.deployment_id,
                         "title":"current Consumer implementation",
                         "identityPublicKey":current_key,
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )
@@ -861,7 +861,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                         "deploymentId":deployment.deployment_id,
                         "packageEvidence":omitted_evidence,
                         "expectedRevision":added.revision,
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )
@@ -878,7 +878,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                         "deploymentId":deployment.deployment_id,
                         "title":"current implementation without Consumer",
                         "identityPublicKey":omitted_key,
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     }))
                     .unwrap(),
                 )

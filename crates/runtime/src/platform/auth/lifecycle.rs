@@ -1,7 +1,7 @@
 use super::Administration;
 use std::collections::{BTreeMap, BTreeSet};
 
-use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+use argon2::{Argon2, PasswordHasher};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -101,12 +101,9 @@ impl SqliteAuthorizationStore {
             ));
         }
         let hash = if let Some(password) = password {
-            let mut salt = [0_u8; 16];
-            getrandom::fill(&mut salt).map_err(|_| AuthError::Unavailable)?;
-            let salt = SaltString::encode_b64(&salt).map_err(|_| AuthError::Unavailable)?;
             Some(
                 Argon2::default()
-                    .hash_password(password.as_bytes(), &salt)
+                    .hash_password(password.as_bytes())
                     .map_err(|_| AuthError::Unavailable)?
                     .to_string(),
             )

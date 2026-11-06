@@ -477,7 +477,7 @@ where
         &self,
         input: &D::Input,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
-        self.start_with_invocation_id(ulid::Ulid::new().to_string(), input)
+        self.start_with_invocation_id(ulid::Ulid::generate().to_string(), input)
             .await
     }
 

@@ -32,5 +32,5 @@ pub fn now_iat_seconds() -> u64 {
 
 #[doc = concat!("Trellis API operation `", stringify!(new_request_id), "`.")]
 pub fn new_request_id() -> String {
-    ulid::Ulid::new().to_string()
+    ulid::Ulid::generate().to_string()
 }

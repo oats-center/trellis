@@ -11,7 +11,7 @@ mod engine;
 pub(super) mod enrollment;
 mod http;
 mod nonce;
-mod oidc;
+pub(super) mod oidc;
 mod portal;
 mod storage;
 mod theme;

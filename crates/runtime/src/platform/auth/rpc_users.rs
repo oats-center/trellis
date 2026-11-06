@@ -6,7 +6,7 @@ use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use crate::platform::auth::sqlite::Connection;
-use argon2::{password_hash::SaltString, Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use rusqlite::{params, OptionalExtension};
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{
@@ -1038,11 +1038,8 @@ pub(super) fn hash_password(password: &str, minimum: u16) -> Result<String, Auth
     if !(usize::from(minimum)..=4096).contains(&password.len()) {
         return Err(AuthError::Invalid("invalid password length".into()));
     }
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes).map_err(|_| AuthError::Unavailable)?;
-    let salt = SaltString::encode_b64(&bytes).map_err(|_| AuthError::Unavailable)?;
     Ok(Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map_err(|_| AuthError::Unavailable)?
         .to_string())
 }

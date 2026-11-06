@@ -263,7 +263,7 @@ fn remember(file: &Path, certificate: &CertificateDer<'_>) -> std::io::Result<()
     pem.push_str("-----END CERTIFICATE-----\n");
     // Unique to this attempt: another one in this process may be staging the
     // same certificate.
-    let staged = file.with_extension(format!("pem.{}", ulid::Ulid::new()));
+    let staged = file.with_extension(format!("pem.{}", ulid::Ulid::generate()));
     {
         let mut out = std::fs::File::create_new(&staged)?;
         out.write_all(pem.as_bytes())?;

@@ -8,5 +8,3 @@ pub mod oci;
 pub mod output;
 pub mod package;
 pub mod project;
-#[cfg(feature = "self-update")]
-pub mod self_update;

@@ -77,7 +77,7 @@ fn native_oauth_admission_authenticates_scope_time_and_identity_in_packaged_wasm
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root
         .join(".local/protocol-interop")
-        .join(ulid::Ulid::new().to_string());
+        .join(ulid::Ulid::generate().to_string());
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("oauth-admission.json");
     fs::write(

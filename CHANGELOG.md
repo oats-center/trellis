@@ -8,6 +8,30 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Release binaries carry no symbol tables: `trellis-server` is 66 MB instead
+  of 92 MB and `trellis` 33 MB instead of 47 MB. Backtraces still name
+  functions.
+- `trellis-server` no longer builds the CLI's code generators. Self-update
+  lives in its own crate, so the server's dependency graph shrinks from 513
+  crates to 440.
+- Trellis uses ring as its only TLS crypto provider and one `reqwest`; the
+  server's upstream OIDC client runs on the same HTTP stack as everything
+  else. `cargo deny check` in Lint keeps it that way and enforces one version
+  of each crate (with listed exceptions), permissive licenses, and no open
+  advisories.
+- Rust dependencies are current, including async-nats 0.52, OpenTelemetry
+  0.33, jsonschema 0.60 and oxc 0.157. `trellis-rs` exposes `ulid` 3 (its
+  `Ulid::generate()` replaces `Ulid::new()`); crates passing a `Ulid` to it
+  need `ulid = "3"`.
+
+### Security
+
+- The P-256 keys Trellis signs with (access tokens and DPoP proofs) move to
+  the RustCrypto release that fixes RUSTSEC-2026-0387, timing variability in
+  crypto-bigint's constant-time arithmetic.
+
 ### Fixed
 
 - Upgrading `trellis-server` over an existing installation no longer stops at

@@ -79,6 +79,7 @@ job_lint() {
     -not -path '*/node_modules/*' -printf ' --ignore-path %p')"
   each \
     "cargo fmt --manifest-path Cargo.toml --all --check" \
+    "cargo deny check" \
     "npm exec -- prettier $ignores --check ts/packages ts/tools" \
     "node docs/scripts/build_llms_full.ts --check"
 }

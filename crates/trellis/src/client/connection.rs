@@ -489,21 +489,7 @@ pub(crate) async fn fetch_device_activation<C: crate::generated::ParticipantDesc
     request["proof"] = serde_json::to_value(identity_auth.sign_session_proof(&input)?)?;
     request["sessionProof"] =
         serde_json::to_value(session_auth.sign_session_proof(&session_input)?)?;
-    let mut builder = super::http_client_builder()?;
-    if !opts.trust.root_certificates.is_empty() {
-        let mut certificates = Vec::new();
-        for path in &opts.trust.root_certificates {
-            let pem = std::fs::read(path).map_err(|error| {
-                TrellisClientError::Bootstrap(format!("read CA '{}': {error}", path.display()))
-            })?;
-            certificates.extend(
-                reqwest::Certificate::from_pem_bundle(&pem)
-                    .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?,
-            );
-        }
-        builder = reqwest::Client::builder().tls_certs_only(certificates);
-    }
-    let response = builder
+    let response = super::http_client_builder(&opts.trust.root_certificates)?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_millis(opts.timeout_ms))
         .build()
@@ -584,7 +570,7 @@ fn build_health_heartbeat(
         .ok_or_else(|| TrellisClientError::Bootstrap("missing signed participant digest".into()))?;
     Ok(HealthHeartbeatSample {
         sample: HealthHeartbeatSampleSample {
-            id: ulid::Ulid::new().to_string(),
+            id: ulid::Ulid::generate().to_string(),
             time: now_rfc3339(),
             extra: Default::default(),
         },

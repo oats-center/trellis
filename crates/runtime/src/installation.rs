@@ -70,7 +70,7 @@ pub async fn prepare(
         if let Some(auth) = config.auth.as_mut() {
             if auth.instance_id.is_none() {
                 if secrets.instance_id.is_none() {
-                    secrets.instance_id = Some(ulid::Ulid::new().to_string());
+                    secrets.instance_id = Some(ulid::Ulid::generate().to_string());
                     changed = true;
                 }
                 auth.instance_id.clone_from(&secrets.instance_id);

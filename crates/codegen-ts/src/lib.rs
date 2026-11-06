@@ -2540,7 +2540,11 @@ fn emit_typescript(source: &GeneratedTsSource) -> Result<[GeneratedTsSource; 2],
             })
             .filter(|literal| literal.value.starts_with("./") || literal.value.starts_with("../"))
         {
-            if let Some(stem) = literal.value.strip_suffix(".ts") {
+            if let Some(stem) = literal
+                .value
+                .as_str()
+                .and_then(|value| value.strip_suffix(".ts"))
+            {
                 executable_source.replace_range(
                     literal.span.start as usize..literal.span.end as usize,
                     &js_string(&format!("{stem}.js")),

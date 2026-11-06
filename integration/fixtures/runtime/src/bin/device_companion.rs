@@ -131,7 +131,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 review_id: review.review_id,
                 confirmation_code: pending.confirmation_code.clone().into(),
                 expected_revision: review.revision,
-                idempotency_key: ulid::Ulid::new().to_string().into(),
+                idempotency_key: ulid::Ulid::generate().to_string().into(),
                 extra: Default::default(),
             })
             .await?;

@@ -1560,7 +1560,7 @@ mod tests {
                     avatar_external_fetch_enabled: true,
                     password_min_length: 12,
                     administration: Default::default(),
-                    instance_id: ulid::Ulid::new().to_string(),
+                    instance_id: ulid::Ulid::generate().to_string(),
                     account: "cimd-retention".into(),
                     oauth_issuer: "https://auth.example".into(),
                     console_origin: Some("https://trellis.example".into()),
@@ -1609,7 +1609,7 @@ mod tests {
         for _ in 0..128 {
             let client_id = format!(
                 "https://{}.example/client.json",
-                ulid::Ulid::new().to_string().to_ascii_lowercase()
+                ulid::Ulid::generate().to_string().to_ascii_lowercase()
             );
             engine
                 .server
@@ -1649,7 +1649,7 @@ mod tests {
                 .validate_authorization_request(&request)
                 .await
                 .unwrap();
-            let transaction = ulid::Ulid::new().to_string();
+            let transaction = ulid::Ulid::generate().to_string();
             engine
                 .server
                 .store()
@@ -1692,7 +1692,7 @@ mod tests {
         ));
         let overflow = format!(
             "https://{}.example/client.json",
-            ulid::Ulid::new().to_string().to_ascii_lowercase()
+            ulid::Ulid::generate().to_string().to_ascii_lowercase()
         );
         assert!(matches!(
             engine

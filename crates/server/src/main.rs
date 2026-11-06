@@ -994,7 +994,7 @@ async fn main() -> miette::Result<()> {
 /// Check for, or install, a newer trellis-server release from GitHub. A
 /// running server keeps its old binary until it is restarted.
 fn upgrade(args: &UpgradeArgs) -> miette::Result<()> {
-    use trellis_cli::self_update::{
+    use trellis_self_update::{
         check_for_update, install_update, ReleaseChannel, SelfUpdateTarget, UpdateResult,
     };
     const TARGET: SelfUpdateTarget = SelfUpdateTarget::new(

@@ -215,7 +215,7 @@ impl Sandbox {
         parent: &Path,
         retention: WorkdirRetention,
     ) -> Result<Self, TrellisTestError> {
-        let ownership_id = ulid::Ulid::new().to_string();
+        let ownership_id = ulid::Ulid::generate().to_string();
         let root = parent.join(format!("trellis-testkit-{ownership_id}"));
         create_private_dir(&root)?;
         for child in [

@@ -9,9 +9,7 @@ publish = false
 
 [features]
 default = ["runtime"]
-runtime = ["dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:rusqlite", "self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
-# Updating a Trellis binary in place from GitHub releases, shared with trellis-server.
-self-update = ["dep:self_update"]
+runtime = ["dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:trellis-self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
 
 [dependencies]
 clap.workspace = true
@@ -40,16 +38,15 @@ bytes.workspace = true
 futures-util.workspace = true
 docker_credential = "1.4.0"
 ed25519-dalek.workspace = true
-oci-client = { version = "0.18", default-features = false, features = ["rustls-tls"] }
+oci-client = { version = "0.18", default-features = false, features = ["rustls-tls-no-provider"] }
 pathdiff = "0.2"
 sha2.workspace = true
 url.workspace = true
 tar.workspace = true
 rand.workspace = true
-rusqlite = { workspace = true, optional = true }
 rustls.workspace = true
 tempfile.workspace = true
-self_update = { workspace = true, optional = true }
+trellis-self-update = { path = "../self-update", optional = true }
 time.workspace = true
 ulid.workspace = true
 

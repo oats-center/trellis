@@ -999,8 +999,8 @@ mod recovery_tests {
             stale_policy: JobKeyStalePolicy::Block,
         };
         let input = AcquireSlotInput {
-            job_id: Ulid::new().to_string(),
-            slot_token: Ulid::new().to_string(),
+            job_id: Ulid::generate().to_string(),
+            slot_token: Ulid::generate().to_string(),
             instance_id: "crashed-worker".into(),
             started_at: "2026-10-01T00:00:00Z".into(),
             lease_expires_at: "2026-10-01T00:00:05Z".into(),
@@ -1018,7 +1018,7 @@ mod recovery_tests {
             panic!("initial lease must be acquired");
         };
         let mut restart = input.clone();
-        restart.slot_token = Ulid::new().to_string();
+        restart.slot_token = Ulid::generate().to_string();
         restart.instance_id = "restarted-worker".into();
         restart.tries = 2;
         restart.started_at = "2026-10-01T00:00:04Z".into();
@@ -1030,7 +1030,7 @@ mod recovery_tests {
         restart.started_at = "2026-10-01T00:00:05Z".into();
         restart.lease_expires_at = "2026-10-01T00:00:10Z".into();
         let mut other = restart.clone();
-        other.job_id = Ulid::new().to_string();
+        other.job_id = Ulid::generate().to_string();
         assert!(matches!(
             acquire_active_slot(state.clone(), &policy, other),
             AcquireSlotOutcome::Blocked {
@@ -1129,7 +1129,9 @@ mod contention_tests {
             when_full: JobQueueWhenFull::Reject,
             stale_policy: JobKeyStalePolicy::FailStale,
         };
-        let ids = (0..32).map(|_| Ulid::new().to_string()).collect::<Vec<_>>();
+        let ids = (0..32)
+            .map(|_| Ulid::generate().to_string())
+            .collect::<Vec<_>>();
         let admissions = ids.iter().enumerate().map(|(index, job_id)| {
             coordinators[index % coordinators.len()].admit(
                 policy.clone(),

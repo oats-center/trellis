@@ -289,12 +289,12 @@ fn params_for_keyword(
         }
         ValidationErrorKind::Enum { options } => {
             let mut map = serde_json::Map::new();
-            map.insert("allowedValues".to_string(), options.clone());
+            map.insert("allowedValues".to_string(), options.as_ref().clone());
             Some(map)
         }
         ValidationErrorKind::Constant { expected_value } => {
             let mut map = serde_json::Map::new();
-            map.insert("allowedValue".to_string(), expected_value.clone());
+            map.insert("allowedValue".to_string(), expected_value.as_ref().clone());
             Some(map)
         }
         _ => None,

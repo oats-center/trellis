@@ -1687,7 +1687,7 @@ mod tests {
         };
 
         for (label, history, ttl_ms, max_value, max_total, compatible) in cases {
-            let bucket = format!("trellis_kv_{label}_{}", ulid::Ulid::new());
+            let bucket = format!("trellis_kv_{label}_{}", ulid::Ulid::generate());
             let store = jetstream
                 .create_key_value(async_nats::jetstream::kv::Config {
                     bucket: bucket.clone(),
@@ -1721,7 +1721,7 @@ mod tests {
                 assert!(wrong.is_err());
             }
         }
-        let forever_bucket = format!("trellis_kv_forever_{}", ulid::Ulid::new());
+        let forever_bucket = format!("trellis_kv_forever_{}", ulid::Ulid::generate());
         jetstream
             .create_key_value(async_nats::jetstream::kv::Config {
                 bucket: forever_bucket.clone(),

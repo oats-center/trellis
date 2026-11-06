@@ -1723,7 +1723,7 @@ mod tests {
                 instance_id: server.trust.instance_id.clone(),
                 account: server.trust.account.clone(),
                 client_id: "trellis.cli".into(),
-                credential_handle: ulid::Ulid::new(),
+                credential_handle: ulid::Ulid::generate(),
             },
             server.trust,
         )

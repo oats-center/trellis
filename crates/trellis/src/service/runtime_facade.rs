@@ -1053,7 +1053,7 @@ impl<C> ConnectedServiceRuntime<C> {
             _event_listener_cleanup: ServiceEventListenerRegistryCleanup::new(event_listeners),
             router,
             provider_deployment_id,
-            operation_executor_id: ulid::Ulid::new().to_string(),
+            operation_executor_id: ulid::Ulid::generate().to_string(),
             operation_connection_id,
             operation_repository: None,
             operation_staging: None,
@@ -1241,7 +1241,7 @@ impl<C> ConnectedServiceRuntime<C> {
         let host = start_worker_host_from_client(
             Arc::clone(self.client()),
             binding,
-            ulid::Ulid::new().to_string(),
+            ulid::Ulid::generate().to_string(),
             |_, _| TrellisJobMetaSource,
             move |active| {
                 let handler = handler.clone();

@@ -65,7 +65,7 @@ pub(crate) async fn login_client(
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: client_id.into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )
@@ -141,7 +141,7 @@ pub(crate) async fn approve_device(
             ("csrf", csrf.clone()),
             ("username", username.into()),
             ("password", password.into()),
-            ("request_id", ulid::Ulid::new().to_string()),
+            ("request_id", ulid::Ulid::generate().to_string()),
         ])
         .send()
         .await
@@ -361,7 +361,7 @@ impl AdminSession {
                 username: username.to_owned().into(),
                 display_name: name.to_owned().into(),
                 password: Some(password.to_owned().into()),
-                idempotency_key: ulid::Ulid::new().to_string().into(),
+                idempotency_key: ulid::Ulid::generate().to_string().into(),
                 extra: Default::default(),
             })
             .await
@@ -403,7 +403,7 @@ impl AdminSession {
                     capability_id: (*capability_id).to_owned().into(),
                     expected_revision: 0.into(),
                     expires_at: None,
-                    idempotency_key: ulid::Ulid::new().to_string().into(),
+                    idempotency_key: ulid::Ulid::generate().to_string().into(),
                     extra: Default::default(),
                 })
                 .await
@@ -476,7 +476,7 @@ impl AdminSession {
                         .map_or(0, |value| value.0 .0)
                         .into(),
                     review_id: review.review_id,
-                    idempotency_key: ulid::Ulid::new().to_string().into(),
+                    idempotency_key: ulid::Ulid::generate().to_string().into(),
                     mapping_edits: Vec::new(),
                     role_edits: Vec::new(),
                     extra: Default::default(),
@@ -500,7 +500,7 @@ impl AdminSession {
                 participant_id: P::ID.to_owned(),
                 package_evidence: wire(P::package_evidence())?,
                 acknowledge_shared_apis: acknowledge_shared_apis.then_some(true),
-                idempotency_key: ulid::Ulid::new().to_string().into(),
+                idempotency_key: ulid::Ulid::generate().to_string().into(),
                 extra: Default::default(),
             })
             .await
@@ -525,7 +525,7 @@ impl AdminSession {
                 deployment_id: wire(deployment_id)?,
                 identity_public_key: Some(key.clone().into()),
                 title: "service".to_owned().into(),
-                idempotency_key: ulid::Ulid::new().to_string().into(),
+                idempotency_key: ulid::Ulid::generate().to_string().into(),
                 extra: Default::default(),
             })
             .await
@@ -550,7 +550,7 @@ impl AdminSession {
         &self,
         name: &str,
     ) -> Result<String, TrellisTestError> {
-        let client_id = ulid::Ulid::new().to_string();
+        let client_id = ulid::Ulid::generate().to_string();
         self.auth
             .o_auth_clients_put(&AuthOAuthClientPutRequest {
                 client_id: client_id.clone().into(),
@@ -561,7 +561,7 @@ impl AdminSession {
                 redirect_uris: Vec::new(),
                 implied_consent: Vec::new(),
                 expected_revision: 0.into(),
-                idempotency_key: ulid::Ulid::new().to_string().into(),
+                idempotency_key: ulid::Ulid::generate().to_string().into(),
                 extra: Default::default(),
             })
             .await

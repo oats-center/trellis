@@ -297,7 +297,7 @@ pub(super) fn issuer_key(signer: &SigningKey) -> AuthorityIssuerKey {
 }
 
 pub(super) fn id() -> String {
-    ulid::Ulid::new().to_string()
+    ulid::Ulid::generate().to_string()
 }
 
 pub(crate) fn read_custody_key(

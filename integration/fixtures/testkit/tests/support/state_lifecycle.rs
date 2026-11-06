@@ -1,12 +1,12 @@
 //! State through ordinary OAuth admission, generated clients and the production provider.
 
-use runtime_trellis::participants::runtime_trellis_provider;
-use trellis_rs::generated::ParticipantDescriptor;
 use super::{administrator, login, wire};
 use futures_util::StreamExt;
+use runtime_trellis::participants::runtime_trellis_provider;
 use serde_json::json;
 use std::time::Duration;
 use trellis_rs::generated::Client as GeneratedClient;
+use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{
     apis::trellis_state_v1::{rpc, Client},
     types::{Bytes, StateRepresentation},
@@ -59,12 +59,12 @@ async fn native_state_registration_cas_watch_and_client_isolation() {
         "representation":representation,
         "accepts": [],
         "expectedRevision":"0",
-        "idempotencyKey":ulid::Ulid::new().to_string()
+        "idempotencyKey":ulid::Ulid::generate().to_string()
     }));
     client.register(&registration).await.unwrap();
     let mut stale_registration = registration.clone();
     stale_registration.representation.version = 2.into();
-    stale_registration.idempotency_key = ulid::Ulid::new().to_string().parse().unwrap();
+    stale_registration.idempotency_key = ulid::Ulid::generate().to_string().parse().unwrap();
     let conflict = client.register(&stale_registration).await;
     assert!(
         matches!(
@@ -114,7 +114,7 @@ async fn native_state_registration_cas_watch_and_client_isolation() {
         client.get(&get).await.unwrap().entry.unwrap().revision,
         written.revision
     );
-    let other_id = format!("state-{}", ulid::Ulid::new());
+    let other_id = format!("state-{}", ulid::Ulid::generate());
     admin
         .o_auth_clients_put(&wire(json!({
             "clientId":other_id,
@@ -125,7 +125,7 @@ async fn native_state_registration_cas_watch_and_client_isolation() {
             "impliedConsent": [],
             "development":true,
             "expectedRevision":"0",
-            "idempotencyKey":ulid::Ulid::new().to_string()
+            "idempotencyKey":ulid::Ulid::generate().to_string()
         })))
         .await
         .unwrap();
@@ -141,7 +141,7 @@ async fn native_state_registration_cas_watch_and_client_isolation() {
     let other_base = GeneratedClient::connect_user(other_options).await.unwrap();
     let other = Client::from_generated(other_base.clone());
     let mut other_registration = registration;
-    other_registration.idempotency_key = ulid::Ulid::new().to_string().parse().unwrap();
+    other_registration.idempotency_key = ulid::Ulid::generate().to_string().parse().unwrap();
     other.register(&other_registration).await.unwrap();
     assert!(other.get(&get).await.unwrap().entry.is_none());
     client

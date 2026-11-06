@@ -67,40 +67,58 @@ async fn rust_upload_to_typescript_reads_persisted_bytes() {
         }
     });
     let admin = administrator(&runtime).await;
-    let password = ulid::Ulid::new().to_string();
-    let user = admin.users_create(&wire(json!({
-        "username":format!("transfer-{}",ulid::Ulid::new()),
-        "password":password,
-        "displayName":"Transfer caller",
-        "idempotencyKey":ulid::Ulid::new().to_string()
-    }))).await.unwrap().user;
+    let password = ulid::Ulid::generate().to_string();
+    let user = admin
+        .users_create(&wire(json!({
+            "username":format!("transfer-{}",ulid::Ulid::generate()),
+            "password":password,
+            "displayName":"Transfer caller",
+            "idempotencyKey":ulid::Ulid::generate().to_string()
+        })))
+        .await
+        .unwrap()
+        .user;
     for capability in Request::REQUIRED_CAPABILITIES {
-        admin.capability_grants_grant(&wire(json!({
-            "principalId":user.principal_id,
-            "capabilityId":capability,
-            "expectedRevision":"0",
-            "idempotencyKey":ulid::Ulid::new().to_string()
-        }))).await.unwrap();
+        admin
+            .capability_grants_grant(&wire(json!({
+                "principalId":user.principal_id,
+                "capabilityId":capability,
+                "expectedRevision":"0",
+                "idempotencyKey":ulid::Ulid::generate().to_string()
+            })))
+            .await
+            .unwrap();
     }
-    let client_id = ulid::Ulid::new().to_string();
-    admin.o_auth_clients_put(&wire(json!({
-        "clientId":client_id,
-        "title":"Transfer caller",
-        "description":"Cross-language transfer",
-        "kind":"native",
-        "redirectUris": [],
-        "impliedConsent": [],
-        "development":true,
-        "expectedRevision":"0",
-        "idempotencyKey":ulid::Ulid::new().to_string()
-    }))).await.unwrap();
-    let options = super::login(&runtime, &client_id, json!([
-        {
-            "type":"trellis_capabilities",
-            "required":Request::REQUIRED_CAPABILITIES,
-            "optional": []
-        }
-    ]), &user.account.as_ref().unwrap().username, &password, None).await;
+    let client_id = ulid::Ulid::generate().to_string();
+    admin
+        .o_auth_clients_put(&wire(json!({
+            "clientId":client_id,
+            "title":"Transfer caller",
+            "description":"Cross-language transfer",
+            "kind":"native",
+            "redirectUris": [],
+            "impliedConsent": [],
+            "development":true,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::generate().to_string()
+        })))
+        .await
+        .unwrap();
+    let options = super::login(
+        &runtime,
+        &client_id,
+        json!([
+            {
+                "type":"trellis_capabilities",
+                "required":Request::REQUIRED_CAPABILITIES,
+                "optional": []
+            }
+        ]),
+        &user.account.as_ref().unwrap().username,
+        &password,
+        None,
+    )
+    .await;
     let base = GeneratedClient::connect_user(options).await.unwrap();
     let caller = Client::from_generated(base.clone()).runtime_trellis_runtime_v1();
     let bytes = (0..5 * 1024 * 1024 + 7)
@@ -120,13 +138,21 @@ async fn rust_upload_to_typescript_reads_persisted_bytes() {
     )
     .unwrap();
     let mut tampered = grant.clone();
-    let other_options = super::login(&runtime, &client_id, json!([
-        {
-            "type":"trellis_capabilities",
-            "required":Request::REQUIRED_CAPABILITIES,
-            "optional": []
-        }
-    ]), &user.account.as_ref().unwrap().username, &password, None).await;
+    let other_options = super::login(
+        &runtime,
+        &client_id,
+        json!([
+            {
+                "type":"trellis_capabilities",
+                "required":Request::REQUIRED_CAPABILITIES,
+                "optional": []
+            }
+        ]),
+        &user.account.as_ref().unwrap().username,
+        &password,
+        None,
+    )
+    .await;
     let other = GeneratedClient::connect_user(other_options).await.unwrap();
     assert!(other.download_transfer(&grant).await.is_err());
     tampered.info.digest = "SHA-256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into();
@@ -255,33 +281,43 @@ async fn typescript_upload_cancellation_and_live_renewal_reduction_against_rust(
         });
     let serving = tokio::spawn(service.run());
     let admin = administrator(&runtime).await;
-    let password = ulid::Ulid::new().to_string();
-    let user = admin.users_create(&wire(json!({
-        "username":format!("transfer-{}",ulid::Ulid::new()),
-        "password":password,
-        "displayName":"Transfer caller",
-        "idempotencyKey":ulid::Ulid::new().to_string()
-    }))).await.unwrap().user;
+    let password = ulid::Ulid::generate().to_string();
+    let user = admin
+        .users_create(&wire(json!({
+            "username":format!("transfer-{}",ulid::Ulid::generate()),
+            "password":password,
+            "displayName":"Transfer caller",
+            "idempotencyKey":ulid::Ulid::generate().to_string()
+        })))
+        .await
+        .unwrap()
+        .user;
     for capability in Request::REQUIRED_CAPABILITIES {
-        admin.capability_grants_grant(&wire(json!({
-            "principalId":user.principal_id,
-            "capabilityId":capability,
-            "expectedRevision":"0",
-            "idempotencyKey":ulid::Ulid::new().to_string()
-        }))).await.unwrap();
+        admin
+            .capability_grants_grant(&wire(json!({
+                "principalId":user.principal_id,
+                "capabilityId":capability,
+                "expectedRevision":"0",
+                "idempotencyKey":ulid::Ulid::generate().to_string()
+            })))
+            .await
+            .unwrap();
     }
-    let client_id = ulid::Ulid::new().to_string();
-    admin.o_auth_clients_put(&wire(json!({
-        "clientId":client_id,
-        "title":"Transfer caller",
-        "description":"Cross-language transfer",
-        "kind":"native",
-        "redirectUris": [],
-        "impliedConsent": [],
-        "development":true,
-        "expectedRevision":"0",
-        "idempotencyKey":ulid::Ulid::new().to_string()
-    }))).await.unwrap();
+    let client_id = ulid::Ulid::generate().to_string();
+    admin
+        .o_auth_clients_put(&wire(json!({
+            "clientId":client_id,
+            "title":"Transfer caller",
+            "description":"Cross-language transfer",
+            "kind":"native",
+            "redirectUris": [],
+            "impliedConsent": [],
+            "development":true,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::generate().to_string()
+        })))
+        .await
+        .unwrap();
     let node = tokio::process::Command::new("node")
         .args(["-p", "process.execPath"])
         .output()
@@ -302,18 +338,29 @@ async fn typescript_upload_cancellation_and_live_renewal_reduction_against_rust(
         .spawn()
         .unwrap();
     let mut input = caller.stdin.take().unwrap();
-    input.write_all(format!("{}\n", json!({
-        "issuer":runtime.trellis_url(),
-        "username":user.account.as_ref().unwrap().username,
-        "password":password,
-        "clientId":client_id,
-        "deploymentId":identity.deployment_id()
-    })).as_bytes()).await.unwrap();
+    input
+        .write_all(
+            format!(
+                "{}\n",
+                json!({
+                    "issuer":runtime.trellis_url(),
+                    "username":user.account.as_ref().unwrap().username,
+                    "password":password,
+                    "clientId":client_id,
+                    "deploymentId":identity.deployment_id()
+                })
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
     let mut output = BufReader::new(caller.stdout.take().unwrap()).lines();
     tokio::time::timeout(Duration::from_secs(30), async {
         while let Some(line) = output.next_line().await.unwrap() {
             eprintln!("transfer caller: {line}");
-            let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
             if event["stage"] == "revoke" {
                 let grants = admin
                     .capability_grants_list(&wire(json!({
@@ -325,22 +372,27 @@ async fn typescript_upload_cancellation_and_live_renewal_reduction_against_rust(
                     .items
                     .iter()
                     .find(|grant| {
-                        grant.capability.capability_id.0 == "runtime-trellis.runtime.v1:transfers.transport"
+                        grant.capability.capability_id.0
+                            == "runtime-trellis.runtime.v1:transfers.transport"
                     })
                     .unwrap();
                 admin
                     .capability_grants_revoke(&wire(json!({
                         "grantId":grant.grant_id,
                         "expectedRevision":grant.revision,
-                        "idempotencyKey":ulid::Ulid::new().to_string()
+                        "idempotencyKey":ulid::Ulid::generate().to_string()
                     })))
                     .await
                     .unwrap();
             }
-            if event["stage"] == "complete" { return; }
+            if event["stage"] == "complete" {
+                return;
+            }
         }
         panic!("caller exited before verification completed");
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     assert!(tokio::time::timeout(Duration::from_secs(15), caller.wait())
         .await
         .unwrap()

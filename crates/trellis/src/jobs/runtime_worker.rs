@@ -1097,7 +1097,7 @@ async fn acquire_key_slot_for_work(
         .map_err(RuntimeWorkerError::KeyCoordinator)?;
     let input = AcquireSlotInput {
         job_id: job.id.clone(),
-        slot_token: Ulid::new().to_string(),
+        slot_token: Ulid::generate().to_string(),
         instance_id: "rust-worker".to_string(),
         started_at: started_at.to_string(),
         lease_expires_at,

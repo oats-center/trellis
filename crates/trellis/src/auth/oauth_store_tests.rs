@@ -10,7 +10,7 @@ fn native_custody_preserves_key_possession_and_recovers_instead_of_replaying_aft
         instance_id: "one".into(),
         account: "public".into(),
         client_id: "native-cli".into(),
-        credential_handle: ulid::Ulid::new(),
+        credential_handle: ulid::Ulid::generate(),
     };
     let mut first = NativeCredentialLease::lock(&root, scope.clone()).unwrap();
     let jwk = first.public_jwk();
@@ -91,7 +91,7 @@ fn native_custody_refuses_unsafe_existing_directory_without_chmod_or_overwrite()
         instance_id: "one".into(),
         account: "public".into(),
         client_id: "native-cli".into(),
-        credential_handle: ulid::Ulid::new(),
+        credential_handle: ulid::Ulid::generate(),
     };
     assert!(NativeCredentialLease::lock(&root, scope).is_err());
     assert_eq!(fs::read(root.join("user-data")).unwrap(), b"retained");

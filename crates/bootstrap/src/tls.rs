@@ -335,7 +335,7 @@ fn name_constraints(hosts: &[CertificateHost]) -> NameConstraints {
 
 /// A positive random 128-bit serial; reused serials break browser trust.
 fn random_serial() -> SerialNumber {
-    let mut bytes = ulid::Ulid::new().to_bytes();
+    let mut bytes = ulid::Ulid::generate().to_bytes();
     bytes[0] &= 0x7f;
     SerialNumber::from_slice(&bytes)
 }

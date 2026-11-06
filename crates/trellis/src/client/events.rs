@@ -90,7 +90,7 @@ impl PreparedTrellisEvent {
             subject: subject.into(),
             payload,
             headers,
-            event_id: Ulid::new().to_string(),
+            event_id: Ulid::generate().to_string(),
             event_time: now_rfc3339(),
             descriptor_identity,
         }

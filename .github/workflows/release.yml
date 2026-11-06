@@ -32,9 +32,10 @@ env:
   RUSTUP_INIT_SKIP_PATH_CHECK: "yes"
 
 jobs:
-  # Formatting needs no generated artifacts, so it never holds back a build.
+  # Formatting and the dependency check need no generated artifacts, so they
+  # never hold back a build.
   lint:
-    name: Formatting
+    name: Formatting and dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -54,6 +55,11 @@ jobs:
 
       - name: Install formatter
         run: npm ci --ignore-scripts
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
 
       # The same command local `npm test` runs; every check reports even when
       # another fails.

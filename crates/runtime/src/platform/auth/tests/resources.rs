@@ -303,7 +303,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         .find(|participant| participant.name() == "Owner")
         .unwrap();
     let create: AuthDeploymentCreateRequest = serde_json::from_value(serde_json::json!({
-    "packageEvidence": package, "participantId":owner.identity().as_str(), "kind":"service", "title":"Resources", "idempotencyKey":ulid::Ulid::new().to_string()
+    "packageEvidence": package, "participantId":owner.identity().as_str(), "kind":"service", "title":"Resources", "idempotencyKey":ulid::Ulid::generate().to_string()
 })).unwrap();
     let deployed = super::super::rpc_deployments::create_deployment(
         &store,
@@ -318,7 +318,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
                 SigningKey::from_bytes(&[83; 32]).verifying_key().as_bytes()
             ),
             "title": "Resource owner",
-            "idempotencyKey": ulid::Ulid::new().to_string()
+            "idempotencyKey": ulid::Ulid::generate().to_string()
     }))
     .unwrap();
     super::super::rpc_deployments::provision_service_instance(
@@ -489,7 +489,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
             serde_json::from_value(serde_json::json!({
                 "resourceId":resource.resource_id,
                 "expectedRevision":resource.revision,
-                "idempotencyKey":ulid::Ulid::new().to_string()
+                "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
             .unwrap();
         let identity = mutation(&f.admin, &input);

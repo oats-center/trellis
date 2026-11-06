@@ -39,7 +39,7 @@ pub(crate) struct OAuthEngine {
     pub(crate) server: AuthorizationServer<OAuthStorage>,
     pub(super) verifiers: JwsVerifiers,
     pub(super) device_entries: FixedWindowRateLimiter,
-    pub(super) upstream_http: openidconnect::reqwest::Client,
+    pub(super) upstream_http: super::oidc::UpstreamHttp,
     documents: super::ClientDocuments,
     pub(super) avatars: super::super::avatars::Avatars,
     nonces: Mutex<super::nonce::DpopNonces>,

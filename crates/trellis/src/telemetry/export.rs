@@ -134,7 +134,7 @@ fn otlp_http_client(signal_timeout_var: &str) -> Result<reqwest::blocking::Clien
                 })
         })
         .unwrap_or(opentelemetry_otlp::OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT);
-    let builder = crate::client::http_client_builder().map_err(|error| error.to_string())?;
+    let builder = crate::client::http_client_builder(&[]).map_err(|error| error.to_string())?;
     reqwest::blocking::ClientBuilder::from(builder)
         .timeout(timeout)
         .build()
@@ -225,7 +225,7 @@ fn resource(identity: &TelemetryIdentity) -> Resource {
         set_resource_attribute(
             &mut attributes,
             "service.instance.id",
-            ulid::Ulid::new().to_string(),
+            ulid::Ulid::generate().to_string(),
         );
     }
     Resource::builder().with_attributes(attributes).build()

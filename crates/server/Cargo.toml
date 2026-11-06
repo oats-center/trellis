@@ -12,8 +12,6 @@ workspace = true
 
 [dependencies]
 clap.workspace = true
-inquire.workspace = true
-ipnet.workspace = true
 miette.workspace = true
 libc = "0.2.186"
 serde_json.workspace = true
@@ -24,7 +22,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
 trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.25" }
-trellis-cli = { path = "../cli", default-features = false, features = ["self-update"] }
+trellis-self-update = { path = "../self-update" }
 trellis-local-nats = { path = "../local-nats", version = "0.100.0-rc.25" }
 trellis-runtime = { path = "../runtime", version = "0.100.0-rc.25" }
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.25", features = ["telemetry-otlp"] }

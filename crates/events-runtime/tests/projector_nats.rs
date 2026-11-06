@@ -197,7 +197,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
             changed_at: now.clone(),
             last_seen_at: now.clone(),
             header: HealthStatusChangedEventHeader {
-                id: HealthStatusChangedEventHeaderId(ulid::Ulid::new().to_string()),
+                id: HealthStatusChangedEventHeaderId(ulid::Ulid::generate().to_string()),
                 time: now,
                 extra: Default::default(),
             },
@@ -350,7 +350,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
             instance_id: server.trust.instance_id.clone(),
             account: server.trust.account.clone(),
             client_id: "trellis.cli".into(),
-            credential_handle: ulid::Ulid::new(),
+            credential_handle: ulid::Ulid::generate(),
         },
         server.trust,
     )
@@ -411,7 +411,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         admin
             .authorization_sessions_revoke(&AuthAuthorizationSessionRevokeRequest {
                 authorization_session_id: session.authorization_session_id,
-                idempotency_key: ulid::Ulid::new().to_string().into(),
+                idempotency_key: ulid::Ulid::generate().to_string().into(),
                 extra: Default::default(),
             })
             .await

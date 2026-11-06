@@ -436,7 +436,7 @@ pub(crate) async fn serve(
         axum::serve(listener, router).await?;
         return Ok(());
     };
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls_pemfile_certs(&tls.ca)? {
         roots.add(cert)?;

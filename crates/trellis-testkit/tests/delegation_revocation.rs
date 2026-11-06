@@ -22,7 +22,7 @@ async fn delegation_revocation_is_atomic_idempotent_and_grant_scoped() {
                 instance_id: server.trust.instance_id.clone(),
                 account: server.trust.account.clone(),
                 client_id: "trellis.cli".into(),
-                credential_handle: ulid::Ulid::new(),
+                credential_handle: ulid::Ulid::generate(),
             },
             server.trust.clone(),
         )
@@ -74,7 +74,7 @@ async fn delegation_revocation_is_atomic_idempotent_and_grant_scoped() {
         .unwrap();
     let request = serde_json::from_value(serde_json::json!({
         "delegationId": target_grant, "expectedRevision": delegation.delegation.revision,
-        "idempotencyKey": ulid::Ulid::new().to_string()
+        "idempotencyKey": ulid::Ulid::generate().to_string()
     }))
     .unwrap();
     let revoked = admin.delegations_revoke(&request).await.unwrap();
