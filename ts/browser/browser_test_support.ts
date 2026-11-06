@@ -54,64 +54,106 @@ export async function launchProfile(
   );
 }
 
-async function visibleWithin(
-  locator: ReturnType<Page["getByLabel"]>,
+/** A Portal page a sign-in or approval flow can show next. */
+type PortalStep = "signIn" | "approval" | "administration";
+
+/** Whether `url` is one of the Portal's sign-in or approval pages. */
+function onPortalStep(url: URL): boolean {
+  return (
+    url.protocol === "about:" ||
+    (/^\/(login|consent|authorize|device|device-enrollment|account|portal)(\/|$)/.test(
+      url.pathname,
+    ) &&
+      !["/device/complete", "/device-enrollment/complete"].includes(
+        url.pathname,
+      ))
+  );
+}
+
+/**
+ * Waits for whichever of `steps` the Portal shows next, or for the flow to
+ * leave the Portal ("done"). All are awaited at once, so a slow page is never
+ * mistaken for one the flow skipped.
+ */
+async function nextPortalStep(
+  page: Page,
+  steps: readonly PortalStep[],
   timeoutMs: number,
-): Promise<boolean> {
-  return await locator
-    .first()
-    .waitFor({ state: "visible", timeout: timeoutMs })
-    .then(() => true)
-    .catch(() => false);
+): Promise<PortalStep | "done"> {
+  const locators: Record<PortalStep, ReturnType<Page["getByLabel"]>> = {
+    signIn: page.getByLabel("Username", { exact: true }),
+    approval: page.getByRole("button", { name: "Allow", exact: true }),
+    administration: page.getByRole("button", {
+      name: "Allow management",
+      exact: true,
+    }),
+  };
+  return await Promise.any([
+    ...steps.map((step) =>
+      locators[step]
+        .first()
+        .waitFor({ state: "visible", timeout: timeoutMs })
+        .then(() => step),
+    ),
+    page
+      .waitForURL((url) => !onPortalStep(url), { timeout: timeoutMs })
+      .then(() => "done" as const),
+  ]);
 }
 
 /** Clicks the portal consent approval button when the flow asks for approval. */
 export async function approveConsentIfRequired(
   page: Page,
-  timeoutMs = 5_000,
+  timeoutMs = 60_000,
 ): Promise<void> {
-  const approve = page.getByRole("button", {
-    name: "Allow",
-    exact: true,
-  });
-  if (await visibleWithin(approve, timeoutMs)) {
+  const step = await nextPortalStep(
+    page,
+    ["approval", "administration"],
+    timeoutMs,
+  );
+  if (step === "approval") {
     for (const choice of await page.getByRole("checkbox").all()) {
       if (await choice.isEnabled()) await choice.check();
     }
-    await approve.click();
-    await confirmAdministrationIfAsked(page);
+    await page.getByRole("button", { name: "Allow", exact: true }).click();
+    await confirmAdministrationIfAsked(page, timeoutMs);
+  } else if (step === "administration") {
+    await confirmAdministrationIfAsked(page, timeoutMs);
   }
 }
 
 /** Completes the portal's separate confirmation step for administration, when shown. */
 export async function confirmAdministrationIfAsked(
   page: Page,
-  timeoutMs = 2_000,
+  timeoutMs = 60_000,
 ): Promise<void> {
-  const allow = page.getByRole("button", {
-    name: "Allow management",
-    exact: true,
-  });
-  if (await visibleWithin(allow, timeoutMs)) {
-    await allow.click();
-  }
+  if ((await nextPortalStep(page, ["administration"], timeoutMs)) !== "done")
+    await page
+      .getByRole("button", { name: "Allow management", exact: true })
+      .click();
 }
 
 /** Completes the local sign-in form when the portal displays it. */
 export async function signInIfPrompted(
   page: Page,
   credentials: { username: string; password: string },
-  timeoutMs = 20_000,
+  timeoutMs = 60_000,
 ): Promise<void> {
-  const username = page.getByLabel("Username", { exact: true });
-  if (await visibleWithin(username, timeoutMs)) {
-    await username.fill(credentials.username);
+  const step = await nextPortalStep(
+    page,
+    ["signIn", "approval", "administration"],
+    timeoutMs,
+  );
+  if (step === "signIn") {
+    await page
+      .getByLabel("Username", { exact: true })
+      .fill(credentials.username);
     await page
       .getByLabel("Password", { exact: true })
       .fill(credentials.password);
     await page.getByRole("button", { name: "Sign in" }).click();
   }
-  await approveConsentIfRequired(page);
+  await approveConsentIfRequired(page, timeoutMs);
 }
 
 /**
@@ -210,11 +252,12 @@ export async function completePasswordReset(
   const passwordFields = page.locator('input[autocomplete="new-password"]');
   await passwordFields.first().waitFor({ state: "visible", timeout: 30_000 });
   assert.deepEqual(await passwordFields.count(), 2);
+  // The form is rendered once its password fields are; a fixed username
+  // shows with them or not at all.
   const usernameField = page.locator('input[autocomplete="username"]');
-  let username: string | undefined;
-  if (await visibleWithin(usernameField, 5_000)) {
-    username = await usernameField.inputValue();
-  }
+  const username = (await usernameField.isVisible())
+    ? await usernameField.inputValue()
+    : undefined;
   await passwordFields.first().fill(password);
   await passwordFields.nth(1).fill(password);
   await page.getByRole("button", { name: /password/i }).click();
