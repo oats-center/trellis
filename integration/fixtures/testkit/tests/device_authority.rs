@@ -636,7 +636,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         "one-use secret admitted a second key"
     );
     assert!(
-        Client::connect_device(
+        Box::pin(Client::connect_device(
             DeviceConnectOptions::<P>::new(
                 runtime.trellis_url(),
                 &seed,
@@ -644,7 +644,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
                 server.trust.clone()
             )
             .with_timeout_ms(2000)
-        )
+        ))
         .await
         .is_err(),
         "device connected before review"
@@ -690,12 +690,12 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         check_device_activation(&options).await.unwrap(),
         DeviceActivationStatus::Ready(_)
     ));
-    let without_user = Client::connect_device(DeviceConnectOptions::<P>::new(
+    let without_user = Box::pin(Client::connect_device(DeviceConnectOptions::<P>::new(
         runtime.trellis_url(),
         &seed,
         server.nats_servers.clone(),
         server.trust.clone(),
-    ))
+    )))
     .await;
     assert_eq!(without_user.is_err(), required);
     drop(without_user);
@@ -759,11 +759,11 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
     let session = flow.complete().await.unwrap();
     let grant = session.admission.credential.oauth_grant_id.clone();
     let association = {
-        let user = Client::connect_user(UserConnectOptions::new(
+        let user = Box::pin(Client::connect_user(UserConnectOptions::new(
             server.nats_servers.clone(),
             10000,
             session,
-        ))
+        )))
         .await
         .unwrap();
         let auth = AuthClient::from_generated(user);
@@ -778,7 +778,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         .resume()
         .await
         .unwrap();
-    let parent = Client::connect_device(
+    let parent = Box::pin(Client::connect_device(
         DeviceConnectOptions::<P>::new(
             runtime.trellis_url(),
             &seed,
@@ -790,7 +790,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
             10000,
             session,
         )),
-    )
+    ))
     .await
     .unwrap();
     let child = parent.companion().expect("assigned OAuth companion");
@@ -909,12 +909,12 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
         .sessions_me(&serde_json::from_value(json!({})).unwrap())
         .await
         .unwrap();
-    let reconnect = Client::connect_device(DeviceConnectOptions::<P>::new(
+    let reconnect = Box::pin(Client::connect_device(DeviceConnectOptions::<P>::new(
         runtime.trellis_url(),
         &seed,
         server.nats_servers.clone(),
         server.trust.clone(),
-    ))
+    )))
     .await;
     assert_eq!(reconnect.is_err(), required);
     deployment

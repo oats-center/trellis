@@ -23,6 +23,25 @@ impl Process {
             "TOKIO_WORKER_THREADS",
             std::env::var_os("TOKIO_WORKER_THREADS").unwrap_or_else(|| "2".into()),
         );
+        // A test killed at its deadline never runs this guard's drop; the
+        // child still stops with it instead of outliving it.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt as _;
+            let parent = std::process::id();
+            // SAFETY: only async-signal-safe libc calls run between fork and exec.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent as libc::pid_t {
+                        return Err(std::io::Error::other("parent exited before exec"));
+                    }
+                    Ok(())
+                });
+            }
+        }
         let child = command.stdout(file.try_clone()?).stderr(file).spawn()?;
         Ok(Self {
             child: Mutex::new(child),
