@@ -53,13 +53,57 @@ test("an app asks for an optional capability once on load, and when used, in pla
       },
     });
     const source = await readFile(join(directory, "app.js"));
+    // `/use` connects and calls Extra from its own script as it loads, with
+    // no user gesture, then offers a button whose click calls Extra again.
+    const use = `
+      const params = new URLSearchParams(location.search);
+      const module = await import("/app.js");
+      const asked = [];
+      const client = (
+        await module.TrellisClient.connect({
+          trellisUrl: params.get("issuer"),
+          request: module.base.OptionalCaller.request,
+          auth: {
+            clientId: params.get("clientId"),
+            redirectTo: location.origin + "/callback",
+            approval: params.get("approval"),
+          },
+          onAuthRequired: ({ loginUrl }) => { asked.push(loginUrl); },
+        })
+      ).unwrapOrElse((error) => { throw error; });
+      const run = async () => {
+        const result = await client.extra({ value: params.get("approval") });
+        return result.isOk()
+          ? { value: result.unwrapOrElse((error) => { throw error; }),
+              grant: client.ownAuthority.current?.oauthGrantId }
+          : { failed: true };
+      };
+      const automatic = await run();
+      const button = document.createElement("button");
+      button.id = "extra";
+      button.textContent = "Extra";
+      button.onclick = () => { window.clicked = run(); };
+      document.body.replaceChildren(button);
+      Object.assign(window, {
+        asked,
+        automatic,
+        grant: client.ownAuthority.current?.oauthGrantId,
+        closeClient: () => client.connection.close(),
+      });
+      console.log("use ready");
+    `;
     const server = createServer((request, response) => {
-      const script = request.url === "/app.js";
+      const path = new URL(request.url ?? "/", "http://localhost").pathname;
+      const script = path === "/app.js";
       response.writeHead(200, {
         "Content-Type": script ? "text/javascript" : "text/html",
       });
       response.end(
-        script ? source : "<!doctype html><title>Optional approval</title>",
+        script
+          ? source
+          : path === "/use"
+            ? `<!doctype html><title>Optional approval</title><script type="module">${use}</script>`
+            : "<!doctype html><title>Optional approval</title>",
       );
     });
     server.listen(0, "127.0.0.1");
@@ -86,7 +130,8 @@ test("an app asks for an optional capability once on load, and when used, in pla
           headless: true,
           env: browserTrustEnvironment(),
         });
-        const page = await browser.newPage();
+        const profile = await browser.newContext();
+        const page = await profile.newPage();
         const clientId = ulid();
         const context = { issuer: runtime.trellisUrl, origin, clientId };
         try {
@@ -217,79 +262,77 @@ test("an app asks for an optional capability once on load, and when used, in pla
             apps.OptionalCaller.request.optionalCapabilities,
           );
 
-          // Used without approval, Extra asks. By default that is a redirect.
-          const redirect = await page.evaluate(
-            async ({ issuer, origin, clientId }) => {
-              const module: Module = await import(`${origin}/app.js`);
-              let loginUrl = "";
-              const client = (
-                await module.TrellisClient.connect({
-                  trellisUrl: issuer,
-                  request: module.base.OptionalCaller.request,
-                  auth: { clientId, redirectTo: `${origin}/callback` },
-                  onAuthRequired: (required) => {
-                    loginUrl = required.loginUrl;
-                  },
-                })
-              ).unwrapOrElse((error) => {
-                throw error;
+          // Asking at use is opt-in, and only a person's action asks. Each
+          // case opens a fresh page in the same browser profile, so no earlier
+          // click counts as the person acting there.
+          const openUse = async (approval: "redirect" | "popup") => {
+            const url = new URL("/use", origin);
+            url.search = new URLSearchParams({
+              issuer: runtime.trellisUrl,
+              clientId,
+              approval,
+            }).toString();
+            const use = await profile.newPage();
+            // Waiting on a console message never runs script in the page,
+            // which Playwright would count as the person acting there.
+            const ready = use.waitForEvent("console", {
+              predicate: (message) => message.text() === "use ready",
+            });
+            await use.goto(url.href);
+            await ready;
+            const loaded = await use.evaluate(() => ({
+              automatic: Reflect.get(window, "automatic"),
+              grant: Reflect.get(window, "grant"),
+            }));
+            const clicked = async () => {
+              const settled = await use.evaluate(async () => {
+                const result: unknown = await Reflect.get(window, "clicked");
+                const asked: unknown = Reflect.get(window, "asked");
+                await Reflect.get(window, "closeClient")();
+                return { result, asked, location: location.href };
               });
-              const extra = await client.extra({ value: "redirect" });
-              // The redirect is requested after the call has failed.
-              for (let wait = 0; wait < 100 && !loginUrl; wait += 1)
-                await new Promise((resolve) => setTimeout(resolve, 50));
-              await client.connection.close();
-              return { failed: extra.isErr(), loginUrl };
-            },
-            context,
-          );
-          assert(redirect.failed);
-          assert.match(redirect.loginUrl, /authorization_details/);
+              await use.close();
+              return settled;
+            };
+            return { ...loaded, page: use, clicked };
+          };
 
-          // With popups, the same call asks in a popup and goes through once
+          // By redirect: the click's call fails and asks once, the automatic
+          // call before it not at all.
+          const redirecting = await openUse("redirect");
+          assert.deepEqual(redirecting.automatic, { failed: true });
+          await redirecting.page.click("#extra");
+          await redirecting.page.waitForFunction(() => {
+            const asked: unknown = Reflect.get(window, "asked");
+            return Array.isArray(asked) && asked.length > 0;
+          });
+          const redirected = await redirecting.clicked();
+          assert.deepEqual(redirected.result, { failed: true });
+          assert(Array.isArray(redirected.asked));
+          assert.equal(redirected.asked.length, 1);
+          assert.match(String(redirected.asked[0]), /authorization_details/);
+
+          // By popup: the click's call asks in a popup and goes through once
           // approved, on the same grant and without leaving the page.
-          const opened = page.waitForEvent("popup");
-          const inPlace = page.evaluate(
-            async ({ issuer, origin, clientId }) => {
-              const module: Module = await import(`${origin}/app.js`);
-              const client = (
-                await module.TrellisClient.connect({
-                  trellisUrl: issuer,
-                  request: module.base.OptionalCaller.request,
-                  auth: {
-                    clientId,
-                    redirectTo: `${origin}/callback`,
-                    approval: "popup",
-                  },
-                })
-              ).unwrapOrElse((error) => {
-                throw error;
-              });
-              const before = client.ownAuthority.current?.oauthGrantId;
-              const value = (
-                await client.extra({ value: "popup" })
-              ).unwrapOrElse((error) => {
-                throw error;
-              });
-              const after = client.ownAuthority.current?.oauthGrantId;
-              await client.connection.close();
-              return { value, before, after, location: location.href };
-            },
-            context,
-          );
+          const popping = await openUse("popup");
+          assert.deepEqual(popping.automatic, { failed: true });
+          assert(popping.grant);
+          const opened = popping.page.waitForEvent("popup");
+          await popping.page.click("#extra");
           const popup = await opened;
           await approveConsentIfRequired(popup, 15_000);
-          const approved = await inPlace;
-          assert.deepEqual(approved.value, { value: "popup" });
-          assert(approved.before);
-          assert.equal(approved.after, approved.before);
-          assert.equal(approved.location, `${origin}/`);
+          const approved = await popping.clicked();
+          assert.deepEqual(approved.result, {
+            value: { value: "popup" },
+            grant: popping.grant,
+          });
+          assert.equal(new URL(approved.location).pathname, "/use");
           await popup
             .waitForEvent("close", { timeout: 10_000 })
             .catch(() => {});
           assert(popup.isClosed());
         } finally {
-          await page.close();
+          await profile.close();
           await service.stop();
           await serviceExit;
         }

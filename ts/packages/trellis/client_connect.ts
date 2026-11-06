@@ -46,11 +46,12 @@ export type ClientAuthOptions = {
   redirectTo: string;
   currentUrl?: string;
   /**
-   * How to ask when the app uses an optional capability the user hasn't
-   * approved: leave for the approval page and come back (`"redirect"`, the
-   * default), or open it in a popup and carry on with the call once approved
-   * (`"popup"`). A blocked popup falls back to a redirect. Asks on page load
-   * always redirect.
+   * Ask the user to approve an optional capability when they use it: leave
+   * for the approval page and come back (`"redirect"`), or open it in a popup
+   * and carry on with the call once approved (`"popup"`). Only calls made in
+   * response to the user's click or key press ask; calls the app makes on its
+   * own, such as loading a page, fail with `ActionUnavailable`. Unset, no call
+   * asks. A blocked popup falls back to a redirect.
    */
   approval?: "redirect" | "popup";
   /**
@@ -407,6 +408,11 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           };
           let asking: Promise<boolean> | undefined;
           const requestApproval: CallerApproval = () => {
+            // Only a person's action asks. A call the app makes by itself
+            // would ask again on every load, even for a capability the user
+            // can never hold.
+            if (!args.auth.approval || !navigator.userActivation?.isActive)
+              return undefined;
             if (asking) return asking;
             // A popup only opens in the same turn as the user's action.
             const popup =

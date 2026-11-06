@@ -379,12 +379,17 @@ user to approve again (`onAuthRequired`, or a redirect), instead of connecting
 with authority that can never cover the request. The approval screen keeps the
 user's earlier choices, so only the new capabilities need a decision.
 
-Optional capabilities wait until the app uses them. Calling an RPC, live query
-or event whose optional capability the user hasn't approved asks then, set by
-`auth.approval`:
+Optional capabilities wait until the person uses them. With `auth.approval`
+set, an RPC, live query or event whose optional capability the user hasn't
+approved asks when the call comes from the person's click or key press (the
+browser's user activation). Calls the app makes by itself, such as loading a
+page, never ask: they fail with `ActionUnavailable`, so an app can show "no
+permission" for a capability the user can't hold. Without `auth.approval`, no
+call asks. `availability()` and `watchAvailability()` say which optional
+capabilities the session holds.
 
-- `"redirect"` (default): the call fails with `ActionUnavailable` and the page
-  goes to the approval screen (or `onAuthRequired`), returning to `redirectTo`.
+- `"redirect"`: the call fails with `ActionUnavailable` and the page goes to
+  the approval screen (or `onAuthRequired`), returning to `redirectTo`.
 - `"popup"`: the approval screen opens in a popup. Once approved, the app's
   current grant has widened, the live connection renews into it, and the same
   call goes through; declined or closed, the call fails with `ActionUnavailable`.
