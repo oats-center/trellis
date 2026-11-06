@@ -801,9 +801,11 @@ async function runPump<T>(
     let lastCreditSent = 0n;
     let nextExpected = 1n;
     // One logical credit control outstanding at a time: retries reuse its
-    // identical body and sequence, and newer consumption is coalesced.
+    // identical body and sequence, and newer consumption is coalesced. Its
+    // sequence is taken when it is first sent, so a credit cancelled before
+    // it went out leaves no gap ahead of the close.
     let pendingCredit:
-      { seq: string; received: string; consumed: string } | undefined;
+      { seq?: string; received: string; consumed: string } | undefined;
     while (true) {
       core.commitDrainIfComplete();
       if (core.committedEnd()) return;
@@ -899,12 +901,10 @@ async function runPump<T>(
         if (await authorityFence()) return;
         if (localGuard.contextDigest !== controlContextDigest) {
           controlContextDigest = localGuard.contextDigest;
-          // Credit is sent only once active. Taking a control sequence while
-          // activating would leave a gap the activation pulse cannot cross;
-          // that pulse is already signed under the new context.
+          // Credit is sent only once active; while activating, the
+          // activation pulse is already signed under the new context.
           if (!pendingCredit && core.phase === "active") {
             pendingCredit = {
-              seq: nextSeq(session).toString(),
               received: core.receivedSeq().toString(),
               consumed: core.consumedSeq().toString(),
             };
@@ -944,13 +944,13 @@ async function runPump<T>(
               const consumed = core.consumedSeq();
               if (consumed > lastCreditSent) {
                 pendingCredit = {
-                  seq: nextSeq(session).toString(),
                   received: core.receivedSeq().toString(),
                   consumed: consumed.toString(),
                 };
               }
             }
             if (pendingCredit) {
+              pendingCredit.seq ??= nextSeq(session).toString();
               const response = await controlAttempt(
                 host,
                 core,

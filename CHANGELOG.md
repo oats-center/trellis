@@ -44,6 +44,11 @@ and this project adheres to
   built-in API incompatibly stops startup with an error naming the service
   and leaves the installation unchanged; stable releases never refuse an
   upgrade.
+- A TypeScript Live cancelled just as its caller's authority renewed could
+  have its close refused for a skipped control sequence, so the provider kept
+  the handler running until its 35-second inactivity bound. The credit
+  re-sent under the renewed context now takes its sequence only when it is
+  sent.
 
 ## [0.100.0-rc.25] - 2026-11-06
 
