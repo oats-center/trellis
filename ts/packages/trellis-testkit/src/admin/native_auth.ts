@@ -39,7 +39,11 @@ export async function loginNativeTestClient(options: {
   /** Administrative `trellis.*` capabilities required in addition to the request. */
   administrativeCapabilities?: readonly string[];
   signal?: AbortSignal;
-}): Promise<{ session: NativeOAuthSession; servers: readonly string[] }> {
+}): Promise<{
+  session: NativeOAuthSession;
+  servers: readonly string[];
+  natsSentinel: string;
+}> {
   const server = (
     await discoverNativeOAuth(options.issuer, { signal: options.signal })
   ).take();
@@ -82,7 +86,11 @@ export async function loginNativeTestClient(options: {
     });
     const session = (await device.complete({ signal: options.signal })).take();
     if (isErr(session)) throw session.error;
-    return { session, servers: server.natsServers };
+    return {
+      session,
+      servers: server.natsServers,
+      natsSentinel: server.natsSentinel,
+    };
   } catch (error) {
     await client.close();
     throw error;

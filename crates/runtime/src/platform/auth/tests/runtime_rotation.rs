@@ -83,51 +83,56 @@ async fn start_broker(
     .unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let directory = tempfile::tempdir().unwrap();
-    let root = directory.path();
+/// Writes an installation the way an operator does: a one-server NATS
+/// cluster from `trellis-server nats new` as its broker's config, and a
+/// `config.toml` serving `origin` with `transport` on `ports[0]`. Starts the
+/// broker, then prepares the installation as a first start does.
+async fn installation(
+    root: &std::path::Path,
+    ports: &[u16],
+    origin: &str,
+    transport: &str,
+) -> (crate::RuntimeConfig, trellis_local_nats::LocalNats) {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let server = std::env::var_os("TRELLIS_TEST_SERVER_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join("target/release/trellis-server"));
-    // Held until the listeners are up; see ReservedPort.
-    let reserved: Vec<_> = (0..4)
-        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
-        .collect();
-    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
-    let oauth_origin = format!("http://127.0.0.1:{}", ports[0]);
     let config_dir = root.join("config");
-    let generated = tokio::process::Command::new(&server)
-        .arg("init")
-        .arg(&config_dir)
-        .arg("--external-nats")
-        .args([
-            "--nats-port",
-            &ports[1].to_string(),
-            "--nats-monitor-port",
-            &ports[2].to_string(),
-            "--nats-ws-port",
-            &ports[3].to_string(),
-            "--trellis-origin",
-            &oauth_origin,
-            "--trellis-port",
-            &ports[0].to_string(),
-            "--tls",
-            "loopback-development",
-            "--bind-address",
-            "127.0.0.1",
-        ])
+    let made = tokio::process::Command::new(&server)
+        .args(["nats", "new", "--servers", "1", "--out"])
+        .arg(config_dir.join("nats"))
+        .args(["--client-port", &ports[1].to_string()])
+        .args(["--monitor-port", &ports[2].to_string()])
+        .args(["--websocket-port", &ports[3].to_string()])
         .output()
         .await
-        .expect("provide the producer-built CLI through TRELLIS_TEST_CLI_BIN");
+        .expect("provide the producer-built server through TRELLIS_TEST_SERVER_BIN");
     assert!(
-        generated.status.success(),
-        "bootstrap failed: {}",
-        String::from_utf8_lossy(&generated.stderr)
+        made.status.success(),
+        "nats new failed: {}",
+        String::from_utf8_lossy(&made.stderr)
     );
-    let (config, _) = crate::RuntimeConfig::load_from_path_with_defaults(
+    std::fs::copy(
+        config_dir.join("nats/nats-1.conf"),
+        config_dir.join("nats.conf"),
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[http]\npublic_origin = \"{origin}\"\nport = {port}\nbind_address = \"127.0.0.1\"\n\
+            nats_websocket_upstream = \"127.0.0.1:{websocket}\"\n\n\
+            [http.transport]\nmode = \"{transport}\"\n\n\
+            [nats]\nservers = \"nats://127.0.0.1:{nats}\"\n\
+            system_credentials = \"nats/system.creds\"\n\
+            operator_signing_key = \"nats/trellis-operator.nk\"\n",
+            port = ports[0],
+            nats = ports[1],
+            websocket = ports[3],
+        ),
+    )
+    .unwrap();
+    let (mut config, _) = crate::RuntimeConfig::load_from_path_with_defaults(
         config_dir.join("config.toml"),
         crate::RuntimePathDefaults {
             data: root.join("data"),
@@ -138,15 +143,35 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         },
     )
     .unwrap();
-    std::fs::write(
-        config_dir.join("config.toml"),
-        toml::to_string_pretty(&config).unwrap(),
+    let broker = start_broker(root, &config_dir, [ports[1], ports[2], ports[3]]).await;
+    crate::installation::prepare(
+        &mut config,
+        &config_dir,
+        &root.join("data"),
+        crate::RuntimeMode::All,
+        true,
     )
+    .await
     .unwrap();
     crate::platform::seed_admin_credentials(&config, "admin", "a strong bootstrap password")
         .await
         .unwrap();
-    let mut broker = start_broker(root, &config_dir, [ports[1], ports[2], ports[3]]).await;
+    (config, broker)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    // Held until the listeners are up; see ReservedPort.
+    let reserved: Vec<_> = (0..4)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    let oauth_origin = format!("http://127.0.0.1:{}", ports[0]);
+    let (config, mut broker) =
+        installation(root, &ports, &oauth_origin, "loopback_development").await;
     let (mut stop, mut runtime) = start_runtime(&config, &oauth_origin, &[]).await;
     let discovered = discover_native_oauth(&oauth_origin, &[])
         .await
@@ -469,47 +494,22 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let server = std::env::var_os("TRELLIS_TEST_SERVER_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace.join("target/release/trellis-server"));
     let reserved: Vec<_> = (0..4)
         .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
         .collect();
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
-    let config_dir = root.join("config");
-    let generated = tokio::process::Command::new(&server)
-        .arg("init")
-        .arg(&config_dir)
-        .args(["--external-nats", "--dev"])
-        .args(["--trellis-port", &ports[0].to_string()])
-        .args(["--nats-port", &ports[1].to_string()])
-        .args(["--nats-monitor-port", &ports[2].to_string()])
-        .args(["--nats-ws-port", &ports[3].to_string()])
-        .output()
-        .await
-        .unwrap();
-    assert!(
-        generated.status.success(),
-        "bootstrap failed: {}",
-        String::from_utf8_lossy(&generated.stderr)
-    );
-    let (config, _) = crate::RuntimeConfig::load_from_path_with_defaults(
-        config_dir.join("config.toml"),
-        crate::RuntimePathDefaults {
-            data: root.join("data"),
-            state: root.join("state"),
-            cache: root.join("cache"),
-            runtime: root.join("runtime"),
-            logs: root.join("logs"),
-        },
+    let (config, mut broker) = installation(
+        root,
+        &ports,
+        &format!("https://localhost:{}", ports[0]),
+        "generated",
     )
-    .unwrap();
-    crate::platform::seed_admin_credentials(&config, "admin", "a strong bootstrap password")
-        .await
-        .unwrap();
-    let mut broker = start_broker(root, &config_dir, [ports[1], ports[2], ports[3]]).await;
-    let ca = config_dir.join("tls/ca.crt");
+    .await;
+    let ca = config
+        .tls
+        .as_ref()
+        .and_then(|tls| tls.generated_ca_certificate.clone())
+        .expect("generated TLS names its CA");
     let origin = format!("https://localhost:{}", ports[0]);
     let issuer = origin.clone();
     let (stop, mut runtime) = start_runtime(&config, &origin, std::slice::from_ref(&ca)).await;
@@ -741,22 +741,20 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
 
     // A server whose certificate no longer comes from the accepted issuer,
     // such as another installation's, is refused.
-    let other = root.join("other");
-    let generated = tokio::process::Command::new(&server)
-        .arg("init")
-        .arg(&other)
-        .args(["--external-nats", "--dev"])
-        .output()
-        .await
-        .unwrap();
-    assert!(generated.status.success());
+    let other = trellis_bootstrap::ensure_generated_tls(
+        &root.join("other"),
+        "Another installation",
+        &["localhost".to_owned()],
+        time::Duration::days(30),
+    )
+    .unwrap();
     let remembered = std::fs::read_dir(root.join("accepted"))
         .unwrap()
         .next()
         .unwrap()
         .unwrap()
         .path();
-    std::fs::copy(other.join("tls/ca.crt"), &remembered).unwrap();
+    std::fs::copy(&other.ca_certificate, &remembered).unwrap();
     match discover_accepting_certificate(&issuer, &acceptance).await {
         Err(CertificateAcceptanceError::Changed { .. }) => {}
         other => panic!("a changed certificate was not refused: {other:?}"),

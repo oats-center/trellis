@@ -39,7 +39,7 @@ export type ProvisionedConnectionOptions = {
   audienceNatsAccount: string;
   issuers: readonly AuthorityIssuerKey[];
   /** Sentinel user JWT from the installation's metadata. */
-  natsSentinel?: string;
+  natsSentinel: string;
   seed: string;
   timeout?: number;
   signal?: AbortSignal;
@@ -129,7 +129,7 @@ export async function connectAdmitted(options: {
   issuers: readonly AuthorityIssuerKey[];
   rotationSequence?: string;
   /** Sentinel user JWT from the installation's metadata. */
-  natsSentinel?: string;
+  natsSentinel: string;
   auth: TrellisAuth;
   runtimeId: string;
   kind: "user" | "service" | "device";

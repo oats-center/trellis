@@ -320,6 +320,7 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
             password_min_length: 12,
             administration: Default::default(),
             upstream_tls_roots_pem: Vec::new(),
+            nats_sentinel: Some("sentinel-user-jwt".into()),
             instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             account: account_key().into(),
             oauth_issuer: "https://auth.example".into(),

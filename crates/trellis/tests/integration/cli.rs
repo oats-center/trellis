@@ -1,4 +1,5 @@
-//! Live coverage for the `trellis-server` managed and configured NATS modes.
+//! Live coverage for `trellis-server` running its own NATS in development and
+//! connecting to NATS servers it does not run.
 
 use std::fs;
 use std::net::{TcpListener, TcpStream};
@@ -42,10 +43,10 @@ fn terminate_on_parent_exit(command: &mut Command) {
 #[cfg(not(target_os = "linux"))]
 fn terminate_on_parent_exit(_command: &mut Command) {}
 
-/// Deliberately bogus NATS URLs baked into the bundle so managed mode's endpoint
-/// override is observable: nothing listens on these, yet the report must be valid.
-const BOGUS_NATS_URL: &str = "tls://nats.invalid:4222";
-const BOGUS_WS_URL: &str = "wss://browser.invalid:8080";
+/// A NATS URL nothing listens on, written into the installation so that
+/// development mode's endpoint override is observable: the report must still
+/// be valid.
+const BOGUS_NATS_URL: &str = "nats://127.0.0.1:1";
 /// The first managed run downloads the pinned nats-server binary into an empty
 /// cache, so startup allows 600s for that initial acquisition.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(600);
@@ -281,50 +282,59 @@ async fn cli_server_managed_nats() {
     let managed_ports = [nats_port, monitor_port, websocket_port];
     let ports_arg = format!("{nats_port},{monitor_port},{websocket_port}");
 
-    // 1. `trellis-server init` renders the bundle the managed server expects, with
-    //    deliberately bogus NATS URLs so the managed endpoint override is observable.
-    let init_output = server_command(&workdir.0)
-        .args([
-            "init",
-            "--format",
-            "json",
-            "--tls",
-            "generated",
-            bundle.to_str().expect("UTF-8 bundle path"),
-            "--nats-port",
-            &nats_port.to_string(),
-            "--nats-monitor-port",
-            &monitor_port.to_string(),
-            "--nats-ws-port",
-            &websocket_port.to_string(),
-            "--nats-server-url",
-            BOGUS_NATS_URL,
-            "--nats-websocket-url",
-            BOGUS_WS_URL,
-            "--trellis-origin",
-            &format!("https://127.0.0.1:{oauth_port}"),
-            "--trellis-port",
-            &oauth_port.to_string(),
-        ])
-        .output()
-        .expect("run trellis-server init");
-    assert!(
-        init_output.status.success(),
-        "trellis-server init failed: {}",
-        String::from_utf8_lossy(&init_output.stderr)
-    );
-    // A bundle keeps everything the server writes in its var folder, apart
-    // from the NATS download, which every installation shares.
-    let config_path = bundle.join("config.toml");
-    let effective_root = bundle.join("var");
     // An empty private cache: explicit download acquires pinned NATS on first run.
     let cache_dir = workdir.0.join("cache/trellis/nats");
     fs::create_dir_all(&cache_dir).expect("create managed-NATS cache dir");
     fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
         .expect("make managed-NATS cache dir private");
+
+    // 1. The first `--dev` start creates the installation; a check stops
+    //    there. The installation then moves to this test's ports, and its
+    //    [nats] servers to an address nothing answers on.
+    let created = server_command(&workdir.0)
+        .args(["check", "--dev", "--config"])
+        .arg(&bundle)
+        .args(["--nats-download", "--local-nats-ports", &ports_arg])
+        .output()
+        .expect("create the development installation");
+    let config_path = bundle.join("config.toml");
+    assert!(
+        config_path.is_file(),
+        "the first --dev start did not create the installation: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let moved = |path: &Path, ports: &[(&str, u16)]| {
+        let mut text = fs::read_to_string(path).expect("read installation file");
+        for (from, to) in ports {
+            text = text.replace(from, &format!(":{to}"));
+        }
+        fs::write(path, text).expect("write installation file");
+    };
+    moved(
+        &config_path,
+        &[
+            (":4222", 1),
+            (":8080", websocket_port),
+            (":3000", oauth_port),
+        ],
+    );
+    let config_text = fs::read_to_string(&config_path)
+        .expect("read config")
+        .replace("port = 3000", &format!("port = {oauth_port}"));
+    fs::write(&config_path, config_text).expect("write config");
+    moved(
+        &bundle.join("nats.conf"),
+        &[
+            (":4222", nats_port),
+            (":8222", monitor_port),
+            (":8080", websocket_port),
+        ],
+    );
+    // A bundle keeps everything the server writes in its var folder, apart
+    // from the NATS download, which every installation shares.
+    let effective_root = bundle.join("var");
     let seeded = server_command(&workdir.0)
         .args([
-            "init",
             "admin",
             "--config",
             config_path.to_str().expect("UTF-8 config path"),
@@ -352,11 +362,10 @@ async fn cli_server_managed_nats() {
     let mut child = ChildGuard::spawn(
         run_command
             .args([
+                "--dev",
                 "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
-                "--local-nats-ports",
-                &ports_arg,
             ])
             .stdout(Stdio::from(
                 fs::File::create(&run_stdout).expect("create run stdout log"),
@@ -464,11 +473,10 @@ async fn cli_server_managed_nats() {
         check_command
             .args([
                 "check",
+                "--dev",
                 "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
-                "--local-nats-ports",
-                &ports_arg,
             ])
             .stdout(Stdio::from(
                 fs::File::create(&check_stdout).expect("create check stdout log"),
@@ -525,6 +533,7 @@ async fn cli_server_managed_nats() {
     let mut occupied_child = ChildGuard::spawn(
         occupied_command
             .args([
+                "--dev",
                 "--config",
                 config_path.to_str().expect("UTF-8 config path"),
                 "--nats-download",
@@ -554,29 +563,8 @@ async fn cli_server_managed_nats() {
     // 3c. A managed bundle without an explicit nats.conf listener set is a
     //     configuration error, never a silent fallback to default ports.
     let broken_bundle = workdir.0.join("broken-bundle");
-    let broken_init = server_command(&workdir.0)
-        .args([
-            "init",
-            "--tls",
-            "generated",
-            broken_bundle.to_str().expect("UTF-8 broken bundle path"),
-            "--trellis-port",
-            &oauth_port.to_string(),
-            "--nats-port",
-            &nats_port.to_string(),
-            "--nats-monitor-port",
-            &monitor_port.to_string(),
-            "--nats-ws-port",
-            &websocket_port.to_string(),
-        ])
-        .output()
-        .expect("run trellis-server init for broken bundle");
-    assert!(
-        broken_init.status.success(),
-        "trellis-server init failed: {}",
-        String::from_utf8_lossy(&broken_init.stderr)
-    );
-    fs::remove_file(broken_bundle.join("nats.conf")).expect("remove authored nats.conf");
+    fs::create_dir(&broken_bundle).expect("create broken bundle");
+    fs::copy(&config_path, broken_bundle.join("config.toml")).expect("copy config");
     let cached_binary =
         NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache_dir))
             .expect("cached nats-server binary");
@@ -588,6 +576,7 @@ async fn cli_server_managed_nats() {
         broken_command
             .args([
                 "check",
+                "--dev",
                 "--config",
                 broken_config.to_str().expect("UTF-8 broken config path"),
                 local_nats.as_str(),
@@ -638,9 +627,8 @@ async fn cli_server_managed_nats() {
         .start()
         .expect("spawn test-owned managed nats-server");
     let creds = server_command(&workdir.0)
-        .args(["nats", "--print", "--config"])
+        .args(["nats", "trellis", "--print", "--config"])
         .arg(&bundle)
-        .arg("trellis")
         .output()
         .expect("print Trellis NATS credentials");
     assert!(
@@ -652,24 +640,20 @@ async fn cli_server_managed_nats() {
         &String::from_utf8(creds.stdout).expect("UTF-8 creds"),
     )
     .expect("load Trellis NATS credentials")
-    .add_root_certificates(bundle.join("tls/ca.crt"))
     .connect(external.nats_url())
     .await
     .expect("connect to external NATS");
     let jetstream = jetstream::new(nats);
-    // Dropping `managed` hands NATS to the operator: the same bundle now
-    // connects to the servers listed in [nats] servers. The first is down and
-    // its name isn't on the certificate, so the runtime only starts if it
-    // checks the second broker by that broker's own name.
+    // Dropping `managed` hands NATS to the operator: the same installation
+    // now connects to the servers listed in [nats] servers. The first is
+    // down, so the runtime only starts if it moves on to the second.
     let external_config = fs::read_to_string(&config_path)
         .expect("read bundle config")
         .replace("managed = true\n", "")
         .replace(
             &format!("servers = \"{BOGUS_NATS_URL}\""),
-            &format!("servers = \"tls://127.0.0.2:1,tls://localhost:{nats_port}\""),
-        )
-        .replace(BOGUS_NATS_URL, &format!("tls://localhost:{nats_port}"))
-        .replace(BOGUS_WS_URL, &format!("wss://localhost:{websocket_port}"));
+            &format!("servers = \"nats://127.0.0.2:1,nats://localhost:{nats_port}\""),
+        );
     fs::write(&config_path, external_config).expect("write external NATS config");
 
     for (name, subjects, max_messages_per_subject, discard_new_per_subject) in [
@@ -893,12 +877,14 @@ async fn cli_server_managed_nats() {
     // Drop stops the test-owned server and removes its pid file.
 }
 
-/// A first plain start with no installation and no terminal to ask on creates
-/// nothing; `--init` creates a localhost development installation over plain
-/// HTTP, which every later plain start then finds. Without nats-server on PATH the managed start
-/// stops before binding any of the installation's fixed default ports.
+/// A start with no installation creates nothing and says how to make one;
+/// `--dev` creates a localhost development installation over plain HTTP,
+/// which every later `--dev` start then finds. A plain start refuses it,
+/// since only a development installation runs its own NATS. Without
+/// nats-server on PATH the managed start stops before binding any of the
+/// installation's fixed default ports.
 #[test]
-fn first_start_creates_the_default_installation_only_when_asked() {
+fn only_a_dev_start_creates_and_runs_a_development_installation() {
     let workdir = WorkdirGuard::new();
     let search_path = std::env::var_os("CARGO")
         .map(PathBuf::from)
@@ -917,84 +903,81 @@ fn first_start_creates_the_default_installation_only_when_asked() {
 
     let refused = start(&[]);
     assert!(
-        refused.contains("no Trellis installation in"),
+        refused.contains("no Trellis configuration at") && refused.contains("config example"),
         "unexpected refusal: {refused}"
     );
-    assert!(!installation.exists(), "an unconfirmed start created files");
+    assert!(!installation.exists(), "a plain start created files");
 
-    let created = start(&["--init"]);
-    assert!(
-        installation.join("config.toml").is_file(),
-        "--init did not create the default installation: {created}"
-    );
-    let config = fs::read_to_string(installation.join("config.toml")).unwrap();
+    let created = start(&["--dev", "--config", installation.to_str().unwrap()]);
+    let config = fs::read_to_string(installation.join("config.toml"))
+        .unwrap_or_else(|_| panic!("--dev did not create the installation: {created}"));
     assert!(
         config.contains("public_origin = \"http://localhost:3000\"")
-            && !installation.join("tls").exists(),
-        "--init did not create a plain-HTTP localhost installation:\n{config}"
+            && config.contains("mode = \"loopback_development\""),
+        "--dev did not create a plain-HTTP localhost installation:\n{config}"
     );
-    for stderr in [created, start(&[])] {
+    for stderr in [
+        created,
+        start(&["--dev", "--config", installation.to_str().unwrap()]),
+    ] {
         assert!(
             stderr.contains("nats-server is not on PATH"),
             "start did not reach managed NATS: {stderr}"
         );
     }
+    let production = start(&["--config", installation.to_str().unwrap()]);
+    assert!(
+        production.contains("start it with --dev"),
+        "a plain start ran a development installation: {production}"
+    );
 }
 
+/// Generated TLS serves Trellis and the Console on their own hostnames from a
+/// CA Trellis makes, which nothing trusts without being told, and every
+/// Console and Portal user is warned about it.
 #[tokio::test]
-async fn server_serves_generated_installation_tls_and_reloads_renewed_certificates() {
+async fn server_serves_generated_installation_tls() {
     let workdir = WorkdirGuard::new();
     let bundle = workdir.0.join("tls");
     // Held outside the ephemeral range until the server is done; see ReservedPort.
     let ports = [(); 4].map(|_| trellis_local_nats::ReservedPort::reserve().unwrap());
     let [nats, monitor, websocket, oauth] =
         ports.each_ref().map(trellis_local_nats::ReservedPort::port);
-    // Generated TLS makes the installation CA and every listener's
-    // certificate. The Console gets a hostname of its own on the Trellis port.
-    let initialized = server_command(&workdir.0)
-        .args(["init", "--format", "json", "--tls", "generated"])
-        .arg(&bundle)
-        .arg("--external-nats")
-        .args([
-            "--nats-port",
-            &nats.to_string(),
-            "--nats-monitor-port",
-            &monitor.to_string(),
-            "--nats-ws-port",
-            &websocket.to_string(),
-            "--trellis-port",
-            &oauth.to_string(),
-            "--console-origin",
-            &format!("https://127.0.0.1:{oauth}"),
-            "--trellis-origin",
-            &format!("https://localhost:{oauth}"),
-            "--nats-server-url",
-            &format!("tls://127.0.0.1:{nats}"),
-            "--nats-websocket-url",
-            &format!("wss://127.0.0.1:{websocket}"),
-            "--nats-data-dir",
-        ])
-        .arg(bundle.join("jetstream"))
+    // An operator's NATS server, and an installation using it whose Console
+    // has a hostname of its own on the Trellis port.
+    let nats_folder = workdir.0.join("nats");
+    let made = server_command(&workdir.0)
+        .args(["nats", "new", "--servers", "1", "--out"])
+        .arg(&nats_folder)
+        .args(["--client-port", &nats.to_string()])
+        .args(["--monitor-port", &monitor.to_string()])
+        .args(["--websocket-port", &websocket.to_string()])
         .output()
         .unwrap();
     assert!(
-        initialized.status.success(),
+        made.status.success(),
         "{}",
-        String::from_utf8_lossy(&initialized.stderr)
+        String::from_utf8_lossy(&made.stderr)
     );
-    let summary: Value = serde_json::from_slice(&initialized.stdout).unwrap();
-    let fingerprint = summary["generatedTls"]["caSha256Fingerprint"]
-        .as_str()
-        .expect("init reports the generated CA fingerprint")
-        .to_owned();
-    let ca = bundle.join("tls/ca.crt");
-    assert!(
-        !bundle.join("tls/ca.key").exists() && bundle.join("tls-ca/ca.key").is_file(),
-        "a local installation keeps its CA private key in its own tls-ca folder"
-    );
+    fs::create_dir(&bundle).unwrap();
     let config = bundle.join("config.toml");
+    let quoted = |path: PathBuf| serde_json::to_string(&path.display().to_string()).unwrap();
+    fs::write(
+        &config,
+        format!(
+            "[http]\npublic_origin = \"https://localhost:{oauth}\"\nport = {oauth}\n\
+            nats_websocket_upstream = \"127.0.0.1:{websocket}\"\n\n\
+            [http.transport]\nmode = \"generated\"\n\n\
+            [console]\norigin = \"https://127.0.0.1:{oauth}\"\n\n\
+            [nats]\nservers = \"nats://127.0.0.1:{nats}\"\nsystem_credentials = {}\n\
+            operator_signing_key = {}\n",
+            quoted(nats_folder.join("system.creds")),
+            quoted(nats_folder.join("trellis-operator.nk")),
+        ),
+    )
+    .unwrap();
     let bootstrap = server_command(&workdir.0)
-        .args(["init", "admin", "--config"])
+        .args(["admin", "--config"])
         .arg(&config)
         .args([
             "--username",
@@ -1009,25 +992,43 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         "{}",
         String::from_utf8_lossy(&bootstrap.stderr)
     );
+    let status = server_command(&workdir.0)
+        .args(["tls", "status", "--format", "json", "--config"])
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    let fingerprint = status["generatedTls"]["caSha256Fingerprint"]
+        .as_str()
+        .expect("tls status reports the generated CA fingerprint")
+        .to_owned();
+    let ca = PathBuf::from(
+        status["generatedTls"]["caCertificate"]
+            .as_str()
+            .expect("tls status names the CA"),
+    );
     let broker_log = bundle.join("nats.log");
     let binary = std::env::var_os("TRELLIS_TEST_NATS_BIN").unwrap_or_else(|| "nats-server".into());
     let mut broker = ChildGuard::spawn(
         Command::new(binary)
             .arg("-c")
-            .arg(bundle.join("nats.conf"))
+            .arg(nats_folder.join("nats-1.conf"))
             .stdout(Stdio::null())
             .stderr(Stdio::from(fs::File::create(&broker_log).unwrap())),
-        "TLS NATS",
+        "NATS",
     );
     wait_until(
         || port_accepts(nats),
         &mut broker,
         &broker_log,
-        "TLS NATS listener",
+        "NATS listener",
     )
     .await;
-    // The runtime trusts its broker only through the configured installation
-    // CA; no system trust or environment override is involved.
     let server_log = bundle.join("server.log");
     let server_output = bundle.join("server.stdout.log");
     let mut server = ChildGuard::spawn(
@@ -1140,9 +1141,16 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         .await
         .unwrap();
     assert!(portal.contains("<html data-generated-tls"), "{portal}");
-    // A real WSS upgrade reaches the broker through a verified TLS connection.
-    let upgraded = client
-        .get(format!("https://127.0.0.1:{websocket}/"))
+    // A real WSS upgrade reaches the broker through the Trellis port's
+    // verified TLS. Upgrades are an HTTP/1.1 mechanism.
+    let upgraded = reqwest::Client::builder()
+        .no_proxy()
+        .http1_only()
+        .tls_certs_only([reqwest::Certificate::from_pem(&fs::read(&ca).unwrap()).unwrap()])
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap()
+        .get(format!("{oauth_origin}/"))
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
@@ -1152,42 +1160,6 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         .unwrap();
     assert_eq!(upgraded.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
 
-    let served = |client: reqwest::Client| async move {
-        let response = client
-            .get(format!("https://127.0.0.1:{oauth}/readyz"))
-            .send()
-            .await
-            .unwrap();
-        response
-            .extensions()
-            .get::<reqwest::tls::TlsInfo>()
-            .and_then(|info| info.peer_certificate().map(<[u8]>::to_vec))
-            .unwrap()
-    };
-    let before = served(client.clone()).await;
-    let renewed = server_command(&workdir.0)
-        .args(["tls", "renew", "--config"])
-        .arg(&bundle)
-        .output()
-        .unwrap();
-    assert!(
-        renewed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&renewed.stderr)
-    );
-    // The running listener picks up the renewed certificate; clients that
-    // trust the unchanged CA keep connecting.
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if served(client.clone()).await != before {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the runtime did not serve its renewed certificate"
-        );
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
     server.signal_term();
     assert!(server.wait_for_exit(SHUTDOWN_TIMEOUT).unwrap().success());
     broker.signal_term();

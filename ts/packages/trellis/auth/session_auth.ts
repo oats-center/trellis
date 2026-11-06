@@ -54,7 +54,7 @@ export type TrellisAuth = {
      * The installation's sentinel user JWT. Presenting it hands the
      * connection to Trellis's auth callout, which decides who connected.
      */
-    natsSentinel?: string;
+    natsSentinel: string;
   }) => Promise<NatsConnectOptions>;
 };
 
@@ -103,7 +103,7 @@ export async function createAuth(opts: {
       return Promise.resolve({
         authenticator: [
           nkeyAuthenticator(encodedSeed),
-          ...sentinelAuthenticator(options.natsSentinel),
+          () => ({ jwt: options.natsSentinel }),
           (nonce) => {
             if (options.authorizationUsable?.() === false) {
               throw new Error("authorization context is suspended");
@@ -125,9 +125,4 @@ export async function createAuth(opts: {
       });
     },
   };
-}
-
-/** Presents the installation's sentinel user JWT, when it publishes one. */
-function sentinelAuthenticator(sentinel: string | undefined): Authenticator[] {
-  return sentinel ? [() => ({ jwt: sentinel })] : [];
 }

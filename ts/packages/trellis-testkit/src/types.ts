@@ -58,28 +58,28 @@ export type TrellisTestRuntimeStartOptions = {
   /** Existing or desired local test-admin password. */
   adminPassword?: string;
   trellis?: TrellisTestRuntimeTrellisOptions;
-  /** Seed via production `trellis-server init admin` by default; browser-flow exercises first-admin UI. */
+  /** Seed via production `trellis-server admin` by default; browser-flow exercises first-admin UI. */
   firstAdmin?: "seeded" | "browser-flow";
   /** Route the advertised browser WebSocket endpoint through a replaceable TCP proxy. */
   rotatableWebsocketProxy?: boolean;
   /**
    * Relay NATS WebSockets through the Trellis port, which sends every
-   * WebSocket upgrade to NATS, as `trellis-server init` does by default with
-   * generated TLS.
+   * WebSocket upgrade to NATS (`[http] nats_websocket_upstream`).
    */
   sameOriginWebsocket?: boolean;
   /**
-   * Offer clients only the NATS WebSocket (`trellis-server init
-   * --nats-websocket-only`), so services and devices connect over it.
+   * Offer clients only the NATS WebSocket (`[client] nats_servers = []`),
+   * so services and devices connect over it.
    */
   websocketOnly?: boolean;
   /**
-   * Create a development installation (`trellis-server init --dev`): one
-   * generated certificate, and the Trellis port relays NATS WebSockets.
+   * Run a development installation: Trellis generates its own certificate,
+   * native NATS is plaintext on loopback, and the Trellis port relays NATS
+   * WebSockets.
    */
   development?: boolean;
   /**
-   * Give the Console its own origin (`trellis-server init --console-origin`),
+   * Give the Console its own origin (`[console] origin`),
    * another hostname on the Trellis port, instead of `/console` on the
    * Trellis origin. Not available with `development`.
    */

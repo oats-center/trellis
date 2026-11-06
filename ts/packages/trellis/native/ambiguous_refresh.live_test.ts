@@ -76,9 +76,9 @@ test(
       );
       // The loss happens inside the OAuth origin's TLS, so the proxy holds the
       // runtime's own certificate and re-encrypts to the real origin.
-      const tls = join(runtime.workdir, "config", "trellis", "tls");
-      const certificate = readFileSync(join(tls, "runtime.crt"));
-      const privateKey = readFileSync(join(tls, "runtime.key"));
+      const tls = join(runtime.workdir, "certificates");
+      const certificate = readFileSync(join(tls, "server.crt"));
+      const privateKey = readFileSync(join(tls, "server.key"));
       proxy.on("connect", (incoming, socket, head) => {
         socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head.length) socket.unshift(head);

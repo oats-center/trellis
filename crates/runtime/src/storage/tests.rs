@@ -59,6 +59,8 @@ fn runtime_config() -> RuntimeConfig {
             managed: false,
             servers: Some("nats://127.0.0.1:4222".to_owned()),
             ca_certificate: None,
+            system_credentials: None,
+            operator_signing_key: None,
         }),
         client: None,
         leases: Some(crate::LeasesConfig {

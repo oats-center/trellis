@@ -67,7 +67,7 @@ export function connectNativeSession(
             await discoverNativeOAuth(session.scope.issuer, {
               signal: options.signal,
             })
-          ).unwrapOr(undefined)?.natsSentinel;
+          ).orThrow().natsSentinel;
         connected = await connectAdmitted({
           servers: [...options.servers],
           trellisInstanceId: trust.instanceId,

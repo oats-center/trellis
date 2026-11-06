@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -22,8 +22,6 @@ test(
   { timeout: 150_000 },
   async (context) => {
     const directory = await mkdtemp(join(tmpdir(), "native-enforcement-"));
-    // The bundle lives inside the temporary directory, so its generated CA
-    // directory (a sibling of the bundle) is removed with it.
     const bundle = join(directory, "bundle");
     const serverBinary = resolve(
       process.env.TRELLIS_TEST_SERVER_BIN ?? "target/release/trellis-server",
@@ -64,47 +62,45 @@ test(
       await exited;
     };
     try {
+      // An operator's one-server NATS, and a Trellis installation using it.
+      const natsFolder = join(directory, "nats");
       await exec(serverBinary, [
-        "init",
-        bundle,
-        "--tls",
-        "generated",
-        "--external-nats",
-        "--nats-port",
+        "nats",
+        "new",
+        "--servers",
+        "1",
+        "--out",
+        natsFolder,
+        "--client-port",
         String(broker),
-        "--nats-monitor-port",
+        "--monitor-port",
         String(monitor),
-        "--nats-ws-port",
+        "--websocket-port",
         String(websocket),
-        "--trellis-origin",
-        issuer,
-        "--trellis-port",
-        String(oauth),
-        "--nats-data-dir",
-        `${directory}/jetstream`,
       ]);
-      // The installation serves its generated TLS; this test trusts its CA.
-      trustInstallationCa(`${bundle}/tls/ca.crt`);
+      await mkdir(bundle);
       const configPath = `${bundle}/config.toml`;
-      const secretsPath = `${bundle}/secrets.toml`;
-      const secrets = await readFile(secretsPath, "utf8");
-      const trellisUser = /\[nats\.users\.trellis\]\n([^[]*)/.exec(secrets);
-      assert(trellisUser, "secrets.toml names the Trellis NATS user");
-      // The broker accepts this operational credential, but it has no access to
-      // the system-account connection-management responders. This is an ordinary
-      // broker permission failure, not a substituted broker or runtime hook.
+      const systemCredentials = join(natsFolder, "system.creds");
       await writeFile(
-        secretsPath,
-        secrets.replace(
-          /\[nats\.users\.system\]\n[^[]*/,
-          `[nats.users.system]\n${trellisUser[1]}`,
-        ),
+        configPath,
+        [
+          "[http]",
+          `public_origin = "${issuer}"`,
+          `port = ${oauth}`,
+          'bind_address = "127.0.0.1"',
+          "[http.transport]",
+          'mode = "generated"',
+          "[nats]",
+          `servers = "nats://127.0.0.1:${broker}"`,
+          `system_credentials = ${JSON.stringify(systemCredentials)}`,
+          `operator_signing_key = ${JSON.stringify(join(natsFolder, "trellis-operator.nk"))}`,
+          "",
+        ].join("\n"),
       );
-      const natsConfig = `${bundle}/nats.conf`;
+      const natsConfig = join(natsFolder, "nats-1.conf");
       const username = "enforcement-admin";
       const password = "enforcement-fixture-password";
       await exec(serverBinary, [
-        "init",
         "admin",
         "--config",
         configPath,
@@ -113,6 +109,8 @@ test(
         "--password",
         password,
       ]);
+      // The installation serves its generated TLS; this test trusts its CA.
+      trustInstallationCa(`${bundle}/var/tls/ca.crt`);
       const nats = spawn(natsBinary, ["-c", natsConfig]);
       nats.stdout.on("data", (chunk) => {
         brokerLog += chunk;
@@ -127,6 +125,33 @@ test(
           () => false,
         ),
       );
+      // The first start creates Trellis's accounts with the operator's system user.
+      // Then the system user's file holds Trellis's own user instead: the
+      // broker admits it, but it has no access to the system account's
+      // connection management. This is an ordinary broker permission failure,
+      // not a substituted broker or runtime hook.
+      const first = spawn(serverBinary, ["--config", configPath]);
+      children.push(first);
+      for (const output of [first.stdout, first.stderr])
+        output.on("data", (chunk) => {
+          serverLog += chunk;
+        });
+      await waitFor("first start readiness", async () =>
+        fetch(`https://127.0.0.1:${oauth}/readyz`).then(
+          (r) => r.ok,
+          () => false,
+        ),
+      );
+      await stop(first);
+      const systemUser = await readFile(systemCredentials, "utf8");
+      const { stdout: trellisUser } = await exec(serverBinary, [
+        "nats",
+        "trellis",
+        "--print",
+        "--config",
+        configPath,
+      ]);
+      await writeFile(systemCredentials, trellisUser);
       let server = spawn(serverBinary, ["--config", configPath]);
       children.push(server);
       server.stdout.on("data", (chunk) => {
@@ -215,7 +240,7 @@ test(
       );
       await sibling.sessionsList({}).orThrow();
       await stop(server);
-      await writeFile(secretsPath, secrets);
+      await writeFile(systemCredentials, systemUser);
       server = spawn(serverBinary, ["--config", configPath]);
       children.push(server);
       server.stdout.on("data", (chunk) => {

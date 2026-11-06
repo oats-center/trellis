@@ -19,6 +19,7 @@ fn secrets() -> Secrets {
     };
     Secrets {
         nats: NatsSecrets {
+            accounts: Default::default(),
             users: NatsUsers {
                 system: user("system"),
                 auth: user("auth"),
@@ -29,6 +30,7 @@ fn secrets() -> Secrets {
                 target_signing_seed: Some("target".into()),
                 xkey_seed: Some("xkey".into()),
                 sentinel_public_key: Some("sentinel".into()),
+                sentinel_jwt: None,
             },
         },
         ..Secrets::default()

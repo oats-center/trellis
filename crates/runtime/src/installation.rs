@@ -48,7 +48,9 @@ pub enum InstallationError {
 /// starts it in `mode`. Data such as generated certificates goes in `data_dir`.
 ///
 /// Only a role that runs the platform creates keys and NATS accounts; split
-/// roles started on their own use what it created.
+/// roles started on their own use what it created. Without `push_accounts`
+/// the accounts are created but not sent to NATS, for a command that only
+/// touches the database; the next start sends them.
 ///
 /// # Errors
 ///
@@ -59,6 +61,7 @@ pub async fn prepare(
     config_dir: &Path,
     data_dir: &Path,
     mode: RuntimeMode,
+    push_accounts: bool,
 ) -> Result<(), InstallationError> {
     let platform = matches!(mode, RuntimeMode::All | RuntimeMode::Platform);
     if platform {
@@ -75,7 +78,17 @@ pub async fn prepare(
         }
         if let Some(provisioning) = nats_provisioning(config)? {
             changed |= create_missing_nats_accounts(&mut secrets)?;
-            push_nats_accounts(config, &provisioning, &secrets).await?;
+            if push_accounts {
+                if let Err(error) = push_nats_accounts(config, &provisioning, &secrets).await {
+                    // Servers that already have the accounts still admit
+                    // Trellis; only what needs the system user, such as
+                    // closing connections, waits until it works again.
+                    if !accounts_resolve(config, &secrets).await {
+                        return Err(error);
+                    }
+                    tracing::warn!(%error, "NATS refused Trellis's account update; using the accounts it has");
+                }
+            }
             secrets.nats.users.system = Some(provisioning.system_user);
         }
         if changed {
@@ -264,6 +277,9 @@ async fn push_nats_accounts(
         .as_ref()
         .and_then(|nats| nats.servers.clone())
         .unwrap_or_default();
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
     let mut options =
         async_nats::ConnectOptions::with_credentials(&provisioning.system_user.creds())
             .map_err(|error| InstallationError::Nats(error.to_string()))?
@@ -302,6 +318,42 @@ async fn push_nats_accounts(
     }
     let _ = client.drain().await;
     Ok(())
+}
+
+/// Whether the NATS servers admit Trellis's own user, which they do only when
+/// they have its account.
+async fn accounts_resolve(config: &RuntimeConfig, secrets: &Secrets) -> bool {
+    let Some(user) = secrets.nats.users.trellis.as_ref() else {
+        return false;
+    };
+    let creds = trellis_bootstrap::NatsUserKeys {
+        jwt: user.jwt.clone(),
+        seed: user.seed.clone(),
+    }
+    .creds();
+    let Ok(mut options) = async_nats::ConnectOptions::with_credentials(&creds) else {
+        return false;
+    };
+    options = options
+        .name("trellis-provisioning")
+        .connection_timeout(Duration::from_secs(10));
+    let nats = config.nats.as_ref();
+    if let Some(ca) = nats.and_then(|nats| nats.ca_certificate.clone()) {
+        options = options.add_root_certificates(ca);
+    }
+    let urls: Vec<String> = nats
+        .and_then(|nats| nats.servers.clone())
+        .unwrap_or_default()
+        .split(',')
+        .map(|server| server.trim().to_owned())
+        .collect();
+    match options.connect(urls).await {
+        Ok(client) => {
+            let _ = client.drain().await;
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Writes `secrets` to `secrets.toml`, replacing it whole and readable by its

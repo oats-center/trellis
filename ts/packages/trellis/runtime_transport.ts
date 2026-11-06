@@ -98,9 +98,14 @@ export async function loadDefaultRuntimeTransport(): Promise<RuntimeTransport> {
         });
       }
       const { connect } = await import("@nats-io/transport-node");
-      const ca = acceptedIssuersFor(
-        Array.isArray(options.servers) ? options.servers : [options.servers],
-      );
+      const servers = Array.isArray(options.servers)
+        ? options.servers
+        : [options.servers];
+      // Plain `nats://` stays plaintext: a development installation serves
+      // native NATS that way on loopback.
+      const ca = servers.some((server) => server?.startsWith("tls://"))
+        ? acceptedIssuersFor(servers)
+        : undefined;
       return await connect(
         ca ? { ...options, tls: { ca: ca.join("\n") } } : options,
       );

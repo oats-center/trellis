@@ -3,7 +3,7 @@ import { connectNativeSession } from "@oatscenter/trellis/native";
 
 /** Admit a real native client, then retain an ordinary non-renewing NATS attachment for wire/security checks. */
 export async function admitRawNativeClient(
-  login: Parameters<typeof connectNativeSession>[0],
+  login: Parameters<typeof connectNativeSession>[0] & { natsSentinel: string },
 ) {
   const admitted = await connectNativeSession(login).orThrow();
   const own = admitted.owner.own();
@@ -13,6 +13,7 @@ export async function admitRawNativeClient(
     const options = await login.session.auth.natsConnectOptions({
       inboxPrefix: authority.inboxPrefix,
       admission: login.session.admission,
+      natsSentinel: login.natsSentinel,
     });
     const nc = await connect({
       servers: [...login.servers],

@@ -5913,13 +5913,14 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "time",
  "toml",
- "trellis-runtime",
  "ulid",
  "url",
+ "x509-parser",
 ]
 
 [[package]]
@@ -6197,6 +6198,7 @@ dependencies = [
  "nkeys",
  "oauth-as",
  "openidconnect",
+ "rand 0.10.1",
  "rcgen",
  "ref-cast",
  "refinery",
@@ -6218,6 +6220,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "trellis-bootstrap",
  "trellis-events-runtime",
  "trellis-idl",
  "trellis-jobs-runtime",

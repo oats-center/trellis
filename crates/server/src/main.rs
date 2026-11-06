@@ -669,7 +669,10 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         prepare_directory(&paths.logs)?;
     }
     let mut managed = None;
-    let managed_nats = config.nats.as_ref().is_some_and(|nats| nats.managed);
+    // Seeding an administrator only touches the database, so it never needs
+    // NATS, which a development installation runs only while Trellis does.
+    let seeding = policy.operation == Operation::BootstrapAdmin;
+    let managed_nats = config.nats.as_ref().is_some_and(|nats| nats.managed) && !seeding;
     if managed_nats && policy.dev.is_none() {
         return Err(miette!(
             "{} has [nats] managed, which only a development installation may: start it \
@@ -782,6 +785,11 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 .into_diagnostic()?;
             info!("managed NATS ready");
             let servers = server.nats_url().to_string();
+            // Provisioning below reaches the broker where it listens, which
+            // --local-nats-ports may have moved.
+            if let Some(nats) = config.nats.as_mut() {
+                nats.servers = Some(servers.clone());
+            }
             // Clients elsewhere reach the broker by the addresses [client]
             // names, not the loopback address the runtime itself uses.
             let client_native = config.client.as_ref().and_then(|c| c.nats_servers.clone());
@@ -819,6 +827,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
         &policy.paths.config_root,
         &paths.data,
         policy.mode,
+        !seeding,
     )
     .await
     .into_diagnostic()?;
@@ -1357,6 +1366,5 @@ kind = "sqlite"
             ])
             .is_err());
         }
-        assert!(Args::try_parse_from(["trellis-server", "init", "--user", "x"]).is_err());
     }
 }

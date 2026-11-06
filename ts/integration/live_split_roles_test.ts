@@ -8,7 +8,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, stringify } from "smol-toml";
 import { ulid } from "ulid";
@@ -104,6 +104,7 @@ async function startSplitRole(
     await writeFile(
       join(root, "secrets.toml"),
       stringify({
+        instance_id: secrets.instance_id,
         live_providers: { [role]: seed },
         nats: { users: { trellis: users.trellis } },
       }),
@@ -113,12 +114,15 @@ async function startSplitRole(
     // resolve them against the original bundle.
     const bundlePath = (value: unknown): string => {
       assert.equal(typeof value, "string");
-      return join(configDir, String(value));
+      return resolve(configDir, String(value));
     };
     nats.ca_certificate = bundlePath(nats.ca_certificate);
     // The split role joins the running installation's broker; it does not run
     // one of its own.
     delete nats.managed;
+    // Only the platform creates Trellis's NATS accounts.
+    delete nats.system_credentials;
+    delete nats.operator_signing_key;
     assert("transport" in http);
     assert(http.transport && typeof http.transport === "object");
     const files = http.transport as Record<string, unknown>;

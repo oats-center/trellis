@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Smoke the managed-NATS Trellis runtime image against an already-loaded local
-# image: non-root operation, read-only root filesystem and configuration, a
-# writable state volume, readiness, clean shutdown, and actual state placement.
+# Smoke the Trellis runtime image against an already-loaded local image, the
+# way it runs in production: NATS in its own container from the image's
+# pinned nats-server, made by `trellis-server nats new`, and Trellis in
+# another on a network only they share. Checks non-root operation, read-only
+# root filesystem and configuration, a writable state volume, account
+# creation on first start, readiness, clean shutdown, and state placement.
 #
-# Run/job-specific container and volume names let several runner services share
-# one Docker daemon without colliding; only this invocation's resources are
-# removed.
+# Run/job-specific container, network and volume names let several runner
+# services share one Docker daemon without colliding; only this invocation's
+# resources are removed.
 #
 # Usage: smoke-trellis-image.sh --image <ref> [--pin <nats-binaries.json>]
 set -euo pipefail
@@ -24,6 +27,8 @@ done
 
 suffix="${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-smoke}-$$"
 container="trellis-smoke-${suffix}"
+nats_container="trellis-smoke-nats-${suffix}"
+network="trellis-smoke-${suffix}"
 bundle_volume="trellis-bundle-${suffix}"
 state_volume="trellis-state-${suffix}"
 
@@ -31,7 +36,8 @@ work="$(mktemp -d)"
 
 cleanup() {
   rm -rf "${work}"
-  docker rm -f "${container}" >/dev/null 2>&1 || true
+  docker rm -f "${container}" "${nats_container}" >/dev/null 2>&1 || true
+  docker network rm "${network}" >/dev/null 2>&1 || true
   docker volume rm "${bundle_volume}" >/dev/null 2>&1 || true
   docker volume rm "${state_volume}" >/dev/null 2>&1 || true
   docker image rm "${image}" >/dev/null 2>&1 || true
@@ -51,45 +57,67 @@ test -n "${trellis_version}"
 server_version="$(docker run --rm --entrypoint trellis-server "${image}" --version)"
 test -n "${server_version}"
 
-# 2. Generate a bundle into the state volume, owned by the image's non-root
-#    user, then copy it into its own named volume. System path defaults keep
-#    mutable SQLite state out of the read-only bundle.
+# 2. Certificates for localhost, a one-server NATS cluster and its system
+#    user and Trellis signing key, all in the state volume and owned by the
+#    image's non-root user. Production serves certificates clients already
+#    trust; the smoke issues its own and trusts that issuer.
+docker network create "${network}" >/dev/null
 docker volume create "${bundle_volume}" >/dev/null
 docker volume create "${state_volume}" >/dev/null
-docker run --rm --user root --entrypoint chown -v "${state_volume}":/var/lib/trellis \
-  "${image}" -R 10001:10001 /var/lib/trellis
-# Production serves certificates clients already trust; the smoke issues
-# its own for localhost and trusts that issuer.
-docker run --rm --user 10001:10001 --entrypoint trellis-server \
-  -v "${state_volume}":/var/lib/trellis "${image}" \
+for volume in "${state_volume}:/var/lib/trellis" "${bundle_volume}:/etc/trellis"; do
+  docker run --rm --user root --entrypoint chown -v "${volume}" \
+    "${image}" -R 10001:10001 "${volume#*:}"
+done
+in_state() {
+  docker run --rm --user 10001:10001 -v "${state_volume}":/var/lib/trellis "$@"
+}
+in_state --entrypoint trellis-server "${image}" \
   tls issue --out /var/lib/trellis/certificates --host localhost --host 127.0.0.1
-docker run --rm --user 10001:10001 --entrypoint trellis-server \
-  -v "${state_volume}":/var/lib/trellis "${image}" \
-  init /var/lib/trellis/bundle --tls supplied \
-  --tls-ca-certificate /var/lib/trellis/certificates/ca.crt \
-  --tls-certificate-chain /var/lib/trellis/certificates/server.crt \
-  --tls-private-key /var/lib/trellis/certificates/server.key \
-  --nats-tls-certificate-chain /var/lib/trellis/certificates/server.crt \
-  --nats-tls-private-key /var/lib/trellis/certificates/server.key
-docker run --rm --user root --entrypoint cp \
-  -v "${state_volume}":/from:ro -v "${bundle_volume}":/to "${image}" \
-  -a /from/bundle/. /to/
-# The bundle's secrets.toml is 0o600 and generated as 10001, but the copy
-# helper runs as root and the bundle volume root is root-owned: the run
-# container uid must own the bundle contents to read them.
-docker run --rm --user root --entrypoint chown \
-  -v "${bundle_volume}":/to "${image}" \
-  -R 10001:10001 /to
-# Probes trust exactly that issuer instead of disabling verification.
-docker run --rm --entrypoint cat -v "${bundle_volume}":/etc/trellis:ro "${image}" \
-  /etc/trellis/tls/ca.crt > "${work}/ca.crt"
+in_state --entrypoint trellis-server "${image}" \
+  nats new --servers 1 --listen 0.0.0.0 --out /var/lib/trellis/nats
+docker run --detach --name "${nats_container}" --network "${network}" \
+  --network-alias nats --read-only --user 10001:10001 \
+  --volume "${state_volume}":/var/lib/trellis:rw,Z \
+  --entrypoint nats-server "${image}" -c /var/lib/trellis/nats/nats-1.conf >/dev/null
 
-# 3. Managed-mode run: non-root user, read-only rootfs, read-only bundle volume,
-#    writable state volume. All mutable NATS files go to /var/lib/trellis/nats
-#    via the system profile and the runtime's SQLite stores to
-#    /var/lib/trellis/data. Private runtime and log directories are created
-#    inside portable sticky tmpfs parents by the non-root service user.
-docker run --detach --name "${container}" --read-only --tmpfs /tmp \
+# 3. The configuration a person writes, from `trellis-server config example`.
+#    NATS is plaintext on the network only these two containers share.
+docker run --rm -i --user 10001:10001 -v "${bundle_volume}":/etc/trellis \
+  --entrypoint sh "${image}" -c 'cat > /etc/trellis/config.toml' <<'TOML'
+[http]
+public_origin = "https://localhost:3000"
+port = 3000
+bind_address = "0.0.0.0"
+
+[http.transport]
+mode = "tls"
+certificate_chain = "/var/lib/trellis/certificates/server.crt"
+private_key = "/var/lib/trellis/certificates/server.key"
+
+[nats]
+servers = "nats://nats:4222"
+private_network = true
+system_credentials = "/var/lib/trellis/nats/system.creds"
+operator_signing_key = "/var/lib/trellis/nats/trellis-operator.nk"
+
+[client]
+nats_servers = []
+TOML
+# The first administrator, which also creates the installation's keys in
+# secrets.toml. Later runs mount the configuration read-only.
+docker run --rm --user 10001:10001 \
+  -v "${bundle_volume}":/etc/trellis:Z -v "${state_volume}":/var/lib/trellis:Z \
+  "${image}" admin --system --username admin --password smoke-admin-password >/dev/null
+test "$(docker run --rm --entrypoint stat -v "${bundle_volume}":/etc/trellis:ro "${image}" \
+  -c %a /etc/trellis/secrets.toml)" = 600
+# Probes trust exactly that issuer instead of disabling verification.
+docker run --rm --entrypoint cat -v "${state_volume}":/var/lib/trellis:ro "${image}" \
+  /var/lib/trellis/certificates/ca.crt > "${work}/ca.crt"
+
+# Non-root user, read-only rootfs, read-only configuration, writable state
+# volume. Private runtime and log directories are created inside portable
+# sticky tmpfs parents by the non-root service user.
+docker run --detach --name "${container}" --network "${network}" --read-only --tmpfs /tmp \
   --tmpfs /run:mode=1777 \
   --tmpfs /var/log:mode=1777 \
   --user 10001:10001 \
@@ -108,7 +136,7 @@ docker run --detach --name "${container}" --read-only --tmpfs /tmp \
          exit 1
        fi
      done
-     exec trellis-server --system --local-nats=/usr/local/bin/nats-server'
+     exec trellis-server --system' >/dev/null
 
 # 4. Wait for runtime readiness on the published port.
 runtime_port="$(docker port "${container}" 3000/tcp | cut -d: -f2)"
@@ -178,18 +206,15 @@ if ! jq -Rse '
   exit 1
 fi
 
-# 7. Mutable NATS state landed in the state volume; the pid file was removed on
-#    shutdown; the bundle volume stayed untouched; the runtime's SQLite
+# 7. NATS holds the system account and the two Trellis created on its first
+#    start; the configuration volume stayed untouched; the runtime's SQLite
 #    databases landed in the system data root.
 docker run --rm --entrypoint sh \
   -v "${bundle_volume}":/etc/trellis:ro,Z \
   -v "${state_volume}":/var/lib/trellis:rw,Z "${image}" -c '
     set -eu
-    test -f /var/lib/trellis/nats/nats.conf
-    test -d /var/lib/trellis/nats/data/jwt
-    test -d /var/lib/trellis/nats/data/jetstream
-    test ! -e /var/lib/trellis/nats/nats-server.pid
+    test "$(ls /var/lib/trellis/nats/data/nats-1/jwt/*.jwt | wc -l)" -ge 3
     test -f /var/lib/trellis/platform.sqlite
     test ! -e /etc/trellis/var
   '
-echo "managed NATS image smoke passed"
+echo "Trellis image smoke passed"

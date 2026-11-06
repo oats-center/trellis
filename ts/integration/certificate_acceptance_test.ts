@@ -451,11 +451,11 @@ test("an installation can't make another's address trust its certificate", async
         async (other) => {
           // Another installation's certificate, answering at an address that
           // names the first installation as its sign-in.
-          const tls = join(other.workdir, "config", "trellis", "tls");
+          const tls = join(other.workdir, "config", "trellis", "var", "tls");
           const claiming = createServer(
             {
-              cert: await readFile(join(tls, "nats.crt")),
-              key: await readFile(join(tls, "nats.key")),
+              cert: await readFile(join(tls, "trellis.crt")),
+              key: await readFile(join(tls, "trellis.key")),
             },
             (request, response) => {
               if (request.url === "/.well-known/oauth-protected-resource") {
@@ -472,12 +472,12 @@ test("an installation can't make another's address trust its certificate", async
               }
             },
           );
-          await new Promise<void>((resolve) =>
-            claiming.listen(0, "127.0.0.1", resolve),
-          );
+          // On every loopback address, as `localhost`, the one name the other
+          // installation's certificate holds, may resolve to either.
+          await new Promise<void>((resolve) => claiming.listen(0, resolve));
           const address = claiming.address();
           assert(address && typeof address === "object");
-          const claimingUrl = `https://127.0.0.1:${address.port}`;
+          const claimingUrl = `https://localhost:${address.port}`;
           try {
             const fingerprintOf = async (runtime: { caCertificate: string }) =>
               new X509Certificate(await readFile(runtime.caCertificate))

@@ -175,6 +175,25 @@ pub(crate) struct NatsNewArgs {
     /// The operator's name.
     #[arg(long, default_value = "Trellis")]
     pub(crate) name: String,
+    /// Client port of the first server; each further server takes the next.
+    #[arg(long, default_value_t = 4222)]
+    pub(crate) client_port: u16,
+    /// Cluster route port of the first server.
+    #[arg(long, default_value_t = 6222)]
+    pub(crate) cluster_port: u16,
+    /// WebSocket port of the first server.
+    #[arg(long, default_value_t = 8080)]
+    pub(crate) websocket_port: u16,
+    /// Monitoring port of the first server.
+    #[arg(long, default_value_t = 8222)]
+    pub(crate) monitor_port: u16,
+    /// PEM certificate chain the servers serve native NATS and WebSockets
+    /// with. Without it both are plaintext.
+    #[arg(long, requires = "tls_private_key")]
+    pub(crate) tls_certificate: Option<PathBuf>,
+    /// Private key for --tls-certificate.
+    #[arg(long, requires = "tls_certificate")]
+    pub(crate) tls_private_key: Option<PathBuf>,
     /// Print the result as text or JSON.
     #[arg(long, value_enum, default_value_t)]
     pub(crate) format: OutputFormat,
@@ -205,8 +224,13 @@ pub(crate) fn nats(args: NatsArgs) -> miette::Result<()> {
 
 /// The ports server `index` (from 0) of a `nats new` cluster listens on:
 /// client, cluster routes, WebSocket and monitoring.
-fn cluster_ports(index: u16) -> (u16, u16, u16, u16) {
-    (4222 + index, 6222 + index, 8080 + index, 8222 + index)
+fn cluster_ports(args: &NatsNewArgs, index: u16) -> (u16, u16, u16, u16) {
+    (
+        args.client_port + index,
+        args.cluster_port + index,
+        args.websocket_port + index,
+        args.monitor_port + index,
+    )
 }
 
 fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
@@ -228,15 +252,30 @@ fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
         std::net::IpAddr::V6(ip) => format!("[{ip}]"),
         ip => ip.to_string(),
     };
+    let tls = match (&args.tls_certificate, &args.tls_private_key) {
+        (Some(certificate), Some(key)) => Some(format!(
+            "  cert_file: {}\n  key_file: {}",
+            quoted(&std::path::absolute(certificate).into_diagnostic()?),
+            quoted(&std::path::absolute(key).into_diagnostic()?)
+        )),
+        _ => None,
+    };
+    let (native_tls, websocket_tls) = match &tls {
+        Some(files) => (
+            format!("tls {{\n{files}\n}}\n\n"),
+            format!("  tls {{\n  {}\n  }}", files.replace('\n', "\n  ")),
+        ),
+        None => (String::new(), "  no_tls: true".to_owned()),
+    };
     let mut configs = Vec::new();
     for index in 0..args.servers {
-        let (client, cluster, websocket, monitor) = cluster_ports(index);
+        let (client, cluster, websocket, monitor) = cluster_ports(args, index);
         let name = format!("nats-{}", index + 1);
         let data = out.join("data").join(&name);
         let cluster_block = if args.servers > 1 {
             let routes = (0..args.servers)
                 .filter(|other| *other != index)
-                .map(|other| format!("nats-route://{host}:{}", cluster_ports(other).1))
+                .map(|other| format!("nats-route://{host}:{}", cluster_ports(args, other).1))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!(
@@ -249,9 +288,9 @@ fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
         let config = format!(
             "# NATS server {number} of {count}, made by `trellis-server nats new`.\n\
             server_name: {name}\n\nlisten: {host}:{client}\nhttp: {host}:{monitor}\n\n\
-            jetstream {{\n  store_dir: {store}\n}}\n\n\
-            # Browsers and clients behind an HTTPS proxy connect here.\n\
-            websocket {{\n  listen: {host}:{websocket}\n  no_tls: true\n}}\n{cluster_block}\n{operator}",
+            {native_tls}jetstream {{\n  store_dir: {store}\n}}\n\n\
+            # Browsers and clients connect here, or a proxy in front of it.\n\
+            websocket {{\n  listen: {host}:{websocket}\n{websocket_tls}\n}}\n{cluster_block}\n{operator}",
             number = index + 1,
             count = args.servers,
             store = quoted(&data),
@@ -270,8 +309,9 @@ fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
         .map_err(bootstrap_report)?;
     trellis_bootstrap::write_private_file(&signing, format!("{}\n", operator.signing_seed))
         .map_err(bootstrap_report)?;
+    let scheme = if tls.is_some() { "tls" } else { "nats" };
     let servers = (0..args.servers)
-        .map(|index| format!("nats://{host}:{}", cluster_ports(index).0))
+        .map(|index| format!("{scheme}://{host}:{}", cluster_ports(args, index).0))
         .collect::<Vec<_>>()
         .join(",");
     if args.format == OutputFormat::Json {

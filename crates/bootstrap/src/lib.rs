@@ -6,6 +6,7 @@ mod error;
 mod files;
 mod nats_config;
 mod nats_material;
+mod standalone;
 mod tls;
 mod types;
 
@@ -20,6 +21,7 @@ pub use nats_material::{
     render_nats_operator, NatsOperator, NatsUserKeys, TrellisAccounts, AUTH_ACCOUNT,
     SYSTEM_ACCOUNT, TRELLIS_ACCOUNT,
 };
+pub use standalone::{generate_nats_bootstrap, NatsBootstrapOptions};
 pub use tls::{ensure_generated_tls, issue_certificates, GeneratedTls, IssuedCertificates};
 pub use types::NatsListeners;
 

@@ -162,11 +162,6 @@ impl TrellisTestRuntimeBuilder {
             .workdir_parent
             .clone()
             .unwrap_or_else(std::env::temp_dir);
-        // Installation choices the builder adds to `trellis-server init`.
-        let mut init_args = Vec::new();
-        if self.nats_websocket_only {
-            init_args.push("--nats-websocket-only".to_owned());
-        }
         let sandbox = Sandbox::create(&parent, self.retention)?;
         let workdir = sandbox.root().to_owned();
         match tokio::time::timeout(
@@ -178,7 +173,7 @@ impl TrellisTestRuntimeBuilder {
                 timeouts,
                 username,
                 &password,
-                &init_args,
+                self.nats_websocket_only,
             ),
         )
         .await
@@ -268,7 +263,7 @@ async fn start_once(
     timeouts: TestTimeouts,
     username: &str,
     password: &str,
-    init_args: &[String],
+    websocket_only: bool,
 ) -> Result<TrellisTestRuntime, TrellisTestError> {
     let mut infrastructure = Infrastructure {
         sandbox: Some(sandbox),
@@ -310,63 +305,53 @@ async fn start_once(
             TrellisTestStage::ConfigGeneration,
         )
         .await?;
-        let mut command = Command::new(&distribution.server);
-        command
-            .arg("init")
-            .arg(&config_dir)
-            .arg("--external-nats")
-            .args(["--tls", "supplied", "--tls-ca-certificate"])
-            .arg(certificates.join("ca.crt"));
-        for flag in ["--tls-certificate-chain", "--nats-tls-certificate-chain"] {
-            command.arg(flag).arg(certificates.join("server.crt"));
-        }
-        for flag in ["--tls-private-key", "--nats-tls-private-key"] {
-            command.arg(flag).arg(certificates.join("server.key"));
-        }
-        command
-            .args([
-                "--nats-port",
-                &ports.nats.to_string(),
-                "--nats-monitor-port",
-                &ports.monitor.to_string(),
-                "--nats-ws-port",
-                &ports.websocket.to_string(),
-                "--nats-server-url",
-                &nats_url,
-                "--nats-websocket-url",
-                &websocket_url,
-                "--trellis-origin",
-                &trellis_url,
-                "--trellis-port",
-                &ports.trellis.to_string(),
-                "--bind-address",
-                "127.0.0.1",
-                "--nats-data-dir",
-            ])
-            .arg(workdir.join("state/nats/data"));
-        command.args(init_args);
+        // One NATS server with the test CA's certificate, whose operator hands
+        // Trellis the two files it creates its NATS accounts with.
         crate::process::run(
-            &mut command,
+            Command::new(&distribution.server)
+                .args(["nats", "new", "--servers", "1", "--out"])
+                .arg(config_dir.join("nats"))
+                .args(["--client-port", &ports.nats.to_string()])
+                .args(["--websocket-port", &ports.websocket.to_string()])
+                .args(["--monitor-port", &ports.monitor.to_string()])
+                .arg("--tls-certificate")
+                .arg(certificates.join("server.crt"))
+                .arg("--tls-private-key")
+                .arg(certificates.join("server.key")),
             &workdir.join("logs/bootstrap.log"),
             None,
             TrellisTestStage::ConfigGeneration,
         )
         .await?;
-        crate::process::run(
-            Command::new(&distribution.server)
-                .args(["init", "admin", "--config"])
-                .arg(&config_path)
-                .args(["--username", username, "--password-stdin"]),
-            &workdir.join("logs/bootstrap.log"),
-            Some(password),
-            TrellisTestStage::AdministratorBootstrap,
-        )
-        .await?;
+        let quoted = |value: &std::path::Path| {
+            serde_json::to_string(&value.display().to_string()).unwrap_or_default()
+        };
+        let native = if websocket_only {
+            "[]".to_owned()
+        } else {
+            format!("[\"{nats_url}\"]")
+        };
+        std::fs::write(
+            &config_path,
+            format!(
+                "[http]\npublic_origin = \"{trellis_url}\"\nport = {port}\n\
+                bind_address = \"127.0.0.1\"\n\n[http.transport]\nmode = \"tls\"\n\
+                certificate_chain = {chain}\nprivate_key = {key}\n\n\
+                [nats]\nservers = \"{nats_url}\"\nca_certificate = {ca}\n\
+                system_credentials = \"nats/system.creds\"\n\
+                operator_signing_key = \"nats/trellis-operator.nk\"\n\n\
+                [client]\nnats_servers = {native}\nws_nats_servers = [\"{websocket_url}\"]\n",
+                port = ports.trellis,
+                chain = quoted(&certificates.join("server.crt")),
+                key = quoted(&certificates.join("server.key")),
+                ca = quoted(&certificates.join("ca.crt")),
+            ),
+        )?;
         infrastructure.port_ownership = Some(lease.release_for_spawn());
         infrastructure.nats = Some(Process::spawn(
             Command::new(&distribution.nats)
                 .arg("-c")
-                .arg(config_dir.join("nats.conf"))
+                .arg(config_dir.join("nats/nats-1.conf"))
                 .stdin(Stdio::null()),
             &workdir.join("logs/nats-server.log"),
         )?);
@@ -407,6 +392,18 @@ async fn start_once(
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        // Seeding the administrator also creates the installation's keys and
+        // its NATS accounts, so the broker is up by now.
+        crate::process::run(
+            Command::new(&distribution.server)
+                .args(["admin", "--config"])
+                .arg(&config_path)
+                .args(["--username", username, "--password-stdin"]),
+            &workdir.join("logs/bootstrap.log"),
+            Some(password),
+            TrellisTestStage::AdministratorBootstrap,
+        )
+        .await?;
         infrastructure.server = Some(Process::spawn(
             Command::new(&distribution.server)
                 .arg("--config")
@@ -414,7 +411,7 @@ async fn start_once(
                 .stdin(Stdio::null()),
             &workdir.join("logs/trellis-server.log"),
         )?);
-        let trust_roots = vec![config_dir.join("tls/ca.crt")];
+        let trust_roots = vec![certificates.join("ca.crt")];
         wait_for_readyz(&trellis_url, &trust_roots, &mut infrastructure).await?;
         let admin = AdminSession::connect(
             &trellis_url,
@@ -723,12 +720,13 @@ impl TrellisTestRuntime {
             )
         };
         let output = tokio::process::Command::new(&self.distribution.server)
-            .args(["nats", "--print", "--config"])
-            .arg(&self.config)
+            .arg("nats")
             .arg(match user {
                 TestNatsUser::System => "system",
                 TestNatsUser::Trellis => "trellis",
             })
+            .args(["--print", "--config"])
+            .arg(&self.config)
             .stdin(Stdio::null())
             .output()
             .await

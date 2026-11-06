@@ -33,7 +33,7 @@ const metadataSchema = z.object({
     requiredAuthorizationDetailsTypes: z
       .array(z.literal("trellis_capabilities"))
       .min(1),
-    natsSentinel: z.string().min(1).nullish(),
+    natsSentinel: z.string().min(1),
   }),
 });
 
@@ -72,7 +72,7 @@ export type NativeOAuthServer = Readonly<{
   natsServers: readonly string[];
   trust: RuntimeAuthorizationTrust;
   /** Sentinel user JWT every connection presents so NATS hands it to Trellis's auth callout. */
-  natsSentinel?: string;
+  natsSentinel: string;
   /** The token endpoint's current DPoP nonce, when the issuer offers it, so the first token request needs no challenge. */
   dpopNonce?: string;
 }>;
@@ -180,9 +180,7 @@ export async function discoverNativeOAuth(
         issuer: active[0],
         rotationSequence: metadata.trellis.rotationSequence,
       },
-      ...(metadata.trellis.natsSentinel
-        ? { natsSentinel: metadata.trellis.natsSentinel }
-        : {}),
+      natsSentinel: metadata.trellis.natsSentinel,
       ...(dpopNonce ? { dpopNonce } : {}),
     });
   } catch (cause) {

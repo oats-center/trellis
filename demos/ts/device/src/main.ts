@@ -73,6 +73,7 @@ async function main(): Promise<void> {
     trellisInstanceId: server.trust.instanceId,
     audienceNatsAccount: server.trust.account,
     issuers: [server.trust.issuer],
+    natsSentinel: server.natsSentinel,
   }).orThrow();
 
   try {

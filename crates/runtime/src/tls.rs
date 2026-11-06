@@ -55,8 +55,8 @@ impl GeneratedTlsNotice {
             leaf_not_after = leaf_expires.as_deref().unwrap_or("not served by this listener"),
             "Trellis is serving certificates it generated itself, which suit \
             development only. Browsers and clients ask before accepting them; \
-            accept only if the issuing CA has this fingerprint, and renew leaf \
-            certificates before they expire with `trellis-server tls renew`."
+            accept only if the issuing CA has this fingerprint. Trellis renews \
+            the certificate itself before it expires."
         );
     }
 }

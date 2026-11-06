@@ -175,8 +175,7 @@ fn check_leaf(certificate_chain: &std::path::Path, origin: &url::Url) -> std::io
         .map_err(|error| invalid(error.to_string()))?;
     if leaf.not_after <= time::OffsetDateTime::now_utc() {
         return Err(invalid(format!(
-            "TLS certificate '{}' expired at {}; renew it (generated certificates: \
-            `trellis-server tls renew`) before starting",
+            "TLS certificate '{}' expired at {}; replace it before starting",
             certificate_chain.display(),
             leaf.not_after
         )));

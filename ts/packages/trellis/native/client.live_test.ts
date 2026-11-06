@@ -158,6 +158,7 @@ test(
               ...(await declinedLogin.session.auth.natsConnectOptions({
                 admission: declinedLogin.session.admission,
                 inboxPrefix: own.inboxPrefix,
+                natsSentinel: declinedLogin.natsSentinel,
               })),
               reconnect: false,
             });
@@ -247,6 +248,7 @@ test(
           ...(await session.auth.natsConnectOptions({
             admission: session.admission,
             inboxPrefix: raw.inboxPrefix,
+            natsSentinel: login.natsSentinel,
           })),
           maxReconnectAttempts: 0,
           reconnect: false,

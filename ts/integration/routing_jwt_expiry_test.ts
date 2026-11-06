@@ -21,7 +21,7 @@ test("expired OAuth admission cannot open a fresh NATS attachment", async () => 
         contract: apps.EchoCaller.request,
       });
       const connected = await connectNativeSession(login).orThrow();
-      const { session, servers } = login;
+      const { session, servers, natsSentinel } = login;
       const admission = session.admission;
       const verified = await verifyOAuthAdmissionWasm(
         new TextEncoder().encode(admission),
@@ -45,6 +45,7 @@ test("expired OAuth admission cannot open a fresh NATS attachment", async () => 
         const original = await session.auth.natsConnectOptions({
           inboxPrefix: connected.inboxPrefix,
           admission,
+          natsSentinel,
         });
         const before = await connect({
           servers: [...servers],
@@ -61,6 +62,7 @@ test("expired OAuth admission cannot open a fresh NATS attachment", async () => 
         const current = await session.auth.natsConnectOptions({
           inboxPrefix: connected.inboxPrefix,
           admission: renewed.admission,
+          natsSentinel,
         });
         const fresh = await connect({
           servers: [...servers],
@@ -72,6 +74,7 @@ test("expired OAuth admission cannot open a fresh NATS attachment", async () => 
         const expired = await session.auth.natsConnectOptions({
           inboxPrefix: connected.inboxPrefix,
           admission,
+          natsSentinel,
         });
         await assert.rejects(() =>
           connect({

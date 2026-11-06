@@ -236,8 +236,8 @@ job_typescript_testkit() {
     ts/packages/result/npm ts/packages/trellis/npm
 }
 
-# Builds the runtime and Console images and smoke-tests the runtime image's
-# managed NATS. CI builds the images with its Buildx actions and runs only the
+# Builds the runtime and Console images and smoke-tests the runtime image
+# beside a NATS container. CI builds the images with its Buildx actions and runs only the
 # smoke (`images --smoke-only`); locally Docker or Podman builds them.
 job_images() {
   local engine

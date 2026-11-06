@@ -8,7 +8,14 @@ import {
 import { recordTrellisDuration } from "@oatscenter/trellis/telemetry";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import {
   type Server,
   type Socket,
@@ -22,7 +29,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ulid } from "ulid";
-import { z } from "zod";
 
 import { ADMIN_USERNAME } from "./admin/methods.ts";
 import type { AdminRpc, AdminRpcInput } from "./admin/methods.ts";
@@ -85,6 +91,9 @@ function serverCommand(plan: LaunchPlan): ResolvedTrellisProcessCommand {
   const args = [
     "--config",
     plan.configPath,
+    // A test installation's broker is one Trellis runs, which only a
+    // development installation may.
+    "--dev",
     "--nats-download",
     "--isolated-process-group",
     `--local-nats-ports=${plan.ports.slice(0, 3).join(",")}`,
@@ -115,7 +124,7 @@ async function printNatsCredentials(
 ): Promise<Uint8Array> {
   return await runBootstrapCommand(
     server,
-    ["nats", "--print", "--config", configPath, user],
+    ["nats", user, "--print", "--config", configPath],
     environment,
     timeoutMs,
   );
@@ -763,8 +772,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
         portLeases.map((lease) => lease.port);
       // A runtime serves certificates from its own test CA, as a production
       // installation serves ones browsers trust; this process trusts that CA
-      // explicitly. Development mode generates its own instead.
-      const natsUrl = `tls://127.0.0.1:${nativePort}`;
+      // explicitly. Development mode generates its own instead, and serves
+      // native NATS on loopback without TLS.
+      const natsUrl = options.development
+        ? `nats://127.0.0.1:${nativePort}`
+        : `tls://127.0.0.1:${nativePort}`;
       const websocketUrl = `wss://127.0.0.1:${websocketPort}`;
       if (options.rotatableWebsocketProxy) {
         websocketProxy = await TcpProxy.start(websocketUrl);
@@ -800,82 +812,78 @@ export class TrellisTestRuntime implements AsyncDisposable {
           timeouts.startupMs,
         );
       }
-      const initArgs = [
-        "init",
-        "--format",
-        "json",
-        join(workdir, "config", "trellis"),
-        "--nats-port",
-        String(nativePort),
-        "--nats-monitor-port",
-        String(monitorPort),
-        "--nats-ws-port",
-        String(websocketPort),
-        "--nats-server-url",
-        natsUrl,
-        ...(options.development
-          ? ["--dev"]
-          : [
-              "--tls",
-              "supplied",
-              "--tls-ca-certificate",
-              join(certificates, "ca.crt"),
-              "--tls-certificate-chain",
-              join(certificates, "server.crt"),
-              "--tls-private-key",
-              join(certificates, "server.key"),
-              "--nats-tls-certificate-chain",
-              join(certificates, "server.crt"),
-              "--nats-tls-private-key",
-              join(certificates, "server.key"),
-              ...(options.sameOriginWebsocket
-                ? ["--nats-websocket", "relay"]
-                : ["--nats-websocket-url", websocketUrl]),
-            ]),
-        ...(options.ownConsoleOrigin ? ["--console-origin", consoleUrl] : []),
-        ...(options.websocketOnly ? ["--nats-websocket-only"] : []),
-        "--trellis-origin",
-        trellisUrl,
-        "--trellis-port",
-        String(trellisPort),
-        "--bind-address",
-        "127.0.0.1",
-      ];
-      for (const [flag, value] of [
-        [
-          "auth-context-lifetime-seconds",
-          options.authorization?.contextLifetimeSeconds,
-        ],
-        [
-          "auth-oauth-admission-lifetime-seconds",
-          options.authorization?.oauthAdmissionLifetimeSeconds,
-        ],
-        // Every process of a test runtime shares one clock, so tolerating
-        // installation-wide skew only delays what expiry-driven tests observe.
-        [
-          "auth-allowed-clock-skew-seconds",
-          options.authorization?.allowedClockSkewSeconds ?? 2,
-        ],
-      ] as const)
-        if (value !== undefined) initArgs.push(`--${flag}`, String(value));
-      const output = await runBootstrapCommand(
+      // A NATS operator of one server, its config the managed broker reads,
+      // and the Trellis config pointing at it, as an operator writes them.
+      const configDir = join(workdir, "config", "trellis");
+      const configPath = join(configDir, "config.toml");
+      await runBootstrapCommand(
         native.server,
-        initArgs,
+        [
+          "nats",
+          "new",
+          "--servers",
+          "1",
+          "--out",
+          join(configDir, "nats"),
+          "--client-port",
+          String(nativePort),
+          "--websocket-port",
+          String(websocketPort),
+          "--monitor-port",
+          String(monitorPort),
+        ],
         environment,
         timeouts.startupMs,
       );
-      const bootstrap = z
-        .object({
-          trellisConfig: z.string(),
-        })
-        .parse(JSON.parse(new TextDecoder().decode(output)));
-      environment.TRELLIS_CONFIG = bootstrap.trellisConfig;
-      const caCertificate = join(
-        dirname(bootstrap.trellisConfig),
-        "tls",
-        "ca.crt",
+      await copyFile(
+        join(configDir, "nats", "nats-1.conf"),
+        join(configDir, "nats.conf"),
       );
-      trustInstallationCa(caCertificate);
+      if (!options.development) {
+        await mkdir(join(configDir, "tls"), { mode: 0o700 });
+        await copyFile(
+          join(certificates, "server.crt"),
+          join(configDir, "tls", "nats.crt"),
+        );
+        await copyFile(
+          join(certificates, "server.key"),
+          join(configDir, "tls", "nats.key"),
+        );
+      }
+      const relayed = options.development || options.sameOriginWebsocket;
+      const toml = (value: string) => JSON.stringify(value);
+      const sections = [
+        `[http]\npublic_origin = ${toml(trellisUrl)}\nport = ${trellisPort}\nbind_address = "127.0.0.1"`,
+        ...(relayed
+          ? [`nats_websocket_upstream = "127.0.0.1:${websocketPort}"`]
+          : []),
+        options.development
+          ? `\n[http.transport]\nmode = "generated"`
+          : `\n[http.transport]\nmode = "tls"\ncertificate_chain = ${toml(join(certificates, "server.crt"))}\nprivate_key = ${toml(join(certificates, "server.key"))}`,
+        ...(options.ownConsoleOrigin
+          ? [`\n[console]\norigin = ${toml(consoleUrl)}`]
+          : []),
+        `\n[nats]\nmanaged = true\nservers = ${toml(natsUrl)}`,
+        ...(options.development
+          ? []
+          : [`ca_certificate = ${toml(join(certificates, "ca.crt"))}`]),
+        `system_credentials = "nats/system.creds"\noperator_signing_key = "nats/trellis-operator.nk"`,
+        // Every process of a test runtime shares one clock, so tolerating
+        // installation-wide skew only delays what expiry-driven tests observe.
+        `\n[auth.authorization]\ncontext_lifetime_seconds = ${options.authorization?.contextLifetimeSeconds ?? 300}\nallowed_clock_skew_seconds = ${options.authorization?.allowedClockSkewSeconds ?? 2}\noauth_admission_lifetime_seconds = ${options.authorization?.oauthAdmissionLifetimeSeconds ?? 300}`,
+        `\n[client]`,
+        ...(options.websocketOnly ? ["nats_servers = []"] : []),
+        ...(relayed ? [] : [`ws_nats_servers = [${toml(websocketUrl)}]`]),
+      ];
+      await writeFile(configPath, `${sections.join("\n")}\n`, {
+        mode: 0o600,
+      });
+      // Development TLS is created with the installation's keys, which
+      // seeding the administrator does first.
+      const caCertificate = options.development
+        ? join(configDir, "var", "tls", "ca.crt")
+        : join(certificates, "ca.crt");
+      if (!options.development) trustInstallationCa(caCertificate);
       const adminPassword =
         options.adminPassword ?? `trellis-testkit-${crypto.randomUUID()}`;
       const seeded = (options.firstAdmin ?? "seeded") === "seeded";
@@ -883,12 +891,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
         await runBootstrapCommand(
           native.server,
           [
-            "init",
             "admin",
             "--format",
             "json",
             "--config",
-            bootstrap.trellisConfig,
+            configPath,
             "--username",
             ADMIN_USERNAME,
             "--password-stdin",
@@ -898,16 +905,18 @@ export class TrellisTestRuntime implements AsyncDisposable {
           `${adminPassword}\n`,
         );
       }
+      if (options.development) {
+        if (!seeded)
+          throw new Error(
+            "a development runtime needs a seeded administrator, which creates its certificate",
+          );
+        trustInstallationCa(caCertificate);
+      }
       const launch: LaunchPlan = {
         server: native.server,
-        configPath: bootstrap.trellisConfig,
-        creds: await printNatsCredentials(
-          native.server,
-          bootstrap.trellisConfig,
-          "trellis",
-          environment,
-          timeouts.startupMs,
-        ),
+        configPath,
+        // Trellis creates its NATS users on its first start.
+        creds: new Uint8Array(),
         timeoutMs: timeouts.startupMs,
         environment,
         mode: options.trellis?.mode ?? "all",
@@ -925,6 +934,13 @@ export class TrellisTestRuntime implements AsyncDisposable {
         portLeases,
       });
       controlPlane = startedControlPlane;
+      launch.creds = await printNatsCredentials(
+        native.server,
+        configPath,
+        "trellis",
+        environment,
+        timeouts.startupMs,
+      );
       nc = await connect({
         servers: natsUrl,
         authenticator: credsAuthenticator(launch.creds),
@@ -1061,7 +1077,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
     contract: TrellisTestClientParticipant;
     user?: TrellisTestUser;
     approvedCapabilities?: readonly string[];
-  }): Promise<{ session: NativeOAuthSession; servers: readonly string[] }> {
+  }): Promise<{
+    session: NativeOAuthSession;
+    servers: readonly string[];
+    natsSentinel: string;
+  }> {
     const credentials = this.#credentialsFor(args.user);
     const clientId = args.contract.id;
     let registration = this.#clientRegistrations.get(clientId);
