@@ -60,8 +60,8 @@ runs use debug builds; the pipeline tests its release build.
 
 `npm test -- --all` adds the slower packaging and container-image jobs: the Rust
 testkit crate bundle and its artifact-only consumer, the npm testkit package,
-and the runtime and Console images with the runtime image's managed-NATS smoke
-test (Docker or Podman). To run one job, use `scripts/check.sh <job>`.
+and the runtime and Console images with the runtime image's smoke test beside
+a NATS container (Docker or Podman). To run one job, use `scripts/check.sh <job>`.
 
 While iterating, run the focused checks that match the files touched. Build the server/CLI and set their paths as described in `integration/README.md`. Each live test owns its real runtime lifecycle:
 

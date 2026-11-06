@@ -266,12 +266,18 @@ fn nats_new(args: &NatsNewArgs) -> miette::Result<()> {
         std::net::IpAddr::V6(ip) => format!("[{ip}]"),
         ip => ip.to_string(),
     };
-    // Where server `index` is reached: its own host, or the shared address.
+    // Where server `index` is reached: its own host, or the shared address,
+    // which for every interface is this machine's loopback.
+    let shared = match args.listen {
+        ip if !ip.is_unspecified() => host.clone(),
+        std::net::IpAddr::V4(_) => "127.0.0.1".to_owned(),
+        std::net::IpAddr::V6(_) => "[::1]".to_owned(),
+    };
     let reach = |index: u16| {
         args.hosts
             .get(usize::from(index))
             .cloned()
-            .unwrap_or_else(|| host.clone())
+            .unwrap_or_else(|| shared.clone())
     };
     let tls = match (&args.tls_certificate, &args.tls_private_key) {
         (Some(certificate), Some(key)) => Some(format!(
