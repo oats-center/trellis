@@ -289,9 +289,9 @@ impl SqliteAuthorizationStore {
                     )
                     .map_err(|error| match error {
                         AuthError::Invalid(reason) => AuthError::Invalid(format!(
-                            "this server can't upgrade the installation's built-in \
-                            {participant}: {reason}. Start it with the server version that \
-                            created it, or create a new installation"
+                            "this release candidate can't upgrade the installation's \
+                            built-in {participant}: {reason}. Start it with the server \
+                            version that created it, or create a new installation"
                         )),
                         error => error,
                     })?;

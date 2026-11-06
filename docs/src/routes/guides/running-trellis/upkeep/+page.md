@@ -14,9 +14,13 @@ reports whether there is one.
 
 If the new version changes one of Trellis's own services, the first start
 installs the new build under the same identity, and the Console lists it as an
-applied update. A version whose changes the installation can't take stops
-before serving anything and names the service. The installation is left as it
-was, so starting the version you had before still works.
+applied update. A stable release always upgrades an installation made by an
+earlier stable release.
+
+Release candidates can break each other. When one can't take an installation
+made by an earlier candidate, it stops before serving anything and names the
+service. The installation is left as it was, so the version you had before
+still starts.
 
 ## Generated certificates
 

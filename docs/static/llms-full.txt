@@ -206,8 +206,10 @@ checksum (`TRELLIS_VERSION` and `TRELLIS_INSTALL_DIR` override). Both update
 themselves: `trellis upgrade` and `trellis-server upgrade`
 (`--prerelease` before the first stable release), then restart the server. A
 restart on a version that changed Trellis's own services installs their new
-builds under the same identities; one it can't take stops startup naming the
-service and leaves the installation unchanged. The server is also published as `ghcr.io/oats-center/trellis-server`.
+builds under the same identities. A stable release always upgrades an
+installation made by an earlier stable release; only a release candidate may
+refuse one made by an earlier candidate, stopping startup with the service's
+name and leaving the installation unchanged. The server is also published as `ghcr.io/oats-center/trellis-server`.
 
 #### Installation and first start
 

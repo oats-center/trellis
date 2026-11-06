@@ -120,11 +120,17 @@ build asks for new capabilities or resources, because the operator chose the
 build by upgrading the server.
 
 Only the binary's own definitions of `trellis.*` APIs are ever accepted, so
-this path cannot install anything else. An incompatible change to a built-in
-API stops startup with an error naming the built-in, and the installation keeps
-the revision it had. Within an API version, built-in changes must therefore
-stay compatible; a breaking change is a new API version served alongside the
-old one.
+this path cannot install anything else.
+
+A stable release never refuses to upgrade an installation made by an earlier
+stable release. Within an API version, built-in changes stay compatible; a
+breaking change is a new API version served alongside the old one. From the
+first stable release, the Pipeline proves it before publishing by upgrading an
+installation the previous stable release made.
+
+Release candidates may break each other. An incompatible change to a built-in
+API stops a candidate's startup with an error naming the built-in, and the
+installation keeps the revision it had.
 
 ## Service claims
 
