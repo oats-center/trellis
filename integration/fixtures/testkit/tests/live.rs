@@ -970,7 +970,7 @@ async fn t16_cancelling_start_does_not_orphan_infrastructure() {
                 else {
                     continue;
                 };
-                let Ok(nats) = std::fs::read_to_string(root.join("config/nats.conf")) else {
+                let Ok(nats) = std::fs::read_to_string(root.join("config/nats/nats-1.conf")) else {
                     continue;
                 };
                 // Read the generated listener addresses, not a process command line.

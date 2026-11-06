@@ -990,6 +990,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   #monitorGeneration(generation: TransportGeneration): void {
     const iterator = generation.nc.status()[Symbol.asyncIterator]();
     void (async () => {
+      let reconnecting = false;
       try {
         while (true) {
           const next = await iterator.next();
@@ -1001,6 +1002,16 @@ export class TransportGenerationManager implements TrellisTransportProvider {
             isAuthError?: () => boolean;
           } | null;
           const type = event?.type;
+          if (type === "disconnect" && reconnecting) {
+            // The broker dropped a reconnect attempt mid-handshake, as NATS
+            // does when an auth callout goes unanswered while Trellis is
+            // starting. nats.js keeps waiting on that attempt until its
+            // connect timeout, so a fresh generation recovers instead.
+            this.#closeGeneration(generation, "recovery");
+            continue;
+          }
+          if (type === "reconnecting") reconnecting = true;
+          if (type === "reconnect") reconnecting = false;
           if (
             type === "disconnect" ||
             type === "reconnecting" ||
