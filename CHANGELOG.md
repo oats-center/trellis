@@ -10,9 +10,10 @@ and this project adheres to
 
 ### Changed
 
-- Release binaries carry no symbol tables: `trellis-server` is 66 MB instead
-  of 92 MB and `trellis` 33 MB instead of 47 MB. Backtraces still name
-  functions.
+- Release binaries carry no symbol tables and are built with whole-program
+  optimization: `trellis-server` is 53 MB instead of 92 MB and `trellis`
+  25 MB instead of 47 MB. A panic still reports its file and line, but its
+  backtrace no longer names functions.
 - `trellis-server` no longer builds the CLI's code generators. Self-update
   lives in its own crate, so the server's dependency graph shrinks from 513
   crates to 440.
