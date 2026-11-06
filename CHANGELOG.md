@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.26] - 2026-11-06
+
 ### Changed
 
 - Release binaries carry no symbol tables and are built with whole-program

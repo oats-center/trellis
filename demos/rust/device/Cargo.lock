@@ -2568,7 +2568,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.100.0-rc.24"
+version = "0.100.0-rc.26"
 dependencies = [
  "serde",
  "serde_json",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol"
-version = "0.100.0-rc.13"
+version = "0.100.0-rc.26"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek",
@@ -2596,7 +2596,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0-rc.25"
+version = "0.100.0-rc.26"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
@@ -3100,4 +3100,4 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[patch.unused]]
 name = "trellis-testkit"
-version = "0.100.0-rc.25"
+version = "0.100.0-rc.26"
