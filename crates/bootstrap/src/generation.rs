@@ -11,7 +11,7 @@ use crate::tls::{
     generate_installation_tls, CertificateHost, GeneratedTlsSummary, BUNDLE_CA_CERTIFICATE,
     NATS_CERTIFICATE, NATS_PRIVATE_KEY, RUNTIME_CERTIFICATE, RUNTIME_PRIVATE_KEY,
 };
-use crate::types::{BootstrapTls, NatsBootstrapOptions, TrellisBootstrapOptions};
+use crate::types::{BootstrapTls, NatsBootstrapOptions, NatsListeners, TrellisBootstrapOptions};
 use crate::validate::{
     validate_nats_listener_ports, validate_output_dir, validate_required_nats_names,
     validate_required_trellis_options, validate_trellis_listener_collision,
@@ -30,6 +30,7 @@ pub fn generate_nats_bootstrap(options: &NatsBootstrapOptions) -> Result<(), Boo
         DEFAULT_TRELLIS_NAME,
         None,
         NatsWebsocket::Loopback,
+        false,
         &material,
     )?;
     write_nats_material(&options.out, &material)?;
@@ -41,17 +42,21 @@ fn write_nats_conf(
     trellis_name: &str,
     tls: Option<&NatsTlsFiles>,
     websocket: NatsWebsocket,
+    private_network: bool,
     material: &NatsMaterial,
 ) -> Result<(), BootstrapError> {
     fs::write(
         options.out.join("nats.conf"),
         render_nats_config(
             &resolved_server_name(&options.config.names, trellis_name),
-            options.config.nats_port,
-            options.config.monitor_port,
-            options.config.websocket_port,
+            NatsListeners {
+                native: options.config.nats_port,
+                monitor: options.config.monitor_port,
+                websocket: options.config.websocket_port,
+            },
             tls,
             websocket,
+            private_network,
             &render_nats_accounts(material),
         ),
     )?;
@@ -163,6 +168,7 @@ pub fn generate_trellis_bootstrap(
         &options.runtime.name,
         nats_tls.as_ref(),
         websocket,
+        options.runtime.nats_private_network,
         &material,
     )?;
     let summary = match &options.runtime.tls {
@@ -397,11 +403,12 @@ fn validate_nats_urls(options: &TrellisBootstrapOptions) -> Result<(), Bootstrap
             }
         }
         "tls" if !loopback && !proxy => {}
-        "nats" if loopback || (proxy && on_loopback) => {}
+        "nats" if loopback || (proxy && (on_loopback || runtime.nats_private_network)) => {}
         "nats" if proxy => {
             return invalid(format!(
                 "NATS endpoint '{}' is plaintext, which may only reach NATS on this machine's \
-                loopback; use wss:// to reach it through the proxy",
+                loopback or the installation's own container network; use wss:// to reach it \
+                through the proxy",
                 runtime.nats_server_url
             ))
         }

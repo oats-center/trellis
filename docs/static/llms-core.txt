@@ -216,10 +216,12 @@ port. It is never a production setup. `init --user` (the default) and
 folders. `init <dir>` writes a self-contained installation that keeps
 everything the server writes in `<dir>/var`; start it with
 `trellis-server --config <dir>`; `init <dir> --quadlet` also writes Podman
-Quadlet units that run it as NATS and Trellis containers in one pod. They
-share the pod's loopback, and its pasta networking shows Trellis each
-connection's real address, so `--trusted-proxy` names the proxy itself
-(`127.0.0.1/32` for one on the same host). Several bundles can share a host. An installation is
+Quadlet units that run it as rootless NATS and Trellis containers on a
+network of their own; Trellis reaches NATS there by the container's name,
+plaintext with `--tls proxy`. Rootless Podman hides the address of whoever
+connects, so behind a proxy Trellis accepts that network and the firewall
+must admit only the proxy to the published ports. Several bundles can share a
+host. An installation is
 `config.toml`, `secrets.toml` (every private key, owner-only), `nats.conf` and
 `tls/`. `trellis-server nats <system|trellis> <args>` runs the `nats` CLI as
 that installation user; `--print` prints its creds instead.

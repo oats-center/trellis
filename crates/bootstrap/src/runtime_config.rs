@@ -90,6 +90,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             managed: options.runtime.managed_nats,
             servers: Some(options.runtime.nats_server_url.clone()),
             ca_certificate,
+            private_network: options.runtime.nats_private_network,
         }),
         client: Some(ClientConfig {
             ws_nats_servers: (!options.runtime.nats_websocket_via_runtime)

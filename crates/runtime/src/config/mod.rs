@@ -230,6 +230,7 @@ impl RuntimeConfig {
             }
             _ => trellis.origin().ascii_serialization(),
         };
+        let private_network = self.nats.as_ref().is_some_and(|nats| nats.private_network);
         if let Some(servers) = self.nats.as_ref().and_then(|nats| nats.servers.as_deref()) {
             for server in servers.split(',') {
                 let endpoint = Url::parse(server.trim()).map_err(|_| {
@@ -251,13 +252,15 @@ impl RuntimeConfig {
                     || endpoint.query().is_some()
                     || endpoint.fragment().is_some()
                     // Plaintext never leaves this machine: only another process here
-                    // could read loopback traffic, and it could read secrets.toml too.
+                    // could read loopback or a private container network's
+                    // traffic, and it could read secrets.toml too.
                     || !(matches!(endpoint.scheme(), "tls" | "wss")
-                        || (loopback && matches!(endpoint.scheme(), "nats" | "ws")))
+                        || ((loopback || private_network)
+                            && matches!(endpoint.scheme(), "nats" | "ws")))
                 {
                     return Err(invalid_authorization(
                         "nats.servers",
-                        "requires TLS; plaintext is restricted to loopback",
+                        "requires TLS; plaintext is restricted to loopback or a private network",
                     ));
                 }
             }
@@ -900,6 +903,10 @@ pub struct NatsConfig {
     /// Trellis-generated installation CA. Publicly trusted brokers omit it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<PathBuf>,
+    /// `servers` is reached over a network only this installation uses, such
+    /// as a Quadlet's container network, so it may be plaintext `nats://`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private_network: bool,
 }
 
 /// Resolved runtime NATS credential configuration.

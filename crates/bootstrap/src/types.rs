@@ -134,6 +134,9 @@ pub struct TrellisRuntimeBootstrapConfig {
     /// `trellis-server` runs the generated NATS server itself. Off, it
     /// connects to a NATS server the operator runs from the generated files.
     pub managed_nats: bool,
+    /// Trellis reaches NATS over a network only this installation uses, such
+    /// as a Quadlet's container network, so plaintext NATS listens there.
+    pub nats_private_network: bool,
 }
 
 impl Default for TrellisRuntimeBootstrapConfig {
@@ -154,6 +157,7 @@ impl Default for TrellisRuntimeBootstrapConfig {
             bind_address: None,
             authorization: BootstrapAuthorizationPolicy::default(),
             managed_nats: true,
+            nats_private_network: false,
         }
     }
 }

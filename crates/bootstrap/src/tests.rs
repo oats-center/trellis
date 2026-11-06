@@ -223,14 +223,17 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
 fn nats_config_render_round_trips_custom_ports() {
     let config = render_nats_config(
         "trellis",
-        4322,
-        8322,
-        8180,
+        NatsListeners {
+            native: 4322,
+            monitor: 8322,
+            websocket: 8180,
+        },
         Some(&NatsTlsFiles {
             certificate: "/etc/nats/tls/nats.crt".into(),
             private_key: "/etc/nats/tls/nats.key".into(),
         }),
         NatsWebsocket::Tls,
+        false,
         "",
     );
 

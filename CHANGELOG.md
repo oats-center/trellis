@@ -37,17 +37,17 @@ and this project adheres to
 
 ### Changed
 
-- **Breaking:** `init --quadlet` runs NATS and Trellis in one Podman pod
-  (`<name>.pod`) instead of on a container network (`<name>.network`). On that
-  network, Podman's rootless port forwarding made every connection arrive from
-  the network's own address, so `--trusted-proxy` could only name the network
-  and per-client rate limits saw a single client. The pod's pasta networking
-  keeps real addresses: `--trusted-proxy` now names the proxy itself,
-  `127.0.0.1/32` for one on the same host. Trellis reaches NATS on the pod's
-  loopback, so `--host` is no longer required. Generate the units again for an
-  existing Quadlet installation.
+- `init --quadlet` picks a private range for the containers' network itself.
+  It used the `--trusted-proxy` range, so `--trusted-proxy 172.31.0.0/16` on
+  an AWS instance gave the network the VPC's own range. Behind a proxy
+  (`--tls proxy` or `--trusted-proxy`), Trellis now accepts connections from
+  that network: rootless Podman delivers every published connection from the
+  network's own address, so the firewall decides who reaches the ports.
+  Trellis reaches NATS by the container's name, so `--host` is no longer
+  required.
 - Plaintext `nats://` in `[nats] servers` is accepted for loopback addresses in
-  every mode, not only loopback development.
+  every mode, not only loopback development, and for any address with
+  `[nats] private_network = true`, which `init --quadlet --tls proxy` writes.
 - A capability's action may be dotted: `capability activation.confirmations.read`
   compiles, where the IDL used to require exactly `area.action`. The first part
   is still the area Console groups by, and Console labels the whole action.

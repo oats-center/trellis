@@ -56,18 +56,23 @@ fn render_tls_blocks(tls: Option<&NatsTlsFiles>, websocket: NatsWebsocket) -> (S
 /// With `tls`, native clients always use TLS and listeners bind every
 /// interface so the container can publish them; without it, native NATS and
 /// monitoring are loopback-only plaintext, and only a WebSocket behind a proxy
-/// listens on every interface.
+/// listens on every interface. On a `private_network`, plaintext listeners bind
+/// every interface of the container, which only that network reaches.
 #[must_use]
 pub fn render_nats_config(
     server_name: &str,
-    nats_port: u16,
-    monitor_port: u16,
-    websocket_port: u16,
+    ports: NatsListeners,
     tls: Option<&NatsTlsFiles>,
     websocket: NatsWebsocket,
+    private_network: bool,
     accounts: &str,
 ) -> String {
-    let bind = if tls.is_some() {
+    let NatsListeners {
+        native: nats_port,
+        monitor: monitor_port,
+        websocket: websocket_port,
+    } = ports;
+    let bind = if tls.is_some() || private_network {
         "0.0.0.0"
     } else {
         "127.0.0.1"
