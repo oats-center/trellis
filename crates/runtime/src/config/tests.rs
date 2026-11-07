@@ -240,6 +240,45 @@ kind = "sqlite"
     );
 }
 
+/// A URL here would make every relayed WebSocket upgrade fail with a 502, so
+/// startup refuses it instead of running without browser sign-in.
+#[test]
+fn nats_websocket_upstream_must_be_host_and_port() {
+    for upstream in [
+        "https://trellis.example.com",
+        "trellis-nats",
+        "ws://trellis-nats:8080",
+    ] {
+        let source = COMPLETE_CONFIG.replace(
+            "port = 39123\n",
+            &format!("port = 39123\nnats_websocket_upstream = \"{upstream}\"\n"),
+        );
+        let config = from_toml(&source).expect("parse config");
+        assert!(
+            matches!(
+                config.validate_for_mode(RuntimeMode::All),
+                Err(ConfigError::InvalidNatsConfig {
+                    field: "nats_websocket_upstream",
+                    ..
+                })
+            ),
+            "{upstream}"
+        );
+    }
+    let source = COMPLETE_CONFIG.replace(
+        "port = 39123\n",
+        "port = 39123\nnats_websocket_upstream = \"trellis-nats:8080\"\n",
+    );
+    let config = from_toml(&source).expect("parse config");
+    assert!(!matches!(
+        config.validate_for_mode(RuntimeMode::All),
+        Err(ConfigError::InvalidNatsConfig {
+            field: "nats_websocket_upstream",
+            ..
+        })
+    ));
+}
+
 #[test]
 fn rejects_shared_sqlite_paths_across_subsystems() {
     let source = COMPLETE_CONFIG.replace("./data/health.sqlite", "./data/platform.sqlite");

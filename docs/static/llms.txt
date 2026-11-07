@@ -32,7 +32,8 @@ tools.
 - IDL authoring: `/guides/authoring-contracts`.
 - Testing: `/guides/testing-trellis-services`.
 - Installing and running Trellis: `/guides/install-trellis`,
-  `/guides/starting-trellis`.
+  `/guides/running-trellis/development`,
+  `/guides/running-trellis/binaries`, `/guides/running-trellis/podman`.
 - Public API reference: `/api`. Generated participant source defines the exact
   names available for a project's declared actions.
 

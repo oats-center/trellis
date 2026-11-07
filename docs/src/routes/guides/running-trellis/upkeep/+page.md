@@ -1,6 +1,6 @@
 ---
 title: "Keep Trellis running"
-description: "Upgrade the server, keep certificates current, reset the administrator password, run a second Trellis on one machine, and start over."
+description: "Upgrade the server, keep certificates current, back up, reset the administrator password, use the nats CLI, run a second Trellis on one machine, and start over."
 ---
 
 ## Upgrade
@@ -32,6 +32,43 @@ listener picks up the new certificate within seconds.
 
 Certificates you supply (`mode = "tls"`) are yours to renew. Replace the files
 in place; Trellis reloads them by itself.
+
+## Back it up as one piece
+
+Trellis ties its database to the NATS data it was created with. Point a
+database at a different or empty NATS store and Trellis refuses to start,
+because jobs and stored files would silently go missing. Back up and restore
+these together:
+
+- the installation folder: `config.toml` and `secrets.toml`, with the NATS
+  `system.creds` and `trellis-operator.nk` beside them
+- the data folder, including `platform.sqlite` and the `platform.issuer-keys/`
+  folder beside it, which holds the sign-in signing keys
+- each NATS server's data folder: JetStream and the resolver's accounts
+
+If a signing key in `platform.issuer-keys/` goes missing, restore it from a
+backup; Trellis won't make a new one in its place. Recreating NATS streams or
+buckets by hand doesn't bring back lost jobs or files either.
+
+## Use the `nats` CLI
+
+`trellis-server nats <user>` runs the [`nats` CLI](https://github.com/nats-io/natscli)
+as one of the installation's NATS users, with its address and CA already set:
+
+```sh
+trellis-server nats system server report jetstream
+trellis-server nats trellis stream ls
+trellis-server nats trellis --config ~/trellis-two kv ls
+```
+
+`system` sees servers, accounts and connections. `trellis` is the account
+services run in, with its streams and buckets. The credentials exist on disk
+only while `nats` runs. `--print` writes them to standard output instead, for
+a saved `nats context`.
+
+Trellis creates its streams with one copy each, NATS's default, so on a
+cluster each stream lives on one server. `[leases] replicas` sets the copies of
+the lease bucket.
 
 ## Reset the administrator password
 

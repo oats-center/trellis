@@ -135,6 +135,8 @@ async fn asset(uri: Uri) -> Response {
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
         Some("woff") => "font/woff",
+        // Browsers stream-compile wasm only when it's labelled as wasm.
+        Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     };
     (
@@ -204,6 +206,13 @@ mod tests {
             callback(&script.text().await.unwrap()),
             format!("{trellis}/console/login")
         );
+        // Browsers refuse to stream-compile wasm under any other type.
+        let (wasm, _) = ASSETS
+            .iter()
+            .find(|(name, _)| name.ends_with(".wasm"))
+            .expect("the Console bundles the protocol wasm");
+        let wasm = get(&format!("/{wasm}")).await.unwrap();
+        assert_eq!(wasm.headers()[header::CONTENT_TYPE], "application/wasm");
         assert_eq!(
             get("/assets/web/missing.js").await.unwrap().status(),
             StatusCode::NOT_FOUND

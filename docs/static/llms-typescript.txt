@@ -417,7 +417,11 @@ the Portal login. `logout({ endPortalLogin: true, returnTo })` also ends the
 Portal login on that browser: the browser goes through the Portal's sign-out and
 returns to `returnTo` (default: the current page), which must be on an origin the
 app registered a redirect URI on. Use it for "sign out" on shared computers and
-for "switch account", since the next sign-in asks for credentials. Never fabricate OAuth or authority metadata in application
+for "switch account", since the next sign-in asks for credentials. When
+connecting fails after sign-in, there's no connected client to call `logout` on:
+`TrellisClient.signOut({ trellisUrl, auth, returnTo })` revokes the app's stored
+session and ends the Portal login the same way, so a "try again" button asks who
+is signing in instead of repeating the failed sign-in. Never fabricate OAuth or authority metadata in application
 callbacks. Coverage loss suspends application use without invalidating retained
 identity; a cancelled renewal settles before its replacement starts, and logical
 close cancels maintenance and renewal.

@@ -25,7 +25,7 @@ A machine that only manages a Trellis running elsewhere needs just `trellis`.
 To upgrade later, run `trellis-server upgrade --prerelease` (then restart the
 server) and `trellis upgrade --prerelease`.
 
-Then [start Trellis](/guides/starting-trellis).
+Then [run a development Trellis](/guides/running-trellis/development).
 
 ## By hand
 
@@ -67,8 +67,7 @@ with its version (`v0.100.0-rc.13`) and `latest`, for linux/amd64 and
 linux/arm64. The image's entry point is
 `trellis-server`. It also contains the `trellis` CLI and a checksum-verified
 `nats-server` at `/usr/local/bin/nats-server`.
-[Run Trellis in production](/guides/running-trellis/production) has full
-examples for Podman and Docker.
+[Run Trellis with Podman](/guides/running-trellis/podman) has a full example.
 
 ## From source
 

@@ -453,6 +453,28 @@ impl RuntimeConfig {
             .ok_or_else(|| ConfigError::InvalidPublicOrigin {
                 origin: public_origin.clone(),
             })?;
+        // The listener opens a plain TCP connection here for every WebSocket
+        // upgrade, so a URL in its place would fail each one with a 502.
+        if let Some(upstream) = self.nats_websocket_upstream() {
+            let address = Url::parse(&format!("tcp://{upstream}")).ok();
+            if upstream.contains("://")
+                || !address.is_some_and(|address| {
+                    address.host_str().is_some()
+                        && address.port().is_some()
+                        && address.username().is_empty()
+                        && address.path().is_empty()
+                        && address.query().is_none()
+                        && address.fragment().is_none()
+                })
+            {
+                return Err(ConfigError::InvalidNatsConfig {
+                    section: "http",
+                    field: "nats_websocket_upstream",
+                    reason: "must be the NATS WebSocket listener as host:port, such as \
+                        \"trellis-nats:8080\"",
+                });
+            }
+        }
         validate_listener_transport(&origin, self.http_bind_address(), self.http_transport())
             .map_err(|reason| ConfigError::InvalidHttpTransport {
                 origin: public_origin,

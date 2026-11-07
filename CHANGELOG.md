@@ -8,6 +8,38 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- The guides for running Trellis are three walkthroughs: a development
+  Trellis (which now also covers reaching it from other machines), Trellis
+  from the binaries as systemd services, and Trellis with rootless Podman
+  Quadlet units. The last two each have a section for running behind an HTTPS
+  proxy, including a load balancer that routes WebSockets to NATS itself.
+  Backups and the `nats` CLI moved to "Keep it running".
+
+### Added
+
+- `TrellisClient.signOut({ trellisUrl, auth, returnTo })` revokes a browser
+  app's stored session and ends the Portal login without connecting first,
+  for apps whose sign-in failed after OAuth.
+
+### Fixed
+
+- The Console served its protocol wasm as `application/octet-stream`, so
+  browsers fell back to slower non-streaming compilation and logged a MIME
+  warning. It's now `application/wasm`.
+- "Sign in again" after a failed Console sign-in reloaded the same page, which
+  signed straight back in with the same session and failed again, so it looked
+  like nothing happened. It now ends the Console session and the Portal login
+  and asks who is signing in.
+- `trellis-server` refuses to start when `[http] nats_websocket_upstream` isn't
+  a `host:port` address. A URL there used to be accepted, and every WebSocket
+  upgrade relayed through Trellis then failed with a 502.
+- The Podman example used image tags without the `v` the published tags have
+  (`v0.100.0-rc.26`), so its units pointed at images that don't exist. Its two
+  containers also both relabeled the NATS folder with a private SELinux label;
+  Trellis's NATS files now live in Trellis's own folder instead.
+
 ## [0.100.0-rc.26] - 2026-11-06
 
 ### Changed

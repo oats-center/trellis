@@ -92,7 +92,7 @@ The shared `/service` entrypoint runs on Node 24. For Rust, use the generated fa
 
 ## Provision and run
 
-Log the CLI into your [running Trellis](/guides/starting-trellis) as an
+Log the CLI into your [running Trellis](/guides/running-trellis/development) as an
 administrator. From the service project:
 
 ```sh

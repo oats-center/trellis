@@ -449,13 +449,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
                   if (revoked.isErr()) throw revoked.error;
                   await activeConnection.manager.close();
                   if (!options?.endPortalLogin) return;
-                  const signOut = new URL(oauth.metadata.end_session_endpoint);
-                  signOut.searchParams.set("client_id", args.auth.clientId);
-                  signOut.searchParams.set(
-                    "post_logout_redirect_uri",
-                    options.returnTo ?? location.href,
-                  );
-                  location.assign(signOut);
+                  endPortalLogin(oauth, args.auth.clientId, options.returnTo);
                 },
               },
             ),
@@ -477,6 +471,29 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
   );
 }
 
+/** Navigate through the Portal's sign-out, which returns to `returnTo`. */
+function endPortalLogin(
+  oauth: BrowserOAuthClient,
+  clientId: string,
+  returnTo = location.href,
+): void {
+  const signOut = new URL(oauth.metadata.end_session_endpoint);
+  signOut.searchParams.set("client_id", clientId);
+  signOut.searchParams.set("post_logout_redirect_uri", returnTo);
+  location.assign(signOut);
+}
+
+/** Options for signing a browser app out without connecting it first. */
+export type ClientSignOutArgs = {
+  trellisUrl: string;
+  auth: Pick<ClientAuthOptions, "clientId" | "credentialHandle">;
+  /**
+   * Where the Portal returns after ending its login; defaults to the current
+   * page. Its origin must be one the app registered a redirect URI on.
+   */
+  returnTo?: string;
+};
+
 /** Public OAuth app connector. Requests choose local surfaces; signed admission owns authority. */
 export class TrellisClient {
   /** Open a registered browser application using its generated request descriptor. */
@@ -484,6 +501,41 @@ export class TrellisClient {
     args: TrellisClientConnectArgs<T>,
   ) {
     return connectClient(args);
+  }
+
+  /**
+   * Revoke the app's stored OAuth session and end the Portal login, then
+   * navigate back to `returnTo`. Unlike `logout` on a connected client, this
+   * works when connecting failed, so a person can start over and sign in
+   * again, possibly as someone else.
+   */
+  static signOut(args: ClientSignOutArgs): AsyncResult<void, AuthError> {
+    return AsyncResult.from(
+      (async (): Promise<Result<void, AuthError>> => {
+        const opened = (
+          await BrowserOAuthClient.open({
+            issuer: args.trellisUrl,
+            clientId: args.auth.clientId,
+            credentialHandle: args.auth.credentialHandle ?? args.auth.clientId,
+          })
+        ).take();
+        if (isErr(opened)) return Result.err(opened.error);
+        const revoked = await opened.revoke();
+        if (revoked.isErr()) {
+          // A missing or unusable credential has no session left to revoke;
+          // dropping it locally is enough.
+          if (
+            !["InvalidCredential", "OAuthRecoveryRequired"].includes(
+              revoked.error.reason,
+            )
+          )
+            return Result.err(revoked.error);
+          await opened.store.clear();
+        }
+        endPortalLogin(opened, args.auth.clientId, args.returnTo);
+        return Result.ok(undefined);
+      })(),
+    );
   }
 }
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { isErr } from "@oatscenter/result";
   import { TrellisClient } from "@oatscenter/trellis";
   import { APP_CONFIG, consoleAuthOptions } from "$lib/config";
   import { consoleReturnKey, getConsoleRedirectTarget } from "$lib/auth";
@@ -9,6 +10,24 @@
 
   let failed = $state(false);
   let problem = $state("");
+  let restarting = $state(false);
+
+  // Retrying with the same app session and Portal login would fail the same
+  // way, so starting over ends both and asks who is signing in.
+  async function restart(): Promise<void> {
+    restarting = true;
+    const ended = (
+      await TrellisClient.signOut({
+        trellisUrl: APP_CONFIG.authUrl,
+        auth: consoleAuthOptions(),
+        returnTo: APP_CONFIG.callbackUri,
+      })
+    ).take();
+    if (isErr(ended)) {
+      problem = connectionProblem(ended.error);
+      restarting = false;
+    }
+  }
 
   onMount(() => {
     // A requested destination must survive the round trip to the
@@ -61,9 +80,7 @@
         Sign-in could not be completed. Start a new sign-in request.
       </p>
       {#if problem}<p class="portal-copy text-sm">{problem}</p>{/if}
-      <button
-        class="btn btn-primary"
-        onclick={() => window.location.assign(APP_CONFIG.callbackUri)}
+      <button class="btn btn-primary" disabled={restarting} onclick={restart}
         >Sign in again</button
       >
     {:else}

@@ -4,7 +4,7 @@ description: "Run the Trellis server, Console and NATS from a source checkout wh
 ---
 
 This is for working on Trellis itself. The server runs from your checkout the
-same way an installed one does in [Start Trellis](/guides/starting-trellis):
+same way an installed one does in [Run a development Trellis](/guides/running-trellis/development):
 it creates an installation on first start and runs NATS for you.
 
 ## What you need

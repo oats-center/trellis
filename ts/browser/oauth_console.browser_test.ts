@@ -166,6 +166,33 @@ test("the Console signs in without asking for access and uses the real authentic
       // Signing out of the Console ends the Portal login too, so authorization
       // asks who is signing in instead of returning to the same account.
       await page.getByLabel("Username", { exact: true }).waitFor();
+      // NATS refusing the connection fails sign-in after OAuth succeeded; a
+      // corrupted CONNECT signature gets that refusal from the real broker.
+      // Starting over must end that app session and the Portal login, or the
+      // retry signs straight back in and fails the same way.
+      await page.routeWebSocket(/.*/, (socket) => {
+        const broker = socket.connectToServer();
+        socket.onMessage((message) => {
+          const text = message.toString();
+          if (!text.startsWith("CONNECT ")) return broker.send(message);
+          const tampered = text.replace(/"sig":"(.)/, (_, first: string) =>
+            first === "A" ? '"sig":"B' : '"sig":"A',
+          );
+          broker.send(
+            typeof message === "string" ? tampered : Buffer.from(tampered),
+          );
+        });
+      });
+      await page.getByLabel("Username", { exact: true }).fill(username);
+      await page.getByLabel("Password", { exact: true }).fill(password);
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await page
+        .getByText("Sign-in could not be completed", { exact: false })
+        .waitFor();
+      await page
+        .getByRole("button", { name: "Sign in again", exact: true })
+        .click();
+      await page.getByLabel("Username", { exact: true }).waitFor();
     } catch (error) {
       await page.screenshot({
         path: "/tmp/opencode/console-signout-failure.png",

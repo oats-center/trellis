@@ -65,6 +65,7 @@ export type {
   ClientAuthOptions,
   ClientAuthRequiredContext,
   ClientLogoutOptions,
+  ClientSignOutArgs,
   ClientResourceMigrations,
   ConnectedTrellisClient,
   TrellisClientConnectArgs,

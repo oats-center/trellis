@@ -90,16 +90,16 @@
         "to": "/guides/install-trellis"
       },
       {
-        "title": "Start Trellis",
-        "to": "/guides/starting-trellis"
+        "title": "Run a development Trellis",
+        "to": "/guides/running-trellis/development"
       },
       {
-        "title": "Reach it from other machines",
-        "to": "/guides/running-trellis/other-machines"
+        "title": "Run it from the binaries",
+        "to": "/guides/running-trellis/binaries"
       },
       {
-        "title": "Run it in production",
-        "to": "/guides/running-trellis/production"
+        "title": "Run it with Podman",
+        "to": "/guides/running-trellis/podman"
       },
       {
         "title": "Keep it running",
