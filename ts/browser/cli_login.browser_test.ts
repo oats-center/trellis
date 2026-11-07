@@ -276,11 +276,11 @@ test("CLI login authorizes independent runtime keys through one durable login", 
         );
         assert.equal(disabled.enabled, false);
         assert.equal((await listed())[0]?.enabled, false);
-        const removed = await runCli(
-          ["sign-in", "providers", "remove", provider.providerId],
-          configHome,
-        );
-        assert.equal(removed.code, 0, removed.stderr);
+        // Scripts read the removal from JSON, like every other result.
+        assert.deepEqual(await providers("remove", provider.providerId), {
+          removed: true,
+          providerId: provider.providerId,
+        });
         assert.deepEqual(await listed(), []);
 
         // The accepted CA is pinned for this deployment: a later login trusts

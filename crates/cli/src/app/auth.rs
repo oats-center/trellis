@@ -449,7 +449,11 @@ async fn providers_command(
             auth.oidc_providers_delete(&mutation(&current))
                 .await
                 .into_diagnostic()?;
-            output::print_info(&format!("removed provider {provider_id}"));
+            if output::is_json(format) {
+                output::print_json(&json!({ "removed": true, "providerId": provider_id }))?;
+            } else {
+                output::print_info(&format!("removed provider {provider_id}"));
+            }
             return Ok(());
         }
     };

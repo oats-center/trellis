@@ -35,6 +35,8 @@ and this project adheres to
 - `trellis-server` refuses to start when `[http] nats_websocket_upstream` isn't
   a `host:port` address. A URL there used to be accepted, and every WebSocket
   upgrade relayed through Trellis then failed with a 502.
+- `trellis sign-in providers remove --format json` printed a line of text
+  instead of JSON. It now prints `{"removed": true, "providerId": ...}`.
 - The Podman example used image tags without the `v` the published tags have
   (`v0.100.0-rc.26`), so its units pointed at images that don't exist. Its two
   containers also both relabeled the NATS folder with a private SELinux label;
