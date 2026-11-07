@@ -35,6 +35,15 @@ and this project adheres to
 - `trellis-server` refuses to start when `[http] nats_websocket_upstream` isn't
   a `host:port` address. A URL there used to be accepted, and every WebSocket
   upgrade relayed through Trellis then failed with a 502.
+- A window a browser app opened itself, or any page whose URL had a `state`
+  parameter, was taken for the SDK's approval popup when an app window of the
+  same origin had opened it, so it never finished its own sign-in. Only a popup
+  the SDK sent to approve something takes that path now.
+- Right after first sign-in, an optional capability left unchecked on the
+  approval screen didn't count as declined until the page reloaded.
+- An app whose new version requires a capability the user had approved while it
+  was optional lost its grant and went back through approval. The grant already
+  holds it, so the app keeps it.
 - A release candidate that couldn't install one of Trellis's built-in services
   still upgraded the built-ins started before it, so the server that made the
   installation could no longer start it. Startup now checks every built-in

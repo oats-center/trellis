@@ -133,9 +133,11 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           throw new AuthError({ reason: "InvalidCredential" });
         // An approval popup ends on the app's callback. The window that opened
         // it holds the continuation and reads the outcome; this one only
-        // reports where it landed.
+        // reports where it landed. Any other window, opened by the app or
+        // not, completes its own sign-in.
         const landed = new URL(args.auth.currentUrl ?? location.href);
-        if (landed.searchParams.has("state") && sameOriginOpener()) {
+        const state = landed.searchParams.get("state");
+        if (state && sameOriginOpener() && approvalPending(state)) {
           window.opener.postMessage(
             { type: APPROVAL_MESSAGE, href: landed.href },
             location.origin,
@@ -223,19 +225,28 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
         let unseen: string[] = [];
         // The optional capabilities the user was shown when approving this grant.
         let grantAsked: readonly string[] = [];
+        const requestedOptional = (admission: BrowserOAuthAdmission) => {
+          const details = admission.authorizationDetails;
+          return details?.every(
+            (detail) => detail.requested_optional !== undefined,
+          )
+            ? details.flatMap((detail) => detail.requested_optional ?? [])
+            : undefined;
+        };
         const install = async (admission: BrowserOAuthAdmission) => {
           const details = admission.authorizationDetails;
-          const granted = details?.flatMap((detail) => detail.required);
+          // An optional capability the user approved counts once a newer app
+          // version requires it: the grant already holds it.
+          const granted = details?.flatMap((detail) => [
+            ...detail.required,
+            ...detail.optional,
+          ]);
           outdated =
             granted !== undefined &&
             args.request.requiredCapabilities.some(
               (capability) => !granted.includes(capability),
             );
-          const requested = details?.every(
-            (detail) => detail.requested_optional !== undefined,
-          )
-            ? details.flatMap((detail) => detail.requested_optional ?? [])
-            : undefined;
+          const requested = requestedOptional(admission);
           grantAsked = requested ?? [];
           if (!outdated && args.auth.askForNewOptional && requested) {
             const asked = new Set([...requested, ...askedOptional(oauth)]);
@@ -248,6 +259,9 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
         let resumed = callback
           ? (await oauth.complete(currentUrl.href)).take()
           : (await oauth.resume(install)).take();
+        // The consent just given is what the grant asked about.
+        if (callback && !isErr(resumed) && "value" in resumed)
+          grantAsked = requestedOptional(resumed.value) ?? [];
         // Declining more leaves the app as it was, on the grant already approved.
         if (
           callback &&
@@ -382,6 +396,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           // The popup widens this session's own grant, so the live
           // connection renews into the approved capabilities in place.
           const approveInPopup = async (popup: Window): Promise<boolean> => {
+            let state: string | undefined;
             try {
               const lease = activeConnection.owner.own();
               const grant = lease.authority.oauthGrantId;
@@ -393,6 +408,8 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
                 })
               ).take();
               if (isErr(url)) return false;
+              state = new URL(url).searchParams.get("state") ?? undefined;
+              if (state) markApproval(state, true);
               popup.location.href = url;
               const landed = await approvalCallback(
                 popup,
@@ -407,6 +424,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
             } catch {
               return false;
             } finally {
+              if (state) markApproval(state, false);
               popup.close();
             }
           };
@@ -542,6 +560,26 @@ export class TrellisClient {
 /** Names the approval popup and the message it sends its opener. */
 const APPROVAL_MESSAGE = "trellis.approval";
 const POPUP_FEATURES = "popup,width=520,height=720";
+
+/** Where an opener records the approval it sent a popup to, by OAuth state. */
+const approvalKey = (state: string) => `trellis.approval:${state}`;
+
+function markApproval(state: string, pending: boolean): void {
+  try {
+    if (pending) localStorage.setItem(approvalKey(state), "1");
+    else localStorage.removeItem(approvalKey(state));
+  } catch {
+    // Without storage the opener still sees the popup land by watching it.
+  }
+}
+
+function approvalPending(state: string): boolean {
+  try {
+    return localStorage.getItem(approvalKey(state)) !== null;
+  } catch {
+    return false;
+  }
+}
 
 /** Whether this window was opened by another window of this app's origin. */
 function sameOriginOpener(): boolean {
