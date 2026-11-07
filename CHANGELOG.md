@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.27] - 2026-11-07
+
 ### Changed
 
 - The guides for running Trellis are three walkthroughs: a development
