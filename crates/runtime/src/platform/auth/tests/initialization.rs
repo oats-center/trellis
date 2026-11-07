@@ -401,3 +401,115 @@ fn startup_installs_a_changed_builtin_under_its_existing_identity() {
         .unwrap();
     assert_eq!(holds(&upgraded.principal_id), (2, true));
 }
+
+/// A server whose later built-in can't be installed changes none of them: the
+/// earlier built-in's compatible upgrade is checked but not kept, so the
+/// server that made the installation still starts on it.
+#[test]
+fn a_builtin_this_server_cant_install_leaves_every_builtin_unchanged() {
+    use trellis_rs::generated::ParticipantDescriptor;
+    use trellis_runtime_apis::participants::{trellis_health_runtime, trellis_platform};
+    let f = fixture();
+    let (platform_seed, health_seed) = (
+        URL_SAFE_NO_PAD.encode([62; 32]),
+        URL_SAFE_NO_PAD.encode([63; 32]),
+    );
+    f.store
+        .initialize_builtin_provider::<trellis_platform::Participant>(&platform_seed, NOW)
+        .unwrap();
+    f.store
+        .initialize_builtin_provider::<trellis_health_runtime::Participant>(&health_seed, NOW)
+        .unwrap();
+    let edited = |evidence: serde_json::Value, from: &str, to: &str| {
+        let shipped: PackageEvidence = serde_json::from_value(evidence).unwrap();
+        let source = &shipped
+            .packages
+            .iter()
+            .find(|package| package.name == shipped.root_package)
+            .unwrap()
+            .source;
+        assert!(source.contains(from), "{from}");
+        (
+            package_evidence("trellis", &source.replacen(from, to, 1)),
+            shipped,
+        )
+    };
+    let platform = "service platform {\n  implements auth;\n";
+    let (needs_more, platform_shipped) = edited(
+        serde_json::to_value(trellis_platform::Participant::package_evidence()).unwrap(),
+        platform,
+        &format!("{platform}  use auth {{\n    required capability bindings.readJobs;\n  }}\n"),
+    );
+    // A different output is an incompatible change to the health API.
+    let summary =
+        "rpc Summary {\n    input HealthSummaryRequest;\n    output HealthSummaryResponse;";
+    let (breaks_api, health_shipped) = edited(
+        serde_json::to_value(trellis_health_runtime::Participant::package_evidence()).unwrap(),
+        summary,
+        "rpc Summary {\n    input HealthSummaryRequest;\n    output HealthInspectResponse;",
+    );
+    let state = || -> Vec<String> {
+        f.store
+            .transaction(|connection| {
+                let mut rows = Vec::new();
+                for query in [
+                    "SELECT participant_id||':'||revision FROM auth_installed_participants",
+                    "SELECT principal_id||':'||installed_revision FROM auth_instances",
+                    "SELECT api_id||':'||definition_digest FROM auth_accepted_apis",
+                    "SELECT principal_id||':'||capability_id FROM auth_direct_capabilities",
+                    "SELECT update_id||':'||state FROM auth_service_updates",
+                ] {
+                    let mut statement = connection.prepare(&format!("{query} ORDER BY 1"))?;
+                    rows.extend(
+                        statement
+                            .query_map([], |row| row.get::<_, String>(0))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?,
+                    );
+                }
+                Ok(rows)
+            })
+            .unwrap()
+    };
+    let before = state();
+
+    let refused = f.store.check_builtin_upgrades(
+        vec![
+            (
+                trellis_platform::Participant::ID.into(),
+                needs_more,
+                platform_seed.clone(),
+            ),
+            (
+                trellis_health_runtime::Participant::ID.into(),
+                breaks_api,
+                health_seed.clone(),
+            ),
+        ],
+        NOW + 1,
+    );
+    assert!(
+        matches!(&refused, Err(AuthError::Invalid(reason))
+            if reason.contains(trellis_health_runtime::Participant::ID)),
+        "{refused:?}"
+    );
+    assert_eq!(state(), before);
+
+    // The builds the installation was made with still start, as they were.
+    f.store
+        .initialize_builtin(
+            trellis_platform::Participant::ID,
+            platform_shipped,
+            &platform_seed,
+            NOW + 2,
+        )
+        .unwrap();
+    f.store
+        .initialize_builtin(
+            trellis_health_runtime::Participant::ID,
+            health_shipped,
+            &health_seed,
+            NOW + 2,
+        )
+        .unwrap();
+    assert_eq!(state(), before);
+}

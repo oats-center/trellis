@@ -129,8 +129,11 @@ first stable release, the Pipeline proves it before publishing by upgrading an
 installation the previous stable release made.
 
 Release candidates may break each other. An incompatible change to a built-in
-API stops a candidate's startup with an error naming the built-in, and the
-installation keeps the revision it had.
+API stops a candidate's startup with an error naming the built-in. Before
+installing any built-in, startup tries every one this process runs in a single
+transaction it rolls back, so the refusal leaves all of them at the revision
+they had, including any that this server could have upgraded. The previous
+server still starts on the installation.
 
 ## Service claims
 

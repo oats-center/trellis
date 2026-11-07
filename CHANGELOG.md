@@ -35,6 +35,10 @@ and this project adheres to
 - `trellis-server` refuses to start when `[http] nats_websocket_upstream` isn't
   a `host:port` address. A URL there used to be accepted, and every WebSocket
   upgrade relayed through Trellis then failed with a 502.
+- A release candidate that couldn't install one of Trellis's built-in services
+  still upgraded the built-ins started before it, so the server that made the
+  installation could no longer start it. Startup now checks every built-in
+  before installing any.
 - `trellis sign-in providers remove --format json` printed a line of text
   instead of JSON. It now prints `{"removed": true, "providerId": ...}`.
 - The Podman example used image tags without the `v` the published tags have

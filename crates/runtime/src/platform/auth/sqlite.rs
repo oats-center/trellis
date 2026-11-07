@@ -656,6 +656,18 @@ impl SqliteAuthorizationStore {
         Ok(result)
     }
 
+    /// Runs `operation` in a write transaction that's always rolled back,
+    /// to learn whether it would succeed without keeping what it did.
+    pub(super) fn rehearse<T>(
+        &self,
+        operation: impl FnOnce(&Connection) -> Result<T, AuthError>,
+    ) -> Result<T, AuthError> {
+        let mut connection = self.writer()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Dropping the transaction rolls it back.
+        operation(Connection::new(&transaction))
+    }
+
     /// `transaction` for async callers, run on the blocking pool.
     pub(crate) async fn transaction_blocking<T: Send + 'static>(
         self: &Arc<Self>,

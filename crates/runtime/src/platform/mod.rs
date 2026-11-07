@@ -145,6 +145,17 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let (auth_creds, system_creds) = nats.platform_creds()?;
     let auth_nats = connect_nats(&nats, auth_creds).await?;
     let system = connect_nats(&nats, system_creds).await?;
+    // Every built-in this process starts must be one this server can install
+    // before any of them is.
+    let mut builtins = Vec::new();
+    for role in LiveProviderRole::roles_for_mode(context.mode) {
+        let (participant, evidence) = builtin_live_provider::builtin_build(role)?;
+        let seed = live_provider::load_live_provider_seed(&context.config, role)?;
+        builtins.push((participant, evidence, seed));
+    }
+    let checking = store.clone();
+    auth::blocking(move || checking.check_builtin_upgrades(builtins, crate::clock::unix_now()))
+        .await?;
     let provider_seed = live_provider::load_live_provider_seed(
         &context.config,
         live_provider::LiveProviderRole::Platform,

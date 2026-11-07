@@ -14,7 +14,9 @@ use trellis_idl::{
 use super::authorization_sessions::ProviderImplementation;
 use super::catalog::{action_identity, resolve_api};
 use super::policy::capability;
-use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
+use super::sqlite::{
+    decode, digest, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
+};
 
 pub(super) const SELF_HEALTH_CAPABILITY: &str = "trellis.health.v1:health.report";
 /// Every service instance may submit its own build as a participant update.
@@ -251,6 +253,73 @@ impl SqliteAuthorizationStore {
         self.initialize_builtin(C::ID, evidence, seed, now)
     }
 
+    /// Builds for each built-in this server starts, as
+    /// `(participant, evidence, identity seed)`, in the order it starts them.
+    pub(crate) fn check_builtin_upgrades(
+        &self,
+        builtins: Vec<(String, PackageEvidence, String)>,
+        now: i64,
+    ) -> Result<(), AuthError> {
+        // Startup commits each built-in on its own. Trying every upgrade
+        // first, in one transaction that's rolled back, means a later built-in
+        // this release can't take leaves the earlier ones untouched too, so
+        // the previous server still starts.
+        self.rehearse(|connection| {
+            for (participant, evidence, seed) in builtins {
+                let source = BuiltinProviderSource::new(&participant, evidence, &seed)?;
+                self.existing_builtin(connection, &source, &participant, now)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The installed built-in `source` names, upgraded to its build when the
+    /// server's build changed it. `None` before it's installed.
+    fn existing_builtin(
+        &self,
+        connection: &Connection,
+        source: &BuiltinProviderSource,
+        participant: &str,
+        now: i64,
+    ) -> Result<Option<ProvisionedDeployment>, AuthError> {
+        let admin: String = connection
+            .query_row(
+                "SELECT principal_id FROM auth_bootstrap_administrator WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)?;
+        Self::require_administration(connection, &admin, Administration::ManagePrincipals)?;
+        match source.lookup(connection, now) {
+            Ok(existing) => Ok(Some(existing)),
+            Err(AuthError::NotFound) => Ok(None),
+            Err(AuthError::Conflict) => {
+                // The operator chose this build by upgrading the server,
+                // so it needs no approval; an incompatible API still fails.
+                super::service_updates::upgrade_builtin(
+                    connection,
+                    self,
+                    &admin,
+                    &source.key_id,
+                    &source.evidence,
+                    participant,
+                    now,
+                )
+                .map_err(|error| match error {
+                    AuthError::Invalid(reason) => AuthError::Invalid(format!(
+                        "this release candidate can't upgrade the installation's \
+                        built-in {participant}: {reason}. Start it with the server \
+                        version that created it, or create a new installation"
+                    )),
+                    error => error,
+                })?;
+                source.lookup(connection, now).map(Some)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Startup of the built-in `participant` as `evidence` declares it. A
     /// server upgrade that changed it installs the new build as the
     /// deployment's next revision, as an applied service update would.
@@ -263,42 +332,7 @@ impl SqliteAuthorizationStore {
     ) -> Result<ProvisionedDeployment, AuthError> {
         let source = BuiltinProviderSource::new(participant, evidence, seed)?;
         let existing = self.transaction(|connection| {
-            let admin: String = connection
-                .query_row(
-                    "SELECT principal_id FROM auth_bootstrap_administrator WHERE singleton=1",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or(AuthError::Denied)?;
-            Self::require_administration(connection, &admin, Administration::ManagePrincipals)?;
-            match source.lookup(connection, now) {
-                Ok(existing) => Ok(Some(existing)),
-                Err(AuthError::NotFound) => Ok(None),
-                Err(AuthError::Conflict) => {
-                    // The operator chose this build by upgrading the server,
-                    // so it needs no approval; an incompatible API still fails.
-                    super::service_updates::upgrade_builtin(
-                        connection,
-                        self,
-                        &admin,
-                        &source.key_id,
-                        &source.evidence,
-                        participant,
-                        now,
-                    )
-                    .map_err(|error| match error {
-                        AuthError::Invalid(reason) => AuthError::Invalid(format!(
-                            "this release candidate can't upgrade the installation's \
-                            built-in {participant}: {reason}. Start it with the server \
-                            version that created it, or create a new installation"
-                        )),
-                        error => error,
-                    })?;
-                    source.lookup(connection, now).map(Some)
-                }
-                Err(error) => Err(error),
-            }
+            self.existing_builtin(connection, &source, participant, now)
         })?;
         if let Some(existing) = existing {
             return Ok(existing);

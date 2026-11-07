@@ -45,6 +45,36 @@ pub(crate) async fn prepare_builtin_live_provider(
     }
 }
 
+/// The build of `role`'s built-in this server ships, as its participant ID and
+/// package evidence.
+pub(crate) fn builtin_build(
+    role: LiveProviderRole,
+) -> Result<(String, trellis_idl::PackageEvidence), RuntimeError> {
+    fn build<C: ParticipantDescriptor>(
+    ) -> Result<(String, trellis_idl::PackageEvidence), RuntimeError> {
+        let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
+        C::validate().map_err(|error| platform(&error))?;
+        let evidence = serde_json::to_value(C::package_evidence())
+            .and_then(serde_json::from_value)
+            .map_err(|error| platform(&error))?;
+        Ok((C::ID.to_owned(), evidence))
+    }
+    match role {
+        LiveProviderRole::Platform => {
+            build::<trellis_runtime_apis::participants::trellis_platform::Participant>()
+        }
+        LiveProviderRole::Health => {
+            build::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>()
+        }
+        LiveProviderRole::Jobs => {
+            build::<trellis_runtime_apis::participants::trellis_jobs_runtime::Participant>()
+        }
+        LiveProviderRole::Events => {
+            build::<trellis_runtime_apis::participants::trellis_events_runtime::Participant>()
+        }
+    }
+}
+
 /// Configured transport/trust and the actual provisioned record to check locally.
 /// Expected identities are never sent to the SDK as admission assertions.
 #[derive(Debug)]
