@@ -288,7 +288,10 @@ A NATS cluster, an `nsc` operator you already have, the Console on its own
 hostname, and turning the Console off work the same in a container. They're in
 [Run Trellis from the binaries](/guides/running-trellis/binaries#other-settings).
 For a cluster, run one container per server, each named after its
-`nats new --hosts` name.
+`nats new --hosts` name. They all mount `~/trellis-nats`, so use the shared
+label, `Volume=%h/trellis-nats:/etc/nats:z` with a lowercase `z`. `:Z` gives
+the folder a label private to one container, and each broker that starts
+takes it away from the ones already running.
 
 [Keep it running](/guides/running-trellis/upkeep) covers upgrades, backups
 and resetting the administrator's password.
