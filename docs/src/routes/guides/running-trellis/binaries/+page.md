@@ -253,6 +253,16 @@ only when nothing but the proxy can.
 For the proxy's health check, use `/readyz`. Trellis answers it whatever `Host`
 header the check sends.
 
+### A proxy on another machine
+
+`bind_address = "127.0.0.1"` keeps Trellis off the network, which only works
+for a proxy on the same machine. For one elsewhere, delete that line, so
+Trellis listens on every interface, or set it to the address the proxy
+reaches, such as `"10.0.1.20"`. Then list the proxy's network in
+`trusted_proxies`, such as `["10.0.1.0/24"]`, and firewall port 3000 to it.
+The proxy forwards to port 3000 on this machine with the same rules as above.
+NATS stays on loopback, since Trellis forwards the WebSockets to it.
+
 ### When the proxy sends WebSockets to NATS itself
 
 A load balancer, such as an AWS Application Load Balancer, can route WebSocket
@@ -281,8 +291,19 @@ ws_nats_servers = ["wss://trellis.example.com"]
 ```
 
 `[nats]` stays as it was. There's no `nats_websocket_upstream`: nothing
-reaches Trellis's port asking for a WebSocket. `172.31.0.0/16` stands for your VPC. The load balancer's HTTPS
-listener needs two rules, in this order:
+reaches Trellis's port asking for a WebSocket. `172.31.0.0/16` stands for
+your VPC. Keep the `[client]` heading. Without it the two lines belong to
+`[nats]`, clients are told the `[nats] servers` address, and the Console
+can't sign in. Check what clients are told with:
+
+```sh
+curl -s https://trellis.example.com/.well-known/oauth-authorization-server | grep -o '"natsEndpoints":[^]]*]'
+```
+
+It should print `"natsEndpoints":["wss://trellis.example.com"]`.
+
+The load balancer's HTTPS listener needs two rules, in this order, each to a
+target group on this machine:
 
 | Condition                                                  | Forward to | Health check            |
 | ---------------------------------------------------------- | ---------- | ----------------------- |

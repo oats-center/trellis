@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- The Podman guide's proxy section covered only a proxy on the same machine,
+  which publishes Trellis on loopback, so a proxy or load balancer elsewhere
+  couldn't reach it. It now has separate cases for a proxy on the same
+  machine, a proxy on another machine, and a load balancer that sends
+  WebSockets to NATS, the last with complete units publishing ports 3000 and 8080. The binaries guide covers a proxy on another machine too, and both
+  show how to check the NATS addresses clients are told.
+
 ## [0.100.0-rc.27] - 2026-11-07
 
 ### Changed

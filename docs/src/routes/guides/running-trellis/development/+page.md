@@ -87,7 +87,7 @@ curl http://127.0.0.1:8222/healthz
 The first two answer with the version and what the server is running:
 
 ```json
-{ "version": "0.100.0-rc.26", "mode": "all", "processId": 2264453 }
+{ "version": "0.100.0-rc.27", "mode": "all", "processId": 2264453 }
 ```
 
 `/healthz` answers as soon as the server is up. `/readyz` returns `503` until

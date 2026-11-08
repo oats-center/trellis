@@ -15,7 +15,7 @@ machine, and a certificate for it. Nothing has to be installed besides Podman:
 the `trellis-server` image carries the tools the setup uses.
 
 The image is `ghcr.io/oats-center/trellis-server`, tagged with each release's
-version, `v` included: `v0.100.0-rc.26`. The examples use that tag. Pick the
+version, `v` included: `v0.100.0-rc.27`. The examples use that tag. Pick the
 newest from the
 [releases](https://github.com/oats-center/trellis/releases).
 
@@ -25,7 +25,7 @@ newest from the
 mkdir -p ~/trellis/nats ~/trellis-nats
 podman run --rm --userns keep-id:uid=10001,gid=10001 \
   -v ~/trellis-nats:/etc/nats:Z \
-  ghcr.io/oats-center/trellis-server:v0.100.0-rc.26 \
+  ghcr.io/oats-center/trellis-server:v0.100.0-rc.27 \
   nats new --servers 1 --listen 0.0.0.0 --hosts trellis-nats --out /etc/nats
 mv ~/trellis-nats/system.creds ~/trellis-nats/trellis-operator.nk ~/trellis/nats/
 ```
@@ -84,7 +84,7 @@ alone, which is what `private_network = true` does. `[client] nats_servers = []`
 keeps that address from clients, which couldn't reach it. They get
 `wss://trellis.example.com` instead.
 
-`podman run --rm ghcr.io/oats-center/trellis-server:v0.100.0-rc.26 config example`
+`podman run --rm ghcr.io/oats-center/trellis-server:v0.100.0-rc.27 config example`
 prints every setting with a comment saying what it does.
 
 ## The units
@@ -123,7 +123,7 @@ After=trellis-nats.service
 
 [Container]
 ContainerName=trellis
-Image=ghcr.io/oats-center/trellis-server:v0.100.0-rc.26
+Image=ghcr.io/oats-center/trellis-server:v0.100.0-rc.27
 Network=trellis.network
 PublishPort=443:3000
 Volume=%h/trellis:/etc/trellis:Z
@@ -204,23 +204,40 @@ NATS upgrade separately.
 
 ## Behind an HTTPS proxy
 
-If a proxy on the host already holds port 443, Trellis can serve it plain
-HTTP. In `config.toml`:
+A proxy can hold port 443 and the certificate instead, and talk plain HTTP to
+Trellis. In `config.toml`, replace `[http.transport]` with:
 
 ```toml
 [http.transport]
 mode = "proxy"
 ```
 
-and in `trellis.container`, publish on loopback only:
+Where the containers publish their ports depends on where the proxy runs. The
+sysctl for port 443 isn't needed in either case.
+
+Leave `trusted_proxies` out of a Podman installation. Rootless Podman hands
+Trellis published connections from the network's own address, so Trellis
+can't tell the proxy from anyone else. What keeps everyone else out is where
+the port is published, or a firewall. Without `trusted_proxies`, Trellis takes
+each client's address from the last `X-Forwarded-For` entry, which its
+per-client limits count against.
+
+For the proxy's health check, use `/readyz`. Trellis answers it whatever
+`Host` header the check sends.
+
+### A proxy on the same machine
+
+Publish Trellis on loopback only. In `trellis.container`, replace the
+`PublishPort=` line with:
 
 ```toml
 PublishPort=127.0.0.1:3000:3000
 ```
 
-The sysctl isn't needed for that. The proxy has to forward everything for
+NATS still publishes nothing. The proxy forwards everything for
 `trellis.example.com` to `127.0.0.1:3000`, WebSocket upgrades included, and
-keep the original `Host` header. Caddy does both by default:
+keeps the original `Host` header. Trellis hands the WebSockets on to NATS.
+Caddy does both by default:
 
 ```text
 trellis.example.com {
@@ -231,27 +248,74 @@ trellis.example.com {
 nginx needs `proxy_set_header Host $host`, and the `Upgrade` and
 `Connection` headers passed on for WebSockets.
 
-Leave `trusted_proxies` out here. Rootless Podman delivers published
-connections from the network's own address, so Trellis can't tell the proxy
-from anyone else anyway. Publishing on loopback is what keeps everyone else
-out. Without `trusted_proxies`, Trellis takes each client's address from the
-last `X-Forwarded-For` entry, which its per-client limits count against.
+### A proxy on another machine
 
-For the proxy's health check, use `/readyz`. Trellis answers it whatever
-`Host` header the check sends.
-
-### When the proxy sends WebSockets to NATS itself
-
-A load balancer, such as an AWS Application Load Balancer, can route WebSocket
-upgrades straight to NATS. Then the NATS container publishes its WebSocket
-port, in `trellis-nats.container`:
+The proxy has to reach the port across the network, so publish it on the
+machine's address. In `trellis.container`:
 
 ```toml
-PublishPort=8080:8080
+PublishPort=3000:3000
 ```
 
-and Trellis publishes `PublishPort=3000:3000`, with `config.toml` naming the
-address clients use instead of forwarding:
+`3000:3000` listens on every interface. To listen on one, name its address:
+`PublishPort=10.0.1.20:3000:3000`. Either way, firewall port 3000 so only the
+proxy reaches it. The proxy forwards to port 3000 on this machine, with the
+same rules as above: WebSocket upgrades included and the `Host` header kept.
+NATS still publishes nothing, since Trellis forwards the WebSockets to it.
+
+### A load balancer that sends WebSockets to NATS itself
+
+A load balancer, such as an AWS Application Load Balancer, can route WebSocket
+upgrades straight to NATS. Then both containers publish a port the load
+balancer reaches. `trellis-nats.container`:
+
+```toml
+[Container]
+ContainerName=trellis-nats
+Image=docker.io/library/nats:2.14.4-alpine
+Network=trellis.network
+PublishPort=8080:8080
+Volume=%h/trellis-nats:/etc/nats:Z
+Exec=-c /etc/nats/nats-1.conf
+ReadOnly=true
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+`trellis.container`:
+
+```toml
+[Unit]
+Requires=trellis-nats.service
+After=trellis-nats.service
+
+[Container]
+ContainerName=trellis
+Image=ghcr.io/oats-center/trellis-server:v0.100.0-rc.27
+Network=trellis.network
+PublishPort=3000:3000
+Volume=%h/trellis:/etc/trellis:Z
+Volume=trellis-data:/var/lib/trellis
+ReadOnly=true
+Tmpfs=/run
+Tmpfs=/var/log
+UserNS=keep-id:uid=10001,gid=10001
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+Only 8080, the WebSocket listener, is published from NATS. Ports 4222 and
+8222 stay on the `trellis` network, where Trellis reaches them by name.
+
+`config.toml` names the address clients use instead of forwarding:
 
 ```toml
 [http]
@@ -261,14 +325,30 @@ port = 3000
 [http.transport]
 mode = "proxy"
 
+[nats]
+servers = "nats://trellis-nats:4222"
+private_network = true
+system_credentials = "nats/system.creds"
+operator_signing_key = "nats/trellis-operator.nk"
+
 [client]
 nats_servers = []
 ws_nats_servers = ["wss://trellis.example.com"]
 ```
 
-`[nats]` stays as it was. There's no `nats_websocket_upstream`: nothing
-reaches Trellis's port asking for a WebSocket. The load balancer's HTTPS listener needs two rules, in this
-order:
+There's no `nats_websocket_upstream`: nothing reaches Trellis's port asking
+for a WebSocket. Keep the `[client]` heading. Without it the two lines belong
+to `[nats]`, clients are told `nats://trellis-nats:4222`, and the Console
+can't sign in. Check what clients are told with:
+
+```sh
+curl -s https://trellis.example.com/.well-known/oauth-authorization-server | grep -o '"natsEndpoints":[^]]*]'
+```
+
+It should print `"natsEndpoints":["wss://trellis.example.com"]`.
+
+The load balancer's HTTPS listener needs two rules, in this order, each to a
+target group on this machine:
 
 | Condition                                                  | Forward to | Health check            |
 | ---------------------------------------------------------- | ---------- | ----------------------- |
@@ -278,9 +358,15 @@ order:
 A NATS WebSocket port answers a plain request with `400`, so that's the
 success code. Raise the load balancer's idle timeout above its 60-second
 default, or it cuts quiet NATS connections. Let only the load balancer reach
-ports 3000 and 8080. NATS logs
+ports 3000 and 8080; in AWS, that's the instance's security group allowing
+them from the load balancer's security group alone. NATS logs
 `Websocket not configured with TLS. DO NOT USE IN PRODUCTION!` when it starts;
 behind a load balancer that terminates TLS, that's expected.
+
+If sign-in then fails with `Authorization Violation` and `trellis-nats` logs
+nothing, the WebSocket rule reaches some other NATS server. Compare the
+`server_id` that `wss://trellis.example.com` sends first with the
+`Server ID` line in `podman logs trellis-nats`.
 
 ## Other settings
 
