@@ -10,6 +10,11 @@ and this project adheres to
 
 ### Fixed
 
+- An approval popup recognizes itself by asking the window that opened it,
+  not through a `localStorage` marker. With `localStorage` full or blocked,
+  the popup's callback page started a new sign-in instead, and an opener
+  that missed the callback, such as a throttled background tab, left the
+  action that asked for approval waiting (#33).
 - The Podman guide's proxy section covered only a proxy on the same machine,
   which publishes Trellis on loopback, so a proxy or load balancer elsewhere
   couldn't reach it. It now has separate cases for a proxy on the same

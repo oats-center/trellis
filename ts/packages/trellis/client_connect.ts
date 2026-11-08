@@ -561,21 +561,25 @@ export class TrellisClient {
 const APPROVAL_MESSAGE = "trellis.approval";
 const POPUP_FEATURES = "popup,width=520,height=720";
 
-/** Where an opener records the approval it sent a popup to, by OAuth state. */
-const approvalKey = (state: string) => `trellis.approval:${state}`;
+/** The OAuth states of the approvals this window has sent popups to. */
+const pendingApprovals = new Set<string>();
 
 function markApproval(state: string, pending: boolean): void {
-  try {
-    if (pending) localStorage.setItem(approvalKey(state), "1");
-    else localStorage.removeItem(approvalKey(state));
-  } catch {
-    // Without storage the opener still sees the popup land by watching it.
-  }
+  if (pending) pendingApprovals.add(state);
+  else pendingApprovals.delete(state);
+  // The popup asks this window directly, so no storage has to work.
+  if (!Object.hasOwn(window, APPROVAL_MESSAGE))
+    Object.defineProperty(window, APPROVAL_MESSAGE, {
+      value: (asked: unknown) =>
+        typeof asked === "string" && pendingApprovals.has(asked),
+    });
 }
 
+/** Whether the same-origin opener sent this window to approve `state`. */
 function approvalPending(state: string): boolean {
   try {
-    return localStorage.getItem(approvalKey(state)) !== null;
+    const pending: unknown = window.opener[APPROVAL_MESSAGE];
+    return typeof pending === "function" && pending(state) === true;
   } catch {
     return false;
   }

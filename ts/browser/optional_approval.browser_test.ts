@@ -65,7 +65,7 @@ test("an app asks for an optional capability once on load, and when used, in pla
           request: module.base.OptionalCaller.request,
           auth: {
             clientId: params.get("clientId"),
-            redirectTo: location.origin + "/callback",
+            redirectTo: location.origin + (params.get("approval") === "popup" ? "/approved" : "/callback"),
             approval: params.get("approval"),
           },
           onAuthRequired: ({ loginUrl }) => { asked.push(loginUrl); },
@@ -96,6 +96,25 @@ test("an app asks for an optional capability once on load, and when used, in pla
       });
       console.log("use ready");
     `;
+    // `/approved`, where the approval popup lands, connects the way any page
+    // of the app does and reports to its opener what that returned.
+    const issued = { issuer: "", clientId: "" };
+    const approvedPage = () => `
+      const module = await import("/app.js");
+      const connected = await module.TrellisClient.connect({
+        trellisUrl: ${JSON.stringify(issued.issuer)},
+        request: module.base.OptionalCaller.request,
+        auth: {
+          clientId: ${JSON.stringify(issued.clientId)},
+          redirectTo: location.origin + "/approved",
+        },
+      });
+      // The opener closes this popup as soon as it hears from it, so the
+      // outcome goes to the opener, where the test reads it.
+      window.opener.approvedOutcome = connected.isErr()
+        ? connected.error.reason ?? connected.error.name
+        : "connected";
+    `;
     const server = createServer((request, response) => {
       const path = new URL(request.url ?? "/", "http://localhost").pathname;
       const script = path === "/app.js";
@@ -105,8 +124,8 @@ test("an app asks for an optional capability once on load, and when used, in pla
       response.end(
         script
           ? source
-          : path === "/use"
-            ? `<!doctype html><title>Optional approval</title><script type="module">${use}</script>`
+          : path === "/use" || path === "/approved"
+            ? `<!doctype html><title>Optional approval</title><script type="module">${path === "/use" ? use : approvedPage()}</script>`
             : "<!doctype html><title>Optional approval</title>",
       );
     });
@@ -138,13 +157,14 @@ test("an app asks for an optional capability once on load, and when used, in pla
         const page = await profile.newPage();
         const clientId = ulid();
         const context = { issuer: runtime.trellisUrl, origin, clientId };
+        Object.assign(issued, { issuer: runtime.trellisUrl, clientId });
         try {
           await runtime.callAdminRpc("authOAuthClientsPut", {
             clientId,
             kind: "browser",
             title: "Optional approval",
             description: "Real browser optional approval acceptance",
-            redirectUris: [`${origin}/callback`],
+            redirectUris: [`${origin}/callback`, `${origin}/approved`],
             development: true,
             impliedConsent: [],
             expectedRevision: 0n,
@@ -290,10 +310,26 @@ test("an app asks for an optional capability once on load, and when used, in pla
             }));
             const clicked = async () => {
               const settled = await use.evaluate(async () => {
-                const result: unknown = await Reflect.get(window, "clicked");
+                // A popup that lost its approval would leave the call waiting
+                // for ten minutes.
+                const result: unknown = await Promise.race([
+                  Reflect.get(window, "clicked"),
+                  new Promise((resolve) =>
+                    setTimeout(() => resolve("still waiting"), 30_000),
+                  ),
+                ]);
                 const asked: unknown = Reflect.get(window, "asked");
+                const approvedOutcome: unknown = Reflect.get(
+                  window,
+                  "approvedOutcome",
+                );
                 await Reflect.get(window, "closeClient")();
-                return { result, asked, location: location.href };
+                return {
+                  result,
+                  asked,
+                  approvedOutcome,
+                  location: location.href,
+                };
               });
               await use.close();
               return settled;
@@ -324,7 +360,27 @@ test("an app asks for an optional capability once on load, and when used, in pla
           assert.match(String(redirected.asked[0]), /authorization_details/);
 
           // By popup: the click's call asks in a popup and goes through once
-          // approved, on the same grant and without leaving the page.
+          // approved, on the same grant and without leaving the page. That
+          // holds with localStorage full, and with the app's page throttled
+          // the way a browser throttles a background tab, so it can't spot
+          // the popup landing in time: the popup's own page knows it's the
+          // approval from the window that opened it.
+          await profile.addInitScript(() => {
+            const setItem = Storage.prototype.setItem;
+            Storage.prototype.setItem = function (key, value) {
+              if (this === localStorage)
+                throw new DOMException("full", "QuotaExceededError");
+              setItem.call(this, key, value);
+            };
+            if (location.pathname !== "/use") return;
+            const setInterval = window.setInterval;
+            Reflect.set(
+              window,
+              "setInterval",
+              (handler: TimerHandler, timeout?: number, ...rest: unknown[]) =>
+                setInterval(handler, Math.max(timeout ?? 0, 10_000), ...rest),
+            );
+          });
           const popping = await openUse("popup");
           assert.deepEqual(popping.automatic, {
             failed: true,
@@ -336,6 +392,7 @@ test("an app asks for an optional capability once on load, and when used, in pla
           const popup = await opened;
           await approveConsentIfRequired(popup, 15_000);
           const approved = await popping.clicked();
+          assert.equal(approved.approvedOutcome, "OAuthApprovalWindow");
           assert.deepEqual(approved.result, {
             value: { value: "popup" },
             grant: popping.grant,
