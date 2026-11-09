@@ -61,12 +61,12 @@ tower-http = { workspace = true, features = ["cors"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 trellis-protocol.workspace = true
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.27" }
-trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0-rc.27" }
-trellis-events-runtime = { path = "../events-runtime", version = "0.100.0-rc.27" }
-trellis-idl = { path = "../idl", version = "0.100.0-rc.27" }
-trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0-rc.27" }
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.27" }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.28" }
+trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0-rc.28" }
+trellis-events-runtime = { path = "../events-runtime", version = "0.100.0-rc.28" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.28" }
+trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0-rc.28" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.28" }
 ulid.workspace = true
 url.workspace = true
 

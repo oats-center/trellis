@@ -14,7 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 syn = { version = "3.0.9", features = ["full"] }
 thiserror.workspace = true
-trellis-idl = { path = "../idl", version = "0.100.0-rc.27" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.28" }
 trellis-protocol.workspace = true
 toml.workspace = true
 

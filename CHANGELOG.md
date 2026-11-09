@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.28] - 2026-11-09
+
 ### Fixed
 
 - An approval popup recognizes itself by asking the window that opened it,
