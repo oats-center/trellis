@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.30] - 2026-11-09
+
 ### Fixed
 
 - A service whose API an administrator force-replaced can connect again and
@@ -17,6 +19,12 @@ and this project adheres to
   never present itself and only `trellis svc apply` recovered it. Its
   instances now connect with only the right to submit their build, which
   installs without approval when it asks for nothing new.
+
+### Security
+
+- Trellis builds with SQLite 3.54.1 (`rusqlite` 0.41.1), which fixes
+  CVE-2026-119375 (RUSTSEC-2026-0459): before 3.54.0, opening a database with
+  a `-wal` file of a different page size could return uninitialized memory.
 
 ## [0.100.0-rc.29] - 2026-11-09
 

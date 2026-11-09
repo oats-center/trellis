@@ -531,7 +531,7 @@ impl SqliteAuthorizationStore {
     /// Takes an ordinarily initialized platform connection. Initialization and
     /// schema checks remain owned by the normal storage migration runner.
     pub(crate) fn from_connection(
-        connection: rusqlite::Connection,
+        mut connection: rusqlite::Connection,
         signer: SigningKey,
         settings: AuthSettings,
         custody_directory: PathBuf,
