@@ -45,9 +45,9 @@ fi
 work="$(mktemp -d "$dest/dex-image.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 registry=https://ghcr.io/v2/dexidp/dex
-token="$(curl -fsSL "https://ghcr.io/token?scope=repository:dexidp/dex:pull" | jq -r .token)"
+token="$(curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 "https://ghcr.io/token?scope=repository:dexidp/dex:pull" | jq -r .token)"
 get() {
-  curl -fsSL -H "Authorization: Bearer $token" -H "Accept: $1" "$2"
+  curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 -H "Authorization: Bearer $token" -H "Accept: $1" "$2"
 }
 digest="$(get "application/vnd.oci.image.index.v1+json" "$registry/manifests/$DEX_VERSION" |
   jq -r --arg arch "$arch" \
