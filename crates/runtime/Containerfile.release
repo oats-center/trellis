@@ -37,7 +37,7 @@ RUN apt-get update \
          exit 1; \
        fi \
     && url="https://github.com/nats-io/nats-server/releases/download/v${version}/nats-server-v${version}-linux-${TARGETARCH}.tar.gz" \
-    && curl --fail --location --retry 3 --output /tmp/nats-server.tar.gz "$url" \
+    && curl --fail --location --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 --output /tmp/nats-server.tar.gz "$url" \
     && actual="$(sha256sum /tmp/nats-server.tar.gz | awk '{print $1}')" \
     && if [ "$actual" != "$sha" ]; then \
          echo "sha256 mismatch for nats-server ${asset}: expected ${sha}, got ${actual}" >&2; \
