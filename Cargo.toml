@@ -75,7 +75,7 @@ panic = "abort"
 strip = "symbols"
 
 [workspace.package]
-version = "0.100.0-rc.28"
+version = "0.100.0-rc.29"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/oats-center/trellis"

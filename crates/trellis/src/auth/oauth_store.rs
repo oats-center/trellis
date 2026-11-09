@@ -211,7 +211,7 @@ impl NativeCredentialLease {
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+            use std::os::unix::fs::DirBuilderExt;
             if !directory.is_absolute() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -248,22 +248,6 @@ impl NativeCredentialLease {
                 .mode(0o700)
                 .create(directory)?;
             private_metadata(&fs::symlink_metadata(directory)?, true)?;
-            // A writable non-sticky ancestor could let another user replace the
-            // entire credential directory despite its private leaf permissions.
-            // SAFETY: geteuid has no arguments, memory access, or failure result.
-            let owner = unsafe { libc::geteuid() };
-            for parent in directory.ancestors().skip(1) {
-                let metadata = fs::symlink_metadata(parent)?;
-                if !metadata.is_dir()
-                    || (metadata.uid() != owner && metadata.uid() != 0)
-                    || (metadata.mode() & 0o022 != 0 && metadata.mode() & 0o1000 == 0)
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "unsafe OAuth custody ancestor",
-                    ));
-                }
-            }
             let identity = URL_SAFE_NO_PAD.encode(Sha256::digest(
                 serde_json::to_vec(&scope).map_err(io::Error::other)?,
             ));

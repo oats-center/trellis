@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.29] - 2026-11-09
+
+### Fixed
+
+- `trellis login` and other native clients no longer refuse to sign in
+  because a folder above their token folder, such as the home folder or
+  `~/.config`, is writable by its group or owned by another user. They failed
+  with `unsafe OAuth custody ancestor`. The token folder itself must still be
+  private to its owner, and the token files owner-only and never opened
+  through a symlink.
+
 ## [0.100.0-rc.28] - 2026-11-09
 
 ### Fixed

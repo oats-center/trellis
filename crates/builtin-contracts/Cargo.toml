@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 miette.workspace = true
-trellis-idl = { path = "../idl", version = "0.100.0-rc.28" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.29" }
 
 [lints]
 workspace = true

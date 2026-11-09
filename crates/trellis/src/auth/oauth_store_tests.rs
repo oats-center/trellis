@@ -100,3 +100,39 @@ fn native_custody_refuses_unsafe_existing_directory_without_chmod_or_overwrite()
         0o755
     );
 }
+
+#[test]
+fn native_custody_works_under_a_folder_its_group_can_write() {
+    use std::os::unix::fs::PermissionsExt;
+    // Images that give each user a private group often leave home or
+    // ~/.config group-writable. Custody depends only on its own folder and
+    // files being private.
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("config");
+    fs::create_dir(&config).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o775)).unwrap();
+    let root = config.join("trellis/oauth");
+    let scope = NativeCredentialScope {
+        issuer: "https://oauth.example".into(),
+        instance_id: "one".into(),
+        account: "public".into(),
+        client_id: "native-cli".into(),
+        credential_handle: ulid::Ulid::generate(),
+    };
+    let mut lease = NativeCredentialLease::lock(&root, scope.clone()).unwrap();
+    lease
+        .install(NativeOAuthGrant {
+            principal_id: "user-one".into(),
+            oauth_grant_id: "grant".into(),
+            login_session_id: "login".into(),
+            refresh_token: "rotating-one".into(),
+        })
+        .unwrap();
+    drop(lease);
+    assert_eq!(
+        fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let mut reopened = NativeCredentialLease::lock(&root, scope).unwrap();
+    assert_eq!(reopened.begin_rotation().unwrap(), "rotating-one");
+}
