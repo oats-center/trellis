@@ -42,7 +42,7 @@ url="https://github.com/nats-io/nats-server/releases/download/v$version/nats-ser
 dest="$(cd "$dest" && pwd)"
 work="$(mktemp -d "$dest/.nats.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
-curl -fsSL --retry 3 --output "$work/nats.tar.gz" "$url"
+curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 --output "$work/nats.tar.gz" "$url"
 actual="$(sha256sum "$work/nats.tar.gz" | cut -d ' ' -f 1)"
 [[ "$actual" == "$expected" ]] || {
   echo "checksum mismatch for $url: expected $expected, got $actual" >&2
