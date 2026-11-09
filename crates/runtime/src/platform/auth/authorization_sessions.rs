@@ -295,6 +295,31 @@ pub(super) fn credential_snapshot(
             let Some((principal, deployment, instance, participant, kind, deadline)) = row else {
                 return claim_snapshot(connection, identity);
             };
+            // After an administrator replaces an API the deployment provides,
+            // its installed build no longer answers for the accepted one. The
+            // service may then only present its build, which installs itself
+            // when it matches.
+            let replaced: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_deployment_bindings b, \
+                json_each(b.provided_apis_json) p \
+                LEFT JOIN auth_accepted_apis a \
+                ON a.api_id=json_extract(p.value,'$.api_id') \
+                WHERE b.deployment_id=?1 \
+                AND a.generation IS NOT json_extract(p.value,'$.generation'))",
+                [&deployment],
+                |row| row.get(0),
+            )?;
+            if replaced && kind == "service" {
+                return submit_only(
+                    principal,
+                    SessionBinding::Service {
+                        deployment_id: deployment,
+                        instance_id: instance,
+                        participant_id: participant,
+                    },
+                    deadline.unwrap_or(i64::MAX),
+                );
+            }
             let projection = Arc::new(super::native_projection::project_instance(
                 connection, &instance, now,
             )?);
@@ -432,11 +457,37 @@ fn claim_snapshot(
         )
         .optional()?
         .ok_or(AuthError::Denied)?;
+    submit_only(
+        principal,
+        SessionBinding::Service {
+            deployment_id: claim.clone(),
+            instance_id: claim,
+            participant_id: String::new(),
+        },
+        i64::MAX,
+    )
+}
+
+/// A service session that may only submit its build and ask how that went. Its
+/// bootstrap names no participant digest, so the SDK always submits.
+fn submit_only(
+    principal: String,
+    binding: SessionBinding,
+    not_after: i64,
+) -> Result<CredentialSnapshot, AuthError> {
+    let SessionBinding::Service {
+        deployment_id,
+        participant_id,
+        ..
+    } = &binding
+    else {
+        return Err(AuthError::Denied);
+    };
     let required = vec![super::deployments::SERVICE_UPDATE_CAPABILITY.to_owned()];
     let resources = serde_json::to_value(trellis_rs::service::ServiceResourceBindings::default())?;
     let projection = Arc::new(NativeInstanceProjection {
-        deployment_id: claim.clone(),
-        participant_id: String::new(),
+        deployment_id: deployment_id.clone(),
+        participant_id: participant_id.clone(),
         participant_digest: String::new(),
         principal_id: principal.clone(),
         graph: None,
@@ -449,11 +500,7 @@ fn claim_snapshot(
     Ok(CredentialSnapshot {
         principal_id: principal,
         principal_kind: PrincipalKind::Service,
-        binding: SessionBinding::Service {
-            deployment_id: claim.clone(),
-            instance_id: claim,
-            participant_id: String::new(),
-        },
+        binding,
         login_session_id: None,
         selection: CapabilitySelection {
             required,
@@ -463,7 +510,7 @@ fn claim_snapshot(
         consent_deadlines: BTreeMap::new(),
         providers: vec![],
         resource_bindings_digest: Some(digest(&resources)?),
-        not_after: i64::MAX,
+        not_after,
         native: Some(projection),
     })
 }

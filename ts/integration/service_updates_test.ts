@@ -18,9 +18,12 @@ import { test } from "node:test";
 import nacl from "tweetnacl";
 import { ulid } from "ulid";
 
+import { participants as breakingProviders } from "../../integration/fixtures/client-upgrade-breaking/packages/client-upgrade/index.js";
+import { participants as upgradeProviders } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as extendedParticipants } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
 import { spawnTracked } from "./_support/process.ts";
+import { types } from "../packages/trellis-testkit/trellis/index.js";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
 const DEPLOYMENT = "service-updates";
@@ -114,6 +117,57 @@ test("a service update waits for approval only when it asks for new access", asy
       value: "before rollback",
     });
     await fixed.stop();
+  });
+});
+
+test("a build that implements a force-replaced API connects and installs itself", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const base = upgradeProviders.Provider.participant;
+    const breaking = breakingProviders.Provider.participant;
+    await runtime.deployments.create({ id: "replaced", contract: base });
+    await runtime.contracts.apply({ deployment: "replaced", contract: base });
+    const instance = await runtime.services.createInstance({
+      name: "replaced",
+      deployment: "replaced",
+      contract: base,
+    });
+    const connect = <P extends typeof base | typeof breaking>(participant: P) =>
+      TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant,
+        seed: instance.seed,
+      }).orThrow();
+    await (await connect(base)).stop();
+
+    // An administrator replaces the API the deployment provides with a
+    // definition its running build no longer matches.
+    const { review } = await runtime.callAdminRpc("authApisReview", {
+      apiId: breaking.implements[0].identity,
+      packageEvidence: types.AuthPackageEvidenceCodec.decode(
+        breaking.packageEvidence,
+      ),
+    });
+    assert.equal(review.compatible, false);
+    await runtime.callAdminRpc("authApisForceReplace", {
+      reviewId: review.reviewId,
+      canonicalDigest: review.canonicalDigest,
+      expectedGeneration: review.currentGeneration ?? 0n,
+      expectedAcceptedRevision: review.currentAcceptedRevision ?? 0n,
+      acknowledgeBreakage: true,
+      acknowledgeConsentImpact: true,
+      roleEdits: [],
+      mappingEdits: [],
+      idempotencyKey: ulid(),
+    });
+
+    // The build that implements the replacement asks for nothing new, so it
+    // installs itself without an administrator.
+    const updated = await connect(breaking);
+    await updated.stop();
+    const { items } = await runtime.callAdminRpc("authServiceUpdatesList", {});
+    assert.equal(items[0]?.state, "applied");
+    // From then on it connects under its own installed revision.
+    await (await connect(breaking)).stop();
   });
 });
 

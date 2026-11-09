@@ -8,6 +8,16 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A service whose API an administrator force-replaced can connect again and
+  install the build that implements the replacement. Admission refused every
+  instance of its deployment with `Authorization Violation`, since the
+  installed build no longer matched the accepted API, so the new build could
+  never present itself and only `trellis svc apply` recovered it. Its
+  instances now connect with only the right to submit their build, which
+  installs without approval when it asks for nothing new.
+
 ## [0.100.0-rc.29] - 2026-11-09
 
 ### Fixed

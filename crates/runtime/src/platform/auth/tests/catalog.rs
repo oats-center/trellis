@@ -101,10 +101,26 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
             Err(error) => panic!("unexpected concurrent provider issuance failure: {error}"),
         }
     }
-    assert!(matches!(
-        issue_authority(&f.store, &provider, None, NOW + 2),
-        Err(AuthError::Denied)
-    ));
+    // The replaced build no longer provides the API: it may only submit a
+    // build that does.
+    let fenced = issue_authority(&f.store, &provider, None, NOW + 2).unwrap();
+    assert!(!fenced
+        .authority
+        .unsigned
+        .apis
+        .iter()
+        .any(|api| api.api_id == f.api));
+    assert!(fenced.authority.unsigned.provider_bindings.is_empty());
+    assert_eq!(
+        fenced
+            .authority
+            .unsigned
+            .capabilities
+            .iter()
+            .map(|cap| cap.capability_id.as_str())
+            .collect::<Vec<_>>(),
+        ["trellis.auth.v1:serviceUpdates.submit"]
+    );
     let user = issue_authority(&f.store, &f.admission, None, NOW + 2).unwrap();
     assert!(user
         .authority

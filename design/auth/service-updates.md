@@ -59,6 +59,12 @@ the same install, started by the service.
 6. An implemented API whose definition changed incompatibly with the accepted
    one fails the submission. That change breaks callers and needs an
    administrator to force-replace the API first.
+7. After a force-replace, the deployment's installed build no longer answers
+   for the accepted API. Admission then treats its instances like a waiting
+   claim: their sessions hold only `serviceUpdates.submit` and their bootstrap
+   names no participant digest. A build that implements the replacement
+   submits itself and installs like any other update; the old build's
+   submission fails until it is replaced.
 
 Moving an instance re-grants its direct capabilities to match the new revision's
 selection, removes capabilities the revision no longer selects, and enqueues
