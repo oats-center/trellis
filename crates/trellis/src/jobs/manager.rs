@@ -441,6 +441,20 @@ where
         self.admit(submission, true).await
     }
 
+    /// The outcome of dispatching a prepared job whose Created event already
+    /// exists: it was admitted the first time, and key state must not change.
+    pub fn already_admitted(
+        &self,
+        submission: PreparedJobSubmission,
+    ) -> Result<JobSubmitOutcome<Job>, JobManagerError<P::Error>> {
+        let queue = self.queue_binding(&submission.queue)?.clone();
+        let job = self.job_from_submission(&queue, submission)?;
+        let key = self
+            .key_policy_for_job(&queue, &job)?
+            .map(|policy| policy.key);
+        Ok(JobSubmitOutcome::Accepted { job, key })
+    }
+
     async fn admit(
         &self,
         submission: PreparedJobSubmission,

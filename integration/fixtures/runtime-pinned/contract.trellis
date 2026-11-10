@@ -85,6 +85,7 @@ service Provider {
     retry { attempts 2; backoff [250ms]; }
   }
   job keyedWork { title "Keyed work"; description "Runtime keyed queue acceptance."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }
+  job rejectingWork { title "Rejecting work"; description "A keyed queue that refuses work while its key is busy."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy reject; } }
   job replayWork { title "Replay work"; description "Keyed retry and dead-letter replay acceptance."; payload Value; result Value; retry { attempts 2; backoff [250ms]; } key_concurrency { path value; policy queue; } }
   job restartWork { title "Restart work"; description "Automatic retry and crashed-worker redelivery."; payload Value; result Value; deadline 60s; retry { attempts 3; backoff [250ms, 250ms]; } }
   job preStartedWork { title "Pre-started work"; description "Key acquisition crash recovery."; payload KeyedValue; result KeyedValue; deadline 5s; key_concurrency { path key; policy queue; } }

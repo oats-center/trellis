@@ -8,6 +8,21 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Cancelling a deferred Rust operation now enters its handler again to clean up
+  and settles it as cancelled. Before, the operation stayed in `cancelling`.
+- Dispatching a keyed Rust outbox job again after it finished no longer leaves
+  a reservation behind that refuses later jobs with the same key.
+- Rust job submission keeps its transport lease until publishing has finished,
+  so a connection replaced mid-submission no longer drains under it.
+- A Rust health check that panics before returning its future is reported as
+  failed and no longer stops the service's heartbeats.
+- Rust peer reconciliation no longer keeps every completed request in memory
+  until its connection closes.
+- The Dex test download starts a retried transfer over instead of appending to
+  the partial response.
+
 ## [0.100.0-rc.34] - 2026-11-10
 
 ### Added

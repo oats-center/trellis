@@ -165,7 +165,9 @@ impl ServiceHealth {
         let checks =
             futures_util::future::join_all(checks.into_iter().map(|(name, check)| async move {
                 let started = Instant::now();
-                let result = std::panic::AssertUnwindSafe(check())
+                // Calling the check is inside the guard too: it can panic before
+                // it returns a future.
+                let result = std::panic::AssertUnwindSafe(async { check().await })
                     .catch_unwind()
                     .await
                     .unwrap_or_else(|_| ServiceHealthCheck::failed("health check panicked"));

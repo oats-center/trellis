@@ -106,6 +106,21 @@ async fn heartbeats_carry_the_services_version_info_and_current_check_results() 
     assert_eq!(removed["reportedStatus"], "healthy");
     assert_eq!(removed["participant"]["version"], "1.4.2");
 
+    // A check that panics before it returns a future is reported as failed,
+    // and the heartbeats carry on.
+    let broken = service.health().add("broken", || {
+        if true {
+            panic!("the check's lock is poisoned");
+        }
+        std::future::ready(ServiceHealthCheck::ok())
+    });
+    let panicked = sample(|sample| sample["reportedStatus"] == "unhealthy").await;
+    assert_eq!(panicked["checks"][0]["name"], "broken");
+    assert_eq!(panicked["checks"][0]["status"], "failed");
+    assert_eq!(panicked["checks"][0]["error"], "health check panicked");
+    broken.remove();
+    sample(|sample| sample["reportedStatus"] == "healthy").await;
+
     drop(health);
     drop(client);
     drop(service);

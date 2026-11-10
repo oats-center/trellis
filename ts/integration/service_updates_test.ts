@@ -133,13 +133,22 @@ test("a build that implements a force-replaced API connects and installs itself"
       deployment: "replaced",
       contract: base,
     });
-    const connect = <P extends typeof base | typeof breaking>(participant: P) =>
+    const second = await runtime.services.createInstance({
+      name: "replaced-second",
+      deployment: "replaced",
+      contract: base,
+    });
+    const connect = <P extends typeof base | typeof breaking>(
+      participant: P,
+      seed = instance.seed,
+    ) =>
       TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
         participant,
-        seed: instance.seed,
+        seed,
       }).orThrow();
     await (await connect(base)).stop();
+    await (await connect(base, second.seed)).stop();
 
     // An administrator replaces the API the deployment provides with a
     // definition its running build no longer matches.
@@ -169,6 +178,12 @@ test("a build that implements a force-replaced API connects and installs itself"
     const { items } = await runtime.callAdminRpc("authServiceUpdatesList", {});
     assert.equal(items[0]?.state, "applied");
     // From then on it connects under its own installed revision.
+    await (await connect(breaking)).stop();
+
+    // The rollout's next replica is still pinned to the replaced build, though
+    // the deployment is already current. It gets the same way through.
+    await (await connect(breaking, second.seed)).stop();
+    await (await connect(breaking, second.seed)).stop();
     await (await connect(breaking)).stop();
   });
 });

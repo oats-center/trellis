@@ -233,7 +233,8 @@ reference; a caller restores it with the generated operation's `control(ref)`.
 
 A handler that hands its work elsewhere, such as to a job, calls
 `control.defer()` and returns `Ok(())`: the instance keeps the operation's lease
-until it ends. Returning `Ok(())` without a terminal state and without deferring
+until it ends. A caller's cancellation enters the handler again with cancellation
+already set, and its return settles the operation as cancelled. Returning `Ok(())` without a terminal state and without deferring
 lets the lease lapse, and recovery runs the handler again. `register_<op>`
 returns an `OperationRegistration`. Its `control(id)` returns the owner-fenced
 `OperationControl` of an execution this instance runs, including a deferred one,

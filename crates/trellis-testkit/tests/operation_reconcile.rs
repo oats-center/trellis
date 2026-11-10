@@ -124,3 +124,65 @@ async fn only_the_owner_controls_a_deferred_operation_and_any_replica_reconciles
     }
     runtime.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_deferred_operation_enters_its_handler_again_to_clean_up() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("cancelled deferral")
+        .await
+        .unwrap();
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let (deferred, mut deferrals) = tokio::sync::mpsc::unbounded_channel();
+    let (cleaned, mut cleanups) = tokio::sync::mpsc::unbounded_channel();
+    let _registration = Provider::new(&mut service)
+        .runtime_trellis_runtime_v1()
+        .register_work(move |_context, input, operation| {
+            let deferred = deferred.clone();
+            let cleaned = cleaned.clone();
+            async move {
+                if operation.cancellation().is_cancelled() {
+                    let _ = cleaned.send(input.value);
+                    return Ok::<_, ServerError>(());
+                }
+                operation.started().await?;
+                operation.defer();
+                let _ = deferred.send(());
+                Ok(())
+            }
+        });
+    let run = tokio::spawn(service.run());
+    let caller = runtime.register_client::<Request>("caller").await.unwrap();
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller.connect_options())
+            .await
+            .unwrap(),
+    );
+    let api = caller.runtime_trellis_runtime_v1();
+    let work = api.work();
+    let limit = Duration::from_secs(30);
+
+    let operation = work.start(&value("to undo")).await.unwrap();
+    tokio::time::timeout(limit, deferrals.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    operation.cancel().await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(limit, cleanups.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        "to undo"
+    );
+    let finished = tokio::time::timeout(limit, operation.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(finished.state, CallerState::Cancelled);
+
+    run.abort();
+    runtime.shutdown().await.unwrap();
+}

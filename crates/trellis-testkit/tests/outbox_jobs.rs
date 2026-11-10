@@ -1,6 +1,7 @@
 //! A job stored in an outbox runs once, even when its dispatch is repeated.
 use std::time::Duration;
 
+use runtime_trellis::participants::runtime_trellis_provider::types::KeyedValue;
 use runtime_trellis::participants::runtime_trellis_provider::{Participant, Provider};
 use runtime_trellis::types::Value;
 use trellis_rs::client::{
@@ -89,6 +90,184 @@ async fn an_outboxed_job_runs_once_when_a_crashed_dispatcher_submits_it_again() 
             (later.identity().id.clone(), "later".to_owned()),
         ]
     );
+    drop(service);
+    runtime.shutdown().await.unwrap();
+}
+
+async fn jobs_admin(
+    runtime: &mut TrellisTestRuntime,
+) -> trellis_runtime_apis::apis::trellis_jobs_v1::Client {
+    let admin = runtime
+        .register_client::<runtime_trellis::apps::runtime_trellis_jobs_admin::Request>("admin")
+        .await
+        .unwrap();
+    trellis_runtime_apis::apis::trellis_jobs_v1::Client::from_generated(
+        trellis_rs::generated::Client::connect_user(admin.connect_options())
+            .await
+            .unwrap(),
+    )
+}
+
+async fn next_run(runs: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+    tokio::time::timeout(Duration::from_secs(30), runs.recv())
+        .await
+        .expect("the job ran")
+        .unwrap()
+}
+
+fn keyed(key: &str, value: &str) -> KeyedValue {
+    KeyedValue {
+        key: key.into(),
+        value: value.into(),
+        extra: Default::default(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dispatching_a_finished_keyed_job_again_leaves_its_key_free() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("keyed outbox")
+        .await
+        .unwrap();
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let (ran, mut runs) = tokio::sync::mpsc::unbounded_channel();
+    let mut provider = Provider::new(&mut service);
+    // This queue refuses work while its key is taken, so one leftover
+    // reservation would refuse every later job.
+    provider
+        .register_rejecting_work(move |job| {
+            let ran = ran.clone();
+            async move {
+                let _ = ran.send(job.payload().value.clone());
+                Ok::<_, trellis_rs::jobs::JobProcessError<String>>(job.payload().clone())
+            }
+        })
+        .await
+        .unwrap();
+    let jobs = provider.jobs_client();
+    let dispatcher = jobs.outbox_dispatcher();
+    let admin = jobs_admin(&mut runtime).await;
+
+    let prepared = jobs
+        .prepare_rejecting_work(keyed("field", "first"))
+        .unwrap();
+    let first = dispatcher.dispatch_job(prepared.clone()).await.unwrap();
+    let OutboxJobOutcome::Accepted { job, .. } = first else {
+        panic!("the first dispatch was not accepted: {first:?}");
+    };
+    assert_eq!(next_run(&mut runs).await, "first");
+    let lookup = serde_json::from_value(serde_json::json!({
+        "service": job.service,
+        "type": job.job_type,
+        "key": "field",
+    }))
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(key) = admin.get_key(&lookup).await {
+                let key = serde_json::to_value(&key).unwrap();
+                if key["active"] == serde_json::json!([]) && key["queued"] == serde_json::json!([])
+                {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the finished job freed its key");
+
+    // The dispatcher crashed before marking its record, and sends it again.
+    let again = dispatcher.dispatch_job(prepared.clone()).await.unwrap();
+    assert!(
+        matches!(&again, OutboxJobOutcome::Accepted { job, .. } if job.id == prepared.job_id()),
+        "{again:?}"
+    );
+
+    jobs.create_rejecting_work(keyed("field", "next"))
+        .await
+        .unwrap();
+    assert_eq!(next_run(&mut runs).await, "next");
+    drop(service);
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_outbox_job_can_be_found_as_skipped_by_its_prepared_id() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("refused outbox")
+        .await
+        .unwrap();
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let (started, mut holding) = tokio::sync::mpsc::unbounded_channel();
+    let release = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let mut provider = Provider::new(&mut service);
+    provider
+        .register_rejecting_work({
+            let release = std::sync::Arc::clone(&release);
+            move |job| {
+                let started = started.clone();
+                let release = std::sync::Arc::clone(&release);
+                async move {
+                    let _ = started.send(());
+                    drop(release.acquire().await.unwrap());
+                    Ok::<_, trellis_rs::jobs::JobProcessError<String>>(job.payload().clone())
+                }
+            }
+        })
+        .await
+        .unwrap();
+    let jobs = provider.jobs_client();
+    let admin = jobs_admin(&mut runtime).await;
+
+    jobs.create_rejecting_work(keyed("field", "holder"))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), holding.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let prepared = jobs
+        .prepare_rejecting_work(keyed("field", "refused"))
+        .unwrap();
+    let outcome = jobs
+        .outbox_dispatcher()
+        .dispatch_job(prepared.clone())
+        .await
+        .unwrap();
+    assert!(
+        matches!(outcome, OutboxJobOutcome::Rejected { .. }),
+        "{outcome:?}"
+    );
+
+    let request = serde_json::from_value(serde_json::json!({})).unwrap();
+    let id = prepared.job_id();
+    let found = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Ok(listed) = admin.query(&request).await {
+                let listed = serde_json::to_value(&listed).unwrap();
+                let job = listed["items"]
+                    .as_array()
+                    .and_then(|items| items.iter().find(|job| job["id"] == id).cloned());
+                if let Some(job) = job {
+                    break job;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the refused job is listed");
+    assert_eq!(found["state"], "skipped");
+
+    release.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
     drop(service);
     runtime.shutdown().await.unwrap();
 }

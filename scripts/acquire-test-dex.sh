@@ -45,19 +45,23 @@ fi
 work="$(mktemp -d "$dest/dex-image.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 registry=https://ghcr.io/v2/dexidp/dex
-token="$(curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 "https://ghcr.io/token?scope=repository:dexidp/dex:pull" | jq -r .token)"
+# A retry that writes to a pipe or redirection appends to the failed attempt's
+# bytes. Only curl's own --output starts over, so every response lands in a file.
+retry=(--retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300)
+curl -fsSL "${retry[@]}" --output "$work/token.json" "https://ghcr.io/token?scope=repository:dexidp/dex:pull"
+token="$(jq -r .token "$work/token.json")"
 get() {
-  curl -fsSL --retry 10 --retry-all-errors --retry-delay 10 --retry-max-time 300 -H "Authorization: Bearer $token" -H "Accept: $1" "$2"
+  curl -fsSL "${retry[@]}" -H "Authorization: Bearer $token" -H "Accept: $1" --output "$3" "$2"
 }
-digest="$(get "application/vnd.oci.image.index.v1+json" "$registry/manifests/$DEX_VERSION" |
-  jq -r --arg arch "$arch" \
-    '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest' |
-  head -n1)"
+get "application/vnd.oci.image.index.v1+json" "$registry/manifests/$DEX_VERSION" "$work/index.json"
+digest="$(jq -r --arg arch "$arch" \
+  '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest' \
+  "$work/index.json" | head -n1)"
 [[ -n "$digest" ]] || { echo "Dex $DEX_VERSION has no linux/$arch image" >&2; exit 1; }
 # The binary is in the top layers; search from the last one.
-for layer in $(get "application/vnd.oci.image.manifest.v1+json" "$registry/manifests/$digest" |
-  jq -r '.layers | reverse | .[].digest'); do
-  get "*/*" "$registry/blobs/$layer" > "$work/layer.tar.gz"
+get "application/vnd.oci.image.manifest.v1+json" "$registry/manifests/$digest" "$work/manifest.json"
+for layer in $(jq -r '.layers | reverse | .[].digest' "$work/manifest.json"); do
+  get "*/*" "$registry/blobs/$layer" "$work/layer.tar.gz"
   if tar -xzf "$work/layer.tar.gz" -C "$work" usr/local/bin/dex 2>/dev/null; then
     break
   fi

@@ -629,7 +629,7 @@ impl ServiceHandle {
     where
         D: JobDescriptor,
     {
-        let (manager, queue) = self.job_manager::<D>().await?;
+        let (manager, queue, _lease) = self.job_manager::<D>().await?;
         let job = manager
             .create(D::QUEUE_TYPE, payload)
             .await
@@ -662,7 +662,7 @@ impl ServiceHandle {
     {
         use crate::jobs::manager::JobSubmitOutcome as Submitted;
         use crate::jobs::JobSubmitOutcome;
-        let (manager, queue) = self.job_manager::<D>().await?;
+        let (manager, queue, _lease) = self.job_manager::<D>().await?;
         let job_ref = |job| {
             JobRef::from_runtime(
                 job,
@@ -729,7 +729,7 @@ impl ServiceHandle {
         let schema = D::UPDATE_SCHEMA.ok_or_else(|| JobsError::Message {
             message: format!("jobs queue '{}' does not declare updates", D::QUEUE_TYPE),
         })?;
-        let (_, queue) = self.job_manager::<D>().await?;
+        let (_, queue, _) = self.job_manager::<D>().await?;
         let lease = self
             .client()
             .transport_generations()
@@ -792,6 +792,7 @@ impl ServiceHandle {
         (
             JobManager<TrellisJobEventPublisher, TrellisJobMetaSource>,
             crate::jobs::JobsQueueBinding,
+            crate::client::TransportLease,
         ),
         JobsError,
     >
@@ -808,6 +809,7 @@ impl ServiceHandle {
         (
             JobManager<TrellisJobEventPublisher, TrellisJobMetaSource>,
             crate::jobs::JobsQueueBinding,
+            crate::client::TransportLease,
         ),
         JobsError,
     > {
@@ -851,7 +853,9 @@ impl ServiceHandle {
         } else {
             JobManager::new(publisher, binding.jobs, TrellisJobMetaSource)
         };
-        Ok((manager, queue))
+        // The manager publishes on this generation's connection, so the caller
+        // holds the lease until its submission has finished.
+        Ok((manager, queue, lease))
     }
 
     /// Start a descriptor-backed event listener.
@@ -1091,12 +1095,26 @@ impl crate::client::OutboxDispatcher for ServiceOutboxDispatcher {
             job_type: queue_type.clone(),
             id,
         };
-        let (manager, _) = self
+        // A dispatcher that crashed before marking its record comes back with a
+        // job that may have finished and freed its key slot. Admitting it again
+        // would reserve a slot that no delivery ever clears.
+        let keyed = binding.jobs.queues[&queue_type].key_concurrency.is_some();
+        let created = keyed
+            && crate::jobs::history::read(self.handle.client(), &queue_type, &job_id)
+                .await?
+                .iter()
+                .any(|(_, event)| event.event_type == crate::jobs::types::JobEventType::Created);
+        let (manager, _, _lease) = self
             .handle
             .job_manager_for(&queue_type)
             .await
             .map_err(|error| error.to_string())?;
-        Ok(match manager.dispatch_prepared(job).await {
+        let submitted = if created {
+            manager.already_admitted(job)
+        } else {
+            manager.dispatch_prepared(job).await
+        };
+        Ok(match submitted {
             Ok(Submitted::Accepted { job, key }) => OutboxJobOutcome::Accepted {
                 job: identity(job.id),
                 key,

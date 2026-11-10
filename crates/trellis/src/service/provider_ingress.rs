@@ -458,6 +458,8 @@ impl GenerationIntake for PeerIntake {
                     tokio::select! {
                         _ = retired.wait_for(|retired| *retired) => break,
                         _ = owner_stop.wait_for(|stopped| *stopped) => break,
+                        // A finished answer stays in the set until it is joined.
+                        Some(_) = answering.join_next(), if !answering.is_empty() => {}
                         message = futures_util::StreamExt::next(&mut messages) => {
                             let Some((index, message)) = message else { break };
                             let Some(reply) = message.reply else { continue };

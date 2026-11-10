@@ -906,6 +906,16 @@ where
                                 cancellation_started.get_or_insert_with(std::time::Instant::now);
                                 cancel_sender
                                     .send_replace(Some(OperationCancellationReason::Requested));
+                                // A deferred operation has no handler left to
+                                // see this: enter it again to clean up. Its
+                                // return then settles the cancellation.
+                                if execution.is_none() {
+                                    let stored = current.record.input.clone();
+                                    let Ok(input) = serde_json::from_value(stored) else {
+                                        break "error";
+                                    };
+                                    execution = Some(run_handler(&current.record, input, None));
+                                }
                             }
                             Some(Ok(_)) => {}
                             Some(Err(error)) => {
@@ -3496,7 +3506,9 @@ where
     /// [`OperationRegistration::control`] completes, fails or cancels it, or
     /// [`OperationRegistration::reconcile`] enters the handler again. Without
     /// this, a handler that returns `Ok(())` early lets its lease lapse and
-    /// recovery runs it again.
+    /// recovery runs it again. A caller's cancellation also enters the handler
+    /// again, with [`Self::cancellation`] already set, and its return settles
+    /// the operation as cancelled.
     pub fn defer(&self) {
         self.deferred.store(true, Ordering::SeqCst);
     }
