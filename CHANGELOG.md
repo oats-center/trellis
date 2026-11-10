@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.31] - 2026-11-10
+
 ### Added
 
 - Rust job handlers publish live-only typed updates with
