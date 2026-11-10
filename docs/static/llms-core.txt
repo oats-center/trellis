@@ -985,6 +985,10 @@ reconcile earlier side effects. A retryable cleanup error redelivers after a
 growing delay capped at five minutes; a `failed` one ends the job and records
 why.
 
+Workers ride out a NATS restart, including restarting a `trellis-server --dev`
+installation, and resume on the new connection without restarting the service.
+A job in flight during the outage is delivered again after its ack wait.
+
 Never-started expiration confirms terminal publication before releasing
 recovered key slots, without running handlers; publication failure retains the
 reservation, and terminal redelivery reconciles any remaining slot before

@@ -243,6 +243,8 @@ pub enum RuntimeWorkerError {
     },
     #[error("failed to coordinate keyed job concurrency: {0}")]
     KeyCoordinator(String),
+    #[error("worker panicked")]
+    Panicked,
 }
 
 #[derive(Debug, Clone)]
@@ -697,8 +699,8 @@ where
             Err(error) => {
                 // A retired generation's consumer stream ends with a connection
                 // error as the physical attachment is retired; that is expected,
-                // not a worker fault. A live worker's stream error stays fatal
-                // and is surfaced through host supervision.
+                // not a worker fault. On a live worker the same error is the
+                // broker going away, which the managed slot rides out.
                 if retire
                     .as_ref()
                     .is_some_and(|retire| *retire.borrow() || retire.has_changed().is_err())
@@ -1932,6 +1934,10 @@ impl GenerationIntakeHandle for JobsWorkerIngressHandle {
     }
 }
 
+/// First wait after a failed receive; it doubles up to [`WORKER_RETRY_MAX`].
+const WORKER_RETRY_MIN: Duration = Duration::from_millis(100);
+const WORKER_RETRY_MAX: Duration = Duration::from_secs(5);
+
 /// The logical service job worker host's generation-following intake owner.
 ///
 /// One owner spans the host's whole life: it installs broker-ready durable
@@ -2060,6 +2066,7 @@ where
                 tasks.push(tokio::spawn(async move {
                     let mut publication = owner.manager.subscribe_publication();
                     let mut availability = owner.manager.watch_own_availability();
+                    let mut retry_delay = WORKER_RETRY_MIN;
                     loop {
                         let changed = owner.sources_changed.notified();
                         if owner.cancellation.is_cancelled() {
@@ -2147,28 +2154,55 @@ where
                         )
                         .catch_unwind()
                         .await
-                        .unwrap_or_else(|_| {
-                            Err(RuntimeWorkerError::Process("worker panicked".into()))
-                        });
+                        .unwrap_or(Err(RuntimeWorkerError::Panicked));
                         drop(forward);
-                        if let Err(error) = result {
-                            // Physical loss belongs to the receiving work. It may
-                            // fail its disposition, but cannot be rebound to current.
-                            if !source.forced.is_lease_lost() && !owner.cancellation.is_cancelled()
-                            {
-                                let mut failure = owner
-                                    .failure_message
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner());
-                                if failure.is_none() {
-                                    *failure = Some(format!(
-                                        "queue {queue_type} slot {worker_index}: {error}"
-                                    ));
-                                }
-                                owner.failure.notify_one();
-                                break;
-                            }
+                        let lease_lost = source.forced.is_lease_lost();
+                        // A retiring generation must not wait out this slot's backoff.
+                        drop(reservation);
+                        let Err(error) = result else {
+                            retry_delay = WORKER_RETRY_MIN;
+                            continue;
+                        };
+                        // Physical loss belongs to the receiving work. It may
+                        // fail its disposition, but cannot be rebound to current.
+                        if lease_lost || owner.cancellation.is_cancelled() {
+                            continue;
                         }
+                        // The broker can go away at any step of a receive, usually
+                        // before the connection reports it. Whatever delivery was
+                        // in hand is still unacknowledged, so it comes back.
+                        if matches!(
+                            error,
+                            RuntimeWorkerError::Messages { .. }
+                                | RuntimeWorkerError::Ack(_)
+                                | RuntimeWorkerError::Process(_)
+                                | RuntimeWorkerError::LifecycleRead { .. }
+                                | RuntimeWorkerError::KeyCoordinator(_)
+                        ) {
+                            tracing::warn!(
+                                queue = %queue_type,
+                                slot = worker_index,
+                                %error,
+                                retry_ms = retry_delay.as_millis() as u64,
+                                "job worker receive failed; retrying"
+                            );
+                            tokio::select! {
+                                _ = owner.cancellation.cancelled() => break,
+                                _ = tokio::time::sleep(retry_delay) => {}
+                            }
+                            retry_delay = (retry_delay * 2).min(WORKER_RETRY_MAX);
+                            continue;
+                        }
+                        let mut failure = owner
+                            .failure_message
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        if failure.is_none() {
+                            *failure =
+                                Some(format!("queue {queue_type} slot {worker_index}: {error}"));
+                        }
+                        owner.failure.notify_one();
+                        break;
                     }
                 }));
             }

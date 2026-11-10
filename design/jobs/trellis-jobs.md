@@ -33,6 +33,13 @@ slot proves a finished job's event is readable, and a delivery re-reads the
 job's lifecycle after taking a slot and runs nothing if it has finished. The
 janitor does not settle deadlines or execute application cleanup.
 
+A worker host outlives its broker. A receive that fails because the broker went
+away or a delivery it could not settle does not stop the service: the slot waits
+up to five seconds, doubling from 100 ms, and receives again on the current
+connection. The unacknowledged delivery returns after its ack wait, so a job in
+flight during the outage runs again and handlers must already tolerate that.
+Worker panics and undecodable lifecycle records still stop the host.
+
 Progress ACK maintenance is automatic for accepted keyed and unkeyed deliveries
 at one third of the effective broker acknowledgement wait. It covers preflight,
 handler execution, confirmed lifecycle publication, and source disposition on

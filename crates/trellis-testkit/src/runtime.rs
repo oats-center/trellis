@@ -256,6 +256,67 @@ impl Drop for Infrastructure {
     }
 }
 
+#[derive(Clone, Copy)]
+struct BrokerPorts {
+    nats: u16,
+    monitor: u16,
+    websocket: u16,
+}
+
+/// Starts the broker from the installation's configuration and waits for it to serve.
+async fn start_broker(
+    infrastructure: &mut Infrastructure,
+    nats: &Path,
+    config_dir: &Path,
+    workdir: &Path,
+    ports: BrokerPorts,
+) -> Result<(), TrellisTestError> {
+    infrastructure.nats = Some(Process::spawn(
+        Command::new(nats)
+            .arg("-c")
+            .arg(config_dir.join("nats/nats-1.conf"))
+            .stdin(Stdio::null()),
+        &workdir.join("logs/nats-server.log"),
+    )?);
+    let broker_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        infrastructure
+            .nats
+            .as_mut()
+            .expect("owned broker")
+            .check_startup()?;
+        let mut ready = true;
+        for port in [ports.nats, ports.monitor, ports.websocket] {
+            ready &= tokio::time::timeout(Duration::from_millis(100), async {
+                let socket = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+                if port == ports.nats {
+                    // Another concurrent pre-exec child can still hold a
+                    // reservation listener. TCP connect alone therefore
+                    // cannot prove that the production broker is ready.
+                    let mut info = [0; 5];
+                    Ok::<_, std::io::Error>(
+                        socket.peek(&mut info).await? == info.len() && info == *b"INFO ",
+                    )
+                } else {
+                    Ok(true)
+                }
+            })
+            .await
+            .is_ok_and(|result| result.unwrap_or(false));
+        }
+        if ready {
+            return Ok(());
+        }
+        if Instant::now() >= broker_deadline {
+            return Err(request_timeout(
+                "broker readiness",
+                TrellisTestStage::RuntimeStart,
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 async fn start_once(
     sandbox: Sandbox,
     source: NatsSource,
@@ -348,50 +409,18 @@ async fn start_once(
             ),
         )?;
         infrastructure.port_ownership = Some(lease.release_for_spawn());
-        infrastructure.nats = Some(Process::spawn(
-            Command::new(&distribution.nats)
-                .arg("-c")
-                .arg(config_dir.join("nats/nats-1.conf"))
-                .stdin(Stdio::null()),
-            &workdir.join("logs/nats-server.log"),
-        )?);
-        let broker_deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            infrastructure
-                .nats
-                .as_mut()
-                .expect("owned broker")
-                .check_startup()?;
-            let mut ready = true;
-            for port in [ports.nats, ports.monitor, ports.websocket] {
-                ready &= tokio::time::timeout(Duration::from_millis(100), async {
-                    let socket = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
-                    if port == ports.nats {
-                        // Another concurrent pre-exec child can still hold a
-                        // reservation listener. TCP connect alone therefore
-                        // cannot prove that the production broker is ready.
-                        let mut info = [0; 5];
-                        Ok::<_, std::io::Error>(
-                            socket.peek(&mut info).await? == info.len() && info == *b"INFO ",
-                        )
-                    } else {
-                        Ok(true)
-                    }
-                })
-                .await
-                .is_ok_and(|result| result.unwrap_or(false));
-            }
-            if ready {
-                break;
-            }
-            if Instant::now() >= broker_deadline {
-                return Err(request_timeout(
-                    "broker readiness",
-                    TrellisTestStage::RuntimeStart,
-                ));
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        start_broker(
+            &mut infrastructure,
+            &distribution.nats,
+            &config_dir,
+            &workdir,
+            BrokerPorts {
+                nats: ports.nats,
+                monitor: ports.monitor,
+                websocket: ports.websocket,
+            },
+        )
+        .await?;
         // Seeding the administrator also creates the installation's keys and
         // its NATS accounts, so the broker is up by now.
         crate::process::run(
@@ -422,7 +451,7 @@ async fn start_once(
         )
         .await?;
         let admin_principal_id = admin.verify().await?;
-        Ok((
+        Ok::<_, TrellisTestError>((
             workdir,
             distribution,
             config_path,
@@ -431,7 +460,11 @@ async fn start_once(
             trust_roots,
             nats_url,
             websocket_url,
-            ports.monitor,
+            BrokerPorts {
+                nats: ports.nats,
+                monitor: ports.monitor,
+                websocket: ports.websocket,
+            },
             admin,
             admin_principal_id,
         ))
@@ -447,7 +480,7 @@ async fn start_once(
             trust_roots,
             nats_url,
             websocket_url,
-            monitor,
+            broker_ports,
             admin,
             admin_principal_id,
         )) => {
@@ -461,7 +494,8 @@ async fn start_once(
                 trust_roots,
                 nats_url,
                 websocket_url,
-                monitor_url: format!("http://127.0.0.1:{monitor}"),
+                monitor_url: format!("http://127.0.0.1:{}", broker_ports.monitor),
+                broker_ports,
                 admin: Some(admin),
                 admin_principal_id,
                 infrastructure,
@@ -585,6 +619,7 @@ pub struct TrellisTestRuntime {
     nats_url: String,
     websocket_url: String,
     monitor_url: String,
+    broker_ports: BrokerPorts,
     admin: Option<AdminSession>,
     admin_principal_id: String,
     infrastructure: Infrastructure,
@@ -605,6 +640,22 @@ impl TrellisTestRuntime {
     /// # Errors
     /// Returns shutdown, startup, readiness, or administrator reconnect failures.
     pub async fn restart(&mut self) -> Result<(), TrellisTestError> {
+        self.restart_runtime(false).await
+    }
+
+    /// Stop the server and its NATS broker, then start both on their existing
+    /// data, as restarting a `trellis-server --dev` installation does.
+    ///
+    /// Unlike [`Self::restart`], connected services see their broker go away,
+    /// so a test can leave them running across this call.
+    ///
+    /// # Errors
+    /// Returns shutdown, startup, readiness, or administrator reconnect failures.
+    pub async fn restart_with_broker(&mut self) -> Result<(), TrellisTestError> {
+        self.restart_runtime(true).await
+    }
+
+    async fn restart_runtime(&mut self, with_broker: bool) -> Result<(), TrellisTestError> {
         if self.stopped {
             return Err(TrellisTestError::new(
                 TrellisTestErrorKind::RuntimeStopped,
@@ -616,6 +667,19 @@ impl TrellisTestRuntime {
         self.admin = None;
         if let Some(server) = self.infrastructure.server.as_mut() {
             server.stop(self.timeouts.shutdown).await?;
+        }
+        if with_broker {
+            if let Some(nats) = self.infrastructure.nats.as_mut() {
+                nats.stop(self.timeouts.shutdown).await?;
+            }
+            start_broker(
+                &mut self.infrastructure,
+                &self.distribution.nats,
+                self.config.parent().expect("config file in a directory"),
+                &self.workdir,
+                self.broker_ports,
+            )
+            .await?;
         }
         self.infrastructure.server = Some(Process::spawn(
             Command::new(&self.distribution.server)

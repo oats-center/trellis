@@ -356,7 +356,8 @@ boot offline. Set `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
 explicit binaries with no fallback downloads. `trust_roots()` and
 `https_client_builder()` trust the runtime's generated CA. `restart()` restarts
 only the server, retaining its broker and durable installation;
-shutdown/cancellation reaps owned children before sandbox cleanup.
+`restart_with_broker()` also restarts NATS, for testing services left running
+across a broker outage; shutdown/cancellation reaps owned children before sandbox cleanup.
 
 Live user tests use `TrellisTestRuntime::create_user`, explicit
 `grant_user_capabilities(&user, Request::REQUIRED_CAPABILITIES)`, one

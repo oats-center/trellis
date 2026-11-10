@@ -88,6 +88,10 @@ ordinary runtime against the same data and still-running NATS broker. It does
 not reseed identities or credentials. Close application clients first, then
 reconnect them after restart and verify their stored values through public APIs.
 
+`runtime.restart_with_broker().await?` also stops and starts NATS, as restarting
+a `trellis-server --dev` installation does. Leave services running across it to
+test that they recover from losing their broker.
+
 ## Browser and portal-driven tests
 
 ### Distinct ordinary users

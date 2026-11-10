@@ -8,6 +8,20 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.34] - 2026-11-10
+
+### Added
+
+- The Rust testkit's `restart_with_broker()` restarts NATS as well as the
+  server, for testing services left running across a broker outage.
+
+### Fixed
+
+- A Rust service no longer exits when its NATS server restarts, which includes
+  every restart of a `trellis-server --dev` installation. Job workers retry a
+  failed receive or settlement, waiting up to five seconds between tries, and
+  continue on the new connection.
+
 ## [0.100.0-rc.33] - 2026-11-10
 
 ### Added
