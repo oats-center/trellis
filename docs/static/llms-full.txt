@@ -422,6 +422,10 @@ extension supplies installed revision and participant digest, never payload
 claims. No health declaration is needed in service contracts, and initial
 publication does not gate connection.
 
+A participant can add its own version, structured details, and named checks to
+every heartbeat; checks run at each publication. With any check failing, the
+instance reports degraded, or unhealthy when every check fails.
+
 ### Identity And Connection
 
 #### Participants and admission
@@ -1795,6 +1799,12 @@ for an administrator, logging the review link and printing it as a QR code on
 stderr; a rejection returns `ServiceRuntimeError::UpdateRejected { review }`,
 naming the review link or, without a Console, the CLI command that shows it.
 
+`service.health()` adds to the automatic heartbeats:
+`set_info(ServiceHealthInfo { version, info })` (or `set_info_with` for values
+computed per heartbeat) and `add(name, || async { ServiceHealthCheck::ok() })`,
+whose returned registration's `remove()` drops the check. A device's connected
+client has the same `health()`.
+
 Register generated providers before `service.run().await`. The service lifecycle
 supervises its request host and workers. `with_timeout_ms(...)` bounds
 bootstrap, connect, and request operations. No context-store parameter exists.
@@ -1907,7 +1917,14 @@ or external fencing.
 #### Jobs
 
 Jobs are private service queues. Use generated queue handles and cloneable
-`jobs_client()` handles for submission from other handlers. Worker registration
+`jobs_client()` handles for submission from other handlers. `create_<job>`
+returns a `JobRef` (a refused keyed job is `JobsError::NotEnqueued`);
+`submit_<job>` returns the `JobSubmitOutcome`. Handlers report durable
+`progress`/`log`, wrap outside waits in `wait_for(edge, future)`, and for a queue
+declaring `update` publish live-only updates with `job.emit_update(update)`.
+Subscribe with `job_ref.updates()` or `provider.<job>_updates(&id)`: a validated,
+ordered stream that ends at the job's terminal state and never replays earlier
+updates. Forward them through an operation's `emit_update` to reach callers. Worker registration
 and processing are supervised by the service lifecycle, and delivery progress
 acknowledgement is automatic. Before business work, inspect
 `job.cancellation_token().reason()`: already-cancelled job handlers must

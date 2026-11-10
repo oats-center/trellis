@@ -41,10 +41,51 @@ provider
     })
     .await?;
 
-let job = provider.submit_reconcile(input).await?;
+let job = provider.create_reconcile(input).await?;
 ```
 
 Use `JobProcessError::failed(error)` for a non-retryable handler failure.
+
+`create_reconcile` returns the job's `JobRef`, and fails with
+`JobsError::NotEnqueued` when the key policy refuses the job.
+`submit_reconcile` returns the policy's decision instead: a `JobSubmitOutcome`
+of `Accepted`, `Rejected`, `Coalesced` (an existing job already covers the key)
+or `Replaced`.
+
+## Progress and live updates
+
+A handler reports durable progress with `job.progress(JobProgress { .. })` and
+logs with `job.log(..)`. Both become part of the job's state. Wrap a wait on
+something outside the job in `job.wait_for(edge, future)` so the job's state
+shows what it is waiting for.
+
+A queue that declares `update ReconcileUpdate;` also streams live-only updates.
+The handler publishes them with `job.emit_update(update)`, and anyone in the
+service subscribes with `job.updates()` on a `JobRef`, or by ID with
+`provider.reconcile_updates(&job_id)`:
+
+```rust
+let mut updates = job.updates().await?;
+while let Some(update) = updates.next().await {
+    let update = update?;
+    println!("attempt {} step {}: {:?}", update.attempt, update.sequence, update.update);
+}
+```
+
+Each update is checked against the declared schema. The stream yields updates in
+order and ends when the job reaches a terminal state. Updates are not stored, so
+a subscriber only receives the ones published after it subscribed. A queue
+without a declared update has no update type, and calling `emit_update` on it
+does not compile.
+
+Handlers and spawned tasks create and observe jobs through
+`provider.jobs_client()`, a cloneable `Jobs` handle with the same `create_`,
+`submit_` and `_updates` methods as the provider.
+
+Jobs are private to their service, so a browser or another service can't
+subscribe to them. To show a job's progress in a web app, start the job from an
+operation handler and forward each update from `job.updates()` with the
+operation's `emit_update`. The app then watches the operation.
 
 Delivery progress acknowledgement is automatic for keyed and unkeyed work.
 Applications do not heartbeat merely to retain delivery. Keyed lease renewal is

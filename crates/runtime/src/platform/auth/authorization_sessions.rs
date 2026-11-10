@@ -320,9 +320,37 @@ pub(super) fn credential_snapshot(
                     deadline.unwrap_or(i64::MAX),
                 );
             }
-            let projection = Arc::new(super::native_projection::project_instance(
-                connection, &instance, now,
-            )?);
+            let projection =
+                match super::native_projection::project_instance(connection, &instance, now) {
+                    Ok(projection) => Arc::new(projection),
+                    // An instance still pinned to an earlier build that the
+                    // deployment's current revision no longer accepts, such as one
+                    // providing the previous major of an API, has no authority of
+                    // its own left. Like a replaced API, it may only present its
+                    // build, which installs itself when it matches.
+                    Err(error) if kind == "service" => {
+                        let pinned: bool = connection.query_row(
+                            "SELECT i.installed_revision<>b.installed_revision \
+                        FROM auth_instances i JOIN auth_deployment_bindings b \
+                        ON b.deployment_id=i.deployment_id WHERE i.instance_id=?1",
+                            [&instance],
+                            |row| row.get(0),
+                        )?;
+                        if !pinned {
+                            return Err(error);
+                        }
+                        return submit_only(
+                            principal,
+                            SessionBinding::Service {
+                                deployment_id: deployment,
+                                instance_id: instance,
+                                participant_id: participant,
+                            },
+                            deadline.unwrap_or(i64::MAX),
+                        );
+                    }
+                    Err(error) => return Err(error),
+                };
             let (principal_kind, binding) = match kind.as_str() {
                 "service" => (
                     PrincipalKind::Service,
@@ -1040,6 +1068,17 @@ impl SqliteAuthorizationStore {
                     ],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )?;
+                // A session that may only submit a build answers for no
+                // installed build, as its bootstrap says too.
+                let participant_digest = if current
+                    .native
+                    .as_ref()
+                    .is_some_and(|native| native.participant_digest.is_empty())
+                {
+                    String::new()
+                } else {
+                    participant_digest
+                };
                 extensions.insert(
                     "trellis.nativeParticipant.v1".into(),
                     serde_json::json!({

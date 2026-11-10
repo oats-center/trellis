@@ -2,7 +2,8 @@
 //!
 //! The Rust service SDK submits the build to Auth and waits until it installs;
 //! this prints `service update connected` once it does, then proves the KV the
-//! build added is usable.
+//! build added is usable. It then serves until the service stops, printing
+//! `service stopped: <reason>`.
 
 use runtime_pinned_trellis::participants::runtime_trellis_provider::{
     types::ResourceValue, Participant, Provider,
@@ -31,5 +32,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     let stored = extended.get("rust").await?.ok_or("missing KV value")?;
     println!("service update stored {}", stored.value);
+    if let Err(error) = runtime.run().await {
+        println!("service stopped: {error}");
+    }
     Ok(())
 }

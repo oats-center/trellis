@@ -37,9 +37,13 @@ pub(crate) mod schema_validation;
 mod service_host;
 pub(crate) mod transfer;
 
+pub use crate::client::{
+    HealthCheckRegistration, HealthCheckStatus, ServiceHealth, ServiceHealthCheck,
+    ServiceHealthInfo,
+};
 #[doc(hidden)]
 pub use crate::generated::{EventDescriptor, LiveDescriptor, RpcDescriptor};
-pub use crate::jobs::{ActiveJob, JobDescriptor, JobRef, JobUpdateDescriptor, JobsError};
+pub use crate::jobs::{ActiveJob, JobDescriptor, JobRef, JobsError};
 #[doc(hidden)]
 pub use authenticated_router::{AuthenticatedRouter, RequestValidation, RequestValidator};
 pub use bindings::{

@@ -9,21 +9,28 @@ pub trait JobDescriptor {
     type Payload: Serialize + DeserializeOwned + Clone + Send + Sync + 'static;
     /// Successful result type.
     type Result: Serialize + DeserializeOwned + Clone + Send + Sync + 'static;
+    /// Live-only update type, or [`NoJobUpdates`] when the queue declares none.
+    type Update: Serialize + DeserializeOwned + Clone + Send + Sync + 'static;
 
     /// Contract-local queue type.
     const QUEUE_TYPE: &'static str;
+    /// Declared update schema name and JSON Schema, when the queue declares updates.
+    const UPDATE_SCHEMA: Option<JobUpdateSchema>;
 }
 
-/// Descriptor extension implemented only by jobs queues that declare live updates.
-pub trait JobUpdateDescriptor: JobDescriptor {
-    /// Contract-defined cumulative update payload.
-    type Update: Serialize + DeserializeOwned + Send + 'static;
-
-    /// Declared update schema name in the contract manifest.
-    const UPDATE_SCHEMA: &'static str;
-    /// Declared update JSON Schema.
-    const UPDATE_SCHEMA_JSON: &'static str;
+/// Declared live-update schema of one jobs queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobUpdateSchema {
+    /// Update schema name in the contract manifest.
+    pub name: &'static str,
+    /// Update JSON Schema.
+    pub json: &'static str,
 }
+
+/// Update type of a queue that declares no live updates; it has no values, so
+/// such a queue's handlers cannot emit one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoJobUpdates {}
 
 /// Live-only job update envelope published outside the durable `JOBS` stream.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -230,8 +230,15 @@ test("active contract replacement keeps covered connections and drops uncovered 
             // Instance B is pinned to the broad revision whose required
             // `eventConsumer:changes` resource no longer exists under present
             // deployment policy. A broad binary is never downgraded into an
-            // incomplete narrow authority, so its attachment is retired and it stays
-            // unissuable until it actually becomes the narrow revision.
+            // incomplete narrow authority: readmitted only to submit a build, it
+            // stops, and it stays off until it actually becomes the narrow
+            // revision.
+            const stopped = await serviceBExit;
+            assert(stopped instanceof Error, String(stopped));
+            assert.match(
+              stopped.message,
+              /no longer installed for its instance/,
+            );
             await runtime.waitFor(
               async () =>
                 (await liveConnections(runtime, instanceB.deploymentId)).every(
@@ -239,9 +246,6 @@ test("active contract replacement keeps covered connections and drops uncovered 
                 ),
               { timeoutMs: 30_000 },
             );
-
-            await serviceB.stop().catch(() => {});
-            await serviceBExit.catch(() => {});
           },
         );
 

@@ -142,9 +142,10 @@ export async function applyParticipant(
   if (!deploymentId)
     throw new Error(`Deployment ${deployment} was not created`);
   if (existing) {
-    const expectedRevision = context.deploymentRevisions.get(deploymentId);
-    if (expectedRevision === undefined)
-      throw new Error(`Unknown deployment revision ${deploymentId}`);
+    // Approved service updates also move the revision, so read the current one.
+    const {
+      deployment: { revision: expectedRevision },
+    } = await context.rpc("authDeploymentsGet", { deploymentId });
     const { deployment: applied } = await context.rpc("authDeploymentsApply", {
       deploymentId,
       expectedRevision,

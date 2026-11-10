@@ -10,7 +10,7 @@ use crate::jobs::manager::{JobManager, JobManagerError, JobMetaSource};
 use crate::jobs::publisher::JobEventPublisher;
 use crate::jobs::runtime_worker::JobCancellationToken;
 use crate::jobs::types::{Job, JobContext, JobLogEntry, JobLogLevel, JobProgress, JobWaitEdge};
-use crate::jobs::updates::{JobUpdate, JobUpdateDescriptor};
+use crate::jobs::updates::{JobUpdate, JobUpdateSchema};
 
 type HeartbeatHook = Arc<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
@@ -117,13 +117,13 @@ where
     }
 
     /// Emit one contract-typed live-only update for this active attempt.
-    pub async fn emit_update<D>(
+    pub async fn emit_update<U>(
         &self,
-        update: D::Update,
-    ) -> Result<JobUpdate<D::Update>, JobManagerError<P::Error>>
+        schema: JobUpdateSchema,
+        update: U,
+    ) -> Result<JobUpdate<U>, JobManagerError<P::Error>>
     where
-        D: JobUpdateDescriptor,
-        D::Update: Clone,
+        U: serde::Serialize,
     {
         let gate = self.update_gate.lock().await;
         if !*gate {
@@ -134,7 +134,7 @@ where
         let sequence = self.update_sequence.fetch_add(1, Ordering::Relaxed) + 1;
         let result = self
             .manager
-            .emit_update::<D>(&self.job, sequence, update)
+            .emit_update(&self.job, sequence, schema, update)
             .await;
         drop(gate);
         result

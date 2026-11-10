@@ -119,7 +119,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
         let job = OperationProvider::new(&mut runtime)
-            .submit_held(Value {
+            .create_held(Value {
                 value: "initial".to_owned(),
                 extra: Default::default(),
             })
@@ -287,7 +287,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // generation by the same logical worker host.
             context
                 .handle()
-                .generated_submit_job::<Retained>(Value {
+                .generated_create_job::<Retained>(Value {
                     value: "extended".to_owned(),
                     extra: Default::default(),
                 })
@@ -351,7 +351,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // in its handler until the harness releases it after cutover.
         let provider = OperationProvider::new(&mut runtime);
         match provider
-            .submit_retained(Value {
+            .create_retained(Value {
                 value: "initial".to_owned(),
                 extra: Default::default(),
             })
@@ -385,7 +385,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(value) = command.strip_prefix("JOB_SUBMIT ") {
                 match job_submit
-                    .generated_submit_job::<Retained>(Value {
+                    .generated_create_job::<Retained>(Value {
                         value: value.to_owned(),
                         extra: Default::default(),
                     })

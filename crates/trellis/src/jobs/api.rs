@@ -11,10 +11,13 @@ use crate::jobs::bindings::{JobsBinding, JobsQueueBinding};
 use crate::jobs::manager::{JobManager, TrellisJobMetaSource};
 use crate::jobs::projection::is_terminal;
 use crate::jobs::runtime_ref::NatsJobWaiter;
-use crate::jobs::types::{Job, JobContext, JobLogEntry, JobProgress, JobState};
+use crate::jobs::types::{Job, JobContext, JobLogEntry, JobProgress, JobState, JobWaitEdge};
+use crate::jobs::updates::{JobUpdate, JobUpdateSchema, NoJobUpdates};
 use crate::jobs::TrellisJobEventPublisher;
 
 pub(super) type RuntimeJob = RuntimeActiveJob<TrellisJobEventPublisher, TrellisJobMetaSource>;
+/// Marks the payload, result and update types a handle is typed by.
+type Typed<TPayload, TResult, TUpdate> = PhantomData<fn() -> (TPayload, TResult, TUpdate)>;
 
 /// Errors returned by the typed jobs API.
 #[derive(Debug, thiserror::Error)]
@@ -95,11 +98,30 @@ pub trait JobQueue<TPayload, TResult> {
         Fut: Future<Output = Result<TResult, JobsError>> + Send;
 }
 
+impl From<crate::jobs::manager::JobNotEnqueued> for JobNotEnqueued {
+    fn from(value: crate::jobs::manager::JobNotEnqueued) -> Self {
+        use crate::jobs::manager::JobNotEnqueuedReason as Reason;
+        Self {
+            reason: match value.reason {
+                Reason::ActiveLimit => JobNotEnqueuedReason::ActiveLimit,
+                Reason::QueueDepth => JobNotEnqueuedReason::QueueDepth,
+                Reason::StaleBlocked => JobNotEnqueuedReason::StaleBlocked,
+                Reason::Coalesced => JobNotEnqueuedReason::Coalesced,
+            },
+            key: value.key,
+            active: value.active,
+            queued: value.queued,
+            limit: value.limit,
+            existing_job_id: value.existing_job_id,
+        }
+    }
+}
+
 /// Policy-aware keyed job submission outcome.
 #[derive(Debug)]
-pub enum JobSubmitOutcome<TPayload, TResult> {
+pub enum JobSubmitOutcome<TPayload, TResult, TUpdate = NoJobUpdates> {
     Accepted {
-        job_ref: JobRef<TPayload, TResult>,
+        job_ref: JobRef<TPayload, TResult, TUpdate>,
         key: Option<String>,
     },
     Rejected(JobNotEnqueued),
@@ -111,7 +133,7 @@ pub enum JobSubmitOutcome<TPayload, TResult> {
     Replaced {
         key: String,
         replaced: JobIdentity,
-        job_ref: JobRef<TPayload, TResult>,
+        job_ref: JobRef<TPayload, TResult, TUpdate>,
     },
 }
 
@@ -119,17 +141,18 @@ pub enum JobSubmitOutcome<TPayload, TResult> {
 ///
 /// Each read, wait, or cancellation acquires the currently published transport
 /// and retains that generation until the invocation completes or is dropped.
-pub struct JobRef<TPayload, TResult> {
+pub struct JobRef<TPayload, TResult, TUpdate = NoJobUpdates> {
     identity: JobIdentity,
     seed: Job,
     client: std::sync::Arc<crate::client::TrellisClient>,
     generations: TransportGenerationManager,
     binding: JobsBinding,
     queue: JobsQueueBinding,
-    _types: PhantomData<fn() -> (TPayload, TResult)>,
+    update: Option<JobUpdateSchema>,
+    _types: Typed<TPayload, TResult, TUpdate>,
 }
 
-impl<TPayload, TResult> std::fmt::Debug for JobRef<TPayload, TResult> {
+impl<TPayload, TResult, TUpdate> std::fmt::Debug for JobRef<TPayload, TResult, TUpdate> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("JobRef")
@@ -138,7 +161,7 @@ impl<TPayload, TResult> std::fmt::Debug for JobRef<TPayload, TResult> {
     }
 }
 
-impl<TPayload, TResult> Clone for JobRef<TPayload, TResult> {
+impl<TPayload, TResult, TUpdate> Clone for JobRef<TPayload, TResult, TUpdate> {
     fn clone(&self) -> Self {
         Self {
             identity: self.identity.clone(),
@@ -147,21 +170,24 @@ impl<TPayload, TResult> Clone for JobRef<TPayload, TResult> {
             generations: self.generations.clone(),
             binding: self.binding.clone(),
             queue: self.queue.clone(),
+            update: self.update,
             _types: PhantomData,
         }
     }
 }
 
-impl<TPayload, TResult> JobRef<TPayload, TResult>
+impl<TPayload, TResult, TUpdate> JobRef<TPayload, TResult, TUpdate>
 where
     TPayload: DeserializeOwned + Clone + Send + Sync + 'static,
     TResult: DeserializeOwned + Clone + Send + Sync + 'static,
+    TUpdate: DeserializeOwned + Send + 'static,
 {
     pub(crate) fn from_runtime(
         seed: Job,
         client: std::sync::Arc<crate::client::TrellisClient>,
         binding: JobsBinding,
         queue: JobsQueueBinding,
+        update: Option<JobUpdateSchema>,
     ) -> Self {
         Self {
             identity: JobIdentity::from(&seed),
@@ -170,8 +196,39 @@ where
             client,
             binding,
             queue,
+            update,
             _types: PhantomData,
         }
+    }
+
+    /// Subscribe to the job's live-only updates.
+    ///
+    /// The stream yields each validated update in order, one attempt after
+    /// another, and ends once the job reaches a terminal state. Updates
+    /// published before the subscription opened are not replayed; read
+    /// [`JobRef::get`] for the durable state.
+    pub async fn updates(
+        &self,
+    ) -> Result<
+        futures_util::stream::BoxStream<'static, Result<JobUpdate<TUpdate>, JobsError>>,
+        JobsError,
+    > {
+        let schema = self.update.ok_or_else(|| {
+            jobs_message(format!(
+                "jobs queue '{}' does not declare updates",
+                self.queue.queue_type
+            ))
+        })?;
+        let (lease, waiter) = self.published_waiter()?;
+        let updates = waiter.updates(self.identity.id.clone(), schema).await?;
+        // The stream keeps the transport it subscribed on.
+        Ok(Box::pin(futures_util::StreamExt::map(
+            updates,
+            move |update| {
+                let _ = &lease;
+                update
+            },
+        )))
     }
 
     fn published_waiter(&self) -> Result<(TransportLease, NatsJobWaiter), JobsError> {
@@ -312,13 +369,14 @@ where
 pub type TerminalJob<TPayload, TResult> = JobSnapshot<TPayload, TResult>;
 
 /// Typed active-job handle.
-pub struct ActiveJob<TPayload, TResult> {
+pub struct ActiveJob<TPayload, TResult, TUpdate = NoJobUpdates> {
     payload: TPayload,
     runtime: RuntimeJob,
-    _result: PhantomData<TResult>,
+    update: Option<JobUpdateSchema>,
+    _types: Typed<(), TResult, TUpdate>,
 }
 
-impl<TPayload, TResult> std::fmt::Debug for ActiveJob<TPayload, TResult> {
+impl<TPayload, TResult, TUpdate> std::fmt::Debug for ActiveJob<TPayload, TResult, TUpdate> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ActiveJob")
@@ -329,16 +387,22 @@ impl<TPayload, TResult> std::fmt::Debug for ActiveJob<TPayload, TResult> {
     }
 }
 
-impl<TPayload, TResult> ActiveJob<TPayload, TResult>
+impl<TPayload, TResult, TUpdate> ActiveJob<TPayload, TResult, TUpdate>
 where
     TPayload: Send + Sync + 'static,
     TResult: Send + Sync + 'static,
+    TUpdate: Serialize + Send + Sync + 'static,
 {
-    pub(super) fn from_runtime(payload: TPayload, runtime: RuntimeJob) -> Self {
+    pub(super) fn from_runtime(
+        payload: TPayload,
+        runtime: RuntimeJob,
+        update: Option<JobUpdateSchema>,
+    ) -> Self {
         Self {
             payload,
             runtime,
-            _result: PhantomData,
+            update,
+            _types: PhantomData,
         }
     }
 
@@ -410,6 +474,34 @@ where
             .log(entry.level, entry.message)
             .await
             .map_err(jobs_message)
+    }
+
+    /// Publish a live-only update to the job's subscribers.
+    ///
+    /// Updates are not stored: only subscribers already listening receive one,
+    /// and the job's durable state is unchanged. Each update is validated
+    /// against the queue's declared update schema, and sequence numbers order
+    /// the updates of one attempt.
+    pub async fn emit_update(&self, update: TUpdate) -> Result<JobUpdate<TUpdate>, JobsError> {
+        let schema = self.update.ok_or_else(|| {
+            jobs_message(format!(
+                "jobs queue '{}' does not declare updates",
+                self.runtime.job().job_type
+            ))
+        })?;
+        self.runtime
+            .emit_update(schema, update)
+            .await
+            .map_err(jobs_message)
+    }
+
+    /// Record that this job is waiting on `wait_edge` while `future` runs, so
+    /// its state shows what it waits for.
+    pub async fn wait_for<T, Fut>(&self, wait_edge: JobWaitEdge, future: Fut) -> T
+    where
+        Fut: Future<Output = T>,
+    {
+        self.runtime.wait_for(wait_edge, future).await
     }
 }
 

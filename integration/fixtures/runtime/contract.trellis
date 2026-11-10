@@ -22,6 +22,8 @@ api documents@v1 {
   }
 }
 service LiveV1Provider { implements documents; }
+// One participant across both majors: its v2 build replaces its v1 build.
+service DocumentsProvider { implements documents; }
 agent LiveV1Caller { use documents { required capability documents.read; } }
 
 api runtime@v1 {

@@ -19,7 +19,7 @@ async fn cancels_pending_jobs_without_provisioning_unneeded_key_coordination() {
             .await
             .unwrap();
     let job = runtime_trellis_ordinary_jobs::Provider::new(&mut service)
-        .submit_work(Value {
+        .create_work(Value {
             value: "cancel ordinary".into(),
             extra: Default::default(),
         })
@@ -42,7 +42,7 @@ async fn cancels_pending_jobs_without_provisioning_unneeded_key_coordination() {
             .await
             .unwrap();
     let job = runtime_trellis_operation_provider::Provider::new(&mut service)
-        .submit_keyed_work(KeyedValue {
+        .create_keyed_work(KeyedValue {
             key: "one".into(),
             value: "cancel keyed".into(),
             extra: Default::default(),

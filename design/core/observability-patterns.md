@@ -68,9 +68,11 @@ Heartbeat behavior:
   publish baseline samples automatically after authenticated bootstrap
 - baseline heartbeats include runtime metadata, instance identity, publish
   interval, and a built-in NATS connectivity check
-- `service.health.setInfo(...)` and `service.health.add(...)` extend service
-  heartbeat payloads at publish time using callback-based state snapshots; the
-  same helper surface is also available on device connections
+- `service.health.setInfo(...)` and `service.health.add(...)` (Rust
+  `service.health().set_info(...)` and `.add(...)`) extend service heartbeat
+  payloads at publish time using callback-based state snapshots; the same
+  helper surface is also available on device connections. Any failing check
+  reports the instance degraded, or unhealthy when every check fails
 - heartbeat samples are signed native events, not a raw monitoring channel;
   Console reads the Rust-owned health projection through `Health.Query`,
   `Health.Inspect`, and `Health.Metrics`, then uses `Health.Watch` as a

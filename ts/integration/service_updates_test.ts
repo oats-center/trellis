@@ -21,7 +21,9 @@ import { ulid } from "ulid";
 import { participants as breakingProviders } from "../../integration/fixtures/client-upgrade-breaking/packages/client-upgrade/index.js";
 import { participants as upgradeProviders } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { participants as removedParticipants } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
 import { participants as extendedParticipants } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
+import { participants as majorTwo } from "../../integration/fixtures/runtime/v2/packages/runtime-trellis/index.js";
 import { spawnTracked } from "./_support/process.ts";
 import { types } from "../packages/trellis-testkit/trellis/index.js";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
@@ -171,6 +173,36 @@ test("a build that implements a force-replaced API connects and installs itself"
   });
 });
 
+test("a build of an API's next major connects once its package is applied and moves its instance onto it", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const v1 = participants.DocumentsProvider.participant;
+    const v2 = majorTwo.DocumentsProvider.participant;
+    await runtime.deployments.create({ id: "major", contract: v1 });
+    await runtime.contracts.apply({ deployment: "major", contract: v1 });
+    const instance = await runtime.services.createInstance({
+      name: "major",
+      deployment: "major",
+      contract: v1,
+    });
+    const connect = <P extends typeof v1 | typeof v2>(participant: P) =>
+      TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant,
+        seed: instance.seed,
+      }).orThrow();
+    await (await connect(v1)).stop();
+
+    // The administrator installs the v2 package first. The instance is still
+    // pinned to the v1 build, whose API major the deployment no longer
+    // provides, yet the v2 build connects and installs itself.
+    await runtime.contracts.apply({ deployment: "major", contract: v2 });
+    await (await connect(v2)).stop();
+    const { items } = await runtime.callAdminRpc("authServiceUpdatesList", {});
+    assert.equal(items[0]?.state, "applied");
+    await (await connect(v2)).stop();
+  });
+});
+
 test("a Rust service waits for its update's approval, then connects under it", async () => {
   await withTrellisRuntime(async (runtime) => {
     const base = participants.Provider.participant;
@@ -200,30 +232,47 @@ test("a Rust service waits for its update's approval, then connects under it", a
     let errors = "";
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (errors += chunk.toString()));
-    const pending = await runtime.waitFor(async () => {
-      const { items } = await runtime.callAdminRpc(
-        "authServiceUpdatesList",
-        {},
+    try {
+      const pending = await runtime.waitFor(async () => {
+        const { items } = await runtime.callAdminRpc(
+          "authServiceUpdatesList",
+          {},
+        );
+        return items.find((update) => update.state === "pending");
+      });
+      assert.deepEqual(pending.changes.addedResources, [
+        { kind: "kv", name: "extended" },
+      ]);
+      // Waiting, it shows the administrator where to approve it.
+      const reviewUrl = pending.reviewUrl;
+      assert(reviewUrl);
+      await runtime.waitFor(() => errors.includes(reviewUrl));
+      assert(!output.includes("service update connected"), output);
+      await runtime.callAdminRpc("authServiceUpdatesDecide", {
+        updateId: pending.updateId,
+        decision: "approved",
+        expectedRevision: pending.revision,
+        idempotencyKey: ulid(),
+      });
+      await runtime.waitFor(() => output.includes("service update stored"));
+      assert.match(output, /service update stored approved/);
+
+      // The administrator then applies a package this build no longer fits.
+      // Readmitted only to submit a build, the running service stops instead of
+      // lingering without authority.
+      await runtime.contracts.apply({
+        deployment: "rust-service-update",
+        contract: removedParticipants.Provider.participant,
+      });
+      const exit = await child.exited;
+      assert.equal(exit.code, 0, errors);
+      assert.match(
+        output,
+        /service stopped: this build is no longer installed for its instance/,
       );
-      return items.find((update) => update.state === "pending");
-    });
-    assert.deepEqual(pending.changes.addedResources, [
-      { kind: "kv", name: "extended" },
-    ]);
-    // Waiting, it shows the administrator where to approve it.
-    const reviewUrl = pending.reviewUrl;
-    assert(reviewUrl);
-    await runtime.waitFor(() => errors.includes(reviewUrl));
-    assert(!output.includes("service update connected"), output);
-    await runtime.callAdminRpc("authServiceUpdatesDecide", {
-      updateId: pending.updateId,
-      decision: "approved",
-      expectedRevision: pending.revision,
-      idempotencyKey: ulid(),
-    });
-    const exit = await child.exited;
-    assert.equal(exit.code, 0, errors);
-    assert.match(output, /service update stored approved/);
+    } finally {
+      child.kill();
+    }
   });
 });
 
@@ -515,28 +564,31 @@ test("a Rust service connecting to a claim waits for approval, then runs as the 
     let errors = "";
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (errors += chunk.toString()));
-    const pending = await runtime.waitFor(async () => {
-      const { items } = await runtime.callAdminRpc(
-        "authServiceUpdatesList",
-        {},
-      );
-      return items.find(
-        (update) =>
-          update.deploymentId === claim.claimId && update.state === "pending",
-      );
-    });
-    const reviewUrl = pending.reviewUrl;
-    assert(reviewUrl);
-    await runtime.waitFor(() => errors.includes(reviewUrl));
-    assert(!output.includes("service update connected"), output);
-    await runtime.callAdminRpc("authServiceUpdatesDecide", {
-      updateId: pending.updateId,
-      decision: "approved",
-      expectedRevision: pending.revision,
-      idempotencyKey: ulid(),
-    });
-    const exit = await child.exited;
-    assert.equal(exit.code, 0, errors);
-    assert.match(output, /service update stored approved/);
+    try {
+      const pending = await runtime.waitFor(async () => {
+        const { items } = await runtime.callAdminRpc(
+          "authServiceUpdatesList",
+          {},
+        );
+        return items.find(
+          (update) =>
+            update.deploymentId === claim.claimId && update.state === "pending",
+        );
+      });
+      const reviewUrl = pending.reviewUrl;
+      assert(reviewUrl);
+      await runtime.waitFor(() => errors.includes(reviewUrl));
+      assert(!output.includes("service update connected"), output);
+      await runtime.callAdminRpc("authServiceUpdatesDecide", {
+        updateId: pending.updateId,
+        decision: "approved",
+        expectedRevision: pending.revision,
+        idempotencyKey: ulid(),
+      });
+      await runtime.waitFor(() => output.includes("service update stored"));
+      assert.match(output, /service update stored approved/);
+    } finally {
+      child.kill();
+    }
   });
 });

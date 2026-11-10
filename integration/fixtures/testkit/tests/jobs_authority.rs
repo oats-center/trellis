@@ -82,7 +82,7 @@ async fn private_jobs_execute_and_history_is_deployment_scoped() {
     let history_first = JobsClient::from_generated(first.generated_client());
     let history_second = JobsClient::from_generated(second.generated_client());
     let job = Provider::new(&mut first)
-        .submit_work(Value {
+        .create_work(Value {
             value: "retained input".into(),
             extra: Default::default(),
         })

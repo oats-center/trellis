@@ -847,6 +847,12 @@ impl Client {
         self.client.availability()
     }
 
+    /// Health details and checks added to this participant's automatic
+    /// heartbeats. Only provisioned services and devices publish heartbeats.
+    pub fn health(&self) -> &crate::client::ServiceHealth {
+        self.client.health()
+    }
+
     /// Watch subsequent atomic availability replacements.
     pub fn watch_availability(&self) -> tokio::sync::watch::Receiver<AvailabilitySnapshot> {
         self.client.watch_availability()

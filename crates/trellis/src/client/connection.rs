@@ -434,6 +434,7 @@ struct HealthHeartbeatConfig {
     service_name: String,
     started_at: String,
     publish_interval_ms: u64,
+    health: crate::client::ServiceHealth,
 }
 
 struct NativeConnectOptions<'a> {
@@ -531,8 +532,10 @@ fn now_context_millis() -> Result<i64, TrellisClientError> {
 fn build_health_heartbeat(
     config: &HealthHeartbeatConfig,
     authority: &trellis_protocol::UnsignedSessionAuthority,
+    snapshot: crate::client::health::HealthSnapshot,
 ) -> Result<crate::__types::trellis::HealthHeartbeatSample, TrellisClientError> {
     use crate::__types::trellis::*;
+    use crate::client::HealthCheckStatus;
     let (kind, participant_id, instance_id) = match &authority.binding {
         trellis_protocol::SessionBinding::Service {
             participant_id,
@@ -568,6 +571,11 @@ fn build_health_heartbeat(
     let digest = metadata["participantDigest"]
         .as_str()
         .ok_or_else(|| TrellisClientError::Bootstrap("missing signed participant digest".into()))?;
+    let crate::client::health::HealthSnapshot { info, checks } = snapshot;
+    let failing = checks
+        .iter()
+        .filter(|(_, check, _)| check.status == HealthCheckStatus::Failed)
+        .count();
     Ok(HealthHeartbeatSample {
         sample: HealthHeartbeatSampleSample {
             id: ulid::Ulid::generate().to_string(),
@@ -588,14 +596,51 @@ fn build_health_heartbeat(
             ),
             runtime: HealthHeartbeatSampleParticipantRuntime::Rust,
             runtime_version: None,
-            version: None,
-            info: None,
+            version: info
+                .as_ref()
+                .and_then(|info| info.version.clone())
+                .map(HealthHeartbeatSampleParticipantVersion),
+            info: info
+                .and_then(|info| info.info)
+                .map(|extra| HealthHeartbeatSampleParticipantInfo { extra }),
             extra: Default::default(),
         },
-        reported_status: HealthHeartbeatSampleReportedStatus::Healthy,
-        summary: None,
-        // A heartbeat that arrives already proves the broker connection.
-        checks: Vec::new(),
+        reported_status: if failing == 0 {
+            HealthHeartbeatSampleReportedStatus::Healthy
+        } else if failing == checks.len() {
+            HealthHeartbeatSampleReportedStatus::Unhealthy
+        } else {
+            HealthHeartbeatSampleReportedStatus::Degraded
+        },
+        summary: (failing > 0).then(|| {
+            HealthHeartbeatSampleSummary(format!(
+                "{failing} check{} failing",
+                if failing == 1 { "" } else { "s" }
+            ))
+        }),
+        // A heartbeat that arrives already proves the broker connection, so
+        // only the participant's own checks are listed.
+        checks: checks
+            .into_iter()
+            .map(
+                |(name, check, latency_ms)| HealthHeartbeatSampleChecksItem {
+                    error: check.error.map(HealthHeartbeatSampleChecksItemError),
+                    info: check
+                        .info
+                        .map(|extra| HealthHeartbeatSampleChecksItemInfo { extra }),
+                    latency_ms: HealthHeartbeatSampleChecksItemLatencyMs(crate::__types::Number(
+                        latency_ms,
+                    )),
+                    name: HealthHeartbeatSampleChecksItemName(name),
+                    status: match check.status {
+                        HealthCheckStatus::Ok => HealthHeartbeatSampleChecksItemStatus::Ok,
+                        HealthCheckStatus::Failed => HealthHeartbeatSampleChecksItemStatus::Failed,
+                    },
+                    summary: check.summary.map(HealthHeartbeatSampleChecksItemSummary),
+                    extra: Default::default(),
+                },
+            )
+            .collect(),
         extra: Default::default(),
     })
 }
@@ -685,8 +730,9 @@ async fn publish_health_heartbeat(
     deadline: Instant,
     config: &HealthHeartbeatConfig,
 ) -> Result<(), TrellisClientError> {
+    let snapshot = config.health.snapshot().await;
     let own = owner.own_authority()?;
-    let sample = build_health_heartbeat(config, own.authority())?;
+    let sample = build_health_heartbeat(config, own.authority(), snapshot)?;
     let event = crate::client::prepare_event::<crate::runtime_health::events::Heartbeat>(&sample)
         .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
     if event.payload().len() > 65_536 {
@@ -1008,6 +1054,7 @@ pub struct TrellisClient {
     timeout_ms: u64,
     service_bootstrap_binding: Option<CoreBootstrapBinding>,
     health_heartbeat_task: Option<JoinHandle<()>>,
+    health: crate::client::ServiceHealth,
     authorization_contexts: Option<Arc<AuthorizationContextCache>>,
     /// Automatic transport generations that own this logical connection's
     /// physical NATS attachments for finite request and publish work.
@@ -1138,6 +1185,12 @@ impl TrellisClient {
                 "runtime is not a provisioned participant".into(),
             )),
         }
+    }
+
+    /// Health details and checks added to this participant's automatic
+    /// heartbeats. Only provisioned services and devices publish heartbeats.
+    pub fn health(&self) -> &crate::client::ServiceHealth {
+        &self.health
     }
 
     /// Return the session auth helper used by this client.
@@ -1318,6 +1371,7 @@ impl TrellisClient {
             service_name: name.unwrap_or(participant_id).to_owned(),
             started_at: now_rfc3339(),
             publish_interval_ms: health_heartbeat_interval_ms,
+            health: connected.health.clone(),
         };
         connected.service_bootstrap_binding = Some(CoreBootstrapBinding::new(
             BootstrapBinding {
@@ -1592,6 +1646,7 @@ impl TrellisClient {
             timeout_ms,
             service_bootstrap_binding: None,
             health_heartbeat_task: None,
+            health: crate::client::ServiceHealth::default(),
             authorization_contexts: Some(authorization_contexts),
             connection: std::sync::Arc::new(
                 crate::telemetry::lifecycle::ConnectionRegistration::start(kind),

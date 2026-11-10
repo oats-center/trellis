@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
         for value in ["retry", "replay"] {
             let job = provider
-                .submit_replay_work(Value {
+                .create_replay_work(Value {
                     value: value.into(),
                     extra: Default::default(),
                 })
@@ -151,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     let job = provider
-        .submit_work(Value {
+        .create_work(Value {
             value: "native reconciliation".into(),
             extra: Default::default(),
         })

@@ -1515,7 +1515,7 @@ fn render_participant(
         string_slice(required.iter().map(|id| id.as_str())),
         string_slice(optional.iter().map(|id| id.as_str()))
     ));
-    out.push_str(&render_resources(participant));
+    out.push_str(&render_resources(graph, participant)?);
     out.push_str(&render_migrations(participant.resources()));
     out.push_str(&render_availability(graph, participant));
     out.push_str(&render_participant_facades(graph, participant));
@@ -1765,7 +1765,8 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
             "pub async fn connect(options: \
     trellis_rs::client::DeviceConnectOptions<'_, Participant>) -> \
     Result<Self, trellis_rs::client::TrellisClientError> { \
-    trellis_rs::generated::Client::connect_device(options).await.map(Self::from_generated) }\n",
+    trellis_rs::generated::Client::connect_device(options).await.map(Self::from_generated) }\n\
+    pub fn health(&self) -> &trellis_rs::client::ServiceHealth { self.inner.health() }\n",
         ),
         ParticipantKind::Service => {}
     }
@@ -1983,6 +1984,7 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
                 ));
             }
         }
+        let mut jobs = String::new();
         for (name, resource) in participant.resources() {
             let method = rust_ident(&key_to_snake(name.as_str()));
             match resource {
@@ -2020,22 +2022,43 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
                     name.as_str()
                 )),
                 ResourceDefinition::Job {
-                    payload, result, ..
+                    payload,
+                    result,
+                    update,
+                    ..
                 } => {
                     let payload = type_path(payload);
                     let result = result
                         .as_ref()
                         .map(type_path)
                         .unwrap_or_else(|| "()".to_owned());
+                    let update = update
+                        .as_ref()
+                        .map(type_path)
+                        .unwrap_or_else(|| "trellis_rs::jobs::NoJobUpdates".to_owned());
                     let descriptor = format!("resources::{}", type_name(name.as_str()));
-                    out.push_str(&format!(
-                "pub async fn submit_{method}(&self, payload: {payload}) -> \
-                Result<trellis_rs::jobs::JobRef<{payload}, {result}>, \
+                    // The cloneable jobs handle submits the same way as the provider.
+                    let submission = format!(
+                        "pub async fn create_{method}(&self, payload: {payload}) -> \
+                Result<trellis_rs::jobs::JobRef<{payload}, {result}, {update}>, \
                 trellis_rs::jobs::JobsError> {{ \
-                self.runtime.generated_submit_job::<{descriptor}>(payload).await }}\n\
-                pub async fn register_{method}<F, Fut, E>(&mut self, handler: F) -> \
+                RECEIVER.generated_create_job::<{descriptor}>(payload).await }}\n\
+                pub async fn submit_{method}(&self, payload: {payload}) -> \
+                Result<trellis_rs::jobs::JobSubmitOutcome<{payload}, {result}, {update}>, \
+                trellis_rs::jobs::JobsError> {{ \
+                RECEIVER.generated_submit_job::<{descriptor}>(payload).await }}\n\
+                pub async fn {method}_updates(&self, job_id: &str) -> \
+                Result<futures_util::stream::BoxStream<'static, \
+                Result<trellis_rs::jobs::JobUpdate<{update}>, trellis_rs::jobs::JobsError>>, \
+                trellis_rs::jobs::JobsError> {{ \
+                RECEIVER.generated_job_updates::<{descriptor}>(job_id).await }}\n"
+                    );
+                    out.push_str(&submission.replace("RECEIVER", "self.runtime"));
+                    jobs.push_str(&submission.replace("RECEIVER", "self.handle"));
+                    out.push_str(&format!(
+                "pub async fn register_{method}<F, Fut, E>(&mut self, handler: F) -> \
                 Result<(), trellis_rs::service::ServiceRuntimeError> where F: \
-                Fn(trellis_rs::jobs::ActiveJob<{payload}, {result}>) -> Fut + Clone + \
+                Fn(trellis_rs::jobs::ActiveJob<{payload}, {result}, {update}>) -> Fut + Clone + \
                 Send + Sync + 'static, Fut: std::future::Future<Output = \
                 Result<{result}, trellis_rs::jobs::JobProcessError<E>>> + Send + \
                 'static, E: ToString + Send + 'static {{ \
@@ -2044,7 +2067,7 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
                 register_{method}_with_concurrency<F, Fut, E>(&mut self, concurrency: \
                 u32, handler: F) -> Result<(), \
                 trellis_rs::service::ServiceRuntimeError> where F: \
-                Fn(trellis_rs::jobs::ActiveJob<{payload}, {result}>) -> Fut + Clone + \
+                Fn(trellis_rs::jobs::ActiveJob<{payload}, {result}, {update}>) -> Fut + Clone + \
                 Send + Sync + 'static, Fut: std::future::Future<Output = \
                 Result<{result}, trellis_rs::jobs::JobProcessError<E>>> + Send + \
                 'static, E: ToString + Send + 'static {{ \
@@ -2070,13 +2093,25 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
             }
         }
         out.push_str("}\n");
+        if !jobs.is_empty() {
+            out.push_str(&format!(
+                "/// Cloneable handle that creates and observes this service's jobs from \
+                any handler or task.\n#[derive(Clone, Debug)]\npub struct Jobs {{ handle: \
+                trellis_rs::service::ServiceHandle }}\nimpl Jobs {{\n{jobs}}}\nimpl<'a> \
+                Provider<'a> {{ pub fn jobs_client(&self) -> Jobs {{ Jobs {{ handle: \
+                self.runtime.generated_handle() }} }} }}\n"
+            ));
+        }
     }
     out
 }
 
-fn render_resources(participant: &ParticipantDefinition) -> String {
+fn render_resources(
+    graph: &PackageGraph,
+    participant: &ParticipantDefinition,
+) -> Result<String, CodegenRustError> {
     if participant.resources().is_empty() {
-        return String::new();
+        return Ok(String::new());
     }
     let mut out = String::from("pub mod resources {\n");
     for (name, resource) in participant.resources() {
@@ -2157,6 +2192,22 @@ fn render_resources(participant: &ParticipantDefinition) -> String {
                     .as_ref()
                     .map(type_path)
                     .unwrap_or_else(|| "()".to_owned());
+                let update_type = update.as_ref().map_or_else(
+                    || "trellis_rs::jobs::NoJobUpdates".to_owned(),
+                    |_| format!("{rust_name}Update"),
+                );
+                let update_schema = match update {
+                    Some(ty) => format!(
+                        "Some(trellis_rs::jobs::JobUpdateSchema {{ name: {:?}, json: {:?} }})",
+                        ty.id.as_str(),
+                        serde_json::to_string(
+                            &trellis_idl::json_schema(graph, ty)
+                                .map_err(|error| CodegenRustError::Semantic(error.to_string()))?
+                        )
+                        .map_err(|error| CodegenRustError::Semantic(error.to_string()))?
+                    ),
+                    None => "None".to_owned(),
+                };
                 let (attempts, backoff) = retry.as_ref().map_or_else(
                     || ("None".to_owned(), String::new()),
                     |retry| {
@@ -2177,8 +2228,10 @@ fn render_resources(participant: &ParticipantDefinition) -> String {
                     DEADLINE_MS: Option<u64> = {deadline_ms:?}; pub const RETRY_ATTEMPTS: \
                     Option<u32> = {attempts}; pub const RETRY_BACKOFF_MS: &'static [u64] = \
                     &[{backoff}]; }}\nimpl trellis_rs::jobs::JobDescriptor for {rust_name} \
-                    {{ type Payload = {}; type Result = {result_type}; const QUEUE_TYPE: \
-                    &'static str = {:?}; }}\n",
+                    {{ type Payload = {}; type Result = {result_type}; type Update = \
+                    {update_type}; const QUEUE_TYPE: &'static str = {:?}; const \
+                    UPDATE_SCHEMA: Option<trellis_rs::jobs::JobUpdateSchema> = \
+                    {update_schema}; }}\n",
                     name.as_str(),
                     type_path(payload),
                     name.as_str()
@@ -2233,7 +2286,7 @@ fn render_resources(participant: &ParticipantDefinition) -> String {
         }
     }
     out.push_str("}\n");
-    out
+    Ok(out)
 }
 
 fn render_evidence(graph: &PackageGraph) -> Result<String, CodegenRustError> {

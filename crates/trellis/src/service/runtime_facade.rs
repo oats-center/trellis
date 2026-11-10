@@ -268,6 +268,14 @@ pub enum ServiceRuntimeError {
     #[error("service bootstrap response did not include a binding")]
     MissingBootstrapBinding,
 
+    /// Readmitted with only the right to submit a build, this running build no
+    /// longer answers for its instance: the deployment moved past it.
+    #[error(
+        "this build is no longer installed for its instance; restart it with the \
+        deployment's current build"
+    )]
+    BuildRetired,
+
     /// An administrator rejected this build's participant update.
     #[error("an administrator rejected this build's update ({review})")]
     UpdateRejected {
@@ -610,12 +618,148 @@ impl ServiceHandle {
         EventPublisher::new(Arc::clone(self.client()))
     }
 
-    /// Submit a typed service-private job for generated participant code.
+    /// Create a typed service-private job for generated participant code.
+    ///
+    /// A key policy that refuses the job fails with [`JobsError::NotEnqueued`].
+    #[doc(hidden)]
+    pub async fn generated_create_job<D>(
+        &self,
+        payload: D::Payload,
+    ) -> Result<JobRef<D::Payload, D::Result, D::Update>, JobsError>
+    where
+        D: JobDescriptor,
+    {
+        let (manager, queue) = self.job_manager::<D>().await?;
+        let job = manager
+            .create(D::QUEUE_TYPE, payload)
+            .await
+            .map_err(|error| match error {
+                crate::jobs::JobManagerError::NotEnqueued(error) => {
+                    JobsError::NotEnqueued(error.into())
+                }
+                error => JobsError::Message {
+                    message: error.to_string(),
+                },
+            })?;
+        Ok(JobRef::from_runtime(
+            job,
+            self.client().clone(),
+            manager.bindings().clone(),
+            queue,
+            D::UPDATE_SCHEMA,
+        ))
+    }
+
+    /// Submit a typed service-private job through its queue's key policy for
+    /// generated participant code.
     #[doc(hidden)]
     pub async fn generated_submit_job<D>(
         &self,
         payload: D::Payload,
-    ) -> Result<JobRef<D::Payload, D::Result>, JobsError>
+    ) -> Result<crate::jobs::JobSubmitOutcome<D::Payload, D::Result, D::Update>, JobsError>
+    where
+        D: JobDescriptor,
+    {
+        use crate::jobs::manager::JobSubmitOutcome as Submitted;
+        use crate::jobs::JobSubmitOutcome;
+        let (manager, queue) = self.job_manager::<D>().await?;
+        let job_ref = |job| {
+            JobRef::from_runtime(
+                job,
+                self.client().clone(),
+                manager.bindings().clone(),
+                queue.clone(),
+                D::UPDATE_SCHEMA,
+            )
+        };
+        let identity = |id: String| crate::jobs::JobIdentity {
+            service: manager.bindings().service_name.clone(),
+            job_type: D::QUEUE_TYPE.to_owned(),
+            id,
+        };
+        Ok(
+            match manager
+                .submit(D::QUEUE_TYPE, payload)
+                .await
+                .map_err(|error| JobsError::Message {
+                    message: error.to_string(),
+                })? {
+                Submitted::Accepted { job, key } => JobSubmitOutcome::Accepted {
+                    job_ref: job_ref(job),
+                    key,
+                },
+                Submitted::Rejected(error) => JobSubmitOutcome::Rejected(error.into()),
+                Submitted::Coalesced {
+                    key,
+                    existing_job_id,
+                    reason,
+                } => JobSubmitOutcome::Coalesced {
+                    key,
+                    existing: identity(existing_job_id),
+                    reason,
+                },
+                Submitted::Replaced {
+                    key,
+                    replaced_job_id,
+                    job,
+                } => JobSubmitOutcome::Replaced {
+                    key,
+                    replaced: identity(replaced_job_id),
+                    job_ref: job_ref(job),
+                },
+            },
+        )
+    }
+
+    /// Subscribe to one job's live-only updates by ID for generated participant code.
+    #[doc(hidden)]
+    pub async fn generated_job_updates<D>(
+        &self,
+        job_id: &str,
+    ) -> Result<
+        futures_util::stream::BoxStream<
+            'static,
+            Result<crate::jobs::JobUpdate<D::Update>, JobsError>,
+        >,
+        JobsError,
+    >
+    where
+        D: JobDescriptor,
+    {
+        let schema = D::UPDATE_SCHEMA.ok_or_else(|| JobsError::Message {
+            message: format!("jobs queue '{}' does not declare updates", D::QUEUE_TYPE),
+        })?;
+        let (_, queue) = self.job_manager::<D>().await?;
+        let lease = self
+            .client()
+            .transport_generations()
+            .acquire_application_published()
+            .map_err(|error| JobsError::Message {
+                message: error.to_string(),
+            })?;
+        let waiter = crate::jobs::runtime_ref::NatsJobWaiter::new(
+            self.client().clone(),
+            lease.nats().clone(),
+            queue,
+            Duration::from_secs(30),
+        );
+        let updates = waiter.updates(job_id, schema).await?;
+        // The stream keeps the transport it subscribed on.
+        Ok(Box::pin(updates.map(move |update| {
+            let _ = &lease;
+            update
+        })))
+    }
+
+    async fn job_manager<D>(
+        &self,
+    ) -> Result<
+        (
+            JobManager<TrellisJobEventPublisher, TrellisJobMetaSource>,
+            crate::jobs::JobsQueueBinding,
+        ),
+        JobsError,
+    >
     where
         D: JobDescriptor,
     {
@@ -625,6 +769,14 @@ impl ServiceHandle {
             .map_err(|error| JobsError::Message {
                 message: error.to_string(),
             })?;
+        let queue = binding
+            .jobs
+            .queues
+            .get(D::QUEUE_TYPE)
+            .cloned()
+            .ok_or_else(|| JobsError::Message {
+                message: format!("missing jobs queue binding '{}'", D::QUEUE_TYPE),
+            })?;
         let lease = self
             .client()
             .acquire_transport(&[], &[], self.client().transport_deadline())
@@ -633,12 +785,7 @@ impl ServiceHandle {
                 message: error.to_string(),
             })?;
         let publisher = TrellisJobEventPublisher::new(lease.nats().clone());
-        let manager = if binding
-            .jobs
-            .queues
-            .get(D::QUEUE_TYPE)
-            .is_some_and(|queue| queue.key_concurrency.is_some())
-        {
+        let manager = if queue.key_concurrency.is_some() {
             let coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
                 lease.nats().clone(),
                 &binding.jobs.namespace,
@@ -656,26 +803,7 @@ impl ServiceHandle {
         } else {
             JobManager::new(publisher, binding.jobs, TrellisJobMetaSource)
         };
-        let job = manager
-            .create(D::QUEUE_TYPE, payload)
-            .await
-            .map_err(|error| JobsError::Message {
-                message: error.to_string(),
-            })?;
-        let queue = manager
-            .bindings()
-            .queues
-            .get(D::QUEUE_TYPE)
-            .cloned()
-            .ok_or_else(|| JobsError::Message {
-                message: format!("missing jobs queue binding '{}'", D::QUEUE_TYPE),
-            })?;
-        Ok(JobRef::from_runtime(
-            job,
-            self.client().clone(),
-            manager.bindings().clone(),
-            queue,
-        ))
+        Ok((manager, queue))
     }
 
     /// Start a descriptor-backed event listener.
@@ -1070,6 +1198,14 @@ impl<C> ConnectedServiceRuntime<C> {
         &self.client
     }
 
+    /// Health details and checks added to this service's automatic heartbeats.
+    ///
+    /// Each heartbeat reports the info set here and runs every added check,
+    /// so the Console shows the instance's current state.
+    pub fn health(&self) -> &crate::client::ServiceHealth {
+        self.client.health()
+    }
+
     /// Return the authenticated transport consumed by generated facades.
     #[doc(hidden)]
     pub fn generated_client(&self) -> crate::generated::Client {
@@ -1185,17 +1321,52 @@ impl<C> ConnectedServiceRuntime<C> {
         ))
     }
 
-    /// Submit a typed service-private job for generated participant code.
+    /// Create a typed service-private job for generated participant code.
+    #[doc(hidden)]
+    pub async fn generated_create_job<D>(
+        &self,
+        payload: D::Payload,
+    ) -> Result<JobRef<D::Payload, D::Result, D::Update>, JobsError>
+    where
+        D: JobDescriptor,
+    {
+        self.generated_handle()
+            .generated_create_job::<D>(payload)
+            .await
+    }
+
+    /// Submit a typed service-private job through its key policy for generated
+    /// participant code.
     #[doc(hidden)]
     pub async fn generated_submit_job<D>(
         &self,
         payload: D::Payload,
-    ) -> Result<JobRef<D::Payload, D::Result>, JobsError>
+    ) -> Result<crate::jobs::JobSubmitOutcome<D::Payload, D::Result, D::Update>, JobsError>
     where
         D: JobDescriptor,
     {
         self.generated_handle()
             .generated_submit_job::<D>(payload)
+            .await
+    }
+
+    /// Subscribe to one job's live-only updates for generated participant code.
+    #[doc(hidden)]
+    pub async fn generated_job_updates<D>(
+        &self,
+        job_id: &str,
+    ) -> Result<
+        futures_util::stream::BoxStream<
+            'static,
+            Result<crate::jobs::JobUpdate<D::Update>, JobsError>,
+        >,
+        JobsError,
+    >
+    where
+        D: JobDescriptor,
+    {
+        self.generated_handle()
+            .generated_job_updates::<D>(job_id)
             .await
     }
 
@@ -1207,7 +1378,11 @@ impl<C> ConnectedServiceRuntime<C> {
     ) -> Result<(), ServiceRuntimeError>
     where
         D: JobDescriptor + 'static,
-        H: Fn(crate::jobs::ActiveJob<D::Payload, D::Result>) -> Fut + Clone + Send + Sync + 'static,
+        H: Fn(crate::jobs::ActiveJob<D::Payload, D::Result, D::Update>) -> Fut
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Fut: Future<Output = Result<D::Result, JobProcessError<E>>> + Send + 'static,
         E: ToString + Send + 'static,
     {
@@ -1224,7 +1399,11 @@ impl<C> ConnectedServiceRuntime<C> {
     ) -> Result<(), ServiceRuntimeError>
     where
         D: JobDescriptor + 'static,
-        H: Fn(crate::jobs::ActiveJob<D::Payload, D::Result>) -> Fut + Clone + Send + Sync + 'static,
+        H: Fn(crate::jobs::ActiveJob<D::Payload, D::Result, D::Update>) -> Fut
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Fut: Future<Output = Result<D::Result, JobProcessError<E>>> + Send + 'static,
         E: ToString + Send + 'static,
     {
@@ -1495,9 +1674,32 @@ impl<C> ConnectedServiceRuntime<C> {
             tokio::try_join!(serve, workers)?;
             Ok(())
         };
+        // A current build installs itself when it connects; this one stops
+        // rather than linger without authority of its own.
+        let owner = self.client.authorization_owner().clone();
+        let retired = async move {
+            let mut changes = owner.subscribe_changes();
+            loop {
+                if let Err(tokio::sync::broadcast::error::RecvError::Closed) = changes.recv().await
+                {
+                    return std::future::pending().await;
+                }
+                let submit_only = owner.own_authority().is_ok_and(|own| {
+                    own.authority()
+                        .extensions
+                        .get("trellis.nativeParticipant.v1")
+                        .and_then(|metadata| metadata["participantDigest"].as_str())
+                        == Some("")
+                });
+                if submit_only {
+                    return ServiceRuntimeError::BuildRetired;
+                }
+            }
+        };
         let result = tokio::select! {
             result = run => result,
             Some(error) = event_failures.recv() => Err(error),
+            error = retired => Err(error),
         };
         self.transfer_tasks.shutdown().await;
         result

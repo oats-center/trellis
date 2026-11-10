@@ -23,7 +23,7 @@ use crate::jobs::types::{
     Job, JobConcurrency, JobContext, JobEventType, JobLineage, JobLogEntry, JobProgress,
     JobQueuePolicy, JobQueuePolicyOutcome, JobState, JobTrigger, JobTriggerKind, JobWaitEdge,
 };
-use crate::jobs::updates::{validate_update, JobUpdate, JobUpdateDescriptor, JobUpdateError};
+use crate::jobs::updates::{validate_update, JobUpdate, JobUpdateError, JobUpdateSchema};
 
 type HeartbeatHook = Arc<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
@@ -1125,15 +1125,15 @@ where
     }
 
     /// Publish one validated live-only update for an active job attempt.
-    pub async fn emit_update<D>(
+    pub async fn emit_update<U>(
         &self,
         job: &Job,
         sequence: u64,
-        update: D::Update,
-    ) -> Result<JobUpdate<D::Update>, JobManagerError<P::Error>>
+        schema: JobUpdateSchema,
+        update: U,
+    ) -> Result<JobUpdate<U>, JobManagerError<P::Error>>
     where
-        D: JobUpdateDescriptor,
-        D::Update: Clone,
+        U: Serialize,
     {
         let queue = self.queue_binding_for_job(job)?;
         let Some(bound_schema) = queue.update.as_deref() else {
@@ -1148,7 +1148,7 @@ where
                 feature: "update",
             });
         };
-        if D::QUEUE_TYPE != job.job_type || D::UPDATE_SCHEMA != bound_schema {
+        if queue.queue_type != job.job_type || schema.name != bound_schema {
             return Err(JobManagerError::UpdateBindingMismatch {
                 queue_type: queue.queue_type.clone(),
                 bound_schema: bound_schema.to_string(),
@@ -1162,7 +1162,7 @@ where
             });
         }
         let update_value = serde_json::to_value(&update).map_err(JobUpdateError::Json)?;
-        validate_update(D::UPDATE_SCHEMA_JSON, &update_value)?;
+        validate_update(schema.json, &update_value)?;
         let envelope = JobUpdate {
             job_id: job.id.clone(),
             attempt: job.tries,

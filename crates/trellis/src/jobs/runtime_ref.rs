@@ -7,7 +7,7 @@ use futures_util::{FutureExt, StreamExt};
 use crate::jobs::bindings::JobsQueueBinding;
 use crate::jobs::projection::{is_terminal, reduce_job_event};
 use crate::jobs::types::{Job, JobEvent, JobEventType};
-use crate::jobs::updates::{validate_update, JobUpdate, JobUpdateDescriptor};
+use crate::jobs::updates::{validate_update, JobUpdate, JobUpdateSchema};
 use crate::jobs::JobsError;
 
 const JOBS_STREAM: &str = "JOBS";
@@ -103,14 +103,24 @@ impl NatsJobWaiter {
     }
 
     /// Subscribe to validated live-only updates until terminal lifecycle state.
-    pub async fn updates<D>(
+    pub async fn updates<U>(
         &self,
         job_id: impl Into<String>,
-    ) -> Result<BoxStream<'static, Result<JobUpdate<D::Update>, JobsError>>, JobsError>
+        schema: JobUpdateSchema,
+    ) -> Result<BoxStream<'static, Result<JobUpdate<U>, JobsError>>, JobsError>
     where
-        D: JobUpdateDescriptor,
+        U: serde::de::DeserializeOwned + Send + 'static,
     {
         let job_id = job_id.into();
+        if job_id.is_empty()
+            || job_id
+                .chars()
+                .any(|c| matches!(c, '.' | '*' | '>') || c.is_whitespace())
+        {
+            return Err(jobs_message(format!(
+                "job id '{job_id}' is not one NATS token"
+            )));
+        }
         let bound_schema = self.queue.update.as_deref().ok_or_else(|| {
             jobs_message(format!(
                 "jobs queue '{}' does not declare updates",
@@ -123,7 +133,7 @@ impl NatsJobWaiter {
                 self.queue.queue_type
             ))
         })?;
-        if D::QUEUE_TYPE != self.queue.queue_type || D::UPDATE_SCHEMA != bound_schema {
+        if schema.name != bound_schema {
             return Err(jobs_message(format!(
                 "job update descriptor does not match queue '{}'",
                 self.queue.queue_type
@@ -239,13 +249,13 @@ impl NatsJobWaiter {
                                 (lifecycle, updates, attempt, sequence, true),
                             ));
                         };
-                        if let Err(error) = validate_update(D::UPDATE_SCHEMA_JSON, update_value) {
+                        if let Err(error) = validate_update(schema.json, update_value) {
                             return Some((
                                 Err(jobs_message(error.to_string())),
                                 (lifecycle, updates, attempt, sequence, true),
                             ));
                         }
-                        let update: JobUpdate<D::Update> = match serde_json::from_value(value) {
+                        let update: JobUpdate<U> = match serde_json::from_value(value) {
                             Ok(update) => update,
                             Err(error) => {
                                 return Some((

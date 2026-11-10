@@ -3140,6 +3140,28 @@ export function connectTrellisServiceWithRuntimeDeps<
             "service",
             {
               onPreActivate: async (generation, retainAuthority) => {
+                if (ingress) {
+                  // Readmitted with only the right to submit a build, this
+                  // build no longer answers for its instance: the deployment
+                  // moved past it. It stops rather than linger without
+                  // authority; a current build installs itself on connect.
+                  const lease = retainAuthority();
+                  const metadata =
+                    lease.authority.extensions["trellis.nativeParticipant.v1"];
+                  lease.release();
+                  if (
+                    metadata &&
+                    typeof metadata === "object" &&
+                    !Array.isArray(metadata) &&
+                    metadata.participantDigest === ""
+                  ) {
+                    const error = new Error(
+                      "This build is no longer installed for its instance; restart it with the deployment's current build",
+                    );
+                    void connected?.manager.terminate(error);
+                    throw error;
+                  }
+                }
                 await ingress?.install({
                   id: generation.id,
                   nc: generation.nc,

@@ -56,7 +56,7 @@ pub use types::{
     JobLogLevel, JobProgress, JobQueuePolicy, JobQueuePolicyOutcome, JobState, JobWaitEdge,
     JobWaitTarget, JobWaitTargetKind, WorkerHeartbeat,
 };
-pub use updates::{JobDescriptor, JobUpdate, JobUpdateDescriptor, JobUpdateError};
+pub use updates::{JobDescriptor, JobUpdate, JobUpdateError, JobUpdateSchema, NoJobUpdates};
 
 #[doc(hidden)]
 pub type NatsJobEventPublisher = TrellisJobEventPublisher;
@@ -67,18 +67,29 @@ pub mod internal {
         process_work_payload, start_worker_host_from_binding, WorkerHostError,
     };
 
+    /// The typed handle a worker of queue `D` receives.
+    pub type TypedActiveJob<D> = super::ActiveJob<
+        <D as super::JobDescriptor>::Payload,
+        <D as super::JobDescriptor>::Result,
+        <D as super::JobDescriptor>::Update,
+    >;
+
     pub fn typed_active_job<D>(
         active: super::WorkerActiveJob<
             super::TrellisJobEventPublisher,
             super::TrellisJobMetaSource,
         >,
-    ) -> Result<super::ActiveJob<D::Payload, D::Result>, super::JobsError>
+    ) -> Result<TypedActiveJob<D>, super::JobsError>
     where
         D: super::JobDescriptor,
     {
         let payload = serde_json::from_value(active.job().payload.clone())
             .map_err(super::JobsError::DecodePayload)?;
-        Ok(super::ActiveJob::from_runtime(payload, active))
+        Ok(super::ActiveJob::from_runtime(
+            payload,
+            active,
+            D::UPDATE_SCHEMA,
+        ))
     }
 }
 

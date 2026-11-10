@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     let first = provider
-        .submit_keyed_work(KeyedValue {
+        .create_keyed_work(KeyedValue {
             key: "shared".to_owned(),
             value: "first".to_owned(),
             extra: Default::default(),
@@ -125,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::task::yield_now().await;
     }
     let second = provider
-        .submit_keyed_work(KeyedValue {
+        .create_keyed_work(KeyedValue {
             key: "shared".to_owned(),
             value: "second".to_owned(),
             extra: Default::default(),
@@ -145,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(second_runs.load(Ordering::SeqCst), 1);
 
     let retry = provider
-        .submit_keyed_work(KeyedValue {
+        .create_keyed_work(KeyedValue {
             key: "retry".to_owned(),
             value: "retry".to_owned(),
             extra: Default::default(),

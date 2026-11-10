@@ -8,6 +8,48 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Rust job handlers publish live-only typed updates with
+  `job.emit_update(update)` on queues that declare `update`, and service code
+  subscribes with `job_ref.updates()` or `provider.<job>_updates(&id)`. The
+  stream validates each update, keeps attempt and sequence order, and ends at
+  the job's terminal state. Handlers also gain `job.wait_for(edge, future)`.
+- `provider.jobs_client()` returns a cloneable `Jobs` handle, so RPC and
+  operation handlers and spawned tasks can create and observe the service's
+  jobs.
+- `submit_<job>` returns the key policy's `JobSubmitOutcome` (accepted,
+  rejected, coalesced or replaced), like TypeScript's `submit`.
+- Rust services and devices add their own version, details and named checks to
+  their heartbeats through `health()`: `set_info`, `set_info_with` and `add`.
+  A failing check shows the instance as degraded or unhealthy in the Console.
+
+### Fixed
+
+- A service connects again after an administrator applies its next build
+  when that build provides a new major of an API, such as v1 to v2. Its
+  instance stayed pinned to the previous build, which the deployment no longer
+  accepted, so admission refused it with `Authorization Violation` and the new
+  build could never present itself. It now connects with only the right to
+  submit its build, which installs at once and moves the instance onto it.
+- A running service whose build an administrator replaced with one it no
+  longer fits stops instead of staying connected with no authority. Rust's
+  `runtime.run()` returns `ServiceRuntimeError::BuildRetired` and a
+  TypeScript service ends with the same message; restart it with the
+  deployment's current build.
+- The testkit's `contracts.apply` failed with `Revision conflict` after an
+  approved service update had moved the deployment. It now applies against the
+  deployment's current revision.
+
+### Changed
+
+- The generated Rust `submit_<job>`, which returned the `JobRef`, is now
+  `create_<job>`, matching TypeScript's `create`. A key policy's refusal is
+  `JobsError::NotEnqueued` instead of a message.
+- `JobDescriptor` carries the queue's `Update` type and `UPDATE_SCHEMA`, and
+  `JobUpdateDescriptor` is gone. `ActiveJob`, `JobRef` and `JobSubmitOutcome`
+  take the update type as a third parameter, `NoJobUpdates` by default.
+
 ## [0.100.0-rc.30] - 2026-11-09
 
 ### Fixed

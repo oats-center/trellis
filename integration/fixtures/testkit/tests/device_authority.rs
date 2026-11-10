@@ -1041,7 +1041,7 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
         .await
         .unwrap();
     let job = JobsProviderRuntime::new(&mut jobs)
-        .submit_work(value.clone())
+        .create_work(value.clone())
         .await
         .unwrap();
     let history = trellis_runtime_apis::apis::trellis_jobs_v1::Client::from_generated(

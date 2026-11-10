@@ -10,6 +10,7 @@ pub(crate) mod authorization;
 mod connection;
 mod error;
 mod events;
+mod health;
 #[cfg(feature = "http")]
 mod http_error;
 pub(crate) mod nats_tls;
@@ -63,6 +64,10 @@ pub use events::{
 pub use events::{PostgresInboxStore, PostgresOutboxStore};
 #[cfg(feature = "event-store-sqlite")]
 pub use events::{SqliteInboxStore, SqliteOutboxStore};
+pub use health::{
+    HealthCheckRegistration, HealthCheckStatus, ServiceHealth, ServiceHealthCheck,
+    ServiceHealthInfo,
+};
 #[cfg(feature = "http")]
 pub(crate) use http_error::http_client_builder;
 #[cfg(feature = "device")]

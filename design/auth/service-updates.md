@@ -65,6 +65,12 @@ the same install, started by the service.
    names no participant digest. A build that implements the replacement
    submits itself and installs like any other update; the old build's
    submission fails until it is replaced.
+8. The same holds for an instance still pinned to an earlier build that the
+   deployment's current revision no longer accepts, for example after an
+   administrator applies a package whose build provides the next major of an
+   API. The pinned build has no authority left, so its instances get the
+   submit-only session; the new build submits itself and, matching the applied
+   revision, moves the instance onto it at once.
 
 Moving an instance re-grants its direct capabilities to match the new revision's
 selection, removes capabilities the revision no longer selects, and enqueues

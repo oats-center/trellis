@@ -416,6 +416,10 @@ extension supplies installed revision and participant digest, never payload
 claims. No health declaration is needed in service contracts, and initial
 publication does not gate connection.
 
+A participant can add its own version, structured details, and named checks to
+every heartbeat; checks run at each publication. With any check failing, the
+instance reports degraded, or unhealthy when every check fails.
+
 ## Identity And Connection
 
 ### Participants and admission
