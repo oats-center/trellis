@@ -199,7 +199,28 @@ export type ConsoleErrorProjection = {
   retryable?: boolean;
   id?: string;
   consentRequest?: unknown;
+  /** A service's unexpected failure, already worded with its error ID. */
+  unexpected?: true;
 };
+
+/**
+ * What to tell someone about a service's unexpected failure, which arrives with
+ * an ID instead of its cause. Undefined for anything else, including an error
+ * raised in this browser, whose ID is in no service's log.
+ */
+export function unexpectedFailureCopy(
+  source: Record<string, unknown>,
+): string | undefined {
+  const context = isPlainRecord(source.context) ? source.context : undefined;
+  if (
+    source.type !== "UnexpectedError" ||
+    typeof source.id !== "string" ||
+    context?.causeMessage !== undefined
+  ) {
+    return undefined;
+  }
+  return `Something went wrong on the server. Look for error ID ${source.id} in the service's log.`;
+}
 
 function projectionFromSource(
   source: Record<string, unknown>,
@@ -220,6 +241,10 @@ function projectionFromSource(
     ? context.reason
     : undefined;
   if (message === undefined && code === undefined) return undefined;
+  const unexpected = unexpectedFailureCopy(source);
+  if (unexpected !== undefined) {
+    return { message: unexpected, unexpected: true };
+  }
   // The SDK reports an optional action the user never allowed with the
   // selected action and its capabilities in context.
   if (

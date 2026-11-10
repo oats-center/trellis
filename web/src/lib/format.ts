@@ -172,7 +172,9 @@ export function jobStateStatus(
 export function errorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   const projected = projectConsoleError(error);
-  if (projected.code === "not_allowed") return projected.message;
+  if (projected.code === "not_allowed" || projected.unexpected) {
+    return projected.message;
+  }
 
   if (error && typeof error === "object") {
     const candidate = error as ErrorLike;
@@ -265,7 +267,8 @@ export function errorMessage(error: unknown): string {
  * runtime". Names people typed are returned exactly as written.
  */
 export function humanizeName(name: string): string {
-  if (!/^[A-Za-z][a-zA-Z0-9]*(\.[A-Za-z][a-zA-Z0-9]*)*$/.test(name)) return name;
+  if (!/^[A-Za-z][a-zA-Z0-9]*(\.[A-Za-z][a-zA-Z0-9]*)*$/.test(name))
+    return name;
   const words = (name.split(".").at(-1) ?? name)
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .toLowerCase();

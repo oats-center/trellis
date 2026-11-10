@@ -3,6 +3,8 @@
  * IDs, states, serialized errors) become short words a person can act on.
  */
 
+import { unexpectedFailureCopy } from "./display_value.ts";
+
 type Tone = "healthy" | "degraded" | "unhealthy" | "offline";
 
 /** "Connections.Opened" → "Connections opened"; "StatusChanged" → "Status changed". */
@@ -129,6 +131,8 @@ function rawErrorText(raw: string | undefined): string | undefined {
       parsed.context && typeof parsed.context === "object"
         ? (parsed.context as Record<string, unknown>)
         : {};
+    const unexpected = unexpectedFailureCopy(parsed);
+    if (unexpected !== undefined) return unexpected;
     for (const candidate of [
       context.causeMessage,
       context.message,

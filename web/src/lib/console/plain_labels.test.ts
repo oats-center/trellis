@@ -74,6 +74,19 @@ test("serialized errors show their cause", () => {
   assert.equal(errorText(undefined), undefined);
 });
 
+test("a stored unexpected failure without a cause shows its error ID", () => {
+  assert.equal(
+    errorText(
+      JSON.stringify({
+        id: "01M5N1W3RMBDAQ5QV4S5PMPQN6",
+        type: "UnexpectedError",
+        message: "An unexpected error has occurred",
+      }),
+    ),
+    "Something went wrong on the server. Look for error ID 01M5N1W3RMBDAQ5QV4S5PMPQN6 in the service's log.",
+  );
+});
+
 test("durations read the way people say them", () => {
   assert.equal(friendlyDuration(359), "359ms");
   assert.equal(friendlyDuration(2_184), "2.2s");

@@ -11,6 +11,32 @@ test("compactDuration preserves millisecond resolution", () => {
   equal(compactDuration(3_723_006), "1h 2m 3.006s");
 });
 
+test("errorMessage gives a service's unexpected failure its error ID", () => {
+  const wire = {
+    id: "rust-server-error-1-2",
+    type: "UnexpectedError",
+    message: "An unexpected error has occurred",
+    context: { requestId: "request-1" },
+  };
+  const expected =
+    "Something went wrong on the server. Look for error ID rust-server-error-1-2 in the service's log.";
+  equal(errorMessage({ error: { remoteError: wire } }), expected);
+  equal(errorMessage({ remoteError: wire }), expected);
+});
+
+test("errorMessage keeps the cause of an error raised in this browser", () => {
+  equal(
+    errorMessage({
+      id: "local-1",
+      type: "UnexpectedError",
+      message: "An unexpected error has occurred",
+      context: { causeMessage: "Could not reach Trellis" },
+      getContext: () => ({ causeMessage: "Could not reach Trellis" }),
+    }),
+    "Could not reach Trellis",
+  );
+});
+
 test("errorMessage prefers explicit server messages", () => {
   equal(
     errorMessage({

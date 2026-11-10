@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- The Console shows a service's unexpected failure with its error ID, to look
+  up in that service's log.
+
 ## [0.100.0-rc.31] - 2026-11-10
 
 ### Added
