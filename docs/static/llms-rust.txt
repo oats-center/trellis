@@ -272,7 +272,8 @@ reconcile earlier side effects. A recovered owner after fail-stale takeover sees
 ## Resources
 
 Use generated State, KV, Store, Consumer, and Job handles. Resolved binding
-payloads and subjects are runtime internals.
+payloads and subjects are runtime internals. `kv.keys(filter)` streams live keys
+matching a NATS-style filter, where `">"` lists them all.
 
 App State accessors register generated native-IDL schemas asynchronously:
 `let (state, registration) = client.saved_resource("0", idempotency_key).await?;`

@@ -30,6 +30,16 @@ pub trait KvResourceClient: Clone + fmt::Debug + Send + Sync + 'static {
     /// Watch stream type returned by this client.
     type Watch: Stream<Item = Result<RawKvResourceEntry, ServerError>> + Send + Unpin + 'static;
 
+    /// List every live key in this bucket.
+    fn keys(
+        &self,
+    ) -> impl Future<
+        Output = Result<
+            futures_util::stream::BoxStream<'static, Result<String, ServerError>>,
+            ServerError,
+        >,
+    > + Send;
+
     /// Read the authoritative latest entry for `key`, including delete markers.
     fn get_entry(
         &self,
@@ -296,6 +306,29 @@ where
             }),
             Err(error) => Err(KvResourceWriteError::Backend(error.to_string())),
         }
+    }
+
+    /// List live keys matching a NATS-style `filter`: `*` stands for one
+    /// dot-separated token, a trailing `>` for the rest, and `">"` for every
+    /// key. The stream ends once the bucket's current keys have been listed.
+    pub async fn keys(
+        &self,
+        filter: &str,
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<String, KvResourceReadError>> + Send>>,
+        KvResourceReadError,
+    > {
+        self.ensure_read()?;
+        let keys = self.client.keys().await.map_err(backend_read)?;
+        let filter = filter.to_owned();
+        Ok(Box::pin(keys.filter_map(move |key| {
+            let matched = match key {
+                Ok(key) if key_matches(&filter, &key) => Some(Ok(key)),
+                Ok(_) => None,
+                Err(error) => Some(Err(backend_read(error).into())),
+            };
+            std::future::ready(matched)
+        })))
     }
 
     /// Return retained revisions in backend order, including tombstones.
@@ -1092,6 +1125,20 @@ pub(super) async fn ensure_existing_kv_binding(
         )));
     }
     Ok(())
+}
+
+fn key_matches(filter: &str, key: &str) -> bool {
+    let mut filter = filter.split('.');
+    let mut key = key.split('.');
+    loop {
+        match (filter.next(), key.next()) {
+            (Some(">"), Some(_)) => return filter.next().is_none(),
+            (Some("*"), Some(_)) => {}
+            (Some(expected), Some(actual)) if expected == actual => {}
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
 }
 
 pub fn validate_kv_binding(

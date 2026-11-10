@@ -856,53 +856,13 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         stopReason === "retry-exhausted" ||
         stopReason === "stale-attempt"
       ) {
-        if (lease) {
-          try {
-            await this.#keyedHeartbeat(job, lease)();
-          } catch {
-            cancellation.cancelForLeaseLoss();
-            await this.#releaseKeyedSlot(job, lease);
-            return { outcome: "interrupted", tries };
-          }
-        }
-        if (cancellation.isHostShutdown() || cancellation.isLeaseLost()) {
-          await this.#releaseKeyedSlot(job, lease);
-          return { outcome: "interrupted", tries };
-        }
-        const expired = stopReason === "deadline-exceeded";
-        const stale = stopReason === "stale-attempt";
-        if (cancellation.isJobCancelled()) {
-          await this.#releaseKeyedSlot(job, lease);
-          return { outcome: "cancelled", tries };
-        }
-        await this.#publishJobEvent(job.type, job.id, {
-          jobId: job.id,
-          service: job.service,
-          jobType: job.type,
-          eventType: stale ? "stale" : expired ? "expired" : "dead",
-          state: stale ? "stale" : expired ? "expired" : "dead",
-          previousState: "active",
-          context: job.context,
+        return await this.#settleReconciled(
+          job,
+          lease,
+          cancellation,
           tries,
-          error: stale
-            ? "key lease displaced; execution owner reconciled"
-            : expired
-              ? "job deadline exceeded; execution owner reconciled"
-              : "ordinary job attempts exhausted; execution owner reconciled",
-          timestamp: this.#meta().nowIso(),
-        });
-        await this.#releaseKeyedSlot(job, lease);
-        if (stale) {
-          await this.cleanupQueuedKeyedJob(job);
-          return { outcome: "stale", tries };
-        }
-        return expired
-          ? { outcome: "expired", tries }
-          : {
-              outcome: "dead",
-              tries,
-              error: "ordinary job attempts exhausted",
-            };
+          stopReason,
+        );
       }
       if (cancellation.isCancelled()) {
         await this.#releaseKeyedSlot(job, lease);
@@ -943,10 +903,11 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         await this.#releaseKeyedSlot(job, lease);
         return { outcome: "interrupted", tries };
       }
+      const stopReason = cancellation.reason();
       if (
-        cancellation.reason() === "deadline-exceeded" ||
-        cancellation.reason() === "retry-exhausted" ||
-        cancellation.reason() === "stale-attempt"
+        stopReason === "deadline-exceeded" ||
+        stopReason === "retry-exhausted" ||
+        stopReason === "stale-attempt"
       ) {
         recordTrellisError(error, {
           surface: "job",
@@ -954,6 +915,18 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
           operation: job.type,
           phase: "reconciliation",
         });
+        // Only a retryable error asks for another cleanup attempt. A failed
+        // one is the handler's last word, so the job settles with it.
+        if (error instanceof JobProcessError && error.kind === "failed") {
+          return await this.#settleReconciled(
+            job,
+            lease,
+            cancellation,
+            tries,
+            stopReason,
+            error.message,
+          );
+        }
         await this.#releaseKeyedSlot(job, lease);
         return { outcome: "interrupted", tries };
       }
@@ -1159,6 +1132,71 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       now: this.#meta().nowIso(),
     });
     return released.kind === "released" ? "released" : "staleCompletion";
+  }
+
+  /**
+   * Ends a job whose attempts, deadline or key lease ran out, once its handler
+   * has run cleanup. `cleanupError` is the handler's final failure, if any.
+   */
+  async #settleReconciled(
+    job: Job<TPayload, TResult>,
+    lease: ActiveSlotLease | undefined,
+    cancellation: JobCancellationToken,
+    tries: number,
+    stopReason: "deadline-exceeded" | "retry-exhausted" | "stale-attempt",
+    cleanupError?: string,
+  ): Promise<JobProcessOutcome<TResult>> {
+    const settlement =
+      cleanupError === undefined
+        ? "execution owner reconciled"
+        : `cleanup failed: ${cleanupError}`;
+    if (lease) {
+      try {
+        await this.#keyedHeartbeat(job, lease)();
+      } catch {
+        cancellation.cancelForLeaseLoss();
+        await this.#releaseKeyedSlot(job, lease);
+        return { outcome: "interrupted", tries };
+      }
+    }
+    if (cancellation.isHostShutdown() || cancellation.isLeaseLost()) {
+      await this.#releaseKeyedSlot(job, lease);
+      return { outcome: "interrupted", tries };
+    }
+    const expired = stopReason === "deadline-exceeded";
+    const stale = stopReason === "stale-attempt";
+    if (cancellation.isJobCancelled()) {
+      await this.#releaseKeyedSlot(job, lease);
+      return { outcome: "cancelled", tries };
+    }
+    await this.#publishJobEvent(job.type, job.id, {
+      jobId: job.id,
+      service: job.service,
+      jobType: job.type,
+      eventType: stale ? "stale" : expired ? "expired" : "dead",
+      state: stale ? "stale" : expired ? "expired" : "dead",
+      previousState: "active",
+      context: job.context,
+      tries,
+      error: stale
+        ? `key lease displaced; ${settlement}`
+        : expired
+          ? `job deadline exceeded; ${settlement}`
+          : `ordinary job attempts exhausted; ${settlement}`,
+      timestamp: this.#meta().nowIso(),
+    });
+    await this.#releaseKeyedSlot(job, lease);
+    if (stale) {
+      await this.cleanupQueuedKeyedJob(job);
+      return { outcome: "stale", tries };
+    }
+    return expired
+      ? { outcome: "expired", tries }
+      : {
+          outcome: "dead",
+          tries,
+          error: "ordinary job attempts exhausted",
+        };
   }
 
   /**

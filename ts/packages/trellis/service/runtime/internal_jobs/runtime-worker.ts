@@ -569,7 +569,9 @@ export function startQueueWorkerLoop<TResult>(
           } else {
             await disposition(
               "nak",
-              retryDelayMs(outcome?.tries ?? 1, options.backoffMs),
+              outcome?.outcome === "interrupted"
+                ? interruptedDelayMs(outcome.tries, options.backoffMs)
+                : retryDelayMs(outcome?.tries ?? 1, options.backoffMs),
             );
           }
         } catch (error) {
@@ -833,6 +835,18 @@ function retryDelayMs(
     ? configured
     : [5_000, 30_000, 120_000, 600_000];
   return schedule[Math.min(Math.max(0, delivery - 1), schedule.length - 1)]!;
+}
+
+/** Failed cleanup can repeat indefinitely, so its delay keeps growing. */
+function interruptedDelayMs(
+  tries: number,
+  configured: number[] | undefined,
+): number {
+  const beyondSchedule = Math.max(0, tries - (configured?.length || 4));
+  return Math.min(
+    retryDelayMs(tries, configured) * 2 ** Math.min(beyondSchedule, 12),
+    300_000,
+  );
 }
 
 export function progressAckIntervalMs(queue: JobsQueueBinding): number {

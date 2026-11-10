@@ -850,6 +850,33 @@ test("keyed capacity deferral reserves work without NAK until a real KV slot rel
     }
   }, true));
 
+test("a failed cleanup ends a job instead of redelivering it forever", () =>
+  withBroker(async (f) => {
+    // One ordinary attempt leaves the fixture's second delivery for cleanup.
+    f.binding.jobs.queues.refresh.maxDeliver = 1;
+    const job = await f.manager.create("refresh", { tenant: "a" });
+    let entries = 0;
+    await f.host((active) => {
+      entries += 1;
+      return Promise.reject(
+        active.isCancelled()
+          ? JobProcessError.failed("cannot undo the partial run")
+          : JobProcessError.retryable("storage is busy"),
+      );
+    });
+    await f.settled();
+    const ended = await f.jsm.direct.getMessage("ADAPTER_JOBS", {
+      last_by_subj: `adapter.jobs.svc.refresh.${job.id}.dead`,
+    });
+    assert(ended);
+    assert.match(
+      (JSON.parse(ended.string()) as JobEvent).error ?? "",
+      /cannot undo the partial run/,
+    );
+    // The ordinary attempt, then the one cleanup entry.
+    assert.equal(entries, 2);
+  }));
+
 test("a finished keyed job's event is stored before its slot is freed", () =>
   withBroker(async (f) => {
     const payload = { tenant: "a" };

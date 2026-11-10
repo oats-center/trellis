@@ -1752,8 +1752,12 @@ fn ack_action_for_outcome<TResult>(
         Some(JobProcessOutcome::Retry { tries, .. }) => {
             WorkerAckAction::Nak(Duration::from_millis(retry_delay_ms(*tries, backoff_ms)))
         }
-        Some(JobProcessOutcome::Interrupted { .. })
-        | Some(JobProcessOutcome::StaleCompletionIgnored { .. }) => {
+        // Failed cleanup can repeat indefinitely, so its delay grows.
+        Some(JobProcessOutcome::Interrupted { tries }) => {
+            let doublings = tries.saturating_sub(1).min(6) as u32;
+            WorkerAckAction::Nak(Duration::from_secs((5_u64 << doublings).min(300)))
+        }
+        Some(JobProcessOutcome::StaleCompletionIgnored { .. }) => {
             WorkerAckAction::Nak(Duration::from_secs(5))
         }
         Some(JobProcessOutcome::Completed { .. })

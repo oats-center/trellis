@@ -117,11 +117,10 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
         .await
         .unwrap();
     app.flush().await.unwrap(); // A reused CID is not authority to kick this user.
-    assert!(
-        super::super::broker::close_attachment(&system, "UNKNOWN_SERVER", cid, &attachment)
-            .await
-            .is_err()
-    );
+                                // A server that no longer exists holds no socket to close.
+    super::super::broker::close_attachment(&system, "UNKNOWN_SERVER", cid, &attachment)
+        .await
+        .unwrap();
     drain(&f.store, NOW);
     f.store
         .process_effects(&material, &revocations, &system, NOW)

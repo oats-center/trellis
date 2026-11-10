@@ -51,8 +51,13 @@ pub(crate) async fn close_attachment(
         ),
     )
     .await
-    .map_err(|_| AuthError::Unavailable)?
-    .map_err(|error| AuthError::Broker(error.to_string()))?;
+    .map_err(|_| AuthError::Unavailable)?;
+    // A NATS server takes a new ID each start, so no answer for this one means
+    // the process that held the socket is gone, and the socket with it.
+    let inventory = match inventory {
+        Err(error) if error.kind() == async_nats::RequestErrorKind::NoResponders => return Ok(()),
+        inventory => inventory.map_err(|error| AuthError::Broker(error.to_string()))?,
+    };
     let reply: ConnzReply = serde_json::from_slice(&inventory.payload)?;
     if reply.server.id != server || reply.data.server_id != server {
         return Err(AuthError::Unavailable);

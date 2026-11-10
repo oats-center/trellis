@@ -906,11 +906,21 @@ where
                     | JobCancellationReason::StaleAttempt
             )
         ) {
-            if process_result.is_err() {
+            // Only a retryable error asks for another cleanup attempt. A failed
+            // one is the handler's last word, so the job settles with it.
+            if matches!(process_result, Err(JobProcessError::Retryable(_))) {
                 self.run_terminal_cleanup(&terminal_cleanup, &self.now_iso())
                     .await?;
                 return Ok(JobProcessOutcome::Interrupted { tries });
             }
+            let cleanup_failure = match &process_result {
+                Err(JobProcessError::Failed(error)) => Some(error.to_string()),
+                _ => None,
+            };
+            let reconciled = |outcome: &str| match &cleanup_failure {
+                Some(error) => format!("{outcome}; cleanup failed: {error}"),
+                None => format!("{outcome}; execution owner reconciled"),
+            };
             let terminal_at = self.now_iso();
             if self
                 .guard_terminal_publish(&job, queue, tries, &terminal_at, &terminal_guard)
@@ -941,7 +951,7 @@ where
                         timestamp: &terminal_at,
                     },
                     tries,
-                    Some("key lease displaced; execution owner reconciled"),
+                    Some(&reconciled("key lease displaced")),
                     None,
                 )
             } else if expired {
@@ -955,7 +965,7 @@ where
                     },
                     tries,
                     JobState::Active,
-                    "job deadline exceeded; execution owner reconciled",
+                    &reconciled("job deadline exceeded"),
                 )
             } else {
                 events::dead(
@@ -968,7 +978,7 @@ where
                     },
                     tries,
                     JobState::Active,
-                    "ordinary job attempts exhausted; execution owner reconciled",
+                    &reconciled("ordinary job attempts exhausted"),
                 )
             };
             self.publish_queue_event(queue, &job.id, &event).await?;

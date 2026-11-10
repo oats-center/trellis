@@ -21,9 +21,10 @@ positive delays. Ordinary retryable handler failure uses delayed NAK and
 consumes that execution budget. Broker delivery is unlimited: after the ordinary
 budget is exhausted, the execution owner re-enters the handler with cancellation
 already requested to reconcile earlier side effects. A creation-relative
-deadline uses the same cleanup path for previously started work. Cleanup errors
-leave work redeliverable; only successful cleanup permits terminal Dead or
-Expired settlement and source acknowledgement. Never-started expired work
+deadline uses the same cleanup path for previously started work. A retryable
+cleanup error leaves work redeliverable after a growing delay capped at five
+minutes. Successful cleanup or a `failed` cleanup error permits terminal Dead or
+Expired settlement and source acknowledgement, and the failure text is recorded. Never-started expired work
 recovers a fresh fence and confirms Expired publication before releasing its
 slot, without running the handler. Failed publication retains the reservation
 for redelivery; confirmed terminal redelivery reconciles any remaining slot

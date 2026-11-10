@@ -987,7 +987,9 @@ ordinary attempts with delays of 5s, 30s, 2m, and 10m; explicit retry declares
 total attempts and exactly attempts-minus-one positive ordered backoffs. Broker
 redelivery is unlimited so execution owners can finish cleanup before Expired or
 Dead. Check cancellation before business work: already-cancelled handlers
-reconcile earlier side effects, and cleanup errors preserve redelivery.
+reconcile earlier side effects. A retryable cleanup error redelivers after a
+growing delay capped at five minutes; a `failed` one ends the job and records
+why.
 
 Never-started expiration confirms terminal publication before releasing
 recovered key slots, without running handlers; publication failure retains the
@@ -1951,7 +1953,8 @@ reconcile earlier side effects. A recovered owner after fail-stale takeover sees
 ### Resources
 
 Use generated State, KV, Store, Consumer, and Job handles. Resolved binding
-payloads and subjects are runtime internals.
+payloads and subjects are runtime internals. `kv.keys(filter)` streams live keys
+matching a NATS-style filter, where `">"` lists them all.
 
 App State accessors register generated native-IDL schemas asynchronously:
 `let (state, registration) = client.saved_resource("0", idempotency_key).await?;`

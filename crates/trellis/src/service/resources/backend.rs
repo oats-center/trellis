@@ -292,6 +292,28 @@ impl KvResourceClient for BoundKvResourceClient {
         .map_err(|_| resource_timeout("kv delete"))?
     }
 
+    async fn keys(
+        &self,
+    ) -> Result<futures_util::stream::BoxStream<'static, Result<String, ServerError>>, ServerError>
+    {
+        let deadline = self.deadline();
+        // Only listing setup is bounded by the budget; reading the keys is not.
+        timeout_at(tokio::time::Instant::from_std(deadline), async {
+            let guard = self.guard(ResourceTransportAction::Read, deadline).await?;
+            let KvStoreGuard { _lease, store } = guard;
+            let keys = store.keys().await.map_err(nats_error)?;
+            Ok(keys
+                .map(move |key| {
+                    // Keeps this generation until the listing ends.
+                    let _held = &_lease;
+                    key.map_err(nats_error)
+                })
+                .boxed())
+        })
+        .await
+        .map_err(|_| resource_timeout("kv keys setup"))?
+    }
+
     async fn history(&self, key: &str) -> Result<Vec<RawKvResourceEntry>, ServerError> {
         let deadline = self.deadline();
         timeout_at(tokio::time::Instant::from_std(deadline), async {
