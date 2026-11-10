@@ -1,6 +1,6 @@
 [package]
 name = "trellis-test-fixture"
-version = "0.100.0-rc.32"
+version = "0.100.0-rc.33"
 
 [sources]
 echo = "contract.trellis"

@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.33] - 2026-11-10
+
 ### Added
 
 - Rust KV handles list live keys with `keys(filter)`, as TypeScript's do.
@@ -19,8 +21,8 @@ and this project adheres to
   `retryable` one waits longer each time, up to five minutes, instead of
   repeating every five seconds.
 - A connection kick no longer stays pending forever once its NATS server has
-  restarted. Nothing answers for the old server's ID, so Auth now treats the
-  connection as closed and completes the kick.
+  restarted. When a running server answers and none has the old server's ID,
+  Auth treats the connection as closed and completes the kick.
 
 ## [0.100.0-rc.32] - 2026-11-10
 

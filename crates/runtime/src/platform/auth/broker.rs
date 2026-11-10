@@ -3,6 +3,7 @@
 use std::{sync::Arc, time::Duration};
 
 use async_nats::{jetstream::kv, Client};
+use futures_util::StreamExt;
 use serde::Deserialize;
 
 use super::sqlite::{blocking, json, AuthError, SqliteAuthorizationStore};
@@ -34,6 +35,37 @@ struct ConnzConnection {
 
 /// Never kick a reused numeric CID belonging to a different attachment. Missing
 /// or malformed system inventory is retryable, not proof that a socket is gone.
+/// True when at least one NATS server identifies itself and none is `server`.
+async fn server_is_gone(client: &Client, server: &str) -> Result<bool, AuthError> {
+    let inbox = client.new_inbox();
+    let mut replies = client
+        .subscribe(inbox.clone())
+        .await
+        .map_err(|error| AuthError::Broker(error.to_string()))?;
+    client
+        .publish_with_reply("$SYS.REQ.SERVER.PING", inbox, Vec::new().into())
+        .await
+        .map_err(|error| AuthError::Broker(error.to_string()))?;
+    let mut answered = false;
+    while let Ok(Some(reply)) =
+        tokio::time::timeout(Duration::from_millis(500), replies.next()).await
+    {
+        // A no-responders status has an empty body and identifies nobody.
+        let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&reply.payload) else {
+            continue;
+        };
+        match reply
+            .pointer("/server/id")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(id) if id == server => return Ok(false),
+            Some(_) => answered = true,
+            None => {}
+        }
+    }
+    Ok(answered)
+}
+
 pub(crate) async fn close_attachment(
     client: &Client,
     server: &str,
@@ -52,10 +84,17 @@ pub(crate) async fn close_attachment(
     )
     .await
     .map_err(|_| AuthError::Unavailable)?;
-    // A NATS server takes a new ID each start, so no answer for this one means
-    // the process that held the socket is gone, and the socket with it.
     let inventory = match inventory {
-        Err(error) if error.kind() == async_nats::RequestErrorKind::NoResponders => return Ok(()),
+        // A NATS server takes a new ID each start, so a server that has gone
+        // took its sockets with it. Silence alone proves nothing, since
+        // credentials outside the system account hear none either.
+        Err(error) if error.kind() == async_nats::RequestErrorKind::NoResponders => {
+            return if server_is_gone(client, server).await? {
+                Ok(())
+            } else {
+                Err(AuthError::Unavailable)
+            };
+        }
         inventory => inventory.map_err(|error| AuthError::Broker(error.to_string()))?,
     };
     let reply: ConnzReply = serde_json::from_slice(&inventory.payload)?;

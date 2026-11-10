@@ -842,7 +842,7 @@ function interruptedDelayMs(
   tries: number,
   configured: number[] | undefined,
 ): number {
-  const beyondSchedule = Math.max(0, tries - (configured?.length || 4));
+  const beyondSchedule = Math.max(0, tries - (configured?.length ?? 0) - 2);
   return Math.min(
     retryDelayMs(tries, configured) * 2 ** Math.min(beyondSchedule, 12),
     300_000,

@@ -325,7 +325,7 @@ where
             let matched = match key {
                 Ok(key) if key_matches(&filter, &key) => Some(Ok(key)),
                 Ok(_) => None,
-                Err(error) => Some(Err(backend_read(error).into())),
+                Err(error) => Some(Err(backend_read(error))),
             };
             std::future::ready(matched)
         })))
