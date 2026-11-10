@@ -54,7 +54,7 @@ impl JobsProjectorHandle {
         match joined {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(ServerError::Nats(format!(
+            Err(error) => Err(ServerError::Internal(format!(
                 "projector loop task failed: {error}"
             ))),
         }
@@ -68,7 +68,7 @@ pub async fn start_jobs_projector(
     resolver: Arc<dyn JobResourceResolver>,
 ) -> Result<JobsProjectorHandle, ServerError> {
     let consumer_name = projector_consumer_name(&store.projection_id().map_err(|error| {
-        ServerError::Nats(format!(
+        ServerError::Internal(format!(
             "failed to resolve Jobs projection identity: {error}"
         ))
     })?);
@@ -76,7 +76,7 @@ pub async fn start_jobs_projector(
         .filtered_messages(&jobs_stream, &consumer_name, JOBS_EVENTS_SUBJECT_WILDCARD)
         .await
         .map_err(|error| {
-            ServerError::Nats(format!(
+            ServerError::Internal(format!(
                 "failed to start jobs projector consumer '{consumer_name}' message stream: {error}"
             ))
         })?;
@@ -136,7 +136,7 @@ pub async fn start_jobs_projector(
                         None => {
                             let owner =
                                 resolver.by_publish_prefix(prefix).await.map_err(|error| {
-                                    ServerError::Nats(format!(
+                                    ServerError::Internal(format!(
                                         "jobs projector could not resolve queue \
                                         '{prefix}': {error}"
                                     ))
@@ -179,9 +179,9 @@ pub async fn start_jobs_projector(
                 Ok::<_, SqliteJobsStoreError>(projected)
             })
             .await
-            .map_err(|error| ServerError::Nats(format!("jobs projector task failed: {error}")))?
+            .map_err(|error| ServerError::Internal(format!("jobs projector task failed: {error}")))?
             .map_err(|error| {
-                ServerError::Nats(format!("jobs projector failed to project batch: {error}"))
+                ServerError::Internal(format!("jobs projector failed to project batch: {error}"))
             })?;
             let projected_count = projected.iter().filter(|job| job.is_some()).count();
             tracing::debug!(
@@ -226,7 +226,7 @@ async fn collect_projector_message(
     horizon: &mut u64,
 ) -> Result<(), ServerError> {
     let message = message.map_err(|error| {
-        ServerError::Nats(format!(
+        ServerError::Internal(format!(
             "jobs projector failed to pull from consumer '{consumer_name}' on \
             stream '{jobs_stream}': {error}"
         ))

@@ -254,20 +254,22 @@ impl UploadTransferCompletion {
                         result
                             .as_ref()
                             .map(|_| ())
-                            .map_err(|error| ServerError::Nats(error.to_string())),
+                            .map_err(|error| ServerError::Internal(error.to_string())),
                     );
                 }
                 result.map(|_| info)
             }
             Ok((Err(error), _)) => Err(error),
-            Err(_) => Err(ServerError::Nats("upload completion channel closed".into())),
+            Err(_) => Err(ServerError::Internal(
+                "upload completion channel closed".into(),
+            )),
         };
         // Even a failed backend/barrier must finish endpoint cleanup and its terminal signal.
         // Keep the handle here so cancelling this wait still aborts the owned endpoint.
         let endpoint = match self.task.as_mut() {
             Some(task) => task
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))
+                .map_err(|error| ServerError::Internal(error.to_string()))
                 .and_then(|result| result),
             None => Ok(()),
         };

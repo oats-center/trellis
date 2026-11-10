@@ -50,7 +50,7 @@ pub(super) fn register(
                     extra: Default::default(),
                 })
                 .await
-                .map_err(ServerError::Nats)?;
+                .map_err(ServerError::Internal)?;
             let expected = authority
                 .authority()
                 .resource_bindings_digest
@@ -77,7 +77,7 @@ pub(super) fn register(
             let stream = js
                 .get_stream("JOBS")
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
             let through = input
                 .through_sequence
                 .map_or(stream.cached_info().state.last_sequence, |value| {
@@ -101,7 +101,7 @@ pub(super) fn register(
                         next = through.saturating_add(1);
                         break;
                     }
-                    Err(error) => return Err(ServerError::Nats(error.to_string())),
+                    Err(error) => return Err(ServerError::Internal(error.to_string())),
                 };
                 bytes += message.payload.len();
                 next = message.sequence.saturating_add(1);

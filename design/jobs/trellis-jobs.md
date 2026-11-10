@@ -27,8 +27,10 @@ Expired settlement and source acknowledgement. Never-started expired work
 recovers a fresh fence and confirms Expired publication before releasing its
 slot, without running the handler. Failed publication retains the reservation
 for redelivery; confirmed terminal redelivery reconciles any remaining slot
-before acknowledgement. The janitor does not settle deadlines or execute
-application cleanup.
+before acknowledgement. Completed and Failed follow the same order, so a free
+slot proves a finished job's event is readable, and a delivery re-reads the
+job's lifecycle after taking a slot and runs nothing if it has finished. The
+janitor does not settle deadlines or execute application cleanup.
 
 Progress ACK maintenance is automatic for accepted keyed and unkeyed deliveries
 at one third of the effective broker acknowledgement wait. It covers preflight,

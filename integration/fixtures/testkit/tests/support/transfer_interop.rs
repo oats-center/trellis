@@ -249,10 +249,9 @@ async fn typescript_upload_cancellation_and_live_renewal_reduction_against_rust(
                     .await?
                     .expect("persisted staged object");
                 let mut actual = Vec::new();
-                reader
-                    .read_to_end(&mut actual)
-                    .await
-                    .map_err(|error| trellis_rs::service::ServerError::Nats(error.to_string()))?;
+                reader.read_to_end(&mut actual).await.map_err(|error| {
+                    trellis_rs::service::ServerError::Internal(error.to_string())
+                })?;
                 assert_eq!(actual.len(), 5 * 1024 * 1024 + 7);
                 assert_eq!(actual.len() as u64, committed.size);
                 assert!(actual

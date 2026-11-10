@@ -1,3 +1,4 @@
+import { JobCancellationToken } from "./active-job.ts";
 import { AckPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { deadline } from "@nats-io/nats-core";
@@ -847,6 +848,75 @@ test("keyed capacity deferral reserves work without NAK until a real KV slot rel
       release.resolve();
       progress.unsubscribe();
     }
+  }, true));
+
+test("a finished keyed job's event is stored before its slot is freed", () =>
+  withBroker(async (f) => {
+    const payload = { tenant: "a" };
+    const job = await f.manager.create("refresh", payload);
+    const seen: string[] = [];
+    const watcher = f.nc.subscribe("$KV.JOBS_KEYS_svc.>", {
+      callback: (_error, message) => {
+        const state = JSON.parse(message.string()) as JobKeyState;
+        if (state.active.length === 0 && state.queued.length === 0) {
+          seen.push("slot-freed");
+        }
+      },
+    });
+    const completed = f.nc.subscribe(
+      `adapter.jobs.svc.refresh.${job.id}.completed`,
+      {
+        callback: () => {
+          seen.push("completed");
+        },
+      },
+    );
+    await f.nc.flush();
+    try {
+      await f.host(async (active) => ({ id: active.job().id }));
+      await f.settled();
+      await waitFor(() => Promise.resolve(seen.length >= 2));
+      assert.deepEqual(seen, ["completed", "slot-freed"]);
+    } finally {
+      watcher.unsubscribe();
+      completed.unsubscribe();
+    }
+  }, true));
+
+test("a stale delivery that takes a finished job's free slot does not run it again", () =>
+  withBroker(async (f) => {
+    const payload = { tenant: "a" };
+    const job = await f.manager.create("refresh", payload);
+    await f.host(async (active) => ({ id: active.job().id }));
+    await f.settled();
+    let ran = false;
+    const outcome = await f.manager.processWithHeartbeat(
+      job,
+      new JobCancellationToken(),
+      () => Promise.resolve(),
+      () => {
+        ran = true;
+        return Promise.resolve({ id: job.id });
+      },
+      {
+        // What the delivery read before the first delivery finished.
+        latestState: "active",
+        workEventType: "created",
+        instanceId: "worker",
+        isSettled: async () =>
+          (
+            await getLatestLifecycleEvent(
+              f.jsm.direct,
+              "ADAPTER_JOBS",
+              "adapter.jobs.svc.refresh",
+              job,
+            )
+          )?.state === "completed",
+      },
+    );
+    assert.equal(ran, false);
+    assert.equal(outcome.outcome, "deferred");
+    assert.deepEqual((await f.keyState(payload)).active, []);
   }, true));
 
 test("manual retry of failed keyed work reacquires a real KV slot without create admission", () =>

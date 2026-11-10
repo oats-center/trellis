@@ -222,6 +222,7 @@ import {
 } from "./session/wire.ts";
 import {
   annotateHandlerBoundaryError,
+  callerErrorData,
   isResultLike,
   reconstructDeclaredRpcError,
   recordRuntimeError,
@@ -328,6 +329,7 @@ export type {
 export {
   isResultLike,
   annotateHandlerBoundaryError,
+  callerErrorData,
 } from "./session/handler_errors.ts";
 export type { HandlerErrorAnnotationContext } from "./session/handler_errors.ts";
 export type { EventListenerContext } from "./session/events.ts";
@@ -2979,7 +2981,7 @@ export class Trellis<
       "RPC error",
     );
 
-    const errorData = trellisError.toSerializable();
+    const errorData = callerErrorData(trellisError);
     const hdrs = natsHeaders();
     hdrs.set("status", "error");
 

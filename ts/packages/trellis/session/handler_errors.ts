@@ -1,4 +1,9 @@
-import { BaseError, Result, isErr } from "@oatscenter/result";
+import {
+  BaseError,
+  type BaseErrorSchema,
+  Result,
+  isErr,
+} from "@oatscenter/result";
 import { RemoteError, TrellisErrorDataSchema } from "../errors/RemoteError.ts";
 import {
   UnexpectedError,
@@ -54,6 +59,18 @@ export function compactHandlerErrorContext(
 
 export function sanitizeHandlerErrorContext(error: BaseError): void {
   delete error.getContext().subject;
+}
+
+/**
+ * The form of an error sent to a caller: serialized, without the failure text
+ * or stack of its cause. The ID, trace ID and request ID stay, so the caller can
+ * quote them to find the full error in the service's log.
+ */
+export function callerErrorData(error: BaseError): BaseErrorSchema {
+  const data: BaseErrorSchema = error.toSerializable();
+  if (data.context === undefined) return data;
+  const { causeMessage: _message, causeStack: _stack, ...kept } = data.context;
+  return { ...data, context: kept };
 }
 
 export function annotateHandlerBoundaryError(

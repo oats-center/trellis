@@ -46,10 +46,10 @@ async fn confirm_broker_processed(nats: &async_nats::Client) -> Result<(), Serve
     .await;
     match confirmed {
         Ok(Ok(_)) => Ok(()),
-        Ok(Err(error)) => Err(ServerError::Nats(format!(
+        Ok(Err(error)) => Err(ServerError::Internal(format!(
             "broker readiness probe was not answered: {error}"
         ))),
-        Err(_) => Err(ServerError::Nats(
+        Err(_) => Err(ServerError::Internal(
             "broker readiness confirmation timed out".into(),
         )),
     }
@@ -96,7 +96,7 @@ impl ProviderIngress {
             for mut subscriber in subscribers {
                 let _ = subscriber.unsubscribe().await;
             }
-            return Err(ServerError::Nats(format!(
+            return Err(ServerError::Internal(format!(
                 "failed to flush provider subscriptions: {error}"
             )));
         }

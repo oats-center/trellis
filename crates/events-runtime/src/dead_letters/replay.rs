@@ -39,7 +39,7 @@ impl ReplayDispatcherHandle {
         match joined {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(ServerError::Nats(format!(
+            Err(error) => Err(ServerError::Internal(format!(
                 "replay dispatcher task failed: {error}"
             ))),
         }
@@ -79,7 +79,7 @@ pub async fn start_replay_dispatcher(
             while let Some(message) = messages.next().await {
                 let message = message.map_err(nats)?;
                 let transition = serde_json::from_slice::<DeadLetterTransition>(&message.payload)
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                 if transition.state != DeadLetterState::ReplayPending {
                     message.ack().await.map_err(nats)?;
                     continue;
@@ -87,9 +87,9 @@ pub async fn start_replay_dispatcher(
                 let (latest, latest_sequence) = journal
                     .latest(&transition.id)
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?
+                    .map_err(|error| ServerError::Internal(error.to_string()))?
                     .ok_or_else(|| {
-                        ServerError::Nats("dead-letter journal entry disappeared".to_owned())
+                        ServerError::Internal("dead-letter journal entry disappeared".to_owned())
                     })?;
                 if latest.state != DeadLetterState::ReplayPending
                     || latest.generation != transition.generation
@@ -100,9 +100,11 @@ pub async fn start_replay_dispatcher(
                 let original = journal
                     .original(&latest)
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?
+                    .map_err(|error| ServerError::Internal(error.to_string()))?
                     .ok_or_else(|| {
-                        ServerError::Nats("dead-letter original evidence disappeared".to_owned())
+                        ServerError::Internal(
+                            "dead-letter original evidence disappeared".to_owned(),
+                        )
                     })?;
                 let envelope = ReplayEnvelope {
                     dead_letter_id: latest.id.clone(),
@@ -115,7 +117,7 @@ pub async fn start_replay_dispatcher(
                 };
                 let payload = serde_json::to_vec(&envelope)
                     .map(Bytes::from)
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                 let subject = replay_subject(&latest.resource_id, &latest.id, latest.generation);
                 let replay_sequence = match context.publish(subject.clone(), payload.clone()).await
                 {
@@ -127,7 +129,7 @@ pub async fn start_replay_dispatcher(
                         {
                             Ok(existing) if existing.payload == payload => existing.sequence,
                             Ok(_) => {
-                                return Err(ServerError::Nats(
+                                return Err(ServerError::Internal(
                                     "targeted replay generation content conflict".to_owned(),
                                 ))
                             }
@@ -147,7 +149,7 @@ pub async fn start_replay_dispatcher(
                     {
                         Ok(existing) if existing.payload == payload => existing.sequence,
                         Ok(_) => {
-                            return Err(ServerError::Nats(
+                            return Err(ServerError::Internal(
                                 "targeted replay generation content conflict".to_owned(),
                             ))
                         }
@@ -170,7 +172,7 @@ pub async fn start_replay_dispatcher(
                 journal
                     .mark_replaying(&latest, latest_sequence, replay_sequence)
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                 message.ack().await.map_err(nats)?;
             }
         }
@@ -192,7 +194,7 @@ pub(super) fn replay_subject(resource_id: &str, dead_letter_id: &str, generation
 }
 
 fn nats(error: impl std::fmt::Display) -> ServerError {
-    ServerError::Nats(error.to_string())
+    ServerError::Internal(error.to_string())
 }
 
 #[cfg(test)]

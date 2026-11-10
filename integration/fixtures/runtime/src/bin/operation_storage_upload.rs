@@ -25,12 +25,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut upload = operation
                 .open_staged_upload()
                 .await?
-                .ok_or_else(|| ServerError::Nats("committed upload missing".into()))?;
+                .ok_or_else(|| ServerError::Internal("committed upload missing".into()))?;
             let mut bytes = Vec::new();
             upload
                 .read_to_end(&mut bytes)
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
             println!(
                 "{}",
                 json!({"uploaded":bytes, "info":operation.upload().await?})

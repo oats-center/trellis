@@ -73,6 +73,8 @@ type ActiveJobRuntimeMetadata = Partial<ActiveJobMetadata> & {
   progressAckIntervalMs?: number;
   latestState?: Job["state"];
   workEventType?: JobEvent["eventType"];
+  /** Reads whether the job has finished, once this delivery holds a key slot. */
+  isSettled?: () => Promise<boolean>;
 };
 
 type JobProcessValidation<TPayload, TResult> = {
@@ -754,6 +756,12 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         policy: keyedPolicy,
       };
       keyState = acquired.state;
+      // The lifecycle read that admitted this delivery may predate another
+      // delivery finishing the job and freeing this slot.
+      if (await metadata.isSettled?.()) {
+        await this.#releaseKeyedSlot(job, lease);
+        return { outcome: "deferred", tries, reason: "settled" };
+      }
       if (acquired.state.cleanupPending.includes(job.id)) {
         cancellation.cancelForStaleAttempt();
       }
@@ -912,24 +920,24 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         );
       }
 
-      const release = await this.#releaseKeyedSlot(job, lease);
-      if (release === "staleCompletion") {
-        await this.#publishStaleCompletionIgnored(job, tries);
-        return { outcome: "stale_completion_ignored", tries };
-      }
-      await this.#publishJobEvent(job.type, job.id, {
-        jobId: job.id,
-        service: job.service,
-        jobType: job.type,
-        eventType: "completed",
-        state: "completed",
-        previousState: "active",
-        context: job.context,
+      return await this.#settleHoldingSlot(
+        job,
+        lease,
         tries,
-        result,
-        timestamp: this.#meta().nowIso(),
-      });
-      return { outcome: "completed", tries, result };
+        {
+          jobId: job.id,
+          service: job.service,
+          jobType: job.type,
+          eventType: "completed",
+          state: "completed",
+          previousState: "active",
+          context: job.context,
+          tries,
+          result,
+          timestamp: this.#meta().nowIso(),
+        },
+        { outcome: "completed", tries, result },
+      );
     } catch (error) {
       if (cancellation.isHostShutdown() || cancellation.isLeaseLost()) {
         await this.#releaseKeyedSlot(job, lease);
@@ -989,24 +997,24 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
           operation: job.type,
           phase: "handler_result",
         });
-        const release = await this.#releaseKeyedSlot(job, lease);
-        if (release === "staleCompletion") {
-          await this.#publishStaleCompletionIgnored(job, tries);
-          return { outcome: "stale_completion_ignored", tries };
-        }
-        await this.#publishJobEvent(job.type, job.id, {
-          jobId: job.id,
-          service: job.service,
-          jobType: job.type,
-          eventType: "failed",
-          state: "failed",
-          previousState: "active",
-          context: job.context,
+        return await this.#settleHoldingSlot(
+          job,
+          lease,
           tries,
-          error: detail,
-          timestamp: this.#meta().nowIso(),
-        });
-        return { outcome: "failed", tries, error: detail };
+          {
+            jobId: job.id,
+            service: job.service,
+            jobType: job.type,
+            eventType: "failed",
+            state: "failed",
+            previousState: "active",
+            context: job.context,
+            tries,
+            error: detail,
+            timestamp: this.#meta().nowIso(),
+          },
+          { outcome: "failed", tries, error: detail },
+        );
       }
 
       recordTrellisError(error, {
@@ -1151,6 +1159,47 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       now: this.#meta().nowIso(),
     });
     return released.kind === "released" ? "released" : "staleCompletion";
+  }
+
+  /**
+   * Publishes a terminal event while still holding the key slot, then frees it.
+   * A free slot therefore proves a finished job's event is readable, so a
+   * redelivered copy that takes the slot can tell the job is done.
+   */
+  async #settleHoldingSlot(
+    job: Job<TPayload, TResult>,
+    lease: ActiveSlotLease | undefined,
+    tries: number,
+    event: JobEvent<TPayload, TResult>,
+    settled: JobProcessOutcome<TResult>,
+  ): Promise<JobProcessOutcome<TResult>> {
+    if (lease) {
+      const renewed = await this.#context.keyCoordinator!.renewHeartbeat({
+        service: this.#coordinationService(),
+        jobType: job.type,
+        jobId: job.id,
+        lease,
+        now: this.#meta().nowIso(),
+      });
+      if (renewed.kind === "lost") {
+        await this.#publishStaleCompletionIgnored(job, tries);
+        return { outcome: "stale_completion_ignored", tries };
+      }
+    }
+    await this.#publishJobEvent(job.type, job.id, event);
+    try {
+      await this.#releaseKeyedSlot(job, lease);
+    } catch (error) {
+      // The job is finished. Redelivery sees that and clears the slot.
+      recordTrellisError(error, {
+        surface: "job",
+        direction: "worker",
+        operation: job.type,
+        phase: "slot_release",
+      });
+      return { outcome: "interrupted", tries };
+    }
+    return settled;
   }
 
   async #publishStaleCompletionIgnored(

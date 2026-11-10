@@ -556,7 +556,7 @@ impl ExhaustionAdvisoryHandle {
         // Joined once: a later stop must not poll the finished task again.
         let joined = task.await;
         self.task = None;
-        joined.map_err(|error| ServerError::Nats(error.to_string()))?
+        joined.map_err(|error| ServerError::Internal(error.to_string()))?
     }
 }
 
@@ -663,7 +663,7 @@ pub async fn start_exhaustion_advisory_loop(
                     Err(DeliveryReportError::NotFound(_)) => {
                         events_store
                             .record_retention_gap(advisory.stream_sequence)
-                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                            .map_err(|error| ServerError::Internal(error.to_string()))?;
                         tracing::error!(
                             stream_sequence = advisory.stream_sequence,
                             "Consumer exhaustion source expired; Events coverage is incomplete"
@@ -745,7 +745,7 @@ fn subject_matches(pattern: &str, subject: &str) -> bool {
 }
 
 fn nats(error: impl std::fmt::Display) -> ServerError {
-    ServerError::Nats(error.to_string())
+    ServerError::Internal(error.to_string())
 }
 
 #[cfg(test)]

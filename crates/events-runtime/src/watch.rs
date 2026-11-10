@@ -65,7 +65,7 @@ async fn next_watch_frame(
                 Ok(messages) => messages,
                 Err(error) => {
                     return Some((
-                        Err(ServerError::Nats(format!(
+                        Err(ServerError::Internal(format!(
                             "failed to start Events.Watch: {error}"
                         ))),
                         WatchState::Done,
@@ -87,7 +87,9 @@ async fn next_watch_frame(
             Some(Ok(message)) => message,
             Some(Err(error)) => {
                 return Some((
-                    Err(ServerError::Nats(format!("Events.Watch failed: {error}"))),
+                    Err(ServerError::Internal(format!(
+                        "Events.Watch failed: {error}"
+                    ))),
                     WatchState::Done,
                 ));
             }
@@ -96,7 +98,7 @@ async fn next_watch_frame(
         let frame = project_message_inner(&message, verifier.clone())
             .await
             .map_err(|error| {
-                ServerError::Nats(format!("Events.Watch verification failed: {error}"))
+                ServerError::Internal(format!("Events.Watch verification failed: {error}"))
             })
             .and_then(|event| watch_frame(&input, &event));
         let _ = message.ack().await;
@@ -132,7 +134,7 @@ fn watch_frame(
         return Ok(None);
     }
     let headers = serde_json::from_str::<BTreeMap<String, Vec<String>>>(&event.headers_json)
-        .map_err(|error| ServerError::Nats(format!("Events.Watch headers failed: {error}")))?
+        .map_err(|error| ServerError::Internal(format!("Events.Watch headers failed: {error}")))?
         .into_iter()
         .map(|(name, values)| (name, values.join(",")))
         .collect::<BTreeMap<_, _>>();

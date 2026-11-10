@@ -12,7 +12,7 @@ use crate::{
 };
 
 pub(crate) fn error(value: impl std::fmt::Display) -> ServerError {
-    ServerError::Nats(value.to_string())
+    ServerError::Internal(value.to_string())
 }
 
 pub(crate) fn header(headers: &HeaderMap, name: &str) -> Result<String, ServerError> {

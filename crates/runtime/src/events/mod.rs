@@ -327,7 +327,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     .ok_or_else(|| events_forbidden("verified caller is missing"))?;
                 let owner = crate::platform::await_live_owner(&mut owner, &stop)
                     .await
-                    .ok_or_else(|| ServerError::Nats("Events provider stopped".into()))?;
+                    .ok_or_else(|| ServerError::Internal("Events provider stopped".into()))?;
                 let authority_owner = owner.runtime_authorization_owner();
                 let transport = owner.runtime_nats();
                 let authority = authority_owner
@@ -338,7 +338,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     let binding = resolver
                         .by_resource(&resource_id)
                         .await
-                        .map_err(ServerError::Nats)?
+                        .map_err(ServerError::Internal)?
                         .ok_or_else(|| events_forbidden("Consumer resource is unavailable"))?;
                     let owns_binding = match &caller.binding {
                         trellis_protocol::SessionBinding::Service {
@@ -391,7 +391,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                                 extra: Default::default(),
                             })
                             .await
-                            .map_err(ServerError::Nats)?;
+                            .map_err(ServerError::Internal)?;
                         let digest = records
                             .into_iter()
                             .find_map(|row| row.resource_bindings_digest)

@@ -139,7 +139,7 @@ async fn main() -> anyhow::Result<()> {
                         site: sites
                             .get(input.site_id.as_ref())
                             .await
-                            .map_err(|error| ServerError::Nats(error.to_string()))?,
+                            .map_err(|error| ServerError::Internal(error.to_string()))?,
                         extra: Default::default(),
                     })
                 }
@@ -196,10 +196,10 @@ async fn main() -> anyhow::Result<()> {
                 let metadata = store
                     .metadata(input.key.as_ref())
                     .await?
-                    .ok_or_else(|| ServerError::Nats("evidence not found".into()))?;
+                    .ok_or_else(|| ServerError::Internal("evidence not found".into()))?;
                 let digest = metadata
                     .digest
-                    .ok_or_else(|| ServerError::Nats("evidence digest is missing".into()))?;
+                    .ok_or_else(|| ServerError::Internal("evidence digest is missing".into()))?;
                 let updated_at = metadata
                     .modified_at
                     .and_then(|value| {
@@ -215,7 +215,7 @@ async fn main() -> anyhow::Result<()> {
                 let expires_at = (time::OffsetDateTime::now_utc()
                     + time::Duration::seconds(TRANSFER_TTL_SECONDS))
                 .format(&time::format_description::well_known::Rfc3339)
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
                 let plan = context.plan_download_transfer(
                     "uploads",
                     &transfer_id,
@@ -295,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
                         refresh_site(&sites, input.site_id.as_ref())
                             .await
                             .map_err(|error| {
-                                ServerError::Nats(match error {
+                                ServerError::Internal(match error {
                                     JobProcessError::Retryable(error)
                                     | JobProcessError::Failed(error) => error,
                                 })
@@ -315,7 +315,7 @@ async fn main() -> anyhow::Result<()> {
                             extra: Default::default(),
                         })
                         .await
-                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        .map_err(|error| ServerError::Internal(error.to_string()))?;
                     Ok(())
                 }
             }
@@ -378,7 +378,7 @@ async fn main() -> anyhow::Result<()> {
                             extra: Default::default(),
                         })
                         .await
-                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        .map_err(|error| ServerError::Internal(error.to_string()))?;
                     Ok(())
                 }
             }
@@ -396,10 +396,9 @@ async fn main() -> anyhow::Result<()> {
                             extra: Default::default(),
                         })
                         .await?;
-                    let info = operation
-                        .upload()
-                        .await?
-                        .ok_or_else(|| ServerError::Nats("upload transfer is required".into()))?;
+                    let info = operation.upload().await?.ok_or_else(|| {
+                        ServerError::Internal("upload transfer is required".into())
+                    })?;
                     let evidence_id = format!("evidence-{}", info.key);
                     operation
                         .complete(EvidenceUploadResponse {
@@ -423,7 +422,7 @@ async fn main() -> anyhow::Result<()> {
                             extra: Default::default(),
                         })
                         .await
-                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        .map_err(|error| ServerError::Internal(error.to_string()))?;
                     Ok(())
                 }
             }
@@ -441,13 +440,13 @@ async fn seed_sites(sites: &trellis_rs::service::KvHandle<SiteSummary>) -> Resul
         if sites
             .get(site.site_id.as_ref())
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?
+            .map_err(|error| ServerError::Internal(error.to_string()))?
             .is_none()
         {
             sites
                 .create(site.site_id.as_ref(), &site)
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
         }
     }
     Ok(())
@@ -461,7 +460,7 @@ async fn list_sites(
         if let Some(value) = sites
             .get(site.site_id.as_ref())
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?
+            .map_err(|error| ServerError::Internal(error.to_string()))?
         {
             values.push(value);
         }

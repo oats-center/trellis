@@ -927,7 +927,7 @@ impl Client {
             &self
                 .client
                 .participant_id()
-                .map_err(|error| crate::service::ServerError::Nats(error.to_string()))?,
+                .map_err(|error| crate::service::ServerError::Internal(error.to_string()))?,
             name,
             binding,
             codec,
@@ -955,7 +955,7 @@ impl Client {
             &self
                 .client
                 .participant_id()
-                .map_err(|error| crate::service::ServerError::Nats(error.to_string()))?,
+                .map_err(|error| crate::service::ServerError::Internal(error.to_string()))?,
             name,
             binding,
             self.client.watch_availability(),

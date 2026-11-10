@@ -129,7 +129,7 @@ pub(crate) mod internal {
             .client()
             .authorization_owner()
             .own_authority()
-            .map_err(|error| super::ServerError::Nats(error.to_string()))?;
+            .map_err(|error| super::ServerError::Internal(error.to_string()))?;
         router.bind_provider_owner(&authority)?;
         let subjects = router.subjects();
         // A live-capable router must be given its connection's provider owner
@@ -143,6 +143,6 @@ pub(crate) mod internal {
             router,
         )
         .await
-        .map_err(|error| super::ServerError::Nats(error.to_string()))
+        .map_err(|error| super::ServerError::Internal(error.to_string()))
     }
 }

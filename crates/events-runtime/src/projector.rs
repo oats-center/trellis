@@ -91,7 +91,7 @@ impl EventsProjectorHandle {
         match joined {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(ServerError::Nats(format!(
+            Err(error) => Err(ServerError::Internal(format!(
                 "Events projector loop task failed: {error}"
             ))),
         }
@@ -104,17 +104,16 @@ pub async fn start_events_projector(
     store: EventsStore,
     verifier: EventVerifier,
 ) -> Result<EventsProjectorHandle, ServerError> {
-    let (first_sequence, _) = runtime
-        .stream_bounds()
-        .await
-        .map_err(|error| ServerError::Nats(format!("failed to inspect Events stream: {error}")))?;
+    let (first_sequence, _) = runtime.stream_bounds().await.map_err(|error| {
+        ServerError::Internal(format!("failed to inspect Events stream: {error}"))
+    })?;
     store
         .record_stream_bounds(first_sequence)
         .map_err(|error| {
-            ServerError::Nats(format!("failed to record Events retention bounds: {error}"))
+            ServerError::Internal(format!("failed to record Events retention bounds: {error}"))
         })?;
     let consumer_name = projector_consumer_name(&store.projection_id().map_err(|error| {
-        ServerError::Nats(format!(
+        ServerError::Internal(format!(
             "failed to resolve Events projection identity: {error}"
         ))
     })?);
@@ -122,7 +121,7 @@ pub async fn start_events_projector(
         .event_consumer(&consumer_name, true)
         .await
         .map_err(|error| {
-            ServerError::Nats(format!(
+            ServerError::Internal(format!(
                 "failed to start Events projector consumer '{consumer_name}': {error}"
             ))
         })?;
@@ -143,7 +142,9 @@ pub async fn start_events_projector(
                 .messages()
                 .await
                 .map_err(|error| {
-                    ServerError::Nats(format!("Events projector failed to fetch batch: {error}"))
+                    ServerError::Internal(format!(
+                        "Events projector failed to fetch batch: {error}"
+                    ))
                 })?;
             while let Some(message) = messages.next().await {
                 collect_message(message, &mut batch)?;
@@ -156,7 +157,7 @@ pub async fn start_events_projector(
                 batch[0]
                     .info()
                     .map_err(|error| {
-                        ServerError::Nats(format!(
+                        ServerError::Internal(format!(
                             "Events projector message metadata failed: {error}"
                         ))
                     })?
@@ -191,7 +192,7 @@ fn collect_message(
     batch: &mut Vec<jetstream::Message>,
 ) -> Result<(), ServerError> {
     batch.push(message.map_err(|error| {
-        ServerError::Nats(format!("Events projector failed to pull message: {error}"))
+        ServerError::Internal(format!("Events projector failed to pull message: {error}"))
     })?);
     Ok(())
 }
@@ -581,7 +582,7 @@ fn sanitize_consumer_token(value: &str) -> String {
 
 impl From<EventsStoreError> for ServerError {
     fn from(error: EventsStoreError) -> Self {
-        ServerError::Nats(error.to_string())
+        ServerError::Internal(error.to_string())
     }
 }
 

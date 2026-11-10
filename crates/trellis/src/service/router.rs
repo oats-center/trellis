@@ -91,7 +91,7 @@ async fn accepted_generation(
         .client()
         .acquire_transport(&[], &[], owner.client().transport_deadline())
         .await
-        .map_err(|error| ServerError::Nats(error.to_string()))
+        .map_err(|error| ServerError::Internal(error.to_string()))
 }
 
 /// Request metadata forwarded to mounted RPC handlers.
@@ -167,21 +167,23 @@ impl RequestContext {
             .required_permission
             .as_ref()
             .filter(|_| self.handler_authorizes)
-            .ok_or_else(|| ServerError::Nats("request is not a handler-authorized route".into()))?;
+            .ok_or_else(|| {
+                ServerError::Internal("request is not a handler-authorized route".into())
+            })?;
         let mut slot = self
             .verified_opening
             .0
             .write()
-            .map_err(|_| ServerError::Nats("verified request unavailable".into()))?;
+            .map_err(|_| ServerError::Internal("verified request unavailable".into()))?;
         let verified = slot
             .as_mut()
-            .ok_or_else(|| ServerError::Nats("verified opening unavailable".into()))?;
+            .ok_or_else(|| ServerError::Internal("verified opening unavailable".into()))?;
         if verified.request().api_id != route.api {
-            return Err(ServerError::Nats("handler route API mismatch".into()));
+            return Err(ServerError::Internal("handler route API mismatch".into()));
         }
         verified
             .authorize_handler(route.catalog_action())
-            .map_err(|error| ServerError::Nats(error.to_string()))
+            .map_err(|error| ServerError::Internal(error.to_string()))
     }
     /// Return the authenticated opening, never the caller's unverified header assertions.
     pub fn verified_request(&self) -> Option<crate::client::VerifiedAuthorizationRequest> {
@@ -198,12 +200,12 @@ impl RequestContext {
             .verified_opening
             .0
             .write()
-            .map_err(|_| ServerError::Nats("verified request unavailable".into()))?;
+            .map_err(|_| ServerError::Internal("verified request unavailable".into()))?;
         if slot
             .as_ref()
             .is_some_and(|current| current.digest() != request.digest())
         {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "verified request already installed".into(),
             ));
         }
@@ -430,7 +432,7 @@ impl Router {
             ..
         } = &owner.authority().binding
         else {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "provider requires a verified service binding".into(),
             ));
         };
@@ -443,7 +445,7 @@ impl Router {
             if let RoutePermissionSpec::OperationControl(api, name) = &route.permission {
                 let base =
                     trellis_protocol::derive_bound_operation_subject(api, deployment_id, name)
-                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        .map_err(|error| ServerError::Internal(error.to_string()))?;
                 controls.push((subject.clone(), control_subject(&base)));
             }
             if let RoutePermissionSpec::Static(
@@ -455,11 +457,11 @@ impl Router {
             {
                 let bound =
                     trellis_protocol::derive_bound_operation_subject(api, deployment_id, name)
-                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        .map_err(|error| ServerError::Internal(error.to_string()))?;
                 if let Some(previous) = &previous_deployment {
                     let previous =
                         trellis_protocol::derive_bound_operation_subject(api, previous, name)
-                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                            .map_err(|error| ServerError::Internal(error.to_string()))?;
                     if subject == &previous {
                         previous_starts.push(subject.clone());
                         continue;
@@ -511,11 +513,11 @@ impl Router {
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::Nats`] when this router serves a live surface
+    /// Returns [`ServerError::Internal`] when this router serves a live surface
     /// without an installed live provider owner.
     pub fn require_live_owner(&self) -> Result<(), ServerError> {
         if self.serves_live_surface() && !self.has_live_owner() {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "a router serving a Live or Operation watch route requires a live provider owner"
                     .to_owned(),
             ));
@@ -616,7 +618,7 @@ impl Router {
                         let input = decode_generated_input::<D::Input>(&payload, &input_schema)?;
                         let output = handler(ctx, input).await?;
                         let output = crate::generated::Codec::encode(&output)
-                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                            .map_err(|error| ServerError::Internal(error.to_string()))?;
                         Ok(HandlerResponse::Frames(vec![Bytes::from(
                             serde_json::to_vec(&output)?,
                         )]))
@@ -675,7 +677,7 @@ impl Router {
                 live: false,
                 handler: Box::new(|_, _| {
                     Box::pin(async {
-                        Err(ServerError::Nats(
+                        Err(ServerError::Internal(
                             "routing-metadata-only handler cannot execute".to_owned(),
                         ))
                     })
@@ -698,7 +700,7 @@ impl Router {
         let metadata_handler = || {
             Box::new(|_, _| -> HandlerFuture {
                 Box::pin(async {
-                    Err(ServerError::Nats(
+                    Err(ServerError::Internal(
                         "routing-metadata-only handler cannot execute".to_owned(),
                     ))
                 })
@@ -786,7 +788,7 @@ impl Router {
                             .ok()
                             .and_then(|owner| owner.clone())
                             .ok_or_else(|| {
-                                ServerError::Nats(format!(
+                                ServerError::Internal(format!(
                                     "live route '{handler_subject}' has no live provider owner"
                                 ))
                             })?;
@@ -794,15 +796,15 @@ impl Router {
                             .client()
                             .authorization_owner()
                             .own_authority()
-                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                            .map_err(|error| ServerError::Internal(error.to_string()))?;
                         let SessionBinding::Service { .. } = &authority.authority().binding else {
-                            return Err(ServerError::Nats(
+                            return Err(ServerError::Internal(
                                 "live provider requires a service binding".into(),
                             ));
                         };
                         let opening = live_router::parse_live_open::<D::Input>(&payload)?;
                         let encoded_input = crate::generated::Codec::encode(&opening.input)
-                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                            .map_err(|error| ServerError::Internal(error.to_string()))?;
                         let input = opening.input;
                         let meta = live_router::LiveOpeningMeta {
                             open_id: opening.open_id.clone(),
@@ -900,7 +902,9 @@ impl Router {
                         let schemas = schemas.get()?;
                         let envelope: OperationStartEnvelope = serde_json::from_slice(&payload)?;
                         envelope.invocation_id.parse::<ulid::Ulid>().map_err(|_| {
-                            ServerError::Nats("operation invocation id must be a ULID".to_owned())
+                            ServerError::Internal(
+                                "operation invocation id must be a ULID".to_owned(),
+                            )
                         })?;
                         schemas.input.validate(&envelope.input)?;
                         let input = serde_json::from_value(envelope.input)?;
@@ -985,7 +989,7 @@ impl Router {
                                     .ok()
                                     .and_then(|owner| owner.clone())
                                     .ok_or_else(|| {
-                                        ServerError::Nats(format!(
+                                        ServerError::Internal(format!(
                                     "operation route '{subject}' has no live provider owner"
                                 ))
                                     })?;
@@ -993,10 +997,10 @@ impl Router {
                                     .client()
                                     .authorization_owner()
                                     .own_authority()
-                                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                                 let SessionBinding::Service { .. } = &authority.authority().binding
                                 else {
-                                    return Err(ServerError::Nats(
+                                    return Err(ServerError::Internal(
                                         "operation provider requires a service binding".into(),
                                     ));
                                 };
@@ -1109,7 +1113,7 @@ impl Router {
             .handle_request_frames(subject, payload, context)
             .await?;
         let first = frames.drain(..).next().ok_or_else(|| {
-            ServerError::Nats(format!("handler for '{subject}' returned no response"))
+            ServerError::Internal(format!("handler for '{subject}' returned no response"))
         })?;
         Ok(first)
     }
@@ -1159,11 +1163,13 @@ impl Router {
             .read()
             .ok()
             .and_then(|owner| owner.clone())
-            .ok_or_else(|| ServerError::Nats("provider reply owner unavailable".into()))?;
+            .ok_or_else(|| ServerError::Internal("provider reply owner unavailable".into()))?;
         let action = self
             .required_permission(&context.subject, request_payload)?
             .map(|route| route.catalog_action())
-            .ok_or_else(|| ServerError::Nats("reply has no registered provider action".into()))?;
+            .ok_or_else(|| {
+                ServerError::Internal("reply has no registered provider action".into())
+            })?;
         super::request_loop::sign_verified_reply(owner.client(), context, &action, reply).await
     }
 
@@ -1180,7 +1186,7 @@ impl Router {
         {
             HandlerResponse::Frames(frames) => Ok(frames),
             HandlerResponse::Error(payload) => Ok(vec![payload]),
-            HandlerResponse::LivePrepared(_) => Err(ServerError::Nats(
+            HandlerResponse::LivePrepared(_) => Err(ServerError::Internal(
                 "a live response requires a live owner and cannot be collected".to_owned(),
             )),
         }
@@ -1237,7 +1243,7 @@ fn validate_provider_value(
 ) -> Result<(), ServerError> {
     schema.validate(value).map_err(|error| {
         tracing::error!(surface = key, %error, "provider emitted an invalid contract payload");
-        ServerError::Nats(format!(
+        ServerError::Internal(format!(
             "provider output for `{key}` violated its contract schema"
         ))
     })
@@ -1291,11 +1297,11 @@ where
 {
     let update_value = serde_json::to_value(update.update)?;
     let schema = update_schema.ok_or_else(|| {
-        ServerError::Nats("operation update stream is missing its declared schema".to_string())
+        ServerError::Internal("operation update stream is missing its declared schema".to_string())
     })?;
     schema.validate(&update_value)?;
     let snapshot = snapshot.ok_or_else(|| {
-        ServerError::Nats("operation update preceded its initial snapshot".into())
+        ServerError::Internal("operation update preceded its initial snapshot".into())
     })?;
     Ok(Bytes::from(serde_json::to_vec(&serde_json::json!({
         "kind": "event",

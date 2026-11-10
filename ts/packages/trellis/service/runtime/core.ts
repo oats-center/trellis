@@ -73,9 +73,11 @@ import {
   SpanKind,
   trace,
 } from "@opentelemetry/api";
+import type { BaseErrorSchema } from "@oatscenter/result";
 import {
   annotateHandlerBoundaryError,
   buildRuntimeOperationSnapshot,
+  callerErrorData,
   type DurableOperationRecord,
   type HandlerFn,
   isOperationDeferred,
@@ -633,7 +635,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         }),
       fail: (operationId, error) =>
         this.#applyOwnedOperationUpdate(operationId, "failed", {
-          patch: { error: error.toSerializable() },
+          patch: { error: this.#operationFailureData(operationId, error) },
           event: { type: "failed" },
         }),
       cancel: (operationId) =>
@@ -1975,7 +1977,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         }),
       fail: (error: BaseError) =>
         this.#applyControlledOperationUpdate(runtime, fence, ctx, "failed", {
-          patch: { error: error.toSerializable() },
+          patch: { error: this.#operationFailureData(runtime.id, error) },
           event: { type: "failed" },
         }),
       cancel: () => this.#requestOwnedOperationCancellation(runtime, fence),
@@ -2008,6 +2010,17 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         this.#acknowledgeSignal(runtime, fence, sequence),
       defer: () => ({ kind: "deferred" as const }),
     };
+  }
+
+  /** Logs a failure's cause under its IDs and returns what its caller may see. */
+  #operationFailureData(target: string, error: BaseError): BaseErrorSchema {
+    if (error.getContext().causeMessage !== undefined) {
+      this.#log.error(
+        { operation: target, error: error.toSerializable() },
+        "Operation failed",
+      );
+    }
+    return callerErrorData(error);
   }
 
   #operationNotFoundError(operationId: string): OperationNotFoundError {
@@ -2444,7 +2457,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           msg,
           JSON.stringify({
             kind: "error",
-            error: trellisError.toSerializable(),
+            error: this.#operationFailureData(msg.subject, trellisError),
           }),
           undefined,
           { responseKind: "success" },
@@ -3409,7 +3422,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                     "failed",
                     {
                       patch: {
-                        error: annotatedError.toSerializable(),
+                        error: this.#operationFailureData(
+                          runtime.id,
+                          annotatedError,
+                        ),
                         completedAt: now(),
                       },
                       event: { type: "failed" },

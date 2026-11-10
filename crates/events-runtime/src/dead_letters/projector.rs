@@ -32,7 +32,7 @@ impl DeadLetterProjectorHandle {
         match joined {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(ServerError::Nats(format!(
+            Err(error) => Err(ServerError::Internal(format!(
                 "dead-letter projector task failed: {error}"
             ))),
         }
@@ -46,26 +46,26 @@ pub async fn start_dead_letter_projector(
 ) -> Result<DeadLetterProjectorHandle, ServerError> {
     let projection_id = store
         .projection_id()
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
+        .map_err(|error| ServerError::Internal(error.to_string()))?;
     let durable = format!("events-dlq-projector-{}", sanitize(&projection_id));
     let mut stream = jetstream::new(client)
         .get_stream(DLQ_STREAM)
         .await
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
+        .map_err(|error| ServerError::Internal(error.to_string()))?;
     let checkpoint = store
         .dead_letter_projection_checkpoint()
         .map_err(ServerError::from)?;
     let last_sequence = stream
         .info()
         .await
-        .map_err(|error| ServerError::Nats(error.to_string()))?
+        .map_err(|error| ServerError::Internal(error.to_string()))?
         .state
         .last_sequence;
     for sequence in checkpoint.saturating_add(1)..=last_sequence {
         let raw = stream
             .get_raw_message(sequence)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let transition = serde_json::from_slice::<DeadLetterTransition>(&raw.payload)
             .map_err(ServerError::Json)?;
         store
@@ -84,7 +84,7 @@ pub async fn start_dead_letter_projector(
             },
         )
         .await
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
+        .map_err(|error| ServerError::Internal(error.to_string()))?;
     let task = tokio::spawn(async move {
         loop {
             let mut messages = consumer
@@ -93,12 +93,12 @@ pub async fn start_dead_letter_projector(
                 .expires(Duration::from_millis(500))
                 .messages()
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
             while let Some(message) = messages.next().await {
-                let message = message.map_err(|error| ServerError::Nats(error.to_string()))?;
+                let message = message.map_err(|error| ServerError::Internal(error.to_string()))?;
                 let sequence = message
                     .info()
-                    .map_err(|error| ServerError::Nats(error.to_string()))?
+                    .map_err(|error| ServerError::Internal(error.to_string()))?
                     .stream_sequence;
                 let transition = match serde_json::from_slice::<DeadLetterTransition>(
                     &message.payload,
@@ -109,7 +109,7 @@ pub async fn start_dead_letter_projector(
                         message
                             .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
                             .await
-                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                            .map_err(|error| ServerError::Internal(error.to_string()))?;
                         continue;
                     }
                 };
@@ -122,15 +122,15 @@ pub async fn start_dead_letter_projector(
                     Ok(Ok(())) => message
                         .ack()
                         .await
-                        .map_err(|error| ServerError::Nats(error.to_string()))?,
+                        .map_err(|error| ServerError::Internal(error.to_string()))?,
                     Ok(Err(error)) => {
                         tracing::error!(%error, sequence, "dead-letter projection rejected transition");
                         message
                             .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
                             .await
-                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                            .map_err(|error| ServerError::Internal(error.to_string()))?;
                     }
-                    Err(error) => return Err(ServerError::Nats(error.to_string())),
+                    Err(error) => return Err(ServerError::Internal(error.to_string())),
                 }
             }
         }

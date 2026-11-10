@@ -34,12 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         println!(
             "{}",
-            serde_json::to_string(
-                &serde_json::json!({
-                    "participantId":participant_id,
-                    "packageEvidence":package_evidence
-                })
-            )?
+            serde_json::to_string(&serde_json::json!({
+                "participantId":participant_id,
+                "packageEvidence":package_evidence
+            }))?
         );
         return Ok(());
     }
@@ -177,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .runtime_trellis_runtime_v1()
         .register_work(|context, input, op| async move {
             if input.value == "failure" {
-                return Err(trellis_rs::service::ServerError::Nats(
+                return Err(trellis_rs::service::ServerError::Internal(
                     "domain failure".to_owned(),
                 ));
             }
@@ -199,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|value| value.as_str())
                 != Some("persisted")
             {
-                return Err(trellis_rs::service::ServerError::Nats(
+                return Err(trellis_rs::service::ServerError::Internal(
                     "missing resumed progress".to_owned(),
                 ));
             }
@@ -213,7 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let mut signals = op.signals().await?;
             let signal = signals.next().await.transpose()?.ok_or_else(|| {
-                trellis_rs::service::ServerError::Nats("signal stream ended".to_owned())
+                trellis_rs::service::ServerError::Internal("signal stream ended".to_owned())
             })?;
             if input.value == "reconnect-live" {
                 op.emit_update(Update {
@@ -249,22 +247,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !context.resuming {
                 let mut signals = op.signals().await?;
                 let signal = signals.next().await.transpose()?.ok_or_else(|| {
-                    trellis_rs::service::ServerError::Nats("signal stream ended".to_owned())
+                    trellis_rs::service::ServerError::Internal("signal stream ended".to_owned())
                 })?;
                 op.acknowledge_signal(signal.signal_sequence).await?;
             }
             let upload = op.upload().await?.ok_or_else(|| {
-                trellis_rs::service::ServerError::Nats("committed upload missing".to_owned())
+                trellis_rs::service::ServerError::Internal("committed upload missing".to_owned())
             })?;
             let mut reader = op.open_staged_upload().await?.ok_or_else(|| {
-                trellis_rs::service::ServerError::Nats("staged upload missing".to_owned())
+                trellis_rs::service::ServerError::Internal("staged upload missing".to_owned())
             })?;
             let mut chunk = [0u8; 8192];
             let mut received = 0;
             loop {
                 let count = tokio::io::AsyncReadExt::read(&mut reader, &mut chunk)
                     .await
-                    .map_err(|error| trellis_rs::service::ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| {
+                        trellis_rs::service::ServerError::Internal(error.to_string())
+                    })?;
                 if count == 0 {
                     break;
                 }
@@ -273,14 +273,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .enumerate()
                     .any(|(index, byte)| *byte != ((received + index) % 251) as u8)
                 {
-                    return Err(trellis_rs::service::ServerError::Nats(
+                    return Err(trellis_rs::service::ServerError::Internal(
                         "staged upload bytes do not match caller input".to_owned(),
                     ));
                 }
                 received += count;
             }
             if received as u64 != upload.size {
-                return Err(trellis_rs::service::ServerError::Nats(
+                return Err(trellis_rs::service::ServerError::Internal(
                     "staged upload bytes do not match caller input".to_owned(),
                 ));
             }

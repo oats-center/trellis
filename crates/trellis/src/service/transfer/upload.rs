@@ -144,21 +144,21 @@ impl UploadTransferSession {
 
     pub(super) fn admit(&mut self, seq: u64, bytes: Bytes) -> Result<(), ServerError> {
         if bytes.is_empty() || self.complete {
-            return Err(ServerError::Nats("invalid upload DATA state".into()));
+            return Err(ServerError::Internal("invalid upload DATA state".into()));
         }
         let consumed = self.consumption();
         let received = self.received.highest_sent.load(Ordering::Acquire);
         self.received
             .apply_credit(received, consumed.seq, Some(consumed.bytes))
-            .map_err(|e| ServerError::Nats(format!("upload credit: {e:?}")))?;
+            .map_err(|e| ServerError::Internal(format!("upload credit: {e:?}")))?;
         self.received
             .validate_frame_slot(bytes.len() as u64, self.plan.grant.max_frame_bytes)
-            .map_err(|e| ServerError::Nats(format!("upload window violation: {e:?}")))?;
+            .map_err(|e| ServerError::Internal(format!("upload window violation: {e:?}")))?;
         if seq
             != self
                 .received
                 .next_frame_seq()
-                .map_err(|e| ServerError::Nats(format!("upload sequence: {e:?}")))?
+                .map_err(|e| ServerError::Internal(format!("upload sequence: {e:?}")))?
         {
             return Err(ServerError::TransferSequenceOutOfOrder {
                 transfer_id: self.plan.grant.transfer_id.clone(),
@@ -169,13 +169,13 @@ impl UploadTransferSession {
         let total = self
             .transferred_bytes
             .checked_add(bytes.len() as u64)
-            .ok_or_else(|| ServerError::Nats("upload size overflow".into()))?;
+            .ok_or_else(|| ServerError::Internal("upload size overflow".into()))?;
         super::enforce_upload_max_bytes(&self.plan, total)?;
         self.hasher.update(&bytes);
         let len = bytes.len() as u64;
         self.sender
             .as_ref()
-            .ok_or_else(|| ServerError::Nats("upload ingress not activated".into()))?
+            .ok_or_else(|| ServerError::Internal("upload ingress not activated".into()))?
             .try_send(Ingress::Frame {
                 seq,
                 bytes: super::telemetry::Payload::new(
@@ -184,10 +184,10 @@ impl UploadTransferSession {
                     "provider",
                 ),
             })
-            .map_err(|e| ServerError::Nats(format!("upload ingress closed/full: {e}")))?;
+            .map_err(|e| ServerError::Internal(format!("upload ingress closed/full: {e}")))?;
         self.received
             .commit_frame(seq, len)
-            .map_err(|e| ServerError::Nats(format!("upload sequence: {e:?}")))?;
+            .map_err(|e| ServerError::Internal(format!("upload sequence: {e:?}")))?;
         self.transferred_bytes = total;
         Ok(())
     }
@@ -204,15 +204,17 @@ impl UploadTransferSession {
         let actual_digest = self.verify_completion(final_seq, size, digest)?;
         while self.consumption().seq < final_seq {
             self.consumed.changed().await.map_err(|_| {
-                ServerError::Nats("upload stream closed by its handler before completion".into())
+                ServerError::Internal(
+                    "upload stream closed by its handler before completion".into(),
+                )
             })?;
         }
         let consumed = self.consumption();
         self.received
             .apply_credit(final_seq, consumed.seq, Some(consumed.bytes))
-            .map_err(|e| ServerError::Nats(format!("upload credit: {e:?}")))?;
+            .map_err(|e| ServerError::Internal(format!("upload credit: {e:?}")))?;
         self.received.validate_complete(final_seq).map_err(|e| {
-            ServerError::Nats(format!("upload incomplete stream consumption: {e:?}"))
+            ServerError::Internal(format!("upload incomplete stream consumption: {e:?}"))
         })?;
         self.complete = true;
         Ok(FileTransferInfo {
@@ -220,7 +222,7 @@ impl UploadTransferSession {
             size,
             updated_at: time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
             digest: actual_digest,
             content_type: self.plan.grant.content_type.clone(),
             metadata: self.plan.grant.metadata.clone(),
@@ -257,7 +259,7 @@ impl UploadTransferSession {
                 digest_bytes_match = transfer_digests_match(digest, &actual_digest),
                 "upload completion integrity mismatch"
             );
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "upload completion sequence/size/digest mismatch".into(),
             ));
         }
@@ -273,16 +275,16 @@ impl UploadTransferSession {
         let actual_digest = self.verify_completion(final_seq, size, digest)?;
         self.sender
             .as_ref()
-            .ok_or_else(|| ServerError::Nats("upload ingress not activated".into()))?
+            .ok_or_else(|| ServerError::Internal("upload ingress not activated".into()))?
             .send(Ingress::Complete)
             .await
-            .map_err(|e| ServerError::Nats(e.to_string()))?;
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
         self.sender.take();
         // Keep the future in self while awaiting; dropping the endpoint cancels it.
         let stored = self
             .upload_future
             .as_mut()
-            .ok_or_else(|| ServerError::Nats("upload backend missing".into()))?
+            .ok_or_else(|| ServerError::Internal("upload backend missing".into()))?
             .await;
         self.upload_future.take();
         let stored = stored?;
@@ -293,14 +295,16 @@ impl UploadTransferSession {
                 .as_deref()
                 .is_some_and(|value| transfer_digests_match(value, &actual_digest))
         {
-            return Err(ServerError::Nats("upload backend metadata mismatch".into()));
+            return Err(ServerError::Internal(
+                "upload backend metadata mismatch".into(),
+            ));
         }
         let consumed = self.consumption();
         self.received
             .apply_credit(final_seq, consumed.seq, Some(consumed.bytes))
-            .map_err(|e| ServerError::Nats(format!("upload credit: {e:?}")))?;
+            .map_err(|e| ServerError::Internal(format!("upload credit: {e:?}")))?;
         self.received.validate_complete(final_seq).map_err(|e| {
-            ServerError::Nats(format!("upload incomplete storage consumption: {e:?}"))
+            ServerError::Internal(format!("upload incomplete storage consumption: {e:?}"))
         })?;
         self.complete = true;
         Ok(FileTransferInfo {
@@ -309,7 +313,7 @@ impl UploadTransferSession {
             updated_at: match stored.modified_at {
                 Some(timestamp) => timestamp
                     .format(&time::format_description::well_known::Rfc3339)
-                    .map_err(|error| ServerError::Nats(error.to_string()))?,
+                    .map_err(|error| ServerError::Internal(error.to_string()))?,
                 None => self.updated_at.clone(),
             },
             digest: actual_digest,
@@ -325,19 +329,19 @@ impl UploadTransferSession {
 
     pub(super) async fn early_backend_failure(&mut self) -> ServerError {
         if self.stream {
-            return ServerError::Nats(
+            return ServerError::Internal(
                 "upload stream closed by its handler before completion".into(),
             );
         }
         let result = match self.upload_future.as_mut() {
             Some(future) => future.await,
-            None => return ServerError::Nats("upload backend missing".into()),
+            None => return ServerError::Internal("upload backend missing".into()),
         };
         self.upload_future.take();
         match result {
             Err(error) => error,
             Ok(_) => {
-                ServerError::Nats("upload backend returned before validated completion".into())
+                ServerError::Internal("upload backend returned before validated completion".into())
             }
         }
     }

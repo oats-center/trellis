@@ -1,10 +1,11 @@
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
   OperationNotFoundError,
+  RemoteError,
   TransportError,
   UnexpectedError,
 } from "@oatscenter/trellis/errors";
-import { isOk, Result } from "@oatscenter/result";
+import { isErr, isOk, Result } from "@oatscenter/result";
 import { inspect } from "node:util";
 import { ulid } from "ulid";
 import assert from "node:assert/strict";
@@ -16,6 +17,52 @@ import {
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
+
+test("an unexpected failure gives its caller IDs to trace and not its cause", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const secret = "orders database at 10.0.0.5 refused";
+    const identity = await runtime.registerService({
+      name: "unexpected-failure",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      name: "unexpected-failure",
+      seed: identity.seed,
+    }).orThrow();
+    await service.handleEcho(() => {
+      throw new Error(secret);
+    });
+    await service.handleWork(() => {
+      throw new Error(secret);
+    });
+    const client = await runtime.connectClient({
+      name: "unexpected-failure-caller",
+      contract: apps.Caller.request,
+    });
+    const exit = service.wait();
+    try {
+      const reply = await client.echo({ value: "fail" }).take();
+      assert(isErr(reply));
+      assert(reply.error instanceof RemoteError, inspect(reply.error));
+      const rpcFailure = reply.error.remoteError;
+      assert(!JSON.stringify(rpcFailure).includes(secret), inspect(rpcFailure));
+      assert.equal(typeof rpcFailure.id, "string");
+      assert.equal(typeof rpcFailure.context?.requestId, "string");
+
+      const operation = await client.work({ value: "fail" }).start().orThrow();
+      const failed = await operation.wait().orThrow();
+      assert.equal(failed.state, "failed");
+      assert(!JSON.stringify(failed).includes(secret), inspect(failed));
+      assert.equal(typeof failed.error?.id, "string");
+    } finally {
+      await client.connection.close();
+      await service.stop();
+      await exit;
+    }
+  });
+});
 
 test("Operation reads retain committed progress after an oversized persistence failure", async () => {
   await withTrellisRuntime(async (runtime) => {

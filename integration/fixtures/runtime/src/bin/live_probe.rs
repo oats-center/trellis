@@ -113,18 +113,20 @@ impl KeyState {
         padding: u32,
     ) -> Result<(), ServerError> {
         if !(0..=MAX_THROUGH_INDEX).contains(&through_index) {
-            return Err(ServerError::Nats("throughIndex out of range".to_owned()));
+            return Err(ServerError::Internal(
+                "throughIndex out of range".to_owned(),
+            ));
         }
         let emitted = self.counters.lock().expect("counters lock").emitted;
         let mut release = self.release.lock().expect("release lock");
         if through_index < release.through_index {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "throughIndex must not regress".to_owned(),
             ));
         }
         let sizes_changed = payload != release.payload_bytes || padding != release.padding_bytes;
         if sizes_changed && emitted < release.through_index {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "size settings may change only after the released range has emitted".to_owned(),
             ));
         }
@@ -185,7 +187,7 @@ fn source_stream(
             }
             if fail {
                 return Some((
-                    Err(ServerError::Nats("live probe source failed".to_owned())),
+                    Err(ServerError::Internal("live probe source failed".to_owned())),
                     cursor,
                 ));
             }
@@ -273,7 +275,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut guard = registry.lock().expect("registry lock");
                         let key = (input.run_id.clone(), input.stream_id.clone());
                         if !guard.contains_key(&key) && guard.len() >= MAX_KEY_COUNT {
-                            return Err(ServerError::Nats("too many live probe keys".to_owned()));
+                            return Err(ServerError::Internal(
+                                "too many live probe keys".to_owned(),
+                            ));
                         }
                         Arc::clone(guard.entry(key).or_insert_with(KeyState::new))
                     };

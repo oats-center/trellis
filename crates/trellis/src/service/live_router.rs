@@ -55,7 +55,9 @@ impl LiveProviderOwner {
     /// Returns an error when the connection has no live manager.
     pub(crate) fn manager(&self) -> Result<&std::sync::Arc<LiveSessionManager>, ServerError> {
         self.client.live_manager().ok_or_else(|| {
-            ServerError::Nats("live session manager is unavailable for this connection".to_owned())
+            ServerError::Internal(
+                "live session manager is unavailable for this connection".to_owned(),
+            )
         })
     }
 }
@@ -338,7 +340,7 @@ where
     let encoded_input = request.encoded_input.clone();
     let cancellation = request.cancellation.clone();
     manager.is_available().map_err(|unavailable| {
-        ServerError::Nats(format!("live manager unavailable: {unavailable:?}"))
+        ServerError::Internal(format!("live manager unavailable: {unavailable:?}"))
     })?;
     let caller = context
         .caller
@@ -350,11 +352,11 @@ where
     let request_id = context
         .request_id
         .clone()
-        .ok_or_else(|| ServerError::Nats("live request is missing a request id".to_owned()))?;
+        .ok_or_else(|| ServerError::Internal("live request is missing a request id".to_owned()))?;
     let own_context_digest = client
         .authorization_owner()
         .own_authority()
-        .map_err(|error| ServerError::Nats(error.to_string()))?
+        .map_err(|error| ServerError::Internal(error.to_string()))?
         .digest()
         .to_owned();
 
@@ -380,12 +382,12 @@ where
         LiveGuardRequirement::PeerProvider {
             expected: client
                 .own_pinned_identity()
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
             action: observer_action.clone(),
         },
     )
     .await
-    .map_err(|lost| ServerError::Nats(format!("provider authority unavailable: {lost:?}")))?;
+    .map_err(|lost| ServerError::Internal(format!("provider authority unavailable: {lost:?}")))?;
     let caller_guard = LiveAuthorityGuard::retain(
         client.authorization_owner(),
         lease.nats(),
@@ -393,7 +395,7 @@ where
         LiveGuardRequirement::Observer(observer_action),
     )
     .await
-    .map_err(|lost| ServerError::Nats(format!("caller authority unavailable: {lost:?}")))?;
+    .map_err(|lost| ServerError::Internal(format!("caller authority unavailable: {lost:?}")))?;
     let negotiated = trellis_protocol::negotiate_max_data_body_bytes(
         opening.receive_max_payload_bytes,
         lease.nats().max_payload() as u64,
@@ -418,7 +420,7 @@ where
             operation_id: None,
             include_updates: None,
         })
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
+        .map_err(|error| ServerError::Internal(error.to_string()))?;
     let now_ms = crate::client::now_iat_seconds() * 1_000;
     let open_request = ProviderOpenRequest {
         kind: LiveSessionKind::Standalone,
@@ -430,7 +432,7 @@ where
     };
     let (session, permit) = ProviderSessionRecord::reserve(manager, &open_request, now_ms)
         .await
-        .map_err(|code| ServerError::Nats(format!("live reservation rejected: {code:?}")))?;
+        .map_err(|code| ServerError::Internal(format!("live reservation rejected: {code:?}")))?;
     let limits = LiveOfferLimits {
         max_data_body_bytes: negotiated,
         window_frames: trellis_protocol::WINDOW_FRAMES,
@@ -474,11 +476,11 @@ where
             &request_id,
             &client
                 .own_pinned_identity()
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
             &consumer,
             limits,
         )
-        .map_err(|code| ServerError::Nats(format!("offer build failed: {code:?}")))?;
+        .map_err(|code| ServerError::Internal(format!("offer build failed: {code:?}")))?;
     // Authenticate the exact offer bytes with the provider's live proof.
     let headers = crate::service::live_router::sign_live_offer(
         client.auth(),
@@ -486,7 +488,7 @@ where
         &context.reply_to.clone().unwrap_or_default(),
         &offer,
     )
-    .map_err(|error| ServerError::Nats(error.to_string()))?;
+    .map_err(|error| ServerError::Internal(error.to_string()))?;
     // Install the owner-control subscription before the offer is published so
     // an immediate activation cannot be lost. The session's physical path runs
     // on the generation that accepted it.
@@ -501,7 +503,7 @@ where
         negotiated,
     )
     .await
-    .map_err(|code| ServerError::Nats(format!("live control subscription failed: {code:?}")))?;
+    .map_err(|code| ServerError::Internal(format!("live control subscription failed: {code:?}")))?;
     Ok(ReservedLive {
         prepared: LivePreparedResponse {
             offer,
@@ -538,7 +540,7 @@ where
     let opening = &request.opening;
     let cancellation = request.cancellation.clone();
     manager.is_available().map_err(|unavailable| {
-        ServerError::Nats(format!("live manager unavailable: {unavailable:?}"))
+        ServerError::Internal(format!("live manager unavailable: {unavailable:?}"))
     })?;
     let caller = context
         .caller
@@ -548,12 +550,12 @@ where
             session_key: context.session_key.clone().unwrap_or_default(),
         })?;
     let request_id = context.request_id.clone().ok_or_else(|| {
-        ServerError::Nats("operation watch request is missing a request id".to_owned())
+        ServerError::Internal("operation watch request is missing a request id".to_owned())
     })?;
     let own_context_digest = client
         .authorization_owner()
         .own_authority()
-        .map_err(|error| ServerError::Nats(error.to_string()))?
+        .map_err(|error| ServerError::Internal(error.to_string()))?
         .digest()
         .to_owned();
 
@@ -582,12 +584,12 @@ where
         LiveGuardRequirement::PeerProvider {
             expected: client
                 .own_pinned_identity()
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
             action: observer_action.clone(),
         },
     )
     .await
-    .map_err(|lost| ServerError::Nats(format!("provider authority unavailable: {lost:?}")))?;
+    .map_err(|lost| ServerError::Internal(format!("provider authority unavailable: {lost:?}")))?;
     let caller_guard = LiveAuthorityGuard::retain(
         client.authorization_owner(),
         lease.nats(),
@@ -595,7 +597,7 @@ where
         LiveGuardRequirement::Observer(observer_action),
     )
     .await
-    .map_err(|lost| ServerError::Nats(format!("caller authority unavailable: {lost:?}")))?;
+    .map_err(|lost| ServerError::Internal(format!("caller authority unavailable: {lost:?}")))?;
     let negotiated = trellis_protocol::negotiate_max_data_body_bytes(
         opening.receive_max_payload_bytes,
         lease.nats().max_payload() as u64,
@@ -620,7 +622,7 @@ where
             operation_id: Some(opening.operation_id.clone()),
             include_updates: Some(opening.include_updates),
         })
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
+        .map_err(|error| ServerError::Internal(error.to_string()))?;
     let now_ms = crate::client::now_iat_seconds() * 1_000;
     let open_request = ProviderOpenRequest {
         kind: LiveSessionKind::Operation,
@@ -632,7 +634,7 @@ where
     };
     let (session, permit) = ProviderSessionRecord::reserve(manager, &open_request, now_ms)
         .await
-        .map_err(|code| ServerError::Nats(format!("live reservation rejected: {code:?}")))?;
+        .map_err(|code| ServerError::Internal(format!("live reservation rejected: {code:?}")))?;
     let limits = LiveOfferLimits {
         max_data_body_bytes: negotiated,
         window_frames: trellis_protocol::WINDOW_FRAMES,
@@ -676,11 +678,11 @@ where
             &request_id,
             &client
                 .own_pinned_identity()
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
             &consumer,
             limits,
         )
-        .map_err(|code| ServerError::Nats(format!("offer build failed: {code:?}")))?;
+        .map_err(|code| ServerError::Internal(format!("offer build failed: {code:?}")))?;
     // Authenticate the exact offer bytes with the provider's live proof.
     let headers = crate::service::live_router::sign_live_offer(
         client.auth(),
@@ -688,7 +690,7 @@ where
         &context.reply_to.clone().unwrap_or_default(),
         &offer,
     )
-    .map_err(|error| ServerError::Nats(error.to_string()))?;
+    .map_err(|error| ServerError::Internal(error.to_string()))?;
     // Install the owner-control subscription before the offer is published so
     // an immediate activation cannot be lost.
     spawn_session_drivers(
@@ -702,7 +704,7 @@ where
         negotiated,
     )
     .await
-    .map_err(|code| ServerError::Nats(format!("live control subscription failed: {code:?}")))?;
+    .map_err(|code| ServerError::Internal(format!("live control subscription failed: {code:?}")))?;
     Ok(ReservedOperationWatch {
         prepared: LivePreparedResponse {
             offer,

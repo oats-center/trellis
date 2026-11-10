@@ -24,12 +24,12 @@ pub(crate) struct PreparedSchema {
 impl PreparedSchema {
     pub(crate) fn new(schema_json: &str) -> Result<Self, ServerError> {
         let schema: Value = serde_json::from_str(schema_json)
-            .map_err(|e| ServerError::Nats(format!("failed to parse input schema: {e}")))?;
+            .map_err(|e| ServerError::Internal(format!("failed to parse input schema: {e}")))?;
 
         let validator = jsonschema::options()
             .with_draft(Draft::Draft201909)
             .build(&schema)
-            .map_err(|e| ServerError::Nats(format!("failed to compile input schema: {e}")))?;
+            .map_err(|e| ServerError::Internal(format!("failed to compile input schema: {e}")))?;
 
         Ok(Self { schema, validator })
     }
@@ -159,7 +159,7 @@ impl PreparedOperationSchemas {
         let prepared = (|| {
             let signals: std::collections::BTreeMap<String, Value> =
                 serde_json::from_str(D::SIGNAL_INPUT_SCHEMAS_JSON).map_err(|error| {
-                    ServerError::Nats(format!("failed to parse signal schemas: {error}"))
+                    ServerError::Internal(format!("failed to parse signal schemas: {error}"))
                 })?;
             Ok(std::sync::Arc::new(OperationSchemas {
                 input: PreparedSchema::new(D::INPUT_SCHEMA_JSON)?,
@@ -174,16 +174,13 @@ impl PreparedOperationSchemas {
                     .collect::<Result<_, ServerError>>()?,
             }))
         })();
-        Self(prepared.map_err(|error| match error {
-            ServerError::Nats(message) => message,
-            other => other.to_string(),
-        }))
+        Self(prepared.map_err(|error: ServerError| error.to_string()))
     }
 
     pub(crate) fn get(&self) -> Result<&std::sync::Arc<OperationSchemas>, ServerError> {
         self.0
             .as_ref()
-            .map_err(|message| ServerError::Nats(message.clone()))
+            .map_err(|message| ServerError::Internal(message.clone()))
     }
 }
 
@@ -499,7 +496,7 @@ mod tests {
         let result = validate_input_schema("not valid json", &value);
         assert!(result.is_err(), "expected Err");
         match result.unwrap_err() {
-            ServerError::Nats(msg) => assert!(
+            ServerError::Internal(msg) => assert!(
                 msg.contains("failed to parse"),
                 "expected parse error, got: {msg}"
             ),

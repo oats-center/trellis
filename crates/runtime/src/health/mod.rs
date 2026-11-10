@@ -694,7 +694,7 @@ fn map_store_error(error: store::HealthStoreError) -> ServerError {
             std::iter::empty::<(&str, Value)>(),
         ))
     } else {
-        ServerError::Nats(error.to_string())
+        ServerError::Internal(error.to_string())
     }
 }
 

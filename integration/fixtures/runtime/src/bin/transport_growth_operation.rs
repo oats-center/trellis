@@ -292,7 +292,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     extra: Default::default(),
                 })
                 .await
-                .map_err(|error| trellis_rs::service::ServerError::Nats(error.to_string()))?;
+                .map_err(|error| trellis_rs::service::ServerError::Internal(error.to_string()))?;
             Ok(Empty {
                 extra: Default::default(),
             })

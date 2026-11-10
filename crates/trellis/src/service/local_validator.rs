@@ -128,7 +128,7 @@ impl LocalAuthVerifier {
         }
         self.owner
             .assert_current(verified.authority())
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let result = RequestValidation {
             allowed: true,
             caller: Some(verified.caller().clone()),

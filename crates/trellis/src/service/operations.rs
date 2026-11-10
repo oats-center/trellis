@@ -280,7 +280,7 @@ where
     ) -> AcceptedOperationFuture<D> {
         if cancelled_admission.is_some() {
             return Box::pin(async {
-                Err(ServerError::Nats(
+                Err(ServerError::Internal(
                     "cancelled admission is unsupported".to_owned(),
                 ))
             });
@@ -373,7 +373,7 @@ impl OperationTransport {
                 std::time::Instant::now() + std::time::Duration::from_millis(self.timeout_ms),
             )
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         Ok(SupportTransport {
             nats: lease.nats().clone(),
             lease: Some(lease),
@@ -400,7 +400,7 @@ impl SupportTransport {
                 nats: lease.nats().clone(),
                 lease: Some(lease.clone()),
             }),
-            None => Err(ServerError::Nats(
+            None => Err(ServerError::Internal(
                 "operation request is missing its accepting transport generation".to_owned(),
             )),
         }
@@ -573,7 +573,7 @@ where
             &claimed.record.invocation_id,
         )
         .await?
-        .ok_or_else(|| ServerError::Nats("operation owner fence is stale".to_owned()))?;
+        .ok_or_else(|| ServerError::Internal("operation owner fence is stale".to_owned()))?;
         let mut cancellation = repository.watch(&claimed.record.invocation_id).await?;
         let input = serde_json::from_value(claimed.record.input.clone())?;
         let route = crate::telemetry::instruments::route_token(
@@ -767,7 +767,24 @@ where
                                 }
                             }
                         } else if let Err(error) = &result {
-                            tracing::error!(%error, "operation handler failed");
+                            // The caller gets these IDs instead of the failure text.
+                            let error_id = super::request_loop::error_id();
+                            let trace_id = admitted.record.telemetry.as_ref().and_then(|carrier| {
+                                super::request_loop::trace_id_from_traceparent(&carrier.traceparent)
+                                    .map(str::to_owned)
+                            });
+                            tracing::error!(
+                                error_id = %error_id,
+                                operation_id = %operation_id,
+                                trace_id = trace_id.as_deref(),
+                                %error,
+                                "operation handler failed",
+                            );
+                            let mut fields = serde_json::Map::new();
+                            fields.insert("id".to_owned(), Value::String(error_id));
+                            if let Some(trace_id) = trace_id {
+                                fields.insert("traceId".to_owned(), Value::String(trace_id));
+                            }
                             match durable_snapshot_update::<D>(
                                 &repository,
                                 &fence,
@@ -779,8 +796,8 @@ where
                                     output: None,
                                     error: Some(OperationError {
                                         error_type: "OperationHandlerError".to_owned(),
-                                        message: error.to_string(),
-                                        fields: Box::default(),
+                                        message: "An unexpected error has occurred".to_owned(),
+                                        fields: Box::new(fields),
                                     }),
                                     cancellation_requested: false,
                                 },
@@ -1078,7 +1095,7 @@ where
                                     let upload: DurableOperationUpload =
                                         serde_json::from_value(
                                             claimed.record.transfer.clone().ok_or_else(|| {
-                                                ServerError::Nats(
+                                                ServerError::Internal(
                                                     "operation upload staging state is missing"
                                                         .to_owned(),
                                                 )
@@ -1102,7 +1119,7 @@ where
                                         if committed {
                                             return Ok(Some(claimed));
                                         }
-                                        return Err(ServerError::Nats(
+                                        return Err(ServerError::Internal(
                                             "committed operation upload metadata does not match staging"
                                                 .to_owned(),
                                         ));
@@ -1198,7 +1215,9 @@ where
             let cancellation_requested = cancelled_admission.is_some();
             if let Some(payload) = cancelled_admission {
                 if !D::CANCELABLE {
-                    return Err(ServerError::Nats("operation is not cancelable".to_owned()));
+                    return Err(ServerError::Internal(
+                        "operation is not cancelable".to_owned(),
+                    ));
                 }
                 // Invoke was verified by the authenticated router. Verify Cancel
                 // against the same proof and raw payload before any durable write.
@@ -1238,7 +1257,7 @@ where
             let support = SupportTransport::accepting(&context)?;
             let repository = repository.pinned(support.lease.as_ref()).await?;
             let caller = context.caller.as_ref().ok_or_else(|| {
-                ServerError::Nats("operation start is missing verified caller".to_owned())
+                ServerError::Internal("operation start is missing verified caller".to_owned())
             })?;
             let input_value = serde_json::to_value(&input)?;
             let digest = operation_invocation_digest(
@@ -1418,7 +1437,7 @@ where
             if D::STREAM && !claimed.record.cancellation_requested {
                 let upload: DurableOperationUpload =
                     serde_json::from_value(claimed.record.transfer.clone().ok_or_else(|| {
-                        ServerError::Nats("operation stream state is missing".to_owned())
+                        ServerError::Internal("operation stream state is missing".to_owned())
                     })?)?;
                 let operation_ref = OperationRefData {
                     id: invocation_id.clone(),
@@ -1481,13 +1500,13 @@ where
                 );
                 let (mut completion, stream) = super::transfer::spawn_stream_upload_endpoint(
                     publisher.clone().ok_or_else(|| {
-                        ServerError::Nats(
+                        ServerError::Internal(
                             "operation stream is missing its signing client".to_owned(),
                         )
                     })?,
                     UploadTransferSession::new(plan, now_timestamp()),
                     support.lease.clone().ok_or_else(|| {
-                        ServerError::Nats(
+                        ServerError::Internal(
                             "operation stream is missing its accepting generation".to_owned(),
                         )
                     })?,
@@ -1530,7 +1549,7 @@ where
                         let _ = stop_progress.send(());
                         let progress = final_progress_receiver
                             .await
-                            .map_err(|error| ServerError::Nats(error.to_string()))??;
+                            .map_err(|error| ServerError::Internal(error.to_string()))??;
                         persist_operation_upload(
                             persist_repository,
                             persist_fence,
@@ -1605,7 +1624,9 @@ where
             if D::UPLOAD && !claimed.record.cancellation_requested {
                 let mut upload: DurableOperationUpload =
                     serde_json::from_value(claimed.record.transfer.clone().ok_or_else(|| {
-                        ServerError::Nats("operation upload staging state is missing".to_owned())
+                        ServerError::Internal(
+                            "operation upload staging state is missing".to_owned(),
+                        )
                     })?)?;
                 if upload.state == "committed" {
                     durable_snapshot_update::<D>(
@@ -1731,14 +1752,14 @@ where
                 let completion =
                     super::transfer::spawn_upload_transfer_endpoint_with_progress_and_completion(
                         publisher.clone().ok_or_else(|| {
-                            ServerError::Nats(
+                            ServerError::Internal(
                                 "operation upload is missing its signing client".to_owned(),
                             )
                         })?,
                         UploadTransferSession::new(plan, now_timestamp()),
                         staging.clone(),
                         support.lease.clone().ok_or_else(|| {
-                            ServerError::Nats(
+                            ServerError::Internal(
                                 "operation upload is missing its accepting generation".to_owned(),
                             )
                         })?,
@@ -1822,7 +1843,7 @@ where
                         let _ = stop_progress.send(());
                         let progress = final_progress_receiver
                             .await
-                            .map_err(|error| ServerError::Nats(error.to_string()))??;
+                            .map_err(|error| ServerError::Internal(error.to_string()))??;
                         persist_operation_upload(
                             acknowledgement_repository,
                             acknowledgement_fence,
@@ -2054,7 +2075,7 @@ where
                     return typed_snapshot(snapshot);
                 }
             }
-            Err(ServerError::Nats(
+            Err(ServerError::Internal(
                 "operation watch closed before terminal state".to_owned(),
             ))
         })
@@ -2080,12 +2101,12 @@ where
                     .nats
                     .subscribe(update_subject)
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                 support
                     .nats
                     .flush()
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                 let record = repository.get(&operation_id).await?.ok_or_else(|| {
                     ServerError::OperationNotFound {
                         operation_id: operation_id.clone(),
@@ -2681,7 +2702,7 @@ where
                 return typed_snapshot(current.record.snapshot);
             }
             if expected_epoch.is_some_and(|epoch| epoch != current.record.owner_epoch) {
-                return Err(ServerError::Nats(
+                return Err(ServerError::Internal(
                     "operation owner changed before reconciliation".to_owned(),
                 ));
             }
@@ -2693,7 +2714,7 @@ where
                 .is_none_or(|expiry| expiry <= now_ms())
             {
                 if expected_epoch.is_some() || std::time::Instant::now() >= deadline {
-                    return Err(ServerError::Nats(
+                    return Err(ServerError::Internal(
                         "operation has no live owner to reconcile it".to_owned(),
                     ));
                 }
@@ -2719,14 +2740,14 @@ where
                     let (answer, answered) = oneshot::channel();
                     if reentry.send(answer).is_ok() {
                         if let Ok(Err(error)) = answered.await {
-                            return Err(ServerError::Nats(error));
+                            return Err(ServerError::Internal(error));
                         }
                     }
                     return typed_snapshot(read().await?.record.snapshot);
                 }
             }
             if expected_epoch.is_some() {
-                return Err(ServerError::Nats(
+                return Err(ServerError::Internal(
                     "reconciliation reached a non-owner executor".to_owned(),
                 ));
             }
@@ -2744,15 +2765,15 @@ where
                 support.nats.request(subject, request.into()),
             )
             .await
-            .map_err(|_| ServerError::Nats("operation reconciliation timed out".to_owned()))
-            .and_then(|reply| reply.map_err(|error| ServerError::Nats(error.to_string())))
+            .map_err(|_| ServerError::Internal("operation reconciliation timed out".to_owned()))
+            .and_then(|reply| reply.map_err(|error| ServerError::Internal(error.to_string())))
             .and_then(|reply| {
                 let frame: Value = serde_json::from_slice(&reply.payload)?;
                 if let Some(error) = frame.get("error").and_then(Value::as_str) {
-                    return Err(ServerError::Nats(error.to_owned()));
+                    return Err(ServerError::Internal(error.to_owned()));
                 }
                 if frame.get("kind").and_then(Value::as_str) != Some("reconciled") {
-                    return Err(ServerError::Nats(
+                    return Err(ServerError::Internal(
                         "invalid operation reconciliation response".to_owned(),
                     ));
                 }
@@ -2769,7 +2790,7 @@ where
                 _ => {}
             }
         }
-        Err(ServerError::Nats(
+        Err(ServerError::Internal(
             "operation owner changed during reconciliation".to_owned(),
         ))
     }
@@ -2967,9 +2988,9 @@ impl OwnerFence {
             executor_id: record
                 .owner_executor_id
                 .clone()
-                .ok_or_else(|| ServerError::Nats("operation has no active owner".to_owned()))?,
+                .ok_or_else(|| ServerError::Internal("operation has no active owner".to_owned()))?,
             connection_id: record.owner_connection_id.clone().ok_or_else(|| {
-                ServerError::Nats("operation has no owning connection".to_owned())
+                ServerError::Internal("operation has no owning connection".to_owned())
             })?,
             owner_epoch: record.owner_epoch,
             retirement: Arc::default(),
@@ -3040,17 +3061,17 @@ fn operation_upload_grant<D: OperationDescriptor>(
         TRANSFER_OPERATION_UPLOAD_MAX_BYTES, TRANSFER_VERSION,
     };
     let transfer_id =
-        generate_transfer_id().map_err(|error| ServerError::Nats(error.to_string()))?;
+        generate_transfer_id().map_err(|error| ServerError::Internal(error.to_string()))?;
     let subject = |kind| {
         derive_transfer_subject(kind, connection_id, &caller.runtime_id, &transfer_id)
-            .map_err(|error| ServerError::Nats(error.to_string()))
+            .map_err(|error| ServerError::Internal(error.to_string()))
     };
     let max_frame_bytes = negotiate_transfer_max_frame_bytes(max_payload, max_payload)
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
+        .map_err(|error| ServerError::Internal(error.to_string()))?;
     // The provider receives the upload: offer what the process can admit.
     let (window_frames, window_bytes) = crate::data_plane::budget::ReceiveBudget::process()
         .offer(max_frame_bytes)
-        .ok_or_else(|| ServerError::Nats("transfer receive capacity exhausted".to_owned()))?;
+        .ok_or_else(|| ServerError::Internal("transfer receive capacity exhausted".to_owned()))?;
     Ok(UploadTransferGrant {
         origin: trellis_protocol::transfer::TransferOrigin {
             api_id: D::API_ID.to_owned(),
@@ -3082,7 +3103,7 @@ fn operation_upload_grant<D: OperationDescriptor>(
         expires_at: (OffsetDateTime::now_utc()
             + time::Duration::seconds(TRANSFER_OPERATION_UPLOAD_LIFETIME_SECONDS as i64))
         .format(&Rfc3339)
-        .map_err(|error| ServerError::Nats(error.to_string()))?,
+        .map_err(|error| ServerError::Internal(error.to_string()))?,
         max_frame_bytes,
         window_frames,
         window_bytes,
@@ -3109,7 +3130,7 @@ async fn settle_operation_upload(
     })?;
     let upload: DurableOperationUpload =
         serde_json::from_value(current.record.transfer.clone().ok_or_else(|| {
-            ServerError::Nats("operation upload staging state is missing".to_owned())
+            ServerError::Internal("operation upload staging state is missing".to_owned())
         })?)?;
     if upload.state == "committed" && upload.staging_key == staging_key {
         // A failed committed reply is not a failed durable upload. Only the
@@ -3138,7 +3159,7 @@ async fn settle_operation_upload(
     };
     let mut upload: DurableOperationUpload =
         serde_json::from_value(current.record.transfer.clone().ok_or_else(|| {
-            ServerError::Nats("operation upload staging state is missing".to_owned())
+            ServerError::Internal("operation upload staging state is missing".to_owned())
         })?)?;
     if !fence.matches(&current.record)
         || current.record.snapshot.state.is_terminal()
@@ -3223,7 +3244,7 @@ async fn coalesce_operation_upload_progress(
                     || current.record.snapshot.state.is_terminal()
                     || current.record.cancellation_requested
                 {
-                    return Err(ServerError::Nats(
+                    return Err(ServerError::Internal(
                         "operation owner fence is stale".to_owned(),
                     ));
                 }
@@ -3288,14 +3309,14 @@ async fn persist_operation_upload(
         || current.record.snapshot.state.is_terminal()
         || current.record.cancellation_requested
     {
-        return Err(ServerError::Nats(
+        return Err(ServerError::Internal(
             "operation owner fence is stale".to_owned(),
         ));
     }
     let mut record = current.record;
     let mut upload: DurableOperationUpload =
         serde_json::from_value(record.transfer.clone().ok_or_else(|| {
-            ServerError::Nats("operation upload staging state is missing".to_owned())
+            ServerError::Internal("operation upload staging state is missing".to_owned())
         })?)?;
     upload.state = if upload.state == "streaming" {
         "streamed"
@@ -3318,7 +3339,7 @@ async fn persist_operation_upload(
         transferred_bytes: 0,
     });
     if progress.transferred_bytes != info.size {
-        return Err(ServerError::Nats(
+        return Err(ServerError::Internal(
             "final operation upload progress does not match stored size".to_owned(),
         ));
     }
@@ -3398,7 +3419,7 @@ where
             })?
             .record;
         if !self.durable.fence.matches(&record) {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation owner fence is stale".to_owned(),
             ));
         }
@@ -3407,12 +3428,12 @@ where
         };
         let upload: DurableOperationUpload = serde_json::from_value(upload)?;
         if !matches!(upload.state.as_str(), "committed" | "streamed") {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation upload is not committed".to_owned(),
             ));
         }
         let info = serde_json::from_value(upload.file_info.ok_or_else(|| {
-            ServerError::Nats("committed upload logical metadata is missing".to_owned())
+            ServerError::Internal("committed upload logical metadata is missing".to_owned())
         })?)?;
         Ok(Some((info, upload.staging_key)))
     }
@@ -3449,7 +3470,7 @@ where
         &self,
     ) -> Result<Option<impl tokio::io::AsyncRead + Unpin + Send>, ServerError> {
         if D::STREAM {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "stream Operations stage no upload; use take_upload_stream".to_owned(),
             ));
         }
@@ -3457,14 +3478,14 @@ where
             return Ok(None);
         };
         let object = self.staging.open(&staging_key).await?.ok_or_else(|| {
-            ServerError::Nats("committed operation upload is missing from staging".to_owned())
+            ServerError::Internal("committed operation upload is missing from staging".to_owned())
         })?;
         if object.info().size as u64 != upload.size
             || !object.info().digest.as_deref().is_some_and(|digest| {
                 super::transfer::transfer_digests_match(digest, &upload.digest)
             })
         {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "committed operation upload metadata does not match staging".to_owned(),
             ));
         }
@@ -3534,20 +3555,21 @@ where
             return Err(operation_terminal_error(&current.record));
         }
         if !durable.fence.matches(&current.record) {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation owner fence is stale".to_owned(),
             ));
         }
         let sequence = self.next_update_sequence.fetch_add(1, Ordering::Relaxed);
         let timestamp = now_timestamp();
         let publisher = self.publisher.as_ref().ok_or_else(|| {
-            ServerError::Nats("operation update publisher authentication is unavailable".to_owned())
+            ServerError::Internal(
+                "operation update publisher authentication is unavailable".to_owned(),
+            )
         })?;
         let reply = self.nats.new_inbox();
-        let owner_connection_id =
-            current.record.owner_connection_id.clone().ok_or_else(|| {
-                ServerError::Nats("operation owner connection is missing".to_owned())
-            })?;
+        let owner_connection_id = current.record.owner_connection_id.clone().ok_or_else(|| {
+            ServerError::Internal("operation owner connection is missing".to_owned())
+        })?;
         let payload = serde_json::to_vec(&OperationUpdateEnvelope {
             operation_id: self.operation_ref.id.clone(),
             api_id: D::API_ID.to_owned(),
@@ -3563,17 +3585,17 @@ where
         let authorization = publisher.authorization_owner();
         let authority = authorization
             .own_authority()
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         authorization
             .assert_current(&authority)
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let api = authority
             .authority()
             .apis
             .iter()
             .find(|api| api.api_id == D::API_ID)
             .ok_or_else(|| {
-                ServerError::Nats("operation update API authority is unavailable".into())
+                ServerError::Internal("operation update API authority is unavailable".into())
             })?;
         let request = trellis_protocol::SessionRequest {
             authority_digest: authority.digest().to_owned(),
@@ -3593,7 +3615,7 @@ where
         let auth = publisher.auth_handle();
         let (proof, _) = auth
             .create_request_proof(&request, &payload)
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let mut headers = async_nats::HeaderMap::new();
         headers.insert(
             "Trellis-Session-Request",
@@ -3620,11 +3642,11 @@ where
                 payload.into(),
             )
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         self.nats
             .flush()
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         Ok(crate::client::OperationUpdateEvent {
             operation_id: self.operation_ref.id.clone(),
             sequence,
@@ -3683,7 +3705,7 @@ where
         E: std::fmt::Display,
     {
         task.await.map_err(|error| {
-            ServerError::Nats(format!("attached operation task failed: {error}"))
+            ServerError::Internal(format!("attached operation task failed: {error}"))
         })?;
         let record = self
             .durable
@@ -3694,7 +3716,7 @@ where
                 operation_id: self.operation_ref.id.clone(),
             })?;
         if !self.durable.fence.matches(&record.record) {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation owner fence is stale".to_owned(),
             ));
         }
@@ -3702,7 +3724,7 @@ where
         if snapshot.state.is_terminal() {
             Ok(snapshot)
         } else {
-            Err(ServerError::Nats(
+            Err(ServerError::Internal(
                 "attached operation task completed without terminal operation state".to_string(),
             ))
         }
@@ -3729,7 +3751,7 @@ where
         // Repository CAS checks the stored owner, not this execution's
         // retirement, so every write checks the live fence first.
         if !durable.fence.matches(&current.record) {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation owner fence is stale".to_owned(),
             ));
         }
@@ -3793,7 +3815,7 @@ where
                     };
                     if !fence.matches(&current.record) {
                         return Some((
-                            Err(ServerError::Nats(
+                            Err(ServerError::Internal(
                                 "operation owner fence is stale".to_owned(),
                             )),
                             (repository, fence, Arc::clone(&gate), id, sequence),
@@ -3844,7 +3866,7 @@ where
                 operation_id: self.operation_ref.id.clone(),
             })?;
         if !durable.fence.matches(&current.record) {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation owner fence is stale".to_owned(),
             ));
         }
@@ -3857,7 +3879,7 @@ where
             .iter_mut()
             .find(|signal| signal.sequence == sequence)
             .ok_or_else(|| {
-                ServerError::Nats(format!("operation signal {sequence} was not found"))
+                ServerError::Internal(format!("operation signal {sequence} was not found"))
             })?;
         if signal.acknowledged {
             return Ok(());
@@ -3974,7 +3996,7 @@ where
         return Err(operation_terminal_error(&record));
     }
     if !fence.matches(&record) {
-        return Err(ServerError::Nats(
+        return Err(ServerError::Internal(
             "operation owner fence is stale".to_owned(),
         ));
     }
@@ -4035,12 +4057,12 @@ where
         return typed_snapshot(current.record.snapshot);
     }
     if !current.record.cancellation_requested {
-        return Err(ServerError::Nats(
+        return Err(ServerError::Internal(
             "operation cancellation was not requested".to_owned(),
         ));
     }
     if !fence.matches(&current.record) {
-        return Err(ServerError::Nats(
+        return Err(ServerError::Internal(
             "operation owner fence is stale".to_owned(),
         ));
     }

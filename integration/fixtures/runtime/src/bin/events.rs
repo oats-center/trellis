@@ -1,7 +1,7 @@
-use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 
 use runtime_trellis::apis::runtime_trellis_events_v1::events::{Alpha, Beta};
 use runtime_trellis::apis::runtime_trellis_events_v1::rpc::ObservedOutput;
@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut stats = stats.lock().unwrap();
                     stats.active -= 1;
                     if fails {
-                        return Err(ServerError::Nats("fixture handler failure".to_owned()));
+                        return Err(ServerError::Internal("fixture handler failure".to_owned()));
                     }
                     stats.successes.push(event.value.clone());
                     seen.lock().unwrap().insert(event.value);

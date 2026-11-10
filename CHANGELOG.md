@@ -43,6 +43,10 @@ and this project adheres to
 
 ### Fixed
 
+- A keyed job could run twice when the broker redelivered it while its first
+  delivery was finishing: the copy took the slot the first had just freed.
+  TypeScript now publishes a finished job's event before freeing its slot, and
+  Rust and TypeScript re-read the job's state after taking a slot.
 - A service connects again after an administrator applies its next build
   when that build provides a new major of an API, such as v1 to v2. Its
   instance stayed pinned to the previous build, which the deployment no longer
@@ -60,6 +64,14 @@ and this project adheres to
 
 ### Changed
 
+- `ServerError::Nats` is now `ServerError::Internal`, the supported error for
+  an unexpected service failure, and it no longer adds `nats error: ` to its
+  text.
+- An unexpected failure no longer sends its cause to the caller. Rust and
+  TypeScript services drop `context.causeMessage` and `context.causeStack` from
+  RPC, control and Operation failures. Callers get the error's `id` and, when
+  known, `traceId` and `context.requestId`, and the service logs the failure
+  under those IDs. Job records keep their detail for administrators.
 - The Rust outbox stores intents rather than only events: `OutboxStore::enqueue`
   takes anything convertible to `OutboxIntent`, `OutboxEventRecord` is
   `OutboxRecord` with an `intent` field, and `dispatch_outbox_once` takes an

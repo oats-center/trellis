@@ -67,6 +67,10 @@ export type OperationSnapshot<TProgress = unknown, TOutput = unknown> = {
   error?: {
     type: string;
     message: string;
+    /** Identifies this failure in the service's log, when the service set one. */
+    id?: string;
+    /** The trace to follow this failure through, when one was recorded. */
+    traceId?: string;
   };
 };
 

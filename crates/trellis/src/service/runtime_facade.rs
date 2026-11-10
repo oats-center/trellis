@@ -926,7 +926,7 @@ impl ServiceHandle {
                 .client()
                 .acquire_transport(&[], &[], self.client().transport_deadline())
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
         };
         let completion = spawn_upload_transfer_endpoint_with_progress_and_completion(
             Arc::clone(&self.client),
@@ -959,7 +959,7 @@ impl ServiceHandle {
                 .client()
                 .acquire_transport(&[], &[], self.client().transport_deadline())
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
         };
         spawn_upload_transfer_endpoint_with_completion(
             Arc::clone(&self.client),
@@ -986,7 +986,7 @@ impl ServiceHandle {
                 .client()
                 .acquire_transport(&[], &[], self.client().transport_deadline())
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
         };
         let task =
             spawn_download_transfer_endpoint(Arc::clone(&self.client), plan, store, lease).await?;
@@ -1012,7 +1012,7 @@ impl ServiceHandle {
                 .client()
                 .acquire_transport(&[], &[], self.client().transport_deadline())
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
         };
         let task = super::transfer::spawn_stream_download_endpoint(
             Arc::clone(&self.client),
@@ -1198,7 +1198,7 @@ impl ServiceHandlerContext {
         info: super::FileTransferInfo,
     ) -> Result<DownloadTransferGrantPlan, ServerError> {
         if !self.download_allowed {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "RPC descriptor does not declare a download transfer".to_owned(),
             ));
         }
@@ -1219,7 +1219,7 @@ impl ServiceHandlerContext {
                 .handle
                 .client()
                 .own_connection_id()
-                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                .map_err(|error| ServerError::Internal(error.to_string()))?,
             consumer_connection_id: &self
                 .request
                 .caller
@@ -1461,7 +1461,7 @@ impl<C> ConnectedServiceRuntime<C> {
         async_nats::jetstream::new(self.client.nats())
             .get_key_value(&bucket)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         Ok(super::KvOperationRepository::managed(
             self.client.transport_generations(),
             bucket,
@@ -1972,7 +1972,7 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
                 .get_object_store(&staging_bucket)
                 .await
                 .map_err(|error| {
-                    ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
+                    ServiceRuntimeError::Server(Box::new(ServerError::Internal(error.to_string())))
                 })?;
             runtime.operation_staging = Some(
                 super::resources::backend::BoundStoreResourceClient::managed_current(
@@ -2001,7 +2001,7 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
         direction: trellis_protocol::PermissionAction::Call,
     };
     let evidence = serde_json::to_value(C::package_evidence()).map_err(|error| {
-        ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
+        ServiceRuntimeError::Server(Box::new(ServerError::Internal(error.to_string())))
     })?;
     let body = serde_json::json!({ "participantId": C::ID, "packageEvidence": evidence });
     let submit = || {

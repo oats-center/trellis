@@ -148,9 +148,12 @@ pub enum ServerError {
     #[doc(hidden)]
     Subject(#[from] crate::client::SubjectError),
 
-    #[error("nats error: {0}")]
-    #[doc(hidden)]
-    Nats(String),
+    /// An unexpected failure with no contract-declared error. The caller
+    /// receives an `UnexpectedError` with its `id`, `traceId` and
+    /// `context.requestId`; this text goes only to the service's log, under
+    /// those same IDs.
+    #[error("{0}")]
+    Internal(String),
 
     /// A KV revision check failed because the key is no longer at the expected revision.
     #[error("kv key '{key}' revision mismatch: expected {expected}, actual {actual:?}")]

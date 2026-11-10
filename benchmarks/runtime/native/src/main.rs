@@ -384,15 +384,15 @@ async fn main() -> Result<(), Error> {
                         let metadata = files
                             .metadata(&input.value)
                             .await?
-                            .ok_or_else(|| ServerError::Nats("stored object missing".into()))?;
+                            .ok_or_else(|| ServerError::Internal("stored object missing".into()))?;
                         let expires = (time::OffsetDateTime::now_utc()
                             + time::Duration::minutes(2))
                         .format(&time::format_description::well_known::Rfc3339)
-                        .map_err(|e| ServerError::Nats(e.to_string()))?;
+                        .map_err(|e| ServerError::Internal(e.to_string()))?;
                         let plan = context.plan_download_transfer(
                             "files",
                             &generate_transfer_id()
-                                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                                .map_err(|error| ServerError::Internal(error.to_string()))?,
                             &expires,
                             FileTransferInfo {
                                 key: input.value.clone(),
@@ -400,13 +400,13 @@ async fn main() -> Result<(), Error> {
                                 updated_at: metadata
                                     .modified_at
                                     .ok_or_else(|| {
-                                        ServerError::Nats("modified time missing".into())
+                                        ServerError::Internal("modified time missing".into())
                                     })?
                                     .format(&time::format_description::well_known::Rfc3339)
-                                    .map_err(|e| ServerError::Nats(e.to_string()))?,
-                                digest: metadata
-                                    .digest
-                                    .ok_or_else(|| ServerError::Nats("digest missing".into()))?,
+                                    .map_err(|e| ServerError::Internal(e.to_string()))?,
+                                digest: metadata.digest.ok_or_else(|| {
+                                    ServerError::Internal("digest missing".into())
+                                })?,
                                 content_type: Some("application/octet-stream".into()),
                                 metadata: Default::default(),
                             },
@@ -430,14 +430,13 @@ async fn main() -> Result<(), Error> {
                         let mut reader = op
                             .open_staged_upload()
                             .await?
-                            .ok_or_else(|| ServerError::Nats("staged upload missing".into()))?;
+                            .ok_or_else(|| ServerError::Internal("staged upload missing".into()))?;
                         let key = format!("upload-{}", input.value);
                         files.write_from(&key, &mut reader, None).await?;
                         let mut stored = Hasher::default();
-                        files
-                            .read_into(&key, &mut stored)
-                            .await?
-                            .ok_or_else(|| ServerError::Nats("persisted upload missing".into()))?;
+                        files.read_into(&key, &mut stored).await?.ok_or_else(|| {
+                            ServerError::Internal("persisted upload missing".into())
+                        })?;
                         op.complete(operations::UploadOutput {
                             value: stored.digest(),
                             extra: Default::default(),
@@ -459,7 +458,7 @@ async fn main() -> Result<(), Error> {
                     async move {
                         let mut stream = op
                             .take_upload_stream()
-                            .ok_or_else(|| ServerError::Nats("stream upload missing".into()))?;
+                            .ok_or_else(|| ServerError::Internal("stream upload missing".into()))?;
                         let mut hashed = Hasher::default();
                         if let Some(size) = input.value.strip_prefix("store:") {
                             let mut tee = http::HashingReader::new(&mut stream);
@@ -470,7 +469,7 @@ async fn main() -> Result<(), Error> {
                         } else {
                             tokio::io::copy(&mut stream, &mut hashed)
                                 .await
-                                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                                .map_err(|error| ServerError::Internal(error.to_string()))?;
                         }
                         op.complete(operations::UploadStreamOutput {
                             value: hashed.digest(),
@@ -496,24 +495,24 @@ async fn main() -> Result<(), Error> {
                         let size: usize = input
                             .value
                             .parse()
-                            .map_err(|_| ServerError::Nats("invalid size".into()))?;
-                        let digest = declared
-                            .get(&size)
-                            .ok_or_else(|| ServerError::Nats("unknown generated size".into()))?;
+                            .map_err(|_| ServerError::Internal("invalid size".into()))?;
+                        let digest = declared.get(&size).ok_or_else(|| {
+                            ServerError::Internal("unknown generated size".into())
+                        })?;
                         let format = &time::format_description::well_known::Rfc3339;
                         let now = time::OffsetDateTime::now_utc();
                         let plan = context.plan_stream_download_transfer(
                             &generate_transfer_id()
-                                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                                .map_err(|error| ServerError::Internal(error.to_string()))?,
                             &(now + time::Duration::minutes(2))
                                 .format(format)
-                                .map_err(|e| ServerError::Nats(e.to_string()))?,
+                                .map_err(|e| ServerError::Internal(e.to_string()))?,
                             FileTransferInfo {
                                 key: format!("generated-{size}"),
                                 size: size as u64,
                                 updated_at: now
                                     .format(format)
-                                    .map_err(|e| ServerError::Nats(e.to_string()))?,
+                                    .map_err(|e| ServerError::Internal(e.to_string()))?,
                                 digest: format!("SHA-256={digest}"),
                                 content_type: None,
                                 metadata: Default::default(),
@@ -538,13 +537,13 @@ async fn main() -> Result<(), Error> {
                     let info = op
                         .upload()
                         .await?
-                        .ok_or_else(|| ServerError::Nats("staged upload missing".into()))?;
+                        .ok_or_else(|| ServerError::Internal("staged upload missing".into()))?;
                     let encoded = info.digest.trim_start_matches("SHA-256=");
                     let digest = base64::Engine::decode(
                         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
                         encoded.trim_end_matches('='),
                     )
-                    .map_err(|e| ServerError::Nats(e.to_string()))?;
+                    .map_err(|e| ServerError::Internal(e.to_string()))?;
                     op.complete(operations::UploadStagedOutput {
                         value: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
                         extra: Default::default(),

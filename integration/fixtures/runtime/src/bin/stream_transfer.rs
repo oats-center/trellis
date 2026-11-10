@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_ingest(|_, input, operation| async move {
             let mut stream = operation
                 .take_upload_stream()
-                .ok_or_else(|| ServerError::Nats("stream upload missing".into()))?;
+                .ok_or_else(|| ServerError::Internal("stream upload missing".into()))?;
             assert!(operation.take_upload_stream().is_none(), "taken once");
             let mut hasher = Sha256::new();
             let mut size = 0usize;
@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(read) => read,
                     Err(error) => {
                         emit(json!({"streamError": error.to_string()}));
-                        return Err(ServerError::Nats(error.to_string()));
+                        return Err(ServerError::Internal(error.to_string()));
                     }
                 };
                 if read == 0 {
@@ -65,14 +65,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // before the upload completes.
                     emit(json!({"partial": size}));
                     if input.value == "fail-after-partial" {
-                        return Err(ServerError::Nats("handler rejected the stream".into()));
+                        return Err(ServerError::Internal("handler rejected the stream".into()));
                     }
                 }
             }
             let info = operation
                 .upload()
                 .await?
-                .ok_or_else(|| ServerError::Nats("verified stream metadata missing".into()))?;
+                .ok_or_else(|| ServerError::Internal("verified stream metadata missing".into()))?;
             let digest = format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.finalize()));
             assert_eq!(info.size, size as u64);
             assert_eq!(info.digest.trim_end_matches('='), digest);
@@ -105,7 +105,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let now = time::OffsetDateTime::now_utc();
             let format = &time::format_description::well_known::Rfc3339;
             let plan = context.plan_stream_download_transfer(
-                &generate_transfer_id().map_err(|error| ServerError::Nats(error.to_string()))?,
+                &generate_transfer_id()
+                    .map_err(|error| ServerError::Internal(error.to_string()))?,
                 &(now + time::Duration::minutes(2))
                     .format(format)
                     .expect("timestamp"),

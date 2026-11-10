@@ -23,7 +23,7 @@ impl EventPublisher {
         self.client
             .publish_prepared(&prepared)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         Ok(())
     }
 
@@ -35,6 +35,6 @@ impl EventPublisher {
         self.client
             .publish_prepared(event)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))
+            .map_err(|error| ServerError::Internal(error.to_string()))
     }
 }

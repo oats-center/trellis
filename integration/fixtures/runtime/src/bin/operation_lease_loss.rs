@@ -1,6 +1,6 @@
+use futures_util::StreamExt;
 use runtime_trellis::participants::runtime_trellis_operation_provider::{Participant, Provider};
 use runtime_trellis::types::{Update, UpdateDetail, Value};
-use futures_util::StreamExt;
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Only the ownership check may refuse a retired execution's
                 // write; a refusal for any other reason would hide a missing one.
                 let outcome = |result: Result<(), ServerError>| match result {
-                    Err(ServerError::Nats(message)) if message.contains("stale") => "refused",
+                    Err(ServerError::Internal(message)) if message.contains("stale") => "refused",
                     Err(_) => "failed otherwise",
                     Ok(()) => "accepted",
                 };
@@ -138,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .await
                         .expect_err("withheld progress acknowledgement must time out");
                     assert!(
-                        matches!(error, ServerError::Nats(ref message) if message.contains("timed out")),
+                        matches!(error, ServerError::Internal(ref message) if message.contains("timed out")),
                         "{error}"
                     );
                     println!("control failed");
@@ -170,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await
                     .expect_err("interrupted native transport must fail the cleanup read");
                 assert!(
-                    matches!(error, ServerError::Nats(_)),
+                    matches!(error, ServerError::Internal(_)),
                     "{error}"
                 );
                 println!("cleanup complete");

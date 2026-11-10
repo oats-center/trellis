@@ -157,7 +157,7 @@ pub trait RequestHandler: Send + Sync {
         _reply: &'a OutboundReply,
     ) -> BoxFuture<'a, Result<HeaderMap, ServerError>> {
         Box::pin(async {
-            Err(ServerError::Nats(
+            Err(ServerError::Internal(
                 "request handler has no certified reply signer".into(),
             ))
         })
@@ -216,7 +216,7 @@ pub trait RequestHandler: Send + Sync {
             match self.handle_response(subject, payload, context).await? {
                 HandlerResponse::Frames(frames) => Ok(frames),
                 HandlerResponse::Error(payload) => Ok(vec![payload]),
-                HandlerResponse::LivePrepared(_) => Err(ServerError::Nats(
+                HandlerResponse::LivePrepared(_) => Err(ServerError::Internal(
                     "a live response requires a live owner and cannot be collected".to_owned(),
                 )),
             }
@@ -613,8 +613,6 @@ pub fn encode_error_reply_with_context(
 
     #[derive(serde::Serialize)]
     struct ErrorContext<'a> {
-        #[serde(rename = "causeMessage")]
-        cause_message: &'a str,
         #[serde(rename = "requestId", skip_serializing_if = "Option::is_none")]
         request_id: Option<&'a str>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -631,14 +629,38 @@ pub fn encode_error_reply_with_context(
         operation: Option<&'a str>,
     }
 
-    let error_message = error.to_string();
+    // Callers get these IDs instead of the failure text; the log holds both.
+    let id = error_id();
+    let route = annotations
+        .method
+        .as_deref()
+        .or(annotations.live.as_deref())
+        .or(annotations.operation.as_deref());
+    if matches!(server_outcome(error), "error" | "unavailable") {
+        tracing::error!(
+            error_id = %id,
+            request_id = annotations.request_id.as_deref(),
+            trace_id = annotations.trace_id(),
+            route,
+            %error,
+            "unexpected service error",
+        );
+    } else {
+        tracing::warn!(
+            error_id = %id,
+            request_id = annotations.request_id.as_deref(),
+            trace_id = annotations.trace_id(),
+            route,
+            %error,
+            "request refused",
+        );
+    }
     let payload = match serde_json::to_vec(&ErrorPayload {
-    id: error_id(),
+    id,
     r#type: "UnexpectedError",
     message: "An unexpected error has occurred",
     trace_id: annotations.trace_id(),
     context: ErrorContext {
-        cause_message: &error_message,
         request_id: annotations.request_id.as_deref(),
         service: annotations.service.as_deref(),
         contract_id: annotations.contract_id.as_deref(),
@@ -681,7 +703,7 @@ fn trim_operation_control(operation: &str) -> &str {
     operation.strip_suffix(".control").unwrap_or(operation)
 }
 
-fn trace_id_from_traceparent(traceparent: &str) -> Option<&str> {
+pub(super) fn trace_id_from_traceparent(traceparent: &str) -> Option<&str> {
     let mut parts = traceparent.split('-');
     let version = parts.next()?;
     let trace_id = parts.next()?;
@@ -711,7 +733,7 @@ fn is_lower_hex(value: &str) -> bool {
         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn error_id() -> String {
+pub(super) fn error_id() -> String {
     let sequence = ERROR_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -760,7 +782,7 @@ fn server_outcome(error: &ServerError) -> &'static str {
         ServerError::StoreWaitTimeout { .. } => "timeout",
         ServerError::Json(_) => "error",
         ServerError::OperationCapacityExceeded { .. } => "rate_limited",
-        ServerError::Nats(_)
+        ServerError::Internal(_)
         | ServerError::MissingResourceBinding { .. }
         | ServerError::ResourceUnavailable { .. }
         | ServerError::StoreCommitIndeterminate { .. } => "unavailable",
@@ -1108,7 +1130,7 @@ pub async fn sign_verified_reply(
         || opening.reply_subject.as_deref() != Some(&reply.reply_to)
         || opening.action != action.name
     {
-        return Err(ServerError::Nats(
+        return Err(ServerError::Internal(
             "reply does not match verified opening".into(),
         ));
     }
@@ -1123,15 +1145,15 @@ pub async fn sign_verified_reply(
         let _published = client
             .acquire_transport(&[], &[], deadline)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let provider = owner
             .own_authority()
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let result = async {
             let certificate = owner
                 .authorize_provider(&nats, &provider, &opening.api_id, action)
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
             let binding = provider
                 .authority()
                 .provider_bindings
@@ -1140,10 +1162,10 @@ pub async fn sign_verified_reply(
                     binding.api_id == opening.api_id && binding.generation == opening.api_generation
                 })
                 .ok_or_else(|| {
-                    ServerError::Nats("provider generation does not match opening".into())
+                    ServerError::Internal("provider generation does not match opening".into())
                 })?;
             if certificate.generation != opening.api_generation {
-                return Err(ServerError::Nats(
+                return Err(ServerError::Internal(
                     "provider certificate generation mismatch".into(),
                 ));
             }
@@ -1170,15 +1192,15 @@ pub async fn sign_verified_reply(
             let proof = client
                 .auth()
                 .create_response_proof(&response, &reply.payload)
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
             owner
                 .assert_current(&provider)
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
             // Admission authorized this finite work; only the provider must still be
             // current when signing against the retained opening transcript.
             owner
                 .assert_issuer_current(&certificate.issuer_key_id)
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
             let mut headers = HeaderMap::new();
             headers.insert(
                 "Trellis-Session-Response",
@@ -1255,7 +1277,7 @@ async fn publish_handler_response<H: RequestHandler>(
                 client
                     .publish_with_headers(reply.reply_to, headers, reply.payload)
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
             }
         }
         HandlerResponse::Error(payload) => {
@@ -1270,7 +1292,7 @@ async fn publish_handler_response<H: RequestHandler>(
             client
                 .publish_with_headers(reply.reply_to, headers, reply.payload)
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
         }
         HandlerResponse::LivePrepared(prepared) => {
             // One signed offer, no infinite reply loop. Ownership of the
@@ -1280,7 +1302,7 @@ async fn publish_handler_response<H: RequestHandler>(
             client
                 .publish_with_headers(reply_to, prepared.headers, prepared.offer)
                 .await
-                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                .map_err(|error| ServerError::Internal(error.to_string()))?;
         }
     }
     Ok(())
@@ -1292,7 +1314,7 @@ fn panic_to_server_error(panic: Box<dyn Any + Send>) -> ServerError {
         .map(|value| (*value).to_string())
         .or_else(|| panic.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "request handler panicked".to_string());
-    ServerError::Nats(format!("request handler panicked: {message}"))
+    ServerError::Internal(format!("request handler panicked: {message}"))
 }
 
 /// Run an inbound NATS request loop until every subscription ends or `retire`
@@ -1499,6 +1521,18 @@ mod tests {
         assert!(context.get("subject").is_none());
     }
 
+    #[test]
+    fn unexpected_error_reply_gives_the_caller_an_id_and_not_the_failure() {
+        let error = ServerError::Internal("orders database at 10.0.0.5 refused".to_owned());
+        let reply = encode_error_reply("_INBOX.reply".to_owned(), &error);
+        let payload = reply_payload(&reply);
+
+        assert_eq!(payload["type"], "UnexpectedError");
+        assert_eq!(payload["message"], "An unexpected error has occurred");
+        assert!(payload["id"].as_str().is_some_and(|id| !id.is_empty()));
+        assert!(!payload.to_string().contains("10.0.0.5"));
+    }
+
     #[tokio::test]
     async fn panic_error_reply_uses_same_runtime_context() {
         let host = test_service_host(PanicHandler);
@@ -1520,10 +1554,7 @@ mod tests {
         assert_eq!(context["contractId"], "inventory.service@v1");
         assert_eq!(context["contractDigest"], "sha256:inventory");
         assert_eq!(context["method"], "Inventory.Get");
-        assert!(context["causeMessage"]
-            .as_str()
-            .expect("cause message should be a string")
-            .contains("request handler panicked: boom"));
+        assert!(!payload.to_string().contains("boom"));
         assert!(context.get("subject").is_none());
     }
 

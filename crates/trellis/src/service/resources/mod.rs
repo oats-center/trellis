@@ -839,7 +839,7 @@ where
     pub async fn write(&self, key: &str, value: impl Into<Bytes>) -> Result<(), ServerError> {
         let value = value.into();
         let expected_size = u64::try_from(value.len()).map_err(|_| {
-            ServerError::Nats("store object length does not fit in u64".to_string())
+            ServerError::Internal("store object length does not fit in u64".to_string())
         })?;
         let mut reader = Cursor::new(value);
         self.write_from(key, &mut reader, Some(expected_size))
@@ -864,7 +864,7 @@ where
         self.ensure_current(crate::client::ResourceTransportAction::Read)?;
         let limit = options.limit.unwrap_or(100);
         if limit == 0 || limit > 500 {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "store list limit must be between 1 and 500".into(),
             ));
         }
@@ -872,7 +872,7 @@ where
             "trellis.store.list",
             &serde_json::json!({ "prefix": options.prefix }),
         )
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
+        .map_err(|error| ServerError::Internal(error.to_string()))?;
         let after = options
             .cursor
             .as_deref()
@@ -880,7 +880,7 @@ where
                 trellis_protocol::decode_pagination_cursor::<String>(cursor, &query_digest)
             })
             .transpose()
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let mut objects = self.client.list_objects().await?;
         objects.retain(|object| {
             object.key.starts_with(&options.prefix)
@@ -897,7 +897,7 @@ where
                 )
             })
             .transpose()
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         Ok(StoreListPage {
             entries,
             next_cursor,
@@ -1211,7 +1211,7 @@ fn is_valid_nats_resource_name(value: &str) -> bool {
 }
 
 pub(super) fn nats_error(error: impl fmt::Display) -> ServerError {
-    ServerError::Nats(error.to_string())
+    ServerError::Internal(error.to_string())
 }
 
 #[cfg(test)]

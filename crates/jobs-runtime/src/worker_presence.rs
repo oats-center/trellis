@@ -47,7 +47,7 @@ impl WorkerPresenceProjectorHandle {
         match joined {
             Ok(result) => result,
             Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(ServerError::Nats(format!(
+            Err(error) => Err(ServerError::Internal(format!(
                 "worker presence projector loop task failed: {error}"
             ))),
         }
@@ -96,7 +96,7 @@ pub async fn start_worker_presence_projector(
         )
         .await
         .map_err(|error| {
-            ServerError::Nats(format!(
+            ServerError::Internal(format!(
                 "failed to start worker presence consumer \
                 '{WORKER_PRESENCE_CONSUMER_NAME}' message stream: {error}"
             ))
@@ -116,7 +116,7 @@ pub async fn start_worker_presence_projector(
         );
         while let Some(message) = messages.next().await {
             let message = message.map_err(|error| {
-                ServerError::Nats(format!(
+                ServerError::Internal(format!(
                     "worker presence projector failed to pull from consumer \
                     '{WORKER_PRESENCE_CONSUMER_NAME}' on stream '{jobs_stream}': {error}"
                 ))
@@ -148,7 +148,7 @@ pub async fn start_worker_presence_projector(
             };
 
             project_worker_heartbeat(&store, &heartbeat).map_err(|error| {
-                ServerError::Nats(format!(
+                ServerError::Internal(format!(
                     "worker presence projector failed to project worker \
                     '{subject_service}/{job_type}/{instance_id}': {error}"
                 ))

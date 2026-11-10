@@ -36,17 +36,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .runtime_trellis_runtime_v1()
         .register_upload(|_, input, op| async move {
             let upload = op.upload().await?.ok_or_else(|| {
-                trellis_rs::service::ServerError::Nats("committed upload missing".into())
+                trellis_rs::service::ServerError::Internal("committed upload missing".into())
             })?;
             let mut reader = op.open_staged_upload().await?.ok_or_else(|| {
-                trellis_rs::service::ServerError::Nats("staged upload missing".into())
+                trellis_rs::service::ServerError::Internal("staged upload missing".into())
             })?;
             let mut buffer = [0u8; 8192];
             let mut received = 0usize;
             loop {
                 let count = tokio::io::AsyncReadExt::read(&mut reader, &mut buffer)
                     .await
-                    .map_err(|error| trellis_rs::service::ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| {
+                        trellis_rs::service::ServerError::Internal(error.to_string())
+                    })?;
                 if count == 0 {
                     break;
                 }
@@ -55,14 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .enumerate()
                     .any(|(index, byte)| *byte != ((received + index) % 251) as u8)
                 {
-                    return Err(trellis_rs::service::ServerError::Nats(
+                    return Err(trellis_rs::service::ServerError::Internal(
                         "staged upload bytes differ".into(),
                     ));
                 }
                 received += count;
             }
             if received != 8 * 1024 * 1024 || received as u64 != upload.size {
-                return Err(trellis_rs::service::ServerError::Nats(
+                return Err(trellis_rs::service::ServerError::Internal(
                     "staged upload size differs".into(),
                 ));
             }
@@ -81,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let plan = context.plan_download_transfer(
                     "files",
                     &generate_transfer_id().map_err(|error| {
-                        trellis_rs::service::ServerError::Nats(error.to_string())
+                        trellis_rs::service::ServerError::Internal(error.to_string())
                     })?,
                     &expires_at,
                     FileTransferInfo {

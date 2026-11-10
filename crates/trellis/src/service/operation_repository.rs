@@ -29,7 +29,7 @@ impl From<OperationRecordError> for ServerError {
                 actual_bytes,
                 max_bytes,
             },
-            other => Self::Nats(other.to_string()),
+            other => Self::Internal(other.to_string()),
         }
     }
 }
@@ -49,7 +49,7 @@ pub fn operation_invocation_digest(
         creator_binding,
         input,
     )
-    .map_err(|error| ServerError::Nats(error.to_string()))
+    .map_err(|error| ServerError::Internal(error.to_string()))
 }
 
 /// One operation record paired with its authoritative KV revision.
@@ -214,7 +214,7 @@ impl KvOperationRepository {
             RepositoryTransport::Fixed { .. } => Ok(self.clone()),
             RepositoryTransport::Managed { bucket, .. } => {
                 let lease = lease.ok_or_else(|| {
-                    ServerError::Nats(
+                    ServerError::Internal(
                         "operation repository is missing its accepting transport generation"
                             .to_owned(),
                     )
@@ -222,7 +222,7 @@ impl KvOperationRepository {
                 let store = async_nats::jetstream::new(lease.nats().clone())
                     .get_key_value(bucket)
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                 Ok(Self {
                     transport: RepositoryTransport::Fixed {
                         store: Box::new(store),
@@ -253,11 +253,11 @@ impl KvOperationRepository {
                         std::time::Instant::now() + std::time::Duration::from_millis(*timeout_ms),
                     )
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                 let store = async_nats::jetstream::new(lease.nats().clone())
                     .get_key_value(bucket)
                     .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    .map_err(|error| ServerError::Internal(error.to_string()))?;
                 Ok(RepositoryStore {
                     store,
                     _lease: Some(lease),
@@ -273,7 +273,7 @@ impl KvOperationRepository {
         let Some(entry) = store
             .entry(invocation_id)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?
+            .map_err(|error| ServerError::Internal(error.to_string()))?
         else {
             return Ok(None);
         };
@@ -311,7 +311,7 @@ impl OperationRepository for KvOperationRepository {
                     let existing = Self::load(&guard.store, &record.invocation_id)
                         .await?
                         .ok_or_else(|| {
-                            ServerError::Nats(
+                            ServerError::Internal(
                                 "operation acceptance lost its KV create race".to_owned(),
                             )
                         })?;
@@ -339,7 +339,7 @@ impl OperationRepository for KvOperationRepository {
                         return Ok(updated);
                     }
                 }
-                Err(ServerError::Nats(
+                Err(ServerError::Internal(
                     "cancelled admission exceeded CAS retry limit".to_owned(),
                 ))
             }
@@ -355,7 +355,7 @@ impl OperationRepository for KvOperationRepository {
         lease_expires_at_ms: i64,
     ) -> Result<RevisionedOperationRecord, ServerError> {
         if lease_expires_at_ms <= now_ms {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation lease must expire in the future".to_owned(),
             ));
         }
@@ -364,13 +364,13 @@ impl OperationRepository for KvOperationRepository {
             let current = Self::load(&guard.store, invocation_id)
                 .await?
                 .ok_or_else(|| {
-                    ServerError::Nats("operation invocation was not found".to_owned())
+                    ServerError::Internal("operation invocation was not found".to_owned())
                 })?;
             if matches!(
                 current.record.snapshot.state,
                 OperationState::Completed | OperationState::Failed | OperationState::Cancelled
             ) {
-                return Err(ServerError::Nats(
+                return Err(ServerError::Internal(
                     "terminal operation cannot be claimed".to_owned(),
                 ));
             }
@@ -379,22 +379,21 @@ impl OperationRepository for KvOperationRepository {
                 .lease_expires_at_ms
                 .is_some_and(|expiry| expiry > now_ms)
             {
-                return Err(ServerError::Nats(
+                return Err(ServerError::Internal(
                     "operation already has an active lease".to_owned(),
                 ));
             }
             let mut record = current.record;
             record.owner_executor_id = Some(owner_executor_id.to_owned());
             record.owner_connection_id = Some(owner_connection_id.to_owned());
-            record.owner_epoch = record
-                .owner_epoch
-                .checked_add(1)
-                .ok_or_else(|| ServerError::Nats("operation owner epoch overflow".to_owned()))?;
+            record.owner_epoch = record.owner_epoch.checked_add(1).ok_or_else(|| {
+                ServerError::Internal("operation owner epoch overflow".to_owned())
+            })?;
             record.lease_expires_at_ms = Some(lease_expires_at_ms);
             record.revision = record
                 .revision
                 .checked_add(1)
-                .ok_or_else(|| ServerError::Nats("operation revision overflow".to_owned()))?;
+                .ok_or_else(|| ServerError::Internal("operation revision overflow".to_owned()))?;
             record.snapshot.revision = record.revision;
             record.validate()?;
             let bytes = encode_operation_record(&record)?.into();
@@ -406,7 +405,7 @@ impl OperationRepository for KvOperationRepository {
                 return Ok(RevisionedOperationRecord { record, revision });
             }
         }
-        Err(ServerError::Nats(
+        Err(ServerError::Internal(
             "operation claim exceeded CAS retry limit".to_owned(),
         ))
     }
@@ -420,7 +419,7 @@ impl OperationRepository for KvOperationRepository {
         lease_expires_at_ms: i64,
     ) -> Result<RevisionedOperationRecord, ServerError> {
         if lease_expires_at_ms <= now_ms {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation lease must expire in the future".to_owned(),
             ));
         }
@@ -429,7 +428,7 @@ impl OperationRepository for KvOperationRepository {
             let current = Self::load(&guard.store, invocation_id)
                 .await?
                 .ok_or_else(|| {
-                    ServerError::Nats("operation invocation was not found".to_owned())
+                    ServerError::Internal("operation invocation was not found".to_owned())
                 })?;
             if current.record.owner_executor_id.as_deref() != Some(owner_executor_id)
                 || current.record.owner_epoch != owner_epoch
@@ -439,7 +438,7 @@ impl OperationRepository for KvOperationRepository {
                     .is_none_or(|expiry| expiry <= now_ms)
                 || current.record.snapshot.state.is_terminal()
             {
-                return Err(ServerError::Nats(
+                return Err(ServerError::Internal(
                     "operation owner fence is stale".to_owned(),
                 ));
             }
@@ -460,7 +459,7 @@ impl OperationRepository for KvOperationRepository {
                 return Ok(RevisionedOperationRecord { record, revision });
             }
         }
-        Err(ServerError::Nats(
+        Err(ServerError::Internal(
             "operation renewal exceeded CAS retry limit".to_owned(),
         ))
     }
@@ -473,7 +472,9 @@ impl OperationRepository for KvOperationRepository {
         let guard = self.store().await?;
         let current = Self::load(&guard.store, &record.invocation_id)
             .await?
-            .ok_or_else(|| ServerError::Nats("operation invocation was not found".to_owned()))?;
+            .ok_or_else(|| {
+                ServerError::Internal("operation invocation was not found".to_owned())
+            })?;
         if current.revision != expected_revision
             || record.owner_executor_id != current.record.owner_executor_id
             || record.owner_epoch != current.record.owner_epoch
@@ -486,12 +487,12 @@ impl OperationRepository for KvOperationRepository {
             || record.caller != current.record.caller
             || record.input != current.record.input
         {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation record CAS is stale".to_owned(),
             ));
         }
         if record.revision != current.record.revision.saturating_add(1) {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation durable revision must increment exactly once".to_owned(),
             ));
         }
@@ -505,7 +506,7 @@ impl OperationRepository for KvOperationRepository {
                 expected_revision,
             )
             .await
-            .map_err(|error| ServerError::Nats(format!("operation CAS failed: {error}")))?;
+            .map_err(|error| ServerError::Internal(format!("operation CAS failed: {error}")))?;
         Ok(RevisionedOperationRecord { record, revision })
     }
 
@@ -519,14 +520,16 @@ impl OperationRepository for KvOperationRepository {
         if record.owner_executor_id.as_deref() != Some(expected_owner_executor_id)
             || record.owner_epoch != expected_owner_epoch
         {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation owner fence rejected update".to_owned(),
             ));
         }
         let guard = self.store().await?;
         let current = Self::load(&guard.store, &record.invocation_id)
             .await?
-            .ok_or_else(|| ServerError::Nats("operation invocation was not found".to_owned()))?;
+            .ok_or_else(|| {
+                ServerError::Internal("operation invocation was not found".to_owned())
+            })?;
         if current.revision != expected_revision
             || current.record.owner_executor_id.as_deref() != Some(expected_owner_executor_id)
             || current.record.owner_epoch != expected_owner_epoch
@@ -534,7 +537,7 @@ impl OperationRepository for KvOperationRepository {
                 expiry <= time::OffsetDateTime::now_utc().unix_timestamp_nanos() as i64 / 1_000_000
             })
         {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation owner fence is stale".to_owned(),
             ));
         }
@@ -546,12 +549,12 @@ impl OperationRepository for KvOperationRepository {
             || record.caller != current.record.caller
             || record.input != current.record.input
         {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation immutable identity cannot change".to_owned(),
             ));
         }
         if record.revision != current.record.revision.saturating_add(1) {
-            return Err(ServerError::Nats(
+            return Err(ServerError::Internal(
                 "operation durable revision must increment exactly once".to_owned(),
             ));
         }
@@ -589,7 +592,7 @@ impl OperationRepository for KvOperationRepository {
                 expected_revision,
             )
             .await
-            .map_err(|error| ServerError::Nats(format!("operation CAS failed: {error}")))?;
+            .map_err(|error| ServerError::Internal(format!("operation CAS failed: {error}")))?;
         Ok(RevisionedOperationRecord { record, revision })
     }
 
@@ -603,10 +606,12 @@ impl OperationRepository for KvOperationRepository {
             .store
             .watch(invocation_id)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let snapshot = Self::load(&guard.store, invocation_id)
             .await?
-            .ok_or_else(|| ServerError::Nats("operation invocation was not found".to_owned()))?;
+            .ok_or_else(|| {
+                ServerError::Internal("operation invocation was not found".to_owned())
+            })?;
         let snapshot_revision = snapshot.revision;
         let stream = Box::pin(
             futures_util::stream::once(async move { Ok(snapshot) }).chain(watcher.filter_map(
@@ -621,7 +626,7 @@ impl OperationRepository for KvOperationRepository {
                                 .map_err(ServerError::from),
                         ),
                         Ok(_) => None,
-                        Err(error) => Some(Err(ServerError::Nats(error.to_string()))),
+                        Err(error) => Some(Err(ServerError::Internal(error.to_string()))),
                     }
                 },
             )),
@@ -642,10 +647,10 @@ impl OperationRepository for KvOperationRepository {
             .store
             .keys()
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))?;
+            .map_err(|error| ServerError::Internal(error.to_string()))?;
         let mut records = Vec::new();
         while let Some(key) = keys.next().await {
-            let key = key.map_err(|error| ServerError::Nats(error.to_string()))?;
+            let key = key.map_err(|error| ServerError::Internal(error.to_string()))?;
             if let Some(record) = Self::load(&guard.store, &key).await? {
                 if !record.record.snapshot.state.is_terminal() {
                     records.push(record);

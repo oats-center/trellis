@@ -28,7 +28,7 @@ mod upload;
 
 /// Error for an operation that did not finish inside its absolute budget.
 fn resource_timeout(operation: &str) -> ServerError {
-    ServerError::Nats(format!("resource operation timed out: {operation}"))
+    ServerError::Internal(format!("resource operation timed out: {operation}"))
 }
 
 /// Acquire one generation lease for the exact resource subject family of one
@@ -56,7 +56,7 @@ impl ManagedKvTransport {
         self.manager
             .acquire_for(&[marker], &[], deadline)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))
+            .map_err(|error| ServerError::Internal(error.to_string()))
     }
 }
 
@@ -91,7 +91,7 @@ impl ManagedStoreTransport {
         self.manager
             .acquire_for(&requirement, &[], deadline)
             .await
-            .map_err(|error| ServerError::Nats(error.to_string()))
+            .map_err(|error| ServerError::Internal(error.to_string()))
     }
 }
 
@@ -360,7 +360,7 @@ async fn entry_at(
         .await
         .map_err(nats_error)?
         .map(kv_entry_from_nats)
-        .ok_or_else(|| ServerError::Nats(format!("KV write revision {revision} disappeared")))
+        .ok_or_else(|| ServerError::Internal(format!("KV write revision {revision} disappeared")))
 }
 
 async fn authoritative_entry(
@@ -984,8 +984,9 @@ fn store_object_info(
 ) -> Result<StoreObjectInfo, ServerError> {
     Ok(StoreObjectInfo {
         key: info.name.clone(),
-        size: u64::try_from(info.size)
-            .map_err(|_| ServerError::Nats("store object size does not fit in u64".to_string()))?,
+        size: u64::try_from(info.size).map_err(|_| {
+            ServerError::Internal("store object size does not fit in u64".to_string())
+        })?,
         digest: info.digest.clone(),
         modified_at: info.modified,
     })

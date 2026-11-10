@@ -1869,6 +1869,12 @@ through `CallError::ServiceUnavailable` or
 `TrellisClientError::ServiceUnavailable`. Generated cursor-paginated RPCs add
 lazy fallible page/item streams; a missing `next_cursor` is the sole end signal.
 
+A handler reports a failure with no declared error as
+`ServerError::Internal(message)`. The text goes only to the service's log.
+Callers receive `UnexpectedError` with a fixed message, its `id`, `traceId` and
+`context.requestId`, and the log line carries the same IDs. A failed Operation
+carries `id` and `traceId`, and its log line also has the operation ID.
+
 Rust schema-validation issue paths use JSON Pointer: an empty path is the root,
 `/` is an empty-name property, and property names escape `~` as `~0` and `/` as
 `~1`, including missing required fields.

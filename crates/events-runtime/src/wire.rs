@@ -20,7 +20,7 @@ pub(crate) fn generated_output<T: DeserializeOwned>(
 ) -> Result<T, ServerError> {
     convert_integer_fields(&mut value, integer_fields, true);
     serde_json::from_value(value).map_err(|error| {
-        ServerError::Nats(format!("failed to encode generated Events value: {error}"))
+        ServerError::Internal(format!("failed to encode generated Events value: {error}"))
     })
 }
 

@@ -186,6 +186,6 @@ pub(crate) fn map_query_error(error: EventsQueryError) -> ServerError {
                 ],
             ))
         }
-        other => ServerError::Nats(format!("Events RPC query failed: {other}")),
+        other => ServerError::Internal(format!("Events RPC query failed: {other}")),
     }
 }

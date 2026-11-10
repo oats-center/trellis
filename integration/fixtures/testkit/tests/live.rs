@@ -139,7 +139,7 @@ async fn start_provider(runtime: &mut TrellisTestRuntime, name: &str) -> Provide
                     publisher
                         .publish_observed(&input)
                         .await
-                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        .map_err(|error| ServerError::Internal(error.to_string()))?;
                     Ok(input)
                 }
             });
@@ -1413,7 +1413,7 @@ async fn cancelled_admission_is_atomic_and_replayable() {
                     );
                     if input.value == "retry" && retry_failures.fetch_add(1, Ordering::SeqCst) == 0
                     {
-                        return Err(ServerError::Nats("cleanup needs recovery".to_owned()));
+                        return Err(ServerError::Internal("cleanup needs recovery".to_owned()));
                     }
                     cleanup.acquire().await.unwrap().forget();
                     Ok(())
@@ -1781,7 +1781,9 @@ async fn cancellation_cleanup_failure_recovers_through_generated_client() {
                     );
                     if attempt < 2 {
                         failed.send(attempt).unwrap();
-                        return Err(ServerError::Nats("owned child cleanup failed".to_owned()));
+                        return Err(ServerError::Internal(
+                            "owned child cleanup failed".to_owned(),
+                        ));
                     }
                     release_cleanup.notified().await;
                     Ok(())
@@ -1920,7 +1922,7 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
                             entered
                                 .send((context.resuming, reason, input.value, upload.is_none()))
                                 .unwrap();
-                            Err(ServerError::Nats("upload cleanup failed".to_owned()))
+                            Err(ServerError::Internal("upload cleanup failed".to_owned()))
                         }
                     });
                 let mut task = tokio::spawn(async move { service.run().await });
@@ -2104,7 +2106,7 @@ async fn spawned_tasks_start_and_upload_operations() {
             let upload = operation
                 .upload()
                 .await?
-                .ok_or_else(|| ServerError::Nats("upload missing".to_owned()))?;
+                .ok_or_else(|| ServerError::Internal("upload missing".to_owned()))?;
             operation
                 .complete(value(&format!("{}:{}", input.value, upload.size)))
                 .await?;
@@ -2228,7 +2230,7 @@ async fn t20_operation_live_update_uses_declared_update_schema() {
                     .next()
                     .await
                     .transpose()?
-                    .ok_or_else(|| ServerError::Nats("signal stream ended".to_owned()))?;
+                    .ok_or_else(|| ServerError::Internal("signal stream ended".to_owned()))?;
                 operation
                     .emit_update(Preview {
                         text: "partial preview".to_owned(),
@@ -2243,7 +2245,7 @@ async fn t20_operation_live_update_uses_declared_update_schema() {
                     .next()
                     .await
                     .transpose()?
-                    .ok_or_else(|| ServerError::Nats("signal stream ended".to_owned()))?;
+                    .ok_or_else(|| ServerError::Internal("signal stream ended".to_owned()))?;
                 operation
                     .acknowledge_signal(release_completion.signal_sequence)
                     .await?;
@@ -2259,7 +2261,7 @@ async fn t20_operation_live_update_uses_declared_update_schema() {
                     .next()
                     .await
                     .transpose()?
-                    .ok_or_else(|| ServerError::Nats("signal stream ended".to_owned()))?;
+                    .ok_or_else(|| ServerError::Internal("signal stream ended".to_owned()))?;
                 operation
                     .emit_update(Preview {
                         text: "update-only preview".to_owned(),
@@ -2273,7 +2275,7 @@ async fn t20_operation_live_update_uses_declared_update_schema() {
                     .next()
                     .await
                     .transpose()?
-                    .ok_or_else(|| ServerError::Nats("signal stream ended".to_owned()))?;
+                    .ok_or_else(|| ServerError::Internal("signal stream ended".to_owned()))?;
                 operation
                     .acknowledge_signal(release_completion.signal_sequence)
                     .await?;

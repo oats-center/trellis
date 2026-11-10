@@ -11,7 +11,7 @@ pub(crate) async fn subscribe_subject(
         )
         .await
         .map_err(|error| {
-            ServerError::Nats(format!(
+            ServerError::Internal(format!(
                 "failed to subscribe to subject '{subject}': {error}"
             ))
         })

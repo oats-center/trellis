@@ -211,6 +211,9 @@ Library support rule:
 - libraries performing I/O must accept trace context, create child spans, and
   propagate context
 - `TrellisError` subclasses should include `traceId` when tracing is active
+- An unexpected failure's cause stays in the service's log. Replies and failed
+  Operation snapshots carry only the error `id`, `traceId` and
+  `context.requestId`, which the log line repeats.
 - if a runtime has not installed an OpenTelemetry tracer provider, RPC error
   responses should still attach `traceId` from a valid inbound `traceparent`
   header before the error leaves the server span boundary

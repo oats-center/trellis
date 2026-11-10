@@ -496,6 +496,14 @@ export function startQueueWorkerLoop<TResult>(
               {
                 latestState: latestLifecycle?.state,
                 workEventType: event.eventType,
+                ...(session.getLatestLifecycleEvent
+                  ? {
+                      isSettled: async () =>
+                        lifecycleWorkDecision(
+                          await session.getLatestLifecycleEvent?.(job),
+                        ) === "skip-ack",
+                    }
+                  : {}),
                 redeliveryCount: msg.info?.redeliveryCount,
                 instanceId: options.instanceId,
                 progressAckIntervalMs: options.progressAckIntervalMs,

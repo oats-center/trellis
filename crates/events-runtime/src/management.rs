@@ -353,7 +353,7 @@ impl EventsManagement {
             .await
             .map_err(journal_error)?
             .ok_or_else(|| {
-                ServerError::Nats("dead-letter original evidence is missing".to_owned())
+                ServerError::Internal("dead-letter original evidence is missing".to_owned())
             })?;
         Ok(json!({
             "deadLetterId": transition.id,
@@ -435,7 +435,7 @@ fn journal_error(error: JournalError) -> ServerError {
 fn store_error(error: EventsStoreError) -> ServerError {
     match error {
         EventsStoreError::InvalidCursor => validation("page.cursor", "invalid cursor"),
-        other => ServerError::Nats(other.to_string()),
+        other => ServerError::Internal(other.to_string()),
     }
 }
 

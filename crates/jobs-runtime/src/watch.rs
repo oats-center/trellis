@@ -75,7 +75,7 @@ async fn next_watch_frame(
                 Ok(messages) => messages,
                 Err(error) => {
                     return Some((
-                        Err(ServerError::Nats(format!(
+                        Err(ServerError::Internal(format!(
                             "failed to start Jobs.Watch: {error}"
                         ))),
                         WatchState::Done,
@@ -95,7 +95,7 @@ async fn next_watch_frame(
                 Some(Ok(message)) => message,
                 Some(Err(error)) => {
                     return Some((
-                        Err(ServerError::Nats(format!("Jobs.Watch failed: {error}"))),
+                        Err(ServerError::Internal(format!("Jobs.Watch failed: {error}"))),
                         WatchState::Done,
                     ));
                 }
