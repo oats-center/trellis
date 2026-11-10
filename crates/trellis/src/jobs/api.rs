@@ -117,6 +117,37 @@ impl From<crate::jobs::manager::JobNotEnqueued> for JobNotEnqueued {
     }
 }
 
+/// What a queue did with a job an outbox submitted. Every variant is final.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboxJobOutcome {
+    /// The job was admitted.
+    Accepted {
+        job: JobIdentity,
+        key: Option<String>,
+    },
+    /// The key policy refused the job; it is recorded as skipped.
+    Rejected {
+        job: JobIdentity,
+        error: JobNotEnqueued,
+    },
+    /// An earlier job with the same key absorbed this one; it is recorded as
+    /// skipped.
+    Coalesced {
+        job: JobIdentity,
+        key: String,
+        existing: JobIdentity,
+    },
+    /// The job was admitted in place of the oldest queued job with its key.
+    Replaced {
+        job: JobIdentity,
+        key: String,
+        replaced: JobIdentity,
+    },
+    /// This service cannot submit the stored job, for example because its
+    /// queue no longer exists.
+    Invalid { job_id: String, error: String },
+}
+
 /// Policy-aware keyed job submission outcome.
 #[derive(Debug)]
 pub enum JobSubmitOutcome<TPayload, TResult, TUpdate = NoJobUpdates> {
@@ -404,6 +435,11 @@ where
             update,
             _types: PhantomData,
         }
+    }
+
+    /// This job's ID.
+    pub fn id(&self) -> &str {
+        &self.runtime.job().id
     }
 
     #[doc = concat!("Trellis API operation `", stringify!(payload), "`.")]

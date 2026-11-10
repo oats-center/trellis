@@ -1904,6 +1904,17 @@ invocation_id, &input)`.
 In a handler, `control.operation_ref()` is the operation's complete serialized
 reference; a caller restores it with the generated operation's `control(ref)`.
 
+A handler that hands its work elsewhere, such as to a job, calls
+`control.defer()` and returns `Ok(())`: the instance keeps the operation's lease
+until it ends. Returning `Ok(())` without a terminal state and without deferring
+lets the lease lapse, and recovery runs the handler again. `register_<op>`
+returns an `OperationRegistration`. Its `control(id)` returns the owner-fenced
+`OperationControl` of an execution this instance runs, including a deferred one,
+so other code can report progress or `complete`/`fail` it; any other instance
+gets `ServerError::OperationNotFound`. `reconcile(id)` asks the current owner,
+on any replica, to enter the handler again with the stored input and returns the
+snapshot once that entry returns; it never takes over a live lease.
+
 Operation handlers can clone `control.cancellation()` and observe `Requested`,
 `OwnershipLost`, or `ServiceStopping` with `is_cancelled()`, `reason()`, or
 `cancelled().await`. They must stop and join owned child work, including
@@ -1977,12 +1988,19 @@ the exact size and digest.
 
 #### Transactional events
 
-Prepared events and SQL outbox stores let event intents participate in a local
-SQL transaction. The application owns its transaction and migration execution.
-Pass the claimed record to `mark_published`/`mark_failed`; false means ownership
-was superseded, and `dispatch_outbox_once` returns `ClaimLost` for superseded
-completion. See `/guides/libraries/rust` and current Rustdoc for supported
-stores and transaction APIs.
+Prepared events and jobs let outbox intents participate in a local SQL
+transaction. Store `prepare_event::<Descriptor>(...)` or the generated
+`jobs.prepare_<job>(payload)` with `store.enqueue(id, &intent)`; the job's ID is
+fixed at preparation. `dispatch_outbox_once(&mut store,
+&jobs.outbox_dispatcher())` claims one intent and publishes the event or
+submits the job, returning `Published` or `JobDispatched` with the queue's
+`OutboxJobOutcome`. A key policy's refusal is final and records the job as
+skipped; only dispatcher errors retry. A repeated job dispatch does not create a
+second job. Pass the claimed record to `mark_published`/`mark_failed`; false
+means ownership was superseded, and `dispatch_outbox_once` returns `ClaimLost`
+for superseded completion. SQL tables have a `kind` column (`event` or `job`).
+The application owns its transaction and migration execution. See current
+Rustdoc for supported stores.
 
 ### Accounts
 

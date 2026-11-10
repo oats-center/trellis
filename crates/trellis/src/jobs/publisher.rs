@@ -9,6 +9,8 @@ pub struct JobEventHeaders {
     pub traceparent: String,
     #[doc = concat!("The `", stringify!(tracestate), "` value.")]
     pub tracestate: Option<String>,
+    /// A stable `Nats-Msg-Id`, so the stream drops a retried publication.
+    pub message_id: Option<String>,
 }
 
 impl From<&JobContext> for JobEventHeaders {
@@ -17,6 +19,7 @@ impl From<&JobContext> for JobEventHeaders {
             request_id: context.request_id.clone(),
             traceparent: context.traceparent.clone(),
             tracestate: context.tracestate.clone(),
+            message_id: None,
         }
     }
 }

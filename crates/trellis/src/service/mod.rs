@@ -73,8 +73,8 @@ pub use operations::{
     control_subject, AcceptedOperation, OperationCancellation, OperationCancellationReason,
     OperationControl, OperationControlRequest, OperationDescriptor, OperationError,
     OperationFailure, OperationFailureLike, OperationLiveEvent, OperationLiveWatch,
-    OperationRefData, OperationSignal, OperationSignalAccepted, OperationSnapshot,
-    OperationSnapshotFrame, OperationState, OperationTransferProgress,
+    OperationRefData, OperationRegistration, OperationSignal, OperationSignalAccepted,
+    OperationSnapshot, OperationSnapshotFrame, OperationState, OperationTransferProgress,
 };
 #[doc(hidden)]
 pub use publisher::EventPublisher;
@@ -91,7 +91,8 @@ pub use runtime_facade::{ConnectedServiceRuntime, CoreBootstrapBinding, ServiceH
 pub use runtime_facade::{
     ServiceConnectOptions, ServiceEventListenOptions, ServiceEventListenerContext,
     ServiceEventListenerHandle, ServiceEventListenerMode, ServiceEventPublisherContext,
-    ServiceHandlerContext, ServiceLiveHandlerContext, ServiceRuntimeError, DEFAULT_TIMEOUT_MS,
+    ServiceHandlerContext, ServiceLiveHandlerContext, ServiceOutboxDispatcher, ServiceRuntimeError,
+    DEFAULT_TIMEOUT_MS,
 };
 #[doc(hidden)]
 pub use schema_validation::validate_input_schema;

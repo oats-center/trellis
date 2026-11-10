@@ -3,7 +3,7 @@ use bytes::Bytes;
 #[cfg(feature = "event-store-postgres")]
 use postgres::Client as PostgresClient;
 #[cfg(feature = "event-store-sqlite")]
-use rusqlite::{params, types::Type as SqliteType, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use time::format_description::well_known::Rfc3339;
@@ -11,11 +11,16 @@ use time::OffsetDateTime;
 use ulid::Ulid;
 
 use crate::client::{subject::SubjectError, EventDescriptor};
+use crate::jobs::{OutboxJobOutcome, PreparedJobSubmission};
 
 const OUTBOX_STATUS_PENDING: &str = "pending";
 const OUTBOX_STATUS_IN_FLIGHT: &str = "in_flight";
 const OUTBOX_STATUS_PUBLISHED: &str = "published";
 const OUTBOX_CLAIM_SECONDS: i64 = 30;
+#[cfg(any(feature = "event-store-sqlite", feature = "event-store-postgres"))]
+const OUTBOX_KIND_EVENT: &str = "event";
+#[cfg(any(feature = "event-store-sqlite", feature = "event-store-postgres"))]
+const OUTBOX_KIND_JOB: &str = "job";
 pub(crate) const EVENT_ID_HEADER: &str = "Nats-Msg-Id";
 pub(crate) const EVENT_TIME_HEADER: &str = "Trellis-Event-Time";
 pub(crate) const EVENT_DESCRIPTOR_HEADER: &str = "Trellis-Event-Descriptor";
@@ -212,11 +217,6 @@ where
     ))
 }
 
-#[cfg(feature = "event-store-sqlite")]
-fn sqlite_header_decode_error(error: serde_json::Error) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(3, SqliteType::Text, Box::new(error))
-}
-
 /// Errors returned by Trellis event outbox and inbox stores.
 #[derive(Debug, thiserror::Error)]
 pub enum EventStoreError {
@@ -242,44 +242,160 @@ pub enum EventStoreError {
     Publish(String),
 }
 
-/// One durable outbox event record.
+/// One intent an outbox stores inside the application's transaction: an event
+/// to publish or a job to submit.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OutboxEventRecord {
+pub enum OutboxIntent {
+    /// A prepared event, published as is.
+    Event(PreparedTrellisEvent),
+    /// A prepared job, submitted through its queue's key policy.
+    Job(Box<PreparedJobSubmission>),
+}
+
+impl From<PreparedTrellisEvent> for OutboxIntent {
+    fn from(event: PreparedTrellisEvent) -> Self {
+        Self::Event(event)
+    }
+}
+
+impl From<&PreparedTrellisEvent> for OutboxIntent {
+    fn from(event: &PreparedTrellisEvent) -> Self {
+        Self::Event(event.clone())
+    }
+}
+
+impl From<PreparedJobSubmission> for OutboxIntent {
+    fn from(job: PreparedJobSubmission) -> Self {
+        Self::Job(Box::new(job))
+    }
+}
+
+impl From<&PreparedJobSubmission> for OutboxIntent {
+    fn from(job: &PreparedJobSubmission) -> Self {
+        Self::Job(Box::new(job.clone()))
+    }
+}
+
+/// The columns one outbox intent is stored as. A job row keeps its queue in
+/// `subject`, its submission JSON in `payload`, its job ID in `event_id` and
+/// its creation time in `event_time`.
+#[cfg(any(feature = "event-store-sqlite", feature = "event-store-postgres"))]
+struct OutboxRow {
+    kind: &'static str,
+    subject: String,
+    payload: Vec<u8>,
+    headers: String,
+    event_id: String,
+    event_time: String,
+}
+
+#[cfg(any(feature = "event-store-sqlite", feature = "event-store-postgres"))]
+impl OutboxRow {
+    fn encode(intent: &OutboxIntent) -> Result<Self, EventStoreError> {
+        Ok(match intent {
+            OutboxIntent::Event(event) => Self {
+                kind: OUTBOX_KIND_EVENT,
+                subject: event.subject().to_owned(),
+                payload: event.payload().to_vec(),
+                headers: serde_json::to_string(event.headers())?,
+                event_id: event.event_id().to_owned(),
+                event_time: event.event_time().to_owned(),
+            },
+            OutboxIntent::Job(job) => Self {
+                kind: OUTBOX_KIND_JOB,
+                subject: job.queue().to_owned(),
+                payload: serde_json::to_vec(job)?,
+                headers: "{}".to_owned(),
+                event_id: job.job_id().to_owned(),
+                event_time: job.created_at().to_owned(),
+            },
+        })
+    }
+
+    fn decode(
+        kind: &str,
+        subject: String,
+        payload: Vec<u8>,
+        headers: &str,
+        event_id: String,
+        event_time: String,
+    ) -> Result<OutboxIntent, EventStoreError> {
+        match kind {
+            OUTBOX_KIND_EVENT => Ok(OutboxIntent::Event(PreparedTrellisEvent::from_parts(
+                subject,
+                Bytes::from(payload),
+                serde_json::from_str(headers)?,
+                event_id,
+                event_time,
+            ))),
+            OUTBOX_KIND_JOB => Ok(OutboxIntent::Job(serde_json::from_slice(&payload)?)),
+            other => Err(EventStoreError::InvalidRecord(format!(
+                "unknown outbox kind '{other}'"
+            ))),
+        }
+    }
+}
+
+/// One claimed outbox record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutboxRecord {
     pub id: String,
-    pub event: PreparedTrellisEvent,
+    pub intent: OutboxIntent,
     pub attempts: u32,
     pub last_error: Option<String>,
 }
 
-/// Storage abstraction for pending prepared events.
+/// Storage abstraction for pending outbox intents.
 pub trait OutboxStore {
-    /// Store a prepared event under a stable application-chosen outbox id.
+    /// Store a prepared event or job under a stable application-chosen outbox
+    /// id. Storing the same id again keeps the first intent.
     fn enqueue(
         &mut self,
         id: &str,
-        event: &PreparedTrellisEvent,
+        intent: impl Into<OutboxIntent>,
     ) -> impl std::future::Future<Output = Result<(), EventStoreError>>;
 
     /// Atomically claim pending work or a claim whose 30-second lease expired.
     /// The returned attempt number fences completion against later claims.
     fn claim_next(
         &mut self,
-    ) -> impl std::future::Future<Output = Result<Option<OutboxEventRecord>, EventStoreError>>;
+    ) -> impl std::future::Future<Output = Result<Option<OutboxRecord>, EventStoreError>>;
 
-    /// Mark a claimed event as successfully published.
+    /// Mark a claimed intent as dispatched.
     /// Returns false when the claim was superseded, without changing the newer claim.
     fn mark_published(
         &mut self,
-        record: &OutboxEventRecord,
+        record: &OutboxRecord,
     ) -> impl std::future::Future<Output = Result<bool, EventStoreError>>;
 
-    /// Return a claimed event to pending state after a publish failure.
+    /// Return a claimed intent to pending state after a dispatch failure.
     /// Returns false when the claim was superseded, without changing the newer claim.
     fn mark_failed(
         &mut self,
-        record: &OutboxEventRecord,
+        record: &OutboxRecord,
         error: &str,
     ) -> impl std::future::Future<Output = Result<bool, EventStoreError>>;
+}
+
+/// Delivers claimed outbox intents. A connected service's
+/// `outbox_dispatcher()` publishes events and submits jobs through its own
+/// bindings.
+pub trait OutboxDispatcher {
+    /// A transient failure; the intent is retried.
+    type Error: std::fmt::Display;
+
+    /// Publish a prepared event and wait for the stream to store it.
+    fn publish_event(
+        &self,
+        event: PreparedTrellisEvent,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>>;
+
+    /// Submit a prepared job. Every outcome, including a key policy's refusal,
+    /// is final; only an error is retried.
+    fn dispatch_job(
+        &self,
+        job: PreparedJobSubmission,
+    ) -> impl std::future::Future<Output = Result<OutboxJobOutcome, Self::Error>>;
 }
 
 /// Storage abstraction for consumer-side duplicate suppression.
@@ -303,36 +419,49 @@ pub enum InboxReceipt {
 /// Result of one outbox dispatch attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboxDispatchResult {
-    /// No pending event was available.
+    /// No pending intent was available.
     Empty,
     /// One event was published and marked complete.
     Published { id: String },
-    /// One event failed and was returned to pending state.
+    /// One job was submitted and marked complete with its queue's outcome.
+    JobDispatched {
+        id: String,
+        outcome: OutboxJobOutcome,
+    },
+    /// One intent failed and was returned to pending state.
     Failed { id: String, error: String },
     /// A later claim or completion superseded this dispatch attempt.
     ClaimLost { id: String },
 }
 
-/// Claim and publish at most one outbox event.
-pub async fn dispatch_outbox_once<S, F, Fut, E>(
+/// Claim and dispatch at most one outbox intent.
+pub async fn dispatch_outbox_once<S, D>(
     store: &mut S,
-    mut publish: F,
+    dispatcher: &D,
 ) -> Result<OutboxDispatchResult, EventStoreError>
 where
     S: OutboxStore,
-    F: FnMut(PreparedTrellisEvent) -> Fut,
-    Fut: std::future::Future<Output = Result<(), E>>,
-    E: std::fmt::Display,
+    D: OutboxDispatcher,
 {
     let Some(record) = store.claim_next().await? else {
         return Ok(OutboxDispatchResult::Empty);
     };
-    match publish(record.event.clone()).await {
-        Ok(()) => {
+    let dispatched = match record.intent.clone() {
+        OutboxIntent::Event(event) => dispatcher.publish_event(event).await.map(|()| None),
+        OutboxIntent::Job(job) => dispatcher.dispatch_job(*job).await.map(Some),
+    };
+    match dispatched {
+        Ok(outcome) => {
             if !store.mark_published(&record).await? {
                 return Ok(OutboxDispatchResult::ClaimLost { id: record.id });
             }
-            Ok(OutboxDispatchResult::Published { id: record.id })
+            Ok(match outcome {
+                None => OutboxDispatchResult::Published { id: record.id },
+                Some(outcome) => OutboxDispatchResult::JobDispatched {
+                    id: record.id,
+                    outcome,
+                },
+            })
         }
         Err(error) => {
             let error = error.to_string();
@@ -349,7 +478,7 @@ where
 
 #[derive(Clone, Debug)]
 struct MemoryOutboxEntry {
-    record: OutboxEventRecord,
+    record: OutboxRecord,
     status: String,
     claimed_until: i64,
 }
@@ -367,7 +496,7 @@ impl MemoryOutboxStore {
     }
 
     /// Return a stored record by id, including its current attempt count.
-    pub fn record(&self, id: &str) -> Option<&OutboxEventRecord> {
+    pub fn record(&self, id: &str) -> Option<&OutboxRecord> {
         self.records.get(id).map(|entry| &entry.record)
     }
 }
@@ -376,14 +505,15 @@ impl OutboxStore for MemoryOutboxStore {
     async fn enqueue(
         &mut self,
         id: &str,
-        event: &PreparedTrellisEvent,
+        intent: impl Into<OutboxIntent>,
     ) -> Result<(), EventStoreError> {
+        let intent = intent.into();
         self.records
             .entry(id.to_string())
             .or_insert_with(|| MemoryOutboxEntry {
-                record: OutboxEventRecord {
+                record: OutboxRecord {
                     id: id.to_string(),
-                    event: event.clone(),
+                    intent,
                     attempts: 0,
                     last_error: None,
                 },
@@ -393,7 +523,7 @@ impl OutboxStore for MemoryOutboxStore {
         Ok(())
     }
 
-    async fn claim_next(&mut self) -> Result<Option<OutboxEventRecord>, EventStoreError> {
+    async fn claim_next(&mut self) -> Result<Option<OutboxRecord>, EventStoreError> {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let Some((_, entry)) = self.records.iter_mut().find(|(_, entry)| {
             entry.status == OUTBOX_STATUS_PENDING
@@ -409,10 +539,7 @@ impl OutboxStore for MemoryOutboxStore {
         Ok(Some(entry.record.clone()))
     }
 
-    async fn mark_published(
-        &mut self,
-        record: &OutboxEventRecord,
-    ) -> Result<bool, EventStoreError> {
+    async fn mark_published(&mut self, record: &OutboxRecord) -> Result<bool, EventStoreError> {
         if let Some(entry) = self.records.get_mut(&record.id).filter(|entry| {
             entry.status == OUTBOX_STATUS_IN_FLIGHT && entry.record.attempts == record.attempts
         }) {
@@ -424,7 +551,7 @@ impl OutboxStore for MemoryOutboxStore {
 
     async fn mark_failed(
         &mut self,
-        record: &OutboxEventRecord,
+        record: &OutboxRecord,
         error: &str,
     ) -> Result<bool, EventStoreError> {
         if let Some(entry) = self.records.get_mut(&record.id).filter(|entry| {
@@ -480,6 +607,7 @@ impl<'a> SqliteOutboxStore<'a> {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS trellis_outbox_events (\
             id TEXT PRIMARY KEY,\
+            kind TEXT NOT NULL DEFAULT 'event',\
             subject TEXT NOT NULL,\
             payload BLOB NOT NULL,\
             headers TEXT NOT NULL,\
@@ -500,27 +628,29 @@ impl OutboxStore for SqliteOutboxStore<'_> {
     async fn enqueue(
         &mut self,
         id: &str,
-        event: &PreparedTrellisEvent,
+        intent: impl Into<OutboxIntent>,
     ) -> Result<(), EventStoreError> {
+        let row = OutboxRow::encode(&intent.into())?;
         self.connection.execute(
-            "INSERT INTO trellis_outbox_events (id, subject, payload, headers, \
+            "INSERT INTO trellis_outbox_events (id, kind, subject, payload, headers, \
             event_id, event_time, status, attempts) \
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0) \
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0) \
             ON CONFLICT(id) DO NOTHING",
             params![
                 id,
-                event.subject(),
-                event.payload(),
-                serde_json::to_string(event.headers())?,
-                event.event_id(),
-                event.event_time(),
+                row.kind,
+                row.subject,
+                row.payload,
+                row.headers,
+                row.event_id,
+                row.event_time,
                 OUTBOX_STATUS_PENDING,
             ],
         )?;
         Ok(())
     }
 
-    async fn claim_next(&mut self) -> Result<Option<OutboxEventRecord>, EventStoreError> {
+    async fn claim_next(&mut self) -> Result<Option<OutboxRecord>, EventStoreError> {
         let row = self
             .connection
             .query_row(
@@ -533,40 +663,40 @@ impl OutboxStore for SqliteOutboxStore<'_> {
                 AND claimed_until <= unixepoch()) \
                 ORDER BY rowid LIMIT 1) \
                 RETURNING id, subject, payload, headers, event_id, event_time, \
-                attempts, last_error",
+                attempts, last_error, kind",
                 params![
                     OUTBOX_STATUS_IN_FLIGHT,
                     OUTBOX_CLAIM_SECONDS,
                     OUTBOX_STATUS_PENDING
                 ],
                 |row| {
-                    let id: String = row.get(0)?;
-                    let attempts: u32 = row.get(6)?;
-                    let header_json: String = row.get(3)?;
-                    let headers =
-                        serde_json::from_str(&header_json).map_err(sqlite_header_decode_error)?;
-                    Ok(OutboxEventRecord {
-                        id,
-                        event: PreparedTrellisEvent::from_parts(
-                            row.get(1)?,
-                            Bytes::from(row.get::<_, Vec<u8>>(2)?),
-                            headers,
-                            row.get(4)?,
-                            row.get(5)?,
-                        ),
-                        attempts,
-                        last_error: row.get(7)?,
-                    })
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, u32>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
                 },
             )
             .optional()?;
-        Ok(row)
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let (id, subject, payload, headers, event_id, event_time, attempts, last_error, kind) = row;
+        Ok(Some(OutboxRecord {
+            id,
+            intent: OutboxRow::decode(&kind, subject, payload, &headers, event_id, event_time)?,
+            attempts,
+            last_error,
+        }))
     }
 
-    async fn mark_published(
-        &mut self,
-        record: &OutboxEventRecord,
-    ) -> Result<bool, EventStoreError> {
+    async fn mark_published(&mut self, record: &OutboxRecord) -> Result<bool, EventStoreError> {
         Ok(self.connection.execute(
             "UPDATE trellis_outbox_events \
             SET status = ?1 WHERE id = ?2 \
@@ -582,7 +712,7 @@ impl OutboxStore for SqliteOutboxStore<'_> {
 
     async fn mark_failed(
         &mut self,
-        record: &OutboxEventRecord,
+        record: &OutboxRecord,
         error: &str,
     ) -> Result<bool, EventStoreError> {
         Ok(self.connection.execute(
@@ -670,6 +800,7 @@ impl<'a> PostgresOutboxStore<'a> {
         client.batch_execute(
             "CREATE TABLE IF NOT EXISTS trellis_outbox_events (\
             id TEXT PRIMARY KEY,\
+            kind TEXT NOT NULL DEFAULT 'event',\
             subject TEXT NOT NULL,\
             payload BYTEA NOT NULL,\
             headers TEXT NOT NULL,\
@@ -690,27 +821,29 @@ impl OutboxStore for PostgresOutboxStore<'_> {
     async fn enqueue(
         &mut self,
         id: &str,
-        event: &PreparedTrellisEvent,
+        intent: impl Into<OutboxIntent>,
     ) -> Result<(), EventStoreError> {
+        let row = OutboxRow::encode(&intent.into())?;
         self.client.execute(
-            "INSERT INTO trellis_outbox_events (id, subject, payload, headers, \
+            "INSERT INTO trellis_outbox_events (id, kind, subject, payload, headers, \
             event_id, event_time, status, attempts) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7, 0) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0) \
             ON CONFLICT(id) DO NOTHING",
             &[
                 &id,
-                &event.subject(),
-                &event.payload(),
-                &serde_json::to_string(event.headers())?,
-                &event.event_id(),
-                &event.event_time(),
+                &row.kind,
+                &row.subject,
+                &row.payload,
+                &row.headers,
+                &row.event_id,
+                &row.event_time,
                 &OUTBOX_STATUS_PENDING,
             ],
         )?;
         Ok(())
     }
 
-    async fn claim_next(&mut self) -> Result<Option<OutboxEventRecord>, EventStoreError> {
+    async fn claim_next(&mut self) -> Result<Option<OutboxRecord>, EventStoreError> {
         let row = self.client.query_opt(
             "UPDATE trellis_outbox_events \
             SET status = $1, attempts = attempts + 1, claimed_until = \
@@ -723,7 +856,7 @@ impl OutboxStore for PostgresOutboxStore<'_> {
             FROM clock_timestamp())::bigint) \
             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) \
             RETURNING id, subject, payload, headers, event_id, event_time, \
-            attempts, last_error",
+            attempts, last_error, kind",
             &[
                 &OUTBOX_STATUS_IN_FLIGHT,
                 &OUTBOX_CLAIM_SECONDS,
@@ -737,25 +870,23 @@ impl OutboxStore for PostgresOutboxStore<'_> {
         let attempts = u32::try_from(row.get::<_, i32>(6))
             .map_err(|error| EventStoreError::InvalidRecord(error.to_string()))?;
         let header_json: String = row.get(3);
-        let headers = serde_json::from_str(&header_json)?;
-        Ok(Some(OutboxEventRecord {
+        let kind: String = row.get(8);
+        Ok(Some(OutboxRecord {
             id,
-            event: PreparedTrellisEvent::from_parts(
+            intent: OutboxRow::decode(
+                &kind,
                 row.get(1),
-                Bytes::from(row.get::<_, Vec<u8>>(2)),
-                headers,
+                row.get(2),
+                &header_json,
                 row.get(4),
                 row.get(5),
-            ),
+            )?,
             attempts,
             last_error: row.get(7),
         }))
     }
 
-    async fn mark_published(
-        &mut self,
-        record: &OutboxEventRecord,
-    ) -> Result<bool, EventStoreError> {
+    async fn mark_published(&mut self, record: &OutboxRecord) -> Result<bool, EventStoreError> {
         Ok(self.client.execute(
             "UPDATE trellis_outbox_events \
             SET status = $1 WHERE id = $2 \
@@ -771,7 +902,7 @@ impl OutboxStore for PostgresOutboxStore<'_> {
 
     async fn mark_failed(
         &mut self,
-        record: &OutboxEventRecord,
+        record: &OutboxRecord,
         error: &str,
     ) -> Result<bool, EventStoreError> {
         Ok(self.client.execute(
@@ -939,6 +1070,68 @@ mod tests {
         const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[];
     }
 
+    /// Fails its first `failures` deliveries, then delivers.
+    struct FlakyDispatcher {
+        failures: std::cell::Cell<u32>,
+    }
+
+    impl FlakyDispatcher {
+        fn failing(failures: u32) -> Self {
+            Self {
+                failures: std::cell::Cell::new(failures),
+            }
+        }
+
+        fn deliver(&self) -> Result<(), &'static str> {
+            let remaining = self.failures.get();
+            if remaining == 0 {
+                return Ok(());
+            }
+            self.failures.set(remaining - 1);
+            Err("temporary")
+        }
+    }
+
+    impl OutboxDispatcher for FlakyDispatcher {
+        type Error = &'static str;
+
+        async fn publish_event(&self, _event: PreparedTrellisEvent) -> Result<(), &'static str> {
+            self.deliver()
+        }
+
+        async fn dispatch_job(
+            &self,
+            job: PreparedJobSubmission,
+        ) -> Result<OutboxJobOutcome, &'static str> {
+            self.deliver()?;
+            Ok(OutboxJobOutcome::Accepted {
+                job: crate::jobs::JobIdentity {
+                    service: "test".into(),
+                    job_type: job.queue().into(),
+                    id: job.job_id().into(),
+                },
+                key: None,
+            })
+        }
+    }
+
+    #[cfg(feature = "event-store-sqlite")]
+    fn test_job() -> PreparedJobSubmission {
+        serde_json::from_value(serde_json::json!({
+            "queue": "refresh",
+            "jobId": "01JOB0000000000000000000000",
+            "payload": { "orderId": "o-1" },
+            "createdAt": "2026-11-10T12:00:00Z",
+            "context": {
+                "requestId": "req-1",
+                "traceId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "spanId": "bbbbbbbbbbbbbbbb",
+                "traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
+            }
+        }))
+        .expect("prepared job decodes")
+    }
+
     fn test_event() -> TestEvent {
         TestEvent {
             header: "domain-header".to_string(),
@@ -1019,7 +1212,8 @@ mod tests {
             .await
             .expect("enqueue succeeds");
 
-        let failed = dispatch_outbox_once(&mut store, |_event| async { Err("temporary") })
+        let dispatcher = FlakyDispatcher::failing(1);
+        let failed = dispatch_outbox_once(&mut store, &dispatcher)
             .await
             .expect("dispatch returns failure result");
         assert_eq!(
@@ -1034,7 +1228,7 @@ mod tests {
             Some(1)
         );
 
-        let published = dispatch_outbox_once(&mut store, |_event| async { Ok::<(), &str>(()) })
+        let published = dispatch_outbox_once(&mut store, &dispatcher)
             .await
             .expect("dispatch publishes retry");
         assert_eq!(
@@ -1075,7 +1269,7 @@ mod tests {
             .await
             .expect("enqueue succeeds");
 
-        let failed = dispatch_outbox_once(&mut store, |_event| async { Err("temporary") })
+        let failed = dispatch_outbox_once(&mut store, &FlakyDispatcher::failing(1))
             .await
             .expect("dispatch returns failure result");
         assert_eq!(
@@ -1094,7 +1288,7 @@ mod tests {
         assert_eq!(retried.id, "sqlite-outbox");
         assert_eq!(retried.attempts, 2);
         assert_eq!(retried.last_error.as_deref(), Some("temporary"));
-        assert_eq!(retried.event, prepared);
+        assert_eq!(retried.intent, OutboxIntent::Event(prepared));
         store
             .mark_published(&retried)
             .await
@@ -1104,6 +1298,45 @@ mod tests {
             .await
             .expect("claim after publish succeeds")
             .is_none());
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "event-store-sqlite")]
+    async fn sqlite_outbox_returns_a_stored_job_intact_and_reports_its_outcome() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("outbox.db");
+        let job = test_job();
+        {
+            let connection = Connection::open(&path).unwrap();
+            SqliteOutboxStore::create_schema(&connection).unwrap();
+            SqliteOutboxStore::new(&connection)
+                .enqueue("order-o-1-refresh", &job)
+                .await
+                .unwrap();
+        }
+        // A restarted dispatcher reads back exactly the job the transaction stored.
+        let connection = Connection::open(&path).unwrap();
+        let mut store = SqliteOutboxStore::new(&connection);
+        let claimed = store.claim_next().await.unwrap().unwrap();
+        assert_eq!(claimed.intent, OutboxIntent::from(&job));
+        assert!(store.mark_failed(&claimed, "temporary").await.unwrap());
+        assert_eq!(
+            dispatch_outbox_once(&mut store, &FlakyDispatcher::failing(0))
+                .await
+                .unwrap(),
+            OutboxDispatchResult::JobDispatched {
+                id: "order-o-1-refresh".into(),
+                outcome: OutboxJobOutcome::Accepted {
+                    job: crate::jobs::JobIdentity {
+                        service: "test".into(),
+                        job_type: "refresh".into(),
+                        id: job.job_id().into(),
+                    },
+                    key: None,
+                },
+            }
+        );
+        assert!(store.claim_next().await.unwrap().is_none());
     }
 
     #[tokio::test]

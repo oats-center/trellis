@@ -373,3 +373,155 @@ where
     manager.wait_terminal().await;
     Ok(())
 }
+
+/// Answers raw requests on one exact subject, such as another replica asking
+/// this instance to reconcile an operation it owns. Unlike provider intake it
+/// carries no caller proof: NATS permissions restrict who may publish there.
+pub(crate) type PeerHandler =
+    Arc<dyn Fn(bytes::Bytes) -> BoxFuture<'static, bytes::Bytes> + Send + Sync>;
+
+/// The logical service core's peer intake owner.
+struct PeerIntake {
+    routes: Arc<[(String, PeerHandler)]>,
+    stop: tokio::sync::watch::Sender<bool>,
+}
+
+/// One generation's peer intake.
+struct PeerIngress {
+    retire: tokio::sync::watch::Sender<bool>,
+    stopped: tokio::sync::watch::Sender<bool>,
+}
+
+impl GenerationIntakeHandle for PeerIngress {
+    fn retire(&self, _reason: GenerationIntakeRetireReason) {
+        let _ = self.retire.send(true);
+    }
+
+    fn intake_stopped(&self) -> BoxFuture<'_, ()> {
+        let mut stopped = self.stopped.subscribe();
+        Box::pin(async move {
+            if *stopped.borrow_and_update() {
+                return;
+            }
+            let _ = stopped.wait_for(|value| *value).await;
+        })
+    }
+
+    fn dispose(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+}
+
+impl Drop for PeerIngress {
+    fn drop(&mut self) {
+        let _ = self.retire.send(true);
+    }
+}
+
+impl GenerationIntake for PeerIntake {
+    fn adopt<'a>(
+        &'a self,
+        generation: Arc<TransportGeneration>,
+    ) -> BoxFuture<'a, Result<Box<dyn GenerationIntakeHandle>, TrellisClientError>> {
+        Box::pin(async move {
+            let unavailable = |error: String| TrellisClientError::TransportUnavailable(error);
+            if *self.stop.borrow() {
+                return Err(unavailable("peer intake owner has stopped".into()));
+            }
+            let lease = generation.lease().ok_or_else(|| {
+                unavailable("transport generation is closed; peer intake was not installed".into())
+            })?;
+            let nats = lease.nats().clone();
+            let mut subscribers = Vec::with_capacity(self.routes.len());
+            for (index, (subject, _)) in self.routes.iter().enumerate() {
+                let subscriber = subscribe_subject(&nats, subject)
+                    .await
+                    .map_err(|error| unavailable(error.to_string()))?;
+                subscribers.push(futures_util::StreamExt::map(subscriber, move |message| {
+                    (index, message)
+                }));
+            }
+            confirm_broker_processed(&nats)
+                .await
+                .map_err(|error| unavailable(error.to_string()))?;
+            let (retire, mut retired) = tokio::sync::watch::channel(false);
+            let (stopped, _) = tokio::sync::watch::channel(false);
+            let stopped_tx = stopped.clone();
+            let mut owner_stop = self.stop.subscribe();
+            let routes = Arc::clone(&self.routes);
+            tokio::spawn(async move {
+                // Answers run on this generation, which the lease pins.
+                let lease = lease;
+                let mut messages = futures_util::stream::select_all(subscribers);
+                let mut answering = tokio::task::JoinSet::new();
+                loop {
+                    tokio::select! {
+                        _ = retired.wait_for(|retired| *retired) => break,
+                        _ = owner_stop.wait_for(|stopped| *stopped) => break,
+                        message = futures_util::StreamExt::next(&mut messages) => {
+                            let Some((index, message)) = message else { break };
+                            let Some(reply) = message.reply else { continue };
+                            let handler = Arc::clone(&routes[index].1);
+                            let nats = lease.nats().clone();
+                            answering.spawn(async move {
+                                let answer = handler(message.payload).await;
+                                let _ = nats.publish(reply, answer).await;
+                            });
+                        }
+                    }
+                }
+                drop(messages);
+                while answering.join_next().await.is_some() {}
+                drop(lease);
+                stopped_tx.send_replace(true);
+            });
+            Ok(Box::new(PeerIngress { retire, stopped }) as Box<dyn GenerationIntakeHandle>)
+        })
+    }
+}
+
+/// Serve `routes` on every adopted generation until the connection closes.
+pub(crate) async fn run_peer_intake(
+    manager: TransportGenerationManager,
+    routes: Arc<[(String, PeerHandler)]>,
+) -> Result<(), ServiceRuntimeError> {
+    if routes.is_empty() {
+        manager.wait_terminal().await;
+        return Ok(());
+    }
+    let (stop, _) = tokio::sync::watch::channel(false);
+    let owner = Arc::new(PeerIntake { routes, stop });
+    struct Registration {
+        manager: TransportGenerationManager,
+        owner: Arc<PeerIntake>,
+    }
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.owner.stop.send_replace(true);
+            let owner: Arc<dyn GenerationIntake> = self.owner.clone();
+            self.manager.detach_intake(&owner);
+        }
+    }
+    let _registration = Registration {
+        manager: manager.clone(),
+        owner: Arc::clone(&owner),
+    };
+    let owner: Arc<dyn GenerationIntake> = owner;
+    loop {
+        if manager.terminal().is_some() {
+            return Ok(());
+        }
+        match manager.attach_intake(Arc::clone(&owner)).await {
+            Ok(()) => break,
+            Err(error) => {
+                if manager.terminal().is_some() {
+                    return Ok(());
+                }
+                tracing::warn!(%error, "peer intake attach will retry");
+                tokio::time::sleep(Duration::from_millis(PROVIDER_INTAKE_ATTACH_RETRY_MS)).await;
+            }
+        }
+    }
+    manager.wait_terminal().await;
+    Ok(())
+}

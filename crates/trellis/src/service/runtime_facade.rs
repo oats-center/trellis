@@ -751,6 +751,41 @@ impl ServiceHandle {
         })))
     }
 
+    /// Prepare a typed service-private job for a durable outbox for generated
+    /// participant code.
+    #[doc(hidden)]
+    pub fn generated_prepare_job<D>(
+        &self,
+        payload: D::Payload,
+    ) -> Result<crate::jobs::PreparedJobSubmission, JobsError>
+    where
+        D: JobDescriptor,
+    {
+        let binding = self
+            .binding
+            .jobs_runtime_binding()
+            .map_err(|error| JobsError::Message {
+                message: error.to_string(),
+            })?;
+        crate::jobs::manager::prepare_submission::<_, String>(
+            &TrellisJobMetaSource,
+            &binding.jobs,
+            D::QUEUE_TYPE,
+            payload,
+        )
+        .map_err(|error| JobsError::Message {
+            message: error.to_string(),
+        })
+    }
+
+    /// Return a dispatcher that publishes this service's outboxed events and
+    /// submits its outboxed jobs; see [`crate::client::dispatch_outbox_once`].
+    pub fn outbox_dispatcher(&self) -> ServiceOutboxDispatcher {
+        ServiceOutboxDispatcher {
+            handle: self.clone(),
+        }
+    }
+
     async fn job_manager<D>(
         &self,
     ) -> Result<
@@ -763,6 +798,19 @@ impl ServiceHandle {
     where
         D: JobDescriptor,
     {
+        self.job_manager_for(D::QUEUE_TYPE).await
+    }
+
+    async fn job_manager_for(
+        &self,
+        queue_type: &str,
+    ) -> Result<
+        (
+            JobManager<TrellisJobEventPublisher, TrellisJobMetaSource>,
+            crate::jobs::JobsQueueBinding,
+        ),
+        JobsError,
+    > {
         let binding = self
             .binding
             .jobs_runtime_binding()
@@ -772,10 +820,10 @@ impl ServiceHandle {
         let queue = binding
             .jobs
             .queues
-            .get(D::QUEUE_TYPE)
+            .get(queue_type)
             .cloned()
             .ok_or_else(|| JobsError::Message {
-                message: format!("missing jobs queue binding '{}'", D::QUEUE_TYPE),
+                message: format!("missing jobs queue binding '{}'", queue_type),
             })?;
         let lease = self
             .client()
@@ -991,6 +1039,103 @@ pub struct ServiceLiveHandlerContext {
     pub cancellation: crate::live::LiveCancellation,
 }
 
+/// Delivers a service's outboxed events and jobs through its own bindings.
+#[derive(Clone)]
+pub struct ServiceOutboxDispatcher {
+    handle: ServiceHandle,
+}
+
+impl std::fmt::Debug for ServiceOutboxDispatcher {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServiceOutboxDispatcher")
+            .finish_non_exhaustive()
+    }
+}
+
+impl crate::client::OutboxDispatcher for ServiceOutboxDispatcher {
+    type Error = String;
+
+    async fn publish_event(
+        &self,
+        event: crate::client::PreparedTrellisEvent,
+    ) -> Result<(), String> {
+        self.handle
+            .client()
+            .publish_prepared(&event)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn dispatch_job(
+        &self,
+        job: crate::jobs::PreparedJobSubmission,
+    ) -> Result<crate::jobs::OutboxJobOutcome, String> {
+        use crate::jobs::manager::JobSubmitOutcome as Submitted;
+        use crate::jobs::{JobIdentity, JobManagerError, OutboxJobOutcome};
+        let job_id = job.job_id().to_owned();
+        let queue_type = job.queue().to_owned();
+        let binding = self
+            .handle
+            .binding
+            .jobs_runtime_binding()
+            .map_err(|error| error.to_string())?;
+        if !binding.jobs.queues.contains_key(&queue_type) {
+            return Ok(OutboxJobOutcome::Invalid {
+                job_id,
+                error: format!("this service has no jobs queue '{queue_type}'"),
+            });
+        }
+        let identity = |id: String| JobIdentity {
+            service: binding.jobs.service_name.clone(),
+            job_type: queue_type.clone(),
+            id,
+        };
+        let (manager, _) = self
+            .handle
+            .job_manager_for(&queue_type)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(match manager.dispatch_prepared(job).await {
+            Ok(Submitted::Accepted { job, key }) => OutboxJobOutcome::Accepted {
+                job: identity(job.id),
+                key,
+            },
+            Ok(Submitted::Rejected(error)) => OutboxJobOutcome::Rejected {
+                job: identity(job_id),
+                error: error.into(),
+            },
+            Ok(Submitted::Coalesced {
+                key,
+                existing_job_id,
+                ..
+            }) => OutboxJobOutcome::Coalesced {
+                job: identity(job_id),
+                key,
+                existing: identity(existing_job_id),
+            },
+            Ok(Submitted::Replaced {
+                key,
+                replaced_job_id,
+                job,
+            }) => OutboxJobOutcome::Replaced {
+                job: identity(job.id),
+                key,
+                replaced: identity(replaced_job_id),
+            },
+            Err(
+                error @ (JobManagerError::InvalidTimestamp { .. }
+                | JobManagerError::KeyDerivation(_)
+                | JobManagerError::SerializePayload(_)),
+            ) => OutboxJobOutcome::Invalid {
+                job_id,
+                error: error.to_string(),
+            },
+            Err(error) => return Err(error.to_string()),
+        })
+    }
+}
+
 /// Per-request handler context with request metadata and a cloneable service handle.
 #[derive(Debug, Clone)]
 pub struct ServiceHandlerContext {
@@ -1122,6 +1267,8 @@ pub struct ConnectedServiceRuntime<C> {
     operation_staging: Option<super::resources::backend::BoundStoreResourceClient>,
     service_name: String,
     registered_subjects: BTreeSet<String>,
+    /// Raw subjects other replicas send this instance, such as reconciliation.
+    peer_routes: Vec<(String, super::provider_ingress::PeerHandler)>,
     job_hosts: Vec<WorkerHostHandle>,
     event_subscribe_needs: &'static [&'static str],
     _contract: PhantomData<C>,
@@ -1187,6 +1334,7 @@ impl<C> ConnectedServiceRuntime<C> {
             operation_staging: None,
             service_name: service_name.into(),
             registered_subjects: BTreeSet::new(),
+            peer_routes: Vec::new(),
             job_hosts: Vec::new(),
             event_subscribe_needs: &[],
             _contract: PhantomData,
@@ -1333,6 +1481,25 @@ impl<C> ConnectedServiceRuntime<C> {
         self.generated_handle()
             .generated_create_job::<D>(payload)
             .await
+    }
+
+    /// Prepare a typed service-private job for a durable outbox for generated
+    /// participant code.
+    #[doc(hidden)]
+    pub fn generated_prepare_job<D>(
+        &self,
+        payload: D::Payload,
+    ) -> Result<crate::jobs::PreparedJobSubmission, JobsError>
+    where
+        D: JobDescriptor,
+    {
+        self.generated_handle().generated_prepare_job::<D>(payload)
+    }
+
+    /// Return a dispatcher that publishes this service's outboxed events and
+    /// submits its outboxed jobs; see [`crate::client::dispatch_outbox_once`].
+    pub fn outbox_dispatcher(&self) -> ServiceOutboxDispatcher {
+        self.generated_handle().outbox_dispatcher()
     }
 
     /// Submit a typed service-private job through its key policy for generated
@@ -1574,7 +1741,10 @@ impl<C> ConnectedServiceRuntime<C> {
     ///
     /// Starts accept canonical and explicitly deployment-bound subjects; controls retain their
     /// owner.
-    pub fn register_operation_handler<D, F, Fut>(&mut self, handler: F)
+    pub fn register_operation_handler<D, F, Fut>(
+        &mut self,
+        handler: F,
+    ) -> super::operations::OperationRegistration<D>
     where
         D: OperationDescriptor + 'static,
         D::Progress: serde::de::DeserializeOwned,
@@ -1582,35 +1752,43 @@ impl<C> ConnectedServiceRuntime<C> {
         F: Fn(RequestContext, D::Input, OperationControl<D>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), ServerError>> + Send + 'static,
     {
-        self.router.register_operation_provider::<D, _>(
-            super::operations::RuntimeOperationProvider::new_authenticated(
-                super::operations::OperationHandlerRuntime {
-                    service: self.service_name.clone(),
-                    deployment_id: self.provider_deployment_id.clone(),
-                    executor_id: self.operation_executor_id.clone(),
-                    connection_id: self.operation_connection_id.clone(),
-                    repository: self
-                        .operation_repository
-                        .clone()
-                        .expect("connected service operation repository"),
-                    transport: super::operations::OperationTransport::managed(
-                        self.client.transport_generations(),
-                        self.client.timeout_ms(),
-                    ),
-                    service_session_key: self.client.auth().session_key.clone(),
-                    staging: self
-                        .operation_staging
-                        .clone()
-                        .expect("connected service operation staging store"),
-                    validator: self.auth.clone(),
-                },
-                handler,
-                self.client
-                    .participant_id()
-                    .expect("connected services always have a participant identity"),
-                Some(Arc::clone(&self.client)),
-            ),
+        let provider = super::operations::RuntimeOperationProvider::new_authenticated(
+            super::operations::OperationHandlerRuntime {
+                service: self.service_name.clone(),
+                deployment_id: self.provider_deployment_id.clone(),
+                executor_id: self.operation_executor_id.clone(),
+                connection_id: self.operation_connection_id.clone(),
+                repository: self
+                    .operation_repository
+                    .clone()
+                    .expect("connected service operation repository"),
+                transport: super::operations::OperationTransport::managed(
+                    self.client.transport_generations(),
+                    self.client.timeout_ms(),
+                ),
+                service_session_key: self.client.auth().session_key.clone(),
+                staging: self
+                    .operation_staging
+                    .clone()
+                    .expect("connected service operation staging store"),
+                validator: self.auth.clone(),
+            },
+            handler,
+            self.client
+                .participant_id()
+                .expect("connected services always have a participant identity"),
+            Some(Arc::clone(&self.client)),
         );
+        let registration = provider.registration();
+        self.router.register_operation_provider::<D, _>(provider);
+        let answering = registration.clone();
+        self.peer_routes.push((
+            registration.reconcile_subject(),
+            Arc::new(move |request| {
+                let answering = answering.clone();
+                Box::pin(async move { answering.answer_reconcile(&request).await })
+            }),
+        ));
         self.registered_subjects.insert(D::SUBJECT.to_owned());
         // Explicit starts and established controls share the same deployment repository.
         let action = D::KEY
@@ -1626,6 +1804,7 @@ impl<C> ConnectedServiceRuntime<C> {
         self.registered_subjects.insert(owner_subject.clone());
         self.registered_subjects
             .insert(control_subject(&owner_subject));
+        registration
     }
 
     /// Run registered subjects using the default NATS request loop.
@@ -1656,8 +1835,13 @@ impl<C> ConnectedServiceRuntime<C> {
             self.router,
             self.auth,
         ));
+        let peer_routes: std::sync::Arc<[_]> = self.peer_routes.into();
         let serve = async move {
-            super::provider_ingress::run_provider_intake(manager, subjects, host).await
+            tokio::try_join!(
+                super::provider_ingress::run_provider_intake(manager.clone(), subjects, host),
+                super::provider_ingress::run_peer_intake(manager, peer_routes),
+            )?;
+            Ok(())
         };
         let run = async {
             if job_hosts.is_empty() {

@@ -1084,9 +1084,11 @@ fn render_api_provider(api: &ApiDefinition, out: &mut String) {
             }}\n"
         )),
         ActionDefinition::Operation { .. } => out.push_str(&format!(
-            "pub fn register_{method}<F, Fut>(&mut self, handler: F) where F: \
+            "pub fn register_{method}<F, Fut>(&mut self, handler: F) -> \
+            trellis_rs::service::OperationRegistration<trellis_rs::generated::OperationAdapter<operations::{name}>> \
+            where F: \
             Fn(trellis_rs::service::RequestContext, operations::{name}Input, \
-            trellis_rs::service::OperationControl<trellis_rs::generated::OperationAdapter<operations::{name}>>) -> Fut + Send + Sync + 'static, Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>> + Send + 'static {{ self.runtime.register_operation_handler::<trellis_rs::generated::OperationAdapter<operations::{name}>, F, Fut>(handler); }}\n"
+            trellis_rs::service::OperationControl<trellis_rs::generated::OperationAdapter<operations::{name}>>) -> Fut + Send + Sync + 'static, Fut: std::future::Future<Output = Result<(), trellis_rs::service::ServerError>> + Send + 'static {{ self.runtime.register_operation_handler::<trellis_rs::generated::OperationAdapter<operations::{name}>, F, Fut>(handler) }}\n"
         )),
         _ => {}
             }
@@ -2051,7 +2053,12 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
                 Result<futures_util::stream::BoxStream<'static, \
                 Result<trellis_rs::jobs::JobUpdate<{update}>, trellis_rs::jobs::JobsError>>, \
                 trellis_rs::jobs::JobsError> {{ \
-                RECEIVER.generated_job_updates::<{descriptor}>(job_id).await }}\n"
+                RECEIVER.generated_job_updates::<{descriptor}>(job_id).await }}\n\
+                /// Fix this job without submitting it, to store in a durable outbox \
+                inside the caller's transaction.\n\
+                pub fn prepare_{method}(&self, payload: {payload}) -> \
+                Result<trellis_rs::jobs::PreparedJobSubmission, trellis_rs::jobs::JobsError> {{ \
+                RECEIVER.generated_prepare_job::<{descriptor}>(payload) }}\n"
                     );
                     out.push_str(&submission.replace("RECEIVER", "self.runtime"));
                     jobs.push_str(&submission.replace("RECEIVER", "self.handle"));
@@ -2097,7 +2104,10 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
             out.push_str(&format!(
                 "/// Cloneable handle that creates and observes this service's jobs from \
                 any handler or task.\n#[derive(Clone, Debug)]\npub struct Jobs {{ handle: \
-                trellis_rs::service::ServiceHandle }}\nimpl Jobs {{\n{jobs}}}\nimpl<'a> \
+                trellis_rs::service::ServiceHandle }}\nimpl Jobs {{\n{jobs}\
+                /// Dispatcher for this service's outboxed events and jobs.\n\
+                pub fn outbox_dispatcher(&self) -> trellis_rs::service::ServiceOutboxDispatcher {{ \
+                self.handle.outbox_dispatcher() }}\n}}\nimpl<'a> \
                 Provider<'a> {{ pub fn jobs_client(&self) -> Jobs {{ Jobs {{ handle: \
                 self.runtime.generated_handle() }} }} }}\n"
             ));

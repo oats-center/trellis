@@ -63,9 +63,10 @@ Current Rust service code should prefer descriptor and facade APIs:
 such as `.rpc().group().method(...)`, and service registration through
 `handle().rpc().group().method(handler)` where generated.
 
-Prepared event support includes `PreparedTrellisEvent`,
-`prepare_event::<Descriptor>(...)`, `publish_prepared`, and
-`dispatch_outbox_once`. Durable stores include `OutboxStore`, `InboxStore`,
+Prepared event and job support includes `PreparedTrellisEvent`,
+`prepare_event::<Descriptor>(...)`, generated `prepare_<job>(...)`,
+`publish_prepared`, `dispatch_outbox_once`, and the service's
+`outbox_dispatcher()`. Durable stores include `OutboxStore`, `InboxStore`,
 `SqliteOutboxStore`, `SqliteInboxStore`, `PostgresOutboxStore`, and
 `PostgresInboxStore`.
 

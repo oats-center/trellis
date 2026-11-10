@@ -12,6 +12,7 @@ use trellis_rs::client::{RuntimeAuthorizationTrust, UserConnectOptions};
 use trellis_rs::service::ServiceConnectOptions;
 
 /// A provisioned service identity and the options its service connects with.
+#[derive(Clone)]
 pub struct TestServiceIdentity {
     pub(crate) name: String,
     pub(crate) participant_id: String,

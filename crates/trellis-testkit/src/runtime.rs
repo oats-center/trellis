@@ -856,6 +856,27 @@ impl TrellisTestRuntime {
         self.register::<P>(name, false).await
     }
 
+    /// Provisions another instance of `service`'s deployment: a replica that
+    /// connects with its own identity and shares the deployment's work.
+    ///
+    /// # Errors
+    /// Returns an error when provisioning fails.
+    pub async fn add_service_instance(
+        &mut self,
+        service: &TestServiceIdentity,
+    ) -> Result<TestServiceIdentity, TrellisTestError> {
+        self.ensure_running()?;
+        let admin = self.admin()?;
+        let (instance_id, seed) = admin
+            .provision_service_instance(&service.deployment_id)
+            .await?;
+        Ok(TestServiceIdentity {
+            instance_id,
+            seed,
+            ..service.clone()
+        })
+    }
+
     /// Registers `P` like [`Self::register_service`] when another deployment
     /// already serves an API `P` implements. Every deployment serving an API
     /// shares its requests at random, so Auth requires this explicit

@@ -57,8 +57,8 @@ pub use error::{
 };
 pub use events::{
     dispatch_outbox_once, prepare_event, prepare_event_value, EventStoreError, InboxReceipt,
-    InboxStore, MemoryInboxStore, MemoryOutboxStore, OutboxDispatchResult, OutboxEventRecord,
-    OutboxStore, PreparedTrellisEvent,
+    InboxStore, MemoryInboxStore, MemoryOutboxStore, OutboxDispatchResult, OutboxDispatcher,
+    OutboxIntent, OutboxRecord, OutboxStore, PreparedTrellisEvent,
 };
 #[cfg(feature = "event-store-postgres")]
 pub use events::{PostgresInboxStore, PostgresOutboxStore};

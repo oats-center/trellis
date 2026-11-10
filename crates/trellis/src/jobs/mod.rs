@@ -32,13 +32,14 @@ pub mod updates;
 pub use active_job::ActiveJob as WorkerActiveJob;
 pub use api::{
     ActiveJob, JobFilter, JobIdentity, JobNotEnqueued, JobNotEnqueuedReason, JobQueue, JobRef,
-    JobSnapshot, JobSubmitOutcome, JobWorkerHost, JobsError, JobsFacade, JobsService, TerminalJob,
+    JobSnapshot, JobSubmitOutcome, JobWorkerHost, JobsError, JobsFacade, JobsService,
+    OutboxJobOutcome, TerminalJob,
 };
 pub use bindings::{JobsBinding, JobsQueueBinding, JobsRuntimeBinding};
 pub use keys::{derive_key, job_key, key_hash, worker_presence_key, KeyDerivationError};
 pub use manager::{
     JobManager, JobManagerError, JobMetaSource, JobProcessError, JobProcessOutcome,
-    TrellisJobMetaSource,
+    PreparedJobSubmission, TrellisJobMetaSource,
 };
 pub use projection::{is_terminal, job_from_work_event, reduce_job_event};
 pub use publisher::{JobEventHeaders, JobEventPublisher};
@@ -122,6 +123,9 @@ impl JobEventPublisher for TrellisJobEventPublisher {
             nats_headers.insert("traceparent", headers.traceparent.as_str());
             if let Some(tracestate) = headers.tracestate.as_deref() {
                 nats_headers.insert("tracestate", tracestate);
+            }
+            if let Some(message_id) = headers.message_id.as_deref() {
+                nats_headers.insert("Nats-Msg-Id", message_id);
             }
             async_nats::jetstream::new(nats)
                 .publish_with_headers(subject, nats_headers, payload.into())

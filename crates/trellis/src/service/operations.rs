@@ -415,6 +415,7 @@ pub(crate) struct RuntimeOperationProvider<D: OperationDescriptor, F, V> {
     connection_id: String,
     repository: KvOperationRepository,
     mutation_gate: Arc<Mutex<()>>,
+    active: ActiveExecutions<D>,
     next_update_sequence: Arc<AtomicU64>,
     schemas: Arc<super::schema_validation::PreparedOperationSchemas>,
     handler: Arc<F>,
@@ -457,6 +458,7 @@ where
             connection_id: runtime.connection_id,
             repository: runtime.repository,
             mutation_gate: Arc::new(Mutex::new(())),
+            active: Arc::default(),
             next_update_sequence: Arc::new(AtomicU64::new(1)),
             schemas: Arc::new(super::schema_validation::PreparedOperationSchemas::new::<D>()),
             handler: Arc::new(handler),
@@ -466,6 +468,28 @@ where
             validator: runtime.validator,
             publisher,
             _descriptor: PhantomData,
+        }
+    }
+
+    /// This provider's owner-side controls.
+    pub(crate) fn registration(&self) -> OperationRegistration<D> {
+        let action = D::KEY
+            .split_once(":operation:")
+            .expect("generated canonical Operation identity")
+            .1;
+        let base = trellis_protocol::derive_bound_operation_subject(
+            D::API_ID,
+            &self.deployment_id,
+            action,
+        )
+        .expect("generated operation metadata must form a valid owner subject");
+        OperationRegistration {
+            active: Arc::clone(&self.active),
+            repository: self.repository.clone(),
+            transport: self.transport.clone(),
+            deployment_id: self.deployment_id.clone(),
+            connection_id: self.connection_id.clone(),
+            reconcile_prefix: format!("{base}.reconcile"),
         }
     }
 
@@ -522,6 +546,7 @@ where
         fence: OwnerFence,
         repository: KvOperationRepository,
         mutation_gate: Arc<Mutex<()>>,
+        active: ActiveExecutions<D>,
         handler: Arc<F>,
         support: SupportTransport,
         staging: BoundStoreResourceClient,
@@ -572,44 +597,78 @@ where
             let Some(admitted) = admitted else {
                 return;
             };
+            let operation_id = claimed.record.invocation_id.clone();
             let cancellation_requested = admitted.record.cancellation_requested;
-            let context = RequestContext {
-                resuming: admitted.record.owner_epoch > 1,
-                operation_progress: admitted.record.snapshot.progress.clone(),
-                session_key: Some(admitted.record.caller_session_key),
-                caller: admitted.record.caller,
-                ..RequestContext::default()
-            };
             // One telemetry-only terminal witness for this acquired execution.
             let witness = Arc::new(TerminalWitness::default());
             let (cancel_sender, cancel_receiver) = tokio::sync::watch::channel(
                 cancellation_requested.then_some(OperationCancellationReason::Requested),
             );
-            let control = OperationControl {
-                operation_ref: OperationRefData {
-                    id: claimed.record.invocation_id.clone(),
-                    deployment_id: claimed.record.deployment_id.clone(),
-                    service,
-                    operation: D::KEY.to_owned(),
-                },
-                durable: DurableOperationControl {
+            let deferred = Arc::new(AtomicBool::new(false));
+            let operation_ref = OperationRefData {
+                id: operation_id.clone(),
+                deployment_id: claimed.record.deployment_id.clone(),
+                service,
+                operation: D::KEY.to_owned(),
+            };
+            // Every handle to this execution shares its fence, witness and
+            // cancellation; only the first entry gets the live upload.
+            let make_control: Arc<dyn Fn() -> OperationControl<D> + Send + Sync> = {
+                let durable = DurableOperationControl {
                     repository: repository.clone(),
                     fence: fence.clone(),
                     mutation_gate: Arc::clone(&mutation_gate),
                     witness: Arc::clone(&witness),
+                };
+                let support = support.clone();
+                let deferred = Arc::clone(&deferred);
+                let cancel_receiver = cancel_receiver.clone();
+                Arc::new(move || OperationControl {
+                    operation_ref: operation_ref.clone(),
+                    durable: durable.clone(),
+                    nats: support.nats.clone(),
+                    _lease: support.lease.clone(),
+                    staging: staging.clone(),
+                    publisher: publisher.clone(),
+                    update_subject: update_subject.clone(),
+                    next_update_sequence: Arc::clone(&next_update_sequence),
+                    schemas: Arc::clone(&schemas),
+                    cancellation: OperationCancellation {
+                        receiver: cancel_receiver.clone(),
+                    },
+                    upload_stream: std::sync::Mutex::new(None),
+                    deferred: Arc::clone(&deferred),
+                    _descriptor: PhantomData,
+                })
+            };
+            let (reentry_sender, mut reentries) = tokio::sync::mpsc::unbounded_channel();
+            let _registered = ActiveExecutionGuard::register(
+                &active,
+                &operation_id,
+                fence.owner_epoch,
+                ActiveExecution {
+                    owner_epoch: fence.owner_epoch,
+                    control: Arc::clone(&make_control),
+                    reentry: reentry_sender,
                 },
-                nats: support.nats,
-                _lease: support.lease,
-                staging,
-                publisher,
-                update_subject,
-                next_update_sequence,
-                schemas,
-                cancellation: OperationCancellation {
-                    receiver: cancel_receiver,
-                },
-                upload_stream: std::sync::Mutex::new(upload_stream),
-                _descriptor: PhantomData,
+            );
+            let run_handler = |record: &DurableOperationRecord, input: D::Input, upload| {
+                let control = make_control();
+                if let Some(upload) = upload {
+                    *control
+                        .upload_stream
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(upload);
+                }
+                deferred.store(false, Ordering::SeqCst);
+                let context = RequestContext {
+                    resuming: record.owner_epoch > 1,
+                    operation_progress: record.snapshot.progress.clone(),
+                    session_key: Some(record.caller_session_key.clone()),
+                    caller: record.caller.clone(),
+                    ..RequestContext::default()
+                };
+                Box::pin(handler(context, input, control))
             };
             // One acquired execution observation; it ends with the attempt's
             // lifecycle disposition and never creates a lifetime-long span.
@@ -639,19 +698,49 @@ where
             drop(start_span);
             let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
             heartbeat.tick().await;
-            let mut execution = Box::pin(handler(context, input, control));
+            let mut execution = Some(run_handler(&admitted.record, input, upload_stream));
+            // Reconciliations answered when the current entry returns, and those
+            // that arrived during it and need another.
+            let mut answering: Vec<oneshot::Sender<Result<(), String>>> = Vec::new();
+            let mut waiting: Vec<oneshot::Sender<Result<(), String>>> = Vec::new();
             let mut renewal_due = false;
             let mut cancellation_started = cancellation_requested.then(std::time::Instant::now);
             let outcome = loop {
                 tokio::select! {
-                    result = &mut execution => {
-                        drop(execution);
-                        let cancellation_requested = repository
-                            .get(&claimed.record.invocation_id)
+                    Some(result) = futures_util::future::OptionFuture::from(execution.as_mut()) => {
+                        execution = None;
+                        let current = repository
+                            .get(&operation_id)
                             .await
                             .ok()
-                            .flatten()
+                            .flatten();
+                        let cancellation_requested = current
+                            .as_ref()
                             .is_some_and(|current| current.record.cancellation_requested);
+                        // A deferring handler keeps ownership: the lease stays
+                        // renewed until `control` writes a terminal state or a
+                        // reconciliation enters the handler again.
+                        if result.is_ok()
+                            && deferred.load(Ordering::SeqCst)
+                            && witness.get().is_none()
+                            && !cancellation_requested
+                        {
+                            for answer in answering.drain(..) {
+                                let _ = answer.send(Ok(()));
+                            }
+                            if !waiting.is_empty() {
+                                let Some(current) = current else {
+                                    break "error";
+                                };
+                                let stored = current.record.input.clone();
+                                let Ok(input) = serde_json::from_value(stored) else {
+                                    break "error";
+                                };
+                                answering.append(&mut waiting);
+                                execution = Some(run_handler(&current.record, input, None));
+                            }
+                            continue;
+                        }
                         // Telemetry attributes the durable result of the final
                         // fenced mutation, never the handler's return value: a
                         // handler that returns Ok(()) without a committed
@@ -665,7 +754,7 @@ where
                                     &repository,
                                     &fence,
                                     &mutation_gate,
-                                    &claimed.record.invocation_id,
+                                    &operation_id,
                                     Some(&witness),
                                 )
                                 .await
@@ -683,7 +772,7 @@ where
                                 &repository,
                                 &fence,
                                 &mutation_gate,
-                                &claimed.record.invocation_id,
+                                &operation_id,
                                 SnapshotUpdate {
                                     state: OperationState::Failed,
                                     progress: None,
@@ -717,7 +806,7 @@ where
                         if result.is_ok()
                             && witness.get().is_none()
                             && repository
-                                .get(&claimed.record.invocation_id)
+                                .get(&operation_id)
                                 .await
                                 .ok()
                                 .flatten()
@@ -727,7 +816,7 @@ where
                                 &repository,
                                 &fence,
                                 &mutation_gate,
-                                &claimed.record.invocation_id,
+                                &operation_id,
                                 Some(&witness),
                             )
                             .await
@@ -748,6 +837,32 @@ where
                         }
                         break durable;
                     }
+                    Some(answer) = reentries.recv() => {
+                        if execution.is_some() {
+                            waiting.push(answer);
+                            continue;
+                        }
+                        let current = match repository.get(&operation_id).await {
+                            Ok(Some(current)) if fence.matches(&current.record) => current,
+                            Ok(_) => {
+                                let _ = answer.send(Err("operation owner changed before reconciliation".to_owned()));
+                                continue;
+                            }
+                            Err(error) => {
+                                let _ = answer.send(Err(error.to_string()));
+                                continue;
+                            }
+                        };
+                        match serde_json::from_value(current.record.input.clone()) {
+                            Ok(input) => {
+                                answering.push(answer);
+                                execution = Some(run_handler(&current.record, input, None));
+                            }
+                            Err(error) => {
+                                let _ = answer.send(Err(error.to_string()));
+                            }
+                        }
+                    }
                     changed = cancellation.next() => {
                         match changed {
                             Some(Ok(current)) if !fence.matches(&current.record) => {
@@ -757,8 +872,18 @@ where
                                 } else {
                                     OperationCancellationReason::OwnershipLost
                                 }));
-                                let _ = execution.await;
+                                if let Some(execution) = execution.take() {
+                                    let _ = execution.await;
+                                }
                                 break if fence.is_retired() { "interrupted" } else { "lease_lost" };
+                            }
+                            // A deferred operation ends once `control` writes
+                            // its terminal state.
+                            Some(Ok(current))
+                                if execution.is_none()
+                                    && current.record.snapshot.state.is_terminal() =>
+                            {
+                                break witness.get().unwrap_or("interrupted");
                             }
                             Some(Ok(current)) if current.record.cancellation_requested => {
                                 cancellation_started.get_or_insert_with(std::time::Instant::now);
@@ -771,14 +896,18 @@ where
                                     OperationCancellationReason::ServiceStopping,
                                 ));
                                 tracing::warn!(%error, "operation cancellation watch failed");
-                                let _ = execution.await;
+                                if let Some(execution) = execution.take() {
+                                    let _ = execution.await;
+                                }
                                 break "error";
                             }
                             None => {
                                 cancel_sender.send_replace(Some(
                                     OperationCancellationReason::ServiceStopping,
                                 ));
-                                let _ = execution.await;
+                                if let Some(execution) = execution.take() {
+                                    let _ = execution.await;
+                                }
                                 break "interrupted";
                             }
                         }
@@ -788,7 +917,9 @@ where
                         // handler and never renew or write with this fence.
                         cancel_sender
                             .send_replace(Some(OperationCancellationReason::ServiceStopping));
-                        let _ = execution.await;
+                        if let Some(execution) = execution.take() {
+                            let _ = execution.await;
+                        }
                         break "interrupted";
                     }
                     _ = heartbeat.tick(), if !renewal_due => {
@@ -801,7 +932,7 @@ where
                             let now = now_ms();
                             repository
                                 .renew(
-                                    &claimed.record.invocation_id,
+                                    &operation_id,
                                     &fence.executor_id,
                                     fence.owner_epoch,
                                     now,
@@ -813,12 +944,18 @@ where
                         if renewed.is_err() {
                             cancel_sender
                                 .send_replace(Some(OperationCancellationReason::OwnershipLost));
-                            let _ = execution.await;
+                            if let Some(execution) = execution.take() {
+                                let _ = execution.await;
+                            }
                             break "lease_lost";
                         }
                     }
                 }
             };
+            // Every reconciliation waiting on this execution sees its end.
+            for answer in answering.into_iter().chain(waiting) {
+                let _ = answer.send(Ok(()));
+            }
             observation.finish(outcome);
         });
         Ok(())
@@ -842,6 +979,7 @@ where
         let repository = self.repository.clone();
         let transport = self.transport.clone();
         let mutation_gate = Arc::clone(&self.mutation_gate);
+        let active = Arc::clone(&self.active);
         let handler = Arc::clone(&self.handler);
         let staging = self.staging.clone();
         let publisher = self.publisher.clone();
@@ -895,6 +1033,7 @@ where
                         let connection_id = connection_id.clone();
                         let service = service.clone();
                         let mutation_gate = Arc::clone(&mutation_gate);
+                        let active = Arc::clone(&active);
                         let handler = Arc::clone(&handler);
                         let support = support.clone();
                         let publisher = publisher.clone();
@@ -996,6 +1135,7 @@ where
                                     fence,
                                     repository,
                                     mutation_gate,
+                                    Arc::clone(&active),
                                     handler,
                                     support,
                                     staging,
@@ -1045,6 +1185,7 @@ where
         let connection_id = self.connection_id.clone();
         let repository = self.repository.clone();
         let mutation_gate = Arc::clone(&self.mutation_gate);
+        let active = Arc::clone(&self.active);
         let handler = Arc::clone(&self.handler);
         let publisher = self.publisher.clone();
         let service_session_key = self.service_session_key.clone();
@@ -1447,6 +1588,7 @@ where
                     fence,
                     repository,
                     mutation_gate,
+                    Arc::clone(&active),
                     handler,
                     support,
                     staging,
@@ -1503,6 +1645,7 @@ where
                         fence,
                         repository,
                         mutation_gate,
+                        Arc::clone(&active),
                         handler,
                         support.clone(),
                         staging.clone(),
@@ -1630,6 +1773,7 @@ where
                 let repository_for_completion = repository.clone();
                 let fence_for_completion = fence.clone();
                 let gate_for_completion = Arc::clone(&mutation_gate);
+                let active_for_completion = Arc::clone(&active);
                 let heartbeat_repository = repository.clone();
                 let heartbeat_fence = fence.clone();
                 let heartbeat_operation_id = operation_id.clone();
@@ -1738,6 +1882,7 @@ where
                                 fence_for_completion.clone(),
                                 repository_for_completion.clone(),
                                 Arc::clone(&gate_for_completion),
+                                Arc::clone(&active_for_completion),
                                 handler,
                                 support.clone(),
                                 staging.clone(),
@@ -1853,6 +1998,7 @@ where
                 fence,
                 repository,
                 mutation_gate,
+                Arc::clone(&active),
                 handler,
                 support,
                 staging,
@@ -2428,7 +2574,286 @@ where
     cancellation: OperationCancellation,
     /// Live upload of a `stream` Operation, taken once by its handler.
     upload_stream: std::sync::Mutex<Option<super::transfer::OperationUploadStream>>,
+    /// Set by [`OperationControl::defer`] for the running handler entry.
+    deferred: Arc<AtomicBool>,
     _descriptor: PhantomData<fn() -> D>,
+}
+
+/// A registered Operation handler's owner-side controls, returned by its
+/// generated `register_<operation>`.
+pub struct OperationRegistration<D: OperationDescriptor> {
+    active: ActiveExecutions<D>,
+    repository: KvOperationRepository,
+    transport: OperationTransport,
+    deployment_id: String,
+    connection_id: String,
+    /// `<operation subject>.reconcile`; an owner listens under its own token.
+    reconcile_prefix: String,
+}
+
+impl<D: OperationDescriptor> Clone for OperationRegistration<D> {
+    fn clone(&self) -> Self {
+        Self {
+            active: Arc::clone(&self.active),
+            repository: self.repository.clone(),
+            transport: self.transport.clone(),
+            deployment_id: self.deployment_id.clone(),
+            connection_id: self.connection_id.clone(),
+            reconcile_prefix: self.reconcile_prefix.clone(),
+        }
+    }
+}
+
+impl<D: OperationDescriptor> std::fmt::Debug for OperationRegistration<D> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OperationRegistration")
+            .field("operation", &D::KEY)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The request one replica sends the owner of an operation to reconcile it.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReconcileRequest {
+    operation_id: String,
+    owner_epoch: u64,
+}
+
+impl<D> OperationRegistration<D>
+where
+    D: OperationDescriptor,
+    D::Progress: DeserializeOwned,
+    D::Output: DeserializeOwned,
+{
+    /// The owner-fenced handle of an execution this instance runs, including a
+    /// deferred one, so code outside the handler can report progress or finish
+    /// it. Another instance's execution, or one that has ended, is
+    /// `ServerError::OperationNotFound`.
+    pub fn control(&self, operation_id: &str) -> Result<OperationControl<D>, ServerError> {
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(operation_id)
+            .map(|execution| (execution.control)())
+            .ok_or_else(|| ServerError::OperationNotFound {
+                operation_id: operation_id.to_owned(),
+            })
+    }
+
+    /// Ask the operation's current owner, on any instance, to enter the
+    /// handler again with the stored input, caller and progress, and return
+    /// the snapshot once that entry returns. A live lease is never taken
+    /// over; an expired one is first claimed by ordinary recovery. A terminal
+    /// operation returns its snapshot unchanged.
+    pub async fn reconcile(
+        &self,
+        operation_id: &str,
+    ) -> Result<OperationSnapshot<D::Progress, D::Output>, ServerError> {
+        self.reconcile_owned(operation_id, None).await
+    }
+
+    async fn reconcile_owned(
+        &self,
+        operation_id: &str,
+        expected_epoch: Option<u64>,
+    ) -> Result<OperationSnapshot<D::Progress, D::Output>, ServerError> {
+        let not_found = || ServerError::OperationNotFound {
+            operation_id: operation_id.to_owned(),
+        };
+        let support = self.transport.current().await?;
+        let repository = self.repository.pinned(support.lease.as_ref()).await?;
+        let read = || async {
+            repository
+                .get(operation_id)
+                .await?
+                .filter(|current| {
+                    current.record.api_id == D::API_ID
+                        && current.record.operation == D::KEY
+                        && current.record.deployment_id == self.deployment_id
+                })
+                .ok_or_else(not_found)
+        };
+        for _ in 0..3 {
+            let mut current = read().await?;
+            if current.record.snapshot.state.is_terminal() {
+                return typed_snapshot(current.record.snapshot);
+            }
+            if expected_epoch.is_some_and(|epoch| epoch != current.record.owner_epoch) {
+                return Err(ServerError::Nats(
+                    "operation owner changed before reconciliation".to_owned(),
+                ));
+            }
+            // Recovery claims an expired lease; wait for the next owner.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while current
+                .record
+                .lease_expires_at_ms
+                .is_none_or(|expiry| expiry <= now_ms())
+            {
+                if expected_epoch.is_some() || std::time::Instant::now() >= deadline {
+                    return Err(ServerError::Nats(
+                        "operation has no live owner to reconcile it".to_owned(),
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                current = read().await?;
+                if current.record.snapshot.state.is_terminal() {
+                    return typed_snapshot(current.record.snapshot);
+                }
+            }
+            let owner_epoch = current.record.owner_epoch;
+            let Some(owner) = current.record.owner_connection_id.clone() else {
+                continue;
+            };
+            if owner == self.connection_id {
+                let reentry = self
+                    .active
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(operation_id)
+                    .filter(|execution| execution.owner_epoch == owner_epoch)
+                    .map(|execution| execution.reentry.clone());
+                if let Some(reentry) = reentry {
+                    let (answer, answered) = oneshot::channel();
+                    if reentry.send(answer).is_ok() {
+                        if let Ok(Err(error)) = answered.await {
+                            return Err(ServerError::Nats(error));
+                        }
+                    }
+                    return typed_snapshot(read().await?.record.snapshot);
+                }
+            }
+            if expected_epoch.is_some() {
+                return Err(ServerError::Nats(
+                    "reconciliation reached a non-owner executor".to_owned(),
+                ));
+            }
+            let subject = format!(
+                "{}.{}",
+                self.reconcile_prefix,
+                trellis_protocol::encode_subject_token(&owner)
+            );
+            let request = serde_json::to_vec(&ReconcileRequest {
+                operation_id: operation_id.to_owned(),
+                owner_epoch,
+            })?;
+            let reply = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                support.nats.request(subject, request.into()),
+            )
+            .await
+            .map_err(|_| ServerError::Nats("operation reconciliation timed out".to_owned()))
+            .and_then(|reply| reply.map_err(|error| ServerError::Nats(error.to_string())))
+            .and_then(|reply| {
+                let frame: Value = serde_json::from_slice(&reply.payload)?;
+                if let Some(error) = frame.get("error").and_then(Value::as_str) {
+                    return Err(ServerError::Nats(error.to_owned()));
+                }
+                if frame.get("kind").and_then(Value::as_str) != Some("reconciled") {
+                    return Err(ServerError::Nats(
+                        "invalid operation reconciliation response".to_owned(),
+                    ));
+                }
+                Ok(())
+            });
+            let latest = read().await?;
+            let unchanged = latest.record.owner_epoch == owner_epoch
+                && latest.record.owner_connection_id.as_deref() == Some(owner.as_str());
+            match reply {
+                Ok(()) if unchanged || latest.record.snapshot.state.is_terminal() => {
+                    return typed_snapshot(latest.record.snapshot);
+                }
+                Err(error) if unchanged => return Err(error),
+                _ => {}
+            }
+        }
+        Err(ServerError::Nats(
+            "operation owner changed during reconciliation".to_owned(),
+        ))
+    }
+
+    /// Answer another instance's reconciliation request for an execution this
+    /// instance owns.
+    pub(crate) async fn answer_reconcile(&self, request: &[u8]) -> Bytes {
+        let frame = match serde_json::from_slice::<ReconcileRequest>(request) {
+            Ok(request) => match self
+                .reconcile_owned(&request.operation_id, Some(request.owner_epoch))
+                .await
+            {
+                Ok(_) => serde_json::json!({ "kind": "reconciled" }),
+                Err(error) => serde_json::json!({ "error": error.to_string() }),
+            },
+            Err(error) => serde_json::json!({ "error": error.to_string() }),
+        };
+        Bytes::from(frame.to_string())
+    }
+
+    /// The subject this instance answers reconciliation requests on.
+    pub(crate) fn reconcile_subject(&self) -> String {
+        format!(
+            "{}.{}",
+            self.reconcile_prefix,
+            trellis_protocol::encode_subject_token(&self.connection_id)
+        )
+    }
+}
+
+/// This instance's live executions by operation ID, for `control(id)` and
+/// owner reconciliation.
+type ActiveExecutions<D> =
+    Arc<std::sync::Mutex<std::collections::HashMap<String, ActiveExecution<D>>>>;
+
+/// One live execution this instance owns.
+struct ActiveExecution<D: OperationDescriptor> {
+    owner_epoch: u64,
+    control: Arc<dyn Fn() -> OperationControl<D> + Send + Sync>,
+    /// Asks the execution to enter its handler again; answered once that entry
+    /// returns or the execution ends.
+    reentry: tokio::sync::mpsc::UnboundedSender<oneshot::Sender<Result<(), String>>>,
+}
+
+/// Removes an execution from the registry when it ends, unless a later epoch
+/// of the same operation already replaced it.
+struct ActiveExecutionGuard<D: OperationDescriptor> {
+    active: ActiveExecutions<D>,
+    operation_id: String,
+    owner_epoch: u64,
+}
+
+impl<D: OperationDescriptor> ActiveExecutionGuard<D> {
+    fn register(
+        active: &ActiveExecutions<D>,
+        operation_id: &str,
+        owner_epoch: u64,
+        execution: ActiveExecution<D>,
+    ) -> Self {
+        active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(operation_id.to_owned(), execution);
+        Self {
+            active: Arc::clone(active),
+            operation_id: operation_id.to_owned(),
+            owner_epoch,
+        }
+    }
+}
+
+impl<D: OperationDescriptor> Drop for ActiveExecutionGuard<D> {
+    fn drop(&mut self) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .get(&self.operation_id)
+            .is_some_and(|execution| execution.owner_epoch == self.owner_epoch)
+        {
+            active.remove(&self.operation_id);
+        }
+    }
 }
 
 impl<D: OperationDescriptor> std::fmt::Debug for OperationControl<D> {
@@ -3045,6 +3470,16 @@ where
         }
         Ok(Some(object))
     }
+    /// Keep owning this operation after the handler returns without a terminal
+    /// state. The lease stays renewed until code holding
+    /// [`OperationRegistration::control`] completes, fails or cancels it, or
+    /// [`OperationRegistration::reconcile`] enters the handler again. Without
+    /// this, a handler that returns `Ok(())` early lets its lease lapse and
+    /// recovery runs it again.
+    pub fn defer(&self) {
+        self.deferred.store(true, Ordering::SeqCst);
+    }
+
     /// Mark the operation as started/running.
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(started), "`.")]
     pub async fn started(&self) -> Result<OperationSnapshot<D::Progress, D::Output>, ServerError> {

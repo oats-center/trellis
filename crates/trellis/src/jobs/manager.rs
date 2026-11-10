@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -20,8 +20,8 @@ use crate::jobs::keys::{
 use crate::jobs::publisher::{JobEventHeaders, JobEventPublisher};
 use crate::jobs::runtime_worker::{JobCancellationReason, JobCancellationToken};
 use crate::jobs::types::{
-    Job, JobConcurrency, JobContext, JobEventType, JobLineage, JobLogEntry, JobProgress,
-    JobQueuePolicy, JobQueuePolicyOutcome, JobState, JobTrigger, JobTriggerKind, JobWaitEdge,
+    Job, JobConcurrency, JobContext, JobLineage, JobLogEntry, JobProgress, JobQueuePolicy,
+    JobQueuePolicyOutcome, JobState, JobTrigger, JobTriggerKind, JobWaitEdge,
 };
 use crate::jobs::updates::{validate_update, JobUpdate, JobUpdateError, JobUpdateSchema};
 
@@ -80,6 +80,39 @@ pub enum JobSubmitOutcome<TJob> {
         replaced_job_id: String,
         job: TJob,
     },
+}
+
+/// A job prepared for a durable outbox: its ID, payload, creation time and
+/// trace context are fixed, so dispatching it again submits the same job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedJobSubmission {
+    queue: String,
+    job_id: String,
+    payload: Value,
+    created_at: String,
+    context: JobContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trigger: Option<JobTrigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lineage: Option<JobLineage>,
+}
+
+impl PreparedJobSubmission {
+    /// The queue the job is submitted to.
+    pub fn queue(&self) -> &str {
+        &self.queue
+    }
+
+    /// The ID the job has once admitted.
+    pub fn job_id(&self) -> &str {
+        &self.job_id
+    }
+
+    /// When the job was prepared, as RFC 3339.
+    pub fn created_at(&self) -> &str {
+        &self.created_at
+    }
 }
 
 /// Reason a raw manager-level job submission was not enqueued.
@@ -374,10 +407,51 @@ where
     where
         TPayload: Serialize + Clone,
     {
-        let queue = self.queue_binding(queue_type)?.clone();
-        let (job, payload_value) = self.prepare_job(&queue, queue_type, payload)?;
+        let submission = self.prepare(queue_type, payload)?;
+        self.admit(submission, false).await
+    }
+
+    /// Fix a job's ID, payload, creation time and trace context without
+    /// submitting it, so a durable outbox can store it inside the caller's
+    /// transaction and [`JobManager::dispatch_prepared`] submit it later.
+    pub fn prepare<TPayload>(
+        &self,
+        queue_type: &str,
+        payload: TPayload,
+    ) -> Result<PreparedJobSubmission, JobManagerError<P::Error>>
+    where
+        TPayload: Serialize,
+    {
+        prepare_submission(
+            self.inner.meta.as_ref(),
+            &self.inner.bindings,
+            queue_type,
+            payload,
+        )
+    }
+
+    /// Submit a prepared job through its queue's key policy. Lifecycle events
+    /// carry message IDs derived from the job ID, so dispatching the same
+    /// submission again after a crash does not create a second job. A
+    /// submission the policy refuses is recorded as skipped.
+    pub async fn dispatch_prepared(
+        &self,
+        submission: PreparedJobSubmission,
+    ) -> Result<JobSubmitOutcome<Job>, JobManagerError<P::Error>> {
+        self.admit(submission, true).await
+    }
+
+    async fn admit(
+        &self,
+        submission: PreparedJobSubmission,
+        stable: bool,
+    ) -> Result<JobSubmitOutcome<Job>, JobManagerError<P::Error>> {
+        let queue = self.queue_binding(&submission.queue)?.clone();
+        let created_id = stable.then(|| format!("trellis-job-created:{}", submission.job_id));
+        let job = self.job_from_submission(&queue, submission)?;
+        let payload_value = job.payload.clone();
         let Some(policy) = self.key_policy_for_job(&queue, &job)? else {
-            self.publish_created(&queue, &job, payload_value, None, None)
+            self.publish_created(&queue, &job, payload_value, None, None, created_id)
                 .await?;
             return Ok(JobSubmitOutcome::Accepted { job, key: None });
         };
@@ -402,7 +476,7 @@ where
             .await
             .map_err(|error| JobManagerError::KeyCoordinator(error.to_string()))?;
 
-        match admission {
+        let outcome = match admission {
             AdmitJobOutcome::Accepted { .. } => {
                 let publish_result = self
                     .publish_created(
@@ -416,6 +490,7 @@ where
                             None,
                             None,
                         )),
+                        created_id,
                     )
                     .await;
                 if let Err(error) = publish_result {
@@ -428,29 +503,47 @@ where
                     .await;
                     return Err(error);
                 }
-                Ok(JobSubmitOutcome::Accepted {
+                return Ok(JobSubmitOutcome::Accepted {
                     job,
                     key: Some(policy.key),
-                })
+                });
             }
             AdmitJobOutcome::Rejected {
                 reason,
                 active,
                 queued,
                 limit,
-            } => Ok(JobSubmitOutcome::Rejected(not_enqueued(
+            } => JobSubmitOutcome::Rejected(not_enqueued(
                 &policy, reason, active, queued, limit, None,
-            ))),
-            AdmitJobOutcome::Coalesced { existing_job_id } => Ok(JobSubmitOutcome::Coalesced {
+            )),
+            AdmitJobOutcome::Coalesced { existing_job_id } => JobSubmitOutcome::Coalesced {
                 key: policy.key,
                 existing_job_id,
                 reason: "coalesced".to_string(),
-            }),
+            },
             AdmitJobOutcome::Replaced { replaced, .. } => {
-                if let Err(error) = self
-                    .publish_skipped(&queue, &replaced, "replace-oldest")
-                    .await
-                {
+                let skipped_id =
+                    stable.then(|| format!("trellis-job-skipped:{}:{}", job.id, replaced.job_id));
+                let replaced_context = replaced.context.clone().ok_or_else(|| {
+                    JobManagerError::KeyCoordinator(format!(
+                        "queued job '{}' is missing lifecycle context",
+                        replaced.job_id
+                    ))
+                });
+                let skipped = match replaced_context {
+                    Ok(context) => {
+                        self.publish_skipped(
+                            &queue,
+                            &replaced.job_id,
+                            &context,
+                            "replace-oldest",
+                            skipped_id,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = skipped {
                     let _ = restore_replaced_admission(
                         coordinator.as_ref(),
                         &policy,
@@ -474,6 +567,7 @@ where
                             None,
                             Some(&replaced_job_id),
                         )),
+                        created_id,
                     )
                     .await;
                 if let Err(error) = publish_result {
@@ -486,105 +580,72 @@ where
                     .await;
                     return Err(error);
                 }
-                Ok(JobSubmitOutcome::Replaced {
+                return Ok(JobSubmitOutcome::Replaced {
                     key: policy.key,
                     replaced_job_id,
                     job,
-                })
+                });
             }
+        };
+        // A prepared job's ID is already known to its caller, so record it as
+        // skipped rather than leave it unknown.
+        if stable {
+            let reason = match &outcome {
+                JobSubmitOutcome::Rejected(error) => match error.reason {
+                    JobNotEnqueuedReason::ActiveLimit => "active-limit",
+                    JobNotEnqueuedReason::QueueDepth => "queue-depth",
+                    JobNotEnqueuedReason::StaleBlocked => "stale-blocked",
+                    JobNotEnqueuedReason::Coalesced => "coalesced",
+                },
+                _ => "coalesced",
+            };
+            self.publish_skipped(
+                &queue,
+                &job.id,
+                &job.context,
+                &format!("job submission not enqueued: {reason}"),
+                Some(format!("trellis-job-skipped:{}:{}", job.id, job.id)),
+            )
+            .await?;
         }
+        Ok(outcome)
     }
 
-    fn prepare_job<TPayload>(
+    fn job_from_submission(
         &self,
         queue: &JobsQueueBinding,
-        queue_type: &str,
-        payload: TPayload,
-    ) -> Result<(Job, Value), JobManagerError<P::Error>>
-    where
-        TPayload: Serialize + Clone,
-    {
-        let now = self.inner.meta.now_iso();
-        let id = self.inner.meta.next_job_id();
-        let parent = ACTIVE_PARENT_JOB.try_with(Clone::clone).ok();
-        let context = parent.as_ref().map_or_else(
-            || new_job_context(self.inner.meta.next_job_id(), &id, &now),
-            |parent| parent.context.clone(),
-        );
-        let trigger = parent.as_ref().map_or_else(
-            || JobTrigger {
-                kind: JobTriggerKind::ServiceCode,
-                id: None,
-                subject: None,
-                operation_id: None,
-                parent_job_id: None,
-                trace_id: None,
-                request_id: None,
-            },
-            |parent| JobTrigger {
-                kind: JobTriggerKind::ParentJob,
-                id: None,
-                subject: None,
-                operation_id: parent
-                    .lineage
-                    .as_ref()
-                    .and_then(|lineage| lineage.operation_id.clone()),
-                parent_job_id: Some(parent.id.clone()),
-                trace_id: Some(parent.context.trace_id.clone()),
-                request_id: Some(parent.context.request_id.clone()),
-            },
-        );
-        let lineage = parent.as_ref().map(|parent| JobLineage {
-            parent_job_id: Some(parent.id.clone()),
-            root_job_id: Some(
-                parent
-                    .lineage
-                    .as_ref()
-                    .and_then(|lineage| lineage.root_job_id.clone())
-                    .unwrap_or_else(|| parent.id.clone()),
-            ),
-            operation_id: parent
-                .lineage
-                .as_ref()
-                .and_then(|lineage| lineage.operation_id.clone()),
-            related_keys: None,
-        });
-        let payload_value: Value =
-            serde_json::to_value(payload.clone()).map_err(JobManagerError::SerializePayload)?;
-        let deadline = compute_deadline(&now, queue.default_deadline_ms).map_err(|details| {
-            JobManagerError::InvalidTimestamp {
-                timestamp: now.clone(),
+        submission: PreparedJobSubmission,
+    ) -> Result<Job, JobManagerError<P::Error>> {
+        let deadline = compute_deadline(&submission.created_at, queue.default_deadline_ms)
+            .map_err(|details| JobManagerError::InvalidTimestamp {
+                timestamp: submission.created_at.clone(),
                 details,
-            }
-        })?;
-        Ok((
-            Job {
-                id,
-                context,
-                service: self.inner.bindings.service_name.clone(),
-                job_type: queue_type.to_string(),
-                state: JobState::Pending,
-                payload: payload_value.clone(),
-                result: None,
-                created_at: now.clone(),
-                updated_at: now,
-                started_at: None,
-                completed_at: None,
-                tries: 0,
-                max_tries: queue.max_deliver,
-                last_error: None,
-                error_detail: None,
-                deadline,
-                progress: None,
-                logs: None,
-                concurrency: None,
-                queue_policy: None,
-                trigger: Some(trigger),
-                lineage,
-                waiting_on: None,
-            },
-            payload_value,
-        ))
+            })?;
+        Ok(Job {
+            id: submission.job_id,
+            context: submission.context,
+            service: self.inner.bindings.service_name.clone(),
+            job_type: submission.queue,
+            state: JobState::Pending,
+            payload: submission.payload,
+            result: None,
+            created_at: submission.created_at.clone(),
+            updated_at: submission.created_at,
+            started_at: None,
+            completed_at: None,
+            tries: 0,
+            max_tries: queue.max_deliver,
+            last_error: None,
+            error_detail: None,
+            deadline,
+            progress: None,
+            logs: None,
+            concurrency: None,
+            queue_policy: None,
+            trigger: submission.trigger,
+            lineage: submission.lineage,
+            waiting_on: None,
+        })
     }
 
     fn key_policy_for_job(
@@ -617,6 +678,7 @@ where
         payload: Value,
         concurrency: Option<JobConcurrency>,
         queue_policy: Option<JobQueuePolicy>,
+        message_id: Option<String>,
     ) -> Result<(), JobManagerError<P::Error>> {
         let mut event = match concurrency.or_else(|| job.concurrency.clone()) {
             Some(concurrency) => events::created_with_policy(
@@ -648,35 +710,31 @@ where
         };
         event.trigger = job.trigger.clone();
         event.lineage = job.lineage.clone();
-        self.publish_queue_event(queue, &job.id, event.event_type, &event)
+        self.publish_queue_event_with_id(queue, &job.id, &event, message_id)
             .await
     }
 
     async fn publish_skipped(
         &self,
         queue: &JobsQueueBinding,
-        entry: &JobKeyQueuedEntry,
+        job_id: &str,
+        context: &JobContext,
         reason: &str,
+        message_id: Option<String>,
     ) -> Result<(), JobManagerError<P::Error>> {
-        let context = entry.context.as_ref().ok_or_else(|| {
-            JobManagerError::KeyCoordinator(format!(
-                "queued job '{}' is missing lifecycle context",
-                entry.job_id
-            ))
-        })?;
         let timestamp = self.now_iso();
         let event = events::skipped(
             EventMeta {
                 service: &self.inner.bindings.service_name,
                 job_type: &queue.queue_type,
-                job_id: &entry.job_id,
+                job_id,
                 context,
                 timestamp: &timestamp,
             },
             JobState::Pending,
             Some(reason),
         );
-        self.publish_queue_event(queue, &entry.job_id, event.event_type, &event)
+        self.publish_queue_event_with_id(queue, job_id, &event, message_id)
             .await
     }
 
@@ -764,8 +822,7 @@ where
                 )
             };
             terminal.previous_state = Some(job.state);
-            self.publish_queue_event(queue, &job.id, terminal.event_type, &terminal)
-                .await?;
+            self.publish_queue_event(queue, &job.id, &terminal).await?;
             // Keep the fenced reservation until settlement is durable. A
             // terminal redelivery reconciles any slot left after publication.
             self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
@@ -804,8 +861,7 @@ where
                 job.state,
             ),
         };
-        self.publish_queue_event(queue, &job.id, started.event_type, &started)
-            .await?;
+        self.publish_queue_event(queue, &job.id, &started).await?;
 
         let deadline_delay = self.deadline_delay(&job)?;
         if deadline_delay.is_some_and(|delay| delay.is_zero()) {
@@ -915,8 +971,7 @@ where
                     "ordinary job attempts exhausted; execution owner reconciled",
                 )
             };
-            self.publish_queue_event(queue, &job.id, event.event_type, &event)
-                .await?;
+            self.publish_queue_event(queue, &job.id, &event).await?;
             self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
                 .await?;
             return Ok(if stale {
@@ -960,8 +1015,7 @@ where
                     tries,
                     result_value,
                 );
-                self.publish_queue_event(queue, &job.id, completed.event_type, &completed)
-                    .await?;
+                self.publish_queue_event(queue, &job.id, &completed).await?;
                 self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
                     .await?;
                 Ok(JobProcessOutcome::Completed { tries, result })
@@ -998,8 +1052,7 @@ where
                     JobState::Active,
                     Some(&error),
                 );
-                self.publish_queue_event(queue, &job.id, retry.event_type, &retry)
-                    .await?;
+                self.publish_queue_event(queue, &job.id, &retry).await?;
                 self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
                     .await?;
                 Ok(JobProcessOutcome::Retry { tries, error })
@@ -1036,8 +1089,7 @@ where
                     JobState::Active,
                     &error,
                 );
-                self.publish_queue_event(queue, &job.id, failed.event_type, &failed)
-                    .await?;
+                self.publish_queue_event(queue, &job.id, &failed).await?;
                 self.run_terminal_cleanup(&terminal_cleanup, &terminal_at)
                     .await?;
                 Ok(JobProcessOutcome::Failed { tries, error })
@@ -1087,8 +1139,7 @@ where
                 Some("lost key slot"),
                 job.concurrency.clone(),
             );
-            self.publish_queue_event(queue, &job.id, ignored.event_type, &ignored)
-                .await?;
+            self.publish_queue_event(queue, &job.id, &ignored).await?;
         }
         Ok(decision)
     }
@@ -1120,8 +1171,7 @@ where
             job.tries,
             progress,
         );
-        self.publish_queue_event(queue, &job.id, event.event_type, &event)
-            .await
+        self.publish_queue_event(queue, &job.id, &event).await
     }
 
     /// Publish one validated live-only update for an active job attempt.
@@ -1208,8 +1258,7 @@ where
             job.tries,
             vec![log],
         );
-        self.publish_queue_event(queue, &job.id, event.event_type, &event)
-            .await
+        self.publish_queue_event(queue, &job.id, &event).await
     }
 
     /// Publish `waiting` evidence for an active job.
@@ -1240,8 +1289,7 @@ where
             job.tries,
             wait_edge,
         );
-        self.publish_queue_event(queue, &job.id, event.event_type, &event)
-            .await
+        self.publish_queue_event(queue, &job.id, &event).await
     }
 
     /// Publish `resumed` evidence for an active job.
@@ -1272,8 +1320,7 @@ where
             job.tries,
             wait_edge,
         );
-        self.publish_queue_event(queue, &job.id, event.event_type, &event)
-            .await
+        self.publish_queue_event(queue, &job.id, &event).await
     }
 
     #[doc = concat!("Asynchronous Trellis API operation `", stringify!(cancel), "`.")]
@@ -1309,8 +1356,7 @@ where
             job.tries,
             job.state,
         );
-        self.publish_queue_event(queue, &job.id, event.event_type, &event)
-            .await?;
+        self.publish_queue_event(queue, &job.id, &event).await?;
         self.cleanup_cancelled_keyed_job(queue, job, &cancelled_at)
             .await?;
         Ok(())
@@ -1400,18 +1446,30 @@ where
         &self,
         queue: &JobsQueueBinding,
         job_id: &str,
-        event_type: JobEventType,
         event: &crate::jobs::types::JobEvent,
+    ) -> Result<(), JobManagerError<P::Error>> {
+        self.publish_queue_event_with_id(queue, job_id, event, None)
+            .await
+    }
+
+    async fn publish_queue_event_with_id(
+        &self,
+        queue: &JobsQueueBinding,
+        job_id: &str,
+        event: &crate::jobs::types::JobEvent,
+        message_id: Option<String>,
     ) -> Result<(), JobManagerError<P::Error>> {
         let payload = serde_json::to_vec(event).map_err(JobManagerError::SerializeEvent)?;
         let subject = format!(
             "{}.{}.{}",
             queue.publish_prefix,
             job_id,
-            event_type.as_token()
+            event.event_type.as_token()
         );
+        let mut headers = JobEventHeaders::from(&event.context);
+        headers.message_id = message_id;
         self.publisher()
-            .publish(subject, JobEventHeaders::from(&event.context), payload)
+            .publish(subject, headers, payload)
             .await
             .map_err(JobManagerError::Publish)
     }
@@ -1571,6 +1629,77 @@ fn compute_deadline(now: &str, default_deadline_ms: Option<u64>) -> Result<Optio
         .format(&Rfc3339)
         .map(Some)
         .map_err(|error| error.to_string())
+}
+
+/// Prepare a job for `queue_type` of `bindings`; see [`JobManager::prepare`].
+pub(crate) fn prepare_submission<TPayload, E>(
+    meta: &(impl JobMetaSource + ?Sized),
+    bindings: &JobsBinding,
+    queue_type: &str,
+    payload: TPayload,
+) -> Result<PreparedJobSubmission, JobManagerError<E>>
+where
+    TPayload: Serialize,
+{
+    if !bindings.queues.contains_key(queue_type) {
+        return Err(JobManagerError::MissingQueueBinding {
+            queue_type: queue_type.to_owned(),
+        });
+    }
+    let now = meta.now_iso();
+    let id = meta.next_job_id();
+    let parent = ACTIVE_PARENT_JOB.try_with(Clone::clone).ok();
+    let context = parent.as_ref().map_or_else(
+        || new_job_context(meta.next_job_id(), &id, &now),
+        |parent| parent.context.clone(),
+    );
+    let trigger = parent.as_ref().map_or_else(
+        || JobTrigger {
+            kind: JobTriggerKind::ServiceCode,
+            id: None,
+            subject: None,
+            operation_id: None,
+            parent_job_id: None,
+            trace_id: None,
+            request_id: None,
+        },
+        |parent| JobTrigger {
+            kind: JobTriggerKind::ParentJob,
+            id: None,
+            subject: None,
+            operation_id: parent
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.operation_id.clone()),
+            parent_job_id: Some(parent.id.clone()),
+            trace_id: Some(parent.context.trace_id.clone()),
+            request_id: Some(parent.context.request_id.clone()),
+        },
+    );
+    let lineage = parent.as_ref().map(|parent| JobLineage {
+        parent_job_id: Some(parent.id.clone()),
+        root_job_id: Some(
+            parent
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.root_job_id.clone())
+                .unwrap_or_else(|| parent.id.clone()),
+        ),
+        operation_id: parent
+            .lineage
+            .as_ref()
+            .and_then(|lineage| lineage.operation_id.clone()),
+        related_keys: None,
+    });
+    Ok(PreparedJobSubmission {
+        queue: queue_type.to_owned(),
+        job_id: id,
+        payload: serde_json::to_value(payload).map_err(JobManagerError::SerializePayload)?,
+        created_at: now,
+        context,
+        trigger: Some(trigger),
+        lineage,
+    })
 }
 
 #[cfg(test)]

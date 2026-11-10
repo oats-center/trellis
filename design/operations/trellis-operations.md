@@ -101,8 +101,8 @@ side-effecting children before returning. Only then may the fenced owner persist
 nonterminal without a forced timeout. Cancellation-requested recovery invokes
 the handler with Rust `Requested` or an aborted TypeScript signal already set to
 retry cleanup without starting new business work. Cleanup failure remains
-nonterminal; Rust `Ok(())` or a successful, non-deferred TypeScript return
-acknowledges successful cleanup before fenced cancellation finalization. Owner
+nonterminal; a non-deferred Rust `Ok(())` or TypeScript return acknowledges
+successful cleanup before fenced cancellation finalization. Owner
 loss notifies the old handler, but epoch fencing cannot prevent overlap of
 arbitrary external side effects after lease expiry. Cleanup duration is recorded
 as operation telemetry.

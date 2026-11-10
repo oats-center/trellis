@@ -52,6 +52,39 @@ Use `JobProcessError::failed(error)` for a non-retryable handler failure.
 of `Accepted`, `Rejected`, `Coalesced` (an existing job already covers the key)
 or `Replaced`.
 
+## Submit a job from a database transaction
+
+To submit a job only if your own database transaction commits, store it in an
+outbox inside that transaction and dispatch it afterwards. `prepare_<job>`
+fixes the job's ID, payload and creation time without submitting anything:
+
+```rust
+use trellis_rs::client::{dispatch_outbox_once, OutboxStore, SqliteOutboxStore};
+
+let jobs = provider.jobs_client();
+let tx = connection.transaction()?;
+save_order(&tx, &order)?;
+let job = jobs.prepare_reconcile(ReconcileInput { order_id: order.id.clone() })?;
+SqliteOutboxStore::new(&tx)
+    .enqueue(&format!("reconcile-{}", order.id), &job)
+    .await?;
+tx.commit()?;
+
+// A dispatcher loop, in any task:
+let dispatcher = jobs.outbox_dispatcher();
+let mut outbox = SqliteOutboxStore::new(&connection);
+dispatch_outbox_once(&mut outbox, &dispatcher).await?;
+```
+
+A dispatched job reports `JobDispatched` with the queue's `OutboxJobOutcome`.
+A key policy's refusal (`Rejected` or `Coalesced`) is final, and the prepared
+job is recorded as skipped so anything watching its ID sees it end. Errors
+leave the record pending for another attempt. Dispatching the same job again
+after a crash does not create a second job. The same outbox also carries
+prepared events. Its SQL table has a `kind` column; add
+`kind TEXT NOT NULL DEFAULT 'event'` to an existing `trellis_outbox_events`
+table.
+
 ## Progress and live updates
 
 A handler reports durable progress with `job.progress(JobProgress { .. })` and

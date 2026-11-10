@@ -23,6 +23,21 @@ and this project adheres to
 - Rust services and devices add their own version, details and named checks to
   their heartbeats through `health()`: `set_info`, `set_info_with` and `add`.
   A failing check shows the instance as degraded or unhealthy in the Console.
+- Rust services submit jobs through the SQL outbox, as TypeScript services do.
+  `jobs.prepare_<job>(payload)` fixes a job inside the application's
+  transaction, `store.enqueue(id, &job)` stores it beside prepared events, and
+  `dispatch_outbox_once(&mut store, &jobs.outbox_dispatcher())` submits it and
+  returns the queue's `OutboxJobOutcome`. A repeated dispatch after a crash
+  does not create a second job.
+- `ActiveJob::id()` returns the running job's ID.
+- Rust operation handlers defer with `control.defer()`, keeping the
+  operation's lease after returning, and `register_<op>` returns an
+  `OperationRegistration`. Its `control(id)` reaches an execution this instance
+  owns from outside the handler, and `reconcile(id)` asks the owner on any
+  replica to enter the handler again, as TypeScript's `control` and
+  `reconcile` do.
+- The Rust testkit's `add_service_instance(&identity)` provisions a replica of
+  a registered service.
 
 ### Fixed
 
@@ -43,6 +58,13 @@ and this project adheres to
 
 ### Changed
 
+- The Rust outbox stores intents rather than only events: `OutboxStore::enqueue`
+  takes anything convertible to `OutboxIntent`, `OutboxEventRecord` is
+  `OutboxRecord` with an `intent` field, and `dispatch_outbox_once` takes an
+  `OutboxDispatcher` instead of a publish closure. The SQL tables gain
+  `kind TEXT NOT NULL DEFAULT 'event'`; add it to existing
+  `trellis_outbox_events` tables.
+- `JobEventHeaders` has a `message_id` field.
 - The generated Rust `submit_<job>`, which returned the `JobRef`, is now
   `create_<job>`, matching TypeScript's `create`. A key policy's refusal is
   `JobsError::NotEnqueued` instead of a message.
