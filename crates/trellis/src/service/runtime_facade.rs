@@ -2082,15 +2082,7 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
         // arrives, and its replacement may not be admitted yet.
         // Connecting again shows whether the update installed; if not,
         // Submit returns the same update.
-        Err(ServiceRuntimeError::Client(
-            TrellisClientError::TransportUnavailable(_)
-            | TrellisClientError::NatsConnect(_)
-            | TrellisClientError::Timeout
-            | TrellisClientError::Protocol(trellis_protocol::ProtocolError::Authorization {
-                code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
-                ..
-            }),
-        )) => Ok(()),
+        Err(ServiceRuntimeError::Client(error)) if connection_was_replaced(&error) => Ok(()),
         result => result,
     }
 }
@@ -3130,11 +3122,12 @@ fn missing_durable_event_consumer_is_retryable(
 /// context, protocol/codec failures, and a misconfigured subscription. A
 /// missing or paused durable consumer has its own guard and is not folded in.
 fn durable_event_transport_error_is_retryable(error: &TrellisClientError) -> bool {
-    if is_missing_durable_event_consumer_error(error) {
-        return false;
-    }
-    // A retired session is replaced by fresh admission under the same
-    // credential; the logical connection decides whether that can recover.
+    !is_missing_durable_event_consumer_error(error) && connection_was_replaced(error)
+}
+
+/// A retired session is replaced by fresh admission under the same credential;
+/// the logical connection decides whether that can recover.
+fn connection_was_replaced(error: &TrellisClientError) -> bool {
     matches!(
         error,
         TrellisClientError::AuthorizationUnavailable(_)

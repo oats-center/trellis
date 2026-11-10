@@ -585,7 +585,14 @@ test("a Rust service connecting to a claim waits for approval, then runs as the 
         expectedRevision: pending.revision,
         idempotencyKey: ulid(),
       });
-      await runtime.waitFor(() => output.includes("service update stored"));
+      try {
+        await runtime.waitFor(() => output.includes("service update stored"));
+      } catch (cause) {
+        throw new Error(
+          `the service did not store its value; stdout: ${output}; stderr: ${errors.slice(-1500)}`,
+          { cause },
+        );
+      }
       assert.match(output, /service update stored approved/);
     } finally {
       child.kill();

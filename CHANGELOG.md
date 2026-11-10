@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.32] - 2026-11-10
+
+### Fixed
+
+- A Rust service waiting for its update no longer exits if approval closes its
+  connection during a status check. It reconnects and finds the update.
+
 ### Changed
 
 - The Console shows a service's unexpected failure with its error ID, to look
