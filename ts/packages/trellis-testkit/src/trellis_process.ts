@@ -75,6 +75,21 @@ export class TextTail {
   }
 }
 
+// A test that times out never reaches its cleanup, and the test runner then
+// exits the process. Whatever is still running goes with it.
+const runningHosts = new Set<{ child: TrellisChild; group?: number }>();
+process.once("exit", () => {
+  for (const { child, group } of runningHosts) {
+    killProcess(child, "SIGKILL");
+    if (group === undefined) continue;
+    try {
+      process.kill(-group, "SIGKILL");
+    } catch {
+      // The group is already gone.
+    }
+  }
+});
+
 class StartedTrellisProcess implements TrellisProcessHandle {
   readonly trellisUrl: string;
   readonly #child: TrellisChild;
@@ -89,6 +104,7 @@ class StartedTrellisProcess implements TrellisProcessHandle {
   #bootstrapUrl: string | undefined;
   #bootstrapWaiters: BootstrapUrlWaiter[] = [];
   #stopping: Promise<void> | undefined;
+  readonly #running: { child: TrellisChild; group?: number };
 
   constructor(args: {
     trellisUrl: string;
@@ -112,6 +128,11 @@ class StartedTrellisProcess implements TrellisProcessHandle {
     this.#stderrTail = args.stderrTail;
     this.#shutdownTimeoutMs = args.shutdownTimeoutMs;
     this.#isolatedProcessGroup = args.isolatedProcessGroup;
+    this.#running = {
+      child: args.child,
+      ...(args.isolatedProcessGroup ? { group: args.processId } : {}),
+    };
+    runningHosts.add(this.#running);
   }
 
   get bootstrapUrl(): string | undefined {
@@ -212,6 +233,7 @@ class StartedTrellisProcess implements TrellisProcessHandle {
         await delay(GROUP_EXIT_POLL_MS);
       }
     }
+    runningHosts.delete(this.#running);
     await Promise.allSettled([this.#stdoutReader, this.#stderrReader]);
   }
 

@@ -10,6 +10,8 @@ and this project adheres to
 
 ### Fixed
 
+- The TypeScript testkit now stops a Trellis host still running when its process
+  exits. Before, a test that timed out left its server and broker behind.
 - Cancelling a deferred Rust operation now enters its handler again to clean up
   and settles it as cancelled. Before, the operation stayed in `cancelling`.
 - Dispatching a keyed Rust outbox job again after it finished no longer leaves
