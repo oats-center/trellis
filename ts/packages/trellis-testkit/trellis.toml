@@ -1,6 +1,6 @@
 [package]
 name = "trellis-test-generated"
-version = "0.100.0-rc.34"
+version = "0.100.0-rc.35"
 
 [sources]
 admin = "contract.trellis"

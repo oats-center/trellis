@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.35] - 2026-11-11
+
 ### Fixed
 
 - The TypeScript testkit now stops a Trellis host still running when its process
