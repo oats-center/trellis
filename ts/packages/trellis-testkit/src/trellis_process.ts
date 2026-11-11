@@ -265,7 +265,9 @@ function timeoutValue<T>(
 }
 
 /**
- * Reports whether process group `groupId` has a member that isn't a zombie.
+ * Reports whether process group `groupId` has a member with a thread that
+ * isn't a zombie. A killed multithreaded process, such as the broker, shows a
+ * zombie main thread while its other threads still finish their writes.
  * Without `/proc` every member counts, so only an empty group is gone.
  */
 async function groupHasLivingMember(groupId: number): Promise<boolean> {
@@ -275,18 +277,28 @@ async function groupHasLivingMember(groupId: number): Promise<boolean> {
   } catch {
     return true;
   }
+  // `pid (comm) state ppid pgrp ...`; comm may itself contain spaces or `)`.
+  const fields = async (path: string) => {
+    try {
+      const stat = await readFile(path, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    } catch {
+      return undefined;
+    }
+  };
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
-    let stat: string;
+    const pgrp = (await fields(`/proc/${entry}/stat`))?.[2];
+    if (Number(pgrp) !== groupId) continue;
+    let tasks: string[];
     try {
-      stat = await readFile(`/proc/${entry}/stat`, "utf8");
+      tasks = await readdir(`/proc/${entry}/task`);
     } catch {
       continue;
     }
-    // `pid (comm) state ppid pgrp ...`; comm may itself contain spaces or `)`.
-    const [state, , pgrp] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    if (Number(pgrp) === groupId && state !== "Z" && state !== "X") {
-      return true;
+    for (const task of tasks) {
+      const state = (await fields(`/proc/${entry}/task/${task}/stat`))?.[0];
+      if (state !== undefined && state !== "Z" && state !== "X") return true;
     }
   }
   return false;

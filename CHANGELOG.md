@@ -14,6 +14,9 @@ and this project adheres to
 
 - The TypeScript testkit now stops a Trellis host still running when its process
   exits. Before, a test that timed out left its server and broker behind.
+- Stopping a TypeScript testkit host whose broker was orphaned now waits for
+  every broker thread to exit before removing the sandbox. Before, removal could
+  fail with `ENOTEMPTY` while those threads finished their writes.
 - Cancelling a deferred Rust operation now enters its handler again to clean up
   and settles it as cancelled. Before, the operation stayed in `cancelling`.
 - Dispatching a keyed Rust outbox job again after it finished no longer leaves
