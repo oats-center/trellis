@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.36] - 2026-11-11
+
 ### Added
 
 - The Console header shows the version of the Trellis server it is connected
@@ -15,6 +17,33 @@ and this project adheres to
   release notes. The version comes from the new `Runtime.Version` auth RPC,
   which `account.read` allows. The server asks GitHub only when an
   administrator asks, at most once an hour.
+
+### Fixed
+
+- A deleted OIDC sign-in provider frees its issuer, so a new provider can use
+  it. Before, saving one failed with a storage error naming the unique issuer.
+  A second live provider with the same issuer is now refused with a message
+  saying so. This edits the Auth database's baseline schema, so an existing
+  installation needs a fresh database.
+- A failed company (OIDC) sign-in now logs why on the server, with the
+  provider's ID: a discovery failure such as an issuer that differs from the
+  discovery document by a trailing slash, an unreadable client secret, a token
+  endpoint refusal such as `invalid_client`, the provider's own error reply, or
+  a returned issuer that doesn't match. Before, most of these showed only
+  `{"error":"server_error"}` and logged nothing. Nothing the person types is
+  logged.
+- A CLI sign-in that wasn't allowed an optional permission refuses a command
+  that needs it at once, naming the action and saying to run `trellis login`
+  again and allow it. Before, `whoami`, `svc`, `events` and `resources`
+  commands sent nothing and failed with `request timeout` after ten seconds.
+- `trellis events inspect` works: the CLI now asks for `events.inspect`, the
+  permission its request needs, as an optional permission.
+- A Rust server or service exporting metrics over OTLP no longer hangs during
+  startup. A metrics collection running while a gauge family first registered
+  could deadlock the two, leaving the server never ready.
+- A TypeScript ephemeral event subscription is live on the broker when its
+  `on<Event>(…, { mode: "ephemeral" })` call resolves. Before, an event
+  published right after from another connection could be missed.
 
 ## [0.100.0-rc.35] - 2026-11-11
 
