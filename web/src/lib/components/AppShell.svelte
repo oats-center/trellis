@@ -1,3 +1,11 @@
+<script module lang="ts">
+  /** The connected server's version, and a newer release for administrators. */
+  export type RuntimeVersion = {
+    version: string;
+    update?: { version: string };
+  };
+</script>
+
 <script lang="ts">
   import type { AuthorityProfile } from "../console/authority.ts";
   import { afterNavigate } from "$app/navigation";
@@ -28,6 +36,7 @@
     authority: Authority | null;
     navSections: NavSection[];
     connectionStatus: ConnectionStatus["phase"];
+    runtimeVersion?: RuntimeVersion | null;
     authFailure: string | null;
     accountNotAllowed: boolean;
     onRetryAuthority?: () => void;
@@ -40,6 +49,7 @@
     authority,
     navSections,
     connectionStatus,
+    runtimeVersion = null,
     authFailure,
     accountNotAllowed,
     onRetryAuthority,
@@ -139,6 +149,25 @@
         <kbd class="kbd kbd-xs hidden md:inline-flex">{paletteShortcut}</kbd>
       </button>
       <div class="ml-auto flex items-center gap-2 sm:gap-3">
+        {#if runtimeVersion}
+          <div
+            class="hidden items-center gap-2 text-xs text-base-content/65 sm:flex"
+            data-testid="runtime-version"
+          >
+            <span class="whitespace-nowrap"
+              >Trellis {runtimeVersion.version}</span
+            >
+            {#if runtimeVersion.update}
+              <a
+                class="badge badge-soft badge-info badge-sm whitespace-nowrap"
+                href={`https://github.com/oats-center/trellis/releases/tag/v${runtimeVersion.update.version}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                >{runtimeVersion.update.version} available</a
+              >
+            {/if}
+          </div>
+        {/if}
         <label
           class="swap swap-rotate btn btn-ghost btn-square"
           title="Toggle dark mode"
@@ -173,6 +202,13 @@
                 <p class="text-xs text-base-content/60">
                   {getRoleLabel(authority)}
                 </p>
+                {#if runtimeVersion}
+                  <p class="text-xs text-base-content/60 sm:hidden">
+                    Trellis {runtimeVersion.version}{runtimeVersion.update
+                      ? ` · ${runtimeVersion.update.version} available`
+                      : ""}
+                  </p>
+                {/if}
               </div>
             </li>
             <li>

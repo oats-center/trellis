@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- The Console header shows the version of the Trellis server it is connected
+  to. Administrators also see when a newer release is out, linked to its
+  release notes. The version comes from the new `Runtime.Version` auth RPC,
+  which `account.read` allows. The server asks GitHub only when an
+  administrator asks, at most once an hour.
+
 ## [0.100.0-rc.35] - 2026-11-11
 
 ### Fixed

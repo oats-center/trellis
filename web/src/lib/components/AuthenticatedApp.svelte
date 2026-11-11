@@ -18,7 +18,8 @@
   } from "../notifications.svelte";
   import { getConnection, getTrellis, type ConnectionStatus } from "../trellis";
   import { setChangeAccess } from "../console/change_access.ts";
-  import AppShell from "./AppShell.svelte";
+  import { canPerform } from "../console/operations.ts";
+  import AppShell, { type RuntimeVersion } from "./AppShell.svelte";
 
   type Props = {
     children: Snippet;
@@ -93,12 +94,30 @@
     authority.clear();
   }
 
+  // The server's version, and a newer release when an administrator asks. A
+  // failed read only leaves the header without it.
+  let runtimeVersion = $state<RuntimeVersion | null>(null);
+
   function finishAuthorityLoad(
     token: ReturnType<typeof currentNavigationToken>,
     result: { state: string },
   ): void {
     if (result.state === "auth-required") redirectToLogin();
     completeNavigation(token, result.state === "ready" ? "ok" : "error");
+    if (
+      result.state === "ready" &&
+      canPerform(authority.authority, "runtimeVersion")
+    ) {
+      void trellis
+        .runtimeVersion({})
+        .orThrow()
+        .then(
+          (version) => {
+            runtimeVersion = version;
+          },
+          () => undefined,
+        );
+    }
   }
 
   // Exactly one initial Me request per usable connection, plus one after each
@@ -139,6 +158,7 @@
   authority={snapshot.authority}
   {navSections}
   {connectionStatus}
+  {runtimeVersion}
   authFailure={snapshot.state === "error" &&
   snapshot.failure?.code !== "not_allowed"
     ? (snapshot.failure?.message ?? "Could not verify your session.")

@@ -91,6 +91,7 @@ the exact request, response, and error types.
 | Sessions              | `Sessions.Me/List/Revoke/Logout`, `AuthorizationSessions.List/Revoke`                                                                                                                   |
 | Connections           | `Connections.List`, `Connections.Kick`                                                                                                                                                  |
 | Users                 | `Users.Create/Delete/Get/List/Resolve/Update`, `Users.Profile.Update`, `Users.Password.Change`, `Users.PasswordReset.Create`, `Users.IdentityLink.Create`, `UserIdentities.List/Unlink` |
+| Runtime               | `Runtime.Version`                                                                                                                                                                       |
 
 ### Issuers
 
@@ -140,6 +141,17 @@ session RPCs are login-only; native service/device connections have no session
 row. `Connections.List` supports `principalId` to inspect only the selected
 principal's physical connections. User-session revocation and connection kicks
 remain separate actions.
+
+### Runtime Version
+
+`Runtime.Version` returns the running server's version to any caller holding
+`trellis.auth.v1:account.read`, which is how the Console shows it in its
+header. When the verified session also holds an administrative capability, the
+response carries `update` if a newer release exists on the server's channel:
+release candidates for a release-candidate build, stable releases otherwise.
+The server asks GitHub only while answering such a request, waits at most five
+seconds, and reuses the answer, or the failure, for an hour. A server nobody
+asks never calls out, and an unreachable GitHub only omits `update`.
 
 ### User Management
 

@@ -176,6 +176,7 @@ export const CONSOLE_OPERATIONS = {
   usersUpdate: authRpc("Users.Update"),
   usersDelete: authRpc("Users.Delete"),
   usersResolve: authRpc("Users.Resolve"),
+  runtimeVersion: authRpc("Runtime.Version"),
   usersIdentityLinkCreate: authRpc("Users.IdentityLink.Create"),
   usersPasswordResetCreate: authRpc("Users.PasswordReset.Create"),
 

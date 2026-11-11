@@ -767,6 +767,8 @@ inspect Trellis's internal authorization registry.
   the current login and its application sessions. `Users.Resolve` is self-only
   and includes the caller's `account`; `Sessions.Me` and `Sessions.Logout`
   require normal selection and consent. None of this grants directory access.
+  `accountRead` also permits `Runtime.Version`, the server's version; a caller
+  with an administrative capability also gets any newer release as `update`.
 - `usersRead`, selected and consented, permits `Users.List/Get`: an active-user
   directory with immutable `principalId`, names, available email, and photos.
   Ordinary results omit `account`. Delegated and currently held

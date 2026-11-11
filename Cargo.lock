@@ -6450,6 +6450,7 @@ dependencies = [
  "trellis-protocol",
  "trellis-rs",
  "trellis-runtime-apis",
+ "trellis-self-update",
  "ulid",
  "url",
 ]

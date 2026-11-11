@@ -577,6 +577,19 @@ model AuthLoginSession {
 type AuthSessionsListResponse = CursorPage<AuthLoginSession>;
 model AuthSessionsMeResponse { principal: AuthPrincipal; login?: AuthLoginSession; authorizationSessionId: ulid; }
 model AuthSessionsLogoutResponse { loginSessionId: ulid; enforcement: AuthEnforcementProgress; }
+/// The Trellis server the caller is connected to.
+model AuthRuntimeVersionResponse {
+  /// The running server's version.
+  version: string;
+  /// A newer release on the server's channel. Only administrators see it.
+  update?: AuthRuntimeUpdate;
+}
+model AuthRuntimeUpdate {
+  /// The newest release's version.
+  version: string;
+  /// When the server last asked GitHub.
+  checkedAt: timestamp;
+}
 model AuthLoginRevokeRequest { loginSessionId: ulid; idempotencyKey: AuthIdempotencyKey; }
 model AuthUser {
   principalId: ulid;

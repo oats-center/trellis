@@ -68,6 +68,7 @@ import {
   AuthIssuerRevokeResponse,
   AuthSessionsListResponse,
   AuthSessionsMeResponse,
+  AuthRuntimeVersionResponse,
   AuthSessionsLogoutResponse,
   AuthLoginRevokeRequest,
   AuthUserFindRequest,
@@ -250,6 +251,9 @@ api auth@v1 {
   // Own-account data, bounded by the named capabilities below.
   /// The calling person's own account.
   rpc Users.Resolve { input AuthEmpty; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// The version of the Trellis server, and for administrators a newer
+  /// release when one is out.
+  rpc Runtime.Version { input AuthEmpty; output AuthRuntimeVersionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Change your own name or picture.
   rpc Users.Profile.Update { input AuthUserProfileUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Change your own password. Your other sign-ins end.
@@ -396,7 +400,7 @@ api auth@v1 {
       title "See your profile";
       description "See your name, email, and account, and sign you out.";
       grants "Can read your profile and email and end your current sign-in.";
-      allows { rpc Users.Resolve; rpc Sessions.Me; rpc Sessions.Logout; }
+      allows { rpc Users.Resolve; rpc Sessions.Me; rpc Sessions.Logout; rpc Runtime.Version; }
     }
     capability account.edit {
       title "Edit your profile";

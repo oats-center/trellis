@@ -71,6 +71,12 @@ impl ReleaseChannel {
         }
     }
 
+    /// The channel a build of `version` follows: a release candidate is
+    /// offered later release candidates, a stable build only stable releases.
+    pub fn for_version(version: &str) -> Self {
+        Self::from_prerelease_flag(is_prerelease_version(version))
+    }
+
     fn accepts(self, prerelease: bool) -> bool {
         matches!(self, Self::Prerelease) || !prerelease
     }
@@ -364,6 +370,29 @@ mod tests {
     fn prerelease_channel_accepts_every_release() {
         assert!(ReleaseChannel::Prerelease.accepts(false));
         assert!(ReleaseChannel::Prerelease.accepts(true));
+    }
+
+    #[test]
+    fn a_release_candidate_build_is_offered_later_release_candidates() {
+        let target = SelfUpdateTarget::new("oats-center", "trellis", "trellis", "0.9.0-rc.2");
+        let versions = ["0.8.1", "0.9.0-rc.3", "0.9.0-rc.1"].map(String::from);
+        let channel = ReleaseChannel::for_version("0.9.0-rc.2");
+        let offered = versions
+            .clone()
+            .into_iter()
+            .filter(|version| channel.accepts(is_prerelease_version(version)));
+        assert_eq!(
+            select_latest_version(offered, channel, target).unwrap(),
+            "0.9.0-rc.3"
+        );
+        let stable = ReleaseChannel::for_version("0.8.0");
+        let offered = versions
+            .into_iter()
+            .filter(|version| stable.accepts(is_prerelease_version(version)));
+        assert_eq!(
+            select_latest_version(offered, stable, target).unwrap(),
+            "0.8.1"
+        );
     }
 
     #[test]

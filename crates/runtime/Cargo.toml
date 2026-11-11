@@ -67,6 +67,7 @@ trellis-events-runtime = { path = "../events-runtime", version = "0.100.0-rc.35"
 trellis-idl = { path = "../idl", version = "0.100.0-rc.35" }
 trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0-rc.35" }
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.35" }
+trellis-self-update = { path = "../self-update" }
 ulid.workspace = true
 url.workspace = true
 
