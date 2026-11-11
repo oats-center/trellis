@@ -193,7 +193,14 @@ pub(super) async fn start(
     .await
     {
         Ok(provider) => provider,
-        Err(_) => return error(ErrorCode::AccessDenied),
+        Err(cause) => {
+            tracing::warn!(
+                provider_id = %provider,
+                error = %cause,
+                "company sign-in started with a provider that is not active",
+            );
+            return error(ErrorCode::AccessDenied);
+        }
     };
     let snapshot = match ProviderSnapshot::discover(
         provider,
@@ -213,14 +220,29 @@ pub(super) async fn start(
         .upstream_client_secret(&snapshot.identity.provider_id, configured.secret.as_deref())
     {
         Ok(secret) => secret,
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(cause) => {
+            tracing::error!(
+                provider_id = %snapshot.identity.provider_id,
+                error = %cause,
+                "could not read the company sign-in provider's client secret",
+            );
+            return error(ErrorCode::ServerError);
+        }
     };
     let client = match snapshot.client(
         secret,
         format!("{}/portal/oidc/callback", authority.settings.oauth_issuer),
     ) {
         Ok(client) => client,
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(cause) => {
+            tracing::error!(
+                provider_id = %snapshot.identity.provider_id,
+                oauth_issuer = %authority.settings.oauth_issuer,
+                error = %cause,
+                "the company sign-in callback URL is not valid",
+            );
+            return error(ErrorCode::ServerError);
+        }
     };
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let mut request = client
@@ -255,12 +277,15 @@ pub(super) async fn start(
         request_id: super::super::sqlite::id(),
     };
     let state = state.secret().clone();
-    if with_store(&engine, move |store| {
+    if let Err(cause) = with_store(&engine, move |store| {
         store.store_upstream(&state, &flow, &client_id)
     })
     .await
-    .is_err()
     {
+        tracing::error!(
+            error = ?cause,
+            "could not save a company sign-in before sending the user to the provider",
+        );
         return error(ErrorCode::ServerError);
     }
     Redirect::to(url.as_str()).into_response()
@@ -314,13 +339,27 @@ pub(super) async fn callback(
         Ok(flow) => flow,
         Err(code) => return error(code),
     };
-    if form
+    if let Some(issuer) = form
         .get("iss")
-        .is_some_and(|issuer| issuer != &flow.provider.issuer)
+        .filter(|issuer| *issuer != &flow.provider.issuer)
     {
+        tracing::warn!(
+            provider_id = %flow.provider.provider_id,
+            expected = %flow.provider.issuer,
+            returned = %issuer,
+            "company sign-in provider returned a different issuer",
+        );
         return error(ErrorCode::InvalidRequest);
     }
-    if form.contains_key("error") {
+    if let Some(reason) = form.get("error") {
+        // The provider's own refusal, such as a client it doesn't recognize,
+        // a redirect URL it wasn't given, or the person cancelling.
+        tracing::warn!(
+            provider_id = %flow.provider.provider_id,
+            error = %reason,
+            description = form.get("error_description").map(String::as_str).unwrap_or(""),
+            "company sign-in provider refused the sign-in"
+        );
         if flow.account_token.is_some() {
             return error(ErrorCode::AccessDenied);
         }
@@ -349,12 +388,23 @@ pub(super) async fn callback(
     .await
     {
         Ok(configured) => configured,
-        Err(_) => return error(ErrorCode::AccessDenied),
+        Err(cause) => {
+            tracing::warn!(
+                provider_id = %flow.provider.provider_id,
+                error = %cause,
+                "company sign-in provider stopped being active during the sign-in",
+            );
+            return error(ErrorCode::AccessDenied);
+        }
     };
     if configured.revision != flow.provider.revision
         || configured.issuer != flow.provider.issuer
         || configured.client_id != flow.provider.client_id
     {
+        tracing::warn!(
+            provider_id = %flow.provider.provider_id,
+            "company sign-in provider was edited during the sign-in",
+        );
         return error(ErrorCode::AccessDenied);
     }
     let secret = match engine
@@ -363,7 +413,14 @@ pub(super) async fn callback(
         .upstream_client_secret(&flow.provider.provider_id, configured.secret.as_deref())
     {
         Ok(secret) => secret,
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(cause) => {
+            tracing::error!(
+                provider_id = %flow.provider.provider_id,
+                error = %cause,
+                "could not read the company sign-in provider's client secret",
+            );
+            return error(ErrorCode::ServerError);
+        }
     };
     let snapshot = match ProviderSnapshot::discover(
         flow.provider.provider_id.clone(),
@@ -382,11 +439,26 @@ pub(super) async fn callback(
         format!("{}/portal/oidc/callback", authority.settings.oauth_issuer),
     ) {
         Ok(client) => client,
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(cause) => {
+            tracing::error!(
+                provider_id = %flow.provider.provider_id,
+                oauth_issuer = %authority.settings.oauth_issuer,
+                error = %cause,
+                "the company sign-in callback URL is not valid",
+            );
+            return error(ErrorCode::ServerError);
+        }
     };
     let exchange = match client.exchange_code(AuthorizationCode::new(code.clone())) {
         Ok(exchange) => exchange,
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(cause) => {
+            tracing::error!(
+                provider_id = %flow.provider.provider_id,
+                error = %cause,
+                "company sign-in provider has no usable token endpoint",
+            );
+            return error(ErrorCode::ServerError);
+        }
     };
     let tokens = match exchange
         .set_pkce_verifier(PkceCodeVerifier::new(flow.pkce_verifier.clone()))
@@ -394,15 +466,23 @@ pub(super) async fn callback(
         .await
     {
         Ok(tokens) => tokens,
-        Err(_) => {
-            tracing::warn!(provider_id=%flow.provider.provider_id,"upstream OIDC token exchange rejected");
+        Err(cause) => {
+            // A wrong client secret shows here as the provider's `invalid_client`.
+            tracing::warn!(
+                provider_id = %flow.provider.provider_id,
+                error = %super::oidc::error_chain(&cause),
+                "upstream OIDC token exchange rejected",
+            );
             return error(ErrorCode::AccessDenied);
         }
     };
     let mut identity = match snapshot.verify(&client, &tokens, &flow.nonce) {
         Ok(identity) => identity,
         Err(_) => {
-            tracing::warn!(provider_id=%flow.provider.provider_id,"upstream OIDC ID token verification rejected");
+            tracing::warn!(
+                provider_id=%flow.provider.provider_id,
+                "upstream OIDC ID token verification rejected",
+            );
             return error(ErrorCode::AccessDenied);
         }
     };
@@ -466,8 +546,12 @@ pub(super) async fn callback(
             })
             .into_response(),
         ),
-        Err(_) => {
-            tracing::warn!(%provider_id, "upstream OIDC linked-account login rejected");
+        Err(cause) => {
+            tracing::warn!(
+                %provider_id,
+                error = %cause,
+                "upstream OIDC linked-account login rejected",
+            );
             error(ErrorCode::AccessDenied)
         }
     }

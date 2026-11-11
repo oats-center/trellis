@@ -1,6 +1,5 @@
 use miette::IntoDiagnostic;
 use trellis_runtime_apis::{
-    apis::trellis_events_v1::Client,
     types::{
         EventsConsumersInspectRequest, EventsConsumersQueryRequest,
         EventsDeadLettersDismissRequest, EventsDeadLettersInspectRequest,
@@ -25,7 +24,8 @@ fn page(args: &PageArgs) -> Option<CursorQuery> {
 
 pub(super) async fn run(command: EventsCommand) -> miette::Result<()> {
     let (_state, connected) = connect_authenticated_cli_client().await?;
-    let client = Client::from_generated(connected);
+    let client = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_events_v1();
     match command {
         EventsCommand::Query(args) => {
             let input = EventsQueryRequest {

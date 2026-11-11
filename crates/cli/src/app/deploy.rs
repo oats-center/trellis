@@ -9,7 +9,6 @@ use trellis_idl::project::read_manifest;
 use trellis_idl::CanonicalMode;
 use trellis_rs::auth as authlib;
 use trellis_rs::generated::Client;
-use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
 use trellis_runtime_apis::types as auth_types;
 
 use crate::app::{
@@ -76,7 +75,8 @@ async fn list_service_updates(
     connected: &Client,
     deployment_id: &str,
 ) -> miette::Result<Vec<auth_types::AuthServiceUpdate>> {
-    AuthClient::from_generated(connected.clone())
+    trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+        .trellis_auth_v1()
         .service_updates_list_items(auth_types::AuthServiceUpdatesListRequest {
             deployment_id: Some(wire(deployment_id)?),
             page: Some(trellis_runtime_apis::CursorQuery {
@@ -224,7 +224,8 @@ async fn decide_service_update(
                 .join(", ")
         ));
     }
-    let response = AuthClient::from_generated(connected)
+    let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .service_updates_decide(&auth_types::AuthServiceUpdateDecideRequest {
             update_id: selected.update_id,
             acknowledge_shared_apis: (approve && args.acknowledge_shared_apis).then_some(true),
@@ -389,24 +390,27 @@ pub fn compile_participant_input(
 
 async fn list_services(format: OutputFormat, args: &SvcListArgs) -> miette::Result<()> {
     let (_state, connected) = connect_authenticated_cli_client().await?;
-    let deployments = AuthClient::from_generated(connected.clone())
-        .deployments_list_items(auth_types::AuthPageRequest {
-            search: None,
-            page: Some(trellis_runtime_apis::CursorQuery {
-                cursor: None,
-                limit: Some(100),
-            }),
-            extra: Default::default(),
-        })
-        .try_filter(|item| {
-            std::future::ready(
-                item.kind == auth_types::AuthDeploymentKind::Service
-                    && (args.disabled || item.state == auth_types::AuthDeploymentState::Enabled),
-            )
-        })
-        .try_collect::<Vec<_>>()
-        .await
-        .into_diagnostic()?;
+    let deployments =
+        trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+            .trellis_auth_v1()
+            .deployments_list_items(auth_types::AuthPageRequest {
+                search: None,
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor: None,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .try_filter(|item| {
+                std::future::ready(
+                    item.kind == auth_types::AuthDeploymentKind::Service
+                        && (args.disabled
+                            || item.state == auth_types::AuthDeploymentState::Enabled),
+                )
+            })
+            .try_collect::<Vec<_>>()
+            .await
+            .into_diagnostic()?;
     if output::is_json(format) {
         output::print_json(&json!({ "deployments": deployments }))?;
         return Ok(());
@@ -420,24 +424,27 @@ async fn list_services(format: OutputFormat, args: &SvcListArgs) -> miette::Resu
 
 async fn list_devices(format: OutputFormat, args: &DevListArgs) -> miette::Result<()> {
     let (_state, connected) = connect_authenticated_cli_client().await?;
-    let deployments = AuthClient::from_generated(connected.clone())
-        .deployments_list_items(auth_types::AuthPageRequest {
-            search: None,
-            page: Some(trellis_runtime_apis::CursorQuery {
-                cursor: None,
-                limit: Some(100),
-            }),
-            extra: Default::default(),
-        })
-        .try_filter(|item| {
-            std::future::ready(
-                item.kind == auth_types::AuthDeploymentKind::Device
-                    && (args.disabled || item.state == auth_types::AuthDeploymentState::Enabled),
-            )
-        })
-        .try_collect::<Vec<_>>()
-        .await
-        .into_diagnostic()?;
+    let deployments =
+        trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+            .trellis_auth_v1()
+            .deployments_list_items(auth_types::AuthPageRequest {
+                search: None,
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor: None,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .try_filter(|item| {
+                std::future::ready(
+                    item.kind == auth_types::AuthDeploymentKind::Device
+                        && (args.disabled
+                            || item.state == auth_types::AuthDeploymentState::Enabled),
+                )
+            })
+            .try_collect::<Vec<_>>()
+            .await
+            .into_diagnostic()?;
     if output::is_json(format) {
         output::print_json(&json!({ "deployments": deployments }))?;
         return Ok(());
@@ -475,7 +482,8 @@ async fn create_service(
         Some(trellis_idl::ParticipantKind::Service),
     )?;
     let (_, connected) = connect_authenticated_cli_client().await?;
-    let response = AuthClient::from_generated(connected)
+    let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .deployments_create(&auth_types::AuthDeploymentCreateRequest {
             kind: auth_types::AuthDeploymentKind::Service,
             title: wire(id)?,
@@ -495,7 +503,8 @@ async fn create_service(
 async fn create_service_claim(format: OutputFormat, id: &str) -> miette::Result<()> {
     let (seed, key) = generate_session_keypair();
     let (_, connected) = connect_authenticated_cli_client().await?;
-    let response = AuthClient::from_generated(connected)
+    let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .service_claims_create(&auth_types::AuthServiceClaimCreateRequest {
             title: wire(id)?,
             instance_title: wire(id)?,
@@ -540,7 +549,8 @@ async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> 
         Some(trellis_idl::ParticipantKind::Device),
     )?;
     let (_, connected) = connect_authenticated_cli_client().await?;
-    let response = AuthClient::from_generated(connected)
+    let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .deployments_create(&auth_types::AuthDeploymentCreateRequest {
             kind: auth_types::AuthDeploymentKind::Device,
             title: wire(id)?,
@@ -582,7 +592,8 @@ async fn apply_contract(
     let revision = current["revision"]
         .as_str()
         .ok_or_else(|| miette::miette!("deployment response missing revision"))?;
-    let response = AuthClient::from_generated(connected)
+    let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .deployments_apply(&auth_types::AuthDeploymentApplyRequest {
             deployment_id: wire(deployment_id)?,
             expected_revision: wire(
@@ -618,7 +629,8 @@ async fn toggle_deployment(
         idempotency_key: wire(cli_idempotency_key())?,
         extra: Default::default(),
     };
-    let auth = AuthClient::from_generated(connected);
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
     let response = if enable {
         auth.deployments_enable(&request).await.into_diagnostic()?
     } else {
@@ -652,15 +664,17 @@ async fn remove_deployment(
     }
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let current = find_deployment(&connected, id, kind).await?;
-    let response = AuthClient::from_generated(connected.clone())
-        .deployments_remove(&auth_types::AuthDeploymentMutationRequest {
-            deployment_id: wire(&current["deploymentId"])?,
-            expected_revision: wire(&current["revision"])?,
-            idempotency_key: wire(cli_idempotency_key())?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?;
+    let response =
+        trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+            .trellis_auth_v1()
+            .deployments_remove(&auth_types::AuthDeploymentMutationRequest {
+                deployment_id: wire(&current["deploymentId"])?,
+                expected_revision: wire(&current["revision"])?,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?;
     print_remove_result(format, kind, id, serde_json::to_value(response).is_ok())
 }
 
@@ -671,7 +685,8 @@ async fn service_instances(
 ) -> miette::Result<()> {
     let deployment_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
     let (_, connected) = connect_authenticated_cli_client().await?;
-    let instances = AuthClient::from_generated(connected)
+    let instances = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .service_instances_list_items(auth_types::AuthInstancesListRequest {
             deployment_id: Some(wire(deployment_id)?),
             page: Some(trellis_runtime_apis::CursorQuery {
@@ -694,7 +709,8 @@ async fn device_instances(
 ) -> miette::Result<()> {
     let deployment_id = resolve_deployment_id(DeploymentKind::Device, id).await?;
     let (_, connected) = connect_authenticated_cli_client().await?;
-    let instances = AuthClient::from_generated(connected)
+    let instances = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .devices_list_items(auth_types::AuthInstancesListRequest {
             deployment_id: Some(wire(deployment_id)?),
             page: Some(trellis_runtime_apis::CursorQuery {
@@ -717,7 +733,8 @@ async fn provision_service(
 ) -> miette::Result<()> {
     let deployment_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
     let (_, connected) = connect_authenticated_cli_client().await?;
-    let client = AuthClient::from_generated(connected);
+    let client = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
     let current = client
         .service_instances_list_items(auth_types::AuthInstancesListRequest {
             deployment_id: Some(wire(&deployment_id)?),
@@ -798,7 +815,8 @@ async fn provision_device(
     let seed: [u8; 32] = rand::random();
     let root_secret = URL_SAFE_NO_PAD.encode(seed);
     let identity = authlib::derive_device_identity(&seed).into_diagnostic()?;
-    let response = AuthClient::from_generated(connected)
+    let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .devices_provision(&auth_types::AuthInstanceProvisionRequest {
             deployment_id: wire(deployment_id)?,
             identity_public_key: Some(wire(identity.public_identity_key)?),
@@ -1050,7 +1068,8 @@ async fn resolve_update_owner(id: &str) -> miette::Result<String> {
         return Ok(deployment);
     }
     let (_state, connected) = connect_authenticated_cli_client().await?;
-    let claims = AuthClient::from_generated(connected)
+    let claims = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
         .service_claims_list_items(auth_types::AuthPageRequest {
             search: None,
             page: Some(trellis_runtime_apis::CursorQuery {
@@ -1093,23 +1112,25 @@ async fn find_deployment(
         DeploymentKind::Service => auth_types::AuthDeploymentKind::Service,
         DeploymentKind::Device => auth_types::AuthDeploymentKind::Device,
     };
-    let entries = AuthClient::from_generated(connected.clone())
-        .deployments_list_items(auth_types::AuthPageRequest {
-            search: None,
-            page: Some(trellis_runtime_apis::CursorQuery {
-                cursor: None,
-                limit: Some(100),
-            }),
-            extra: Default::default(),
-        })
-        .try_filter(|item| std::future::ready(item.kind == kind))
-        .try_collect::<Vec<_>>()
-        .await
-        .into_diagnostic()?
-        .into_iter()
-        .map(serde_json::to_value)
-        .collect::<Result<Vec<_>, _>>()
-        .into_diagnostic()?;
+    let entries =
+        trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+            .trellis_auth_v1()
+            .deployments_list_items(auth_types::AuthPageRequest {
+                search: None,
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor: None,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .try_filter(|item| std::future::ready(item.kind == kind))
+            .try_collect::<Vec<_>>()
+            .await
+            .into_diagnostic()?
+            .into_iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()
+            .into_diagnostic()?;
     find_deployment_entry(entries, deployment_id)
 }
 

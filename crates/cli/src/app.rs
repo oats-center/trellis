@@ -58,7 +58,22 @@ pub async fn run() -> miette::Result<()> {
         )
     });
 
-    let result = dispatch(cli.command, format).await;
+    // A sign-in that wasn't allowed an optional permission refuses the command
+    // locally; say how to allow it.
+    let result = dispatch(cli.command, format).await.map_err(|report| {
+        if report
+            .to_string()
+            .starts_with("optional action unavailable:")
+        {
+            miette::miette!(
+                help = "This sign-in wasn't allowed to do that. Run `trellis login <url>` \
+                    again and allow it on the approval page.",
+                "{report}"
+            )
+        } else {
+            report
+        }
+    });
 
     if let Some(observation) = observation {
         observation.finish(if result.is_ok() { "ok" } else { "error" });

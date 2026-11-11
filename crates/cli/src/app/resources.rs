@@ -1,6 +1,5 @@
 use miette::IntoDiagnostic;
 use trellis_runtime_apis::{
-    apis::trellis_core_v1::Client,
     types::{ResourcesDestroyRequest, ResourcesInspectRequest, ResourcesQueryRequest},
     CursorQuery,
 };
@@ -13,7 +12,8 @@ use crate::{
 
 pub(super) async fn run(format: OutputFormat, command: ResourcesCommand) -> miette::Result<()> {
     let (_state, connected) = connect_authenticated_cli_client().await?;
-    let client = Client::from_generated(connected);
+    let client = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_core_v1();
     match command {
         ResourcesCommand::List(args) => {
             let input = ResourcesQueryRequest {

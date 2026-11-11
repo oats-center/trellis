@@ -483,6 +483,17 @@ impl SqliteAuthorizationStore {
                         "provider identity cannot change issuer".into(),
                     ));
                 }
+                let taken: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_oidc_providers \
+                    WHERE issuer=?1 AND provider_id!=?2 AND state!='deleted')",
+                    params![registration.issuer, registration.provider_id],
+                    |row| row.get(0),
+                )?;
+                if taken {
+                    return Err(AuthError::Invalid(
+                        "another sign-in provider already uses this issuer".into(),
+                    ));
+                }
                 connection.execute(
                     "INSERT INTO auth_oidc_providers \
                     VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,?9,?9) \

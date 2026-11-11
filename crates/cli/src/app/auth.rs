@@ -1309,7 +1309,8 @@ async fn logout_command(format: OutputFormat) -> miette::Result<()> {
 pub(super) async fn current_user(
     connected: &trellis_rs::generated::Client,
 ) -> miette::Result<auth_types::AuthSessionsMeResponse> {
-    trellis_runtime_apis::apis::trellis_auth_v1::Client::from_generated(connected.clone())
+    trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+        .trellis_auth_v1()
         .sessions_me(&auth_types::AuthEmpty {
             extra: Default::default(),
         })
@@ -1318,8 +1319,8 @@ pub(super) async fn current_user(
 }
 
 async fn revoke_current_session(connected: &trellis_rs::generated::Client) -> miette::Result<()> {
-    let auth =
-        trellis_runtime_apis::apis::trellis_auth_v1::Client::from_generated(connected.clone());
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+        .trellis_auth_v1();
     auth.sessions_logout(&auth_types::AuthEmpty {
         extra: Default::default(),
     })

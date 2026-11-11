@@ -480,6 +480,15 @@ struct ObservableFamilySources {
 
 type ObservableSources = Mutex<Vec<(&'static str, ObservableFamilySources)>>;
 static OBSERVABLE_SOURCES: OnceLock<ObservableSources> = OnceLock::new();
+/// Serializes binding family callbacks to a meter, so each family gets one
+/// callback per meter generation.
+///
+/// The SDK runs every observable callback while holding its pipeline lock, and
+/// a callback takes the `OBSERVABLE_SOURCES` lock; building an instrument takes
+/// the pipeline lock. So an instrument is never built while the
+/// `OBSERVABLE_SOURCES` lock is held, or a collection running during startup
+/// registration deadlocks both. Callbacks never take this lock.
+static CALLBACK_BINDING: Mutex<()> = Mutex::new(());
 static NEXT_SOURCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Collects one family's live sources under the lock, then invokes them
@@ -525,6 +534,9 @@ pub fn note_meter_provider_changed() {
     let Some(registry) = OBSERVABLE_SOURCES.get() else {
         return;
     };
+    let _binding = CALLBACK_BINDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let generation = meter_generation();
     let families: Vec<(&'static str, &'static str)> = {
         let Ok(sources) = registry.lock() else {
@@ -666,31 +678,39 @@ pub fn register_observable(
 ) -> ObservationRegistration {
     let registry = OBSERVABLE_SOURCES.get_or_init(|| Mutex::new(Vec::new()));
     let id = NEXT_SOURCE_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _binding = CALLBACK_BINDING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let generation = meter_generation();
+    // A provider change rebinds the family callback to the new meter; an
+    // existing generation with an empty source list is reused unchanged, so
+    // re-registration never creates a second callback for the same family.
+    let current_generation = registry
+        .lock()
+        .expect("observable registry")
+        .iter()
+        .find(|(name, _)| *name == family.name())
+        .map(|(_, family_sources)| family_sources.generation);
+    if current_generation != Some(generation) {
+        // Rebind the callback to the newly installed meter while preserving
+        // every live source entry and its registration id: an existing owner
+        // must not disappear because another family re-registered. Built
+        // without the registry lock; see `CALLBACK_BINDING`.
+        global::meter(INSTRUMENTATION_SCOPE)
+            .f64_observable_gauge(family.name())
+            .with_unit(family.unit())
+            .with_callback(move |observer| {
+                for source in live_sources(family.name()) {
+                    for (value, attributes) in source() {
+                        observer.observe(value, &attributes);
+                    }
+                }
+            })
+            .build();
+    }
     {
         let mut sources = registry.lock().expect("observable registry");
-        // A provider change rebinds the family callback to the new meter; an
-        // existing generation with an empty source list is reused unchanged, so
-        // re-registration never creates a second callback for the same family.
-        let current_generation = sources
-            .iter()
-            .find(|(name, _)| *name == family.name())
-            .map(|(_, family_sources)| family_sources.generation);
         if current_generation != Some(generation) {
-            // Rebind the callback to the newly installed meter while preserving
-            // every live source entry and its registration id: an existing
-            // owner must not disappear because another family re-registered.
-            global::meter(INSTRUMENTATION_SCOPE)
-                .f64_observable_gauge(family.name())
-                .with_unit(family.unit())
-                .with_callback(move |observer| {
-                    for source in live_sources(family.name()) {
-                        for (value, attributes) in source() {
-                            observer.observe(value, &attributes);
-                        }
-                    }
-                })
-                .build();
             match sources.iter_mut().find(|(name, _)| *name == family.name()) {
                 Some((_, family_sources)) => family_sources.generation = generation,
                 None => sources.push((

@@ -139,3 +139,37 @@ test(
     }, browserRuntimeOptions());
   },
 );
+
+test("a CLI signed in without an optional permission refuses commands that need it at once", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const browser = await chromium.launch({
+      headless: true,
+      env: browserTrustEnvironment(),
+    });
+    const page = await browser.newPage();
+    page.setDefaultTimeout(10_000);
+    try {
+      const { run } = await loginCliAsAdministrator(runtime, page, {
+        allowOptional: false,
+      });
+      for (const [command, action] of [
+        [["whoami"], "trellis.auth@v1 Sessions.Me"],
+        [["svc", "list"], "trellis.auth@v1 Deployments.List"],
+      ] as const) {
+        const started = Date.now();
+        await assert.rejects(run(...command), (error: { stderr?: string }) => {
+          assert.match(
+            error.stderr ?? "",
+            new RegExp(`unavailable: ${action}`),
+          );
+          assert.match(error.stderr ?? "", /trellis login/);
+          return true;
+        });
+        // Refused before anything is sent, not after the request timeout.
+        assert.ok(Date.now() - started < 5_000, command.join(" "));
+      }
+    } finally {
+      await browser.close();
+    }
+  }, browserRuntimeOptions());
+});

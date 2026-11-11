@@ -629,7 +629,7 @@ ON auth_direct_capabilities(capability_id, capability_generation, principal_id);
 
 CREATE TABLE auth_oidc_providers (
     provider_id TEXT PRIMARY KEY CHECK (length(provider_id) = 26),
-    issuer TEXT NOT NULL UNIQUE,
+    issuer TEXT NOT NULL,
     display_name TEXT NOT NULL,
     client_id TEXT NOT NULL,
     sealed_client_secret BLOB,
@@ -640,6 +640,10 @@ CREATE TABLE auth_oidc_providers (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+-- A deleted provider keeps its row for the sign-ins that name it, but frees
+-- its issuer for a new provider.
+CREATE UNIQUE INDEX auth_oidc_providers_live_issuer
+    ON auth_oidc_providers(issuer) WHERE state != 'deleted';
 CREATE TABLE auth_oidc_role_mappings (
     mapping_id TEXT PRIMARY KEY CHECK (length(mapping_id) = 26),
     provider_id TEXT NOT NULL REFERENCES auth_oidc_providers(provider_id),

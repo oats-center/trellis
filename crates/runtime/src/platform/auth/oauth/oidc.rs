@@ -147,12 +147,28 @@ impl ProviderSnapshot {
         http: &UpstreamHttp,
     ) -> Result<Self, AuthError> {
         let metadata = CoreProviderMetadata::discover_async(
-            IssuerUrl::new(issuer.clone()).map_err(|_| AuthError::Denied)?,
+            IssuerUrl::new(issuer.clone()).map_err(|error| {
+                tracing::warn!(%provider_id, %issuer, %error, "upstream OIDC issuer is not a URL");
+                AuthError::Denied
+            })?,
             http,
         )
         .await
-        .map_err(|_| AuthError::Unavailable)?;
-        let token = metadata.token_endpoint().ok_or(AuthError::Denied)?;
+        .map_err(|error| {
+            // An issuer must match the discovery document's `issuer` exactly,
+            // including any trailing slash.
+            tracing::warn!(
+                %provider_id,
+                %issuer,
+                error = %error_chain(&error),
+                "upstream OIDC discovery failed"
+            );
+            AuthError::Unavailable
+        })?;
+        let token = metadata.token_endpoint().ok_or_else(|| {
+            tracing::warn!(%provider_id, %issuer, "upstream OIDC discovery lists no token endpoint");
+            AuthError::Denied
+        })?;
         for endpoint in [
             metadata.authorization_endpoint().as_str(),
             token.as_str(),
@@ -165,6 +181,12 @@ impl ProviderSnapshot {
                 || endpoint.password().is_some()
                 || endpoint.fragment().is_some()
             {
+                tracing::warn!(
+                    %provider_id,
+                    %issuer,
+                    %endpoint,
+                    "upstream OIDC discovery lists an endpoint that is not plain HTTPS"
+                );
                 return Err(AuthError::Denied);
             }
         }
@@ -201,7 +223,13 @@ impl ProviderSnapshot {
         token: &TokenResponse,
         nonce: &str,
     ) -> Result<VerifiedIdentity, AuthError> {
-        let id_token = token.id_token().ok_or(AuthError::Denied)?;
+        let id_token = token.id_token().ok_or_else(|| {
+            tracing::warn!(
+                provider_id = %self.identity.provider_id,
+                "upstream OIDC token response has no ID token; is the openid scope allowed?"
+            );
+            AuthError::Denied
+        })?;
         let verifier = client.id_token_verifier();
         let claims = id_token
             .claims(&verifier, &Nonce::new(nonce.into()))
@@ -537,4 +565,21 @@ impl super::super::SqliteAuthorizationStore {
             })
         })
     }
+}
+
+/// An error and its sources on one line, for a log an operator reads: the
+/// OIDC library's top-level message often omits the cause, such as the
+/// mismatched issuer or the provider's refusal.
+pub(super) fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
 }

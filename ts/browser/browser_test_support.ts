@@ -360,6 +360,7 @@ export async function createOrdinaryUserWithPassword(
 export async function loginCliAsAdministrator(
   runtime: TrellisTestRuntime,
   page: Page,
+  { allowOptional = true }: { allowOptional?: boolean } = {},
 ): Promise<{
   directory: string;
   run: (...args: string[]) => Promise<any>;
@@ -405,8 +406,9 @@ export async function loginCliAsAdministrator(
     await page
       .getByRole("heading", { name: /wants to use your account/ })
       .waitFor();
-    for (const checkbox of await page.getByRole("checkbox").all())
-      if (await checkbox.isEnabled()) await checkbox.check();
+    if (allowOptional)
+      for (const checkbox of await page.getByRole("checkbox").all())
+        if (await checkbox.isEnabled()) await checkbox.check();
     await page.getByRole("button", { name: "Allow", exact: true }).click();
     await confirmAdministrationIfAsked(page);
     assert.equal((await exited)[0], 0);

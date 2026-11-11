@@ -3345,6 +3345,9 @@ export class Trellis<
           { once: true },
         );
       }
+      // The broker has the subscription once a round trip returns, so an
+      // event published after this resolves, from any connection, arrives.
+      await nc.flush();
     } catch (cause) {
       if (sub) {
         sub.unsubscribe();

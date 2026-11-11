@@ -102,6 +102,14 @@ current key; it never rotates or recreates missing keys. No private key crosses
 an RPC, and no offline root or manifest RPC exists. Historical contexts remain
 stored after ordinary rotation; explicit issuer revocation remains separate.
 
+### Upstream Identity Providers
+
+A provider's issuer never changes; pointing at a different issuer means a new
+provider. Two providers that aren't deleted cannot share an issuer, and
+`OIDCProviders.Put` refuses the second with a validation error. Delete keeps the
+provider's row for the sign-ins that name it but frees its issuer, so a new
+provider can take it.
+
 ### Deployments And Provisioning
 
 Deployment Apply is the administrator's direct mutation path. A running

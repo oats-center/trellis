@@ -1452,3 +1452,50 @@ staticPasswords:
     idp.kill().await.unwrap();
     idp.wait().await.unwrap();
 }
+
+#[test]
+fn a_deleted_provider_frees_its_issuer_for_a_new_provider() {
+    let f = fixture();
+    let authority = f.store.clone();
+    let register = |provider_id: String| {
+        let registration = super::super::lifecycle::OidcProviderRegistration {
+            provider_id,
+            issuer: "https://tenant.example.com/".into(),
+            display_name: "Company identity".into(),
+            client_id: "trellis".into(),
+            sealed_client_secret: None,
+            config: serde_json::json!({"scopes": []}),
+            claim_freshness_seconds: 300,
+            expected_revision: 0,
+        };
+        authority.transaction(|connection| {
+            authority.register_oidc_provider_in_transaction(
+                connection,
+                &mutation(&f.admin, &registration),
+                &registration,
+                NOW,
+            )
+        })
+    };
+    let first = id();
+    register(first.clone()).unwrap();
+    // Two live providers cannot share an issuer, and the refusal says why.
+    match register(id()) {
+        Err(AuthError::Invalid(detail)) => assert!(detail.contains("already uses this issuer")),
+        other => panic!("a second live provider with the same issuer: {other:?}"),
+    }
+    let delete = trellis_runtime_apis::__types::trellis::AuthOIDCProviderMutationRequest {
+        provider_id: first.parse().unwrap(),
+        expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1.into()),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    super::super::rpc_users::delete_provider(
+        &authority,
+        &mutation(&f.admin, &delete),
+        &delete,
+        NOW + 1,
+    )
+    .unwrap();
+    register(id()).unwrap();
+}

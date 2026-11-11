@@ -61,6 +61,7 @@ agent cli {
     capability deadLetters.dismiss;
     capability deadLetters.inspect;
     capability deadLetters.replay;
+    capability events.inspect;
     capability events.query;
   }
 }
