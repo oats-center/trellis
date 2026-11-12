@@ -3,6 +3,8 @@
 //! Each selected owner group acquires a NATS KV lease before its subsystem starts.
 //! After initial verification, one task owns each lease for its complete lifetime:
 //! renewal, failure reporting, and release. There is no standby or reacquisition.
+//! A renewal that fails without losing the lease, such as a KV update timing out
+//! on a loaded host, is tried again until the lease would expire.
 
 use std::collections::{hash_map::DefaultHasher, BTreeMap};
 use std::hash::{Hash, Hasher};
@@ -18,6 +20,9 @@ use crate::leases::{LeaseError, LeaseFence, LeaseGuard, LeaseKey, LeaseManager};
 use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeError, OWNERSHIP_SHUTDOWN_TIMEOUT};
 use crate::{ResolvedLeasesConfig, RuntimeMode, SubsystemName};
+
+/// Pause between renewal attempts within one round after a backend failure.
+const RENEWAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Stable runtime singleton owner group.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -249,38 +254,65 @@ async fn run_owned_lease(
     stop: StopHandle,
     mut next_renewal: Instant,
 ) -> Result<(), RuntimeError> {
-    let renewal_result = loop {
-        tokio::select! {
-            () = stop.stopped() => break Ok(()),
-            () = tokio::time::sleep_until(next_renewal) => {}
-        }
-
-        match tokio::time::timeout(
-            renewal_timeout(&owner_id, manager.renew, manager.ttl),
-            manager.renew(&mut lease.guard),
-        )
-        .await
-        {
-            Ok(Ok(())) => {}
-            Ok(Err(source)) => {
-                break Err(map_renewal_error(
-                    lease.group,
-                    lease.guard.key().clone(),
-                    &owner_id,
-                    source,
-                ));
+    let renewal_result =
+        'rounds: loop {
+            tokio::select! {
+                () = stop.stopped() => break Ok(()),
+                () = tokio::time::sleep_until(next_renewal) => {}
             }
-            Err(_) => {
-                break Err(RuntimeError::OwnerRenewalRoundTimeout {
-                    owner_id: owner_id.clone(),
-                });
-            }
-        }
 
-        next_renewal = next_renewal
-            .checked_add(manager.renew)
-            .unwrap_or(next_renewal);
-    };
+            // The round may use the lease's remaining lifetime. A backend failure,
+            // such as a KV update that timed out on a loaded host, leaves the lease
+            // ours until it expires, so the renewal is tried again within the
+            // round. Only proof that the lease is gone or another owner's, or the
+            // round's end, gives ownership up.
+            let round_deadline =
+                Instant::now() + renewal_timeout(&owner_id, manager.renew, manager.ttl);
+            loop {
+                let failure =
+                    match tokio::time::timeout_at(round_deadline, manager.renew(&mut lease.guard))
+                        .await
+                    {
+                        Ok(Ok(())) => break,
+                        Ok(Err(source @ LeaseError::Backend { .. })) => source,
+                        Ok(Err(source)) => {
+                            break 'rounds Err(map_renewal_error(
+                                lease.group,
+                                lease.guard.key().clone(),
+                                &owner_id,
+                                source,
+                            ));
+                        }
+                        Err(_) => {
+                            break 'rounds Err(RuntimeError::OwnerRenewalRoundTimeout {
+                                owner_id: owner_id.clone(),
+                            });
+                        }
+                    };
+                let retry = Instant::now() + RENEWAL_RETRY_DELAY;
+                if retry >= round_deadline {
+                    break 'rounds Err(map_renewal_error(
+                        lease.group,
+                        lease.guard.key().clone(),
+                        &owner_id,
+                        failure,
+                    ));
+                }
+                tracing::warn!(
+                    subsystem = %lease.group.subsystem(),
+                    error = %failure,
+                    "runtime owner lease renewal failed; retrying before the lease expires"
+                );
+                tokio::select! {
+                    () = stop.stopped() => break 'rounds Ok(()),
+                    () = tokio::time::sleep_until(retry) => {}
+                }
+            }
+
+            next_renewal = next_renewal
+                .checked_add(manager.renew)
+                .unwrap_or(next_renewal);
+        };
 
     let release_result = release_one(&manager, &owner_id, lease).await;
     match renewal_result {
@@ -433,6 +465,92 @@ fn first_renewal_deadline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A broker that stalls longer than one KV request timeout, but less than
+    /// the lease's lifetime, must not cost the runtime its ownership.
+    #[tokio::test]
+    async fn a_renewal_that_times_out_is_retried_before_the_lease_expires() {
+        use tokio::io::AsyncBufReadExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+        let port = reservation.port();
+        let mut server = tokio::process::Command::new(
+            std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
+        )
+        .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
+        .arg(directory.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        let mut logs = tokio::io::BufReader::new(server.stderr.take().unwrap()).lines();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(line) = logs.next_line().await.unwrap() {
+                if line.contains("Server is ready") {
+                    return;
+                }
+            }
+            panic!("NATS exited before readiness");
+        })
+        .await
+        .unwrap();
+        drop(reservation);
+        let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        let mut jetstream = jetstream::new(nats);
+        // Each KV request gives up quickly, as one does on a loaded host.
+        jetstream.set_timeout(Duration::from_millis(300));
+        let config = ResolvedLeasesConfig {
+            bucket: "trellis_leases".into(),
+            replicas: 1,
+            ttl_ms: 6_000,
+            renew_ms: 1_000,
+        };
+        let manager = LeaseManager::open(jetstream, &config, "owner-a")
+            .await
+            .unwrap();
+        let guard = manager
+            .acquire(LeaseKey::new("health.owner"))
+            .await
+            .unwrap();
+        let stop = StopHandle::new();
+        let mut task = tokio::spawn(run_owned_lease(
+            manager.clone(),
+            "owner-a".into(),
+            HeldLease {
+                group: OwnerGroup::Health,
+                guard,
+            },
+            stop.clone(),
+            Instant::now() + Duration::from_millis(500),
+        ));
+
+        // Freeze the broker across the first renewal.
+        let pid = server.id().unwrap().to_string();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(std::process::Command::new("kill")
+            .args(["-STOP", &pid])
+            .status()
+            .unwrap()
+            .success());
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(std::process::Command::new("kill")
+            .args(["-CONT", &pid])
+            .status()
+            .unwrap()
+            .success());
+
+        // Ownership survives the stall and keeps renewing afterwards.
+        let outcome = tokio::time::timeout(Duration::from_secs(4), &mut task).await;
+        assert!(
+            outcome.is_err(),
+            "ownership ended during a short broker stall: {outcome:?}"
+        );
+        stop.stop();
+        task.await.unwrap().unwrap();
+    }
 
     #[test]
     fn mode_owner_groups_use_stable_subsystem_order_and_keys() {
