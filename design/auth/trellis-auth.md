@@ -1097,6 +1097,15 @@ contract-owned Auth service boundary, not a shared filesystem. An Auth-owning
 process can check admission against its own provisioning result without making
 that database a dependency of split roles.
 
+Each role's singleton work (Auth, Jobs, Health, Events) runs only while its
+process holds that role's NATS KV owner lease. A renewal that fails without
+losing the lease is retried until the lease would expire. A process that
+cannot hold a lease, at startup or after losing one, stops all of its owned
+work and stands by, unready, trying again each renewal interval. It starts the
+work again once every lease it needs is free. A lease that another owner holds
+is waited out rather than treated as fatal, so a second process for the same
+role is a standby, and ownership never ends a process.
+
 `Auth.ResourceBindings.Query` is the native-IDL, paginated read boundary for
 runtime Job and Event consumer evidence. `trellis.auth.v1:bindings.readJobs` and
 `trellis.auth.v1:bindings.readEvents` authorize only their respective resource

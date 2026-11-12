@@ -10,11 +10,13 @@ and this project adheres to
 
 ### Fixed
 
-- The server no longer exits when renewing a runtime owner lease times out on a
-  heavily loaded host. A renewal that fails without losing the lease is tried
-  again until the lease would expire; only a lease that is gone, taken over, or
-  out of time ends the process. Before, the first timed-out renewal stopped the
-  server even with most of the lease's 30 seconds left.
+- The server no longer exits over a runtime owner lease. A renewal that fails
+  without losing the lease, such as one that times out on a heavily loaded
+  host, is tried again until the lease would expire. A server that loses a
+  lease, or starts while another server holds one, stops its owned work, reports
+  unready, and starts that work again once the lease is free. Before, the first
+  timed-out renewal stopped the server even with most of the lease's 30 seconds
+  left, and a server that found its lease held refused to start.
 
 ## [0.100.0-rc.36] - 2026-11-11
 

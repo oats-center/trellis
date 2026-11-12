@@ -2,9 +2,14 @@
 //!
 //! Each selected owner group acquires a NATS KV lease before its subsystem starts.
 //! After initial verification, one task owns each lease for its complete lifetime:
-//! renewal, failure reporting, and release. There is no standby or reacquisition.
-//! A renewal that fails without losing the lease, such as a KV update timing out
-//! on a loaded host, is tried again until the lease would expire.
+//! renewal, failure reporting, and release. A renewal that fails without losing
+//! the lease, such as a KV update timing out on a loaded host, is tried again
+//! until the lease would expire.
+//!
+//! A runtime that cannot own every selected group stands by: it tries again
+//! each renewal interval until each lease is free, whether another runtime holds
+//! one or the broker cannot answer. The supervisor stops the owned work when a
+//! lease is lost and returns here, so the process never exits over ownership.
 
 use std::collections::{hash_map::DefaultHasher, BTreeMap};
 use std::hash::{Hash, Hasher};
@@ -87,18 +92,63 @@ pub(crate) struct RuntimeOwnership {
 }
 
 impl RuntimeOwnership {
-    pub(crate) async fn acquire(
+    /// Opens the runtime lease bucket for this process's owner identity.
+    pub(crate) async fn open(
         client: async_nats::Client,
         config: &ResolvedLeasesConfig,
         owner_id: String,
-        mode: RuntimeMode,
-    ) -> Result<Self, RuntimeError> {
-        let manager = LeaseManager::open(jetstream::new(client), config, owner_id.clone())
+    ) -> Result<LeaseManager, RuntimeError> {
+        LeaseManager::open(jetstream::new(client), config, owner_id.clone())
             .await
             .map_err(|source| RuntimeError::LeaseBucketOpen {
-                owner_id: owner_id.clone(),
+                owner_id,
                 source: Box::new(source),
-            })?;
+            })
+    }
+
+    /// Acquires every lease `mode` selects, standing by until each is free.
+    ///
+    /// Another runtime holding a lease and a broker that cannot answer are both
+    /// waited out, one attempt per renewal interval. Returns `None` once `stop`
+    /// fires.
+    pub(crate) async fn acquire_when_free(
+        manager: &LeaseManager,
+        mode: RuntimeMode,
+        stop: &StopHandle,
+    ) -> Option<Self> {
+        let mut last_failure = None;
+        loop {
+            // An attempt runs to completion so a stop never strands a lease it
+            // took; each broker request inside it is bounded.
+            match Self::acquire(manager, mode).await {
+                Ok(ownership) => {
+                    if last_failure.is_some() {
+                        tracing::info!("runtime owns its work again; starting it");
+                    }
+                    return Some(ownership);
+                }
+                Err(error) => {
+                    let failure = error.to_string();
+                    if last_failure.as_ref() != Some(&failure) {
+                        tracing::warn!(
+                            error = %error,
+                            "runtime is standing by until it can own its work"
+                        );
+                    }
+                    last_failure = Some(failure);
+                }
+            }
+            let retry =
+                manager.renew + renewal_jitter(&manager.owner_id, manager.renew, manager.ttl);
+            tokio::select! {
+                () = stop.stopped() => return None,
+                () = tokio::time::sleep(retry) => {}
+            }
+        }
+    }
+
+    async fn acquire(manager: &LeaseManager, mode: RuntimeMode) -> Result<Self, RuntimeError> {
+        let owner_id = manager.owner_id.clone();
         let mut held = Vec::new();
         let mut owners = BTreeMap::new();
 
@@ -120,7 +170,7 @@ impl RuntimeOwnership {
                 Err(source) => {
                     record_runtime_lease_event(group, "acquire", "error");
                     let primary = map_acquisition_error(group, key, &owner_id, source);
-                    if let Err(cleanup) = release_held(&manager, &owner_id, &mut held).await {
+                    if let Err(cleanup) = release_held(manager, &owner_id, &mut held).await {
                         tracing::error!(error = %cleanup, "failed to clean up partially acquired runtime ownership");
                     }
                     return Err(primary);
@@ -129,8 +179,8 @@ impl RuntimeOwnership {
         }
 
         let verification_started = Instant::now();
-        if let Err(primary) = verify_held(&manager, &owner_id, &mut held).await {
-            if let Err(cleanup) = release_held(&manager, &owner_id, &mut held).await {
+        if let Err(primary) = verify_held(manager, &owner_id, &mut held).await {
+            if let Err(cleanup) = release_held(manager, &owner_id, &mut held).await {
                 tracing::error!(error = %cleanup, "failed to clean up ownership after acquisition verification");
             }
             return Err(primary);

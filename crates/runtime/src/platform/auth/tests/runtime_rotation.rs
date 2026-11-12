@@ -771,3 +771,127 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
         .unwrap();
     drop(reserved);
 }
+
+/// A runtime that loses an owner lease keeps its process: with the lease free it
+/// takes it back and serves again; while another owner holds it, it stands by
+/// unready, then resumes once that owner goes away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_runtime_that_loses_its_lease_stands_by_and_serves_again() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let reserved: Vec<_> = (0..4)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    let origin = format!("http://127.0.0.1:{}", ports[0]);
+    let (mut config, mut broker) =
+        installation(root, &ports, &origin, "loopback_development").await;
+    let leases = config
+        .leases
+        .as_mut()
+        .expect("an installation configures leases");
+    leases.ttl_ms = Some(3_000);
+    leases.renew_ms = Some(1_000);
+    let (stop, mut runtime) = start_runtime(&config, &origin, &[]).await;
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let ready = || async {
+        http.get(format!("{origin}/readyz"))
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
+    };
+    let nats = config.resolve_nats_runtime().unwrap();
+    let client = crate::supervisor::nats_connect_options(&nats, &nats.trellis_creds)
+        .unwrap()
+        .connect(nats.server_urls())
+        .await
+        .unwrap();
+    let leases = async_nats::jetstream::new(client)
+        .get_key_value(config.resolve_leases().unwrap().bucket)
+        .await
+        .unwrap();
+    let owner = leases.entry("jobs.owner").await.unwrap().unwrap();
+
+    // The lease vanishes with nobody else holding it: the runtime takes a new
+    // one and serves again.
+    leases.purge("jobs.owner").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            tokio::select! {
+                result = &mut runtime => panic!("runtime exited after losing its lease: {result:?}"),
+                () = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+            let entry = leases.entry("jobs.owner").await.unwrap();
+            if entry.is_some_and(|entry| {
+                entry.value == owner.value && entry.revision > owner.revision
+            }) && ready().await
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the runtime took its lease back and served again");
+
+    // Another owner takes the lease and keeps renewing it: the runtime stops
+    // serving but stays up.
+    let renewals = tokio::spawn({
+        let leases = leases.clone();
+        async move {
+            loop {
+                leases
+                    .put("jobs.owner", "another-runtime".into())
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while ready().await {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("the runtime stopped serving once another owner held its lease");
+    for _ in 0..20 {
+        tokio::select! {
+            result = &mut runtime => panic!("runtime exited while standing by: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+        assert!(!ready().await, "the runtime served without its lease");
+    }
+
+    // That owner goes away and its lease expires: the runtime resumes.
+    renewals.abort();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            tokio::select! {
+                result = &mut runtime => panic!("runtime exited while standing by: {result:?}"),
+                () = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+            let entry = leases.entry("jobs.owner").await.unwrap();
+            if entry.is_some_and(|entry| entry.value == owner.value) && ready().await {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the runtime resumed once the other owner's lease expired");
+
+    stop.stop();
+    tokio::time::timeout(Duration::from_secs(30), &mut runtime)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::task::spawn_blocking(move || broker.stop().unwrap())
+        .await
+        .unwrap();
+    drop(reserved);
+}

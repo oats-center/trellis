@@ -70,6 +70,13 @@ Trellis creates its streams with one copy each, NATS's default, so on a
 cluster each stream lives on one server. `[leases] replicas` sets the copies of
 the lease bucket.
 
+The parts of Trellis that must run once (Auth, jobs, health and events) each
+hold a lease in that bucket while they run. A server that loses a lease, for
+example because NATS couldn't renew it in time on a loaded machine, stops that
+work but keeps running. While it waits, `/readyz` reports it unready. It starts
+the work again as soon as the lease is free. A second server for the same NATS
+waits this way too, and takes over if the first one stops.
+
 ## Reset the administrator password
 
 Start the server once with `--reset-admin`. It prints a reset link that lasts

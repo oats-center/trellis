@@ -5,9 +5,11 @@
 //! Runtime modes select platform, Jobs, Health, or Event Log ownership groups;
 //! `all` acquires every group. With NATS leases and SQLite enabled, [`run`]
 //! acquires all selected singleton leases before opening owner-controlled stores
-//! or starting subsystems. Ownership loss is fatal and does not trigger standby
-//! or reacquisition. Shutdown is bounded across subsystem stop, HTTP drain,
-//! lease release, and NATS flush.
+//! or starting subsystems. A runtime that cannot own every selected group, at
+//! startup or after losing a lease, stops its owned work and stands by until
+//! each lease is free, then starts that work again; ownership never ends the
+//! process. Shutdown is bounded across subsystem stop, HTTP drain, lease
+//! release, and NATS flush.
 
 /// Runtime configuration loading, defaults, and validation.
 pub mod config;

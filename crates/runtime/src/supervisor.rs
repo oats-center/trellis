@@ -680,24 +680,61 @@ pub async fn run_with_stop(
         config.instance_name.as_deref().unwrap_or("trellis-runtime"),
         Ulid::generate()
     );
-    let mut ownership =
-        RuntimeOwnership::acquire(trellis_nats.clone(), &leases, owner_id, options.mode).await?;
-    let result = run_owned(
-        config,
-        options.mode,
-        options.reset_admin,
-        options.nats_override,
-        trellis_nats.clone(),
-        &mut ownership,
-        stop,
-    )
-    .await;
-    tracing::info!("runtime subsystem and provider shutdown finished; releasing ownership");
-    let release_result = ownership.shutdown().await;
-    tracing::info!("runtime ownership shutdown finished; flushing NATS");
+    let manager = RuntimeOwnership::open(trellis_nats.clone(), &leases, owner_id).await?;
+    // One stop serves the whole process, so a signal is observed whether the
+    // runtime is serving or standing by between owners.
+    let process_stop = StopHandle::new();
+    let _signal = AbortOnDropHandle::new(tokio::spawn({
+        let process_stop = process_stop.clone();
+        async move {
+            shutdown_or_stop(stop).await;
+            process_stop.stop();
+        }
+    }));
+    let mut reset_admin = options.reset_admin;
+    // Losing a lease stops the owned work and returns here to stand by; the
+    // process ends only on a stop or a failure that ownership cannot explain.
+    let result = loop {
+        let Some(mut ownership) =
+            RuntimeOwnership::acquire_when_free(&manager, options.mode, &process_stop).await
+        else {
+            break Ok(());
+        };
+        let result = run_owned(
+            config.clone(),
+            options.mode,
+            reset_admin,
+            options.nats_override.clone(),
+            trellis_nats.clone(),
+            &mut ownership,
+            Some(process_stop.clone()),
+        )
+        .await;
+        // The first administrator flow is rotated once per start, not per owner.
+        reset_admin = false;
+        tracing::info!("runtime subsystem and provider shutdown finished; releasing ownership");
+        let release_result = ownership.shutdown().await;
+        tracing::info!("runtime ownership shutdown finished");
+        match result {
+            Err(
+                lost @ (RuntimeError::OwnerRenewal { .. }
+                | RuntimeError::OwnerRenewalRoundTimeout { .. }),
+            ) if !process_stop.is_stopped() => {
+                tracing::warn!(
+                    error = %lost,
+                    "runtime lost ownership; its owned work stopped and it stands by to resume"
+                );
+                if let Err(release) = release_result {
+                    tracing::warn!(error = %release, "runtime ownership release also failed");
+                }
+            }
+            result => break preserve_primary(result, release_result, Ok(())),
+        }
+    };
+    tracing::info!("flushing NATS");
     let flush_result = bounded_flush(trellis_nats.flush(), NATS_FLUSH_TIMEOUT).await;
     tracing::info!("runtime NATS flush finished");
-    preserve_primary(result, release_result, flush_result)
+    preserve_primary(result, Ok(()), flush_result)
 }
 
 async fn bounded_flush<F, E>(flush: F, timeout: Duration) -> Result<(), RuntimeError>
