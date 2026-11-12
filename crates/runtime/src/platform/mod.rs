@@ -56,7 +56,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .config
         .resolve_console_origin()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let (opened, keep_admin) = (store.clone(), !context.reset_admin);
+    let (opened, keep_admin) = (store.clone(), !context.take_reset_admin());
     let (engine, account_url) = auth::blocking(move || {
         let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
         opened.initialize_issuer(crate::clock::unix_now())?;
@@ -180,12 +180,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let callout = AuthCallout::start(auth_nats, system.clone(), store.clone(), keys)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    context
+    *context
         .authorization_store
-        .set(store.clone())
-        .map_err(|_| {
-            RuntimeError::Platform("Platform authorization store is already installed".into())
-        })?;
+        .lock()
+        .map_err(|_| RuntimeError::Platform("authorization store lock poisoned".into()))? =
+        Some(store.clone());
     // Sign-in and the Console share the Trellis listener.
     context.register_http_router(router.merge(console::router(&context.config)?))?;
     let stop = StopHandle::new();

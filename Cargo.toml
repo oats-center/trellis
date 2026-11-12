@@ -125,6 +125,7 @@ axum-server = { version = "0.9.0", default-features = false, features = ["tls-ru
 openidconnect = { version = "4.1.0", default-features = false }
 oauth-as = { version = "=1.0.1", default-features = false, features = ["axum", "dpop", "jwt-p256", "rar", "cimd"] }
 nats-jwt-rs = "0.1.1"
+tower = { version = "0.5.3", default-features = false, features = ["util"] }
 tower-http = { version = "0.6.8", features = ["cors", "limit", "set-header", "trace"] }
 time = { version = "0.3.46", features = ["formatting"] }
 url = "2.5.8"

@@ -103,22 +103,19 @@ impl LiveProviderSlots {
         }
     }
 
-    pub(crate) async fn shutdown(&self) -> Result<(), RuntimeError> {
-        let owners: Vec<_> = self
+    /// Closes one role's provider, leaving its slot empty for the next start.
+    pub(crate) async fn shutdown_role(&self, role: LiveProviderRole) -> Result<(), RuntimeError> {
+        let Some(owner) = self
             .senders
-            .values()
-            .filter_map(|sender| sender.send_replace(None))
-            .collect();
-        let results = futures_util::future::join_all(
-            owners
-                .iter()
-                .map(trellis_rs::__internal::LiveProviderOwner::shutdown_native_runtime),
-        )
-        .await;
-        for result in results {
-            result.map_err(|error| RuntimeError::Platform(error.to_string()))?;
-        }
-        Ok(())
+            .get(&role)
+            .and_then(|sender| sender.send_replace(None))
+        else {
+            return Ok(());
+        };
+        owner
+            .shutdown_native_runtime()
+            .await
+            .map_err(|error| RuntimeError::Platform(error.to_string()))
     }
 }
 

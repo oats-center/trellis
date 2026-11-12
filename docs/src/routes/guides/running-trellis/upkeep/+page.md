@@ -72,10 +72,12 @@ the lease bucket.
 
 The parts of Trellis that must run once (Auth, jobs, health and events) each
 hold a lease in that bucket while they run. A server that loses a lease, for
-example because NATS couldn't renew it in time on a loaded machine, stops that
-work but keeps running. While it waits, `/readyz` reports it unready. It starts
-the work again as soon as the lease is free. A second server for the same NATS
-waits this way too, and takes over if the first one stops.
+example because NATS couldn't renew it in time on a loaded machine, stops only
+that part and keeps the rest running. It starts the part again as soon as the
+lease is free. A second server for the same NATS waits this way too, and takes
+over whichever parts the first one stops running. `/readyz` reports a server
+unready while Auth runs elsewhere, since Auth's pages and sign-in are what its
+listener serves.
 
 ## Reset the administrator password
 

@@ -12,11 +12,13 @@ and this project adheres to
 
 - The server no longer exits over a runtime owner lease. A renewal that fails
   without losing the lease, such as one that times out on a heavily loaded
-  host, is tried again until the lease would expire. A server that loses a
-  lease, or starts while another server holds one, stops its owned work, reports
-  unready, and starts that work again once the lease is free. Before, the first
-  timed-out renewal stopped the server even with most of the lease's 30 seconds
-  left, and a server that found its lease held refused to start.
+  host, is tried again until the lease would expire. Auth, Jobs, Health and
+  Events each run on their own lease: one that is lost, or held by another
+  server at startup, stops only that part, which starts again once the lease
+  is free, while the rest of the server keeps running. `/readyz` reports a
+  server unready only while its Auth stands by. Before, the first timed-out
+  renewal stopped the whole server even with most of the lease's 30 seconds
+  left, and a server that found a lease held refused to start.
 
 ## [0.100.0-rc.36] - 2026-11-11
 

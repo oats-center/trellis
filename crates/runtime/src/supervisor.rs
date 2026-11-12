@@ -555,40 +555,60 @@ pub enum RuntimeError {
 }
 
 /// Shared runtime context passed to subsystem startup scaffolds.
-#[derive(Debug)]
 pub(crate) struct RuntimeContext {
     /// Loaded and validated runtime configuration.
     pub(crate) config: RuntimeConfig,
     /// Runtime mode selected for this process.
     pub(crate) mode: RuntimeMode,
-    /// Whether startup must rotate the pending first-administrator bootstrap flow.
-    pub(crate) reset_admin: bool,
+    /// Whether the next platform start must rotate the pending first-administrator flow.
+    reset_admin: std::sync::atomic::AtomicBool,
     /// Optional replacement for the configured NATS endpoints (managed local NATS).
     pub(crate) nats_override: Option<NatsEndpointOverride>,
     /// SQLite stores opened for the selected subsystems.
     pub(crate) stores: RuntimeStores,
     /// Trellis-account runtime NATS client shared by built-in subsystems.
     pub(crate) trellis_nats: async_nats::Client,
-    /// Fixed owner contexts for selected runtime subsystems.
-    owners: BTreeMap<OwnerGroup, OwnerContext>,
+    /// Owner contexts for the groups this process currently owns.
+    owners: std::sync::Mutex<BTreeMap<OwnerGroup, OwnerContext>>,
+    /// Routes the starting platform registers, before they are served.
     http_router: std::sync::Mutex<axum::Router>,
-    /// Whether startup has completed, reported by every listener's `/readyz`.
+    /// Routes of the running platform, served by the process-wide listener.
+    platform_router: Arc<std::sync::RwLock<Option<axum::Router>>>,
+    /// Whether this process serves, reported by every listener's `/readyz`.
     pub(crate) http_ready: Arc<std::sync::atomic::AtomicBool>,
-    /// Platform-owned aggregate store; other modes may only read provisioned identity.
+    /// The running platform's aggregate store; other modes may only read provisioned identity.
     pub(crate) authorization_store:
-        std::sync::OnceLock<Arc<crate::platform::auth::SqliteAuthorizationStore>>,
+        std::sync::Mutex<Option<Arc<crate::platform::auth::SqliteAuthorizationStore>>>,
     /// Per-role delivery slots for built-in live provider owners.
     pub(crate) live_providers: crate::platform::LiveProviderSlots,
+    /// Where each selected owner group stands.
+    groups: GroupStates,
+}
+
+impl std::fmt::Debug for RuntimeContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RuntimeContext")
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RuntimeContext {
     pub(crate) fn owner(&self, group: OwnerGroup) -> Result<OwnerContext, RuntimeError> {
         self.owners
-            .get(&group)
-            .cloned()
+            .lock()
+            .ok()
+            .and_then(|owners| owners.get(&group).cloned())
             .ok_or(RuntimeError::OwnerContextMissing {
                 subsystem: group.subsystem(),
             })
+    }
+
+    /// Whether this platform start rotates the first-administrator flow; true once per process.
+    pub(crate) fn take_reset_admin(&self) -> bool {
+        self.reset_admin
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     pub(crate) fn register_http_router(&self, router: axum::Router) -> Result<(), RuntimeError> {
@@ -606,6 +626,98 @@ impl RuntimeContext {
             .lock()
             .map_err(|_| RuntimeError::Platform("HTTP router lock poisoned".to_owned()))?;
         Ok(std::mem::take(&mut *registered))
+    }
+
+    fn serve_platform_routes(&self, router: Option<axum::Router>) {
+        if let Ok(mut served) = self.platform_router.write() {
+            *served = router;
+        }
+    }
+}
+
+/// Where one owner group stands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GroupState {
+    /// Taking its lease or starting its work.
+    Starting,
+    /// Doing its work.
+    Running,
+    /// Waiting for its lease while another runtime or a broker failure keeps it.
+    StandingBy,
+}
+
+/// Every selected owner group's state, and the process readiness it implies.
+///
+/// The process is ready once each group has first settled, while at least one
+/// group runs and, when the platform is selected, the platform runs: its routes
+/// are the only ones the listener serves. A group restarting on its own after a
+/// lost lease leaves the others, and readiness, alone.
+struct GroupStates {
+    states: tokio::sync::watch::Sender<BTreeMap<OwnerGroup, GroupState>>,
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    components: Arc<crate::telemetry::snapshots::ComponentReadiness>,
+    settled: std::sync::atomic::AtomicBool,
+    stopping: std::sync::atomic::AtomicBool,
+}
+
+impl GroupStates {
+    fn new(mode: RuntimeMode, ready: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        let states = OwnerGroup::for_mode(mode)
+            .iter()
+            .map(|&group| (group, GroupState::Starting))
+            .collect();
+        Self {
+            states: tokio::sync::watch::channel(states).0,
+            ready,
+            components: Arc::default(),
+            settled: std::sync::atomic::AtomicBool::new(false),
+            stopping: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn set(&self, group: OwnerGroup, state: GroupState) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.states.send_modify(|states| {
+            states.insert(group, state);
+        });
+        self.components.set(
+            component_label(group.subsystem()),
+            if state == GroupState::Running {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        let states = self.states.borrow();
+        if !states.values().any(|state| *state == GroupState::Starting) {
+            self.settled.store(true, SeqCst);
+        }
+        let platform = states
+            .get(&OwnerGroup::Platform)
+            .is_none_or(|state| *state == GroupState::Running);
+        let running = states.values().any(|state| *state == GroupState::Running);
+        self.ready.store(
+            !self.stopping.load(SeqCst) && self.settled.load(SeqCst) && platform && running,
+            SeqCst,
+        );
+    }
+
+    /// Marks the process stopping; it is not ready from here on.
+    fn stop(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.stopping.store(true, SeqCst);
+        self.ready.store(false, SeqCst);
+        for name in self.states.borrow().keys() {
+            self.components.set(component_label(name.subsystem()), 0.0);
+        }
+    }
+
+    /// Waits until `group` has started or stands by.
+    async fn settled(&self, group: OwnerGroup) {
+        let mut states = self.states.subscribe();
+        let _ = states
+            .wait_for(|states| states.get(&group) != Some(&GroupState::Starting))
+            .await;
     }
 }
 
@@ -649,6 +761,10 @@ pub async fn run(options: RuntimeOptions) -> Result<(), RuntimeError> {
 ///
 /// An owner-supplied handle lets an in-process caller (a test harness owning the runtime,
 /// a supervisor restarting it) request the same cooperative shutdown a host signal triggers.
+///
+/// Each selected owner group runs on its own: it takes its lease, starts its
+/// subsystem and built-in provider, and on losing the lease stops that work and
+/// stands by to take it back, while the other groups and the listener carry on.
 pub async fn run_with_stop(
     options: RuntimeOptions,
     stop: Option<crate::shutdown::StopHandle>,
@@ -681,57 +797,60 @@ pub async fn run_with_stop(
         Ulid::generate()
     );
     let manager = RuntimeOwnership::open(trellis_nats.clone(), &leases, owner_id).await?;
-    // One stop serves the whole process, so a signal is observed whether the
-    // runtime is serving or standing by between owners.
+    // Register the OS shutdown signal before any listener becomes observable. A
+    // host can connect to a bound port immediately, so a SIGTERM delivered
+    // during startup must already stop the runtime cooperatively instead of
+    // terminating it with its leases held. One stop serves the whole process, so
+    // a signal is observed whether a group is serving or standing by.
     let process_stop = StopHandle::new();
-    let _signal = AbortOnDropHandle::new(tokio::spawn({
-        let process_stop = process_stop.clone();
-        async move {
-            shutdown_or_stop(stop).await;
-            process_stop.stop();
-        }
-    }));
-    let mut reset_admin = options.reset_admin;
-    // Losing a lease stops the owned work and returns here to stand by; the
-    // process ends only on a stop or a failure that ownership cannot explain.
-    let result = loop {
-        let Some(mut ownership) =
-            RuntimeOwnership::acquire_when_free(&manager, options.mode, &process_stop).await
-        else {
-            break Ok(());
-        };
-        let result = run_owned(
-            config.clone(),
-            options.mode,
-            reset_admin,
-            options.nats_override.clone(),
-            trellis_nats.clone(),
-            &mut ownership,
-            Some(process_stop.clone()),
-        )
+    let signal = shutdown_or_stop(stop);
+    let _signal = {
+        let mut signal = Box::pin(signal);
+        std::future::poll_fn(|cx| {
+            let _ = Future::poll(signal.as_mut(), cx);
+            std::task::Poll::Ready(())
+        })
         .await;
-        // The first administrator flow is rotated once per start, not per owner.
-        reset_admin = false;
-        tracing::info!("runtime subsystem and provider shutdown finished; releasing ownership");
-        let release_result = ownership.shutdown().await;
-        tracing::info!("runtime ownership shutdown finished");
-        match result {
-            Err(
-                lost @ (RuntimeError::OwnerRenewal { .. }
-                | RuntimeError::OwnerRenewalRoundTimeout { .. }),
-            ) if !process_stop.is_stopped() => {
-                tracing::warn!(
-                    error = %lost,
-                    "runtime lost ownership; its owned work stopped and it stands by to resume"
-                );
-                if let Err(release) = release_result {
-                    tracing::warn!(error = %release, "runtime ownership release also failed");
-                }
-            }
-            result => break preserve_primary(result, release_result, Ok(())),
-        }
+        let process_stop = process_stop.clone();
+        AbortOnDropHandle::new(tokio::spawn(async move {
+            signal.await;
+            process_stop.stop();
+        }))
     };
-    tracing::info!("flushing NATS");
+    // Streams and local stores belong to the process, whichever groups it owns.
+    ExpectedRuntimeResources::for_mode(
+        options.mode,
+        &config,
+        async_nats::jetstream::stream::StorageType::File,
+    )
+    .converge_streams(trellis_nats.clone())
+    .await?;
+    let stores = RuntimeStores::from_config(&config, options.mode)?;
+    stores.migrate_all()?;
+    let listener = crate::bind_http_listener(&config).await?;
+    let origin = url::Url::parse(&config.public_origin()).map_err(|error| {
+        RuntimeError::Config(crate::ConfigError::InvalidPublicOrigin {
+            origin: format!("{}: {error}", config.public_origin()),
+        })
+    })?;
+    let http_ready = Arc::<std::sync::atomic::AtomicBool>::default();
+    let context = Arc::new(RuntimeContext {
+        groups: GroupStates::new(options.mode, Arc::clone(&http_ready)),
+        config,
+        mode: options.mode,
+        reset_admin: std::sync::atomic::AtomicBool::new(options.reset_admin),
+        nats_override: options.nats_override,
+        stores,
+        trellis_nats: trellis_nats.clone(),
+        owners: std::sync::Mutex::default(),
+        http_router: std::sync::Mutex::new(axum::Router::new()),
+        platform_router: Arc::default(),
+        http_ready,
+        authorization_store: std::sync::Mutex::default(),
+        live_providers: crate::platform::LiveProviderSlots::new(),
+    });
+    let result = serve(&context, &manager, listener, &origin, &process_stop).await;
+    tracing::info!("runtime shutdown finished; flushing NATS");
     let flush_result = bounded_flush(trellis_nats.flush(), NATS_FLUSH_TIMEOUT).await;
     tracing::info!("runtime NATS flush finished");
     preserve_primary(result, Ok(()), flush_result)
@@ -784,45 +903,273 @@ async fn shutdown_or_stop(stop: Option<crate::shutdown::StopHandle>) {
     }
 }
 
-async fn run_owned(
-    config: RuntimeConfig,
-    mode: RuntimeMode,
-    reset_admin: bool,
-    nats_override: Option<NatsEndpointOverride>,
-    trellis_nats: async_nats::Client,
-    ownership: &mut RuntimeOwnership,
-    stop: Option<crate::shutdown::StopHandle>,
+/// Serves the listener and runs every selected owner group until the process
+/// stops or one of them fails for a reason ownership cannot explain.
+async fn serve(
+    context: &Arc<RuntimeContext>,
+    manager: &crate::leases::LeaseManager,
+    listener: tokio::net::TcpListener,
+    origin: &url::Url,
+    stop: &StopHandle,
 ) -> Result<(), RuntimeError> {
-    ExpectedRuntimeResources::for_mode(
-        mode,
-        &config,
-        async_nats::jetstream::stream::StorageType::File,
-    )
-    .converge_streams(trellis_nats.clone())
-    .await?;
-    let stores = RuntimeStores::from_config(&config, mode)?;
-    stores.migrate_all()?;
-    let context = RuntimeContext {
-        config,
-        mode,
-        reset_admin,
-        nats_override,
-        stores,
-        trellis_nats,
-        owners: ownership.contexts(),
-        http_router: std::sync::Mutex::new(axum::Router::new()),
-        http_ready: Arc::default(),
-        authorization_store: std::sync::OnceLock::new(),
-        live_providers: crate::platform::LiveProviderSlots::new(),
+    let _component_sampler = crate::telemetry::snapshots::spawn_component_sampler(
+        context
+            .mode
+            .subsystems()
+            .iter()
+            .map(|&subsystem| component_label(subsystem))
+            .collect(),
+        Arc::clone(&context.groups.components),
+        stop.clone(),
+    );
+    let server_stop = stop.clone();
+    let mut server = std::pin::pin!(async {
+        // The bound port accepts once the platform's routes are served or it
+        // stands by, so an open port never means routes still to come.
+        if context.mode.subsystems().contains(&SubsystemName::Platform) {
+            tokio::select! {
+                () = context.groups.settled(OwnerGroup::Platform) => {}
+                () = stop.stopped() => return Ok(()),
+            }
+        }
+        crate::serve_http_listener(
+            listener,
+            origin,
+            context.config.http_transport(),
+            context.config.http_trusted_proxies(),
+            context.mode,
+            application_router(context),
+            Arc::clone(&context.http_ready),
+            async move { server_stop.stopped().await },
+        )
+        .await
+    });
+    let mut groups = tokio::task::JoinSet::new();
+    let mut names = BTreeMap::new();
+    for &group in OwnerGroup::for_mode(context.mode) {
+        let task = groups.spawn(run_group(
+            Arc::clone(context),
+            manager.clone(),
+            group,
+            stop.clone(),
+        ));
+        names.insert(task.id(), group);
+    }
+    let group_result =
+        |joined: Result<(tokio::task::Id, Result<(), RuntimeError>), tokio::task::JoinError>| {
+            match joined {
+                Ok((_, Ok(()))) if stop.is_stopped() => Ok(()),
+                Ok((id, Ok(()))) => Err(RuntimeError::SubsystemExited {
+                    subsystem: names[&id].subsystem(),
+                }),
+                Ok((_, Err(error))) => Err(error),
+                Err(source) => Err(RuntimeError::SubsystemTask {
+                    subsystem: names[&source.id()].subsystem(),
+                    source,
+                }),
+            }
+        };
+    let (primary, server_finished) = tokio::select! {
+        () = stop.stopped() => (Ok(()), false),
+        result = server.as_mut() => (result.map_err(RuntimeError::from), true),
+        Some(joined) = groups.join_next_with_id() => (group_result(joined), false),
     };
-    let primary = supervise_owned(&context, ownership, stop).await;
-    tracing::info!("runtime subsystem shutdown finished; closing built-in providers");
-    // HTTP and subsystem parents are now stopped. Their detached ingress tasks
-    // can still retain clients, so end native logical ownership before runtime
-    // ownership and the managed broker are released.
-    let provider_shutdown = tokio::time::timeout(
+    tracing::info!("runtime shutdown requested");
+    context.groups.stop();
+    stop.stop();
+    let http = finish_http_shutdown(server, server_finished, HTTP_SHUTDOWN_TIMEOUT);
+    // Each group bounds its own subsystem stop, provider close and lease release.
+    let owned = async {
+        let mut first_error = None;
+        while let Some(joined) = groups.join_next_with_id().await {
+            if let Err(error) = group_result(joined) {
+                if first_error.is_some() {
+                    tracing::error!(error = %error, "additional runtime group shutdown failed");
+                } else {
+                    first_error = Some(error);
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    };
+    let (http, owned) = tokio::join!(http, owned);
+    preserve_run_primary(primary, preserve_run_primary(owned, http))
+}
+
+/// Routes the process listener serves beside readiness: the running platform's,
+/// answered unavailable while it stands by or restarts.
+fn application_router(context: &RuntimeContext) -> axum::Router {
+    use axum::response::IntoResponse as _;
+    let router = if context.mode.subsystems().contains(&SubsystemName::Platform) {
+        let served = Arc::clone(&context.platform_router);
+        axum::Router::new().fallback(move |request: axum::extract::Request| {
+            let router = served.read().ok().and_then(|router| router.clone());
+            async move {
+                match router {
+                    Some(router) => match tower::ServiceExt::oneshot(router, request).await {
+                        Ok(response) => response,
+                        Err(never) => match never {},
+                    },
+                    None => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                }
+            }
+        })
+    } else {
+        // An upgrade may name any path, including ones no route serves, so a
+        // fallback gives the WebSocket rule below every path to wrap.
+        axum::Router::new().fallback(|| std::future::ready(axum::http::StatusCode::NOT_FOUND))
+    };
+    match context.config.nats_websocket_upstream() {
+        Some(upstream) => router.layer(axum::middleware::from_fn_with_state(
+            upstream.to_owned(),
+            crate::nats_websocket::relay,
+        )),
+        None => router,
+    }
+}
+
+/// Runs one owner group for the life of the process: owns its lease, runs its
+/// work, and after losing the lease stands by to take it back.
+async fn run_group(
+    context: Arc<RuntimeContext>,
+    manager: crate::leases::LeaseManager,
+    group: OwnerGroup,
+    stop: StopHandle,
+) -> Result<(), RuntimeError> {
+    let subsystem = group.subsystem();
+    // The platform starts first, as other roles prepare their providers through
+    // it; once it runs or stands by, they start whichever way it went.
+    if group != OwnerGroup::Platform && context.mode.subsystems().contains(&SubsystemName::Platform)
+    {
+        tokio::select! {
+            () = context.groups.settled(OwnerGroup::Platform) => {}
+            () = stop.stopped() => return Ok(()),
+        }
+    }
+    loop {
+        let Some(mut ownership) =
+            RuntimeOwnership::acquire_when_free(&manager, &[group], &stop, || {
+                context.groups.set(group, GroupState::StandingBy);
+            })
+            .await
+        else {
+            return Ok(());
+        };
+        context.groups.set(group, GroupState::Starting);
+        let result = run_owned_group(&context, group, &mut ownership, &stop).await;
+        tracing::info!(%subsystem, "runtime subsystem stopped; releasing its ownership");
+        let release = ownership.shutdown().await;
+        match result {
+            Err(
+                lost @ (RuntimeError::OwnerRenewal { .. }
+                | RuntimeError::OwnerRenewalRoundTimeout { .. }),
+            ) if !stop.is_stopped() => {
+                tracing::warn!(
+                    %subsystem,
+                    error = %lost,
+                    "runtime lost ownership of this work; it stopped and stands by to resume"
+                );
+                if let Err(release) = release {
+                    tracing::warn!(error = %release, "runtime ownership release also failed");
+                }
+            }
+            result => return preserve_primary(result, release, Ok(())),
+        }
+    }
+}
+
+/// Starts one owned group's subsystem and built-in provider, runs them until
+/// the lease is lost, the process stops, or the subsystem fails, and stops them.
+async fn run_owned_group(
+    context: &RuntimeContext,
+    group: OwnerGroup,
+    ownership: &mut RuntimeOwnership,
+    stop: &StopHandle,
+) -> Result<(), RuntimeError> {
+    let subsystem = group.subsystem();
+    let role = match group {
+        OwnerGroup::Platform => crate::platform::LiveProviderRole::Platform,
+        OwnerGroup::Jobs => crate::platform::LiveProviderRole::Jobs,
+        OwnerGroup::Health => crate::platform::LiveProviderRole::Health,
+        OwnerGroup::Events => crate::platform::LiveProviderRole::Events,
+    };
+    if let Ok(mut owners) = context.owners.lock() {
+        owners.extend(ownership.contexts());
+    }
+    let started = match subsystem {
+        SubsystemName::Platform => platform::start(context).await,
+        SubsystemName::Jobs => jobs::start(context).await,
+        SubsystemName::Health => health::start(context).await,
+        SubsystemName::Events => events::start(context).await,
+    };
+    let handle = match started {
+        Ok(handle) => handle,
+        Err(error) => {
+            if let Ok(mut owners) = context.owners.lock() {
+                owners.remove(&group);
+            }
+            // Work that failed to start because its lease went first stands by.
+            return Err(ownership.renewal_failure_now().unwrap_or(error));
+        }
+    };
+    if group == OwnerGroup::Platform {
+        context.serve_platform_routes(Some(context.take_http_router()?));
+    }
+    let mut handles = vec![handle];
+    // A built-in provider's bootstrap failure fails the group, never a
+    // dispatch-time fallback.
+    let bootstrap_failure = tokio::select! {
+        biased;
+        lost = ownership.wait_for_renewal_failure() => {
+            Some((Err(lost), RuntimeStopCause::OwnershipLost))
+        }
+        () = stop.stopped() => Some((Ok(()), RuntimeStopCause::Signal)),
+        result = bootstrap_live_provider(context, role) => {
+            result.err().map(|error| (Err(error), RuntimeStopCause::SubsystemFailed))
+        }
+    };
+    let (primary, cause) = match bootstrap_failure {
+        Some(failure) => failure,
+        None => {
+            context.groups.set(group, GroupState::Running);
+            let server = std::pin::pin!(std::future::pending::<Result<(), ServerError>>());
+            let signal = std::pin::pin!(stop.stopped());
+            let (primary, _, cause) = wait_for_runtime_event(
+                server,
+                &mut handles,
+                signal,
+                ownership.wait_for_renewal_failure(),
+                &context.groups.components,
+                &[component_label(subsystem)],
+            )
+            .await;
+            (primary, cause)
+        }
+    };
+    tracing::info!(%subsystem, ?cause, "runtime subsystem stopping");
+    if cause == RuntimeStopCause::OwnershipLost {
+        context.groups.set(group, GroupState::StandingBy);
+    }
+    if group == OwnerGroup::Platform {
+        context.serve_platform_routes(None);
+        if let Ok(mut store) = context.authorization_store.lock() {
+            *store = None;
+        }
+    }
+    // Work whose lease is gone stops at once; otherwise it stops cooperatively.
+    let stopped = if cause == RuntimeStopCause::OwnershipLost {
+        abort_subsystems(&mut handles).await
+    } else {
+        for handle in &handles {
+            handle.stop.stop();
+        }
+        join_subsystems(&mut handles, SUBSYSTEM_SHUTDOWN_TIMEOUT).await
+    };
+    // The provider's detached ingress can still hold clients, so it closes
+    // before the lease is released.
+    let provider = tokio::time::timeout(
         SUBSYSTEM_SHUTDOWN_TIMEOUT,
-        context.live_providers.shutdown(),
+        context.live_providers.shutdown_role(role),
     )
     .await
     .unwrap_or_else(|_| {
@@ -830,169 +1177,10 @@ async fn run_owned(
             "built-in provider transport shutdown timed out".into(),
         ))
     });
-    preserve_run_primary(primary, provider_shutdown)
-}
-
-async fn supervise_owned(
-    context: &RuntimeContext,
-    ownership: &mut RuntimeOwnership,
-    stop: Option<crate::shutdown::StopHandle>,
-) -> Result<(), RuntimeError> {
-    // Register the OS shutdown signal before any listener becomes observable;
-    // the platform subsystem binds the Console's. A host can connect to a
-    // bound port immediately, so a SIGTERM delivered during startup must
-    // already be observed cooperatively instead of terminating the process
-    // with its runtime lease held.
-    let shutdown = shutdown_or_stop(stop);
-    tokio::pin!(shutdown);
-    std::future::poll_fn(|cx| {
-        let _ = std::future::Future::poll(shutdown.as_mut(), cx);
-        std::task::Poll::Ready(())
-    })
-    .await;
-    let mut handles = start_subsystems(context).await?;
-    let root_stop = StopHandle::new();
-    // Only components selected by the runtime mode report ready; others are
-    // absent rather than failed. Readiness is written here from the real
-    // lifecycle: ready once the bootstrap listener serves and the built-in
-    // live providers have authenticated, not-ready as soon as the runtime
-    // begins stopping.
-    let component_readiness =
-        std::sync::Arc::new(crate::telemetry::snapshots::ComponentReadiness::default());
-    let component_names: Vec<&'static str> = handles
-        .iter()
-        .map(|handle| component_label(handle.name))
-        .collect();
-    let _component_sampler = crate::telemetry::snapshots::spawn_component_sampler(
-        component_names.clone(),
-        std::sync::Arc::clone(&component_readiness),
-        root_stop.clone(),
-    );
-    let server_stop = root_stop.clone();
-    let mut http_router = context.take_http_router()?;
-    if let Some(upstream) = context.config.nats_websocket_upstream() {
-        // An upgrade may name any path, including ones no route serves, so
-        // the rule also wraps the fallback.
-        http_router = http_router
-            .fallback(|| std::future::ready(axum::http::StatusCode::NOT_FOUND))
-            .layer(axum::middleware::from_fn_with_state(
-                upstream.to_owned(),
-                crate::nats_websocket::relay,
-            ));
+    if let Ok(mut owners) = context.owners.lock() {
+        owners.remove(&group);
     }
-    // Readiness stays false until built-in live providers have finished their
-    // bootstrap, so callers never begin work against half-started routes.
-    let http_ready = std::sync::Arc::clone(&context.http_ready);
-    let listener = match crate::bind_http_listener(&context.config).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            root_stop.stop();
-            if let Err(cleanup) = stop_subsystems(handles).await {
-                tracing::error!(error = %cleanup, "runtime startup cleanup also failed");
-            }
-            return Err(RuntimeError::from(error));
-        }
-    };
-    let transport = context.config.http_transport().clone();
-    let origin = match url::Url::parse(&context.config.public_origin()) {
-        Ok(origin) => origin,
-        Err(error) => {
-            root_stop.stop();
-            if let Err(cleanup) = stop_subsystems(handles).await {
-                tracing::error!(error = %cleanup, "runtime startup cleanup also failed");
-            }
-            return Err(RuntimeError::Config(
-                crate::ConfigError::InvalidPublicOrigin {
-                    origin: format!("{}: {error}", context.config.public_origin()),
-                },
-            ));
-        }
-    };
-    let mut server = Box::pin(crate::serve_http_listener(
-        listener,
-        &origin,
-        &transport,
-        context.config.http_trusted_proxies(),
-        context.mode,
-        http_router,
-        std::sync::Arc::clone(&http_ready),
-        async move { server_stop.stopped().await },
-    ));
-    // The bootstrap listener serves while the built-in live providers
-    // authenticate through the ordinary native bootstrap. A provider failure
-    // or an early listener exit is a startup failure, never a dispatch-time
-    // fallback.
-    // The readiness endpoint answers as soon as this listener serves, so a
-    // restart can deliver the host shutdown signal while built-in live
-    // providers are still bootstrapping. Observe that signal from the first
-    // serve poll so the stop stays cooperative and runtime ownership is
-    // released instead of the process being terminated with its lease held.
-    let mut signalled_during_bootstrap = false;
-    let bootstrap_result: Result<(), RuntimeError> = tokio::select! {
-        result = bootstrap_live_providers(context) => result,
-        result = server.as_mut() => result.map_err(RuntimeError::from),
-        () = shutdown.as_mut() => {
-            signalled_during_bootstrap = true;
-            Ok(())
-        }
-    };
-    if signalled_during_bootstrap {
-        http_ready.store(false, std::sync::atomic::Ordering::SeqCst);
-        for name in &component_names {
-            component_readiness.set(name, 0.0);
-        }
-        root_stop.stop();
-        let shutdown_result = finish_shutdown(
-            server,
-            false,
-            handles,
-            RuntimeStopCause::Signal,
-            HTTP_SHUTDOWN_TIMEOUT,
-            SUBSYSTEM_SHUTDOWN_TIMEOUT,
-        )
-        .await;
-        return preserve_run_primary(Ok(()), shutdown_result);
-    }
-    if let Err(error) = bootstrap_result {
-        http_ready.store(false, std::sync::atomic::Ordering::SeqCst);
-        root_stop.stop();
-        if let Err(cleanup) = stop_subsystems(handles).await {
-            tracing::error!(error = %cleanup, "runtime startup cleanup also failed");
-        }
-        return Err(error);
-    }
-    for name in &component_names {
-        component_readiness.set(name, 1.0);
-    }
-    http_ready.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (primary, server_finished, cause) = wait_for_runtime_event(
-        server.as_mut(),
-        &mut handles,
-        shutdown.as_mut(),
-        ownership.wait_for_renewal_failure(),
-        &component_readiness,
-        &component_names,
-    )
-    .await;
-    tracing::info!(?cause, "runtime shutdown requested");
-    // From this point the runtime is stopping, so selected components stop
-    // being ready regardless of how the stop was triggered.
-    http_ready.store(false, std::sync::atomic::Ordering::SeqCst);
-    for name in &component_names {
-        component_readiness.set(name, 0.0);
-    }
-
-    root_stop.stop();
-    let shutdown = finish_shutdown(
-        server,
-        server_finished,
-        handles,
-        cause,
-        HTTP_SHUTDOWN_TIMEOUT,
-        SUBSYSTEM_SHUTDOWN_TIMEOUT,
-    )
-    .await;
-    preserve_run_primary(primary, shutdown)
+    preserve_run_primary(primary, preserve_run_primary(stopped, provider))
 }
 
 fn preserve_run_primary(
@@ -1012,13 +1200,18 @@ fn preserve_run_primary(
 /// Bound on one built-in live provider's ordinary native bootstrap.
 const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 35_000;
 
-/// Connect every built-in live provider role selected by the runtime mode.
+/// Connects the built-in live provider for one role and delivers it to the
+/// subsystem that serves its live routes.
 ///
 /// Providers authenticate through native Callout and signed own-context, without
-/// HTTP bootstrap. Each connected owner is delivered to the subsystem that
-/// serves its live routes; a role whose subsystem is selected but whose owner
-/// cannot be connected fails startup before any live router serves traffic.
-async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), RuntimeError> {
+/// HTTP bootstrap. In a process that also runs the platform, a provider is
+/// prepared through the platform's store once the platform has started here;
+/// while another server owns the platform, it trusts the configured Auth origin,
+/// as a split role does.
+async fn bootstrap_live_provider(
+    context: &RuntimeContext,
+    role: crate::platform::LiveProviderRole,
+) -> Result<(), RuntimeError> {
     let nats = context
         .config
         .resolve_nats_runtime_with(
@@ -1028,7 +1221,17 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
                 .and_then(|value| value.runtime_servers.as_deref()),
         )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let store = context.authorization_store.get();
+    if role != crate::platform::LiveProviderRole::Platform
+        && context.mode.subsystems().contains(&SubsystemName::Platform)
+    {
+        context.groups.settled(OwnerGroup::Platform).await;
+    }
+    let store = context
+        .authorization_store
+        .lock()
+        .ok()
+        .and_then(|store| store.clone());
+    let store = store.as_ref();
     // The configured broker CA also anchors the Auth origin in a split
     // deployment; the installation's generated CA issues both certificates.
     let root_certificates: Vec<_> = nats.ca_certificate.iter().cloned().collect();
@@ -1049,56 +1252,54 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
     };
     trust.root_certificates = root_certificates;
     trust.nats_server_name = nats.tls_server_name.clone();
-    for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
-        let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
-        let deployment = if let Some(store) = store {
-            Some(
-                crate::platform::prepare_builtin_live_provider(
-                    role,
-                    store,
-                    &context.trellis_nats,
-                    &identity_seed,
-                )
-                .await?,
+    let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
+    let deployment = if let Some(store) = store {
+        Some(
+            crate::platform::prepare_builtin_live_provider(
+                role,
+                store,
+                &context.trellis_nats,
+                &identity_seed,
             )
-        } else {
-            None
-        };
-        let client = crate::platform::connect_builtin_live_provider(
-            role,
-            &identity_seed,
-            crate::platform::BuiltinLiveProviderConnectOptions {
-                nats_servers: nats.server_urls(),
-                trust: trust.clone(),
-                timeout_ms: BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS,
-            },
+            .await?,
         )
-        .await?;
-        if let Some(deployment) = deployment {
-            let authority = client
-                .authorization_context()
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?
-                .ok_or_else(|| {
-                    RuntimeError::Platform("built-in provider has no installed authority".into())
-                })?;
-            if authority.context.unsigned.principal_id != deployment.principal_id
-                || authority.context.unsigned.binding
-                    != (trellis_protocol::SessionBinding::Service {
-                        participant_id: deployment.participant_id,
-                        deployment_id: deployment.deployment_id,
-                        instance_id: deployment.instance_id,
-                    })
-            {
-                return Err(RuntimeError::Platform(
-                    "installed built-in authority does not match provisioning".into(),
-                ));
-            }
+    } else {
+        None
+    };
+    let client = crate::platform::connect_builtin_live_provider(
+        role,
+        &identity_seed,
+        crate::platform::BuiltinLiveProviderConnectOptions {
+            nats_servers: nats.server_urls(),
+            trust: trust.clone(),
+            timeout_ms: BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS,
+        },
+    )
+    .await?;
+    if let Some(deployment) = deployment {
+        let authority = client
+            .authorization_context()
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?
+            .ok_or_else(|| {
+                RuntimeError::Platform("built-in provider has no installed authority".into())
+            })?;
+        if authority.context.unsigned.principal_id != deployment.principal_id
+            || authority.context.unsigned.binding
+                != (trellis_protocol::SessionBinding::Service {
+                    participant_id: deployment.participant_id,
+                    deployment_id: deployment.deployment_id,
+                    instance_id: deployment.instance_id,
+                })
+        {
+            return Err(RuntimeError::Platform(
+                "installed built-in authority does not match provisioning".into(),
+            ));
         }
-        context.live_providers.install(
-            role,
-            trellis_rs::__internal::LiveProviderOwner::from_connected_client(Arc::new(client)),
-        );
     }
+    context.live_providers.install(
+        role,
+        trellis_rs::__internal::LiveProviderOwner::from_connected_client(Arc::new(client)),
+    );
     Ok(())
 }
 
@@ -1164,52 +1365,8 @@ async fn wait_for_subsystem(
     futures_util::future::select_all(waits).await.0
 }
 
-async fn stop_subsystems(mut handles: Vec<SubsystemHandle>) -> Result<(), RuntimeError> {
-    for handle in &handles {
-        handle.stop.stop();
-    }
-    join_subsystems(&mut handles, SUBSYSTEM_SHUTDOWN_TIMEOUT).await
-}
-
-async fn finish_shutdown<F>(
-    server: Pin<Box<F>>,
-    server_finished: bool,
-    mut handles: Vec<SubsystemHandle>,
-    cause: RuntimeStopCause,
-    http_timeout: Duration,
-    subsystem_timeout: Duration,
-) -> Result<(), RuntimeError>
-where
-    F: Future<Output = Result<(), ServerError>>,
-{
-    for handle in &handles {
-        handle.stop.stop();
-    }
-
-    let http_shutdown = finish_http_shutdown(server, server_finished, http_timeout);
-    let subsystem_shutdown = async {
-        if cause == RuntimeStopCause::OwnershipLost {
-            abort_subsystems(&mut handles).await
-        } else {
-            join_subsystems(&mut handles, subsystem_timeout).await
-        }
-    };
-    let (http_result, subsystem_result) = tokio::join!(http_shutdown, subsystem_shutdown);
-
-    let mut first_error = http_result.err();
-    if let Err(error) = subsystem_result {
-        if first_error.is_some() {
-            tracing::error!(error = %error, "runtime subsystem shutdown also failed");
-        } else {
-            first_error = Some(error);
-        }
-    }
-
-    first_error.map_or(Ok(()), Err)
-}
-
 async fn finish_http_shutdown<F>(
-    mut server: Pin<Box<F>>,
+    mut server: Pin<&mut F>,
     server_finished: bool,
     timeout: Duration,
 ) -> Result<(), RuntimeError>
@@ -1307,29 +1464,6 @@ fn component_label(name: SubsystemName) -> &'static str {
         SubsystemName::Events => "events",
         SubsystemName::Health => "health",
     }
-}
-
-async fn start_subsystems(context: &RuntimeContext) -> Result<Vec<SubsystemHandle>, RuntimeError> {
-    let mut handles = Vec::new();
-    for subsystem in context.mode.subsystems() {
-        let result = match subsystem {
-            SubsystemName::Platform => platform::start(context).await,
-            SubsystemName::Jobs => jobs::start(context).await,
-            SubsystemName::Health => health::start(context).await,
-            SubsystemName::Events => events::start(context).await,
-        };
-        match result {
-            Ok(handle) => handles.push(handle),
-            Err(primary) => {
-                handles.reverse();
-                if let Err(cleanup) = stop_subsystems(handles).await {
-                    tracing::error!(error = %cleanup, "started subsystem cleanup also failed");
-                }
-                return Err(primary);
-            }
-        }
-    }
-    Ok(handles)
 }
 
 #[cfg(test)]
@@ -1452,64 +1586,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subsystem_stop_is_signaled_before_pending_http_drain_is_awaited() {
-        let stop = StopHandle::new();
-        let task_stop = stop.clone();
-        let notified = Arc::new(AtomicBool::new(false));
-        let task_notified = Arc::clone(&notified);
-        let (sent, received) = tokio::sync::oneshot::channel();
-        let join = tokio::spawn(async move {
-            task_stop.stopped().await;
-            task_notified.store(true, Ordering::SeqCst);
-            sent.send(()).expect("HTTP test receiver remains open");
-            std::future::pending().await
-        });
-        let server = Box::pin(async move {
-            received.await.expect("subsystem reports stop notification");
-            std::future::pending::<Result<(), ServerError>>().await
-        });
-
-        let error = finish_shutdown(
-            server,
-            false,
-            vec![SubsystemHandle {
-                name: SubsystemName::Jobs,
-                stop,
-                join: AbortOnDropHandle::new(join),
-            }],
-            RuntimeStopCause::Signal,
-            Duration::from_millis(20),
-            Duration::from_millis(20),
-        )
-        .await
-        .expect_err("pending HTTP drain must time out");
-
-        assert!(notified.load(Ordering::SeqCst));
-        assert!(matches!(error, RuntimeError::HttpShutdownTimeout));
-    }
-
-    #[tokio::test]
     async fn pending_http_drain_is_cancelled_at_its_bound() {
-        let dropped = Arc::new(AtomicBool::new(false));
-        let marker = DropMarker(Arc::clone(&dropped));
-        let server = Box::pin(async move {
-            let _marker = marker;
-            std::future::pending::<Result<(), ServerError>>().await
-        });
+        let server = std::pin::pin!(std::future::pending::<Result<(), ServerError>>());
 
-        let error = finish_shutdown(
-            server,
-            false,
-            Vec::new(),
-            RuntimeStopCause::Signal,
-            Duration::from_millis(20),
-            Duration::from_millis(20),
-        )
-        .await
-        .expect_err("pending HTTP drain must time out");
+        let error = finish_http_shutdown(server, false, Duration::from_millis(20))
+            .await
+            .expect_err("pending HTTP drain must time out");
 
         assert!(matches!(error, RuntimeError::HttpShutdownTimeout));
-        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -1521,16 +1605,12 @@ mod tests {
             std::future::pending::<Result<(), RuntimeError>>().await
         });
 
-        let error = finish_shutdown(
-            Box::pin(std::future::ready(Ok(()))),
-            true,
-            vec![SubsystemHandle {
+        let error = join_subsystems(
+            &mut [SubsystemHandle {
                 name: SubsystemName::Jobs,
                 stop: StopHandle::new(),
                 join: AbortOnDropHandle::new(join),
             }],
-            RuntimeStopCause::Signal,
-            Duration::from_millis(20),
             Duration::from_millis(20),
         )
         .await
@@ -1546,45 +1626,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ownership_loss_aborts_subsystem_without_waiting_for_http_drain() {
-        let stop = StopHandle::new();
-        let observed_stop = stop.clone();
-        let task_stop = stop.clone();
+    async fn ownership_loss_aborts_a_subsystem_that_would_not_stop() {
         let dropped = Arc::new(AtomicBool::new(false));
         let marker = DropMarker(Arc::clone(&dropped));
         let join = tokio::spawn(async move {
             let _marker = marker;
-            task_stop.stopped().await;
             std::future::pending::<Result<(), RuntimeError>>().await
         });
-        let shutdown = tokio::spawn(finish_shutdown(
-            Box::pin(std::future::pending::<Result<(), ServerError>>()),
-            false,
-            vec![SubsystemHandle {
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            abort_subsystems(&mut [SubsystemHandle {
                 name: SubsystemName::Jobs,
-                stop,
+                stop: StopHandle::new(),
                 join: AbortOnDropHandle::new(join),
-            }],
-            RuntimeStopCause::OwnershipLost,
-            Duration::from_secs(5),
-            Duration::from_secs(5),
-        ));
-
-        tokio::time::timeout(Duration::from_millis(100), async {
-            while !dropped.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
+            }]),
+        )
         .await
-        .expect("ownership loss must abort the subsystem immediately");
-
-        assert!(observed_stop.is_stopped());
-        assert!(
-            !shutdown.is_finished(),
-            "HTTP drain remains independently bounded"
-        );
-        shutdown.abort();
-        let _ = shutdown.await;
+        .expect("ownership loss must abort the subsystem immediately")
+        .expect("an aborted subsystem is not a shutdown failure");
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -1599,17 +1660,14 @@ mod tests {
             task_completed.store(true, Ordering::SeqCst);
             Ok(())
         });
+        stop.stop();
 
-        finish_shutdown(
-            Box::pin(std::future::ready(Ok(()))),
-            true,
-            vec![SubsystemHandle {
+        join_subsystems(
+            &mut [SubsystemHandle {
                 name: SubsystemName::Jobs,
                 stop,
                 join: AbortOnDropHandle::new(join),
             }],
-            RuntimeStopCause::Signal,
-            Duration::from_millis(50),
             Duration::from_millis(50),
         )
         .await

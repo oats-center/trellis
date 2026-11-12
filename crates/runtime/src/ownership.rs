@@ -6,10 +6,11 @@
 //! the lease, such as a KV update timing out on a loaded host, is tried again
 //! until the lease would expire.
 //!
-//! A runtime that cannot own every selected group stands by: it tries again
-//! each renewal interval until each lease is free, whether another runtime holds
-//! one or the broker cannot answer. The supervisor stops the owned work when a
-//! lease is lost and returns here, so the process never exits over ownership.
+//! The supervisor runs each selected group on its own. A group that cannot own
+//! its lease stands by: it tries again each renewal interval until the lease is
+//! free, whether another runtime holds it or the broker cannot answer. A group
+//! that loses its lease stops its work and returns here, while the other groups
+//! carry on, so the process never exits over ownership.
 
 use std::collections::{hash_map::DefaultHasher, BTreeMap};
 use std::hash::{Hash, Hasher};
@@ -106,21 +107,22 @@ impl RuntimeOwnership {
             })
     }
 
-    /// Acquires every lease `mode` selects, standing by until each is free.
+    /// Acquires every lease in `groups`, standing by until each is free.
     ///
     /// Another runtime holding a lease and a broker that cannot answer are both
-    /// waited out, one attempt per renewal interval. Returns `None` once `stop`
-    /// fires.
+    /// waited out, one attempt per renewal interval; `standing_by` runs after
+    /// each failed attempt. Returns `None` once `stop` fires.
     pub(crate) async fn acquire_when_free(
         manager: &LeaseManager,
-        mode: RuntimeMode,
+        groups: &[OwnerGroup],
         stop: &StopHandle,
+        standing_by: impl Fn(),
     ) -> Option<Self> {
         let mut last_failure = None;
         loop {
             // An attempt runs to completion so a stop never strands a lease it
             // took; each broker request inside it is bounded.
-            match Self::acquire(manager, mode).await {
+            match Self::acquire(manager, groups).await {
                 Ok(ownership) => {
                     if last_failure.is_some() {
                         tracing::info!("runtime owns its work again; starting it");
@@ -136,6 +138,7 @@ impl RuntimeOwnership {
                         );
                     }
                     last_failure = Some(failure);
+                    standing_by();
                 }
             }
             let retry =
@@ -147,12 +150,12 @@ impl RuntimeOwnership {
         }
     }
 
-    async fn acquire(manager: &LeaseManager, mode: RuntimeMode) -> Result<Self, RuntimeError> {
+    async fn acquire(manager: &LeaseManager, groups: &[OwnerGroup]) -> Result<Self, RuntimeError> {
         let owner_id = manager.owner_id.clone();
         let mut held = Vec::new();
         let mut owners = BTreeMap::new();
 
-        for &group in OwnerGroup::for_mode(mode) {
+        for &group in groups {
             let key = LeaseKey::new(group.key());
             match manager.acquire(key.clone()).await {
                 Ok(guard) => {
@@ -223,6 +226,20 @@ impl RuntimeOwnership {
                 source,
             },
         }
+    }
+
+    /// A renewal failure that has already ended a lease's task, without waiting.
+    pub(crate) fn renewal_failure_now(&mut self) -> Option<RuntimeError> {
+        Some(match self.leases.try_join_next()? {
+            Ok(Err(error)) => error,
+            Ok(Ok(())) => RuntimeError::OwnerRenewalTaskExited {
+                owner_id: self.owner_id.clone(),
+            },
+            Err(source) => RuntimeError::OwnerRenewalTaskFailed {
+                owner_id: self.owner_id.clone(),
+                source,
+            },
+        })
     }
 
     pub(crate) async fn shutdown(mut self) -> Result<(), RuntimeError> {

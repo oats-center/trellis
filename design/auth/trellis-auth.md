@@ -1098,13 +1098,25 @@ process can check admission against its own provisioning result without making
 that database a dependency of split roles.
 
 Each role's singleton work (Auth, Jobs, Health, Events) runs only while its
-process holds that role's NATS KV owner lease. A renewal that fails without
-losing the lease is retried until the lease would expire. A process that
-cannot hold a lease, at startup or after losing one, stops all of its owned
-work and stands by, unready, trying again each renewal interval. It starts the
-work again once every lease it needs is free. A lease that another owner holds
-is waited out rather than treated as fatal, so a second process for the same
-role is a standby, and ownership never ends a process.
+process holds that role's NATS KV owner lease. A process running several roles
+supervises each one separately, as if it were its own split role. A renewal
+that fails without losing the lease is retried until the lease would expire. A
+role that cannot hold its lease, at startup or after losing it, stops its work
+and stands by, trying again each renewal interval, and starts the work again
+once the lease is free. The process's other roles and its listener keep
+running. A lease that another owner holds is waited out rather than treated as
+fatal, so a second process for the same role is a standby, and ownership never
+ends a process.
+
+In such a process the platform role starts first; the others start once it
+runs or stands by. The listener belongs to the process and accepts connections
+from that point on. It serves the platform's routes while the platform role
+runs here, and answers `503` for them otherwise. `/readyz` is
+ready once every role has first started or stood by, while some role runs and,
+when the process includes the platform, the platform runs. A role other than
+the platform restarting on its own leaves readiness unchanged. When the
+platform runs elsewhere, a non-platform role prepares its built-in provider by
+trusting the configured Auth origin, as a split role does.
 
 `Auth.ResourceBindings.Query` is the native-IDL, paginated read boundary for
 runtime Job and Event consumer evidence. `trellis.auth.v1:bindings.readJobs` and

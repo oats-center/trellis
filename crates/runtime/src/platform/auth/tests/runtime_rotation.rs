@@ -772,11 +772,13 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
     drop(reserved);
 }
 
-/// A runtime that loses an owner lease keeps its process: with the lease free it
-/// takes it back and serves again; while another owner holds it, it stands by
-/// unready, then resumes once that owner goes away.
+/// A runtime that loses an owner lease keeps its process, and only that lease's
+/// work stops: with the lease free it takes it back; while another owner holds
+/// it, that work stands by and the rest keeps serving. Losing the platform's
+/// lease leaves the server unready until it has the lease again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_runtime_that_loses_its_lease_stands_by_and_serves_again() {
+async fn a_runtime_that_loses_a_lease_stands_by_for_that_work_alone() {
+    use futures_util::StreamExt as _;
     let _ = rustls::crypto::ring::default_provider().install_default();
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -815,74 +817,116 @@ async fn a_runtime_that_loses_its_lease_stands_by_and_serves_again() {
         .get_key_value(config.resolve_leases().unwrap().bucket)
         .await
         .unwrap();
-    let owner = leases.entry("jobs.owner").await.unwrap().unwrap();
-
-    // The lease vanishes with nobody else holding it: the runtime takes a new
-    // one and serves again.
-    leases.purge("jobs.owner").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            tokio::select! {
-                result = &mut runtime => panic!("runtime exited after losing its lease: {result:?}"),
-                () = tokio::time::sleep(Duration::from_millis(200)) => {}
-            }
-            let entry = leases.entry("jobs.owner").await.unwrap();
-            if entry.is_some_and(|entry| {
-                entry.value == owner.value && entry.revision > owner.revision
-            }) && ready().await
-            {
-                break;
-            }
-        }
-    })
-    .await
-    .expect("the runtime took its lease back and served again");
-
-    // Another owner takes the lease and keeps renewing it: the runtime stops
-    // serving but stays up.
-    let renewals = tokio::spawn({
+    let owner = leases.entry("jobs.owner").await.unwrap().unwrap().value;
+    // Restarting the platform would release its lease, which deletes the key.
+    let mut platform_history = leases.watch("platform.owner").await.unwrap();
+    // Keeps a lease held by another owner, as that owner's renewals would.
+    let hold = |key: &'static str| {
         let leases = leases.clone();
-        async move {
+        AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
-                leases
-                    .put("jobs.owner", "another-runtime".into())
-                    .await
-                    .unwrap();
+                leases.put(key, "another-runtime".into()).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
+        }))
+    };
+    macro_rules! within {
+        ($what:literal, $done:expr) => {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    tokio::select! {
+                        result = &mut runtime => panic!("runtime exited: {result:?}"),
+                        () = tokio::time::sleep(Duration::from_millis(200)) => {}
+                    }
+                    if $done {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect($what)
+        };
+    }
+    let owns = |key: &'static str| {
+        let leases = leases.clone();
+        let owner = owner.clone();
+        async move {
+            leases
+                .entry(key)
+                .await
+                .unwrap()
+                .is_some_and(|entry| entry.value == owner)
         }
+    };
+
+    // The jobs lease vanishes with nobody else holding it: the runtime takes
+    // it back, and Auth keeps serving throughout.
+    let before = leases.entry("jobs.owner").await.unwrap().unwrap().revision;
+    leases.purge("jobs.owner").await.unwrap();
+    within!("the runtime took its jobs lease back", {
+        assert!(ready().await, "losing the jobs lease stopped Auth");
+        leases
+            .entry("jobs.owner")
+            .await
+            .unwrap()
+            .is_some_and(|entry| entry.value == owner && entry.revision > before)
     });
-    tokio::time::timeout(Duration::from_secs(30), async {
-        while ready().await {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .expect("the runtime stopped serving once another owner held its lease");
+
+    // Another owner holds the jobs lease: jobs stands by, Auth keeps serving.
+    let other = hold("jobs.owner");
     for _ in 0..20 {
         tokio::select! {
-            result = &mut runtime => panic!("runtime exited while standing by: {result:?}"),
+            result = &mut runtime => panic!("runtime exited while jobs stood by: {result:?}"),
             () = tokio::time::sleep(Duration::from_millis(250)) => {}
         }
-        assert!(!ready().await, "the runtime served without its lease");
+        assert!(ready().await, "jobs standing by stopped Auth");
     }
+    drop(other);
+    within!("jobs resumed once the other owner's lease expired", {
+        owns("jobs.owner").await && ready().await
+    });
 
-    // That owner goes away and its lease expires: the runtime resumes.
-    renewals.abort();
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            tokio::select! {
-                result = &mut runtime => panic!("runtime exited while standing by: {result:?}"),
-                () = tokio::time::sleep(Duration::from_millis(200)) => {}
-            }
-            let entry = leases.entry("jobs.owner").await.unwrap();
-            if entry.is_some_and(|entry| entry.value == owner.value) && ready().await {
-                break;
-            }
+    // Another owner holds the platform lease: the server is unready, while
+    // jobs keeps its own lease.
+    let other = hold("platform.owner");
+    within!("the server went unready without its platform lease", {
+        !ready().await
+    });
+    let jobs = leases.entry("jobs.owner").await.unwrap().unwrap().revision;
+    for _ in 0..20 {
+        tokio::select! {
+            result = &mut runtime => panic!("runtime exited while Auth stood by: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(250)) => {}
         }
-    })
-    .await
-    .expect("the runtime resumed once the other owner's lease expired");
+        assert!(!ready().await, "the server served Auth without its lease");
+    }
+    let renewed = leases.entry("jobs.owner").await.unwrap().unwrap();
+    assert!(
+        renewed.value == owner && renewed.revision > jobs,
+        "jobs stopped renewing while Auth stood by"
+    );
+    drop(other);
+    within!("Auth resumed once the other owner's lease expired", {
+        owns("platform.owner").await && ready().await
+    });
+
+    // Only the last phase took the platform's lease away; the jobs phases
+    // never restarted it.
+    let mut deleted_before_takeover = false;
+    while let Ok(Some(Ok(entry))) =
+        tokio::time::timeout(Duration::from_millis(100), platform_history.next()).await
+    {
+        if entry.value.as_ref() == b"another-runtime" {
+            break;
+        }
+        if entry.operation != async_nats::jetstream::kv::Operation::Put {
+            deleted_before_takeover = true;
+        }
+    }
+    assert!(
+        !deleted_before_takeover,
+        "losing the jobs lease restarted the platform"
+    );
 
     stop.stop();
     tokio::time::timeout(Duration::from_secs(30), &mut runtime)
