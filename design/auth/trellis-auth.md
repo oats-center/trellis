@@ -1104,10 +1104,12 @@ that fails without losing the lease is retried, but only until one renewal
 interval before the last renewal the broker confirmed would expire. The bound
 comes from that confirmation, not from when the renewal ran, so a renewal that
 runs late on a loaded host cannot keep work running past the lease, and the
-role has that interval to stop its work before another process can take it. A
-role that cannot hold its lease, at startup or after losing it, stops its work
-and stands by, trying again each renewal interval, and starts the work again
-once the lease is free. The process's other roles and its listener keep
+role has that interval to stop its work before another process can take it.
+A renewal whose answer was lost, and that a later retry finds in the lease
+entry, is dated from the round's first attempt, since any attempt of the round
+may have written it. A role that cannot hold its lease, at startup or after
+losing it, stops its work and stands by, trying again each renewal interval,
+and starts the work again once the lease is free. The process's other roles and its listener keep
 running. A lease that another owner holds is waited out rather than treated as
 fatal, so a second process for the same role is a standby, and ownership never
 ends a process.

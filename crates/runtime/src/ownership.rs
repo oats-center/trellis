@@ -4,9 +4,10 @@
 //! After initial verification, one task owns each lease for its complete lifetime:
 //! renewal, failure reporting, and release. A renewal that fails without losing
 //! the lease, such as a KV update timing out on a loaded host, is tried again.
-//! Retries are bounded by the last renewal the broker confirmed, not by when the
-//! task woke: ownership is given up one renewal interval before that renewal's
-//! lease would expire, so owned work stops before another runtime can take it.
+//! Retries are bounded by the last renewal the broker confirmed, dated from the
+//! earliest attempt that could have written it rather than from when the task
+//! woke: ownership is given up one renewal interval before that renewal's lease
+//! would expire, so owned work stops before another runtime can take it.
 //!
 //! The supervisor runs each selected group on its own. A group that cannot own
 //! its lease stands by: it tries again each renewal interval until the lease is
@@ -24,7 +25,7 @@ use futures_util::StreamExt;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use crate::leases::{LeaseError, LeaseFence, LeaseGuard, LeaseKey, LeaseManager};
+use crate::leases::{LeaseError, LeaseFence, LeaseGuard, LeaseKey, LeaseManager, Renewal};
 use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeError, OWNERSHIP_SHUTDOWN_TIMEOUT};
 use crate::{ResolvedLeasesConfig, RuntimeMode, SubsystemName};
@@ -322,7 +323,9 @@ async fn verify_held(
 /// `confirmed` is when the last renewal the broker accepted was sent, so the
 /// broker's lease lasts at least `ttl` from it. Every deadline is taken from that
 /// instant rather than from when this task runs, because a task that wakes late
-/// on a loaded host has not extended the lease.
+/// on a loaded host has not extended the lease. A renewal adopted after an
+/// unknown outcome may have been written by any attempt of the round, so it
+/// counts from the round's first attempt.
 async fn run_owned_lease(
     manager: LeaseManager,
     owner_id: String,
@@ -344,12 +347,17 @@ async fn run_owned_lease(
         // another owner's, or one renewal interval before the confirmed lease
         // would expire, which leaves the supervisor that long to stop the work.
         let give_up = confirmed + manager.ttl.saturating_sub(manager.renew);
+        let first_attempt = Instant::now();
         loop {
             let attempt = Instant::now();
             let failure =
                 match tokio::time::timeout_at(give_up, manager.renew(&mut lease.guard)).await {
-                    Ok(Ok(())) => {
+                    Ok(Ok(Renewal::Written)) => {
                         confirmed = attempt;
+                        break;
+                    }
+                    Ok(Ok(Renewal::Adopted)) => {
+                        confirmed = first_attempt;
                         break;
                     }
                     Ok(Err(source @ LeaseError::Backend { .. })) => source,
@@ -531,11 +539,57 @@ fn renewal_jitter(owner_id: &str, renew: Duration, ttl: Duration) -> Duration {
 mod tests {
     use super::*;
 
+    /// Relays NATS traffic and can hold the broker's replies back, so a
+    /// request reaches the broker while its answer does not reach the client.
+    async fn relay(broker: u16) -> (u16, tokio::sync::watch::Sender<bool>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (held, _) = tokio::sync::watch::channel(false);
+        let holding = held.clone();
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                let server = tokio::net::TcpStream::connect(("127.0.0.1", broker))
+                    .await
+                    .unwrap();
+                let (mut client_read, mut client_write) = client.into_split();
+                let (mut server_read, mut server_write) = server.into_split();
+                tokio::spawn(async move {
+                    let _ = tokio::io::copy(&mut client_read, &mut server_write).await;
+                });
+                let mut held = holding.subscribe();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0; 64 * 1024];
+                    loop {
+                        let read = match server_read.read(&mut buffer).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => read,
+                        };
+                        // Bytes that arrive while replies are held wait here.
+                        if held.wait_for(|held| !*held).await.is_err()
+                            || client_write.write_all(&buffer[..read]).await.is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (port, held)
+    }
+
     /// Starts a real JetStream broker and a lease manager whose KV requests
-    /// give up quickly, as they do on a loaded host.
+    /// give up quickly, as they do on a loaded host. The manager reaches the
+    /// broker through [`relay`]; the returned client connects directly.
     async fn broker_and_manager(
         directory: &std::path::Path,
-    ) -> (tokio::process::Child, LeaseManager, ResolvedLeasesConfig) {
+    ) -> (
+        tokio::process::Child,
+        LeaseManager,
+        ResolvedLeasesConfig,
+        tokio::sync::watch::Sender<bool>,
+        async_nats::Client,
+    ) {
         use tokio::io::AsyncBufReadExt as _;
         let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
         let port = reservation.port();
@@ -561,7 +615,11 @@ mod tests {
         .await
         .unwrap();
         drop(reservation);
-        let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
+        let (relayed, replies) = relay(port).await;
+        let nats = async_nats::connect(format!("nats://127.0.0.1:{relayed}"))
+            .await
+            .unwrap();
+        let direct = async_nats::connect(format!("nats://127.0.0.1:{port}"))
             .await
             .unwrap();
         let mut jetstream = jetstream::new(nats);
@@ -575,7 +633,7 @@ mod tests {
         let manager = LeaseManager::open(jetstream, &config, "owner-a")
             .await
             .unwrap();
-        (server, manager, config)
+        (server, manager, config, replies, direct)
     }
 
     fn signal_broker(server: &tokio::process::Child, signal: &str) {
@@ -592,7 +650,7 @@ mod tests {
     #[tokio::test]
     async fn a_renewal_that_times_out_is_retried_before_the_lease_expires() {
         let directory = tempfile::tempdir().unwrap();
-        let (server, manager, _) = broker_and_manager(directory.path()).await;
+        let (server, manager, _, _replies, _direct) = broker_and_manager(directory.path()).await;
         let confirmed = Instant::now();
         let guard = manager
             .acquire(LeaseKey::new("health.owner"))
@@ -633,7 +691,8 @@ mod tests {
     #[tokio::test]
     async fn a_late_renewal_wake_still_gives_ownership_up_before_the_lease_expires() {
         let directory = tempfile::tempdir().unwrap();
-        let (server, manager, config) = broker_and_manager(directory.path()).await;
+        let (server, manager, config, _replies, _direct) =
+            broker_and_manager(directory.path()).await;
         let ttl = Duration::from_millis(config.ttl_ms);
         let confirmed = Instant::now();
         let guard = manager
@@ -668,6 +727,97 @@ mod tests {
         assert!(
             given_up < ttl,
             "ownership ended {given_up:?} after the last confirmed renewal, past the {ttl:?} lease"
+        );
+    }
+
+    /// A renewal whose write reached the broker but whose answer was lost is
+    /// later adopted from the lease entry. The lease runs from that earlier
+    /// write, not from the adopting attempt, so if the broker then stops
+    /// answering, ownership must end before the lease the broker actually holds
+    /// expires.
+    #[tokio::test]
+    async fn an_adopted_renewal_counts_from_the_write_that_made_it() {
+        use futures_util::StreamExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let (server, manager, config, replies, direct) = broker_and_manager(directory.path()).await;
+        let ttl = Duration::from_millis(config.ttl_ms);
+        // Every write the broker accepts, with the broker's own timestamp.
+        let mut watch = jetstream::new(direct)
+            .get_key_value(config.bucket.clone())
+            .await
+            .unwrap()
+            .watch("health.owner")
+            .await
+            .unwrap();
+        let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recording = writes.clone();
+        let watcher = tokio::spawn(async move {
+            while let Some(entry) = watch.next().await {
+                let entry = entry.unwrap();
+                if entry.operation == jetstream::kv::Operation::Put {
+                    recording.lock().unwrap().push(entry.created);
+                }
+            }
+        });
+        let started = Instant::now();
+        let wall_started = time::OffsetDateTime::now_utc();
+        let guard = manager
+            .acquire(LeaseKey::new("health.owner"))
+            .await
+            .unwrap();
+        let task = tokio::spawn(run_owned_lease(
+            manager.clone(),
+            "owner-a".into(),
+            HeldLease {
+                group: OwnerGroup::Health,
+                guard,
+            },
+            StopHandle::new(),
+            started,
+        ));
+
+        // The first renewal is written, but its answer, and every answer to
+        // the retries after it, is held back.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        replies.send_replace(true);
+        tokio::time::sleep_until(started + Duration::from_millis(3_500)).await;
+        // Answers flow again, so a retry finds and adopts the earlier write;
+        // then the broker stops answering at all.
+        replies.send_replace(false);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        signal_broker(&server, "-STOP");
+
+        let result = tokio::time::timeout(ttl * 2, task)
+            .await
+            .expect("ownership outlived its lease")
+            .unwrap();
+        let given_up = time::OffsetDateTime::now_utc();
+        signal_broker(&server, "-CONT");
+        assert!(
+            result.is_err(),
+            "renewal succeeded against a stopped broker"
+        );
+        // The watch has delivered every write the broker made.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        watcher.abort();
+        let writes = writes.lock().unwrap().clone();
+        let held =
+            wall_started + Duration::from_millis(300)..wall_started + Duration::from_millis(3_500);
+        assert!(
+            writes.iter().any(|written| held.contains(written)),
+            "no renewal was written while its answer was held back: {writes:?}"
+        );
+        // A renewal queued in the stopped broker is written when it resumes,
+        // after ownership ended; only earlier writes held the lease.
+        let expires = *writes
+            .iter()
+            .filter(|written| **written < given_up)
+            .max()
+            .unwrap()
+            + ttl;
+        assert!(
+            given_up < expires,
+            "ownership ended at {given_up}, after the broker's lease expired at {expires}"
         );
     }
 

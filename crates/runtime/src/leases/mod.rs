@@ -110,7 +110,12 @@ impl LeaseManager {
     /// before [`LeaseManager::ttl`] expires and keep the guard returned by each
     /// successful renewal. If the update result is ambiguous, the current entry
     /// must still prove ownership before its revision is adopted.
-    pub async fn renew(&self, guard: &mut LeaseGuard) -> Result<(), LeaseError> {
+    ///
+    /// The result tells how the lease's lifetime is known. A written renewal
+    /// started no earlier than this call. An adopted one may have been written
+    /// by any earlier unacknowledged renewal of the same revision, so its
+    /// lifetime runs from the first of those.
+    pub async fn renew(&self, guard: &mut LeaseGuard) -> Result<Renewal, LeaseError> {
         let store = self.store()?;
         let key = guard.key.clone();
         match store
@@ -123,7 +128,7 @@ impl LeaseManager {
         {
             Ok(revision) => {
                 guard.current_revision = revision;
-                Ok(())
+                Ok(Renewal::Written)
             }
             Err(error)
                 if matches!(
@@ -139,7 +144,7 @@ impl LeaseManager {
                             && entry.revision > guard.current_revision =>
                     {
                         guard.current_revision = entry.revision;
-                        Ok(())
+                        Ok(Renewal::Adopted)
                     }
                     Ok(Some(entry))
                         if entry.operation == kv::Operation::Put
@@ -197,6 +202,16 @@ impl LeaseManager {
             message: "lease KV bucket is not open".to_owned(),
         })
     }
+}
+
+/// How a successful [`LeaseManager::renew`] advanced the lease.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Renewal {
+    /// This call's own update was acknowledged.
+    Written,
+    /// The update's outcome was unknown, and the lease entry showed a newer
+    /// revision of ours, written by this call or an earlier unacknowledged one.
+    Adopted,
 }
 
 /// Proof that this runtime currently owns a lease key.

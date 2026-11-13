@@ -13,10 +13,11 @@ and this project adheres to
 - The server no longer exits over a runtime owner lease. A renewal that fails
   without losing the lease, such as one that times out on a heavily loaded
   host, is tried again until one renewal interval before the lease the broker
-  last confirmed would expire, however late the renewal ran. Auth, Jobs, Health and
-  Events each run on their own lease: one that is lost, or held by another
-  server at startup, stops only that part, which starts again once the lease
-  is free, while the rest of the server keeps running. `/readyz` reports a
+  last confirmed would expire. That lease is dated from when its renewal was
+  sent, however late it ran, and a renewal whose answer was lost from the
+  first attempt that could have written it. Auth, Jobs, Health and Events each
+  run on their own lease: one that is lost, or held by another server at
+  startup, stops only that part, which starts again once the lease is free, while the rest of the server keeps running. `/readyz` reports a
   server unready only while its Auth stands by. Before, the first timed-out
   renewal stopped the whole server even with most of the lease's 30 seconds
   left, and a server that found a lease held refused to start.
