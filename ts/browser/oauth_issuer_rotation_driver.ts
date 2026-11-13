@@ -91,6 +91,10 @@ const proxy = createServer(tls, async (incoming, outgoing) => {
       {
         method: incoming.method,
         headers: incoming.headers,
+        // The test restarts the backend at each rotation. A kept-alive socket
+        // to the stopped one can still look open, and reusing it resets the
+        // request, so each forwarded request opens its own connection.
+        agent: false,
       },
       async (response) => {
         try {
