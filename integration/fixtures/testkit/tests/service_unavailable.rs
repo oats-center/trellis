@@ -67,7 +67,20 @@ async fn stopped_provider_is_unavailable_and_same_operation_can_be_observed_afte
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
 
-    let rpc = api.echo(&input).await.unwrap_err();
+    // Ending the run latches the provider's stop at once, but its intake
+    // retires on its own task by draining its subscriptions, and a request the
+    // broker delivered before that drain is still answered rather than left
+    // to time out. So wait, within a bound, for the provider to stop serving.
+    let rpc = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match api.echo(&input).await {
+                Ok(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                Err(error) => return error,
+            }
+        }
+    })
+    .await
+    .expect("the stopped provider kept answering");
     let wait = operation.wait().await.unwrap_err();
     let watch = match operation.live().await {
         Ok(_) => panic!("stopped provider must not open an observation"),
