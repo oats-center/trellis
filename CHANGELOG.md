@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.38] - 2026-11-13
+
 ### Changed
 
 - Services can be added in any order. Approving a service, or creating or

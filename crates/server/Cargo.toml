@@ -21,11 +21,11 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.37" }
+trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.38" }
 trellis-self-update = { path = "../self-update" }
-trellis-local-nats = { path = "../local-nats", version = "0.100.0-rc.37" }
-trellis-runtime = { path = "../runtime", version = "0.100.0-rc.37" }
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.37", features = ["telemetry-otlp"] }
+trellis-local-nats = { path = "../local-nats", version = "0.100.0-rc.38" }
+trellis-runtime = { path = "../runtime", version = "0.100.0-rc.38" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.38", features = ["telemetry-otlp"] }
 
 [dev-dependencies]
 rcgen.workspace = true
