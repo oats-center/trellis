@@ -149,6 +149,12 @@ fn print_service_update(update: &auth_types::AuthServiceUpdate) {
                     .iter()
                     .map(|item| format!("{} (changed)", resource(item))),
             )
+            .chain(
+                changes
+                    .accepted_used_apis
+                    .iter()
+                    .map(|api| format!("to add {api}, which it uses, to the catalog")),
+            )
             .collect(),
     );
     section(

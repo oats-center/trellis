@@ -18,7 +18,7 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 [[ "${1:-}" == "--" ]] && shift
 
-targets=(availability device_authority download jobs_authority service_unavailable)
+targets=(availability device_authority download jobs_authority provider_added_later service_unavailable)
 staged="${TRELLIS_TESTKIT_TESTS_DIR:-$root/target/debug/testkit-tests}"
 cli_bin="${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"
 server_bin="${TRELLIS_TEST_SERVER_BIN:-$root/target/debug/trellis-server}"

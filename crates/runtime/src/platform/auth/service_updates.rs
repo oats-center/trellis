@@ -582,7 +582,39 @@ fn changes(
         "sharedApis": shared_apis,
         "removedApis": current.apis.difference(&apis).collect::<Vec<_>>(),
         "acceptedApis": accepted_apis,
+        "acceptedUsedApis": used_apis_to_accept(connection, definition)?,
     }))?)
+}
+
+/// The APIs `definition` uses, without implementing them, that the catalog
+/// holds no definition of. Approving the participant accepts them from its own
+/// evidence, which carries their verified source, so a consumer can be added
+/// before its provider. A consumer never changes an API the catalog holds.
+fn used_apis_to_accept(
+    connection: &Connection,
+    definition: &trellis_idl::ParticipantDefinition,
+) -> Result<Vec<String>, AuthError> {
+    let implemented: BTreeSet<String> = definition
+        .implements()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let mut apis = Vec::new();
+    for api in definition.uses().keys() {
+        let api = api.to_string();
+        if implemented.contains(&api) {
+            continue;
+        }
+        let accepted: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_accepted_apis WHERE api_id=?1)",
+            [&api],
+            |row| row.get(0),
+        )?;
+        if !accepted {
+            apis.push(api);
+        }
+    }
+    Ok(apis)
 }
 
 /// The APIs `definition` provides that the catalog does not hold at the
@@ -627,9 +659,10 @@ fn apis_to_accept(
 }
 
 /// Accepts every API `participant` in `evidence` provides that the catalog
-/// does not hold at that definition yet. Approving what a deployment provides
-/// is accepting the APIs it publishes, under the approver's authority.
-pub(super) fn accept_provided_apis(
+/// does not hold at that definition yet, and every API it uses that the
+/// catalog holds no definition of. Approving a deployment accepts the APIs it
+/// publishes and the ones it needs, under the approver's authority.
+pub(super) fn accept_participant_apis(
     connection: &Connection,
     store: &SqliteAuthorizationStore,
     identity: &Mutation,
@@ -645,7 +678,8 @@ pub(super) fn accept_provided_apis(
         .values()
         .find(|definition| definition.identity().as_str() == participant)
         .ok_or(AuthError::NotFound)?;
-    let apis = apis_to_accept(connection, &graph, definition)?;
+    let mut apis = apis_to_accept(connection, &graph, definition)?;
+    apis.extend(used_apis_to_accept(connection, definition)?);
     accept_apis(connection, store, identity, evidence, &apis, now)
 }
 
@@ -687,6 +721,8 @@ fn requests_access(changes: &AuthServiceUpdateChanges) -> bool {
         || !changes.changed_resources.is_empty()
         || !changes.added_apis.is_empty()
         || !changes.shared_apis.is_empty()
+        // Only an administrator adds an API to the catalog for a consumer.
+        || !changes.accepted_used_apis.is_empty()
 }
 
 fn submit(
@@ -748,7 +784,7 @@ fn submit(
                 "addedCapabilities": [], "removedCapabilities": [], "addedResources": [],
                 "changedResources": [], "reattachedResources": [], "removedResources": [], "addedApis": [],
                 "sharedApis": [],
-                "removedApis": [], "acceptedApis": []
+                "removedApis": [], "acceptedApis": [], "acceptedUsedApis": []
             }))?
         } else {
             changes(connection, &deployment, &current, &candidate)?
@@ -833,6 +869,14 @@ fn apply(
             identity,
             &candidate.evidence,
             &changes.accepted_apis,
+            now,
+        )?;
+        accept_apis(
+            connection,
+            store,
+            identity,
+            &candidate.evidence,
+            &changes.accepted_used_apis,
             now,
         )?;
         let provisioning = super::rpc_deployments::deployment_input(
@@ -1283,9 +1327,9 @@ fn submit_to_claim(
 }
 
 /// Approving a claim's update creates its deployment from the submitted build,
-/// accepting the APIs it provides, and provisions an instance holding the
-/// claim's identity. The waiting session is retired; the service connects
-/// again as that instance.
+/// accepting the APIs it provides and the unaccepted ones it uses, and
+/// provisions an instance holding the claim's identity. The waiting session is
+/// retired; the service connects again as that instance.
 #[allow(clippy::too_many_arguments)]
 fn approve_claim(
     connection: &Connection,
@@ -1319,6 +1363,14 @@ fn approve_claim(
         identity,
         &candidate.evidence,
         &changes.accepted_apis,
+        now,
+    )?;
+    accept_apis(
+        connection,
+        store,
+        identity,
+        &candidate.evidence,
+        &changes.accepted_used_apis,
         now,
     )?;
     let provisioning = super::rpc_deployments::deployment_input(

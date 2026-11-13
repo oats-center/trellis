@@ -599,6 +599,20 @@ durable Operation controls and observations retain deployment ownership and the
 supported durable coordination mechanism. Canonical entry routing neither merges
 service-owned storage nor load-balances established-session traffic.
 
+A caller's transport policy names the deployment-bound routes of the providers
+that are reachable when it is admitted: an enabled deployment with an active
+instance. A provider that becomes reachable later is named only by a renewed
+authority. Each admitted caller of an API may subscribe to
+`trellis.auth.providers.<b64(apiId)>`, and only Auth publishes there. When an
+installed revision, a new or enabled instance, or an enabled deployment makes a
+deployment reachable, Auth commits a `providers_notice` effect for each API it
+provides and publishes an empty message after the commit. Both SDKs subscribe
+on each transport generation to the notice subjects in its admitted policy and
+renew at once; the growth is adopted as a successor generation. A notice grants
+nothing and a lost one only leaves the caller to its scheduled renewal, so it
+carries no signature. Nothing is announced when a deployment stops being
+reachable.
+
 Providers sharing an API route must be suitable alternatives for that logical
 API. Matching IDL alone does not make independent databases or different
 physical devices interchangeable. Application code selects an API, while the SDK

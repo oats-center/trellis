@@ -295,7 +295,7 @@ pub(super) fn create_deployment(
                 &identity.actor,
                 Administration::ManagePrincipals,
             )?;
-            super::service_updates::accept_provided_apis(
+            super::service_updates::accept_participant_apis(
                 connection,
                 store,
                 identity,
@@ -422,7 +422,7 @@ pub(super) fn apply_deployment(
                 [&deployment],
                 |row| row.get(0),
             )?;
-            super::service_updates::accept_provided_apis(
+            super::service_updates::accept_participant_apis(
                 connection,
                 store,
                 identity,
@@ -580,6 +580,9 @@ pub(super) fn change_deployment(
                 &super::EnforcementScope::Deployment(deployment.clone()),
                 now,
             )?;
+            if state == "active" {
+                super::deployments::announce_providers(connection, &deployment, now)?;
+            }
             Ok(AuthDeploymentMutationResponse {
                 deployment: read_deployment(connection, &deployment)?,
                 enforcement: None,
@@ -706,6 +709,13 @@ pub(super) fn change_instance(
                     SET state=?2,updated_at=?3,version=version+1 \
                     WHERE principal_id=?1",
                     params![instance.principal.principal_id.to_string(), state, now],
+                )?;
+            }
+            if state == "active" {
+                super::deployments::announce_providers(
+                    connection,
+                    &instance.deployment_id.to_string(),
+                    now,
                 )?;
             }
             Ok(AuthInstanceMutationResponse {

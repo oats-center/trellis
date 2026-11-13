@@ -45,6 +45,9 @@ export type ProvisionedConnectionOptions = {
   signal?: AbortSignal;
 };
 
+/** Subjects on which Auth announces a new provider of an API the session calls. */
+const PROVIDERS_NOTICE_SUBJECT_PREFIX = "trellis.auth.providers.";
+
 const policySchema = z.object({
   format: z.literal("trellis.transport-authorization.v1"),
   account: z.string(),
@@ -166,6 +169,7 @@ export async function connectAdmitted(options: {
   let renewalTask: Promise<void> | undefined;
   let mirrorRecovery: AbortController | undefined;
   const credentials = new WeakMap<NatsConnection, string>();
+  const noticed = new WeakSet<NatsConnection>();
   const preparedCredentials = new WeakMap<TransportGenerationConnect, string>();
   const pendingAdmissions = new WeakMap<
     NatsConnection,
@@ -458,6 +462,22 @@ export async function connectAdmitted(options: {
     onActivate: (generation) => {
       const value = candidates.get(generation.nc);
       if (!value) throw new Error("AdmissionUnavailable");
+      if (!noticed.has(generation.nc)) {
+        noticed.add(generation.nc);
+        // Routes name the providers that existed at admission. Auth announces
+        // one added since, and renewing adopts the route to it at once.
+        for (const subject of value.admission.policy.subscribeAllow) {
+          if (!subject.startsWith(PROVIDERS_NOTICE_SUBJECT_PREFIX)) continue;
+          generation.nc.subscribe(subject, {
+            callback: (error) => {
+              if (error || manager.isClosed()) return;
+              void refreshAuthority().catch(() => {
+                /* typed failure is retained by closed() */
+              });
+            },
+          });
+        }
+      }
       if (value.committed) return;
       if (!value.candidate) throw new Error("AdmissionUnavailable");
       value.candidate.commit();

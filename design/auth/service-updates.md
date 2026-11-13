@@ -8,8 +8,9 @@ submits its IDL to Auth. Auth applies an update that asks for nothing new at
 once, and holds one that asks for new access until an administrator approves it.
 
 The administrator-driven path (`trellis svc create|apply`) stays; like an
-approved update, it accepts the APIs the build provides. A service update is
-the same install, started by the service.
+approved update, it accepts the APIs the build provides and the ones it uses
+that the catalog does not hold yet. A service update is the same install,
+started by the service.
 
 ## Principles
 
@@ -27,6 +28,14 @@ the same install, started by the service.
 - What a service consumes waits for approval too: a capability the deployment
   did not already select, or a resource it does not declare now or declares
   with more room or more events.
+- Services are added in any order. A build's package evidence carries the
+  verified source of every API it uses, so approving it also accepts each used
+  API the catalog holds no definition of yet, under the approver's authority.
+  A consumer only adds an API the catalog lacks; it never changes an accepted
+  one. When the provider arrives later, its definition is checked against that
+  accepted one like any other revision, so a provider older than the version
+  its consumers were built against is refused as an incompatible change. Adding
+  an API to the catalog for a consumer always waits for an administrator.
 - Dropping something only takes access away. An omitted resource is detached,
   and its data stays until an administrator removes it with `Resources.Remove`.
   Declaring it again asks to reattach that same storage, which needs approval
@@ -93,6 +102,9 @@ retries it, which the Console offers as "Try again" when setup fails.
 - `removedCapabilities`, `removedResources`, `removedApis`: what the service
   gives up. Removed resources keep their data.
 - `acceptedApis`: compatible API revisions applying the update accepts.
+- `acceptedUsedApis`: APIs the build uses, without providing them, that the
+  catalog holds no definition of; applying the update accepts them from the
+  build's evidence. Any of them makes the update wait for approval.
 
 Approval recomputes the changes, so an API another deployment started serving
 after the submission still needs the acknowledgement.
@@ -163,7 +175,8 @@ that identity.
   its participant in `Submit`. Nothing is installed, so the update always waits
   for an administrator and lists everything the service asks for.
 - Approving it installs a deployment from the submitted build (accepting the
-  APIs it provides, like `Deployments.Create`), provisions an instance holding
+  APIs it provides and the unaccepted ones it uses, like `Deployments.Create`),
+  provisions an instance holding
   the claim's identity, moves the update to that deployment, and retires the
   waiting session. The service connects again as that instance. The claim
   records the deployment it became.

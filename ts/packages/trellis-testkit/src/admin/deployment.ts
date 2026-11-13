@@ -77,6 +77,17 @@ export async function installParticipant(
         `API ${api.identity} requires explicit force replacement`,
       );
     }
+    // Accepting the definition the catalog already holds would only advance
+    // its revision, retiring every live session that uses the API.
+    if (review.currentGeneration !== undefined) {
+      const { api: current } = await context.rpc("authApisGet", {
+        apiId: api.identity,
+      });
+      if (current.canonicalDigest === review.canonicalDigest) {
+        context.acceptedApis.set(api.identity, evidence.rootDigest);
+        continue;
+      }
+    }
     await context.rpc("authApisAccept", {
       reviewId: review.reviewId,
       canonicalDigest: review.canonicalDigest,

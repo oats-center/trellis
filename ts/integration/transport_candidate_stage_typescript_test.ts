@@ -227,7 +227,9 @@ for (const closeWhileHeld of [false, true]) {
                 .filter(
                   (sub) =>
                     !sub.subject.startsWith("_INBOX.") &&
-                    !sub.subject.startsWith("$"),
+                    !sub.subject.startsWith("$") &&
+                    // Auth's provider notices are not application routes.
+                    !sub.subject.startsWith("trellis.auth.providers."),
                 )
                 .map((sub) => sub.subject),
             );

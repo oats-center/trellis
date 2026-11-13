@@ -161,10 +161,11 @@ pub(super) fn enqueue_effect(
     // The predecessor is part of the identity: an identical payload queued
     // behind a different predecessor is a separate action, never a dropped edge.
     let action = digest(&(kind, payload, predecessor))?;
+    // Only a repeated action is skipped; any other rejected row is an error.
     connection.execute(
-        "INSERT OR IGNORE INTO auth_post_commit_actions(action_id,kind,\
+        "INSERT INTO auth_post_commit_actions(action_id,kind,\
         payload_json,created_at,next_attempt_at,predecessor_action_id) \
-        VALUES(?1,?2,?3,?4,?4,?5)",
+        VALUES(?1,?2,?3,?4,?4,?5) ON CONFLICT(action_id) DO NOTHING",
         params![action, kind, json(payload)?, now, predecessor],
     )?;
     Ok(action)

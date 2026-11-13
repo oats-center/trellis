@@ -400,7 +400,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while store
-            .process_effects(&material, &revocations, &transport, now)
+            .process_effects(&material, &revocations, &transport, &transport, now)
             .await
             .unwrap()
             != 0

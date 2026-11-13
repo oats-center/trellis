@@ -8,7 +8,8 @@
  * and answering an API another service serves also needs the administrator to
  * acknowledge that requests will be split between them. A service claim takes
  * whatever service first connects with its identity; approving that service
- * creates its deployment and accepts the APIs it provides.
+ * creates its deployment and accepts the APIs it provides, and the APIs it uses
+ * that no provider has brought yet, so services can be added in any order.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -552,6 +553,183 @@ test("a service claim takes whatever service connects first, once an administrat
         seed: unwanted.seed,
       }).orThrow(),
     );
+  });
+});
+
+test("a service that uses an API no provider has brought yet is added first, and its provider serves it later", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    // Each service introduces itself through a claim and waits for approval,
+    // the way an installation adds services in whatever order they arrive.
+    const introduce = async <
+      P extends
+        | typeof participants.OperationCaller.participant
+        | typeof participants.Provider.participant,
+    >(
+      title: string,
+      participant: P,
+    ) => {
+      const seed = randomBytes(32);
+      const { claim } = await runtime.callAdminRpc("authServiceClaimsCreate", {
+        title,
+        instanceTitle: title,
+        identityPublicKey: Buffer.from(
+          nacl.sign.keyPair.fromSeed(seed).publicKey,
+        ).toString("base64url"),
+        idempotencyKey: ulid(),
+      });
+      const connecting = TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant,
+        seed: seed.toString("base64url"),
+      }).orThrow();
+      const pending = await runtime.waitFor(async () => {
+        const { items } = await runtime.callAdminRpc(
+          "authServiceUpdatesList",
+          {},
+        );
+        return items.find(
+          (update) =>
+            update.deploymentId === claim.claimId && update.state === "pending",
+        );
+      });
+      const approve = async () => {
+        const { update } = await runtime.callAdminRpc(
+          "authServiceUpdatesDecide",
+          {
+            updateId: pending.updateId,
+            decision: "approved",
+            expectedRevision: pending.revision,
+            idempotencyKey: ulid(),
+          },
+        );
+        assert.equal(update.state, "applied");
+        return await connecting;
+      };
+      return { changes: pending.changes, approve };
+    };
+    const consumer = participants.OperationCaller.participant;
+    const apiId = consumer.uses[0].api.identity;
+    const catalogued = async () => {
+      const { items } = await runtime.callAdminRpc("authApisList", {
+        page: { limit: 50 },
+        search: apiId,
+      });
+      return items.some((api) => api.apiId === apiId);
+    };
+    // No provider has brought it, so the catalog doesn't hold it.
+    assert.equal(await catalogued(), false);
+
+    const early = await introduce("early-consumer", consumer);
+    // The review names the API approval adds to the catalog for it.
+    assert.deepEqual(early.changes.acceptedUsedApis, [apiId]);
+    const caller = await early.approve();
+    try {
+      assert.equal(await catalogued(), true);
+
+      // The provider's build carries the definition the catalog now holds, so
+      // approving it accepts nothing again; it only starts serving the API.
+      const late = await introduce(
+        "late-provider",
+        participants.Provider.participant,
+      );
+      assert.deepEqual(late.changes.addedApis, [apiId]);
+      assert.deepEqual(late.changes.acceptedApis, []);
+      assert.deepEqual(late.changes.acceptedUsedApis, []);
+      const provider = await late.approve();
+      try {
+        await provider.handleWork(async ({ input, op }) => {
+          return await op
+            .complete({ value: `completed ${input.value}` })
+            .orThrow();
+        });
+        // The caller was admitted before the provider existed. Auth announces
+        // the provider, so the caller reaches it well before its scheduled
+        // renewal, without reconnecting.
+        // Starting uses the API's shared route; following the operation uses
+        // the route bound to the provider that took it, which the caller gains
+        // when its renewal lands.
+        const operation = await caller
+          .work({ value: "early" })
+          .start()
+          .orThrow();
+        const terminal = await runtime.waitFor(
+          () => operation.wait().orThrow(),
+          { timeoutMs: 10_000, intervalMs: 100 },
+        );
+        assert.equal(terminal.state, "completed");
+        assert.deepEqual(terminal.output, { value: "completed early" });
+      } finally {
+        await provider.stop();
+      }
+    } finally {
+      await caller.stop();
+    }
+  });
+});
+
+test("a running caller keeps working and reaches a provider the testkit registers from another package", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const consumer = participants.OperationCaller.participant;
+    const callerIdentity = await runtime.registerService({
+      name: "running-caller",
+      deployment: "running-caller",
+      contract: consumer,
+    });
+    const caller = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: consumer,
+      name: "running-caller",
+      seed: callerIdentity.seed,
+    }).orThrow();
+    try {
+      const apiId = consumer.uses[0].api.identity;
+      const acceptedRevision = async () => {
+        const { items } = await runtime.callAdminRpc("authApisList", {
+          page: { limit: 50 },
+          search: apiId,
+        });
+        return items.find((api) => api.apiId === apiId)?.acceptedRevision;
+      };
+      const before = await acceptedRevision();
+      // Another package carrying the identical API definition. Accepting it
+      // again would advance the revision every session using it pins.
+      const late = extendedParticipants.Provider.participant;
+      const identity = await runtime.registerService({
+        name: "other-package-provider",
+        deployment: "other-package-provider",
+        contract: late,
+      });
+      assert.equal(await acceptedRevision(), before);
+      const provider = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: late,
+        name: "other-package-provider",
+        seed: identity.seed,
+      }).orThrow();
+      try {
+        await provider.handleWork(async ({ input, op }) => {
+          return await op
+            .complete({ value: `completed ${input.value}` })
+            .orThrow();
+        });
+        // Starting uses the API's shared route; following the operation uses
+        // the route bound to the provider that took it, which the caller gains
+        // when its renewal lands.
+        const operation = await caller
+          .work({ value: "running" })
+          .start()
+          .orThrow();
+        const terminal = await runtime.waitFor(
+          () => operation.wait().orThrow(),
+          { timeoutMs: 10_000, intervalMs: 100 },
+        );
+        assert.deepEqual(terminal.output, { value: "completed running" });
+      } finally {
+        await provider.stop();
+      }
+    } finally {
+      await caller.stop();
+    }
   });
 });
 

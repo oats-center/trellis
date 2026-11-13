@@ -108,10 +108,11 @@ pub use session_proof::{
 pub use subjects::{
     decode_event_descriptor_identity, derive_bound_live_subject, derive_bound_operation_subject,
     derive_bound_rpc_subject, derive_event_subject, derive_event_wildcard_subject,
-    derive_live_subject, derive_operation_subject, derive_rpc_subject,
-    encode_event_descriptor_identity, encode_subject_token, event_patterns_overlap,
-    route_queue_group, validate_event_descriptor_subject, DerivedApiSubjects, DerivedEventSubjects,
-    EventDescriptorIdentity,
+    derive_live_subject, derive_operation_subject, derive_providers_notice_subject,
+    derive_rpc_subject, encode_event_descriptor_identity, encode_subject_token,
+    event_patterns_overlap, route_queue_group, validate_event_descriptor_subject,
+    DerivedApiSubjects, DerivedEventSubjects, EventDescriptorIdentity,
+    PROVIDERS_NOTICE_SUBJECT_PREFIX,
 };
 pub use transport_authorization::{
     subject_union_covered_by, TransportAuthorizationV1, TransportPolicyClass,

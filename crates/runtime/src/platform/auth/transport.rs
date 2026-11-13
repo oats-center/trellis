@@ -81,6 +81,14 @@ impl SqliteAuthorizationStore {
                     );
                 }
             }
+            if !caller.is_empty() {
+                // Routes below name the providers that exist now; a caller
+                // renews on this notice when another one becomes reachable.
+                subscribe.insert(
+                    trellis_protocol::derive_providers_notice_subject(&reference.api_id)
+                        .map_err(|_| AuthError::Denied)?,
+                );
+            }
             let mut providers = Vec::new();
             for binding in authority
                 .provider_bindings

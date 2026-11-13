@@ -175,11 +175,13 @@ impl SqliteAuthorizationStore {
     /// physical closure completes only after exact system-account evidence.
     /// Advance one bounded enforcement page and deliver committed broker effects.
     /// Count progress in both phases so drains cannot stop at effect-free pages.
+    /// `notices` is a connection in the account sessions live in.
     pub(crate) async fn process_effects(
         self: &Arc<Self>,
         material: &kv::Store,
         revocations: &kv::Store,
         system: &Client,
+        notices: &Client,
         now: i64,
     ) -> Result<usize, AuthError> {
         let started = std::time::Instant::now();
@@ -250,6 +252,20 @@ impl SqliteAuthorizationStore {
                                 }
                             }
                         }
+                        Ok(())
+                    }
+                    "providers_notice" => {
+                        let api = effect.payload["apiId"].as_str().ok_or(AuthError::Denied)?;
+                        let subject = trellis_protocol::derive_providers_notice_subject(api)
+                            .map_err(|_| AuthError::Denied)?;
+                        notices
+                            .publish(subject, Default::default())
+                            .await
+                            .map_err(|error| AuthError::Broker(error.to_string()))?;
+                        notices
+                            .flush()
+                            .await
+                            .map_err(|error| AuthError::Broker(error.to_string()))?;
                         Ok(())
                     }
                     "kick" => {

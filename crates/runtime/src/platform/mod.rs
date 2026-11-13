@@ -146,6 +146,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let stopping = || context.is_stopping();
     let auth_nats = crate::supervisor::connect_nats(&nats, auth_creds, stopping).await?;
     let system = crate::supervisor::connect_nats(&nats, system_creds, stopping).await?;
+    // Provider notices reach sessions in the application account.
+    let notices = context.trellis_nats.clone();
     // Every built-in this process starts must be one this server can install
     // before any of them is.
     let mut builtins = Vec::new();
@@ -166,7 +168,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     >(&store, &context.trellis_nats, &provider_seed)
     .await?;
     while store
-        .process_effects(&material, &revocations, &system, crate::clock::unix_now())
+        .process_effects(
+            &material,
+            &revocations,
+            &system,
+            &notices,
+            crate::clock::unix_now(),
+        )
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?
         != 0
@@ -239,7 +247,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 // turn between bounded batches.
                 for _ in 0..EFFECT_DRAIN_TURNS {
                     match store
-                        .process_effects(&material, &revocations, &system, crate::clock::unix_now())
+                        .process_effects(
+                            &material,
+                            &revocations,
+                            &system,
+                            &notices,
+                            crate::clock::unix_now(),
+                        )
                         .await
                     {
                         Ok(0) => break,

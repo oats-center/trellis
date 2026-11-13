@@ -251,6 +251,28 @@ pub fn derive_bound_live_subject(
     ))
 }
 
+/// Prefix of the subjects on which Auth announces new providers of an API.
+pub const PROVIDERS_NOTICE_SUBJECT_PREFIX: &str = "trellis.auth.providers.";
+
+/// Derive the subject on which Auth announces that a deployment became a
+/// reachable provider of `api_id`.
+///
+/// A caller's transport policy names each provider deployment it may reach, so
+/// a session admitted before that provider renews its authority on this
+/// notice instead of waiting for its scheduled renewal. The message carries
+/// nothing; only Auth publishes it, and a renewal grants only what Auth signs.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError::InvalidIdentifier`] for an invalid API ID.
+pub fn derive_providers_notice_subject(api_id: &str) -> Result<String, ProtocolError> {
+    crate::validate_api_id(api_id)?;
+    Ok(format!(
+        "{PROVIDERS_NOTICE_SUBJECT_PREFIX}{}",
+        subject_token(api_id)
+    ))
+}
+
 /// Derive the one queue shared by replicas subscribed to an exact route.
 #[must_use]
 pub fn route_queue_group(subscription_subject: &str) -> String {

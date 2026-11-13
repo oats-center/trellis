@@ -2850,6 +2850,28 @@ async fn open_generation(
             .contexts
             .promote_locked(&transition, &prepared.context_digest, &prepared.instance)?;
     }
+    // Routes name the providers that existed at admission. Auth announces one
+    // added since, and renewing adopts the route to it at once.
+    for subject in generation
+        .admitted_policy
+        .subscribe_allow
+        .iter()
+        .filter(|subject| subject.starts_with(trellis_protocol::PROVIDERS_NOTICE_SUBJECT_PREFIX))
+    {
+        let Ok(mut notices) = generation.nats.subscribe(subject.clone()).await else {
+            continue;
+        };
+        let contexts = Arc::downgrade(&inner.contexts);
+        tokio::spawn(async move {
+            // The subscription ends with this generation's connection.
+            while futures_util::StreamExt::next(&mut notices).await.is_some() {
+                let Some(contexts) = contexts.upgrade() else {
+                    return;
+                };
+                contexts.request_refresh();
+            }
+        });
+    }
     // The managed generation owns the socket now; the raw guard must not drain it.
     raw.disarm();
     Ok(generation)

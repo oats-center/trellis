@@ -123,7 +123,7 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
         .unwrap();
     drain(&f.store, NOW);
     f.store
-        .process_effects(&material, &revocations, &system, NOW)
+        .process_effects(&material, &revocations, &system, &system, NOW)
         .await
         .unwrap();
     let published = material
@@ -152,7 +152,7 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
     let provider_authority = issue_authority(&f.store, &provisioned_admission, None, NOW).unwrap();
     while f
         .store
-        .process_effects(&material, &revocations, &system, NOW)
+        .process_effects(&material, &revocations, &system, &system, NOW)
         .await
         .unwrap()
         != 0
@@ -185,7 +185,7 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
     .unwrap();
     while f
         .store
-        .process_effects(&material, &revocations, &system, NOW + 2)
+        .process_effects(&material, &revocations, &system, &system, NOW + 2)
         .await
         .unwrap()
         != 0
@@ -218,7 +218,7 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
     let scope = EnforcementScope::Session(session.clone());
     revoke_root(&f.store, &mutation(&f.admin, &scope), &scope, NOW + 1).unwrap();
     f.store
-        .process_effects(&material, &revocations, &system, NOW + 1)
+        .process_effects(&material, &revocations, &system, &system, NOW + 1)
         .await
         .unwrap();
     use futures_util::StreamExt;

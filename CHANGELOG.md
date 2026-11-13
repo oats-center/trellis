@@ -8,6 +8,28 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Services can be added in any order. Approving a service, or creating or
+  applying its deployment, also accepts each API it uses that no provider has
+  brought yet, from the service's own verified IDL. The review lists them under
+  `acceptedUsedApis` and the Console shows them, and a service update that
+  would add one always waits for an administrator. A consumer never changes an
+  API the catalog already holds, and a provider added later is checked against
+  the definition its consumer brought.
+
+### Fixed
+
+- A caller that was already connected when a provider of an API it uses was
+  added could not follow operations on that provider until its scheduled
+  authority renewal, up to about five minutes later. Auth now announces a
+  provider when its deployment becomes reachable, and the TypeScript and Rust
+  SDKs renew at once. Existing development databases need recreating, since
+  the platform schema baseline changed.
+- The TypeScript testkit no longer accepts an API definition the catalog
+  already holds when it registers a participant from another package. Doing so
+  advanced the API's revision and retired every live session that used it.
+
 ## [0.100.0-rc.37] - 2026-11-13
 
 ### Fixed

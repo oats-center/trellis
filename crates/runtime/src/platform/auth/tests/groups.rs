@@ -248,61 +248,68 @@ fn an_accepted_api_describes_its_actions_and_their_schemas() {
 }
 
 #[test]
-fn deploying_a_service_that_uses_an_unaccepted_api_names_that_api() {
+fn deploying_a_service_that_uses_an_unaccepted_api_accepts_it_once() {
     let f = fixture();
-    // An API of its own that nobody has accepted yet.
+    // An API of its own that no provider has brought yet.
     let source = SOURCE
         .replace("documents", "notes")
         .replace("Documents", "Notes")
         .replace("Document", "Note");
     let evidence = evidence(&source);
     let graph = trellis_idl::compile_evidence(evidence.clone()).unwrap();
-    let api = graph
-        .root_package()
-        .apis()
-        .keys()
-        .next()
-        .unwrap()
-        .to_string();
+    let api_id = graph.root_package().apis().keys().next().unwrap();
+    let api = api_id.to_string();
     let reader = graph
         .root_package()
         .participants()
         .values()
         .find(|participant| participant.name() == "Reader")
         .unwrap();
-    let create: trellis_runtime_apis::types::AuthDeploymentCreateRequest =
-        serde_json::from_value(serde_json::json!({
-            "packageEvidence": evidence,
-            "participantId": reader.identity().as_str(),
-            "kind": "service",
-            "title": "Reader",
-            "idempotencyKey": ulid::Ulid::generate().to_string()
-        }))
-        .unwrap();
-    let refused = super::super::rpc_deployments::create_deployment(
-        &f.store,
-        &mutation(&f.admin, &create),
-        &create,
-        NOW,
-    );
-    match refused {
-        Err(AuthError::Invalid(message)) => {
-            assert!(message.contains(&api), "{message}");
-            assert!(message.contains("not accepted"), "{message}");
-        }
-        other => panic!("deploying before acceptance was not explained: {other:?}"),
-    }
-    // Once the API is accepted, the same deployment goes ahead.
-    accept(&f.store, &f.admin, &source, false, NOW);
-    let create = trellis_runtime_apis::types::AuthDeploymentCreateRequest {
-        idempotency_key: ulid::Ulid::generate().to_string().into(),
-        ..create
+    let accepted = || {
+        f.store
+            .transaction(|connection| {
+                Ok(rusqlite::OptionalExtension::optional(
+                    connection.query_row(
+                        "SELECT definition_digest,generation,accepted_revision \
+                        FROM auth_accepted_apis WHERE api_id=?1",
+                        [&api],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, u64>(1)?,
+                                row.get::<_, u64>(2)?,
+                            ))
+                        },
+                    ),
+                )?)
+            })
+            .unwrap()
     };
-    super::super::rpc_deployments::create_deployment(
-        &f.store,
-        &mutation(&f.admin, &create),
-        &create,
-        NOW + 1,
-    )
-    .unwrap();
+    assert_eq!(accepted(), None);
+    let create = |title: &str, now: i64| {
+        let input: trellis_runtime_apis::types::AuthDeploymentCreateRequest =
+            serde_json::from_value(serde_json::json!({
+                "packageEvidence": evidence,
+                "participantId": reader.identity().as_str(),
+                "kind": "service",
+                "title": title,
+                "idempotencyKey": ulid::Ulid::generate().to_string()
+            }))
+            .unwrap();
+        super::super::rpc_deployments::create_deployment(
+            &f.store,
+            &mutation(&f.admin, &input),
+            &input,
+            now,
+        )
+        .unwrap();
+    };
+    // Deploying the consumer accepts the API from the consumer's own evidence.
+    create("Reader", NOW);
+    let first = accepted().expect("the used API was accepted");
+    assert_eq!(first.0, trellis_idl::api_digest(&graph, api_id).unwrap());
+    // A second consumer finds it accepted and leaves it alone: accepting it
+    // again would advance its revision under every session that pins it.
+    create("Second reader", NOW + 1);
+    assert_eq!(accepted(), Some(first));
 }

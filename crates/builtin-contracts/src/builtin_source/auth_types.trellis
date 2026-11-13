@@ -786,6 +786,7 @@ model AuthServiceUpdateChanges {
   sharedApis: list<AuthApiId>;
   removedApis: list<AuthApiId>;
   acceptedApis: list<AuthApiId>;
+  acceptedUsedApis: list<AuthApiId>;
 }
 model AuthServiceUpdate {
   updateId: ulid;

@@ -278,6 +278,10 @@
           ...changes.changedResources.map(
             (resource) => `${resourceLabel(resource)}, with more room`,
           ),
+          ...changes.acceptedUsedApis.map(
+            (api) =>
+              `To add ${apiLabel(api)}, which it uses, before any service offers it`,
+          ),
         ],
         "bg-warning",
       )}

@@ -853,6 +853,7 @@ impl SqliteAuthorizationStore {
                     )?;
                 }
             }
+            announce_providers(connection, &deployment_id, now)?;
             Ok(deployment_id)
         }
     }
@@ -1050,6 +1051,45 @@ impl SqliteAuthorizationStore {
                 ],
             )?;
         }
+        announce_providers(connection, deployment, now)?;
         Ok(result)
     }
+}
+
+/// Queue a notice for each API `deployment` provides, once it is reachable:
+/// enabled, with an active instance. A caller's transport policy names only
+/// the providers that existed at its admission, so earlier callers renew on
+/// the notice to reach this one. Nothing is announced while it is unreachable.
+pub(super) fn announce_providers(
+    connection: &crate::platform::auth::sqlite::Connection,
+    deployment: &str,
+    now: i64,
+) -> Result<(), AuthError> {
+    let provided: Option<String> = connection
+        .query_row(
+            "SELECT b.provided_apis_json FROM auth_deployment_bindings b \
+            JOIN auth_deployments d USING(deployment_id) \
+            WHERE b.deployment_id=?1 AND d.state='active' \
+            AND EXISTS(SELECT 1 FROM auth_instances i \
+                WHERE i.deployment_id=?1 AND i.state='active')",
+            [deployment],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(provided) = provided else {
+        return Ok(());
+    };
+    let provided: Vec<ProviderImplementation> = serde_json::from_str(&provided)?;
+    for implementation in provided {
+        // A fresh id keeps a later notice for the same API from being taken
+        // for this one.
+        super::revocation::enqueue_effect(
+            connection,
+            "providers_notice",
+            &serde_json::json!({"apiId": implementation.api_id, "noticeId": id()}),
+            None,
+            now,
+        )?;
+    }
+    Ok(())
 }

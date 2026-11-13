@@ -347,8 +347,13 @@ HTTP loopback callbacks need no development flag; browser loopback does.
 
 Creating or applying a deployment (`trellis svc <name> create`, `svc <id>
 apply`) accepts every API its participant provides that the catalog lacks or
-holds at a compatible older definition: approving a deployment is accepting
-the APIs it publishes. `trellis apis review --source <project-root>
+holds at a compatible older definition, and every API it uses that the catalog
+lacks, from the participant's own evidence: approving a deployment is accepting
+the APIs it publishes and needs, so services can be added in any order. A
+consumer never changes an accepted API; a provider that arrives later is checked
+against the definition its consumer brought. A caller already running when its
+provider is added renews its authority on Auth's notice and reaches it within
+moments; it does not need to reconnect. `trellis apis review --source <project-root>
 [--participant <package>.<Name>]` shows them first, and `apis accept` accepts
 them without a deployment. An incompatible change needs `trellis apis force-replace` with generated
 `AuthApiForceReplaceRequest` JSON, `trellis.auth.v1:apis.forceReplace`, and
@@ -382,7 +387,8 @@ starts from a claim: `trellis svc <name> create` without `--source` (or
 `Auth.ServiceClaims.Create` with the service's public key) creates one, and the
 first service to connect with that identity submits itself as the claim's
 update. Approving it (`trellis svc <claim-id> approve`, or the Console review
-link) creates the deployment, accepts the APIs it provides, and provisions an
+link) creates the deployment, accepts the APIs it provides and the unaccepted
+ones it uses, and provisions an
 instance holding that identity; the service then connects as that instance.
 
 For `trellis identity grants set`, the input file contains only
