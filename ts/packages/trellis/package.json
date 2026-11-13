@@ -1,6 +1,6 @@
 {
   "name": "@oatscenter/trellis",
-  "version": "0.100.0-rc.36",
+  "version": "0.100.0-rc.37",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
@@ -21,6 +21,6 @@
     "build": "node scripts/build_npm.ts"
   },
   "dependencies": {
-    "@oatscenter/result": "0.100.0-rc.36"
+    "@oatscenter/result": "0.100.0-rc.37"
   }
 }
