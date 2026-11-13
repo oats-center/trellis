@@ -371,6 +371,43 @@ pub(crate) fn nats_connect_options(
     })
 }
 
+/// How long a NATS connection that fails in transit is tried again.
+const NATS_CONNECT_RETRY_WINDOW: Duration = Duration::from_secs(30);
+
+/// Connects to NATS, retrying failures in transit, such as a TLS handshake cut
+/// short on a loaded host, for up to [`NATS_CONNECT_RETRY_WINDOW`].
+///
+/// Refused credentials and TLS or address setup errors fail at once, since a
+/// retry cannot change them. Retrying ends early once `stopping` returns true.
+pub(crate) async fn connect_nats(
+    nats: &crate::config::ResolvedRuntimeNatsConfig,
+    credentials: &str,
+    stopping: impl Fn() -> bool,
+) -> Result<async_nats::Client, RuntimeError> {
+    use async_nats::ConnectErrorKind;
+    let give_up = tokio::time::Instant::now() + NATS_CONNECT_RETRY_WINDOW;
+    let mut delay = Duration::from_millis(250);
+    loop {
+        let error = match nats_connect_options(nats, credentials)?
+            .connect(nats.server_urls())
+            .await
+        {
+            Ok(client) => return Ok(client),
+            Err(error) => error,
+        };
+        let transient = matches!(
+            error.kind(),
+            ConnectErrorKind::Io | ConnectErrorKind::TimedOut | ConnectErrorKind::Dns
+        );
+        if !transient || stopping() || tokio::time::Instant::now() + delay >= give_up {
+            return Err(RuntimeError::Nats(error.to_string()));
+        }
+        tracing::warn!(error = %error, "NATS connection failed; retrying");
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(2));
+    }
+}
+
 async fn check_nats_connection(
     nats: &crate::config::ResolvedRuntimeNatsConfig,
     credentials: &str,
@@ -611,6 +648,13 @@ impl RuntimeContext {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Whether the process has begun shutting down.
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.groups
+            .stopping
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) fn register_http_router(&self, router: axum::Router) -> Result<(), RuntimeError> {
         let mut registered = self
             .http_router
@@ -787,10 +831,10 @@ pub async fn run_with_stop(
             .and_then(|o| o.runtime_servers.as_deref()),
     )?;
     let leases = config.resolve_leases()?;
-    let trellis_nats = nats_connect_options(&nats, &nats.trellis_creds)?
-        .connect(nats.server_urls())
-        .await
-        .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+    let trellis_nats = connect_nats(&nats, &nats.trellis_creds, || {
+        stop.as_ref().is_some_and(StopHandle::is_stopped)
+    })
+    .await?;
     let owner_id = format!(
         "{}-{}",
         config.instance_name.as_deref().unwrap_or("trellis-runtime"),
@@ -803,14 +847,19 @@ pub async fn run_with_stop(
     // terminating it with its leases held. One stop serves the whole process, so
     // a signal is observed whether a group is serving or standing by.
     let process_stop = StopHandle::new();
-    let signal = shutdown_or_stop(stop);
+    let mut signal = Box::pin(shutdown_or_stop(stop));
+    // The first poll registers the signal handlers. A stop the owner already
+    // requested, during the connection or lease setup above, completes it, and
+    // the runtime returns before it starts anything.
+    let pending = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(Future::poll(signal.as_mut(), cx).is_pending())
+    })
+    .await;
+    if !pending {
+        tracing::info!("runtime stop requested before startup finished");
+        return Ok(());
+    }
     let _signal = {
-        let mut signal = Box::pin(signal);
-        std::future::poll_fn(|cx| {
-            let _ = Future::poll(signal.as_mut(), cx);
-            std::task::Poll::Ready(())
-        })
-        .await;
         let process_stop = process_stop.clone();
         AbortOnDropHandle::new(tokio::spawn(async move {
             signal.await;

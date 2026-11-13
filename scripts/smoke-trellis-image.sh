@@ -186,6 +186,9 @@ fi
 # Use the runtime's structured diagnostics: a shutdown connection refusal must
 # not be mislabeled as a startup write failure, but a new generation after
 # terminal ownership is a real lifecycle defect even if the process exits zero.
+# A group may stand by and take its work back while the process runs, so the
+# terminal point is the process's own shutdown line, logged once every group
+# has stopped.
 logs="$(docker logs "${container}" 2>&1)"
 if grep -Ei 'read-only|readonly|permission denied|failed to (write|create)' <<<"${logs}"; then
   echo "unexpected filesystem/write error during runtime operation or shutdown" >&2
@@ -194,7 +197,7 @@ if grep -Ei 'read-only|readonly|permission denied|failed to (write|create)' <<<"
 fi
 if ! jq -Rse '
   split("\n") | map(fromjson? | select(type == "object")) |
-  (map(select(.fields.message == "runtime ownership shutdown finished; flushing NATS")) | first | .timestamp) as $stopped |
+  (map(select(.fields.message == "runtime shutdown finished; flushing NATS")) | first | .timestamp) as $stopped |
   $stopped != null and
   all(.[]; .timestamp <= $stopped or
     (.fields.event != "transport_generation.opening" and

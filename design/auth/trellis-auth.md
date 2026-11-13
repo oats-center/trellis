@@ -1100,7 +1100,11 @@ that database a dependency of split roles.
 Each role's singleton work (Auth, Jobs, Health, Events) runs only while its
 process holds that role's NATS KV owner lease. A process running several roles
 supervises each one separately, as if it were its own split role. A renewal
-that fails without losing the lease is retried until the lease would expire. A
+that fails without losing the lease is retried, but only until one renewal
+interval before the last renewal the broker confirmed would expire. The bound
+comes from that confirmation, not from when the renewal ran, so a renewal that
+runs late on a loaded host cannot keep work running past the lease, and the
+role has that interval to stop its work before another process can take it. A
 role that cannot hold its lease, at startup or after losing it, stops its work
 and stands by, trying again each renewal interval, and starts the work again
 once the lease is free. The process's other roles and its listener keep

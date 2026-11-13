@@ -168,8 +168,13 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
     }
     let proxy = Arc::new(NativeOAuthProxy {
         backend: backend.clone(),
+        // This test restarts the backend. A pooled connection to the stopped
+        // one can still look open on a loaded host, and forwarding a refresh
+        // over it loses the response, which the client rightly treats as a
+        // possibly spent token. Each forwarded request opens its own connection.
         http: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(0)
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap(),

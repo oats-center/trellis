@@ -939,3 +939,135 @@ async fn a_runtime_that_loses_a_lease_stands_by_for_that_work_alone() {
         .unwrap();
     drop(reserved);
 }
+
+/// An owner's stop request ends the runtime whenever it arrives during
+/// startup: one made before the runtime runs, and one made while it is still
+/// connecting and taking its leases. Either way it returns promptly and leaves
+/// no owner lease behind for the next runtime to wait out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_requested_during_startup_ends_the_runtime() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let reserved: Vec<_> = (0..4)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    let origin = format!("http://127.0.0.1:{}", ports[0]);
+    let (config, mut broker) = installation(root, &ports, &origin, "loopback_development").await;
+    let nats = config.resolve_nats_runtime().unwrap();
+    let client = crate::supervisor::nats_connect_options(&nats, &nats.trellis_creds)
+        .unwrap()
+        .connect(nats.server_urls())
+        .await
+        .unwrap();
+    let jetstream = async_nats::jetstream::new(client);
+    let bucket = config.resolve_leases().unwrap().bucket;
+
+    let pid = std::fs::read_to_string(root.join("runtime/nats-server.pid")).unwrap();
+    let signal = |signal: &str| {
+        assert!(std::process::Command::new("kill")
+            .args([signal, pid.trim()])
+            .status()
+            .unwrap()
+            .success());
+    };
+    for stopped_before_start in [true, false] {
+        let stop = crate::shutdown::StopHandle::new();
+        if stopped_before_start {
+            stop.stop();
+        } else {
+            // The broker does not answer, so the runtime is still connecting
+            // when its owner stops it.
+            signal("-STOP");
+        }
+        let mut runtime = AbortOnDropHandle::new(tokio::spawn(crate::run_with_stop(
+            crate::RuntimeOptions {
+                mode: crate::RuntimeMode::All,
+                config: config.clone(),
+                reset_admin: false,
+                nats_override: None,
+            },
+            Some(stop.clone()),
+        )));
+        if !stopped_before_start {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            stop.stop();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            signal("-CONT");
+        }
+        tokio::time::timeout(Duration::from_secs(30), &mut runtime)
+            .await
+            .unwrap_or_else(|_| {
+                panic!("stopped_before_start={stopped_before_start}: the runtime ignored its stop")
+            })
+            .unwrap()
+            .unwrap();
+        let leases = jetstream.get_key_value(&bucket).await.unwrap();
+        for key in [
+            "platform.owner",
+            "jobs.owner",
+            "health.owner",
+            "events.owner",
+        ] {
+            assert!(
+                leases.get(key).await.unwrap().is_none(),
+                "stopped_before_start={stopped_before_start}: {key} stayed held after the runtime stopped"
+            );
+        }
+    }
+
+    tokio::task::spawn_blocking(move || broker.stop().unwrap())
+        .await
+        .unwrap();
+    drop(reserved);
+}
+
+/// A NATS connection that fails in transit is tried again: a broker that does
+/// not answer for longer than one connection attempt's timeout, as one may on
+/// a loaded host, still lets Auth connect once it answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_nats_connection_that_fails_in_transit_is_retried() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let reserved: Vec<_> = (0..4)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    let origin = format!("http://127.0.0.1:{}", ports[0]);
+    let (config, mut broker) = installation(root, &ports, &origin, "loopback_development").await;
+    let nats = config.resolve_nats_runtime().unwrap();
+    let (auth_creds, _) = nats.platform_creds().unwrap();
+    let pid = std::fs::read_to_string(root.join("runtime/nats-server.pid")).unwrap();
+    let signal = |signal: &str| {
+        assert!(std::process::Command::new("kill")
+            .args([signal, pid.trim()])
+            .status()
+            .unwrap()
+            .success());
+    };
+
+    signal("-STOP");
+    let started = tokio::time::Instant::now();
+    let connecting = tokio::spawn({
+        let nats = nats.clone();
+        let auth_creds = auth_creds.to_owned();
+        async move { crate::supervisor::connect_nats(&nats, &auth_creds, || false).await }
+    });
+    // Longer than the five-second timeout of one connection attempt.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    signal("-CONT");
+    let client = tokio::time::timeout(Duration::from_secs(20), connecting)
+        .await
+        .expect("the connection kept failing after the broker answered")
+        .unwrap()
+        .expect("a connection that timed out was not tried again");
+    assert!(started.elapsed() > Duration::from_secs(7));
+    client.flush().await.unwrap();
+
+    tokio::task::spawn_blocking(move || broker.stop().unwrap())
+        .await
+        .unwrap();
+    drop(reserved);
+}

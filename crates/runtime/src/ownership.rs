@@ -3,8 +3,10 @@
 //! Each selected owner group acquires a NATS KV lease before its subsystem starts.
 //! After initial verification, one task owns each lease for its complete lifetime:
 //! renewal, failure reporting, and release. A renewal that fails without losing
-//! the lease, such as a KV update timing out on a loaded host, is tried again
-//! until the lease would expire.
+//! the lease, such as a KV update timing out on a loaded host, is tried again.
+//! Retries are bounded by the last renewal the broker confirmed, not by when the
+//! task woke: ownership is given up one renewal interval before that renewal's
+//! lease would expire, so owned work stops before another runtime can take it.
 //!
 //! The supervisor runs each selected group on its own. A group that cannot own
 //! its lease stands by: it tries again each renewal interval until the lease is
@@ -120,6 +122,9 @@ impl RuntimeOwnership {
     ) -> Option<Self> {
         let mut last_failure = None;
         loop {
+            if stop.is_stopped() {
+                return None;
+            }
             // An attempt runs to completion so a stop never strands a lease it
             // took; each broker request inside it is bounded.
             match Self::acquire(manager, groups).await {
@@ -190,8 +195,6 @@ impl RuntimeOwnership {
         }
 
         let stop = StopHandle::new();
-        let first_renewal =
-            first_renewal_deadline(verification_started, &owner_id, manager.renew, manager.ttl);
         let mut leases = JoinSet::new();
         for lease in held {
             leases.spawn(run_owned_lease(
@@ -199,7 +202,7 @@ impl RuntimeOwnership {
                 owner_id.clone(),
                 lease,
                 stop.clone(),
-                first_renewal,
+                verification_started,
             ));
         }
 
@@ -314,82 +317,89 @@ async fn verify_held(
     }
 }
 
+/// Renews one lease until stopped or until ownership can no longer be proven.
+///
+/// `confirmed` is when the last renewal the broker accepted was sent, so the
+/// broker's lease lasts at least `ttl` from it. Every deadline is taken from that
+/// instant rather than from when this task runs, because a task that wakes late
+/// on a loaded host has not extended the lease.
 async fn run_owned_lease(
     manager: LeaseManager,
     owner_id: String,
     mut lease: HeldLease,
     stop: StopHandle,
-    mut next_renewal: Instant,
+    mut confirmed: Instant,
 ) -> Result<(), RuntimeError> {
-    let renewal_result =
-        'rounds: loop {
+    let jitter = renewal_jitter(&owner_id, manager.renew, manager.ttl);
+    let renewal_result = 'rounds: loop {
+        let next_renewal = confirmed + manager.renew + jitter;
+        tokio::select! {
+            () = stop.stopped() => break Ok(()),
+            () = tokio::time::sleep_until(next_renewal) => {}
+        }
+
+        // A backend failure, such as a KV update that timed out on a loaded
+        // host, leaves the lease ours until it expires, so the renewal is tried
+        // again. Ownership is given up on proof that the lease is gone or
+        // another owner's, or one renewal interval before the confirmed lease
+        // would expire, which leaves the supervisor that long to stop the work.
+        let give_up = confirmed + manager.ttl.saturating_sub(manager.renew);
+        loop {
+            let attempt = Instant::now();
+            let failure =
+                match tokio::time::timeout_at(give_up, manager.renew(&mut lease.guard)).await {
+                    Ok(Ok(())) => {
+                        confirmed = attempt;
+                        break;
+                    }
+                    Ok(Err(source @ LeaseError::Backend { .. })) => source,
+                    Ok(Err(source)) => {
+                        break 'rounds Err(map_renewal_error(
+                            lease.group,
+                            lease.guard.key().clone(),
+                            &owner_id,
+                            source,
+                        ));
+                    }
+                    Err(_) => {
+                        break 'rounds Err(RuntimeError::OwnerRenewalRoundTimeout {
+                            owner_id: owner_id.clone(),
+                        });
+                    }
+                };
+            let retry = Instant::now() + RENEWAL_RETRY_DELAY;
+            if retry >= give_up {
+                break 'rounds Err(map_renewal_error(
+                    lease.group,
+                    lease.guard.key().clone(),
+                    &owner_id,
+                    failure,
+                ));
+            }
+            tracing::warn!(
+                subsystem = %lease.group.subsystem(),
+                error = %failure,
+                "runtime owner lease renewal failed; retrying before the lease expires"
+            );
             tokio::select! {
-                () = stop.stopped() => break Ok(()),
-                () = tokio::time::sleep_until(next_renewal) => {}
+                () = stop.stopped() => break 'rounds Ok(()),
+                () = tokio::time::sleep_until(retry) => {}
             }
+        }
+    };
 
-            // The round may use the lease's remaining lifetime. A backend failure,
-            // such as a KV update that timed out on a loaded host, leaves the lease
-            // ours until it expires, so the renewal is tried again within the
-            // round. Only proof that the lease is gone or another owner's, or the
-            // round's end, gives ownership up.
-            let round_deadline =
-                Instant::now() + renewal_timeout(&owner_id, manager.renew, manager.ttl);
-            loop {
-                let failure =
-                    match tokio::time::timeout_at(round_deadline, manager.renew(&mut lease.guard))
-                        .await
-                    {
-                        Ok(Ok(())) => break,
-                        Ok(Err(source @ LeaseError::Backend { .. })) => source,
-                        Ok(Err(source)) => {
-                            break 'rounds Err(map_renewal_error(
-                                lease.group,
-                                lease.guard.key().clone(),
-                                &owner_id,
-                                source,
-                            ));
-                        }
-                        Err(_) => {
-                            break 'rounds Err(RuntimeError::OwnerRenewalRoundTimeout {
-                                owner_id: owner_id.clone(),
-                            });
-                        }
-                    };
-                let retry = Instant::now() + RENEWAL_RETRY_DELAY;
-                if retry >= round_deadline {
-                    break 'rounds Err(map_renewal_error(
-                        lease.group,
-                        lease.guard.key().clone(),
-                        &owner_id,
-                        failure,
-                    ));
-                }
-                tracing::warn!(
-                    subsystem = %lease.group.subsystem(),
-                    error = %failure,
-                    "runtime owner lease renewal failed; retrying before the lease expires"
-                );
-                tokio::select! {
-                    () = stop.stopped() => break 'rounds Ok(()),
-                    () = tokio::time::sleep_until(retry) => {}
-                }
-            }
-
-            next_renewal = next_renewal
-                .checked_add(manager.renew)
-                .unwrap_or(next_renewal);
-        };
-
-    let release_result = release_one(&manager, &owner_id, lease).await;
     match renewal_result {
+        // Report the loss at once. The release is fenced by the lease revision,
+        // so finishing it in the background cannot remove a later owner's lease.
         Err(primary) => {
-            if let Err(release) = release_result {
-                tracing::error!(error = %release, "runtime ownership release also failed");
-            }
+            tokio::spawn(async move {
+                if let Err(release) = release_one(&manager, &owner_id, lease).await {
+                    tracing::error!(error = %release, "runtime ownership release also failed");
+                }
+            });
             Err(primary)
         }
-        Ok(()) => release_result,
+        Ok(()) => release_one(&manager, &owner_id, lease).await,
     }
 }
 
@@ -517,35 +527,23 @@ fn renewal_jitter(owner_id: &str, renew: Duration, ttl: Duration) -> Duration {
     Duration::from_millis(hasher.finish() % (bound + 1))
 }
 
-fn first_renewal_deadline(
-    verification_started: Instant,
-    owner_id: &str,
-    renew: Duration,
-    ttl: Duration,
-) -> Instant {
-    let delay = renew.saturating_add(renewal_jitter(owner_id, renew, ttl));
-    verification_started
-        .checked_add(delay)
-        .unwrap_or(verification_started)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A broker that stalls longer than one KV request timeout, but less than
-    /// the lease's lifetime, must not cost the runtime its ownership.
-    #[tokio::test]
-    async fn a_renewal_that_times_out_is_retried_before_the_lease_expires() {
+    /// Starts a real JetStream broker and a lease manager whose KV requests
+    /// give up quickly, as they do on a loaded host.
+    async fn broker_and_manager(
+        directory: &std::path::Path,
+    ) -> (tokio::process::Child, LeaseManager, ResolvedLeasesConfig) {
         use tokio::io::AsyncBufReadExt as _;
-        let directory = tempfile::tempdir().unwrap();
         let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
         let port = reservation.port();
         let mut server = tokio::process::Command::new(
             std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
         )
         .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
-        .arg(directory.path())
+        .arg(directory)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -567,7 +565,6 @@ mod tests {
             .await
             .unwrap();
         let mut jetstream = jetstream::new(nats);
-        // Each KV request gives up quickly, as one does on a loaded host.
         jetstream.set_timeout(Duration::from_millis(300));
         let config = ResolvedLeasesConfig {
             bucket: "trellis_leases".into(),
@@ -578,6 +575,25 @@ mod tests {
         let manager = LeaseManager::open(jetstream, &config, "owner-a")
             .await
             .unwrap();
+        (server, manager, config)
+    }
+
+    fn signal_broker(server: &tokio::process::Child, signal: &str) {
+        let pid = server.id().unwrap().to_string();
+        assert!(std::process::Command::new("kill")
+            .args([signal, &pid])
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    /// A broker that stalls longer than one KV request timeout, but less than
+    /// the lease's lifetime, must not cost the runtime its ownership.
+    #[tokio::test]
+    async fn a_renewal_that_times_out_is_retried_before_the_lease_expires() {
+        let directory = tempfile::tempdir().unwrap();
+        let (server, manager, _) = broker_and_manager(directory.path()).await;
+        let confirmed = Instant::now();
         let guard = manager
             .acquire(LeaseKey::new("health.owner"))
             .await
@@ -591,23 +607,14 @@ mod tests {
                 guard,
             },
             stop.clone(),
-            Instant::now() + Duration::from_millis(500),
+            confirmed,
         ));
 
         // Freeze the broker across the first renewal.
-        let pid = server.id().unwrap().to_string();
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(std::process::Command::new("kill")
-            .args(["-STOP", &pid])
-            .status()
-            .unwrap()
-            .success());
+        signal_broker(&server, "-STOP");
         tokio::time::sleep(Duration::from_secs(2)).await;
-        assert!(std::process::Command::new("kill")
-            .args(["-CONT", &pid])
-            .status()
-            .unwrap()
-            .success());
+        signal_broker(&server, "-CONT");
 
         // Ownership survives the stall and keeps renewing afterwards.
         let outcome = tokio::time::timeout(Duration::from_secs(4), &mut task).await;
@@ -617,6 +624,51 @@ mod tests {
         );
         stop.stop();
         task.await.unwrap().unwrap();
+    }
+
+    /// A renewal task that wakes late has not extended the lease. If the broker
+    /// then cannot answer, ownership must still end before the lease the broker
+    /// last confirmed expires, or another runtime could take the work while
+    /// this one still runs it.
+    #[tokio::test]
+    async fn a_late_renewal_wake_still_gives_ownership_up_before_the_lease_expires() {
+        let directory = tempfile::tempdir().unwrap();
+        let (server, manager, config) = broker_and_manager(directory.path()).await;
+        let ttl = Duration::from_millis(config.ttl_ms);
+        let confirmed = Instant::now();
+        let guard = manager
+            .acquire(LeaseKey::new("health.owner"))
+            .await
+            .unwrap();
+        let mut task = tokio::spawn(run_owned_lease(
+            manager.clone(),
+            "owner-a".into(),
+            HeldLease {
+                group: OwnerGroup::Health,
+                guard,
+            },
+            StopHandle::new(),
+            confirmed,
+        ));
+        signal_broker(&server, "-STOP");
+        // Hold this test's only executor thread past the first renewal, so the
+        // renewal task wakes about two seconds late.
+        std::thread::sleep(Duration::from_secs(3));
+
+        let outcome = tokio::time::timeout(ttl, &mut task).await;
+        let given_up = confirmed.elapsed();
+        signal_broker(&server, "-CONT");
+        let result = outcome
+            .expect("ownership outlived the confirmed lease")
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "renewal succeeded against a stopped broker"
+        );
+        assert!(
+            given_up < ttl,
+            "ownership ended {given_up:?} after the last confirmed renewal, past the {ttl:?} lease"
+        );
     }
 
     #[test]
@@ -663,16 +715,5 @@ mod tests {
         let jitter = renewal_jitter("owner-1", renew, ttl);
         assert!(renew + jitter < ttl);
         assert_eq!(renew + jitter + renewal_timeout("owner-1", renew, ttl), ttl);
-    }
-
-    #[test]
-    fn first_renewal_is_anchored_to_verification_start() {
-        let renew = Duration::from_secs(5);
-        let ttl = renew * 3;
-        let started = Instant::now();
-        assert_eq!(
-            first_renewal_deadline(started, "owner-1", renew, ttl),
-            started + renew + renewal_jitter("owner-1", renew, ttl)
-        );
     }
 }

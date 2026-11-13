@@ -12,13 +12,21 @@ and this project adheres to
 
 - The server no longer exits over a runtime owner lease. A renewal that fails
   without losing the lease, such as one that times out on a heavily loaded
-  host, is tried again until the lease would expire. Auth, Jobs, Health and
+  host, is tried again until one renewal interval before the lease the broker
+  last confirmed would expire, however late the renewal ran. Auth, Jobs, Health and
   Events each run on their own lease: one that is lost, or held by another
   server at startup, stops only that part, which starts again once the lease
   is free, while the rest of the server keeps running. `/readyz` reports a
   server unready only while its Auth stands by. Before, the first timed-out
   renewal stopped the whole server even with most of the lease's 30 seconds
   left, and a server that found a lease held refused to start.
+- A NATS connection that fails in transit at startup, such as a TLS handshake
+  cut short on a loaded host, is tried again for up to 30 seconds instead of
+  stopping the server. This covers the server's own connection and Auth's two
+  connections. Refused credentials and TLS setup errors still fail at once.
+- A stop requested while the runtime is still starting, before or during its
+  NATS connection, now ends it. Before, the stop was lost and the runtime kept
+  running.
 
 ## [0.100.0-rc.36] - 2026-11-11
 

@@ -143,8 +143,9 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let revocations = buckets.pop().expect("two Auth registries");
     let material = buckets.pop().expect("two Auth registries");
     let (auth_creds, system_creds) = nats.platform_creds()?;
-    let auth_nats = connect_nats(&nats, auth_creds).await?;
-    let system = connect_nats(&nats, system_creds).await?;
+    let stopping = || context.is_stopping();
+    let auth_nats = crate::supervisor::connect_nats(&nats, auth_creds, stopping).await?;
+    let system = crate::supervisor::connect_nats(&nats, system_creds, stopping).await?;
     // Every built-in this process starts must be one this server can install
     // before any of them is.
     let mut builtins = Vec::new();
@@ -409,16 +410,6 @@ pub(crate) fn callout_keys(config: &RuntimeConfig) -> Result<CalloutKeys, Runtim
         &jwt(users.trellis.as_ref(), "nats.users.trellis")?,
     )
     .map_err(|error| RuntimeError::Platform(error.to_string()))
-}
-
-async fn connect_nats(
-    nats: &ResolvedRuntimeNatsConfig,
-    credentials: &str,
-) -> Result<async_nats::Client, RuntimeError> {
-    crate::supervisor::nats_connect_options(nats, credentials)?
-        .connect(nats.server_urls())
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))
 }
 
 fn advertised_endpoints(
