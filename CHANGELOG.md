@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.40] - 2026-11-14
+
 ### Fixed
 
 - Rust SDK: revoking a rotated-out issuer key now ends its overlap even when
