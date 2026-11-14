@@ -46,6 +46,7 @@ url.workspace = true
 tar.workspace = true
 rand.workspace = true
 rustls.workspace = true
+shlex = "2.0.1"
 tempfile.workspace = true
 trellis-self-update = { path = "../self-update", optional = true }
 time = { workspace = true, features = ["parsing"] }

@@ -1436,6 +1436,15 @@ export class SessionAuthorityOwner {
     }
   }
 
+  /**
+   * The issuer key with this id while it authorizes live use: the current key,
+   * or a rotated-out key inside its signed overlap that is not revoked.
+   */
+  liveIssuer(keyId: string): AuthorityIssuerKey | undefined {
+    const issuer = this.#liveIssuer(keyId);
+    return issuer?.state === "active" ? issuer : undefined;
+  }
+
   /** A rotated-out key stays live until its signed deadline, as in the Rust owner. */
   #liveIssuer(keyId: string): AuthorityIssuerKey | undefined {
     const issuer = this.#keys.get(keyId);

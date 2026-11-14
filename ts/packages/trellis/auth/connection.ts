@@ -272,10 +272,15 @@ export async function connectAdmitted(options: {
           options.audienceNatsAccount
       )
         throw new Error("AdmissionAttachmentMismatch");
+      // Verify against the key that signed this answer. A rotation during the
+      // renewal moves the owner's pin on, but that key stays live through its
+      // overlap, and the issuer notice renews again under the new one.
+      const issuer = owner.liveIssuer(context.issuerKeyId);
+      if (!issuer) throw new Error("AdmissionSuperseded");
       const verified = await createSessionAuthorityHandleWasm({
         authorityBytes: utf8(context.sessionAuthority),
         verification: {
-          issuer: owner.trustSnapshot.issuer,
+          issuer,
           trellisInstanceId: options.trellisInstanceId,
           audienceNatsAccount: options.audienceNatsAccount,
           policy: owner.policy(),
@@ -319,7 +324,7 @@ export async function connectAdmitted(options: {
             owner.ownDigest !== originalDigest ||
             signal?.aborted ||
             nc.isClosed() ||
-            owner.trustSnapshot.issuer.keyId !== authority.issuerKeyId
+            !owner.liveIssuer(authority.issuerKeyId)
           )
             throw new Error("AdmissionSuperseded");
           assertSessionAuthorityHandleCurrentWasm(

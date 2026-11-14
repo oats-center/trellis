@@ -813,6 +813,35 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         trellis_protocol::AuthorityIssuerState::Active
     );
     newcomer.assert_issuer_current(&current.key_id).unwrap();
+    // An owner still pinned at the predecessor adopts the link only after the
+    // revocation below, as a renewal answer in flight across Auth's notice does.
+    let late = AuthorizationOwner::new(
+        RuntimeAuthorizationTrust {
+            instance_id: store.settings.instance_id.clone(),
+            account: store.settings.account.clone(),
+            issuer: current.clone(),
+            rotation_sequence: rotation.sequence.get(),
+            root_certificates: Vec::new(),
+            nats_server_name: None,
+            nats_sentinel: None,
+        },
+        URL_SAFE_NO_PAD.encode([10; 16]),
+        URL_SAFE_NO_PAD.encode([11; 32]),
+    )
+    .unwrap();
+    let (stop_late_mirror, late_mirror_stop) = tokio::sync::watch::channel(false);
+    let (ready, coverage) = tokio::sync::oneshot::channel();
+    let mirror_owner = late.clone();
+    let mirror_transport = transport.clone();
+    let late_mirror = tokio::spawn(async move {
+        mirror_owner
+            .run_revocations(&mirror_transport, late_mirror_stop, ready)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), coverage)
+        .await
+        .unwrap()
+        .unwrap();
     let retired = EnforcementScope::Issuer(current.key_id.clone());
     crate::platform::auth::tests::revoke_root(
         &store,
@@ -825,8 +854,27 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     )
     .unwrap();
     owner.assert_issuer_current(&current.key_id).unwrap();
-    owner.recheck_retiring_issuers(&transport).await;
-    assert!(owner.assert_issuer_current(&current.key_id).is_err());
+    // Auth's notice asks the revocation mirror to re-read the key. Without
+    // that the key would stay live until its deadline, an authority lifetime
+    // away, so a few seconds separate the outcomes.
+    owner.request_issuer_recheck();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while owner.assert_issuer_current(&current.key_id).is_ok() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("issuer notice ends the revoked overlap");
+    // The late link is checked on arrival, with no further notice.
+    late.accept_issuer_rotation(next.clone()).unwrap();
+    late.assert_issuer_current(&next.next_key_id).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while late.assert_issuer_current(&current.key_id).is_ok() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("a link adopted after the revocation does not reopen the overlap");
     newcomer.recheck_retiring_issuers(&transport).await;
     assert!(newcomer.assert_issuer_current(&current.key_id).is_err());
     owner.assert_issuer_current(&next.next_key_id).unwrap();
@@ -882,8 +930,10 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     );
     stop_mirror.send(true).unwrap();
     stop_revoked_mirror.send(true).unwrap();
+    stop_late_mirror.send(true).unwrap();
     mirror.await.unwrap().unwrap();
     revoked_mirror.await.unwrap().unwrap();
+    late_mirror.await.unwrap().unwrap();
     shutdown.cancel();
     responder.await.unwrap().unwrap();
     broker.kill().await.unwrap();

@@ -1000,6 +1000,11 @@ pub struct AuthorizationOwner {
     rotations: Arc<Mutex<()>>,
     metadata_reads: Arc<Semaphore>,
     changes: broadcast::Sender<()>,
+    /// Wakes the revocation mirror to re-read rotated-out keys still inside
+    /// their overlap. Set on Auth's issuer notice and on every accepted
+    /// rotation link, since a link can arrive after the revocation it
+    /// predates.
+    issuer_rechecks: Arc<tokio::sync::Notify>,
 }
 
 impl AuthorizationOwner {
@@ -1060,6 +1065,7 @@ impl AuthorizationOwner {
             rotations: Arc::new(Mutex::new(())),
             metadata_reads: Arc::new(Semaphore::new(16)),
             changes: broadcast::channel(16).0,
+            issuer_rechecks: Arc::new(tokio::sync::Notify::new()),
         })
     }
 
@@ -2503,8 +2509,17 @@ impl AuthorizationOwner {
         state.current_issuer = successor;
         state.rotation_sequence = rotation.sequence.get();
         drop(state);
+        // The link may be older than a revocation already announced, such as
+        // one a renewal answer carried while the notice was handled.
+        self.issuer_rechecks.notify_one();
         let _ = self.changes.send(());
         Ok(())
+    }
+
+    /// Ask the revocation mirror to re-read the rotated-out keys still inside
+    /// their overlap, as Auth's issuer notice requires.
+    pub fn request_issuer_recheck(&self) {
+        self.issuer_rechecks.notify_one();
     }
 
     /// Apply HTTP-authenticated OAuth rotation links through the shared pinned owner.
@@ -2893,6 +2908,9 @@ impl AuthorizationOwner {
             tokio::select! {
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                }
+                () = self.issuer_rechecks.notified() => {
+                    self.recheck_retiring_issuers(transport).await;
                 }
                 update = updates.next() => {
                     let Some(Ok(entry)) = update else {

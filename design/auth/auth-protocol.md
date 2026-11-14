@@ -31,9 +31,12 @@ one authority lifetime after the rotation, and only history after that. A
 participant pinned at a later key learns that deadline from the signed
 `issuerKey` answer's `liveUntil`. Auth
 publishes an empty notice on `trellis.auth.issuers` after each rotation link and
-each issuer revocation. On it a participant renews its own authority, then
+each issuer revocation. On it a participant renews its own authority and
 re-reads the signed `issuerKey` state of every rotated-out key still inside its
-overlap; a revoked key ends its overlap at once. The notice carries no trust:
+overlap; a revoked key ends its overlap at once. Accepting a rotation link
+re-reads the key it retires too, since the link can arrive after the
+revocation. A renewal verifies its answer against the live key that signed it,
+not the newest pin. The notice carries no trust:
 participants act only on signed material.
 
 Admitted clients may query independent signed verification metadata through

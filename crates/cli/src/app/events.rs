@@ -54,7 +54,7 @@ pub(super) async fn run(format: OutputFormat, command: EventsCommand) -> miette:
                 listed_all(format, client.query_items(input), &EVENTS, NO_EVENTS).await
             } else {
                 let page = client.query(&input).await.into_diagnostic()?;
-                listed(format, &page, &EVENTS, NO_EVENTS, "trellis events query")
+                listed(format, &page, &EVENTS, NO_EVENTS)
             }
         }
         EventsCommand::Inspect(args) => {
@@ -112,13 +112,7 @@ pub(super) async fn run(format: OutputFormat, command: EventsCommand) -> miette:
                     .await
                 } else {
                     let page = client.consumers_query(&input).await.into_diagnostic()?;
-                    listed(
-                        format,
-                        &page,
-                        &CONSUMERS,
-                        NO_CONSUMERS,
-                        "trellis events consumers query",
-                    )
+                    listed(format, &page, &CONSUMERS, NO_CONSUMERS)
                 }
             }
             ConsumersCommand::Inspect(args) => {
@@ -182,13 +176,7 @@ pub(super) async fn run(format: OutputFormat, command: EventsCommand) -> miette:
                     .await
                 } else {
                     let page = client.dead_letters_query(&input).await.into_diagnostic()?;
-                    listed(
-                        format,
-                        &page,
-                        &DEAD_LETTERS,
-                        NO_DEAD_LETTERS,
-                        "trellis events dead-letters query",
-                    )
+                    listed(format, &page, &DEAD_LETTERS, NO_DEAD_LETTERS)
                 }
             }
             DeadLettersCommand::Inspect(args) => {
@@ -299,11 +287,10 @@ fn listed<T: Serialize>(
     page: &T,
     columns: &[output::Column<'_>],
     empty: &str,
-    command: &str,
 ) -> miette::Result<()> {
     output::emit(format, page, |page| {
         output::table(output::list(page, "items"), columns, empty)?;
-        output::more_pages(page, command);
+        output::more_pages(page);
         Ok(())
     })
 }

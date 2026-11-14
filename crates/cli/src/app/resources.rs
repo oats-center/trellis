@@ -57,7 +57,7 @@ pub(super) async fn run(format: OutputFormat, command: ResourcesCommand) -> miet
                     &COLUMNS,
                     "No resources are provisioned.",
                 )?;
-                output::more_pages(page, "trellis resources list");
+                output::more_pages(page);
                 Ok(())
             })
         }

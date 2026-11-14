@@ -8,6 +8,20 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Rust SDK: revoking a rotated-out issuer key now ends its overlap even when
+  the rotation link reaches the participant after Auth's notice, such as in a
+  renewal answer in flight. The participant re-reads the key whenever it
+  accepts the link, instead of only when the notice arrives.
+- TypeScript SDK: an issuer rotation during a renewal no longer ends the
+  connection. The renewal verifies Auth's answer against the key that signed
+  it while that key is still in its overlap, then renews again under the new
+  key (#47).
+- The CLI's next-page hint repeats the command that was run with the new
+  cursor, keeping filters such as `--resource-id` that the server binds the
+  cursor to (#48).
+
 ## [0.100.0-rc.39] - 2026-11-14
 
 ### Changed

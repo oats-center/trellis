@@ -553,8 +553,8 @@ impl AuthorizationContextCache {
     }
 
     /// Re-read rotated-out issuer keys after Auth's issuer notice.
-    pub(crate) async fn recheck_retiring_issuers(&self, transport: &async_nats::Client) {
-        self.owner.recheck_retiring_issuers(transport).await;
+    pub(crate) fn request_issuer_recheck(&self) {
+        self.owner.request_issuer_recheck();
     }
 
     pub(crate) fn set_transport_ready(&self, ready: bool) {

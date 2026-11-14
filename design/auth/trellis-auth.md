@@ -924,6 +924,10 @@ for live use until then, so every authority it signed expires before its
 deadline. The commit also queues an issuer notice on `trellis.auth.issuers`,
 published after the chain link. Every session may subscribe to it. On the
 notice a session renews at once, moving onto authority the successor signed.
+A renewal verifies Auth's answer against the key that signed it while that key
+is still live, not against the newest pin: a further rotation during the
+renewal moves the pin on, the answer stays valid through its overlap, and the
+notice renews again under the newest key.
 
 Explicit key compromise (`Issuers.Revoke`) makes the key unusable; restart must
 not reinstall it as an active signer. It retires every user session holding any
@@ -934,7 +938,10 @@ latest authority came from the revoked key. A service that renewed on the
 rotation notice keeps running. Revocation also queues the issuer notice. On it,
 SDKs re-read the signed `issuerKey` state of each rotated-out key still inside
 its overlap, and a revoked key stops authorizing live use at once rather than at
-its deadline. A client that misses the notice still refuses the key at that
+its deadline. A participant also re-reads a key whenever it accepts the
+rotation link that retires it, because that link can reach it after the
+revocation it predates, such as in a renewal answer in flight across the
+notice. A client that misses the notice still refuses the key at that
 deadline.
 
 Already admitted Trellis connections may publish bounded public verification

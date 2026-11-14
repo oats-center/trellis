@@ -100,7 +100,7 @@ pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> mi
                     ],
                     "No apps are registered.",
                 )?;
-                output::more_pages(page, "trellis clients list");
+                output::more_pages(page);
                 Ok(())
             })
         }
@@ -272,7 +272,7 @@ pub(super) async fn apis(format: OutputFormat, command: ApisCommand) -> miette::
                     ],
                     "No APIs are accepted yet.",
                 )?;
-                output::more_pages(page, "trellis apis list");
+                output::more_pages(page);
                 Ok(())
             })
         }

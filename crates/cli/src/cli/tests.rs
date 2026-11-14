@@ -172,3 +172,32 @@ fn parses_keys_version_and_completion() {
     let cli = Cli::parse_from(["trellis", "completion", "bash"]);
     assert!(matches!(cli.command, TopLevelCommand::Completion { .. }));
 }
+
+/// The server binds a cursor to the query's filters. Following the next-page
+/// hint must run the same filtered query from the new cursor, with an earlier
+/// cursor replaced and an argument that needs quoting kept intact.
+#[test]
+fn next_page_hint_repeats_the_filtered_query_from_the_new_cursor() {
+    let ran = [
+        "events",
+        "dead-letters",
+        "query",
+        "--resource-id",
+        "consumer 'one'",
+        "--cursor=first",
+        "--limit",
+        "1",
+    ]
+    .map(String::from);
+    let hint = crate::output::next_page_command(&ran, "second");
+    let words = shlex::split(&hint).expect("the hint is one shell command");
+    let cli = Cli::try_parse_from(words).expect("the hint parses");
+    match cli.command {
+        TopLevelCommand::Events(EventsCommand::DeadLetters(DeadLettersCommand::Query(args))) => {
+            assert_eq!(args.resource_id.as_deref(), Some("consumer 'one'"));
+            assert_eq!(args.page.cursor.as_deref(), Some("second"));
+            assert_eq!(args.page.limit, Some(1));
+        }
+        other => panic!("unexpected command: {other:?}"),
+    }
+}

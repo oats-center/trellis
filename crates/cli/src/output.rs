@@ -55,13 +55,32 @@ pub fn list<'a>(value: &'a Value, key: &str) -> &'a [Value] {
 }
 
 /// Tell a person how to see the next page of a one-page listing.
-pub fn more_pages(page: &Value, command: &str) {
+pub fn more_pages(page: &Value) {
     if let Some(cursor) = page["page"]["nextCursor"].as_str() {
+        let args = std::env::args().skip(1).collect::<Vec<_>>();
         hint(format!(
-            "Showing the first page. Next page: {}",
-            code(&format!("{command} --cursor {cursor}"))
+            "More results. Next page: {}",
+            code(&next_page_command(&args, cursor))
         ));
     }
+}
+
+/// The command that was run, with `cursor` in place of any earlier one. The
+/// server binds a cursor to the query's filters, so every other argument stays.
+pub(crate) fn next_page_command(args: &[String], cursor: &str) -> String {
+    let mut words = vec!["trellis"];
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--cursor" {
+            args.next();
+        } else if !arg.starts_with("--cursor=") {
+            words.push(arg);
+        }
+    }
+    words.extend(["--cursor", cursor]);
+    // Arguments come from the operating system and cannot hold a NUL, the
+    // only thing quoting refuses.
+    shlex::try_join(words).unwrap_or_default()
 }
 
 // Status lines, on stderr.

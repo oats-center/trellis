@@ -312,3 +312,117 @@ test("authenticating the issuer chain accepts links its shared owner already hol
     }
   });
 });
+
+test("a renewal holding authority from the previous key survives the next rotation", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const identity = await runtime.registerService({
+        deployment: "overlap-provider",
+        name: "overlap-provider",
+        contract: participants.Provider.participant,
+      });
+      const gate = runtime.nativeTransportGate();
+      const before = new Set(gate.connections().map(({ id }) => id));
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.Provider.participant,
+        seed: identity.seed,
+      }).orThrow();
+      const serviceExit = service.wait().catch(() => undefined);
+      await service.handleEcho(({ input }) => Result.ok(input));
+      // The provider's own connection is the new one carrying the notice.
+      const proxies = gate
+        .connections()
+        .filter(
+          (connection) =>
+            !before.has(connection.id) &&
+            !connection.closed &&
+            connection.subs.some(
+              (sub) => sub.subject === "trellis.auth.issuers",
+            ),
+        );
+      assert.equal(proxies.length, 1);
+      const proxy = proxies[0];
+      const discovery: {
+        trellis: { issuers: { keyId: string; state: string }[] };
+      } = await (
+        await fetch(
+          `${runtime.trellisUrl}/.well-known/oauth-authorization-server`,
+        )
+      ).json();
+      const original = discovery.trellis.issuers.find(
+        (key) => key.state === "active",
+      );
+      assert(original);
+      // A renewal asks the broker who this attachment is, asks Auth for its
+      // authority, then asks the broker again. Withhold that second answer,
+      // so the renewal holds authority the first successor signed.
+      let answers = 0;
+      const hold = gate.armResponseHold(
+        "$SYS.REQ.USER.INFO",
+        proxy.id,
+        () => ++answers === 2,
+      );
+      try {
+        const first = await runtime.callAdminRpc("authIssuersRotate", {
+          expectedCurrentKeyId: original.keyId,
+          idempotencyKey: ulid(),
+        });
+        await hold.held;
+        const mark = gate.connection(proxy.id)?.outboundContexts.length ?? 0;
+        const published = () =>
+          gate
+            .connection(proxy.id)
+            ?.outboundContexts.slice(mark)
+            .map(({ subject }) => subject) ?? [];
+        // The original key is still in its overlap, so the second rotation's
+        // notice re-reads it. Verifying that answer follows the chain to the
+        // newest key: one material read finds the new link and the next finds
+        // none, so the second read means the pin has moved while the renewal
+        // is held.
+        await runtime.callAdminRpc("authIssuersRotate", {
+          expectedCurrentKeyId: first.keyId,
+          idempotencyKey: ulid(),
+        });
+        await runtime.waitFor(
+          () => {
+            const subjects = published();
+            const read = subjects.indexOf("trellis.auth.metadata.get");
+            return read >= 0 &&
+              subjects
+                .slice(read)
+                .filter((subject) =>
+                  subject.startsWith("$JS.API.STREAM.MSG.GET."),
+                ).length >= 2
+              ? true
+              : undefined;
+          },
+          { timeoutMs: 10_000, intervalMs: 20 },
+        );
+        await hold.release();
+        // The held renewal completes under the first successor, which is still
+        // live, and the notice renews again under the newest key.
+        await runtime.waitFor(
+          () =>
+            published().filter((subject) => subject === "$SYS.REQ.USER.INFO")
+              .length >= 2 || undefined,
+          { timeoutMs: 10_000, intervalMs: 50 },
+        );
+        assert.equal(gate.isClosed(proxy.id), false);
+        const caller = await runtime.connectClient({
+          name: "overlap-caller",
+          contract: apps.Caller.request,
+        });
+        assert.deepEqual(
+          await caller.echo({ value: "after both rotations" }).orThrow(),
+          { value: "after both rotations" },
+        );
+      } finally {
+        await hold.release();
+        await service.stop();
+        await serviceExit;
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
