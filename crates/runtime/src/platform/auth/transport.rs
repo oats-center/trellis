@@ -29,7 +29,11 @@ impl SqliteAuthorizationStore {
         )?]);
         publish.insert("$SYS.REQ.USER.INFO".into());
         publish.insert(trellis_protocol::ISSUER_METADATA_SUBJECT.into());
-        let mut subscribe = BTreeSet::from([format!("{}.>", authority.inbox_prefix)]);
+        // Every session hears Auth's issuer rotation and revocation notice.
+        let mut subscribe = BTreeSet::from([
+            format!("{}.>", authority.inbox_prefix),
+            trellis_protocol::ISSUER_NOTICE_SUBJECT.to_owned(),
+        ]);
         // Verification material and session cutoffs are public, read-only data.
         for bucket in [
             super::broker::MATERIAL_BUCKET,

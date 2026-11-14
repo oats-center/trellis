@@ -48,11 +48,14 @@ async fn a_project_installs_and_generates_against_a_published_registry_package()
     package::install(OutputFormat::Text, &project)
         .await
         .expect("install pulls and compiles the registry dependency");
-    generate::run(&GenerateArgs {
-        watch: false,
-        check: false,
-        project,
-    })
+    generate::run(
+        OutputFormat::Text,
+        &GenerateArgs {
+            watch: false,
+            check: false,
+            project,
+        },
+    )
     .expect("generation consumes the registry dependency");
     assert!(root.path().join("generated/apis/health").is_dir());
 }

@@ -1422,6 +1422,17 @@ fn render_action_errors(api: &ApiDefinition, action: &str, errors: &BTreeSet<Str
     trellis_rs::generated::decode_typed_error::<super::errors::{}>(value).map(|value| value.map(Self::{})),\n", type_name(error), variant_name(error)));
     }
     out.push_str("_ => Ok(None),\n} } }\n");
+    out.push_str(&format!(
+        "impl std::fmt::Display for {action}Error {{ fn fmt(&self, formatter: \
+        &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ match self {{\n"
+    ));
+    for error in errors {
+        out.push_str(&format!(
+            "Self::{}(error) => std::fmt::Display::fmt(error, formatter),\n",
+            variant_name(error)
+        ));
+    }
+    out.push_str("} } }\n");
     out
 }
 

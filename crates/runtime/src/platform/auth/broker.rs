@@ -254,6 +254,17 @@ impl SqliteAuthorizationStore {
                         }
                         Ok(())
                     }
+                    "issuer_notice" => {
+                        notices
+                            .publish(trellis_protocol::ISSUER_NOTICE_SUBJECT, Default::default())
+                            .await
+                            .map_err(|error| AuthError::Broker(error.to_string()))?;
+                        notices
+                            .flush()
+                            .await
+                            .map_err(|error| AuthError::Broker(error.to_string()))?;
+                        Ok(())
+                    }
                     "providers_notice" => {
                         let api = effect.payload["apiId"].as_str().ok_or(AuthError::Denied)?;
                         let subject = trellis_protocol::derive_providers_notice_subject(api)

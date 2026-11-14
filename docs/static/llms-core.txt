@@ -305,6 +305,14 @@ Back up the issuer seed and the Auth database's sibling
 the database and the OAuth storage key. Restart loads the database-current key
 and fails closed on missing custody.
 
+A rotation interrupts no session: SDKs accept the old key for live use for one
+authority lifetime, and every session renews onto the new key when Auth
+announces the rotation. `Issuers.Revoke` is for a compromised key. It ends
+that overlap at once and retires every user session holding authority the key
+signed. A service or device session that already renewed onto the new key
+keeps running, because it signs in with its own identity key. Revoke an old key
+after the rotation has settled, not in place of rotating.
+
 ### Administrator bootstrap
 
 Fresh startup creates the protected administrator and accepted built-in authority
@@ -329,6 +337,17 @@ require selection and consent: administrator status is not blanket app
 authority.
 
 ### Operator CLI
+
+The `trellis` CLI writes what a command returns (tables, records, secrets) to
+stdout and its status lines (`✓` done, `•` unchanged, `!` warning), hints, and
+next-step commands to stderr. Lists are aligned tables on a terminal and
+headerless tab-separated rows with raw values when piped, for `cut` and `awk`.
+`--format json` writes one JSON value to stdout instead and silences status
+lines, and is the interface for scripts; the human layout may change between
+releases. Color follows the terminal, `NO_COLOR` and `CLICOLOR_FORCE`. A secret
+the CLI prints, such as an instance seed, root secret, or setup code, is shown
+once and not kept. `svc|dev <name> remove` asks for the name unless given `-f`,
+and refuses without a terminal or with `--format json` unless given `-f`.
 
 `trellis clients list|get|put|disable|delete` manages public OAuth
 registrations, including exact loopback browser redirects. `put` reads generated
@@ -866,9 +885,12 @@ integrated on this branch.
 
 RPC cancellation stops the caller's wait, not work already accepted by the
 service; neither cancellation nor an elapsed deadline undoes accepted work. Use
-Operation cancellation for business work. A no-responders reply means the target
-service is not currently reachable, including during a restart; it is not a
-malformed offer, a declared error, or a failed Operation.
+Operation cancellation for business work. A no-responders reply means no
+provider received the request, so the SDKs send the same signed request, Live
+opening included, again for up to five seconds within its deadline: a provider
+reconnecting is briefly absent. A no-responders failure after that means the
+target service is not currently reachable; it is not a malformed offer, a
+declared error, or a failed Operation.
 
 Declare expected RPC and Operation errors in IDL to obtain typed generated error
 handling. Runtime validation and transport failures remain distinct from those

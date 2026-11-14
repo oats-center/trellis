@@ -47,6 +47,7 @@ pub(crate) use connection::fetch_device_activation;
 pub(crate) use connection::DeviceEnrollmentResponse;
 #[cfg(feature = "native-oauth")]
 pub use connection::UserConnectOptions;
+pub(crate) use connection::SERVICE_AVAILABILITY_WAIT;
 pub use connection::{
     DeviceConnectOptions, EventMessage, EventReplayPolicy, EventSubscribeOptions,
     EventSubscriptionMode, ServiceConnectWithContractOptions, TrellisClient,

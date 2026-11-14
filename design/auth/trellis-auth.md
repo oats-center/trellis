@@ -821,6 +821,22 @@ their credential provider or authorize a new process-local session. The Rust CLI
 retains its existing owner-only file custody and operating-system family lock.
 Browser IndexedDB and cross-tab Web Lock custody are unchanged.
 
+Rust owner-only custody also keeps the latest verified admission with its
+runtime ID and session key seed, committed with the refresh token it arrived
+with. `NativeOAuthClient::resume_retained` reuses it while at least 60 seconds
+of it remain and no rotation is unresolved, making no HTTP request; otherwise it
+resumes normally. A short-lived process, such as each CLI command, then spends
+the refresh token and two requests of the issuer's per-address budget only once
+every few minutes rather than on every run. Keeping it adds nothing to what
+custody holds: the refresh token beside it can mint any admission, and the
+admission expires within the 300-second maximum. Reuse reattaches to the same
+authorization session, so revocation of the grant, family, session, or issuer
+applies at CONNECT as for any admission. When the installation refuses a reused
+admission, the caller opens the client again and resumes. Runs that reuse an
+admission share one authorization session, which keeps authority signed by any
+issuer key current while it lived; a command that revokes an issuer key resumes
+on a session of its own so the revocation cannot end it mid-command.
+
 Browser app sign-out revokes the latest refresh family under the cross-tab
 custody lock and clears both its refresh token and principal/grant binding. The
 independent Portal login survives until explicitly logged out. An app ends it
@@ -889,8 +905,30 @@ creates replacement custody. Backups must include the database, configured
 bootstrap seed, successor-key directory, and the independent OAuth storage key.
 Rotation does not change that OAuth encryption key, revoke existing logical
 sessions, or invalidate historical evidence signed by a merely retired issuer.
-Explicit key compromise revokes affected sessions and makes that key unusable;
-restart must not reinstall it as an active signer.
+Accepted API catalogs outlive the key that signed them, so the same transaction
+has the successor sign a copy of each current catalog; current-catalog selection
+and authority issuance use the current issuer's copy, and older copies remain
+only for verifying history. Revoking the retired key therefore leaves no current
+catalog unverifiable.
+
+A rotation does not interrupt sessions. The signed link's `previousRetiredAt`
+is one authority lifetime after the rotation, and SDKs accept the predecessor
+for live use until then, so every authority it signed expires before its
+deadline. The commit also queues an issuer notice on `trellis.auth.issuers`,
+published after the chain link. Every session may subscribe to it. On the
+notice a session renews at once, moving onto authority the successor signed.
+
+Explicit key compromise (`Issuers.Revoke`) makes the key unusable; restart must
+not reinstall it as an active signer. It retires every user session holding any
+authority the key signed, since such a session may have been admitted with an
+OAuth admission the key signed. A service or device session admits with its own
+identity key, which the issuer key cannot forge, so it is retired only when its
+latest authority came from the revoked key. A service that renewed on the
+rotation notice keeps running. Revocation also queues the issuer notice. On it,
+SDKs re-read the signed `issuerKey` state of each rotated-out key still inside
+its overlap, and a revoked key stops authorizing live use at once rather than at
+its deadline. A client that misses the notice still refuses the key at that
+deadline.
 
 Already admitted Trellis connections may publish bounded public verification
 lookups to `trellis.auth.metadata.get`, regardless of administrative capability.

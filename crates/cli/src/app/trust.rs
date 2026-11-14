@@ -26,8 +26,8 @@ pub(super) async fn discover(
         let path = path.canonicalize().into_diagnostic()?;
         let ca = pem_fingerprint(&path)?;
         if !output::is_json(format) {
-            output::print_warning(&format!(
-                "trusting only the CA {} for this deployment; confirm its SHA-256 \
+            output::warning(format!(
+                "Trusting only the CA {} for this deployment. Check that its SHA-256 \
                 fingerprint matches the one its operator published:\n  {}",
                 path.display(),
                 ca

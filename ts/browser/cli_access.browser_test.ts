@@ -23,6 +23,13 @@ test(
       page.setDefaultTimeout(10_000);
       try {
         const { run } = await loginCliAsAdministrator(runtime, page);
+        // A script can run commands back to back. Each run reuses the
+        // admission an earlier one kept rather than signing in again, so 65
+        // runs in a row stay under the 120 sign-in requests a minute Trellis
+        // allows one address; signing in each time would take 130.
+        for (let index = 0; index < 65; index += 1) {
+          assert.equal((await run("whoami")).loggedIn, true);
+        }
         // A role marked for new users is given to each user created while the
         // mark stands, and to nobody created after it is cleared.
         const { role } = await run(
@@ -133,6 +140,30 @@ test(
           password: true,
           providers: false,
         });
+        // Commands keep working across an issuer key replacement, and the
+        // replaced key can then be revoked from the CLI: the revoking command
+        // signs in afresh under the new key, so the revocation does not end
+        // the session it runs on.
+        await page.goto(
+          new URL("/.well-known/oauth-authorization-server", runtime.trellisUrl)
+            .href,
+        );
+        const signer = JSON.parse(
+          await page.locator("body").innerText(),
+        ).trellis.issuers.find(
+          (key: { state: string }) => key.state === "active",
+        ).keyId;
+        await runtime.callAdminRpc("authIssuersRotate", {
+          expectedCurrentKeyId: signer,
+          idempotencyKey: ulid(),
+        });
+        assert.equal((await run("whoami")).loggedIn, true);
+        assert.equal((await run("issuers", "revoke", signer)).keyId, signer);
+        // The server's own services renew onto the new key when Auth announces
+        // the rotation, so the revocation spares them. One that has not yet
+        // renewed is retired and reconnects, and the next command waits for it
+        // rather than failing.
+        assert.equal((await run("whoami")).loggedIn, true);
       } finally {
         await browser.close();
       }

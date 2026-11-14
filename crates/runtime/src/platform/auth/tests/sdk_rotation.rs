@@ -311,14 +311,17 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         )
         .unwrap(),
     );
-    assert_eq!(
-        store
-            .current_catalog("trellis.auth@v1")
-            .unwrap()
-            .digest()
-            .unwrap(),
-        catalog.digest().unwrap()
-    );
+    // Rotation re-signs each current catalog, so sessions admitted from now
+    // on depend on nothing the retired key signed.
+    let rotated = store.current_catalog("trellis.health@v1").unwrap();
+    rotated
+        .verify(
+            &current,
+            &store.settings.instance_id,
+            &store.settings.account,
+        )
+        .unwrap();
+    assert_eq!(rotated.accepted_revision, health_catalog.accepted_revision);
 
     // Held until the broker's listener is up; see ReservedPort.
     let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
@@ -536,7 +539,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         .authorize_action(&transport, &authority, &health_catalog.api_id, &action)
         .await
         .unwrap();
-    assert_eq!(materialized.digest(), health_catalog.digest().unwrap());
+    assert_eq!(materialized.digest(), rotated.digest().unwrap());
     assert!(materialized.authorizes(&admitted.authority, &action));
 
     // The public Node owner consumes the same production-issued root and
@@ -616,7 +619,6 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
             "sessionPublicKey": admitted.authority.unsigned.session_public_key,
             "apiId": health_catalog.api_id,
             "action": action,
-            "historicalKeyId": original.key_id,
             "historicalRotation": serde_json::to_string(&historical_rotation).unwrap(),
             "forwardRotation": serde_json::to_string(&forward_rotation).unwrap(),
             "successorTrust": {
@@ -642,11 +644,11 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
             .output(),
     )
     .await
-    .expect("Node historical catalog verification deadline")
+    .expect("Node cold catalog verification deadline")
     .unwrap();
     assert!(
         node.status.success(),
-        "Node historical catalog: {}",
+        "Node cold catalog: {}",
         String::from_utf8_lossy(&node.stderr)
     );
 
@@ -711,10 +713,13 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         .await
         .unwrap();
     revoked_owner.promote_own(authority.clone(), None).unwrap();
-    assert!(revoked_owner
+    // Revoking the retired key leaves a session admitted after the rotation
+    // working, because its catalogs are the successor's copies.
+    let materialized = revoked_owner
         .authorize_action(&transport, &authority, &health_catalog.api_id, &action)
         .await
-        .is_err());
+        .unwrap();
+    assert_eq!(materialized.digest(), rotated.digest().unwrap());
     revoked_owner
         .verify_metadata(
             &transport,
@@ -733,10 +738,6 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
             .state,
         trellis_protocol::AuthorityIssuerState::Revoked
     );
-    assert!(revoked_owner
-        .authorize_action(&transport, &authority, &health_catalog.api_id, &action)
-        .await
-        .is_err());
 
     // Loading a historical key cannot advance the pin or its rotation sequence.
     // A genuine next rotation must still be accepted at the original next slot.
@@ -751,7 +752,93 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     .unwrap();
     owner.accept_issuer_rotation(next.clone()).unwrap();
     owner.assert_issuer_current(&next.next_key_id).unwrap();
+    // The predecessor keeps authorizing live use until its signed deadline,
+    // so a rotation interrupts nobody. Revoking it ends that at once for an
+    // owner that re-reads it, as SDKs do on Auth's issuer notice.
+    owner.assert_issuer_current(&current.key_id).unwrap();
+    // The service renews under the successor, as it does on Auth's issuer
+    // notice, so revoking the predecessor spares its session. Authority the
+    // predecessor signed for that session must still stop working.
+    let renewed = crate::platform::auth::tests::issue_provisioned_authority(
+        &store,
+        &serde_json::to_vec(&credential).unwrap(),
+        &ephemeral.public_key(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    )
+    .unwrap();
+    assert_eq!(renewed.authority.unsigned.issuer_key_id, next.next_key_id);
+    assert_eq!(
+        renewed.authority.unsigned.authorization_session_id,
+        admitted.authority.unsigned.authorization_session_id
+    );
+    let retired = EnforcementScope::Issuer(current.key_id.clone());
+    crate::platform::auth::tests::revoke_root(
+        &store,
+        &mutation(&admin, &retired),
+        &retired,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    )
+    .unwrap();
+    owner.assert_issuer_current(&current.key_id).unwrap();
+    owner.recheck_retiring_issuers(&transport).await;
     assert!(owner.assert_issuer_current(&current.key_id).is_err());
+    owner.assert_issuer_current(&next.next_key_id).unwrap();
+    assert_eq!(
+        crate::platform::auth::tests::session_status(
+            &store,
+            &admitted.authority.unsigned.authorization_session_id
+        )
+        .state,
+        trellis_protocol::AuthorizationSessionState::Active
+    );
+    // The TypeScript owner re-reads the same signed state.
+    std::fs::write(
+        &input_path,
+        serde_json::to_vec(&serde_json::json!({
+            "servers": [format!("nats://127.0.0.1:{port}")],
+            "trust": {
+                "instanceId": store.settings.instance_id,
+                "account": store.settings.account,
+                "issuer": current,
+                "rotationSequence": rotation.sequence.get().to_string()
+            },
+            "registry": registry,
+            "authority": serde_json::to_string(&admitted.authority).unwrap(),
+            "runtimeId": admitted.authority.unsigned.runtime_id,
+            "sessionPublicKey": admitted.authority.unsigned.session_public_key,
+            "apiId": health_catalog.api_id,
+            "action": action,
+            "rotation": serde_json::to_string(&next).unwrap()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let node = tokio::time::timeout(
+        Duration::from_secs(20),
+        tokio::process::Command::new("node")
+            .args([
+                "--experimental-transform-types",
+                "ts/packages/trellis/native/issuer_revocation_worker.ts",
+            ])
+            .arg(&input_path)
+            .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("Node issuer revocation deadline")
+    .unwrap();
+    assert!(
+        node.status.success(),
+        "Node issuer revocation: {}",
+        String::from_utf8_lossy(&node.stderr)
+    );
     stop_mirror.send(true).unwrap();
     stop_revoked_mirror.send(true).unwrap();
     mirror.await.unwrap().unwrap();

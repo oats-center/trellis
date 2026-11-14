@@ -52,7 +52,13 @@ administrative `trellis.*` capabilities are optional and take the Portal's
 separate confirmation step. The registered client is `trellis.cli`; no app
 participant installation is involved. The native SDK owns durable P-256 custody,
 refresh-token rotation, locking and atomic replacement. Each process resumes
-custody and establishes fresh ephemeral runtime authority. `--ca-certificate`
+custody with `resume_retained`: it reuses the previous run's admission and
+runtime key while at least 60 seconds of it remain, so scripted runs make no
+sign-in request and stay clear of the issuer's per-address limit, and otherwise
+rotates the refresh token for fresh ephemeral runtime authority. A refused
+reused admission is followed by one ordinary resume. `issuers revoke` always
+resumes on a fresh runtime, because runs that reuse an admission share one
+authorization session that the revocation could end. `--ca-certificate`
 selects a private installation CA as the only trust anchor for that deployment's
 OAuth and broker TLS; login prints its fingerprint for out-of-band comparison
 and the selection retains its path.
@@ -283,8 +289,35 @@ session-compatible key material without introducing offline trust artifacts.
 
 ## Errors And Output
 
-Human output is concise and actionable. JSON mode emits one documented value to
-stdout and sends tracing/progress to stderr. Expected Auth RPC errors retain
+Human output is concise and actionable, and every command uses the shared
+layout in `crates/cli/src/output.rs`:
+
+- stdout carries what the command returns: a table, a record, or a secret.
+  stderr carries status lines (`✓` for a change, `•` for a request that changed
+  nothing, `!` for a warning), dim hints, `Next:` commands, and prompts, so
+  piping stdout keeps only data.
+- A list is an aligned table under an uppercase header on a terminal, truncated
+  to its width, with times relative to now. Piped, it is one tab-separated line
+  per item with raw values and no header. An empty list prints a sentence on
+  stderr saying so, with the command that would add the first item when there
+  is an obvious one.
+- A record is a bold title, aligned `Label  value` fields with empty values
+  left out, and titled sections for lists and nested values. State words are
+  colored by meaning: green for enabled or done, yellow for waiting, red for
+  off or failed.
+- A secret the CLI generates (an instance seed, a device root secret, a setup
+  code, a key seed) prints once with a warning that Trellis does not keep it.
+- Color appears on terminals unless `NO_COLOR` is set; `CLICOLOR_FORCE=1`
+  keeps it when piped.
+- `svc|dev <name> remove` asks for the name before removing; `-f` skips the
+  question, and without a terminal on stdin the command refuses and names `-f`.
+
+JSON mode emits one documented value to stdout, pretty-printed (and colored on a
+terminal), silences status lines and hints, and sends tracing/progress to
+stderr. JSON is the scripting interface; the human layout may change. Errors
+render through miette on stderr in both modes, with a `help:` line naming the
+command or flag that resolves them where one exists. A declared contract error
+shows its message. Expected Auth RPC errors retain
 their generated result codes, including stale binding/deployment revisions,
 invalid participant artifacts, denied administration, missing required
 evidence, and unavailable issuer/runtime dependencies.

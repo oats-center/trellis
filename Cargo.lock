@@ -6159,6 +6159,7 @@ dependencies = [
 name = "trellis-cli"
 version = "0.100.0-rc.38"
 dependencies = [
+ "anstream",
  "base64 0.23.1",
  "bytes",
  "clap",

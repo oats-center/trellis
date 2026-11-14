@@ -219,6 +219,7 @@ import {
   parseRuntimeSchema,
   requestFailedTransportError,
   safeJson,
+  SERVICE_AVAILABILITY_WAIT_MS,
 } from "./session/wire.ts";
 import {
   annotateHandlerBoundaryError,
@@ -3950,6 +3951,19 @@ export class Trellis<
           };
           let verified = false;
           let verifying = 0;
+          // Invocation deduplication does not span deployments, so the request
+          // is sent again only when the broker reports that no provider
+          // received it: a provider reconnecting is briefly absent.
+          const waitUntil = Math.min(
+            deadlineMs,
+            Date.now() + SERVICE_AVAILABILITY_WAIT_MS,
+          );
+          let pause = 100;
+          let resend: ReturnType<typeof setTimeout> | undefined;
+          const send = () => {
+            resend = undefined;
+            nc.publish(args.subject, args.payload, { headers, reply });
+          };
           const timer = setTimeout(
             () => {
               waitFailure = {
@@ -3977,7 +3991,16 @@ export class Trellis<
                 message.data.length === 0 &&
                 message.headers?.code === 503
               ) {
-                response.reject(new Error("no responders"));
+                if (
+                  !args.signal?.aborted &&
+                  resend === undefined &&
+                  Date.now() + pause < waitUntil
+                ) {
+                  resend = setTimeout(send, pause);
+                  pause = Math.min(pause * 2, 1000);
+                } else {
+                  response.reject(new Error("no responders"));
+                }
               } else if (!verified && verifying < 8) {
                 // Unauthenticated traffic cannot consume the pending opening.
                 verifying++;
@@ -4049,12 +4072,13 @@ export class Trellis<
             if (args.signal?.aborted) {
               abort();
             } else {
-              nc.publish(args.subject, args.payload, { headers, reply });
+              send();
             }
             return await response.promise;
           } finally {
             verified = true;
             clearTimeout(timer);
+            clearTimeout(resend);
             args.signal?.removeEventListener("abort", abort);
             stopWatching();
             subscription.unsubscribe();

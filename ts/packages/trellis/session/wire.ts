@@ -127,6 +127,9 @@ export function outcomeForFailure(
   return "error";
 }
 
+/** How long a request waits for an absent provider, within its own deadline. */
+export const SERVICE_AVAILABILITY_WAIT_MS = 5_000;
+
 export function classifyRequestTransportFailure(args: {
   method?: string;
   subject: string;

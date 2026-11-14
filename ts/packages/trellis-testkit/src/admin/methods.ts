@@ -32,6 +32,10 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Issuers.Rotate"],
     (client, input) => client.issuersRotate(input).orThrow(),
   ),
+  authIssuersRevoke: adminMethod(
+    apis.auth.API.actions["rpc:Issuers.Revoke"],
+    (client, input) => client.issuersRevoke(input).orThrow(),
+  ),
   authUsersGet: adminMethod(
     apis.auth.API.actions["rpc:Users.Get"],
     (client, input) => client.usersGet(input).orThrow(),

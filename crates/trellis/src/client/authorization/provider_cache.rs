@@ -1921,9 +1921,16 @@ impl AuthorizationOwner {
                     return Ok(verified);
                 }
                 if previous.state == AuthorityIssuerState::Active {
-                    return Err(TrellisClientError::AuthorizationUnavailable(
-                        "historical issuer is a live pin".into(),
-                    ));
+                    // A rotated-out key stays live until its signed deadline;
+                    // only a revocation ends that overlap early.
+                    if !state.issuer_retirements.contains_key(&historical.key_id) {
+                        return Err(TrellisClientError::AuthorizationUnavailable(
+                            "historical issuer is a live pin".into(),
+                        ));
+                    }
+                    if historical.state != AuthorityIssuerState::Revoked {
+                        return Ok(verified);
+                    }
                 }
             } else if state.issuers.len() >= MAX_ISSUERS {
                 return Err(TrellisClientError::AuthorizationUnavailable(
@@ -2521,6 +2528,23 @@ impl AuthorizationOwner {
                 }
             }
         }
+        self.read_issuer_key(transport, key_id).await?;
+        let state = self.state.read().map_err(|_| {
+            TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
+        })?;
+        state
+            .issuer(key_id, self.policy().now_unix_seconds)
+            .ok_or_else(|| {
+                TrellisClientError::AuthorizationUnavailable("historical issuer unavailable".into())
+            })
+    }
+
+    /// Ask the active issuer for a key's signed lifecycle state and record it.
+    async fn read_issuer_key(
+        &self,
+        transport: &async_nats::Client,
+        key_id: &str,
+    ) -> Result<(), TrellisClientError> {
         // Only the active forward-authenticated pin may attest a historical key.
         // This read can bootstrap mirror verification, but grants no application use.
         let _permit = self.metadata_reads.try_acquire().map_err(|_| {
@@ -2568,18 +2592,7 @@ impl AuthorizationOwner {
                     if !matches!(verified.result(), IssuerMetadataResult::Value { .. }) {
                         break;
                     }
-                    let state = self.state.read().map_err(|_| {
-                        TrellisClientError::AuthorizationUnavailable(
-                            "authority owner unavailable".into(),
-                        )
-                    })?;
-                    return state
-                        .issuer(key_id, self.policy().now_unix_seconds)
-                        .ok_or_else(|| {
-                            TrellisClientError::AuthorizationUnavailable(
-                                "historical issuer unavailable".into(),
-                            )
-                        });
+                    return Ok(());
                 }
             }
             Err(TrellisClientError::AuthorizationUnavailable(
@@ -2590,6 +2603,36 @@ impl AuthorizationOwner {
         .map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("historical issuer read timed out".into())
         })?
+    }
+
+    /// Re-read each rotated-out key still inside its live overlap. Auth sends
+    /// the issuer notice on revocation too, and a revoked key then stops
+    /// authorizing live use at once instead of at its signed deadline.
+    pub async fn recheck_retiring_issuers(&self, transport: &async_nats::Client) {
+        let retiring = match self.state.read() {
+            Ok(state) => {
+                let now = self.policy().now_unix_seconds;
+                state
+                    .issuer_retirements
+                    .iter()
+                    .filter(|(key_id, deadline)| {
+                        **deadline > now
+                            && state
+                                .issuers
+                                .get(*key_id)
+                                .is_some_and(|issuer| issuer.state == AuthorityIssuerState::Active)
+                    })
+                    .map(|(key_id, _)| key_id.clone())
+                    .collect::<Vec<_>>()
+            }
+            Err(_) => return,
+        };
+        for key_id in retiring {
+            if let Err(error) = self.read_issuer_key(transport, &key_id).await {
+                tracing::warn!(error = %error, "retiring issuer state unavailable");
+            }
+        }
+        let _ = self.changes.send(());
     }
 
     async fn forward_issuer(

@@ -1195,6 +1195,8 @@ impl SqliteAuthorizationStore {
             JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
             AND s.generation=a.generation \
             AND s.accepted_revision=a.accepted_revision \
+            AND s.issuer_key_id=(SELECT key_id FROM auth_authorization_issuers \
+            WHERE is_current=1) \
             WHERE a.api_id=?1",
             [api],
             |row| row.get(0),
@@ -1308,7 +1310,11 @@ impl SqliteAuthorizationStore {
                         next_key_id: next_key_id.clone(),
                         next_public_key: next_public_key.clone(),
                         activated_at: now,
-                        previous_retired_at: now,
+                        // Authority the predecessor signed stays live until it
+                        // expires, so a routine rotation interrupts nobody.
+                        // Revocation, not rotation, ends a compromised key at once.
+                        previous_retired_at: now
+                            .saturating_add(i64::from(self.settings.authority_lifetime_seconds)),
                         extensions: Default::default(),
                         critical: vec![],
                         signature: String::new(),
@@ -1326,6 +1332,50 @@ impl SqliteAuthorizationStore {
                         VALUES(?1,?2,1,'active',?3,?3,?3)",
                         params![next_key_id, next_public_key, now],
                     )?;
+                    // Accepted catalogs outlive the key that signed them. The
+                    // successor signs each current one so that later sessions
+                    // reference its copy, and revoking the retired key strands
+                    // no API.
+                    let current = {
+                        let mut statement = connection.prepare(
+                            "SELECT s.signed_bytes FROM auth_accepted_apis a \
+                            JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
+                            AND s.generation=a.generation \
+                            AND s.accepted_revision=a.accepted_revision \
+                            WHERE s.issuer_key_id=?1",
+                        )?;
+                        let rows = statement
+                            .query_map([&rotation.previous_key_id], |row| row.get::<_, Vec<u8>>(0))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        rows
+                    };
+                    for bytes in current {
+                        let mut snapshot: trellis_protocol::SignedCatalogSnapshot =
+                            serde_json::from_slice(&bytes)?;
+                        snapshot.issuer_key_id = next_key_id.clone();
+                        snapshot.issued_at = now;
+                        let snapshot = snapshot.sign(&next)?;
+                        connection.execute(
+                            "INSERT INTO auth_api_verification_snapshots \
+                            VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                            params![
+                                snapshot.digest()?,
+                                snapshot.api_id,
+                                snapshot.generation.get(),
+                                snapshot.accepted_revision.get(),
+                                next_key_id,
+                                json(&snapshot)?.as_bytes(),
+                                now
+                            ],
+                        )?;
+                        enqueue_effect(
+                            connection,
+                            "authority_publish",
+                            &serde_json::json!({"kind":"catalog","digest":snapshot.digest()?}),
+                            None,
+                            now,
+                        )?;
+                    }
                     connection.execute(
                         "INSERT INTO auth_issuer_rotations VALUES(?1,?2,?3,?4,?5,?6,?7)",
                         params![
@@ -1338,11 +1388,21 @@ impl SqliteAuthorizationStore {
                             now
                         ],
                     )?;
-                    enqueue_effect(
+                    let link = enqueue_effect(
                         connection,
                         "authority_publish",
                         &serde_json::json!({"kind": "rotation", "sequence": sequence}),
                         None,
+                        now,
+                    )?;
+                    // Sessions renew on this notice, so revoking the retired
+                    // key later spares the services among them. Renewal reads
+                    // the chain link, so the notice waits for its publication.
+                    enqueue_effect(
+                        connection,
+                        "issuer_notice",
+                        &serde_json::json!({"sequence": sequence}),
+                        Some(&link),
                         now,
                     )?;
                     Ok(rotation)

@@ -51,6 +51,20 @@ pub struct NativeOAuthGrant {
     pub refresh_token: String,
 }
 
+/// The latest verified admission and the runtime key it is bound to, kept so a
+/// later process can connect without spending the refresh token. It grants
+/// less than the refresh token stored beside it, and expires within minutes.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RetainedAdmission {
+    pub runtime_id: String,
+    /// Base64url Ed25519 seed of the session key the admission names.
+    pub session_seed: String,
+    /// The issuer-signed admission, exactly as received.
+    pub admission: String,
+    pub authorization_details: serde_json::Value,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -60,6 +74,8 @@ struct Record {
     recovery_required: bool,
     #[serde(deserialize_with = "Option::deserialize")]
     trust: Option<StoredTrust>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    admission: Option<RetainedAdmission>,
 }
 
 struct CustodyLock(fs::File);
@@ -293,6 +309,7 @@ impl NativeCredentialLease {
                         grant: None,
                         recovery_required: false,
                         trust: None,
+                        admission: None,
                     }
                 }
                 Err(error) => return Err(error),
@@ -330,6 +347,25 @@ impl NativeCredentialLease {
     pub fn sign_dpop(&self, signing_input: &[u8]) -> [u8; 64] {
         let signature: Signature = self.signing_key.sign(signing_input);
         signature.to_bytes().into()
+    }
+
+    /// The admission a previous process retained, unless a rotation is unresolved.
+    pub(crate) fn retained_admission(&self) -> Option<RetainedAdmission> {
+        if self.record.recovery_required || self.record.grant.is_none() {
+            return None;
+        }
+        self.record.admission.clone()
+    }
+
+    /// Persist a verified response together with the admission it carried. A
+    /// failed commit marks recovery, which also withholds the admission.
+    pub(crate) fn install_admitted(
+        &mut self,
+        grant: NativeOAuthGrant,
+        admission: RetainedAdmission,
+    ) -> io::Result<()> {
+        self.record.admission = Some(admission);
+        self.install(grant)
     }
 
     /// Persist a successful verified authorization or refresh response atomically.

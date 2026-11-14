@@ -452,7 +452,7 @@ BEGIN SELECT RAISE(ABORT, 'issuer identity and retirement cannot roll back'); EN
 
 CREATE TABLE auth_post_commit_actions (
     action_id TEXT PRIMARY KEY CHECK (length(action_id) = 43),
-    kind TEXT NOT NULL CHECK (kind IN ('event', 'kick', 'authority_publish', 'session_revoke', 'resource_reconcile', 'transport_reevaluate', 'providers_notice')),
+    kind TEXT NOT NULL CHECK (kind IN ('event', 'kick', 'authority_publish', 'session_revoke', 'resource_reconcile', 'transport_reevaluate', 'providers_notice', 'issuer_notice')),
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -521,7 +521,7 @@ CREATE TABLE auth_api_verification_snapshots (
     issuer_key_id TEXT NOT NULL REFERENCES auth_authorization_issuers(key_id),
     signed_bytes BLOB NOT NULL,
     created_at INTEGER NOT NULL,
-    UNIQUE (api_id, generation, accepted_revision)
+    UNIQUE (api_id, generation, accepted_revision, issuer_key_id)
 );
 CREATE TRIGGER auth_api_snapshot_immutable BEFORE UPDATE ON auth_api_verification_snapshots
 BEGIN SELECT RAISE(ABORT, 'API verification snapshots are immutable'); END;

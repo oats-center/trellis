@@ -44,11 +44,14 @@ async fn install_and_generate(root: &Path) {
     package::install(OutputFormat::Text, &project)
         .await
         .expect("install resolves the local dependency graph");
-    generate::run(&GenerateArgs {
-        watch: false,
-        check: true,
-        project,
-    })
+    generate::run(
+        OutputFormat::Text,
+        &GenerateArgs {
+            watch: false,
+            check: true,
+            project,
+        },
+    )
     .expect("generation succeeds for the resolved graph");
 }
 

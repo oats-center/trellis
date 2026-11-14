@@ -113,6 +113,9 @@ impl TransportError {
 
 /// The broker reported no responder for the requested Trellis service.
 ///
+/// The client has already resent the request for up to five seconds within
+/// its deadline, so a reconnecting provider does not cause this error.
+///
 /// This is a transient service-availability failure, not an authorization denial
 /// or a malformed response. Retrying does not by itself start or restart an
 /// existing operation.
@@ -129,8 +132,8 @@ pub enum CallError<E>
 where
     E: std::fmt::Debug,
 {
-    /// Contract-declared error.
-    #[error("declared remote error: {0:?}")]
+    /// Contract-declared error, shown by its message.
+    #[error("{0}")]
     Declared(Box<E>),
     /// Well-formed remote error not declared by this action.
     #[error("remote error: {}", .0.format_human())]

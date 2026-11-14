@@ -10,11 +10,14 @@ import {
   NativeOAuthClient,
   MemoryNativeOAuthCustody,
 } from "@oatscenter/trellis/native";
+import { codecs } from "@oatscenter/trellis/generated";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { apps } from "../../integration/fixtures/client-upgrade-narrow/packages/client-upgrade/index.js";
 import { participants } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
 import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
+import { SessionAuthorityOwner } from "../packages/trellis/auth/authority.ts";
+import { authenticateIssuerChain } from "../packages/trellis/auth/issuer_trust.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 test("administrator issuer rotation is idempotent and retained native custody follows the chain across server restart", async () => {
@@ -145,6 +148,65 @@ test("administrator issuer rotation is idempotent and retained native custody fo
           );
           assert.equal(retained.keyId, rotated.keyId);
           assert.deepEqual(retained.rotation, rotated.rotation);
+
+          // Rotation tells every session to renew, so the service holds
+          // authority the new key signed before the old one is revoked.
+          // Revoking it then retires user sessions the old key admitted but
+          // not the service, which signs in with its own key.
+          const serviceSession = async () => {
+            const listed = await runtime.callAdminRpc(
+              "authAuthorizationSessionsList",
+              {
+                deploymentId: codecs.ulid.decode(identity.deploymentId),
+                page: { limit: 100 },
+              },
+            );
+            // The service process from before the restart left a session
+            // behind; the current process holds the newest one.
+            const found = listed.items
+              .filter((item) => item.binding.instanceId === identity.instanceId)
+              .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+            assert(found);
+            return found;
+          };
+          const renewedFrom = await serviceSession();
+          // Expiry has whole-second precision. A renewal in the second of
+          // the last issuance would carry the same expiry, so the rotation
+          // waits for the clock to pass that second.
+          const issuedBy = Math.floor(Date.now() / 1000);
+          await runtime.waitFor(
+            async () => Math.floor(Date.now() / 1000) > issuedBy,
+          );
+          const third = await runtime.callAdminRpc("authIssuersRotate", {
+            expectedCurrentKeyId: second.keyId,
+            idempotencyKey: ulid(),
+          });
+          await runtime.waitFor(
+            async () =>
+              ((await serviceSession()).maximumContextExpiresAt ?? 0) >
+              (renewedFrom.maximumContextExpiresAt ?? 0),
+          );
+          await runtime.callAdminRpc("authIssuersRevoke", {
+            keyId: second.keyId,
+            idempotencyKey: ulid(),
+          });
+          const userSession = async () =>
+            (
+              await runtime.callAdminRpc("authAuthorizationSessionsList", {
+                clientId: apps.Caller.request.id,
+                page: { limit: 100 },
+              })
+            ).items.find((item) => item.runtimeId === session.runtimeId);
+          await runtime.waitFor(
+            async () => (await userSession())?.state === "revoked",
+          );
+          const kept = await serviceSession();
+          assert.equal(
+            kept.authorizationSessionId,
+            renewedFrom.authorizationSessionId,
+          );
+          assert.equal(kept.state, "active");
+          assert.notEqual(third.keyId, second.keyId);
         } finally {
           await restored.connection.close();
         }
@@ -191,6 +253,62 @@ test("startup refuses replaced OAuth custody and restored custody retains client
       );
     } finally {
       await writeFile(key, original);
+    }
+  });
+});
+
+test("authenticating the issuer chain accepts links its shared owner already holds", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const credentials = await loginNativeTestClient({
+      issuer: runtime.trellisUrl,
+      custody: new MemoryNativeOAuthCustody(),
+      clientId: "trellis.cli",
+      request: adminParticipant,
+      username: runtime.adminUsername,
+      password: runtime.adminPassword,
+    });
+    const anchor = credentials.session.trust;
+    await credentials.session.close();
+    const rotated = await runtime.callAdminRpc("authIssuersRotate", {
+      expectedCurrentKeyId: anchor.issuer.keyId,
+      idempotencyKey: ulid(),
+    });
+    const link: { nextPublicKey: string } = JSON.parse(
+      new TextDecoder().decode(rotated.rotation),
+    );
+    const target = {
+      ...anchor,
+      issuer: {
+        keyId: rotated.keyId,
+        publicKey: link.nextPublicKey,
+        state: "active" as const,
+      },
+      rotationSequence: (BigInt(anchor.rotationSequence) + 1n).toString(),
+    };
+    // A connected session installs the link on Auth's issuer notice, while
+    // the credential still names the older pin. A concurrent refresh then
+    // authenticates the chain from that pin through the same owner.
+    const owner = new SessionAuthorityOwner({
+      instanceId: anchor.instanceId,
+      account: anchor.account,
+      issuers: [anchor.issuer],
+      rotationSequence: anchor.rotationSequence,
+    });
+    try {
+      await owner.acceptIssuerRotation(rotated.rotation);
+      assert.equal(
+        await authenticateIssuerChain(
+          runtime.trellisUrl,
+          anchor,
+          target,
+          undefined,
+          owner,
+        ),
+        owner,
+      );
+      assert.deepEqual(owner.trustForCredential(anchor), target);
+    } finally {
+      owner.stop();
     }
   });
 });

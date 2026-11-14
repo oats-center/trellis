@@ -72,8 +72,19 @@ export async function authenticateIssuerChain(
       const chain = issuerChainSchema.parse(
         JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
       );
-      for (const rotation of chain.rotations)
+      for (const rotation of chain.rotations) {
+        // A connected session sharing this owner may already have installed
+        // the link, on Auth's issuer notice. The sequence is only a lookup
+        // hint; the final trust check below still requires the target.
+        const { sequence }: { sequence?: unknown } = JSON.parse(rotation);
+        if (
+          typeof sequence === "string" &&
+          /^[0-9]{1,20}$/.test(sequence) &&
+          BigInt(sequence) <= BigInt(owner.trustSnapshot.rotationSequence)
+        )
+          continue;
         await owner.acceptIssuerRotation(signedBytes(rotation));
+      }
     }
     const verified = owner.trustForCredential(anchor);
     if (

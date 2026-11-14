@@ -31,7 +31,7 @@ pub enum PaginationError<E: std::fmt::Debug> {
     RepeatedCursor(String),
 }
 
-impl<E: std::fmt::Debug> std::fmt::Display for PaginationError<E> {
+impl<E: std::fmt::Debug + std::fmt::Display> std::fmt::Display for PaginationError<E> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Call(error) => error.fmt(formatter),
@@ -42,7 +42,7 @@ impl<E: std::fmt::Debug> std::fmt::Display for PaginationError<E> {
     }
 }
 
-impl<E: std::fmt::Debug> std::error::Error for PaginationError<E> {}
+impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for PaginationError<E> {}
 
 impl<E: std::fmt::Debug> From<crate::client::CallError<E>> for PaginationError<E> {
     fn from(error: crate::client::CallError<E>) -> Self {
@@ -437,7 +437,7 @@ pub trait RpcDescriptor {
     /// Success payload type.
     type Output: Codec + DeserializeOwned;
     /// Generated union of errors declared by this action.
-    type Error: std::fmt::Debug;
+    type Error: std::fmt::Debug + std::fmt::Display;
 
     /// Qualified API identity owning this action.
     const API_ID: &'static str;

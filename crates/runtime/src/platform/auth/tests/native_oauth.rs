@@ -394,6 +394,33 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
     assert_eq!(session.admission.credential.principal_id, f.admin);
     let runtime = session.runtime_id.clone();
     let nkey = session.auth.session_nkey().unwrap();
+    // A later process reuses the admission custody retained, spending no token,
+    // and the installation admits it for the same runtime and session key.
+    let posts = proxy.control.lock().unwrap().refresh_posts;
+    let admission = session.admission.clone();
+    drop(session);
+    session = NativeOAuthClient::open(custody.clone(), scope.clone(), trust.clone())
+        .await
+        .unwrap()
+        .resume_retained()
+        .await
+        .unwrap();
+    assert!(session.is_retained());
+    assert_eq!(session.runtime_id, runtime);
+    assert_eq!(session.auth.session_nkey().unwrap(), nkey);
+    assert_eq!(session.admission, admission);
+    assert_eq!(proxy.control.lock().unwrap().refresh_posts, posts);
+    let admitted = crate::platform::auth::tests::admit_credential(
+        &authority,
+        &serde_json::to_vec(&session.admission).unwrap(),
+        &nkey,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    )
+    .unwrap();
+    assert_eq!(admitted.authority.unsigned.principal_id, f.admin);
     let grant = session.admission.credential.oauth_grant_id.clone();
     let family = session.admission.credential.refresh_family_id.clone();
     for _ in 0..2 {
@@ -706,11 +733,13 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         posts_after_loss
     );
     drop(session);
+    // Its retained admission is still unexpired, but the unresolved rotation
+    // withholds it too: only a new authorization recovers.
     let reopened = NativeOAuthClient::open(custody.clone(), scope.clone(), trust.clone())
         .await
         .unwrap();
     assert!(matches!(
-        reopened.resume().await,
+        reopened.resume_retained().await,
         Err(NativeOAuthError::RecoveryRequired)
     ));
     assert_eq!(

@@ -42,12 +42,14 @@ test("unavailable provider preserves typed observation errors and completed oper
       await service.stop();
       await service.wait();
 
-      const unavailable = [
-        await operation.live(),
-        await operation.wait(),
-        await client.runtimeWatch({}),
-        await client.echo({ value: "unavailable" }),
-      ];
+      // Each call that finds no provider first waits up to five seconds for
+      // one, so these wait together.
+      const unavailable = await Promise.all([
+        operation.live(),
+        operation.wait(),
+        client.runtimeWatch({}),
+        client.echo({ value: "unavailable" }),
+      ]);
       for (const outcome of unavailable) {
         assert(outcome.isErr());
         assert(outcome.error instanceof TransportError);
@@ -58,6 +60,12 @@ test("unavailable provider preserves typed observation errors and completed oper
         );
       }
 
+      // A call made while the provider is away waits for it to come back, as
+      // when a provider reconnects: the provider stays away for a moment after
+      // the call is sent, then connects and handles its routes.
+      const waited = client.echo({ value: "waited" });
+      const observing = operation.live();
+      await new Promise((resolve) => setTimeout(resolve, 300));
       service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
@@ -69,7 +77,8 @@ test("unavailable provider preserves typed observation errors and completed oper
         return input;
       });
       await service.handleEcho(({ input }) => Result.ok(input));
-      const observation = await operation.live().orThrow();
+      assert.deepEqual(await waited.orThrow(), { value: "waited" });
+      const observation = await observing.orThrow();
       try {
         const event = await observation[Symbol.asyncIterator]().next();
         assert(!event.done);

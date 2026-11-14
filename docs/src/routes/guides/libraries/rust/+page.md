@@ -199,6 +199,11 @@ let client = Client::from_generated(
 Keep `scope` (it holds no secret) to sign in again later: after a restart,
 `NativeOAuthClient::open` with the same scope and then `resume()` rotates the
 retained credential for a fresh runtime key instead of asking the user again.
+A tool that runs as many short processes, like a CLI, calls `resume_retained()`
+instead. It reuses the admission an earlier process kept while at least a minute
+of it remains, so most runs make no sign-in request at all. If the connection
+with a reused admission is refused (`session.is_retained()` tells you it was
+one), open the client again and call `resume()`.
 The connection presents the signed OAuth admission in CONNECT and then
 retrieves its signed authority. Do not assemble route credentials, NATS
 permissions, or semantic evidence manually.

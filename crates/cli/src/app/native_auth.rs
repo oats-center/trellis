@@ -79,17 +79,31 @@ impl Selection {
 
     pub fn load() -> miette::Result<Self> {
         let path = directory()?.join("selected.json");
-        let metadata = std::fs::symlink_metadata(&path).into_diagnostic()?;
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(miette::miette!(
+                    help = "Run `trellis login <url>` with your Trellis address.",
+                    "not logged in"
+                ))
+            }
+            Err(error) => return Err(error).into_diagnostic(),
+        };
         if !metadata.is_file() {
             return Err(miette::miette!(
-                "native OAuth selection must be a regular file"
+                "the saved login {} must be a regular file",
+                path.display()
             ));
         }
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
             if metadata.mode() & 0o077 != 0 || metadata.nlink() != 1 {
-                return Err(miette::miette!("native OAuth selection must be owner-only"));
+                return Err(miette::miette!(
+                    help = format!("Run `chmod 600 {}` or log in again.", path.display()),
+                    "the saved login {} must be readable only by you",
+                    path.display()
+                ));
             }
         }
         serde_json::from_slice(&std::fs::read(path).into_diagnostic()?).into_diagnostic()

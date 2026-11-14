@@ -10,7 +10,6 @@ use clap_complete::generate;
 use ed25519_dalek::SigningKey;
 use miette::IntoDiagnostic;
 use serde::{de::DeserializeOwned, Serialize};
-use serde_json::Value;
 use tracing_subscriber::EnvFilter;
 use trellis_rs::generated::Client;
 use trellis_rs::telemetry::{
@@ -38,6 +37,7 @@ const SELF_UPDATE_TARGET: SelfUpdateTarget = SelfUpdateTarget::new(
 pub async fn run() -> miette::Result<()> {
     let cli = Cli::parse();
     let format = cli.format;
+    crate::output::init(format);
     // Completion, version, and help stay offline and never start exporters.
     let command_label = cli.command.telemetry_label();
     let telemetry_guard = if command_label.is_some() {
@@ -89,7 +89,7 @@ async fn dispatch(command: TopLevelCommand, format: OutputFormat) -> miette::Res
         TopLevelCommand::Check(args) => package::check(format, &args).await?,
         TopLevelCommand::Update(args) => package::update(format, &args).await?,
         TopLevelCommand::Install(args) => package::install(format, &args).await?,
-        TopLevelCommand::Generate(args) => crate::generate::run(&args)?,
+        TopLevelCommand::Generate(args) => crate::generate::run(format, &args)?,
         TopLevelCommand::Publish(args) => package::publish(format, &args).await?,
         TopLevelCommand::Login(args) => auth::login(format, &args).await?,
         TopLevelCommand::Logout => auth::logout(format).await?,
@@ -97,14 +97,14 @@ async fn dispatch(command: TopLevelCommand, format: OutputFormat) -> miette::Res
         TopLevelCommand::Issuers(command) => auth::issuers(format, command).await?,
         TopLevelCommand::Users(command) => auth::users(format, command).await?,
         TopLevelCommand::Roles(command) => auth::roles(format, command).await?,
-        TopLevelCommand::Clients(command) => auth::clients(command).await?,
-        TopLevelCommand::Apis(command) => auth::apis(command).await?,
-        TopLevelCommand::Theme(command) => auth::theme(command).await?,
+        TopLevelCommand::Clients(command) => auth::clients(format, command).await?,
+        TopLevelCommand::Apis(command) => auth::apis(format, command).await?,
+        TopLevelCommand::Theme(command) => auth::theme(format, command).await?,
         TopLevelCommand::SignIn(command) => auth::sign_in(format, command).await?,
         TopLevelCommand::Svc(command) => deploy::run_svc(format, command).await?,
         TopLevelCommand::Dev(command) => deploy::run_dev(format, command).await?,
         TopLevelCommand::Resources(command) => resources::run(format, command).await?,
-        TopLevelCommand::Events(command) => events::run(command).await?,
+        TopLevelCommand::Events(command) => events::run(format, command).await?,
         TopLevelCommand::Keys(command) => match command.command {
             KeysSubcommand::New(args) => runtime::keygen_command(format, &args)?,
         },
@@ -160,15 +160,39 @@ pub(crate) fn base64url_encode(bytes: &[u8]) -> String {
 }
 
 async fn connect_authenticated_cli_client() -> miette::Result<(native_auth::Selection, Client)> {
+    connect_cli_client(true).await
+}
+
+/// Without `reuse`, this run signs in on a session of its own instead of
+/// reusing the admission an earlier run kept.
+async fn connect_cli_client(reuse: bool) -> miette::Result<(native_auth::Selection, Client)> {
     let selection = native_auth::Selection::load()?;
-    let session = selection.open().await?.resume().await.into_diagnostic()?;
-    let connected = Client::connect_user(trellis_rs::client::UserConnectOptions::new(
-        selection.nats_servers.clone(),
-        10_000,
-        session,
-    ))
-    .await
+    let connect = |session| {
+        Client::connect_user(trellis_rs::client::UserConnectOptions::new(
+            selection.nats_servers.clone(),
+            10_000,
+            session,
+        ))
+    };
+    // Reusing the previous run's admission keeps scripts from spending the
+    // refresh token, and the sign-in request budget, on every command.
+    let client = selection.open().await?;
+    let session = if reuse {
+        client.resume_retained().await
+    } else {
+        client.resume().await
+    }
     .into_diagnostic()?;
+    let retained = session.is_retained();
+    let connected = match connect(session).await {
+        Ok(connected) => connected,
+        // Revoked, expired in transit, or signed by a since-rotated issuer.
+        Err(_) if retained => {
+            let session = selection.open().await?.resume().await.into_diagnostic()?;
+            connect(session).await.into_diagnostic()?
+        }
+        Err(error) => return Err(error).into_diagnostic(),
+    };
     Ok((selection, connected))
 }
 
@@ -177,13 +201,6 @@ pub(crate) fn generate_session_keypair() -> (String, String) {
     let signing_key = SigningKey::from_bytes(&seed);
     let public_key = signing_key.verifying_key().to_bytes();
     (base64url_encode(&seed), base64url_encode(&public_key))
-}
-
-pub(crate) fn json_value_label(value: &Value) -> String {
-    value
-        .as_str()
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| value.to_string())
 }
 
 pub(crate) fn wire<T: DeserializeOwned>(value: impl Serialize) -> miette::Result<T> {

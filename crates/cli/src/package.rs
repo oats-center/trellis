@@ -154,7 +154,11 @@ pub async fn check(format: OutputFormat, args: &ProjectRootArgs) -> Result<()> {
             "version": package.version,
         }))
     } else {
-        println!("Checked {} {}", package.name, package.version);
+        output::success(format!(
+            "{} {} is valid",
+            output::strong(&package.name),
+            package.version
+        ));
         Ok(())
     }
 }
@@ -326,16 +330,12 @@ pub async fn publish(format: OutputFormat, args: &PublishArgs) -> Result<()> {
             "changed": changed
         }))
     } else {
-        println!(
-            "{} {} {}",
-            if changed {
-                "Published"
-            } else {
-                "Already published"
-            },
-            package.name,
-            package.version
-        );
+        let name = format!("{} {}", output::strong(&package.name), package.version);
+        if changed {
+            output::success(format!("Published {name}"));
+        } else {
+            output::unchanged(format!("{name} is already published"));
+        }
         println!("{}@{digest}", oci::repository(config, &package.name)?);
         Ok(())
     }
@@ -1004,12 +1004,25 @@ fn print_result(
         return output::print_json(result);
     }
     if let Some(headline) = headline {
-        println!("{headline}");
+        output::success(headline);
     }
     if result.changed_dependencies == 0 && result.generated_projects == 0 {
-        println!("Installed 0 changes");
+        output::unchanged("Dependencies and generated code are up to date");
     } else {
-        println!("Installed {} package(s)", result.installed_packages);
+        let generated = if result.generated_projects > 0 {
+            " and generated code"
+        } else {
+            ""
+        };
+        match result.installed_packages {
+            0 => output::success(format!(
+                "Installed the project{generated}; it has no dependencies"
+            )),
+            count => output::success(format!(
+                "Installed {}{generated}",
+                output::plural(count, "package")
+            )),
+        }
     }
     Ok(())
 }

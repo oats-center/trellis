@@ -152,7 +152,12 @@ persistent DPoP key and rotating refresh family; an operating-system lock spans
 read, exchange, and commit across processes. Recovery is marked before exchange
 so a lost response cannot trigger replay of a spent refresh token. Platforms
 without the owner-only adapter must supply an explicit secure-store adapter. The
-native CLI uses the same custody.
+native CLI uses the same custody. Custody also keeps the latest admission and
+its runtime key: a tool run as many short processes calls
+`NativeOAuthClient::resume_retained()`, which reuses it with no HTTP request
+while at least 60 seconds remain and otherwise resumes normally. When a
+connection with a reused admission (`session.is_retained()`) is refused, open
+the client again and call `resume()`.
 
 Native OAuth renewal leases the current maintenance transport after HTTP
 refresh and retains it through signer lookup and verified authority promotion;
@@ -185,7 +190,8 @@ Argument and result types come from the generated crate; every model carries an
 
 Exact method and model names come from the generated crate. Match generated
 declared-error variants directly; transport and unknown remote failures remain
-distinct. Native no-responder replies become `ServiceUnavailableError`, exposed
+distinct. Native no-responder replies that persist past the bounded wait become
+`ServiceUnavailableError`, exposed
 through `CallError::ServiceUnavailable` or
 `TrellisClientError::ServiceUnavailable`. Generated cursor-paginated RPCs add
 lazy fallible page/item streams; a missing `next_cursor` is the sole end signal.

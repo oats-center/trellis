@@ -111,7 +111,7 @@ pub use subjects::{
     derive_live_subject, derive_operation_subject, derive_providers_notice_subject,
     derive_rpc_subject, encode_event_descriptor_identity, encode_subject_token,
     event_patterns_overlap, route_queue_group, validate_event_descriptor_subject,
-    DerivedApiSubjects, DerivedEventSubjects, EventDescriptorIdentity,
+    DerivedApiSubjects, DerivedEventSubjects, EventDescriptorIdentity, ISSUER_NOTICE_SUBJECT,
     PROVIDERS_NOTICE_SUBJECT_PREFIX,
 };
 pub use transport_authorization::{

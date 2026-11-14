@@ -8,6 +8,87 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- The `trellis` CLI's human output has one layout across commands. Lists are
+  aligned tables on a terminal and tab-separated rows when piped; records are
+  titled, aligned fields with sections; changes report one `✓` line on stderr
+  with a `Next:` command where one follows. Commands that printed only JSON
+  (`clients`, `apis`, `theme`, `sign-in`, `events`, `resources`) and those that
+  printed `key=value` lines or nothing (`generate`) now print the same layout.
+  `--format json` output is unchanged, except that `generate` now reports its
+  outputs. Generated secrets print once with a warning that Trellis does not
+  keep them, and color follows `NO_COLOR` and `CLICOLOR_FORCE`.
+- A contract-declared error from a generated Rust client displays its message
+  instead of a debug dump, and each generated action error type implements
+  `Display`.
+- Each `trellis` command reuses the admission the previous one kept while at
+  least a minute of it remains, instead of spending the refresh token on every
+  run. Scripts no longer hit the sign-in limit of 120 requests a minute per
+  address at about 60 commands a minute, and commands skip two HTTPS round trips.
+  Rust native custody keeps the latest admission and its runtime key for this;
+  `NativeOAuthClient::resume_retained` reuses it, and
+  `NativeOAuthSession::is_retained` tells a caller to resume normally when the
+  installation refuses it.
+
+- A request, Operation start, or Live opening that finds no provider waits for
+  one for up to five seconds within its deadline, resending the same signed
+  request, instead of failing at once. A provider that is reconnecting or a
+  service restarting during a deploy no longer fails the calls made meanwhile. The
+  broker's no-responders reply means no provider received the request, so
+  nothing runs twice. A service that stays down is reported after the wait.
+  Rust and TypeScript SDKs.
+- An issuer key rotation (`Issuers.Rotate`, `trellis issuers rotate`) no longer
+  interrupts anyone. The signed rotation link keeps the old key live for one
+  authority lifetime (`previousRetiredAt`), and Rust and TypeScript SDKs accept
+  it for live use until then. Before, the server signed a deadline of the
+  rotation time, so a client or service that learned of the rotation refused
+  authority the old key had signed, its own included, until every party had
+  renewed. The TypeScript SDK also ignored the deadline. Auth now announces each
+  rotation on `trellis.auth.issuers`, and every session renews onto the new key
+  at once.
+- Revoking an issuer key (`Issuers.Revoke`) retires a service or device session
+  only when its latest authority came from that key. Such a session signs in
+  with its own identity key, which the issuer key cannot forge, so a service
+  that renewed after the rotation keeps running. User sessions holding any
+  authority from the key are retired as before. The revocation is announced on
+  `trellis.auth.issuers` too: SDKs re-read the state of each old key still in
+  its overlap, and a revoked one stops authorizing live use at once.
+
+### Fixed
+
+- A TypeScript native OAuth refresh could fail with "OAuthTrustUnavailable"
+  after an issuer key rotation. A connected session sharing the credential's
+  authority owner could install the rotation first, and the refresh then
+  re-applied the same chain link from the credential's older pin and refused
+  it. Links the owner already holds are now skipped; the refresh still requires
+  the chain to reach the discovered key. The Rust SDK already skipped them.
+- A TypeScript service or client whose authority renewal was in flight when
+  its connection was closed, as when Auth retires it after a contract change,
+  ended with "Authority renewal is unavailable" instead of being readmitted.
+  Renewal now leaves a closed attachment to ordinary transport recovery.
+- Opening a Live observation (in the Rust SDK, including `operation.wait()` and
+  `operation.live()`) straight after dropping another could fail with "live open
+  rejected with 'control-ack'". Live openings and Live controls numbered their
+  reply inboxes with separate counters under one prefix, so the dropped
+  observation's close acknowledgement could arrive as the new opening's reply.
+- Revoking a replaced issuer key (`Issuers.Revoke`, `trellis issuers revoke`)
+  left every later session unusable: each call failed with "authorization
+  evidence unavailable: verification material unavailable". Accepted API
+  catalogs were signed once, by the key current when the API was accepted, and
+  stayed in use after a rotation, so revoking that key made them unverifiable.
+  Rotation now re-signs each current catalog under the successor in the same
+  transaction, and sessions admitted afterwards use those copies. The old copies
+  stay for verifying retained history. `trellis issuers revoke` now signs in
+  afresh, so the revocation cannot end the session it runs on. This edits the
+  Auth database's baseline schema, so an existing installation needs a fresh
+  database.
+- `trellis events inspect --stream-sequence` was refused with "invalid type:
+  integer, expected a string".
+- `trellis whoami` and other signed-in commands without a login said "No such
+  file or directory"; they now say the CLI is not logged in and name `trellis
+login`.
+
 ## [0.100.0-rc.38] - 2026-11-13
 
 ### Changed

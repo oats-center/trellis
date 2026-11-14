@@ -251,6 +251,15 @@ pub fn derive_bound_live_subject(
     ))
 }
 
+/// Subject on which Auth announces an issuer key rotation or revocation.
+///
+/// Every session may subscribe to it. On the notice a session renews its
+/// authority, so it holds authority the current key signed, and re-reads the
+/// signed state of each rotated-out key still inside its live overlap, so a
+/// revoked key stops authorizing live use at once. The message carries
+/// nothing; only Auth publishes it, and clients act only on signed material.
+pub const ISSUER_NOTICE_SUBJECT: &str = "trellis.auth.issuers";
+
 /// Prefix of the subjects on which Auth announces new providers of an API.
 pub const PROVIDERS_NOTICE_SUBJECT_PREFIX: &str = "trellis.auth.providers.";
 

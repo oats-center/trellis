@@ -74,12 +74,12 @@ api ping@v1 {
         check: true,
         project,
     };
-    generate::run(&args).unwrap();
+    generate::run(OutputFormat::Text, &args).unwrap();
     let generated = root.path().join("generated/index.js");
     let original = fs::read(&generated).unwrap();
     fs::create_dir(root.path().join("generated/obsolete-empty")).unwrap();
     fs::write(&generated, [original.as_slice(), b"// stale\n"].concat()).unwrap();
-    assert!(generate::run(&args).is_err());
+    assert!(generate::run(OutputFormat::Text, &args).is_err());
     assert_ne!(fs::read(&generated).unwrap(), original);
 
     generate::generate_project(root.path()).unwrap();

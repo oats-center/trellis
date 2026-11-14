@@ -47,6 +47,7 @@ export type ProvisionedConnectionOptions = {
 
 /** Subjects on which Auth announces a new provider of an API the session calls. */
 const PROVIDERS_NOTICE_SUBJECT_PREFIX = "trellis.auth.providers.";
+const ISSUER_NOTICE_SUBJECT = "trellis.auth.issuers";
 
 const policySchema = z.object({
   format: z.literal("trellis.transport-authorization.v1"),
@@ -465,15 +466,24 @@ export async function connectAdmitted(options: {
       if (!noticed.has(generation.nc)) {
         noticed.add(generation.nc);
         // Routes name the providers that existed at admission. Auth announces
-        // one added since, and renewing adopts the route to it at once.
+        // one added since, and renewing adopts the route to it at once. Auth
+        // also announces an issuer key rotation or revocation: renewing moves
+        // this session onto authority the current key signed, and the re-check
+        // ends a revoked key's overlap.
         for (const subject of value.admission.policy.subscribeAllow) {
-          if (!subject.startsWith(PROVIDERS_NOTICE_SUBJECT_PREFIX)) continue;
+          if (
+            !subject.startsWith(PROVIDERS_NOTICE_SUBJECT_PREFIX) &&
+            subject !== ISSUER_NOTICE_SUBJECT
+          )
+            continue;
           generation.nc.subscribe(subject, {
             callback: (error) => {
               if (error || manager.isClosed()) return;
               void refreshAuthority().catch(() => {
                 /* typed failure is retained by closed() */
               });
+              if (subject === ISSUER_NOTICE_SUBJECT)
+                void owner.recheckRetiringIssuers();
             },
           });
         }
@@ -533,6 +543,9 @@ export async function connectAdmitted(options: {
     const signal = options.signal
       ? AbortSignal.any([options.signal, renewalAbort.signal])
       : renewalAbort.signal;
+    // Set when the attachment this renewal leased closed under it: ordinary
+    // transport recovery then owns readmission, and this failure ends nothing.
+    let withdrawn = false;
     const task = (async () => {
       // A reduction can withdraw the attachment while the existing admission
       // pipeline is preparing its replacement. Explicit renewal must join that
@@ -596,13 +609,16 @@ export async function connectAdmitted(options: {
         if (!committed) throw new Error("AdmissionSuperseded");
         manager.authorizationPromoted();
         scheduleRenewal();
+      } catch (error) {
+        if (lease.nc.isClosed()) withdrawn = true;
+        throw error;
       } finally {
         lease.release();
       }
     })();
     renewalTask = task
       .catch(async (error) => {
-        if (!signal.aborted && !manager.isClosed()) {
+        if (!signal.aborted && !manager.isClosed() && !withdrawn) {
           await manager.terminate(
             error instanceof AuthError || error instanceof TransportError
               ? error

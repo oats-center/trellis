@@ -654,8 +654,9 @@ test("a no-survivor reduction recovers on one staged socket that becomes current
                 (sub) =>
                   !sub.subject.startsWith("_INBOX.") &&
                   !sub.subject.startsWith("$") &&
-                  // Auth's provider notices are not application routes.
-                  !sub.subject.startsWith("trellis.auth.providers."),
+                  // Auth's provider and issuer notices are not application routes.
+                  !sub.subject.startsWith("trellis.auth.providers.") &&
+                  sub.subject !== "trellis.auth.issuers",
               )
               .map((sub) => sub.subject),
           );
@@ -993,8 +994,9 @@ test("dropping the logical client during a withheld stage warm releases only the
                 (sub) =>
                   !sub.subject.startsWith("_INBOX.") &&
                   !sub.subject.startsWith("$") &&
-                  // Auth's provider notices are not application routes.
-                  !sub.subject.startsWith("trellis.auth.providers."),
+                  // Auth's provider and issuer notices are not application routes.
+                  !sub.subject.startsWith("trellis.auth.providers.") &&
+                  sub.subject !== "trellis.auth.issuers",
               )
               .map((sub) => sub.subject),
           );
@@ -1151,8 +1153,9 @@ test("stopping the logical client preempts provider intake still awaiting stage 
                 (sub) =>
                   !sub.subject.startsWith("_INBOX.") &&
                   !sub.subject.startsWith("$") &&
-                  // Auth's provider notices are not application routes.
-                  !sub.subject.startsWith("trellis.auth.providers."),
+                  // Auth's provider and issuer notices are not application routes.
+                  !sub.subject.startsWith("trellis.auth.providers.") &&
+                  sub.subject !== "trellis.auth.issuers",
               )
               .map((sub) => sub.subject),
           );

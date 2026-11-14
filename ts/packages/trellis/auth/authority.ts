@@ -231,6 +231,7 @@ export class SessionAuthorityOwner {
   readonly instanceId: string;
   readonly account: string;
   readonly #keys = new Map<string, AuthorityIssuerKey>();
+  readonly #liveUntil = new Map<string, number>();
   readonly #peers = new Map<string, CachedAuthority>();
   readonly #materials = new Map<string, CatalogMaterial | ProviderMaterial>();
   readonly #pending = new Map<string, Promise<CachedAuthority>>();
@@ -620,7 +621,7 @@ export class SessionAuthorityOwner {
     );
     if (
       this.#stopped ||
-      this.#keys.get(issuer.keyId)?.state !== "active" ||
+      this.#liveIssuer(issuer.keyId)?.state !== "active" ||
       verified.expiresAt <= this.#now()
     )
       throw new Error("Unavailable");
@@ -1113,7 +1114,7 @@ export class SessionAuthorityOwner {
   assertCurrent(entry: CachedAuthority): void {
     if (this.#stopped || this.#overloaded || !this.#mirrorCovered)
       throw new Error("authority owner unavailable");
-    const issuer = this.#keys.get(entry.authority.issuerKeyId);
+    const issuer = this.#liveIssuer(entry.authority.issuerKeyId);
     if (issuer?.state !== "active")
       throw new Error("issuer unavailable for live authority");
     assertSessionAuthorityHandleCurrentWasm(
@@ -1407,8 +1408,35 @@ export class SessionAuthorityOwner {
     return entry.value;
   }
 
+  /**
+   * Re-read each rotated-out key still inside its live overlap. Auth sends
+   * the issuer notice on revocation too, and a revoked key then stops
+   * authorizing live use at once instead of at its signed deadline.
+   */
+  async recheckRetiringIssuers(): Promise<void> {
+    for (const [keyId, until] of this.#liveUntil) {
+      if (until <= this.#now()) {
+        this.#liveUntil.delete(keyId);
+        continue;
+      }
+      // A failed read leaves the key to its signed deadline.
+      await this.#readIssuerMetadata({ kind: "issuerKey", keyId }, false).catch(
+        () => undefined,
+      );
+    }
+  }
+
+  /** A rotated-out key stays live until its signed deadline, as in the Rust owner. */
+  #liveIssuer(keyId: string): AuthorityIssuerKey | undefined {
+    const issuer = this.#keys.get(keyId);
+    return issuer?.state === "retired" &&
+      (this.#liveUntil.get(keyId) ?? 0) > this.#now()
+      ? { ...issuer, state: "active" }
+      : issuer;
+  }
+
   async #issuer(keyId: string): Promise<AuthorityIssuerKey> {
-    let issuer = this.#keys.get(keyId);
+    let issuer = this.#liveIssuer(keyId);
     if (!issuer) {
       issuer = await this.#forwardIssuer(keyId);
     }
@@ -1474,7 +1502,10 @@ export class SessionAuthorityOwner {
       throw new Error("issuer rotation budget exceeded");
     const existing = this.#keys.get(verified.successor.keyId);
     if (existing) throw new Error("issuer rotation conflict");
+    const retiredAt = verified.record.previousRetiredAt;
+    if (typeof retiredAt !== "number") throw new Error("invalid rotation");
     this.#keys.set(previous.keyId, { ...previous, state: "retired" });
+    this.#liveUntil.set(previous.keyId, retiredAt);
     this.#keys.set(verified.successor.keyId, verified.successor);
     this.#rotationSequence++;
     this.#authenticatedIssuerSequences.set(

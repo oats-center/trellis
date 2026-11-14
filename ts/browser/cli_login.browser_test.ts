@@ -67,7 +67,7 @@ async function runCli(
   return { code: status.code ?? 1, stdout, stderr };
 }
 
-test("CLI login authorizes independent runtime keys through one durable login", async () => {
+test("CLI login keeps one durable login that later commands connect with", async () => {
   await withTrellisRuntime(
     async (runtime) => {
       await runtime.ensureAdmin();
@@ -174,9 +174,9 @@ test("CLI login authorizes independent runtime keys through one durable login", 
         const login = jsonOutput(await stdout);
         assert(login.principalId, JSON.stringify(login));
 
-        // Every `whoami` run opens its own connection with a runtime key it
-        // generates locally and calls the deployment-bound Sessions.Me through the
-        // stored durable login, so both runs must authenticate the same user.
+        // Every `whoami` run opens its own connection, with the admission and
+        // runtime key the stored durable login kept, and calls the
+        // deployment-bound Sessions.Me, so both runs authenticate the same user.
         const first = await runCli(["--format", "json", "whoami"], configHome);
         assert.deepEqual(first.code, 0, first.stderr);
         assert.deepEqual(

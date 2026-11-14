@@ -1,5 +1,3 @@
-use std::io::{self, Write};
-
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use futures_util::TryStreamExt as _;
@@ -11,9 +9,7 @@ use trellis_rs::auth as authlib;
 use trellis_rs::generated::Client;
 use trellis_runtime_apis::types as auth_types;
 
-use crate::app::{
-    connect_authenticated_cli_client, generate_session_keypair, json_value_label, wire,
-};
+use crate::app::{connect_authenticated_cli_client, generate_session_keypair, wire};
 use crate::cli::*;
 use crate::output;
 
@@ -98,10 +94,19 @@ async fn service_updates(format: OutputFormat, id: &str) -> miette::Result<()> {
         return output::print_json(&json!({ "updates": updates }));
     }
     if updates.is_empty() {
-        println!("{id} has not submitted any updates.");
+        output::note(format!("{id} has not submitted any updates."));
     }
-    for update in &updates {
+    for (index, update) in updates.iter().enumerate() {
+        if index > 0 {
+            anstream::println!();
+        }
         print_service_update(update);
+    }
+    if updates
+        .iter()
+        .any(|update| update.state == auth_types::AuthServiceUpdateState::Pending)
+    {
+        output::next(&format!("trellis svc {id} approve"));
     }
     Ok(())
 }
@@ -111,20 +116,23 @@ fn print_service_update(update: &auth_types::AuthServiceUpdate) {
     let changes = &update.changes;
     let resource =
         |item: &auth_types::AuthServiceUpdateResource| format!("{} {}", item.kind, item.name);
-    println!(
-        "{}  {}  {}",
-        update.update_id, update.state, update.requested_at
-    );
-    let section = |title: &str, lines: Vec<String>| {
-        if !lines.is_empty() {
-            println!("  {title}");
-            for line in lines {
-                println!("    {line}");
-            }
+    let value = serde_json::to_value(update).unwrap_or_default();
+    let mut details = output::Details::new(format!("Update {}", output::field(&value, "updateId")))
+        .state("State", &output::field(&value, "state"))
+        .field("Participant", output::field(&value, "participantId"))
+        .time("Requested", &output::field(&value, "requestedAt"))
+        .time("Decided", &output::field(&value, "decidedAt"));
+    if update.state == auth_types::AuthServiceUpdateState::Pending {
+        if let Some(review_url) = &update.review_url {
+            details = details.field("Review", review_url);
         }
+    }
+    let section = |details: output::Details, title: &str, lines: Vec<String>| {
+        details.section(title).items(lines)
     };
-    section(
-        "Asks for:",
+    let details = section(
+        details,
+        "Asks for",
         changes
             .added_capabilities
             .iter()
@@ -157,8 +165,9 @@ fn print_service_update(update: &auth_types::AuthServiceUpdate) {
             )
             .collect(),
     );
-    section(
-        "Gives up:",
+    let details = section(
+        details,
+        "Gives up",
         changes
             .removed_capabilities
             .iter()
@@ -171,8 +180,9 @@ fn print_service_update(update: &auth_types::AuthServiceUpdate) {
             )
             .collect(),
     );
-    section(
-        "Provides:",
+    let details = section(
+        details,
+        "Provides",
         changes
             .removed_apis
             .iter()
@@ -185,11 +195,7 @@ fn print_service_update(update: &auth_types::AuthServiceUpdate) {
             )
             .collect(),
     );
-    if update.state == auth_types::AuthServiceUpdateState::Pending {
-        if let Some(review_url) = &update.review_url {
-            println!("  Review: {review_url}");
-        }
-    }
+    details.print();
 }
 
 async fn decide_service_update(
@@ -249,16 +255,17 @@ async fn decide_service_update(
     if output::is_json(format) {
         return output::print_json(&json!({ "update": response.update }));
     }
+    let name = output::strong(id);
     match response.update.state {
-        auth_types::AuthServiceUpdateState::Applied => {
-            println!("Approved. {id} connects with its new build now.")
-        }
-        auth_types::AuthServiceUpdateState::Rejected => {
-            println!("Rejected. {id} keeps its installed build.")
-        }
-        _ => println!(
-            "{id} changed since it submitted this update; it will submit again when it reconnects."
-        ),
+        auth_types::AuthServiceUpdateState::Applied => output::success(format!(
+            "Approved the update; {name} connects with its new build now"
+        )),
+        auth_types::AuthServiceUpdateState::Rejected => output::success(format!(
+            "Rejected the update; {name} keeps its installed build"
+        )),
+        _ => output::warning(format!(
+            "{name} changed since it submitted this update; it submits again when it reconnects"
+        )),
     }
     Ok(())
 }
@@ -417,15 +424,7 @@ async fn list_services(format: OutputFormat, args: &SvcListArgs) -> miette::Resu
             .try_collect::<Vec<_>>()
             .await
             .into_diagnostic()?;
-    if output::is_json(format) {
-        output::print_json(&json!({ "deployments": deployments }))?;
-        return Ok(());
-    }
-    print_value_table(
-        &serde_json::to_value(deployments).into_diagnostic()?,
-        &["deploymentId", "state", "title"],
-    )?;
-    Ok(())
+    print_deployments(format, DeploymentKind::Service, &deployments, args.disabled)
 }
 
 async fn list_devices(format: OutputFormat, args: &DevListArgs) -> miette::Result<()> {
@@ -451,15 +450,7 @@ async fn list_devices(format: OutputFormat, args: &DevListArgs) -> miette::Resul
             .try_collect::<Vec<_>>()
             .await
             .into_diagnostic()?;
-    if output::is_json(format) {
-        output::print_json(&json!({ "deployments": deployments }))?;
-        return Ok(());
-    }
-    print_value_table(
-        &serde_json::to_value(deployments).into_diagnostic()?,
-        &["deploymentId", "state", "title"],
-    )?;
-    Ok(())
+    print_deployments(format, DeploymentKind::Device, &deployments, args.disabled)
 }
 
 async fn show_service(format: OutputFormat, id: &str) -> miette::Result<()> {
@@ -501,7 +492,14 @@ async fn create_service(
         })
         .await
         .map_err(shared_api_hint)?;
-    print_deployment_result(format, "service deployment created", &response.deployment)
+    print_deployment_result(
+        format,
+        "Created",
+        DeploymentKind::Service,
+        &response.deployment,
+    )?;
+    output::next(&format!("trellis svc {id} provision"));
+    Ok(())
 }
 
 /// Create a claim the first service to connect with the generated seed fills
@@ -523,14 +521,19 @@ async fn create_service_claim(format: OutputFormat, id: &str) -> miette::Result<
     if output::is_json(format) {
         return output::print_json(&json!({ "claim": response.claim, "instanceSeed": seed }));
     }
-    output::print_success("service claim created");
-    let claim = response.claim.claim_id.to_string();
-    println!("claimId={claim}");
-    output::print_info(&format!("instanceSeed={seed}"));
-    output::print_info(&format!(
-        "Give the seed to the service. When it connects it asks for what it needs; \
-        review and approve that with `trellis svc {claim} approve`."
+    output::success(format!(
+        "Created a claim for service {}",
+        output::strong(id)
     ));
+    output::Details::untitled()
+        .field("Claim", response.claim.claim_id)
+        .field("Instance seed", &seed)
+        .print();
+    output::not_kept(
+        "instance seed",
+        "Give it to the service; when it connects it asks for what it needs.",
+    );
+    output::next(&format!("trellis svc {id} updates"));
     Ok(())
 }
 
@@ -568,7 +571,14 @@ async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> 
         })
         .await
         .map_err(shared_api_hint)?;
-    print_deployment_result(format, "device deployment created", &response.deployment)
+    print_deployment_result(
+        format,
+        "Created",
+        DeploymentKind::Device,
+        &response.deployment,
+    )?;
+    output::next(&format!("trellis dev {id} provision"));
+    Ok(())
 }
 
 async fn apply_contract(
@@ -614,7 +624,7 @@ async fn apply_contract(
         })
         .await
         .map_err(shared_api_hint)?;
-    print_deployment_result(format, "deployment package applied", &response.deployment)
+    print_deployment_result(format, "Applied the package to", kind, &response.deployment)
 }
 
 async fn toggle_service(format: OutputFormat, id: &str, enable: bool) -> miette::Result<()> {
@@ -642,12 +652,12 @@ async fn toggle_deployment(
     } else {
         auth.deployments_disable(&request).await.into_diagnostic()?
     };
-    if output::is_json(format) {
-        output::print_json(&json!({"deployment": response.deployment}))?;
-    } else {
-        print_toggle_text(kind, id, enable);
-    }
-    Ok(())
+    print_deployment_result(
+        format,
+        if enable { "Enabled" } else { "Disabled" },
+        kind,
+        &response.deployment,
+    )
 }
 
 async fn toggle_device(format: OutputFormat, id: &str, enable: bool) -> miette::Result<()> {
@@ -662,11 +672,12 @@ async fn remove_deployment(
 ) -> miette::Result<()> {
     miette::ensure!(
         !output::is_json(format) || args.force,
-        "use -f with --format json to skip the interactive removal review"
+        help = "Pass -f to remove it without being asked.",
+        "refusing to remove {} without confirmation in JSON mode",
+        ref_label(kind, id)
     );
-    let label = ref_label(kind, id);
-    if !output::is_json(format) && !args.force && !prompt_for_typed_identifier(&label)? {
-        return Err(miette::miette!("deployment removal cancelled"));
+    if !args.force {
+        output::confirm_typed(id, "remove", "-f")?;
     }
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let current = find_deployment(&connected, id, kind).await?;
@@ -681,7 +692,18 @@ async fn remove_deployment(
             })
             .await
             .into_diagnostic()?;
-    print_remove_result(format, kind, id, serde_json::to_value(response).is_ok())
+    output::emit(
+        format,
+        &json!({ "success": serde_json::to_value(response).is_ok(), "deploymentId": id }),
+        |_| {
+            output::success(format!(
+                "Removed {} {}",
+                kind_noun(kind),
+                output::strong(id)
+            ));
+            Ok(())
+        },
+    )
 }
 
 async fn service_instances(
@@ -835,101 +857,112 @@ async fn provision_device(
     print_device_provision_result(format, &response.instance, &root_secret)
 }
 
+fn kind_noun(kind: DeploymentKind) -> &'static str {
+    match kind {
+        DeploymentKind::Service => "service",
+        DeploymentKind::Device => "device",
+    }
+}
+
+fn print_deployments<T: serde::Serialize>(
+    format: OutputFormat,
+    kind: DeploymentKind,
+    deployments: &[T],
+    with_disabled: bool,
+) -> miette::Result<()> {
+    output::emit(format, &json!({ "deployments": deployments }), |value| {
+        let noun = kind_noun(kind);
+        output::table(
+            output::list(value, "deployments"),
+            &[
+                output::col("Name", "title"),
+                output::state_col("State", "state"),
+                output::col("Participant", "participantId"),
+                output::muted("ID", "deploymentId"),
+            ],
+            &if with_disabled {
+                format!("No {noun}s yet.")
+            } else {
+                format!("No enabled {noun}s. Add --disabled to include the rest.")
+            },
+        )?;
+        if output::list(value, "deployments").is_empty() && with_disabled {
+            output::next(match kind {
+                DeploymentKind::Service => "trellis svc <NAME> create --source <DIR>",
+                DeploymentKind::Device => "trellis dev <NAME> create --source <DIR>",
+            });
+        }
+        Ok(())
+    })
+}
+
 fn print_deployment_show_result<T: serde::Serialize>(
     format: OutputFormat,
     kind: DeploymentKind,
     deployment: &T,
 ) -> miette::Result<()> {
-    if output::is_json(format) {
-        output::print_json(&json!({ "deployment": deployment }))?;
-        return Ok(());
-    }
-
-    let value = serde_json::to_value(deployment).into_diagnostic()?;
-    output::print_info(&format!(
-        "ref={}",
-        ref_label(kind, &value_string(&value, "deploymentId"))
-    ));
-    for field in [
-        "title",
-        "state",
-        "revision",
-        "participantId",
-        "implementationDigest",
-        "selection",
-    ] {
-        print_value_field(&value, field);
-    }
-    Ok(())
+    output::emit(format, &json!({ "deployment": deployment }), |value| {
+        print_deployment(kind, &value["deployment"]);
+        Ok(())
+    })
 }
 
-fn print_toggle_text(kind: DeploymentKind, id: &str, enable: bool) {
-    let state = if enable { "enabled" } else { "disabled" };
-    output::print_success(&format!("{state} deployment"));
-    output::print_info(&format!("ref={}", ref_label(kind, id)));
-}
-
-fn print_remove_result(
-    format: OutputFormat,
-    kind: DeploymentKind,
-    id: &str,
-    success: bool,
-) -> miette::Result<()> {
-    if output::is_json(format) {
-        output::print_json(&json!({ "success": success, "deploymentId": id }))?;
-        return Ok(());
-    }
-
-    if success {
-        output::print_success("removed deployment");
-    } else {
-        output::print_info("no matching deployment removed");
-    }
-    output::print_info(&format!("ref={}", ref_label(kind, id)));
-    Ok(())
+fn print_deployment(kind: DeploymentKind, deployment: &Value) {
+    output::Details::new(output::field(deployment, "title"))
+        .field("Kind", kind_noun(kind))
+        .field("ID", output::field(deployment, "deploymentId"))
+        .state("State", &output::field(deployment, "state"))
+        .field("Participant", output::field(deployment, "participantId"))
+        .field("Revision", output::field(deployment, "revision"))
+        .field("Digest", output::field(deployment, "implementationDigest"))
+        .section("Required capabilities")
+        .items(
+            output::list(&deployment["selection"], "requiredCapabilities")
+                .iter()
+                .map(|id| output::field(id, "")),
+        )
+        .section("Optional capabilities")
+        .items(
+            output::list(&deployment["selection"], "optionalCapabilities")
+                .iter()
+                .map(|id| output::field(id, "")),
+        )
+        .print();
 }
 
 fn print_service_instances_result<T: serde::Serialize>(
     format: OutputFormat,
     instances: T,
 ) -> miette::Result<()> {
-    if output::is_json(format) {
-        output::print_json(&json!({ "instances": instances }))?;
-        return Ok(());
-    }
-
-    print_value_table(
-        &serde_json::to_value(instances).into_diagnostic()?,
-        &[
-            "instanceId",
-            "deploymentId",
-            "principal.enabled",
-            "principal.title",
-            "revision",
-        ],
-    )
+    output::emit(format, &json!({ "instances": instances }), |value| {
+        output::table(
+            output::list(value, "instances"),
+            &[
+                output::col("Name", "principal.title"),
+                output::state_col("Enabled", "principal.enabled"),
+                output::muted("ID", "instanceId"),
+            ],
+            "No instances. Provision one with `provision`.",
+        )
+    })
 }
 
 fn print_device_instances_result<T: serde::Serialize>(
     format: OutputFormat,
     instances: T,
 ) -> miette::Result<()> {
-    if output::is_json(format) {
-        output::print_json(&json!({ "instances": instances }))?;
-        return Ok(());
-    }
-
-    print_value_table(
-        &serde_json::to_value(instances).into_diagnostic()?,
-        &[
-            "instanceId",
-            "deploymentId",
-            "principal.enabled",
-            "principal.title",
-            "identityPublicKey",
-            "revision",
-        ],
-    )
+    output::emit(format, &json!({ "instances": instances }), |value| {
+        output::table(
+            output::list(value, "instances"),
+            &[
+                output::col("Name", "principal.title"),
+                output::state_col("Enabled", "principal.enabled"),
+                output::muted("ID", "instanceId"),
+                output::muted("Identity key", "identityPublicKey"),
+            ],
+            "No devices are provisioned. Provision one with `provision`.",
+        )
+    })
 }
 
 fn print_service_provision_result<T: serde::Serialize>(
@@ -939,30 +972,33 @@ fn print_service_provision_result<T: serde::Serialize>(
     reused: bool,
 ) -> miette::Result<()> {
     if output::is_json(format) {
-        output::print_json(&json!({
+        return output::print_json(&json!({
             "instance": instance,
             "generatedSeed": generated_seed.is_some(),
             "instanceSeed": generated_seed,
             "reused": reused,
-        }))?;
-        return Ok(());
+        }));
     }
-
-    output::print_success(if reused {
-        "service instance already exists"
-    } else {
-        "provisioned service instance"
-    });
     let value = serde_json::to_value(instance).into_diagnostic()?;
-    print_value_field(&value, "instanceId");
-    print_value_field(&value, "deploymentId");
-    print_value_field(&value, "identityPublicKey");
-    if let Some(seed) = generated_seed {
-        output::print_info(&format!("instanceSeed={seed}"));
+    let name = output::strong(output::field(&value, "principal.title"));
+    if reused {
+        output::unchanged(format!("{name} already has an instance"));
+    } else {
+        output::success(format!("Provisioned an instance of {name}"));
+    }
+    output::Details::untitled()
+        .field("Instance", output::field(&value, "instanceId"))
+        .field("Instance seed", generated_seed.unwrap_or_default())
+        .print();
+    if generated_seed.is_some() {
+        output::not_kept(
+            "instance seed",
+            "The service connects with it as this instance.",
+        );
     } else if reused {
-        output::print_info(
-            "Trellis cannot recover the original private seed; reuse the existing \
-            provisioned identity",
+        output::hint(
+            "Trellis can't recover its seed. Keep using the one you have, or pass --new for \
+            another instance.",
         );
     }
     Ok(())
@@ -974,74 +1010,40 @@ fn print_device_provision_result<T: serde::Serialize>(
     root_secret: &str,
 ) -> miette::Result<()> {
     if output::is_json(format) {
-        output::print_json(&json!({ "instance": instance, "rootSecret": root_secret }))?;
-        return Ok(());
+        return output::print_json(&json!({ "instance": instance, "rootSecret": root_secret }));
     }
-
-    output::print_success("provisioned device instance");
     let value = serde_json::to_value(instance).into_diagnostic()?;
-    print_value_field(&value, "instanceId");
-    print_value_field(&value, "deploymentId");
-    print_value_field(&value, "identityPublicKey");
-    output::print_info(&format!("rootSecret={root_secret}"));
+    output::success(format!(
+        "Provisioned device {}",
+        output::strong(output::field(&value, "principal.title"))
+    ));
+    output::Details::untitled()
+        .field("Instance", output::field(&value, "instanceId"))
+        .field("Root secret", root_secret)
+        .print();
+    output::not_kept(
+        "root secret",
+        "Load it onto the device; it derives the device's identity from it.",
+    );
     Ok(())
-}
-
-fn print_value_table(value: &Value, columns: &[&str]) -> miette::Result<()> {
-    let rows = value
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .map(|item| {
-                    columns
-                        .iter()
-                        .map(|column| value_string(item, column))
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    println!("{}", output::table(columns, rows));
-    Ok(())
-}
-
-fn print_value_field(value: &Value, field: &str) {
-    let rendered = value_string(value, field);
-    if !rendered.is_empty() {
-        output::print_info(&format!("{field}={rendered}"));
-    }
-}
-
-fn value_string(value: &Value, field: &str) -> String {
-    let value = field
-        .split('.')
-        .try_fold(value, |value, field| value.get(field));
-    match value {
-        Some(Value::String(value)) => value.clone(),
-        Some(Value::Bool(value)) => value.to_string(),
-        Some(Value::Number(value)) => value.to_string(),
-        Some(Value::Array(values)) => values
-            .iter()
-            .map(json_value_label)
-            .collect::<Vec<_>>()
-            .join(","),
-        Some(value @ Value::Object(_)) => json_value_label(value),
-        Some(Value::Null) | None => String::new(),
-    }
 }
 
 fn print_deployment_result<T: serde::Serialize>(
     format: OutputFormat,
-    message: &str,
+    verb: &str,
+    kind: DeploymentKind,
     deployment: &T,
 ) -> miette::Result<()> {
-    if output::is_json(format) {
-        output::print_json(&json!({ "deployment": deployment }))?;
-    } else {
-        output::print_success(message);
-    }
-    Ok(())
+    output::emit(format, &json!({ "deployment": deployment }), |value| {
+        let deployment = &value["deployment"];
+        output::success(format!(
+            "{verb} {} {} (revision {})",
+            kind_noun(kind),
+            output::strong(output::field(deployment, "title")),
+            output::field(deployment, "revision")
+        ));
+        Ok(())
+    })
 }
 
 fn ref_label(kind: DeploymentKind, id: &str) -> String {
@@ -1050,14 +1052,6 @@ fn ref_label(kind: DeploymentKind, id: &str) -> String {
         DeploymentKind::Device => "dev",
     };
     format!("{prefix}/{id}")
-}
-
-fn prompt_for_typed_identifier(identifier: &str) -> miette::Result<bool> {
-    print!("Type {identifier} to confirm: ");
-    io::stdout().flush().into_diagnostic()?;
-    let mut line = String::new();
-    io::stdin().read_line(&mut line).into_diagnostic()?;
-    Ok(line.trim() == identifier)
 }
 
 fn cli_idempotency_key() -> String {

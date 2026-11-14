@@ -2851,17 +2851,25 @@ async fn open_generation(
             .promote_locked(&transition, &prepared.context_digest, &prepared.instance)?;
     }
     // Routes name the providers that existed at admission. Auth announces one
-    // added since, and renewing adopts the route to it at once.
+    // added since, and renewing adopts the route to it at once. Auth also
+    // announces an issuer key rotation or revocation: renewing moves this
+    // session onto authority the current key signed, and the re-check ends a
+    // revoked key's overlap.
     for subject in generation
         .admitted_policy
         .subscribe_allow
         .iter()
-        .filter(|subject| subject.starts_with(trellis_protocol::PROVIDERS_NOTICE_SUBJECT_PREFIX))
+        .filter(|subject| {
+            subject.starts_with(trellis_protocol::PROVIDERS_NOTICE_SUBJECT_PREFIX)
+                || subject.as_str() == trellis_protocol::ISSUER_NOTICE_SUBJECT
+        })
     {
         let Ok(mut notices) = generation.nats.subscribe(subject.clone()).await else {
             continue;
         };
         let contexts = Arc::downgrade(&inner.contexts);
+        let issuers = subject.as_str() == trellis_protocol::ISSUER_NOTICE_SUBJECT;
+        let transport = generation.nats.clone();
         tokio::spawn(async move {
             // The subscription ends with this generation's connection.
             while futures_util::StreamExt::next(&mut notices).await.is_some() {
@@ -2869,6 +2877,9 @@ async fn open_generation(
                     return;
                 };
                 contexts.request_refresh();
+                if issuers {
+                    contexts.recheck_retiring_issuers(&transport).await;
+                }
             }
         });
     }

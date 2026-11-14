@@ -446,6 +446,8 @@ pub(super) fn evaluate(
                 JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
                 AND s.generation=a.generation \
                 AND s.accepted_revision=a.accepted_revision \
+                AND s.issuer_key_id=(SELECT key_id FROM auth_authorization_issuers \
+                WHERE is_current=1) \
                 WHERE a.api_id=?1 AND a.generation=?2",
                 params![provider.api_id, provider.generation.get()],
                 |row| {
@@ -500,6 +502,8 @@ fn grant(
         JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
         AND s.generation=a.generation \
         AND s.accepted_revision=a.accepted_revision \
+        AND s.issuer_key_id=(SELECT key_id FROM auth_authorization_issuers \
+        WHERE is_current=1) \
         WHERE c.capability_id=?1 \
         AND c.state='active'",
         [id],

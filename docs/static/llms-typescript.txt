@@ -203,7 +203,7 @@ RPC `RequestOpts.signal` cancels the caller's wait with
 `trellis.request.cancelled`, including after publication; an elapsed deadline
 reports `trellis.request.timeout`. Neither undoes accepted work.
 `TransportError` code `trellis.request.unavailable` with `noResponders: true`
-means the target service is not responding; restore reachability and retry
+means the target service did not come back within the bounded wait; restore reachability and retry
 observation of the same work rather than starting replacement business work.
 
 ## Events And Live

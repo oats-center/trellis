@@ -23,13 +23,16 @@ fn source(rpc: &str) -> String {
 }
 
 fn run(root: &Path, check: bool) -> miette::Result<()> {
-    generate::run(&GenerateArgs {
-        watch: false,
-        check,
-        project: ProjectRootArgs {
-            root: root.to_path_buf(),
+    generate::run(
+        OutputFormat::Text,
+        &GenerateArgs {
+            watch: false,
+            check,
+            project: ProjectRootArgs {
+                root: root.to_path_buf(),
+            },
         },
-    })
+    )
 }
 
 #[tokio::test]

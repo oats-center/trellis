@@ -5,6 +5,7 @@ import {
   type Subscription,
 } from "@nats-io/nats-core";
 import { TransportError } from "../errors/TransportError.ts";
+import { SERVICE_AVAILABILITY_WAIT_MS } from "../session/wire.ts";
 import { encodeEventSubjectParameterToken } from "../helpers.ts";
 import {
   liveConstants,
@@ -164,18 +165,34 @@ async function request(
     );
   }
   const sub = host.nats.subscribe(reply);
+  const replies = sub[Symbol.asyncIterator]();
+  // The opening is sent again only when the broker reports that no provider
+  // received it, as for requests.
+  const waitUntil =
+    clock.nowMs() + Math.min(SERVICE_AVAILABILITY_WAIT_MS, remaining);
+  let pause = 100;
   try {
-    host.nats.publish(subject, payload, {
-      headers: proofHeaders(proof, host.sessionKey),
-      reply,
-    });
-    const received = await withTimeout(
-      clock,
-      Math.min(host.timeoutMs, remaining),
-      sub[Symbol.asyncIterator]()
-        .next()
-        .then((next) => (next.done ? undefined : next.value)),
-    );
+    let received: Msg | undefined;
+    for (;;) {
+      host.nats.publish(subject, payload, {
+        headers: proofHeaders(proof, host.sessionKey),
+        reply,
+      });
+      received = await withTimeout(
+        clock,
+        Math.min(host.timeoutMs, Math.max(1, deadlineMs - clock.nowMs())),
+        replies.next().then((next) => (next.done ? undefined : next.value)),
+      );
+      if (received?.headers?.code !== 503 || clock.nowMs() + pause >= waitUntil)
+        break;
+      await new Promise<void>((resolve) => {
+        const clear = clock.scheduleAt(clock.nowMs() + pause, () => {
+          clear();
+          resolve();
+        });
+      });
+      pause = Math.min(pause * 2, 1000);
+    }
     if (!received) {
       throw new LiveStreamError("setup_timeout", "live request timed out");
     }

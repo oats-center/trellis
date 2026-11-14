@@ -311,6 +311,14 @@ Back up the issuer seed and the Auth database's sibling
 the database and the OAuth storage key. Restart loads the database-current key
 and fails closed on missing custody.
 
+A rotation interrupts no session: SDKs accept the old key for live use for one
+authority lifetime, and every session renews onto the new key when Auth
+announces the rotation. `Issuers.Revoke` is for a compromised key. It ends
+that overlap at once and retires every user session holding authority the key
+signed. A service or device session that already renewed onto the new key
+keeps running, because it signs in with its own identity key. Revoke an old key
+after the rotation has settled, not in place of rotating.
+
 #### Administrator bootstrap
 
 Fresh startup creates the protected administrator and accepted built-in authority
@@ -335,6 +343,17 @@ require selection and consent: administrator status is not blanket app
 authority.
 
 #### Operator CLI
+
+The `trellis` CLI writes what a command returns (tables, records, secrets) to
+stdout and its status lines (`✓` done, `•` unchanged, `!` warning), hints, and
+next-step commands to stderr. Lists are aligned tables on a terminal and
+headerless tab-separated rows with raw values when piped, for `cut` and `awk`.
+`--format json` writes one JSON value to stdout instead and silences status
+lines, and is the interface for scripts; the human layout may change between
+releases. Color follows the terminal, `NO_COLOR` and `CLICOLOR_FORCE`. A secret
+the CLI prints, such as an instance seed, root secret, or setup code, is shown
+once and not kept. `svc|dev <name> remove` asks for the name unless given `-f`,
+and refuses without a terminal or with `--format json` unless given `-f`.
 
 `trellis clients list|get|put|disable|delete` manages public OAuth
 registrations, including exact loopback browser redirects. `put` reads generated
@@ -872,9 +891,12 @@ integrated on this branch.
 
 RPC cancellation stops the caller's wait, not work already accepted by the
 service; neither cancellation nor an elapsed deadline undoes accepted work. Use
-Operation cancellation for business work. A no-responders reply means the target
-service is not currently reachable, including during a restart; it is not a
-malformed offer, a declared error, or a failed Operation.
+Operation cancellation for business work. A no-responders reply means no
+provider received the request, so the SDKs send the same signed request, Live
+opening included, again for up to five seconds within its deadline: a provider
+reconnecting is briefly absent. A no-responders failure after that means the
+target service is not currently reachable; it is not a malformed offer, a
+declared error, or a failed Operation.
 
 Declare expected RPC and Operation errors in IDL to obtain typed generated error
 handling. Runtime validation and transport failures remain distinct from those
@@ -1418,7 +1440,7 @@ RPC `RequestOpts.signal` cancels the caller's wait with
 `trellis.request.cancelled`, including after publication; an elapsed deadline
 reports `trellis.request.timeout`. Neither undoes accepted work.
 `TransportError` code `trellis.request.unavailable` with `noResponders: true`
-means the target service is not responding; restore reachability and retry
+means the target service did not come back within the bounded wait; restore reachability and retry
 observation of the same work rather than starting replacement business work.
 
 ### Events And Live
@@ -1845,7 +1867,12 @@ persistent DPoP key and rotating refresh family; an operating-system lock spans
 read, exchange, and commit across processes. Recovery is marked before exchange
 so a lost response cannot trigger replay of a spent refresh token. Platforms
 without the owner-only adapter must supply an explicit secure-store adapter. The
-native CLI uses the same custody.
+native CLI uses the same custody. Custody also keeps the latest admission and
+its runtime key: a tool run as many short processes calls
+`NativeOAuthClient::resume_retained()`, which reuses it with no HTTP request
+while at least 60 seconds remain and otherwise resumes normally. When a
+connection with a reused admission (`session.is_retained()`) is refused, open
+the client again and call `resume()`.
 
 Native OAuth renewal leases the current maintenance transport after HTTP
 refresh and retains it through signer lookup and verified authority promotion;
@@ -1878,7 +1905,8 @@ Argument and result types come from the generated crate; every model carries an
 
 Exact method and model names come from the generated crate. Match generated
 declared-error variants directly; transport and unknown remote failures remain
-distinct. Native no-responder replies become `ServiceUnavailableError`, exposed
+distinct. Native no-responder replies that persist past the bounded wait become
+`ServiceUnavailableError`, exposed
 through `CallError::ServiceUnavailable` or
 `TrellisClientError::ServiceUnavailable`. Generated cursor-paginated RPCs add
 lazy fallible page/item streams; a missing `next_cursor` is the sole end signal.

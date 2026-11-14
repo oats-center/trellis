@@ -147,20 +147,36 @@ pub(crate) async fn open_client_session(
             .await
             .map_err(|_| TrellisClientError::Timeout)?
             .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
-    tokio::time::timeout_at(
-        step_timeout(),
-        lease
-            .nats()
-            .publish_with_reply_and_headers(subject, reply, headers, open.body.clone()),
-    )
-    .await
-    .map_err(|_| TrellisClientError::Timeout)?
-    .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
-
-    let response = tokio::time::timeout_at(step_timeout(), subscriber.next())
+    // The opening is sent again only when the broker reports that no provider
+    // received it, as for requests.
+    let wait_until = tokio::time::Instant::now() + crate::client::SERVICE_AVAILABILITY_WAIT;
+    let mut pause = std::time::Duration::from_millis(100);
+    let response = loop {
+        tokio::time::timeout_at(
+            step_timeout(),
+            lease.nats().publish_with_reply_and_headers(
+                subject.clone(),
+                reply.clone(),
+                headers.clone(),
+                open.body.clone(),
+            ),
+        )
         .await
         .map_err(|_| TrellisClientError::Timeout)?
-        .ok_or(TrellisClientError::Timeout)?;
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+        let response = tokio::time::timeout_at(step_timeout(), subscriber.next())
+            .await
+            .map_err(|_| TrellisClientError::Timeout)?
+            .ok_or(TrellisClientError::Timeout)?;
+        let retry_at = tokio::time::Instant::now() + pause;
+        if response.status != Some(async_nats::StatusCode::NO_RESPONDERS)
+            || retry_at >= wait_until.min(deadline)
+        {
+            break response;
+        }
+        tokio::time::sleep(pause).await;
+        pause = (pause * 2).min(std::time::Duration::from_secs(1));
+    };
 
     verify_offer(
         provider,
@@ -1147,7 +1163,9 @@ fn verify_provider_frame(
     .is_ok()
 }
 
-static LIVE_INBOX_COUNTER: AtomicU64 = AtomicU64::new(1);
+/// One counter for every Live reply inbox under the client's prefix, openings
+/// and controls alike, so no control reply can reach a later opening.
+pub(crate) static LIVE_INBOX_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(test)]
 mod tests {

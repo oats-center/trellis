@@ -14,12 +14,19 @@ pub(super) fn run_upgrade(format: OutputFormat, command: UpgradeCommand) -> miet
     }
 
     if check.needs_update {
-        output::print_info(&format!(
-            "update available: {} -> {}",
-            check.current_version, check.latest_version
+        output::note(format!(
+            "{} {} is available (this is {})",
+            output::strong("trellis"),
+            output::strong(&check.latest_version),
+            check.current_version
         ));
+        output::next(if command.prerelease {
+            "trellis upgrade --prerelease"
+        } else {
+            "trellis upgrade"
+        });
     } else {
-        output::print_info(&format!("up to date: {}", check.current_version));
+        output::unchanged(format!("trellis {} is up to date", check.current_version));
     }
     Ok(())
 }
@@ -33,10 +40,10 @@ fn install_command(format: OutputFormat, channel: ReleaseChannel) -> miette::Res
 
     match result {
         UpdateResult::UpToDate { version } => {
-            output::print_info(&format!("up to date: {version}"));
+            output::unchanged(format!("trellis {version} is up to date"));
         }
         UpdateResult::Updated { version } => {
-            output::print_success(&format!("updated trellis to {version}"));
+            output::success(format!("Updated trellis to {}", output::strong(version)));
         }
     }
     Ok(())

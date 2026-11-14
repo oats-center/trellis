@@ -71,7 +71,8 @@ async fn stopped_provider_is_unavailable_and_same_operation_can_be_observed_afte
     // retires on its own task by draining its subscriptions, and a request the
     // broker delivered before that drain is still answered rather than left
     // to time out. So wait, within a bound, for the provider to stop serving.
-    let rpc = tokio::time::timeout(Duration::from_secs(10), async {
+    // Each call that finds no provider first waits up to five seconds for one.
+    let rpc = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             match api.echo(&input).await {
                 Ok(_) => tokio::time::sleep(Duration::from_millis(50)).await,
@@ -99,38 +100,35 @@ async fn stopped_provider_is_unavailable_and_same_operation_can_be_observed_afte
         watch,
         TrellisClientError::ServiceUnavailable(ServiceUnavailableError)
     ));
-    let mut service = ProviderParticipant::connect(identity.connect_options())
-        .await
-        .unwrap();
-    let handler_calls = Arc::clone(&calls);
-    {
-        let mut provider = Provider::new(&mut service);
-        let mut api = provider.trellis_test_fixture_echo_v1();
-        api.register_echo(|_context, input| async move { Ok(input) });
-        api.register_silent(move |_context, input, operation| {
-            let calls = Arc::clone(&handler_calls);
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                operation.complete(input).await?;
-                Ok(())
-            }
-        });
-    }
-    let task = tokio::spawn(async move { service.run().await });
-    // Connection bootstrap precedes route subscription. Await real serving
-    // readiness through the ordinary RPC, not an artificial server-ready hook.
-    let echo = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match api.echo(&input).await {
-                Err(CallError::ServiceUnavailable(_)) => tokio::task::yield_now().await,
-                result => break result,
-            }
+    // A call made while the provider is away waits for it to come back, as
+    // when a provider reconnects: the provider stays away for a moment after
+    // the call is sent, then connects and subscribes its routes.
+    let (echo, watch, task) = tokio::join!(api.echo(&input), operation.live(), async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut service = ProviderParticipant::connect(identity.connect_options())
+            .await
+            .unwrap();
+        let handler_calls = Arc::clone(&calls);
+        {
+            let mut provider = Provider::new(&mut service);
+            let mut api = provider.trellis_test_fixture_echo_v1();
+            api.register_echo(|_context, input| async move { Ok(input) });
+            api.register_silent(move |_context, input, operation| {
+                let calls = Arc::clone(&handler_calls);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    operation.complete(input).await?;
+                    Ok(())
+                }
+            });
         }
-    })
-    .await
-    .expect("returned provider begins serving")
-    .expect("returned provider answers Echo");
-    assert_eq!(echo.value, input.value);
+        tokio::spawn(async move { service.run().await })
+    });
+    assert_eq!(
+        echo.expect("returned provider answers Echo").value,
+        input.value
+    );
+    drop(watch.expect("returned provider opens the observation"));
     let returned = tokio::time::timeout(Duration::from_secs(20), operation.wait())
         .await
         .unwrap()

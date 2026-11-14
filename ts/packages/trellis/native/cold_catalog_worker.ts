@@ -19,7 +19,6 @@ const input: {
   sessionPublicKey: string;
   apiId: string;
   action: CatalogActionIdentity;
-  historicalKeyId: string;
   historicalRotation: string;
   forwardRotation: string;
   successorTrust: RuntimeAuthorizationTrust;
@@ -43,7 +42,7 @@ try {
   try {
     const catalog = await own.authenticatedCatalog(input.apiId);
     assert.ok(catalog);
-    assert.equal(catalog.issuerKeyId, input.historicalKeyId);
+    assert.equal(catalog.issuerKeyId, input.trust.issuer.keyId);
     await own.authorize(input.apiId, input.action);
     const retained = owner.trustForCredential(input.trust);
     assert.deepEqual(retained, input.trust);
@@ -64,7 +63,7 @@ try {
     );
     console.log(
       JSON.stringify({
-        historicalCatalogAuthorized: true,
+        currentCatalogAuthorized: true,
         historicalRotationRejected: true,
         forwardRotationAccepted: true,
         trust: owner.trustSnapshot,

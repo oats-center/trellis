@@ -1,5 +1,6 @@
 //! Native Trellis package generation and offline filesystem watch orchestration.
 
+use crate::output;
 use std::{
     collections::BTreeSet,
     fs,
@@ -16,14 +17,53 @@ use miette::{miette, IntoDiagnostic, Result};
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
 
 /// Run native IDL generation once or in watch mode.
-pub fn run(args: &GenerateArgs) -> Result<()> {
+pub fn run(format: crate::cli::OutputFormat, args: &GenerateArgs) -> Result<()> {
     let root = args.project.root.canonicalize().into_diagnostic()?;
     if args.watch {
         let manifest = read_manifest(&root.join("trellis.toml"))?;
         output_paths(&root, &manifest)?;
-        watch(&root)
+        return watch(&root);
+    }
+    generate_once(&root, args.check)?;
+    let manifest = read_manifest(&root.join("trellis.toml"))?;
+    let outputs = output_paths(&root, &manifest)?;
+    if output::is_json(format) {
+        return output::print_json(&serde_json::json!({
+            "outputs": outputs
+                .iter()
+                .map(|(language, path)| serde_json::json!({
+                    "language": language,
+                    "path": path,
+                }))
+                .collect::<Vec<_>>(),
+            "checked": args.check,
+        }));
+    }
+    report_outputs(&root, &outputs, args.check);
+    Ok(())
+}
+
+/// Say which outputs a generation wrote or checked, relative to the project.
+fn report_outputs(root: &Path, outputs: &[(&'static str, PathBuf)], check: bool) {
+    if outputs.is_empty() {
+        output::warning(
+            "Nothing to generate: the project has no Cargo.toml or package.json, \
+            and trellis.toml names no [generate] outputs",
+        );
+        return;
+    }
+    let listed = outputs
+        .iter()
+        .map(|(language, path)| {
+            let path = path.strip_prefix(root).unwrap_or(path);
+            format!("{language} in {}", path.display())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if check {
+        output::success(format!("Generated code is up to date ({listed})"));
     } else {
-        generate_once(&root, args.check).map(|_| ())
+        output::success(format!("Generated {listed}"));
     }
 }
 
@@ -410,19 +450,29 @@ fn watch(root: &Path) -> Result<()> {
         .into_diagnostic()?;
     watched.insert(root.to_path_buf());
     refresh_watch_roots(&mut debouncer, root, &mut watched);
-    if let Err(error) = generate_once(root, false) {
-        eprintln!("{error:?}");
-    }
+    let generate = || match generate_once(root, false) {
+        Ok(_) => {
+            if let Ok(outputs) = read_manifest(&root.join("trellis.toml"))
+                .and_then(|manifest| output_paths(root, &manifest))
+            {
+                report_outputs(root, &outputs, false);
+            }
+        }
+        Err(error) => eprintln!("{error:?}"),
+    };
+    generate();
+    output::hint(format!(
+        "Watching {} for changes; press Ctrl-C to stop.",
+        root.display()
+    ));
     while let Ok(events) = receiver.recv() {
         match events {
             Ok(events) if events.iter().any(|event| relevant(&event.path)) => {
                 refresh_watch_roots(&mut debouncer, root, &mut watched);
-                if let Err(error) = generate_once(root, false) {
-                    eprintln!("{error:?}");
-                }
+                generate();
             }
             Ok(_) => {}
-            Err(error) => eprintln!("{error}"),
+            Err(error) => output::warning(format!("watching failed: {error}")),
         }
     }
     Ok(())

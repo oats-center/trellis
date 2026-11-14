@@ -346,10 +346,18 @@ fn session_scope(scope: &EnforcementScope) -> (&'static str, Option<&str>) {
             WHERE deployment_id=?1)",
             Some(key),
         ),
+        // A user session may have been admitted with an admission the key
+        // signed, so any authority from it retires the session. A service or
+        // device admits with its own key, which the issuer key cannot forge, so
+        // only current authority from the key does.
         EnforcementScope::Issuer(key) => (
             "EXISTS(SELECT 1 FROM auth_session_authorities a \
             WHERE a.authorization_session_id=s.authorization_session_id \
-            AND a.issuer_key_id=?1)",
+            AND a.issuer_key_id=?1) \
+            AND (s.credential_kind='oauthGrant' \
+            OR (SELECT a.issuer_key_id FROM auth_session_authorities a \
+            WHERE a.authorization_session_id=s.authorization_session_id \
+            ORDER BY a.rowid DESC LIMIT 1)=?1)",
             Some(key),
         ),
         EnforcementScope::Session(key) => ("s.authorization_session_id=?1", Some(key)),
@@ -941,12 +949,23 @@ impl SqliteAuthorizationStore {
                         if current {
                             return Err(AuthError::Conflict);
                         }
-                        connection.execute(
+                        let changed = connection.execute(
                             "UPDATE auth_authorization_issuers \
                             SET state='compromised',revoked_at=?1 \
                             WHERE key_id=?2 AND revoked_at IS NULL",
                             params![now, issuer],
-                        )?
+                        )?;
+                        // Clients still accept a rotated-out key until its
+                        // signed deadline. The notice makes them re-read its
+                        // state and refuse it now.
+                        enqueue_effect(
+                            connection,
+                            "issuer_notice",
+                            &serde_json::json!({"revoked": issuer}),
+                            None,
+                            now,
+                        )?;
+                        changed
                     }
                     _ => return Err(AuthError::Invalid("unsupported hard root".into())),
                 };

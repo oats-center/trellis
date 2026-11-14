@@ -46,6 +46,8 @@ use crate::generated::Codec as _;
 use crate::service::{BootstrapBinding, CoreBootstrapBinding, ServiceResourceBindings};
 
 const HEALTH_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
+/// How long a request waits for an absent provider, within its own deadline.
+pub(crate) const SERVICE_AVAILABILITY_WAIT: Duration = Duration::from_secs(5);
 const DEFAULT_EVENT_STREAM: &str = "trellis";
 
 /// Internal service connection inputs; assignment and resources come from the server.
@@ -2476,22 +2478,38 @@ impl TrellisClient {
                     headers.insert(key.as_str(), value.as_str());
                 }
             }
-            // A single send: invocation deduplication does not span deployments.
-            let message = timeout(
-                deadline.saturating_duration_since(Instant::now()),
-                lease.nats().send_request(
-                    subject,
-                    async_nats::Request::new()
-                        // The enclosing timeout owns the caller's configured deadline.
-                        .timeout(None)
-                        .inbox(reply)
-                        .headers(headers)
-                        .payload(Bytes::from(payload)),
-                ),
-            )
-            .await
-            .map_err(|_| TrellisClientError::Timeout)?
-            .map_err(TrellisClientError::from)?;
+            // Invocation deduplication does not span deployments, so a request is
+            // sent again only when the broker reports that no provider received
+            // it: a provider reconnecting is briefly absent.
+            let payload = Bytes::from(payload);
+            let wait_until = deadline.min(Instant::now() + SERVICE_AVAILABILITY_WAIT);
+            let mut pause = Duration::from_millis(100);
+            let message = loop {
+                let sent = timeout(
+                    deadline.saturating_duration_since(Instant::now()),
+                    lease.nats().send_request(
+                        subject.clone(),
+                        async_nats::Request::new()
+                            // The enclosing timeout owns the caller's configured deadline.
+                            .timeout(None)
+                            .inbox(reply.clone())
+                            .headers(headers.clone())
+                            .payload(payload.clone()),
+                    ),
+                )
+                .await
+                .map_err(|_| TrellisClientError::Timeout)?;
+                match sent {
+                    Err(error)
+                        if error.kind() == async_nats::RequestErrorKind::NoResponders
+                            && Instant::now() + pause < wait_until =>
+                    {
+                        tokio::time::sleep(pause).await;
+                        pause = (pause * 2).min(Duration::from_secs(1));
+                    }
+                    sent => break sent.map_err(TrellisClientError::from)?,
+                }
+            };
             let headers = message.headers.as_ref().ok_or_else(|| {
                 TrellisClientError::OperationProtocol("uncertified operation response".into())
             })?;

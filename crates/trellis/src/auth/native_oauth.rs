@@ -15,7 +15,9 @@ use trellis_protocol::{
     verify_oauth_admission, OAuthAdmissionBinding, SignedIssuerRotation, SignedOAuthAdmission,
 };
 
-use super::oauth_store::{NativeCredentialLease, NativeCredentialScope, NativeOAuthGrant};
+use super::oauth_store::{
+    NativeCredentialLease, NativeCredentialScope, NativeOAuthGrant, RetainedAdmission,
+};
 use crate::client::{RuntimeAuthorizationTrust, SessionAuth};
 
 /// Initial native connection metadata authenticated by the explicitly selected
@@ -303,8 +305,9 @@ pub enum NativeOAuthError {
     Busy,
 }
 
-/// Verified in-memory inputs for the ordinary one-step native NATS connection.
-/// Never persisted or Debug-formatted: admission itself is a credential.
+/// Verified inputs for the ordinary one-step native NATS connection. Never
+/// Debug-formatted: admission itself is a credential. Custody retains the
+/// latest admission with its runtime key so a later process can reuse it.
 pub struct NativeOAuthSession {
     /// Fresh ephemeral Ed25519 signing material, distinct from the durable P-256 key.
     pub auth: SessionAuth,
@@ -317,9 +320,18 @@ pub struct NativeOAuthSession {
     /// Actual granted RFC 9396 details, including optional deselections.
     pub authorization_details: serde_json::Value,
     client: NativeOAuthClient,
+    retained: bool,
 }
 
 impl NativeOAuthSession {
+    /// Whether this session reuses an admission an earlier process retained,
+    /// rather than one issued to this process. The installation may have
+    /// revoked or replaced it since; when a connection with it is refused,
+    /// open the client again and [`NativeOAuthClient::resume`].
+    pub fn is_retained(&self) -> bool {
+        self.retained
+    }
+
     pub(crate) fn take_issuer_rotations(&mut self) -> Vec<SignedIssuerRotation> {
         std::mem::take(&mut self.client.issuer_rotations)
     }
@@ -377,6 +389,8 @@ pub struct NativeOAuthClient {
     http: reqwest::Client,
     trust: RuntimeAuthorizationTrust,
     auth: SessionAuth,
+    /// Base64url seed of `auth`, retained with each admission it is named in.
+    session_seed: String,
     runtime_id: String,
     issuer_rotations: Vec<SignedIssuerRotation>,
     /// Token-endpoint nonce learned from discovery, used for the first proof.
@@ -448,15 +462,16 @@ impl NativeOAuthClient {
         .await
         .map_err(|_| NativeOAuthError::Unavailable)?
         .map_err(NativeOAuthError::Custody)?;
-        let auth =
-            SessionAuth::from_seed_base64url(&URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()))
-                .map_err(|_| NativeOAuthError::Unavailable)?;
+        let session_seed = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
+        let auth = SessionAuth::from_seed_base64url(&session_seed)
+            .map_err(|_| NativeOAuthError::Unavailable)?;
         let http = oauth_http_client(&trust.root_certificates)?;
         Ok(Self {
             lease: Arc::new(Mutex::new(lease)),
             http,
             trust,
             auth,
+            session_seed,
             runtime_id: URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()),
             issuer_rotations: Vec::new(),
             dpop_nonce: None,
@@ -537,6 +552,52 @@ impl NativeOAuthClient {
         self.refresh_trust().await?;
         let bytes = self.rotate().await?;
         self.install(&bytes).await
+    }
+
+    /// Like [`Self::resume`], but first reuse the admission an earlier process
+    /// retained while at least a minute of it remains, with no HTTP request,
+    /// so a run of short-lived commands does not spend the refresh token each
+    /// time. A refused reuse is handled as [`NativeOAuthSession::is_retained`]
+    /// describes.
+    pub async fn resume_retained(mut self) -> Result<NativeOAuthSession, NativeOAuthError> {
+        let retained = self
+            .lease
+            .lock()
+            .map_err(|_| NativeOAuthError::RecoveryRequired)?
+            .retained_admission();
+        let reusable = retained.and_then(|retained| {
+            let auth = SessionAuth::from_seed_base64url(&retained.session_seed).ok()?;
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            // Signed by the pinned issuer for this installation and session key.
+            let admission = verify_oauth_admission(
+                retained.admission.as_bytes(),
+                &self.trust.issuer,
+                &self.trust.instance_id,
+                &self.trust.account,
+                &auth.session_nkey().ok()?,
+                now,
+                300,
+            )
+            .ok()?;
+            (admission.credential.runtime_id == retained.runtime_id
+                && admission.credential.expires_at - now >= 60)
+                .then_some((retained, auth, admission))
+        });
+        let Some((retained, auth, admission)) = reusable else {
+            return self.resume().await;
+        };
+        self.auth = auth;
+        self.session_seed = retained.session_seed;
+        self.runtime_id = retained.runtime_id;
+        Ok(NativeOAuthSession {
+            auth: self.auth.clone(),
+            runtime_id: self.runtime_id.clone(),
+            admission,
+            trust: self.trust.clone(),
+            authorization_details: retained.authorization_details,
+            client: self,
+            retained: true,
+        })
     }
 
     async fn refresh_trust(&mut self) -> Result<(), NativeOAuthError> {
@@ -821,6 +882,7 @@ impl NativeOAuthClient {
             trust: self.trust.clone(),
             authorization_details: details,
             client: self,
+            retained: false,
         })
     }
 
@@ -887,12 +949,18 @@ impl NativeOAuthClient {
             login_session_id: body.login_session_id.clone(),
             refresh_token: response.refresh_token,
         };
+        let retained = RetainedAdmission {
+            runtime_id: self.runtime_id.clone(),
+            session_seed: self.session_seed.clone(),
+            admission: response.trellis_admission,
+            authorization_details: response.authorization_details.clone(),
+        };
         let lease = Arc::clone(&self.lease);
         tokio::task::spawn_blocking(move || {
             lease
                 .lock()
                 .map_err(|_| std::io::Error::other("OAuth custody poisoned"))?
-                .install(grant)
+                .install_admitted(grant, retained)
         })
         .await
         .map_err(|_| NativeOAuthError::RecoveryRequired)?

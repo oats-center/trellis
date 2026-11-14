@@ -1,5 +1,13 @@
 use super::*;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+
+/// Clap checks a command's options only when that command runs, and a
+/// conflict (such as a global option sharing a subcommand option's name)
+/// panics there; check every command at once.
+#[test]
+fn every_command_has_consistent_options() {
+    Cli::command().debug_assert();
+}
 
 #[test]
 fn parses_check_and_dependency_specific_update_commands() {

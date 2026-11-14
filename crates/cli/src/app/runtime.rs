@@ -62,11 +62,29 @@ pub(super) fn keygen_command(format: OutputFormat, args: &KeygenArgs) -> miette:
         return Ok(());
     }
 
-    if !derived_only && args.out.is_none() {
-        println!("seed={seed_b64}");
+    if let Some(path) = &args.out {
+        output::success(format!("Wrote the seed to {}", path.display()));
     }
-    if args.pubout.is_none() {
-        println!("sessionKey={public_b64}");
+    if let Some(path) = &args.pubout {
+        output::success(format!("Wrote the session key to {}", path.display()));
+    }
+    let show_seed = !derived_only && args.out.is_none();
+    output::Details::untitled()
+        .field(
+            "Session key",
+            if args.pubout.is_none() {
+                public_b64.as_str()
+            } else {
+                ""
+            },
+        )
+        .field("Seed", if show_seed { seed_b64.as_str() } else { "" })
+        .print();
+    if show_seed {
+        output::not_kept(
+            "seed",
+            "It is the private half; anyone holding it can act as this key.",
+        );
     }
 
     Ok(())
@@ -76,7 +94,7 @@ pub(super) fn version_command(format: OutputFormat) -> miette::Result<()> {
     if output::is_json(format) {
         output::print_json(&json!({ "version": env!("TRELLIS_BUILD_VERSION") }))?;
     } else {
-        output::print_info(env!("TRELLIS_BUILD_VERSION"));
+        println!("{}", env!("TRELLIS_BUILD_VERSION"));
     }
     Ok(())
 }

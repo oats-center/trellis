@@ -765,7 +765,7 @@ impl ConsumerControl {
         let reply = format!(
             "{}.{}",
             self.inbox_prefix,
-            CONTROL_INBOX_COUNTER.fetch_add(1, Ordering::Relaxed)
+            super::client_open::LIVE_INBOX_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let (headers, request_id) = self.signed_headers(&reply, &body)?;
         let mut subscriber = self
@@ -1211,8 +1211,6 @@ fn ack_action_matches(action: LiveControlAckAction, expected: &str) -> bool {
             | (LiveControlAckAction::EndAck, "end-ack")
     )
 }
-
-static CONTROL_INBOX_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Return the serialized byte length of one encoded application value.
 #[must_use]

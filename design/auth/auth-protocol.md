@@ -25,7 +25,14 @@ discovery's cross-origin policy.
 Initial issuer trust comes from that authenticated selected origin or provisioned
 installation trust. Broker-delivered public key bytes cannot create a trust root.
 Subsequent keys require authenticated rotation links and monotonic sequence
-checks. Retain installation identity and pinned trust across reconnects.
+checks. Retain installation identity and pinned trust across reconnects. A
+rotated-out key authorizes live use until the link's signed `previousRetiredAt`,
+one authority lifetime after the rotation, and only history after that. Auth
+publishes an empty notice on `trellis.auth.issuers` after each rotation link and
+each issuer revocation. On it a participant renews its own authority, then
+re-reads the signed `issuerKey` state of every rotated-out key still inside its
+overlap; a revoked key ends its overlap at once. The notice carries no trust:
+participants act only on signed material.
 
 Admitted clients may query independent signed verification metadata through
 `trellis.auth.metadata.get`. Bind responses to the exact installation/account,
@@ -102,7 +109,11 @@ authority; it is not an independent trust assertion. Provider replies require
 verified provider authority and request binding. A retained accepted request may
 outlive ordinary authority replacement, but fresh signing requires current
 authority and retained response validation still enforces its security checks.
-Never automatically retransmit potentially executed application requests.
+Never automatically retransmit potentially executed application requests. A
+broker no-responders reply proves no provider received the request, so callers
+resend the same signed request, with its request ID and proof unchanged, for up
+to five seconds within its deadline, with pauses doubling from 100 ms to one
+second; this covers a provider that is reconnecting.
 
 Events retain signed authority by digest. Historical verification uses original
 JetStream publication time/sequence and the signed revocation cutoff, not replay
@@ -111,6 +122,8 @@ time. Preserve immutable issued authority and authenticated trust history.
 ## Authenticated verification material
 
 Catalog snapshots and provider certificates are signed and content-addressed.
+Issuer rotation re-signs each current catalog snapshot under the successor, so
+live authority never references a catalog signed only by a retired key.
 A participant authenticates each one once, when it is fetched: issuer
 signature, record structure, and installation/account scope. It retains the
 issuer key that authenticated it. Every later use rechecks only what can change:
