@@ -27,7 +27,9 @@ installation trust. Broker-delivered public key bytes cannot create a trust root
 Subsequent keys require authenticated rotation links and monotonic sequence
 checks. Retain installation identity and pinned trust across reconnects. A
 rotated-out key authorizes live use until the link's signed `previousRetiredAt`,
-one authority lifetime after the rotation, and only history after that. Auth
+one authority lifetime after the rotation, and only history after that. A
+participant pinned at a later key learns that deadline from the signed
+`issuerKey` answer's `liveUntil`. Auth
 publishes an empty notice on `trellis.auth.issuers` after each rotation link and
 each issuer revocation. On it a participant renews its own authority, then
 re-reads the signed `issuerKey` state of every rotated-out key still inside its

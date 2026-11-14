@@ -294,11 +294,23 @@ impl SqliteAuthorizationStore {
             response.digest()?;
             let result = match &response.request.query {
                 IssuerMetadataQuery::IssuerKey { key_id } => {
-                    Self::resolve_issuer_in(connection, key_id).and_then(|issuer| {
-                        if issuer.state == trellis_protocol::AuthorityIssuerState::Active {
+                    Self::resolve_issuer_in(connection, key_id).and_then(|key| {
+                        if key.state == trellis_protocol::AuthorityIssuerState::Active {
                             return Err(AuthError::Denied);
                         }
-                        Ok(serde_json::to_string(&issuer)?)
+                        // A rotated-out key keeps its signed overlap for a
+                        // participant that joins after the rotation.
+                        let live_until: Option<i64> = connection
+                            .query_row(
+                                "SELECT retired_at FROM auth_authorization_issuers \
+                                WHERE key_id=?1 AND state='retired' AND retired_at>?2",
+                                rusqlite::params![key_id, now],
+                                |row| row.get(0),
+                            )
+                            .optional()?;
+                        Ok(serde_json::to_string(
+                            &trellis_protocol::HistoricalIssuerKey { key, live_until },
+                        )?)
                     })
                 }
                 IssuerMetadataQuery::AuthorityResolve { context_digest } => {

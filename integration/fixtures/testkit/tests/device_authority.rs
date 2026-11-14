@@ -1131,3 +1131,107 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
     .is_err());
     runtime.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn approving_a_secret_enrolled_device_announces_the_apis_it_provides() {
+    use futures_util::StreamExt as _;
+    use trellis_rs::auth::{
+        check_device_activation, DeviceActivationOptions, DeviceActivationStatus,
+    };
+    use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::API_ID;
+    use trellis_test_fixture::participants::trellis_test_fixture_echo_device::Participant as EchoDevice;
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let (controller, _) = oauth(&mut runtime, true).await;
+    let admin = AuthClient::from_generated(Client::connect_user(controller).await.unwrap());
+    let deployment = admin
+        .deployments_create(
+            &serde_json::from_value(json!({
+                "title":"Echo device", "kind":"device", "participantId":EchoDevice::ID,
+                "packageEvidence":EchoDevice::package_evidence(),
+                "idempotencyKey":ulid::Ulid::generate().to_string()
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .deployment;
+    // A provisioning secret leaves the device's instance disabled until its
+    // enrollment is approved, so nothing it provides is reachable yet.
+    let secret = admin
+        .devices_provision(
+            &serde_json::from_value(json!({
+                "deploymentId":deployment.deployment_id, "title":"First echo device",
+                "idempotencyKey":ulid::Ulid::generate().to_string()
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .provisioning_secret
+        .unwrap();
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
+        .await
+        .unwrap();
+    let (seed, _) = trellis_rs::auth::generate_session_keypair();
+    let (activation_key, _) = trellis_rs::auth::generate_session_keypair();
+    let options = DeviceActivationOptions::new(
+        DeviceConnectOptions::<EchoDevice>::new(
+            runtime.trellis_url(),
+            &seed,
+            server.nats_servers.clone(),
+            server.trust.clone(),
+        ),
+        &activation_key,
+    )
+    .with_provisioning_secret(&secret);
+    let DeviceActivationStatus::Pending(pending) = check_device_activation(&options).await.unwrap()
+    else {
+        panic!("unreviewed enrollment became ready")
+    };
+    // Callers of the API renew on this notice, gaining routes to the device.
+    let broker = async_nats::ConnectOptions::with_credentials(
+        &runtime
+            .nats_creds(trellis_testkit::TestNatsUser::Trellis)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    let mut notices = broker
+        .subscribe(trellis_protocol::derive_providers_notice_subject(API_ID).unwrap())
+        .await
+        .unwrap();
+    broker.flush().await.unwrap();
+    let review = admin
+        .devices_reviews_get(
+            &serde_json::from_value(
+                json!({"reviewId":pending.review_id,"confirmationCode":pending.confirmation_code}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap()
+        .review;
+    admin
+        .devices_reviews_decide(
+            &serde_json::from_value(json!({
+                "reviewId":pending.review_id,
+                "confirmationCode":pending.confirmation_code,
+                "decision":"approved",
+                "expectedRevision":review.revision,
+                "idempotencyKey":ulid::Ulid::generate().to_string()
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), notices.next())
+        .await
+        .expect("approving the first device announces the API it provides")
+        .unwrap();
+    runtime.shutdown().await.unwrap();
+}

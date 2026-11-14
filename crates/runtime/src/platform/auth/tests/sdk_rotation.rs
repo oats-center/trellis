@@ -495,9 +495,11 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         .issuer(&transport, &published.issuer_key_id)
         .await
         .unwrap();
+    // The original key was rotated out moments ago, so Auth's signed answer
+    // keeps it live for this owner until the rotation's deadline.
     assert_eq!(
         resolved.state,
-        trellis_protocol::AuthorityIssuerState::Retired
+        trellis_protocol::AuthorityIssuerState::Active
     );
     published
         .verify(
@@ -506,7 +508,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
             &store.settings.account,
         )
         .unwrap();
-    assert!(owner.assert_issuer_current(&original.key_id).is_err());
+    owner.assert_issuer_current(&original.key_id).unwrap();
     owner.assert_issuer_current(&current.key_id).unwrap();
 
     let (stop_mirror, mirror_stop) = tokio::sync::watch::channel(false);
@@ -774,6 +776,43 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         renewed.authority.unsigned.authorization_session_id,
         admitted.authority.unsigned.authorization_session_id
     );
+    // An owner that joins after the rotation pins the successor and learns
+    // the predecessor from Auth's signed answer, with the same overlap.
+    let successor = next
+        .verify_successor(
+            &current,
+            &store.settings.instance_id,
+            &store.settings.account,
+            rotation.sequence.get(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        )
+        .unwrap();
+    let newcomer = AuthorizationOwner::new(
+        RuntimeAuthorizationTrust {
+            instance_id: store.settings.instance_id.clone(),
+            account: store.settings.account.clone(),
+            issuer: successor,
+            rotation_sequence: next.sequence.get(),
+            root_certificates: Vec::new(),
+            nats_server_name: None,
+            nats_sentinel: None,
+        },
+        URL_SAFE_NO_PAD.encode([8; 16]),
+        URL_SAFE_NO_PAD.encode([9; 32]),
+    )
+    .unwrap();
+    assert_eq!(
+        newcomer
+            .issuer(&transport, &current.key_id)
+            .await
+            .unwrap()
+            .state,
+        trellis_protocol::AuthorityIssuerState::Active
+    );
+    newcomer.assert_issuer_current(&current.key_id).unwrap();
     let retired = EnforcementScope::Issuer(current.key_id.clone());
     crate::platform::auth::tests::revoke_root(
         &store,
@@ -788,6 +827,8 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     owner.assert_issuer_current(&current.key_id).unwrap();
     owner.recheck_retiring_issuers(&transport).await;
     assert!(owner.assert_issuer_current(&current.key_id).is_err());
+    newcomer.recheck_retiring_issuers(&transport).await;
+    assert!(newcomer.assert_issuer_current(&current.key_id).is_err());
     owner.assert_issuer_current(&next.next_key_id).unwrap();
     assert_eq!(
         crate::platform::auth::tests::session_status(

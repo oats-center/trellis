@@ -58,6 +58,7 @@ agent RestrictedCaller {}
 agent OptionalOperationCaller { use echo { capability echo.optionalSilent; } }
 agent OperationAuthorizationCaller { use echo { required capability echo.optionalSilent; } }
 device UnsupportedDevice {}
+device EchoDevice { implements echo; }
 device CompanionDevice {
   state saved { title "Device saved value"; description "Installed device State authority acceptance"; schema Value; version 1; }
   agent Companion {

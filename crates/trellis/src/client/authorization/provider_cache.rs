@@ -1907,7 +1907,10 @@ impl AuthorizationOwner {
         if let (IssuerMetadataQuery::IssuerKey { .. }, IssuerMetadataResult::Value { payload }) =
             (&request.query, verified.result())
         {
-            let historical: AuthorityIssuerKey = serde_json::from_str(payload)?;
+            let trellis_protocol::HistoricalIssuerKey {
+                key: historical,
+                live_until,
+            } = serde_json::from_str(payload)?;
             let mut state = self.state.write().map_err(|_| {
                 TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
             })?;
@@ -1936,6 +1939,25 @@ impl AuthorizationOwner {
                 return Err(TrellisClientError::AuthorizationUnavailable(
                     "issuer chain capacity reached".into(),
                 ));
+            }
+            // A key Auth reports inside its overlap is live until the signed
+            // deadline, exactly as if this owner had followed the chain.
+            if let Some(deadline) = live_until.filter(|deadline| {
+                *deadline > self.policy().now_unix_seconds
+                    && historical.state == AuthorityIssuerState::Retired
+                    && !state.issuers.contains_key(&historical.key_id)
+            }) {
+                state
+                    .issuer_retirements
+                    .insert(historical.key_id.clone(), deadline);
+                state.issuers.insert(
+                    historical.key_id.clone(),
+                    AuthorityIssuerKey {
+                        state: AuthorityIssuerState::Active,
+                        ..historical
+                    },
+                );
+                return Ok(verified);
             }
             state.issuers.insert(historical.key_id.clone(), historical);
         }

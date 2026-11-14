@@ -1064,9 +1064,9 @@ fn authority_scope_expiry_and_logical_revocation_fail_closed() {
 #[test]
 fn current_issuer_metadata_authenticates_only_the_requested_historical_key() {
     use trellis_protocol::{
-        sign_issuer_metadata, verify_issuer_metadata, IssuerMetadata, IssuerMetadataQuery,
-        IssuerMetadataRequest, IssuerMetadataResult, ISSUER_METADATA_DOMAIN_V1,
-        ISSUER_METADATA_SUBJECT,
+        sign_issuer_metadata, verify_issuer_metadata, HistoricalIssuerKey, IssuerMetadata,
+        IssuerMetadataQuery, IssuerMetadataRequest, IssuerMetadataResult,
+        ISSUER_METADATA_DOMAIN_V1, ISSUER_METADATA_SUBJECT,
     };
     let (_, old, authority, policy) = issued();
     let signer = SigningKey::from_bytes(&[12; 32]);
@@ -1095,7 +1095,11 @@ fn current_issuer_metadata_authenticates_only_the_requested_historical_key() {
         request_subject: ISSUER_METADATA_SUBJECT.into(),
         reply_subject: reply.into(),
         result: IssuerMetadataResult::Value {
-            payload: serde_json::to_string(&historical).unwrap(),
+            payload: serde_json::to_string(&HistoricalIssuerKey {
+                key: historical.clone(),
+                live_until: None,
+            })
+            .unwrap(),
         },
         issued_at: policy.now_unix_seconds,
         expires_at: policy.now_unix_seconds + 30,
@@ -1116,7 +1120,9 @@ fn current_issuer_metadata_authenticates_only_the_requested_historical_key() {
     let IssuerMetadataResult::Value { payload } = verified.result() else {
         panic!("current issuer authenticates the requested historical key")
     };
-    let resolved: AuthorityIssuerKey = serde_json::from_str(payload).unwrap();
+    let resolved = serde_json::from_str::<HistoricalIssuerKey>(payload)
+        .unwrap()
+        .key;
     // Apply the attested public key at a real cryptographic boundary: an old
     // authority's historical signature remains valid, but not a live admission.
     let input = SessionAuthorityVerificationInput {
@@ -1148,23 +1154,35 @@ fn current_issuer_metadata_authenticates_only_the_requested_historical_key() {
     assert!(verify(&serde_json::to_vec(&tampered).unwrap(), &current, &request).is_err());
 
     // Even a correctly signed envelope cannot substitute another key, attach
-    // unrelated public bytes to the requested digest, or introduce an active pin.
+    // unrelated public bytes to the requested digest, introduce an active pin,
+    // or give a revoked key a live overlap.
+    let plain = |key: AuthorityIssuerKey| HistoricalIssuerKey {
+        key,
+        live_until: None,
+    };
     for candidate in [
-        AuthorityIssuerKey {
+        plain(AuthorityIssuerKey {
             state: AuthorityIssuerState::Retired,
             ..current.clone()
-        },
-        AuthorityIssuerKey {
+        }),
+        plain(AuthorityIssuerKey {
             public_key: current.public_key.clone(),
             ..historical.clone()
-        },
-        AuthorityIssuerKey {
+        }),
+        plain(AuthorityIssuerKey {
             public_key: format!("{}=", historical.public_key),
             ..historical.clone()
-        },
-        AuthorityIssuerKey {
+        }),
+        plain(AuthorityIssuerKey {
             state: AuthorityIssuerState::Active,
             ..historical.clone()
+        }),
+        HistoricalIssuerKey {
+            key: AuthorityIssuerKey {
+                state: AuthorityIssuerState::Revoked,
+                ..historical.clone()
+            },
+            live_until: Some(policy.now_unix_seconds + 60),
         },
     ] {
         let mut response = signed.response.clone();
@@ -1237,10 +1255,10 @@ fn current_issuer_metadata_authenticates_only_the_requested_historical_key() {
 
     let mut response = signed.response.clone();
     response.result = IssuerMetadataResult::Value {
-        payload: serde_json::to_string(&AuthorityIssuerKey {
+        payload: serde_json::to_string(&plain(AuthorityIssuerKey {
             state: AuthorityIssuerState::Revoked,
             ..historical
-        })
+        }))
         .unwrap(),
     };
     let revoked = sign_issuer_metadata(response, &signer).unwrap();
@@ -1249,7 +1267,9 @@ fn current_issuer_metadata_authenticates_only_the_requested_historical_key() {
     let IssuerMetadataResult::Value { payload } = verified.result() else {
         panic!("compromise state is authenticated, not treated as unavailable")
     };
-    let compromised: AuthorityIssuerKey = serde_json::from_str(payload).unwrap();
+    let compromised = serde_json::from_str::<HistoricalIssuerKey>(payload)
+        .unwrap()
+        .key;
     assert!(verify_session_authority(SessionAuthorityVerificationInput {
         issuer: &compromised,
         ..input

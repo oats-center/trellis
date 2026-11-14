@@ -168,6 +168,9 @@ export async function connectAdmitted(options: {
   let renewalTimer: ReturnType<typeof setTimeout> | undefined;
   let renewalAbort: AbortController | undefined;
   let renewalTask: Promise<void> | undefined;
+  // Set by a notice that arrives while a renewal is in flight: that renewal
+  // may already hold Auth's answer from before the change it announces.
+  let renewalNoticed = false;
   let mirrorRecovery: AbortController | undefined;
   const credentials = new WeakMap<NatsConnection, string>();
   const noticed = new WeakSet<NatsConnection>();
@@ -479,9 +482,11 @@ export async function connectAdmitted(options: {
           generation.nc.subscribe(subject, {
             callback: (error) => {
               if (error || manager.isClosed()) return;
-              void refreshAuthority().catch(() => {
-                /* typed failure is retained by closed() */
-              });
+              if (renewalTask) renewalNoticed = true;
+              else
+                void refreshAuthority().catch(() => {
+                  /* typed failure is retained by closed() */
+                });
               if (subject === ISSUER_NOTICE_SUBJECT)
                 void owner.recheckRetiringIssuers();
             },
@@ -636,6 +641,18 @@ export async function connectAdmitted(options: {
         if (renewalAbort === controller) {
           renewalTask = undefined;
           renewalAbort = undefined;
+        }
+        // One trailing renewal covers every notice received meanwhile.
+        if (
+          renewalNoticed &&
+          !renewalTask &&
+          !manager.isClosed() &&
+          !options.signal?.aborted
+        ) {
+          renewalNoticed = false;
+          void refreshAuthority().catch(() => {
+            /* typed failure is retained by closed() */
+          });
         }
       });
     return renewalTask;

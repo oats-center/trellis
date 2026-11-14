@@ -1342,10 +1342,11 @@ export class SessionAuthorityOwner {
         assertCurrent,
       });
       if (query.kind === "issuerKey" && response.result.kind === "value") {
-        // The shared verifier checked the exact requested key and non-live state.
-        const historical: AuthorityIssuerKey = JSON.parse(
-          response.result.payload,
-        );
+        // The shared verifier checked the exact requested key, its non-live
+        // state, and that only a retired key carries a live deadline.
+        const answer: { key: AuthorityIssuerKey; liveUntil?: number } =
+          JSON.parse(response.result.payload);
+        const historical = answer.key;
         const previous = this.#keys.get(historical.keyId);
         if (previous && previous.publicKey !== historical.publicKey)
           throw new Error("historical issuer conflict");
@@ -1353,8 +1354,17 @@ export class SessionAuthorityOwner {
           throw new Error("historical issuer is a live pin");
         if (!previous && this.#keys.size >= 128)
           throw new Error("issuer history budget exceeded");
-        if (previous?.state !== "revoked")
+        if (previous?.state !== "revoked") {
           this.#keys.set(historical.keyId, historical);
+          // A key Auth reports inside its overlap is live until the signed
+          // deadline, as if this owner had followed the chain.
+          if (
+            !previous &&
+            answer.liveUntil !== undefined &&
+            answer.liveUntil > this.#now()
+          )
+            this.#liveUntil.set(historical.keyId, answer.liveUntil);
+        }
       }
       if (
         query.kind === "authorityStatus" &&
@@ -1437,9 +1447,8 @@ export class SessionAuthorityOwner {
 
   async #issuer(keyId: string): Promise<AuthorityIssuerKey> {
     let issuer = this.#liveIssuer(keyId);
-    if (!issuer) {
-      issuer = await this.#forwardIssuer(keyId);
-    }
+    if (!issuer && (await this.#forwardIssuer(keyId)))
+      issuer = this.#liveIssuer(keyId);
     if (!issuer) {
       const response = await this.#readIssuerMetadata(
         { kind: "issuerKey", keyId },
@@ -1447,7 +1456,7 @@ export class SessionAuthorityOwner {
       );
       if (response.result.kind !== "value")
         throw new Error("historical authority issuer unavailable");
-      issuer = this.#keys.get(keyId);
+      issuer = this.#liveIssuer(keyId);
     }
     if (!issuer || issuer.state === "revoked")
       throw new Error("untrusted authority issuer");

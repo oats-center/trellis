@@ -46,7 +46,9 @@ and this project adheres to
   authority the old key had signed, its own included, until every party had
   renewed. The TypeScript SDK also ignored the deadline. Auth now announces each
   rotation on `trellis.auth.issuers`, and every session renews onto the new key
-  at once.
+  at once. A participant that connects during the overlap learns the old key's
+  deadline from Auth's signed `issuerKey` answer, now a `HistoricalIssuerKey`
+  with `liveUntil`, and honors the same overlap.
 - Revoking an issuer key (`Issuers.Revoke`) retires a service or device session
   only when its latest authority came from that key. Such a session signs in
   with its own identity key, which the issuer key cannot forge, so a service
@@ -57,6 +59,14 @@ and this project adheres to
 
 ### Fixed
 
+- A provider announced while a TypeScript caller was already renewing was not
+  reached until the caller's next scheduled renewal. The notice joined the
+  renewal in flight, which could hold Auth's answer from before the provider
+  existed. A notice during a renewal now schedules one trailing renewal.
+  (#45)
+- Approving a device enrollment that used a provisioning secret did not
+  announce the APIs the device provides, so callers connected before the
+  approval reached that device only at their next scheduled renewal. (#46)
 - A TypeScript native OAuth refresh could fail with "OAuthTrustUnavailable"
   after an issuer key rotation. A connected session sharing the credential's
   authority owner could install the rotation first, and the refresh then

@@ -604,11 +604,14 @@ that are reachable when it is admitted: an enabled deployment with an active
 instance. A provider that becomes reachable later is named only by a renewed
 authority. Each admitted caller of an API may subscribe to
 `trellis.auth.providers.<b64(apiId)>`, and only Auth publishes there. When an
-installed revision, a new or enabled instance, or an enabled deployment makes a
-deployment reachable, Auth commits a `providers_notice` effect for each API it
-provides and publishes an empty message after the commit. Both SDKs subscribe
-on each transport generation to the notice subjects in its admitted policy and
-renew at once; the growth is adopted as a successor generation. A notice grants
+installed revision, a new or enabled instance, an approved device enrollment,
+or an enabled deployment makes a deployment reachable, Auth commits a
+`providers_notice` effect for each API it provides and publishes an empty
+message after the commit. Both SDKs subscribe on each transport generation to
+the notice subjects in its admitted policy and renew at once; the growth is
+adopted as a successor generation. A renewal already in flight may hold Auth's
+answer from before the change, so a notice arriving during one schedules a
+single trailing renewal after it settles. A notice grants
 nothing and a lost one only leaves the caller to its scheduled renewal, so it
 carries no signature. Nothing is announced when a deployment stops being
 reachable.
@@ -872,9 +875,13 @@ Cold successor pins resolve older immutable verification material through the
 existing issuer-signed metadata exchange's `issuerKey` selector. Only an active
 issuer authenticated from the pin and forward rotations may sign this reply; its
 requested key, canonical bytes, installation/account, nonce, destinations, and
-freshness are verified before caching. Returned keys are historical-only: retired
-keys can authenticate unchanged catalogs and historical publications, while
-compromised keys remain unusable. The read cannot install an active key, advance
+freshness are verified before caching. The answer is a `HistoricalIssuerKey`:
+the key and, for a key rotated out whose signed deadline has not passed,
+`liveUntil`. A participant that joined after the rotation then honors the same
+overlap as one that followed the chain, and re-reads the key on the issuer
+notice. Past that deadline returned keys are historical-only: retired keys can
+authenticate unchanged catalogs and historical publications, while compromised
+keys remain unusable and never carry `liveUntil`. The read cannot install an active key, advance
 the rotation sequence, or replace credential trust. Learned compromise is sticky.
 Current session and provider-certificate checks remain independent of immutable
 catalog-signature authenticity.

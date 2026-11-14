@@ -168,11 +168,26 @@ pub struct IssuerChainRequest {
     pub target_key_id: String,
 }
 
+/// `IssuerKey` answer: a key that is no longer current.
+///
+/// A key rotated out recently still authorizes live use until the deadline its
+/// rotation link signed, so a participant that joins after the rotation honors
+/// the same overlap as one that followed the chain. A revoked key has none.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoricalIssuerKey {
+    /// The key and its lifecycle state, never `active`.
+    pub key: AuthorityIssuerKey,
+    /// Exclusive live-use deadline of a retired key still inside its overlap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_until: Option<i64>,
+}
+
 /// A verified answer, decoded for the query that asked for it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IssuerMetadataValue {
     /// A historical, non-active issuer key.
-    IssuerKey(AuthorityIssuerKey),
+    IssuerKey(HistoricalIssuerKey),
     /// Immutable authority material.
     Authority(AuthorityMaterial),
     /// Logical session status.
@@ -384,10 +399,14 @@ fn decode_value(
     };
     Ok(match query {
         IssuerMetadataQuery::IssuerKey { key_id } => {
-            let historical: AuthorityIssuerKey =
+            let historical: HistoricalIssuerKey =
                 serde_json::from_str(payload).map_err(malformed)?;
-            historical.verifying_key()?;
-            if historical.key_id != *key_id || historical.state == AuthorityIssuerState::Active {
+            historical.key.verifying_key()?;
+            if historical.key.key_id != *key_id
+                || historical.key.state == AuthorityIssuerState::Active
+                || (historical.live_until.is_some()
+                    && historical.key.state != AuthorityIssuerState::Retired)
+            {
                 return Err(mismatch("invalid historical issuer statement"));
             }
             IssuerMetadataValue::IssuerKey(historical)

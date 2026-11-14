@@ -343,6 +343,15 @@ fn decide(
                     WHERE instance_id=?1",
                     params![review.instance_id.to_string(), now],
                 )?;
+                // The device may be its deployment's first active instance,
+                // which makes the APIs it provides reachable. Callers already
+                // connected renew on the notice instead of at their schedule.
+                let deployment: String = connection.query_row(
+                    "SELECT deployment_id FROM auth_instances WHERE instance_id=?1",
+                    [review.instance_id.to_string()],
+                    |row| row.get(0),
+                )?;
+                super::super::deployments::announce_providers(connection, &deployment, now)?;
             }
             Ok(AuthDeviceReviewResponse {
                 review: read_review(connection, &id)?,

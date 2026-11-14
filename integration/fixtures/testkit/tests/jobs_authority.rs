@@ -1,8 +1,8 @@
 //! Ordinary service workers recover durable history without shared stream access.
 
-use trellis_rs::__internal::RuntimeClient as _;
 use serde_json::json;
 use std::time::Duration;
+use trellis_rs::__internal::RuntimeClient as _;
 use trellis_rs::client::{ServiceConnectWithContractOptions, TrellisClient};
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::apis::trellis_jobs_v1::Client as JobsClient;
@@ -127,7 +127,8 @@ async fn private_jobs_execute_and_history_is_deployment_scoped() {
         "jobId":job.identity().id,
         "fromSequence":page.next_sequence,
         "throughSequence":page.through_sequence
-    })).unwrap();
+    }))
+    .unwrap();
     let end = history_first.history(&continuation).await.unwrap();
     assert_eq!(page.through_sequence, end.through_sequence);
     assert!(end.next_sequence.is_none());

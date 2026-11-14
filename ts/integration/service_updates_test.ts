@@ -667,6 +667,105 @@ test("a service that uses an API no provider has brought yet is added first, and
   });
 });
 
+test("a provider announced while the caller is renewing is reached without waiting for the next renewal", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const consumer = participants.OperationCaller.participant;
+      const apiId = consumer.uses[0].api.identity;
+      const callerIdentity = await runtime.registerService({
+        name: "renewing-caller",
+        deployment: "renewing-caller",
+        contract: consumer,
+      });
+      const caller = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: consumer,
+        name: "renewing-caller",
+        seed: callerIdentity.seed,
+      }).orThrow();
+      try {
+        const notice = `trellis.auth.providers.${Buffer.from(apiId).toString("base64url")}`;
+        const gate = runtime.nativeTransportGate();
+        const proxy = gate
+          .connections()
+          .find(
+            (connection) =>
+              !connection.closed &&
+              connection.subs.some((sub) => sub.subject === notice),
+          );
+        assert(proxy);
+        // A renewal asks the broker who this attachment is, asks Auth for its
+        // authority, then asks the broker again. Withhold that second answer,
+        // so the renewal holds Auth's answer from before the provider exists.
+        let answers = 0;
+        const hold = gate.armResponseHold(
+          "$SYS.REQ.USER.INFO",
+          proxy.id,
+          () => ++answers === 2,
+        );
+        try {
+          // An issuer rotation is an ordinary reason for every session to renew.
+          const discovery: {
+            trellis: { issuers: { keyId: string; state: string }[] };
+          } = await (
+            await fetch(
+              `${runtime.trellisUrl}/.well-known/oauth-authorization-server`,
+            )
+          ).json();
+          const current = discovery.trellis.issuers.find(
+            (key) => key.state === "active",
+          );
+          assert(current);
+          await runtime.callAdminRpc("authIssuersRotate", {
+            expectedCurrentKeyId: current.keyId,
+            idempotencyKey: ulid(),
+          });
+          await hold.held;
+          const announced = gate.waitForDelivery(notice, proxy.id);
+          const identity = await runtime.registerService({
+            name: "announced-provider",
+            deployment: "announced-provider",
+            contract: participants.Provider.participant,
+          });
+          const provider = await TrellisService.connect({
+            trellisUrl: runtime.trellisUrl,
+            participant: participants.Provider.participant,
+            name: "announced-provider",
+            seed: identity.seed,
+          }).orThrow();
+          try {
+            await provider.handleWork(async ({ input, op }) => {
+              return await op
+                .complete({ value: `completed ${input.value}` })
+                .orThrow();
+            });
+            await announced;
+            await hold.release();
+            // Following the operation needs the route bound to the provider,
+            // which the renewal that was in flight could not have carried.
+            const operation = await caller
+              .work({ value: "announced" })
+              .start()
+              .orThrow();
+            const terminal = await runtime.waitFor(
+              () => operation.wait().orThrow(),
+              { timeoutMs: 10_000, intervalMs: 100 },
+            );
+            assert.deepEqual(terminal.output, { value: "completed announced" });
+          } finally {
+            await provider.stop();
+          }
+        } finally {
+          await hold.release();
+        }
+      } finally {
+        await caller.stop();
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
+
 test("a running caller keeps working and reaches a provider the testkit registers from another package", async () => {
   await withTrellisRuntime(async (runtime) => {
     const consumer = participants.OperationCaller.participant;

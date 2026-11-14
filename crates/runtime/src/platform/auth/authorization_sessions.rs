@@ -1320,11 +1320,12 @@ impl SqliteAuthorizationStore {
                         signature: String::new(),
                     }
                     .sign(&signer)?;
+                    // retired_at is the end of live use, the signed deadline.
                     connection.execute(
                         "UPDATE auth_authorization_issuers \
                         SET is_current=0,state='retired',retired_at=?1 \
                         WHERE is_current=1",
-                        [now],
+                        [rotation.previous_retired_at],
                     )?;
                     connection.execute(
                         "INSERT INTO auth_authorization_issuers(key_id,public_key,is_current,\
