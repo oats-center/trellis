@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.39] - 2026-11-14
+
 ### Changed
 
 - The `trellis` CLI's human output has one layout across commands. Lists are
