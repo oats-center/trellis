@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.42] - 2026-11-15
+
 ### Added
 
 - A setting whose type allows null, such as `type string | null`, is optional:
