@@ -61,6 +61,14 @@ and this project adheres to
   Auth now sends `Config.Changed` for the client whenever a declaration changes
   what the app reads, so connected apps reread at once. The event's `revision`
   is absent when the client has no stored settings.
+- A service, device, or app that follows its settings kept its old transport
+  connection open after a new one took over, until that connection was forced
+  closed or the participant stopped. The TypeScript and Rust SDKs now move the
+  settings subscription to the new connection, read the settings again there,
+  and let the old connection close.
+- Aborting `TrellisService.connect` while the service was reading its settings
+  could be missed, leaving the connect waiting for settings or carrying on
+  after the abort. The abort now ends the connect at once.
 
 ## [0.100.0-rc.41] - 2026-11-15
 

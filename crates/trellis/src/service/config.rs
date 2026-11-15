@@ -266,6 +266,9 @@ pub(crate) fn follow(
             }
         };
         loop {
+            // Taken before acquiring, so a publication made while acquiring is
+            // still seen as a change.
+            let mut publication = client.subscribe_transport_publication();
             let deadline = Instant::now() + Duration::from_millis(client.timeout_ms());
             let lease = match client
                 .acquire_transport(&[], std::slice::from_ref(&subject), deadline)
@@ -311,6 +314,19 @@ pub(crate) fn follow(
                         refresh().await;
                     }
                     () = lease.wait_lost() => break,
+                    // A successor's publication ends this subscription. The
+                    // next pass subscribes on the successor and reads again,
+                    // and dropping this lease lets the old generation drain.
+                    changed = publication.changed() => {
+                        if changed.is_err() {
+                            // The connection's transport is gone.
+                            return;
+                        }
+                        let published = *publication.borrow_and_update();
+                        if published.is_some_and(|id| id != lease.generation_id()) {
+                            break;
+                        }
+                    }
                 }
             }
         }

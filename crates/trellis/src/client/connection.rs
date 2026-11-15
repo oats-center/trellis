@@ -1115,6 +1115,13 @@ impl TrellisClient {
             .await
     }
 
+    /// Follow the published current generation id, `None` while none is.
+    pub(crate) fn subscribe_transport_publication(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<u64>> {
+        self.generations.subscribe_publication()
+    }
+
     /// Return the cloneable session signer for owned live controls.
     pub(crate) fn auth_handle(&self) -> std::sync::Arc<crate::client::SessionAuth> {
         self.auth.clone()

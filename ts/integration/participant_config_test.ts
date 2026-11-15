@@ -14,6 +14,7 @@ import {
 import { deriveDeviceIdentity } from "@oatscenter/trellis/auth";
 import { discoverNativeOAuth } from "@oatscenter/trellis/native";
 import { join } from "node:path";
+import { deadline } from "@nats-io/nats-core";
 import { codecs, type JsonValue } from "@oatscenter/trellis/generated";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -251,6 +252,53 @@ test("a service waits for its settings, keeps secrets from administrators, and f
     );
     await service.stop();
   });
+});
+
+test("aborting a service connect while its settings read is outstanding ends the connect", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const key = await runtime.services.createInstance({
+        name: "configured-abort",
+        deployment: "configured-abort",
+        contract: participant,
+      });
+      // Auth's answer to the settings read is withheld, so cancellation lands
+      // while the read is still outstanding.
+      const hold = runtime
+        .nativeTransportGate()
+        .armResponseHold("rpc.v1.auth.Config.Own.Get");
+      const controller = new AbortController();
+      const connecting = TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant,
+        seed: key.seed,
+        signal: controller.signal,
+      });
+      try {
+        await deadline(hold.held, 30_000);
+        const reason = new Error("connect cancelled");
+        controller.abort(reason);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const settled = await Promise.race([
+          connecting,
+          new Promise<"pending">((resolve) => {
+            timer = setTimeout(() => resolve("pending"), 5_000);
+          }),
+        ]);
+        clearTimeout(timer);
+        assert.notEqual(settled, "pending", "connect ignored the abort");
+        assert(settled !== "pending" && settled.isErr());
+        // The connect reports the cancellation, not the closed transport the
+        // cancellation leaves behind.
+        assert.equal(settled.error.cause, reason);
+      } finally {
+        await hold.release();
+        const late = await connecting.orThrow().catch(() => undefined);
+        await late?.stop();
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
 });
 
 test("a device reads its own settings over its type's and follows live changes", async () => {

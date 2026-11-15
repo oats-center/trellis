@@ -227,6 +227,10 @@ service ConfiguredService {
   config region { title "Region"; description "Where work is placed, when it matters."; type string | null; }
   config port { title "Port"; description "Port the service listens on."; type int32; default 8080; restart; }
 }
+service ConfiguredGrowthService {
+  use transport_growth { capability growth.extend; }
+  config level { title "Log level"; description "Lowest level the service writes."; type ConfiguredLevel; default "info"; }
+}
 agent ConfiguredAgent {
   config greeting { title "Greeting"; description "What the app says first."; type string; default "hello"; }
   config limit { title "Limit"; description "Rows the app shows per page."; type int32; default 10; }
