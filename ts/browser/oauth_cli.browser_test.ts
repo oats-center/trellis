@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
@@ -211,16 +211,47 @@ test(
             idempotencyKey: ulid(),
           }),
         );
-        await run(
+        const runtimeSource = new URL(
+          "../../integration/fixtures/runtime",
+          import.meta.url,
+        ).pathname;
+        const registered = await run(
           "clients",
           "put",
           appPath,
           "--source",
-          new URL("../../integration/fixtures/runtime", import.meta.url)
-            .pathname,
+          runtimeSource,
           "--app",
           "runtime-trellis.ConfiguredAgent",
         );
+        // A replacement whose source cannot be declared changes nothing.
+        await writeFile(
+          appPath,
+          JSON.stringify({
+            clientId: "configured-app",
+            expectedRevision: registered.client.revision,
+            title: "Replaced app",
+            description: "",
+            kind: "native",
+            development: true,
+            redirectUris: ["http://127.0.0.1/replaced"],
+            impliedConsent: [],
+            idempotencyKey: ulid(),
+          }),
+        );
+        await mkdir(`${directory}/broken`);
+        await writeFile(`${directory}/broken/trellis.toml`, "[package\n");
+        for (const source of [
+          ["--source", `${directory}/missing`],
+          ["--source", `${directory}/broken`],
+          ["--source", runtimeSource, "--app", "runtime-trellis.Missing"],
+        ])
+          await assert.rejects(run("clients", "put", appPath, ...source));
+        const unchanged = (await run("clients", "get", "configured-app"))
+          .client;
+        assert.equal(unchanged.title, "Configured app");
+        assert.equal(unchanged.revision, registered.client.revision);
+        assert.deepEqual(unchanged.redirectUris, ["http://127.0.0.1/callback"]);
         const appSettings = await run(
           "clients",
           "config",
