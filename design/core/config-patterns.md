@@ -168,6 +168,11 @@ service and device may subscribe to it, so the event only prompts the SDK to rea
 `Config.Own.Get` again over its own authenticated session; its payload is never
 trusted for values. The SDK also reads again whenever its subscription is
 reestablished, so a change made while it was disconnected is not missed.
+The subscription follows the published transport generation. When a successor
+is published, the SDK drops the subscription and its lease on the old
+generation, so that generation drains, subscribes on the successor, and reads
+again once that subscription is in place, so a change made during the cutover
+is not missed either.
 
 A change to a `restart` field does not reach `onChange`. The value loaded at
 connect stays in effect until the participant connects again. A field whose

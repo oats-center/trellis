@@ -65,6 +65,7 @@ fixture_bins=(
   stream_transfer
   jobs
   service_update
+  configured_growth
 )
 
 # CI stages the producer-built executables; a missing one is a setup failure.

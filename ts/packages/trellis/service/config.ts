@@ -7,7 +7,13 @@ import type {
   AuthOwnConfigResponse,
 } from "../internal_sdk/generated/types/index.js";
 import type { LoggerLike } from "../globals.ts";
-import type { TrellisTransportProvider } from "../transport/generations.ts";
+import type { TransportGenerationManager } from "../transport/generations.ts";
+
+/** What a settings watch needs from the logical connection's transport. */
+type ConfigTransport = Pick<
+  TransportGenerationManager,
+  "acquireFor" | "currentGeneration" | "subscribePublication"
+>;
 
 /** One live change to a participant's settings. */
 export type ConfigChange<TValues> = {
@@ -105,7 +111,7 @@ export async function connectAppConfig<TValues>(args: {
   fields: ConfigFields | undefined;
   clientId: string;
   read: () => Promise<AuthAppConfigResponse>;
-  transport: TrellisTransportProvider;
+  transport: ConfigTransport;
   closed: Promise<unknown>;
   log: LoggerLike;
   timeoutMs: number;
@@ -218,11 +224,13 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
   /**
    * Follow `Config.Changed` events `matches` accepts until stopped.
    * Each event only prompts a fresh authenticated read, so its payload is
-   * never trusted for values.
+   * never trusted for values. The subscription follows the published
+   * transport generation: when a successor is published it moves there and
+   * releases the old generation so that one can drain.
    * @internal
    */
   watch(args: {
-    transport: TrellisTransportProvider;
+    transport: ConfigTransport;
     subject: string;
     matches: (event: Readonly<Record<string, unknown>>) => boolean;
     read: ConfigReader;
@@ -245,17 +253,38 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     void (async () => {
       while (!signal.aborted) {
         let lease:
-          | Awaited<ReturnType<TrellisTransportProvider["acquireFor"]>>
-          | undefined;
+          Awaited<ReturnType<ConfigTransport["acquireFor"]>> | undefined;
         let unwatch = (): void => {};
+        // Registered before acquiring, so a publication made while acquiring
+        // is still seen. The first call reports the publication as it stands.
+        let initial = true;
+        let published = false;
+        let onPublished = (): void => {};
+        const unpublish = args.transport.subscribePublication(() => {
+          if (initial) {
+            initial = false;
+            return;
+          }
+          published = true;
+          onPublished();
+        });
         try {
           lease = await args.transport.acquireFor(
             { subscribe: [args.subject] },
             { signal, deadlineMs: Date.now() + args.timeoutMs },
           );
-          const subscription = lease.nc.subscribe(args.subject);
+          const held = lease;
+          const subscription = held.nc.subscribe(args.subject);
           const close = () => subscription.unsubscribe();
           signal.addEventListener("abort", close, { once: true });
+          // A successor's publication ends this subscription. The loop then
+          // subscribes on the successor and reads again, and releasing this
+          // lease lets the old generation drain.
+          onPublished = () => {
+            const current = args.transport.currentGeneration();
+            if (current !== undefined && current.nc !== held.nc) close();
+          };
+          if (published) onPublished();
           // Changes made while no subscription existed are read now.
           unwatch = lease.watchStatus((event) => {
             if (
@@ -298,6 +327,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
             );
           });
         } finally {
+          unpublish();
           unwatch();
           lease?.release();
         }
@@ -326,46 +356,59 @@ export async function loadConfig<
   log: LoggerLike;
   signal?: AbortSignal;
 }): Promise<ConfigHandle<TValues>> {
-  let delay = 1_000;
-  let shown = "";
-  for (;;) {
-    const loaded = await args.read(true);
-    if (loaded.missing.length === 0) {
-      return new ConfigHandle<TValues>(
-        args.fields,
-        ownReading(loaded),
-        args.log,
-      );
+  const signal = args.signal;
+  // Cancellation settles a pending read or wait at once; a read that finishes
+  // after cancellation is discarded.
+  const aborted = Promise.withResolvers<never>();
+  void aborted.promise.catch(() => {});
+  const abort = () => aborted.reject(signal?.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    let delay = 1_000;
+    let shown = "";
+    for (;;) {
+      signal?.throwIfAborted();
+      const loaded = await Promise.race([args.read(true), aborted.promise]);
+      signal?.throwIfAborted();
+      if (loaded.missing.length === 0) {
+        return new ConfigHandle<TValues>(
+          args.fields,
+          ownReading(loaded),
+          args.log,
+        );
+      }
+      const missing = loaded.missing.join(", ");
+      if (shown !== missing) {
+        shown = missing;
+        args.log.warn(
+          {
+            participant: args.participantId,
+            missing: loaded.missing,
+            configUrl: loaded.configUrl,
+          },
+          "Waiting for an administrator to set required settings",
+        );
+        console.error(
+          loaded.configUrl === undefined
+            ? `\n${args.participantId} needs these settings before it starts: ${missing}`
+            : `\n${args.participantId} needs these settings before it starts: ${missing}\nSet them at ${loaded.configUrl}\nor scan:\n${renderUnicodeCompact(loaded.configUrl)}`,
+        );
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, delay);
+          }),
+          aborted.promise,
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      delay = Math.min(delay * 2, 15_000);
     }
-    const missing = loaded.missing.join(", ");
-    if (shown !== missing) {
-      shown = missing;
-      args.log.warn(
-        {
-          participant: args.participantId,
-          missing: loaded.missing,
-          configUrl: loaded.configUrl,
-        },
-        "Waiting for an administrator to set required settings",
-      );
-      console.error(
-        loaded.configUrl === undefined
-          ? `\n${args.participantId} needs these settings before it starts: ${missing}`
-          : `\n${args.participantId} needs these settings before it starts: ${missing}\nSet them at ${loaded.configUrl}\nor scan:\n${renderUnicodeCompact(loaded.configUrl)}`,
-      );
-    }
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, delay);
-      args.signal?.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          reject(args.signal?.reason);
-        },
-        { once: true },
-      );
-    });
-    delay = Math.min(delay * 2, 15_000);
+  } finally {
+    signal?.removeEventListener("abort", abort);
   }
 }
 
