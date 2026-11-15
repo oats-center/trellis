@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.41] - 2026-11-15
+
 ### Changed
 
 - Trellis runs on Node 24 and Node 26, and CI and the container images use 26.
