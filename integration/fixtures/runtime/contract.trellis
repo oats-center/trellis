@@ -222,7 +222,9 @@ enum ConfiguredLevel { "info"; "debug"; }
 service ConfiguredService {
   config endpoint { title "Endpoint"; description "Where the service sends work."; type string; }
   config apiKey { title "API key"; description "Key the endpoint accepts."; type string; secret; }
+  config signingKey { title "Signing key"; description "Signs callbacks when set."; type string | null; secret; }
   config level { title "Log level"; description "Lowest level the service writes."; type ConfiguredLevel; default "info"; }
+  config region { title "Region"; description "Where work is placed, when it matters."; type string | null; }
   config port { title "Port"; description "Port the service listens on."; type int32; default 8080; restart; }
 }
 agent ConfiguredAgent {

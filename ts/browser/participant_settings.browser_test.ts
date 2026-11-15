@@ -53,6 +53,8 @@ test("an administrator sets a waiting service's settings from the link it printe
           .waitFor();
         await settings.getByLabel("Endpoint").fill("https://one.example");
         await settings.getByLabel("API key").fill("k1");
+        // A nullable secret takes plain text, not JSON.
+        await settings.getByLabel("Signing key").fill("s1");
         await settings
           .getByRole("button", { name: "Save settings", exact: true })
           .click();
@@ -71,6 +73,7 @@ test("an administrator sets a waiting service's settings from the link it printe
       const service = await connecting;
       assert.equal(service.config.current.endpoint, "https://one.example");
       assert.equal(service.config.current.apiKey, "k1");
+      assert.equal(service.config.current.signingKey, "s1");
     }, browserRuntimeOptions());
   } finally {
     // A failed step leaves the connecting service running. With the runtime

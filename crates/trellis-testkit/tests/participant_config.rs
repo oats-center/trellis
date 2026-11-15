@@ -28,6 +28,11 @@ async fn a_rust_service_reads_typed_settings_and_follows_live_changes() {
     let current = config.current().unwrap();
     assert_eq!(current.endpoint, "https://one.example");
     assert_eq!(current.api_key, "k1");
+    assert_eq!(
+        current.signing_key,
+        trellis_rs::generated::Nullable::Null,
+        "an optional secret reads null"
+    );
     assert_eq!(current.port, 8080);
     assert_eq!(serde_json::to_value(&current.level).unwrap(), json!("info"));
     assert_eq!(config.revision().deployment, Some(1));

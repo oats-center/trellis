@@ -103,8 +103,12 @@ pub enum ConfigCommand {
     Set {
         /// `FIELD=VALUE`. A text setting takes the text as written; any other
         /// takes JSON, such as `9090`, `true`, or `["a","b"]`.
-        #[arg(value_name = "FIELD=VALUE", required = true)]
+        #[arg(value_name = "FIELD=VALUE", required_unless_present = "null")]
         values: Vec<String>,
+        /// Store null for this setting, which its type must allow. Repeat it
+        /// for several. A text setting would otherwise take `null` as text.
+        #[arg(long, value_name = "FIELD")]
+        null: Vec<String>,
     },
     /// Set a secret from a file, or from standard input with `-`, so the value
     /// never appears in the shell history or process list.
@@ -115,6 +119,10 @@ pub enum ConfigCommand {
         /// secret takes the contents without the trailing newline; any other takes JSON.
         #[arg(long, value_name = "PATH", default_value = "-")]
         from_file: PathBuf,
+        /// Store null instead of reading a value. Only a secret whose type
+        /// allows null takes it, such as one an instance should go without.
+        #[arg(long, conflicts_with = "from_file")]
+        null: bool,
     },
     /// Remove stored values so the default, or the deployment's value for an
     /// instance, applies.

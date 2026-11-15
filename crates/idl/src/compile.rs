@@ -1551,18 +1551,25 @@ fn resolve_config_field(
             "config field '{name}' is secret, but only services can keep a secret"
         ));
     }
-    if participant.is_none() && raw.default.is_none() {
+    // A field that may be null is optional: with no default, it reads null
+    // until an administrator sets it, so nothing waits for it.
+    let default = match (&raw.default, &ty) {
+        (None, TypeExpression::Nullable(_)) => Some(serde_json::Value::Null),
+        (default, _) => default.clone(),
+    };
+    if participant.is_none() && default.is_none() {
         // An app cannot wait for an administrator the way a service does.
         return Err(miette!(
             "app config field '{name}' needs a default; an app cannot wait for an administrator"
         ));
     }
-    if raw.secret && raw.default.is_some() {
+    if raw.secret && default.as_ref().is_some_and(|value| !value.is_null()) {
         return Err(miette!(
+            help = "Make the type nullable, such as `string | null`, for an optional secret.",
             "secret config field '{name}' cannot have a default; it would be in the source"
         ));
     }
-    if let Some(value) = &raw.default {
+    if let Some(value) = &default {
         if !default_fits(&ty, value) {
             return Err(miette!(
                 "the default of config field '{name}' does not match its type"
@@ -1572,7 +1579,7 @@ fn resolve_config_field(
     Ok(ConfigFieldDefinition {
         docs,
         ty,
-        default: raw.default.clone(),
+        default,
         secret: raw.secret,
         restart: raw.restart,
     })

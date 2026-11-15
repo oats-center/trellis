@@ -88,8 +88,13 @@ pub(super) async fn run(
     };
     match args.command.unwrap_or(ConfigCommand::Show) {
         ConfigCommand::Show => show(format, &label, prefix, id, &current),
-        ConfigCommand::Set { values } => {
+        ConfigCommand::Set { values, null } => {
             let mut parsed = serde_json::Map::new();
+            for name in null {
+                // Only to name an unknown setting here; Auth checks that null fits.
+                parse_value(&current, &name, "null")?;
+                parsed.insert(name, Value::Null);
+            }
             for pair in values {
                 let (name, text) = pair.split_once('=').ok_or_else(|| {
                     miette::miette!(
@@ -105,15 +110,23 @@ pub(super) async fn run(
                 .into_diagnostic()?;
             changed(format, &label, prefix, id, &to_value(updated)?)
         }
-        ConfigCommand::SetSecret { field, from_file } => {
-            let text = if from_file == std::path::Path::new("-") {
-                std::io::read_to_string(std::io::stdin()).into_diagnostic()?
+        ConfigCommand::SetSecret {
+            field,
+            from_file,
+            null,
+        } => {
+            let value = if null {
+                Value::Null
             } else {
-                std::fs::read_to_string(&from_file).into_diagnostic()?
+                let text = if from_file == std::path::Path::new("-") {
+                    std::io::read_to_string(std::io::stdin()).into_diagnostic()?
+                } else {
+                    std::fs::read_to_string(&from_file).into_diagnostic()?
+                };
+                let text = text.trim_end_matches(['\r', '\n']);
+                miette::ensure!(!text.is_empty(), "the secret for {field} is empty");
+                parse_value(&current, &field, text)?
             };
-            let text = text.trim_end_matches(['\r', '\n']);
-            miette::ensure!(!text.is_empty(), "the secret for {field} is empty");
-            let value = parse_value(&current, &field, text)?;
             let updated = auth
                 .config_set(&wire(set(json!({ "secrets": { field: value } })))?)
                 .await

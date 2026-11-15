@@ -174,6 +174,27 @@ test(
             [1, []],
           ],
         );
+        // An optional secret can be stored as null without reading a value.
+        const nulled = setting(
+          await run(
+            "svc",
+            "configured",
+            "config",
+            "set-secret",
+            "signingKey",
+            "--null",
+          ),
+          "signingKey",
+        );
+        assert.equal(nulled?.isSet, true);
+        // A nullable text setting stores null with --null, not the text "null".
+        await run("svc", "configured", "config", "set", "region=eu");
+        const cleared = setting(
+          await run("svc", "configured", "config", "set", "--null", "region"),
+          "region",
+        );
+        assert.equal(cleared?.isSet, true);
+        assert.equal(cleared?.value, null);
         // An app's settings come from the IDL registered with its client.
         const appPath = `${directory}/configured-app.json`;
         await writeFile(

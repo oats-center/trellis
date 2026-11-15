@@ -1073,15 +1073,17 @@ role's SQLite database.
 Services, devices, and apps declare the settings they read from Trellis with
 `config` members instead of environment variables:
 `config databaseUrl { title "Database URL"; description "..."; type string; restart; }`.
-A field without `default` is required; `secret` marks a write-only value and is
-allowed only in services; `restart` marks a value read only at connect. Auth
+A field without `default` is required, except a `T | null` field, which reads
+null until set; `secret` marks a write-only value and is allowed only in
+services, and an optional secret is declared `type string | null; secret;`; `restart` marks a value read only at connect. Auth
 checks every write against the installed build's types. At connect the SDK
 reads the values before handlers start; while a required value is missing the
 participant prints a Console link and QR code and waits. Live fields follow
 changes without a restart, a `restart` field keeps its connect-time value, and
 per-instance overrides take precedence over the deployment's values.
-Administrators use `trellis svc <ID> config` (`set FIELD=VALUE`,
-`set-secret FIELD --from-file PATH`, `unset`, `history`, `rollback`,
+Administrators use `trellis svc <ID> config` (`set FIELD=VALUE` or
+`set --null FIELD`,
+`set-secret FIELD --from-file PATH` or `--null`, `unset`, `history`, `rollback`,
 `delete-revision`, `--instance`), `trellis dev <ID> config` for device types,
 or the Console's Settings section; the RPCs are `Auth.Config.*` under
 `config.read`, `config.manage`, and `config.manageSecrets`. Secrets are sealed

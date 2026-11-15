@@ -8,6 +8,22 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- A setting whose type allows null, such as `type string | null`, is optional:
+  with no default it reads null until an administrator sets it, and the
+  instance starts without waiting for it. This is how a service declares an
+  optional secret, since a secret cannot carry any other default.
+  `trellis svc <ID> config set-secret FIELD --null` stores an explicit null,
+  for example for one instance that should go without a secret its deployment
+  has, and `config set --null FIELD` does the same for a setting, where
+  `FIELD=null` would store the text "null".
+
+### Fixed
+
+- The Console's Settings section took a nullable text setting as JSON, so a
+  plain value such as a password was refused. It is now taken as text.
+
 ## [0.100.0-rc.41] - 2026-11-15
 
 ### Added

@@ -77,12 +77,15 @@ service Orders {
 }
 ```
 
-A field without a default is required. An app's fields must all have defaults,
+A field without a default is required, unless its type allows null: a
+`T | null` field with no default reads null until someone sets it, so nothing
+waits for it. An app's fields must all have defaults,
 since an app cannot wait for an administrator the way a service does. A
 default is a JSON scalar (a quoted
 string, a number, `true`, `false`, or `null`) and the compiler checks it
 against a primitive type. A secret cannot have a default, since it would sit in
-the source. Only services may declare `secret` fields: a device runs where its
+the source; null is the one exception, so an optional secret is written
+`type string | null; secret;`. Only services may declare `secret` fields: a device runs where its
 user can read anything it holds. Enums are open in Trellis IDL, so an enum
 field accepts strings beyond its listed symbols.
 
@@ -217,8 +220,12 @@ The CLI follows the target-first shape: `trellis svc <ID> config` (or
 FIELD=VALUE`, `set-secret FIELD --from-file PATH`, `unset`, `history`,
 `rollback REVISION`, and `delete-revision REVISION` change them. `--instance`
 selects one instance's overrides. A text setting takes the text as written;
-any other is JSON. `set-secret` reads a file or standard input, so a secret
-never appears in shell history or the process list.
+any other is JSON. `set --null FIELD` stores null for a nullable setting, since
+a text setting would take `null` as text. `set-secret` reads a file or standard input, so a secret
+never appears in shell history or the process list. `set-secret FIELD --null`
+stores null for a secret whose type allows it, such as an instance that should
+go without a secret its deployment has; `unset` instead returns the field to
+the deployment's value or, failing that, null.
 
 `trellis clients config CLIENT` does the same for an app. The Console shows a
 Settings section on each service page, on each device type's page, and in each

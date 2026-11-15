@@ -2,7 +2,8 @@
  * Live acceptance for settings Trellis keeps for a service: the instance waits
  * for required values, reads secrets the administrator cannot read back,
  * follows live changes, keeps restart-only values until it reconnects, and
- * takes instance overrides over deployment values.
+ * takes instance overrides over deployment values. An optional secret reads
+ * null until it is set, and an instance can be set back to null.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -97,6 +98,8 @@ test("a service waits for its settings, keeps secrets from administrators, and f
       endpoint: "https://one.example",
       level: "info",
       port: 8080,
+      region: null,
+      signingKey: null,
     });
     assert.deepEqual(service.config.revision, { deployment: 1 });
 
@@ -210,6 +213,40 @@ test("a service waits for its settings, keeps secrets from administrators, and f
     assert.deepEqual(
       remaining.items.map((item) => item.revision),
       [3, 2],
+    );
+
+    // An optional secret was never waited for and read null; once set it
+    // arrives live, and an instance can go back to null on its own.
+    const signingKey = (next: () => Promise<unknown>) =>
+      new Promise<string | null>((resolve) => {
+        service.config.onChange(({ changed, current }) => {
+          if (changed.includes("signingKey")) resolve(current.signingKey);
+        });
+        void next();
+      });
+    assert.equal(
+      await signingKey(() =>
+        set(deployment, {
+          secrets: { signingKey: "s1" },
+          expectedRevision: 3,
+        }),
+      ),
+      "s1",
+    );
+    assert.equal(
+      await signingKey(() =>
+        set(instance, { secrets: { signingKey: null }, expectedRevision: 1 }),
+      ),
+      null,
+    );
+    const nulled = (await read(instance)).fields.find(
+      (field) => field.name === "signingKey",
+    );
+    assert.equal(nulled?.source, "instance");
+    // A secret that may not be null refuses it.
+    await assert.rejects(
+      set(instance, { secrets: { apiKey: null }, expectedRevision: 2 }),
+      /apiKey/,
     );
     await service.stop();
   });

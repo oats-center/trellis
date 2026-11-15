@@ -86,17 +86,22 @@
     }
   }
 
-  function schemaOf(field: Field): Record<string, unknown> {
-    const schema = field.schema as Record<string, unknown>;
-    const ref = typeof schema.$ref === "string" ? schema.$ref : undefined;
-    const defs = schema.$defs as
-      Record<string, Record<string, unknown>> | undefined;
-    return ref && defs ? (defs[ref.replace("#/$defs/", "")] ?? schema) : schema;
-  }
-
-  // Text settings are typed as text; anything else as JSON.
+  // Text settings, nullable ones included, are typed as text; anything else
+  // as JSON. Clearing a nullable setting is how it goes back to null.
   function isText(field: Field): boolean {
-    return schemaOf(field).type === "string";
+    const root = field.schema as Record<string, unknown>;
+    const defs = (root.$defs ?? {}) as Record<string, Record<string, unknown>>;
+    const resolve = (schema: Record<string, unknown>) =>
+      typeof schema.$ref === "string"
+        ? (defs[schema.$ref.replace("#/$defs/", "")] ?? schema)
+        : schema;
+    const schema = resolve(root);
+    const options = Array.isArray(schema.anyOf)
+      ? (schema.anyOf as Record<string, unknown>[])
+          .map(resolve)
+          .filter((option) => option.type !== "null")
+      : [schema];
+    return options.length === 1 && options[0]?.type === "string";
   }
 
   function shown(field: Field): string {

@@ -116,6 +116,7 @@ mod tests {
             service Orders {{
               config databaseUrl {{ title "Database URL"; description "Where orders live."; type string; restart; }}
               config databasePassword {{ title "Database password"; description "Role password."; type string; secret; restart; }}
+              config webhookToken {{ title "Webhook token"; description "Signs outgoing hooks."; type string | null; secret; }}
               config logLevel {{ {log_level} }}
               config batchSize {{ title "Batch size"; description "Rows per write."; type int32; default 50; }}
             }}
@@ -131,11 +132,22 @@ mod tests {
         let config = participant.config();
         assert_eq!(
             config.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["batchSize", "databasePassword", "databaseUrl", "logLevel"]
+            [
+                "batchSize",
+                "databasePassword",
+                "databaseUrl",
+                "logLevel",
+                "webhookToken"
+            ]
         );
         assert!(config["databasePassword"].secret && config["databasePassword"].restart);
         assert_eq!(config["batchSize"].default, Some(serde_json::json!(50)));
         assert_eq!(config["databaseUrl"].default, None);
+        // A nullable field is optional, a secret too: unset, it reads null.
+        assert_eq!(
+            config["webhookToken"].default,
+            Some(serde_json::Value::Null)
+        );
 
         let canonical =
             canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();

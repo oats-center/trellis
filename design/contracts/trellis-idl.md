@@ -200,8 +200,10 @@ available rather than feature flags.
 A `config NAME { ... }` member declares one setting Trellis keeps for the
 participant or app request. Each has a lowerCamelCase name, nonempty `title` and `description`, a `type`
 expression, and optionally a scalar `default`, `secret`, and `restart`.
-A field without a default is required; an app's fields need defaults. Only
-services may declare `secret`, and a secret cannot have a default. An app
+A field without a default is required, except that a `T | null` field defaults
+to null; an app's fields need defaults. Only services may declare `secret`, and
+a secret's only possible default is null, so an optional secret has a nullable
+type. An app
 request with settings gains a required `trellis.auth.v1:config.readApp`
 selection and needs a direct dependency on the `trellis` package. Type, default, `secret`, and `restart` are part
 of the participant digest; title and description are not. See
