@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.41] - 2026-11-15
+
 ### Added
 
 - Services, devices, and apps can take their settings from Trellis instead of
@@ -43,6 +45,14 @@ and this project adheres to
   `services.createInstance({ config })` in TypeScript and
   `TrellisTestRuntime::set_config` in Rust.
 
+### Changed
+
+- Trellis runs on Node 24 and Node 26, and CI and the container images use 26.
+  Node 26 rejects `--experimental-transform-types`, so nothing passes it any
+  more: the TypeScript packages use only syntax plain Node runs (constructor
+  parameter properties became declared fields), and `erasableSyntaxOnly`
+  keeps it that way. `engines` now allows `>=24 <27`.
+
 ### Fixed
 
 - `Issuers.Revoke` of a key that still signed Auth's own authority, such as
@@ -53,18 +63,6 @@ and this project adheres to
 - A failed step in the service-update browser tests left the connecting service
   retrying after the test server stopped, so the test file never exited and CI
   ran into the job timeout instead of reporting the failure.
-
-## [0.100.0-rc.41] - 2026-11-15
-
-### Changed
-
-- Trellis runs on Node 24 and Node 26, and CI and the container images use 26.
-  Node 26 rejects `--experimental-transform-types`, so nothing passes it any
-  more: the TypeScript packages use only syntax plain Node runs (constructor
-  parameter properties became declared fields), and `erasableSyntaxOnly`
-  keeps it that way. `engines` now allows `>=24 <27`.
-
-### Fixed
 
 - Adding or editing a sign-in provider with an issuer that is not an `https`
   URL, such as a bare `example.us.auth0.com`, failed with "Not authorized". It
