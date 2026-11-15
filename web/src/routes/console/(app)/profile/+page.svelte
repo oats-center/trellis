@@ -14,6 +14,7 @@
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { getNotifications } from "$lib/notifications.svelte";
   import { getChangeAccess } from "$lib/console/change_access.ts";
+  import { signInRows as signInRowsFor } from "$lib/console/sign_in_rows.ts";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
@@ -41,30 +42,8 @@
   let linkProviders = $state.raw<{ providerId: string; title: string }[]>([]);
   let unlinkPending = $state<string | null>(null);
   let confirmationModal: ConfirmationModal | undefined = $state();
-  /** One row per provider, plus links to providers that are no longer offered. */
-  const signInRows = $derived([
-    ...linkProviders.map((provider) => ({
-      key: provider.providerId,
-      providerId: provider.providerId as string | null,
-      title: provider.title,
-      identity: identities.find(
-        (identity) => identity.providerId === provider.providerId,
-      ),
-    })),
-    ...identities
-      .filter(
-        (identity) =>
-          !linkProviders.some(
-            (provider) => provider.providerId === identity.providerId,
-          ),
-      )
-      .map((identity) => ({
-        key: identity.identityId,
-        providerId: null,
-        title: identity.issuer,
-        identity: identity as IdentityRecord | undefined,
-      })),
-  ]);
+  /** Every linked identity, grouped by provider, plus providers to connect. */
+  const signInRows = $derived(signInRowsFor(linkProviders, identities));
   let linkError = $state<string | null>(null);
   let linkUncertain = $state(false);
   let passwordChangePending = $state(false);
@@ -147,7 +126,7 @@
     if (unlinkPending) return;
     const confirmed = await confirmationModal?.confirm({
       title: `Disconnect ${title}?`,
-      message: `You will no longer be able to sign in with this ${title} account.`,
+      message: `You will no longer be able to sign in with the ${title} account ${identity.subject}.`,
       confirmLabel: "Disconnect",
     });
     if (!confirmed) return;
