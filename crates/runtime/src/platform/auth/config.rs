@@ -12,6 +12,7 @@ use std::sync::Arc;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
 use trellis_idl::{compile_evidence, ConfigFieldDefinition, PackageGraph};
+use trellis_rs::client::EventDescriptor;
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{
     __types::{trellis::*, CursorPage, CursorPageInfo},
@@ -785,8 +786,8 @@ fn write_revision(
         connection,
         "event",
         &json!({
-            "subject": <events::ConfigChanged as trellis_rs::client::EventDescriptor>::SUBJECT,
-            "descriptor": <events::ConfigChanged as trellis_rs::client::EventDescriptor>::descriptor_identity()
+            "subject": <events::ConfigChanged as EventDescriptor>::SUBJECT,
+            "descriptor": <events::ConfigChanged as EventDescriptor>::descriptor_identity()
                 .map_err(|_| AuthError::Unavailable)?,
             "event": event,
         }),
@@ -1053,7 +1054,8 @@ fn own_config(
 ) -> Result<AuthOwnConfigResponse, AuthError> {
     let now = crate::clock::unix_now();
     storage.authority.transaction(|connection| {
-        let (instance, deployment, participant, kind, revision): (String, String, String, String, u64) =
+        type Instance = (String, String, String, String, u64);
+        let (instance, deployment, participant, kind, revision): Instance =
             connection
                 .query_row(
                     "SELECT i.instance_id,i.deployment_id,d.participant_id,d.participant_kind,\
