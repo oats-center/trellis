@@ -233,8 +233,12 @@ the deployment's value or, failing that, null.
 
 `trellis clients config CLIENT` does the same for an app. The Console shows a
 Settings section on each service page, on each device type's page, and in each
-app's editor, with a form for the values, the instance selector, the restart
-notice, and earlier versions to restore or delete. The link a waiting
+app's editor, with a form for the values, the instance selector (offered
+whenever the deployment has an instance), the restart notice, and earlier
+versions to restore or delete. A field whose type allows null offers "Set to
+null" beside Clear, as `--null` does in the CLI. Edits stay with the target
+they were typed for: changing the selector discards them, and the form waits
+until the selected target's settings have loaded. The link a waiting
 participant prints opens that section.
 
 ## Development and tests

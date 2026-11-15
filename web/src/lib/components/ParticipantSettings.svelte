@@ -10,6 +10,7 @@
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
+  import { asSchema, definitionsOf, resolve } from "$lib/console/schema.ts";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import Notice from "$lib/components/Notice.svelte";
@@ -29,10 +30,13 @@
   const scope = new RequestScope("participant-settings");
   let instanceId = $state("");
   let view = $state.raw<View | null>(null);
+  // Whose settings `view` holds, so edits wait until it matches the selector.
+  let loadedKey = $state("");
   // Every instance of the deployment, for choosing whose overrides to edit.
   let instances = $state.raw<View["instances"]>([]);
   let revisions = $state.raw<Revision[]>([]);
-  // What the administrator typed, by field name. Untouched fields are absent.
+  // What the administrator typed for the loaded target, by field name.
+  // Untouched fields are absent; switching targets discards them.
   let drafts = $state<Record<string, string>>({});
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
@@ -44,6 +48,10 @@
       ? { clientId }
       : { deploymentId, ...(instanceId ? { instanceId } : {}) },
   );
+  const key = $derived(`${clientId ?? deploymentId}:${instanceId}`);
+  // The shown settings belong to what the selector names.
+  const ready = $derived(view !== null && loadedKey === key);
+  const loadedInstanceId = $derived(view?.target.instanceId);
   const editable = $derived(canPerform(authority.authority, "configSet"));
   const changed = $derived(Object.keys(drafts).length > 0);
   // Instances still running restart-only values from an earlier save.
@@ -51,7 +59,7 @@
     const current = view;
     if (!current?.fields.some((field) => field.restart)) return [];
     return current.instances.filter((instance) =>
-      instanceId
+      loadedInstanceId
         ? instance.connectedRevision !== current.deploymentRevision ||
           instance.connectedInstanceRevision !== current.revision
         : instance.connectedRevision !== current.revision,
@@ -59,12 +67,14 @@
   });
 
   $effect(() => {
-    scope.setKey(`${clientId ?? deploymentId}:${instanceId}`);
+    scope.setKey(key);
+    drafts = {};
     void load();
   });
 
   async function load(): Promise<void> {
     const token = scope.begin();
+    const loading = key;
     try {
       const input = apis.auth.API.actions["rpc:Config.Get"].input.decode({
         target,
@@ -75,7 +85,8 @@
         .orThrow();
       if (!scope.isCurrent(token)) return;
       view = loaded;
-      if (!instanceId) instances = loaded.instances;
+      loadedKey = loading;
+      if (!input.target.instanceId) instances = loaded.instances;
       revisions = history.items;
       drafts = {};
       error = null;
@@ -86,29 +97,49 @@
     }
   }
 
-  // Text settings, nullable ones included, are typed as text; anything else
-  // as JSON. Clearing a nullable setting is how it goes back to null.
-  function isText(field: Field): boolean {
-    const root = field.schema as Record<string, unknown>;
-    const defs = (root.$defs ?? {}) as Record<string, Record<string, unknown>>;
-    const resolve = (schema: Record<string, unknown>) =>
-      typeof schema.$ref === "string"
-        ? (defs[schema.$ref.replace("#/$defs/", "")] ?? schema)
-        : schema;
-    const schema = resolve(root);
+  // The JSON types a field's value may take.
+  function types(field: Field): unknown[] {
+    const root = asSchema(field.schema) ?? {};
+    const defs = definitionsOf(root);
+    const schema = resolve(root, defs);
     const options = Array.isArray(schema.anyOf)
-      ? (schema.anyOf as Record<string, unknown>[])
-          .map(resolve)
-          .filter((option) => option.type !== "null")
+      ? schema.anyOf.flatMap((option) => {
+          const node = asSchema(option);
+          return node ? [resolve(node, defs)] : [];
+        })
       : [schema];
-    return options.length === 1 && options[0]?.type === "string";
+    return options.flatMap((option) =>
+      Array.isArray(option.type) ? option.type : [option.type],
+    );
+  }
+
+  // Text settings, nullable ones included, are typed as text; anything else
+  // as JSON.
+  function isText(field: Field): boolean {
+    const kinds = types(field).filter((kind) => kind !== "null");
+    return kinds.length === 1 && kinds[0] === "string";
   }
 
   function shown(field: Field): string {
     if (field.value === undefined) return "";
+    if (field.value === null && isText(field)) return "";
     return typeof field.value === "string" && isText(field)
       ? field.value
       : JSON.stringify(field.value);
+  }
+
+  function placeholder(field: Field): string {
+    if (field.secret) return field.isSet ? "Set — type to replace" : "Not set";
+    if (field.value === null) return "null";
+    if (field.default === undefined) return "";
+    return `Default: ${typeof field.default === "string" ? field.default : JSON.stringify(field.default)}`;
+  }
+
+  // Whether the value is stored at the loaded target itself, not inherited.
+  function setHere(field: Field): boolean {
+    return loadedInstanceId
+      ? field.source === "instance"
+      : field.source === "deployment";
   }
 
   function sourceLabel(field: Field): string {
@@ -116,7 +147,7 @@
       case "instance":
         return "Set for this instance";
       case "deployment":
-        return instanceId ? "From the service" : "Set";
+        return loadedInstanceId ? "From the service" : "Set";
       case "default":
         return "Default";
       default:
@@ -133,18 +164,28 @@
     }
   }
 
-  async function mutate(run: () => Promise<View>, done: string): Promise<void> {
+  // Runs a change captured for `intentKey`. Its outcome is shown only while
+  // the selector still names that target.
+  async function mutate(
+    intentKey: string,
+    run: () => Promise<View>,
+    done: string,
+  ): Promise<void> {
     if (busy) return;
     busy = true;
     error = null;
     notice = null;
     try {
-      view = await run();
+      const result = await run();
+      if (key !== intentKey) return;
+      view = result;
+      loadedKey = intentKey;
       // A saved secret is never shown back, so what was typed goes at once.
       drafts = {};
       notice = done;
       await load();
     } catch (cause) {
+      if (key !== intentKey) return;
       error =
         classifyMutationError(cause).kind === "unknown"
           ? "We couldn't confirm the change. Refresh before trying again."
@@ -155,12 +196,13 @@
   }
 
   async function save(): Promise<void> {
-    if (!view) return;
+    if (!ready || !view) return;
+    const current = view;
     const values: Record<string, JsonValue> = {};
     const secrets: Record<string, JsonValue> = {};
     try {
       for (const [name, text] of Object.entries(drafts)) {
-        const field = view.fields.find((item) => item.name === name);
+        const field = current.fields.find((item) => item.name === name);
         if (!field) continue;
         if (field.secret) {
           if (text !== "") secrets[name] = parse(field, text);
@@ -170,12 +212,13 @@
       error = cause instanceof Error ? cause.message : String(cause);
       return;
     }
-    const revision = view.revision;
+    const revision = current.revision;
     await mutate(
+      loadedKey,
       () =>
         trellis
           .configSet({
-            target: view!.target,
+            target: current.target,
             values,
             secrets,
             ...(revision === undefined ? {} : { expectedRevision: revision }),
@@ -186,37 +229,53 @@
     );
   }
 
-  async function clear(field: Field): Promise<void> {
-    if (!view) return;
-    const revision = view.revision;
+  // Unset removes the value stored here, so the default or deployment
+  // applies; null stores null here, overriding them.
+  async function store(
+    field: Field,
+    change: "unset" | "null",
+    done: string,
+  ): Promise<void> {
+    if (!ready || !view) return;
+    const current = view;
+    const revision = current.revision;
+    const nulled = { [field.name]: null };
     await mutate(
+      loadedKey,
       () =>
         trellis
           .configSet({
-            target: view!.target,
-            unset: [field.name],
+            target: current.target,
+            ...(change === "unset"
+              ? { unset: [field.name] }
+              : field.secret
+                ? { secrets: nulled }
+                : { values: nulled }),
             ...(revision === undefined ? {} : { expectedRevision: revision }),
             idempotencyKey: ulid(),
           })
           .orThrow(),
-      `${field.title} cleared.`,
+      done,
     );
   }
 
   async function restore(revision: Revision): Promise<void> {
-    if (!view?.revision) return;
+    if (!ready || !view?.revision) return;
+    const current = view;
+    const intentKey = loadedKey;
+    const expectedRevision = view.revision;
     const confirmed = await confirmationModal?.confirm({
       title: "Restore these settings?",
       message: `The settings saved ${formatDate(revision.createdAt)} become current again.`,
       confirmLabel: "Restore",
     });
-    if (!confirmed) return;
-    const expectedRevision = view.revision;
+    if (!confirmed || key !== intentKey) return;
     await mutate(
+      intentKey,
       () =>
         trellis
           .configRollback({
-            target: view!.target,
+            target: current.target,
             revision: revision.revision,
             expectedRevision,
             idempotencyKey: ulid(),
@@ -227,18 +286,22 @@
   }
 
   async function remove(revision: Revision): Promise<void> {
+    if (!ready || !view) return;
+    const current = view;
+    const intentKey = loadedKey;
     const confirmed = await confirmationModal?.confirm({
       title: "Delete this earlier version?",
       message:
         "It can't be restored afterwards. Delete versions that hold replaced passwords or keys.",
       confirmLabel: "Delete version",
     });
-    if (!confirmed || !view) return;
+    if (!confirmed || key !== intentKey) return;
     await mutate(
+      intentKey,
       () =>
         trellis
           .configRevisionsDelete({
-            target: view!.target,
+            target: current.target,
             revision: revision.revision,
             idempotencyKey: ulid(),
           })
@@ -258,7 +321,7 @@
   >
     <div class="flex flex-wrap items-center justify-between gap-3">
       <h2 class="text-base font-semibold">Settings</h2>
-      {#if instances.length > 1 || instanceId}
+      {#if instances.length > 0 || instanceId}
         <label class="flex items-center gap-2 text-sm"
           ><span class="text-base-content/65">For</span><select
             class="select select-sm"
@@ -267,7 +330,10 @@
             >{#each instances as instance (instance.instanceId)}<option
                 value={instance.instanceId}>{instance.title}</option
               >{/each}</select
-          ></label
+          >{#if !ready && !error}<span
+              class="loading loading-spinner loading-xs"
+              aria-label="Loading settings"
+            ></span>{/if}</label
         >
       {/if}
     </div>
@@ -317,14 +383,8 @@
               class={["input w-full", !isText(field) && "font-mono"]}
               type={field.secret ? "password" : "text"}
               autocomplete="off"
-              disabled={!editable || busy}
-              placeholder={field.secret
-                ? field.isSet
-                  ? "Set — type to replace"
-                  : "Not set"
-                : field.default !== undefined
-                  ? `Default: ${typeof field.default === "string" ? field.default : JSON.stringify(field.default)}`
-                  : ""}
+              disabled={!editable || busy || !ready}
+              placeholder={placeholder(field)}
               value={drafts[field.name] ?? (field.secret ? "" : shown(field))}
               oninput={(event) => {
                 drafts = {
@@ -333,11 +393,23 @@
                 };
               }}
             />
-            {#if editable && field.isSet && (!instanceId || field.source === "instance")}<button
+            {#if editable && types(field).includes("null") && !(field.value === null && setHere(field))}<button
+                type="button"
+                class="btn btn-ghost btn-sm whitespace-nowrap"
+                disabled={busy || !ready}
+                aria-label={`Set ${field.title} to null`}
+                onclick={() =>
+                  void store(field, "null", `${field.title} set to null.`)}
+                >Set to null</button
+              >{/if}
+            {#if editable && field.isSet && (!loadedInstanceId || field.source === "instance")}<button
                 type="button"
                 class="btn btn-ghost btn-sm"
-                disabled={busy}
-                onclick={() => void clear(field)}>Clear</button
+                disabled={busy || !ready}
+                aria-label={`Clear ${field.title}`}
+                onclick={() =>
+                  void store(field, "unset", `${field.title} cleared.`)}
+                >Clear</button
               >{/if}
           </span>
           <span class="trellis-field-help">{field.description}</span>
@@ -350,7 +422,7 @@
           <button
             class="btn btn-primary"
             type="submit"
-            disabled={busy || !changed}>Save settings</button
+            disabled={busy || !changed || !ready}>Save settings</button
           >
         </div>{/if}
     </form>
@@ -378,14 +450,14 @@
                   ariaLabel={`Actions for settings saved ${formatDate(revision.createdAt)}`}
                   ><li>
                     <button
-                      disabled={busy}
+                      disabled={busy || !ready}
                       onclick={() => void restore(revision)}>Restore</button
                     >
                   </li>
                   <li>
                     <button
                       class="text-error"
-                      disabled={busy}
+                      disabled={busy || !ready}
                       onclick={() => void remove(revision)}>Delete</button
                     >
                   </li></ActionMenu

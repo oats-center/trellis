@@ -36,6 +36,20 @@ and this project adheres to
 - Rust generation emitted duplicate `config` methods when a service KV or
   device State was named `config`, and duplicate `Config` fields for settings
   such as `apiURL` and `apiUrl`. It now refuses both, naming the declarations.
+- The Console's Settings section can store an explicit null. A setting or
+  secret whose type allows null has a "Set to null" action beside Clear, so one
+  instance can go without a value its deployment has instead of inheriting it.
+- The Console's Settings section offers its "For" selector whenever a
+  deployment has an instance, so a deployment with a single instance can give
+  that instance its own overrides without changing the deployment.
+- Switching the Console's Settings section to another instance could save
+  unsaved changes, or a restore, to the previously shown target while the new
+  one loaded or after it failed to load. Changes now stay with the target they
+  were typed for, and editing waits until the selected target's settings have
+  loaded.
+- The Account page showed only the first identity linked through a company
+  sign-in provider. Every linked identity is listed with its own Disconnect, so
+  a second account from the same provider can be removed on its own.
 
 ## [0.100.0-rc.41] - 2026-11-15
 
