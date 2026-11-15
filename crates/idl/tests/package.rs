@@ -1448,3 +1448,71 @@ fn descriptions_round_trip_through_evidence_without_changing_meaning() {
         json_schema(&plain, &input).unwrap()
     );
 }
+
+#[test]
+fn settings_typed_by_imported_types_resolve_defaults_and_optionality() {
+    let common = compile_project(
+        &PackageManifest {
+            package: PackageMetadata {
+                name: "common".into(),
+                version: Version::new(1, 0, 0),
+            },
+            ..manifest(&[("source", "common.trellis")])
+        },
+        vec![source(
+            "source",
+            "common.trellis",
+            r#"enum Mode { "fast"; "safe"; } type OptionalKey = string | null;
+            model Settings { mode: Mode; key: OptionalKey; }
+            api common@v1 { title "Common"; description "Common settings.";
+              rpc Get { input Settings; output Settings; }
+              capabilities { public { allows { rpc Get; } } } }"#,
+        )],
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let compile = |config: &str| {
+        let mut root = manifest(&[("main", "main.trellis")]);
+        root.dependencies.insert(
+            "common".into(),
+            Dependency {
+                package: "common".into(),
+                version: None,
+                path: Some("common".into()),
+                registry: None,
+            },
+        );
+        compile_project(
+            &root,
+            vec![source(
+                "main",
+                "main.trellis",
+                &format!(
+                    "import {{ Mode, OptionalKey }} from common;\nservice Worker {{ {config} }}"
+                ),
+            )],
+            BTreeMap::from([("common".into(), common.clone())]),
+        )
+    };
+    // An imported nullable alias makes a setting, and so a secret, optional.
+    let graph = compile(
+        r#"config key { title "Key"; description "API key."; type OptionalKey; secret; }
+        config mode { title "Mode"; description "Run mode."; type Mode; default "safe"; }"#,
+    )
+    .unwrap();
+    let worker = graph.root_package().participants().values().next().unwrap();
+    assert_eq!(
+        worker.config()["key"].default,
+        Some(serde_json::Value::Null)
+    );
+    assert_eq!(
+        worker.config()["mode"].default,
+        Some(serde_json::json!("safe"))
+    );
+    // An imported enum refuses a default that is not one of its strings.
+    let error =
+        compile(r#"config mode { title "Mode"; description "Run mode."; type Mode; default 42; }"#)
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("does not match its type"), "{error}");
+}

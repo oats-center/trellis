@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 base64.workspace = true
+jsonschema.workspace = true
 logos.workspace = true
 miette.workspace = true
 semver = { workspace = true, features = ["serde"] }

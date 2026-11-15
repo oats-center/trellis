@@ -207,6 +207,36 @@ pub(crate) fn compile(
         digests: BTreeMap::new(),
         participant_needs: BTreeMap::new(),
     };
+    // Auth serves a default when nothing is stored, so it must pass the same
+    // schema Auth checks a written value against. Named types can come from
+    // any package, so this waits for the whole graph.
+    let root = &graph.packages[&graph.root];
+    let configs = root
+        .participants
+        .values()
+        .map(|participant| (participant.identity.as_str(), &participant.config))
+        .chain(
+            root.app_requests
+                .values()
+                .map(|request| (request.identity.as_str(), &request.config)),
+        );
+    for (owner, config) in configs {
+        for (name, field) in config {
+            let Some(default) = &field.default else {
+                continue;
+            };
+            let schema = crate::expression_json_schema(&graph, &field.ty)?;
+            let validator = jsonschema::validator_for(&schema).map_err(|error| {
+                miette!("config field '{name}' of '{owner}' has an unusable schema: {error}")
+            })?;
+            if let Err(error) = validator.validate(default) {
+                return Err(miette!(
+                    "the default of config field '{name}' of '{owner}' does not match its \
+                    type: {error}"
+                ));
+            }
+        }
+    }
     for (id, package) in &graph.packages {
         let digest = if let Some(graph) = dependency_aliases
             .values()
@@ -1376,7 +1406,7 @@ fn resolve_authoring(
     }
     let mut config = BTreeMap::new();
     for field in &raw.config {
-        let definition = resolve_config_field(field, kind, source, scope)?;
+        let definition = resolve_config_field(field, kind, source, scope, root)?;
         if config.insert(field.name.clone(), definition).is_some() {
             return Err(miette!("duplicate config field '{}'", field.name));
         }
@@ -1521,6 +1551,7 @@ fn resolve_config_field(
     participant: Option<ParticipantKind>,
     source: usize,
     scope: &Scope<'_>,
+    root: &SemanticPackage,
 ) -> miette::Result<ConfigFieldDefinition> {
     let name = &raw.name;
     let mut characters = name.chars();
@@ -1552,10 +1583,25 @@ fn resolve_config_field(
         ));
     }
     // A field that may be null is optional: with no default, it reads null
-    // until an administrator sets it, so nothing waits for it.
-    let default = match (&raw.default, &ty) {
-        (None, TypeExpression::Nullable(_)) => Some(serde_json::Value::Null),
-        (default, _) => default.clone(),
+    // until an administrator sets it, so nothing waits for it. Its type may
+    // say so directly or through aliases, here or in a dependency.
+    let mut resolved = &ty;
+    let nullable = loop {
+        match resolved {
+            TypeExpression::Nullable(_) => break true,
+            TypeExpression::Named(reference) => {
+                let package = package_for(root, scope.dependencies, &reference.package)?;
+                match package.types.get(&reference.id) {
+                    Some(TypeDefinition::Alias(value)) => resolved = value,
+                    _ => break false,
+                }
+            }
+            _ => break false,
+        }
+    };
+    let default = match &raw.default {
+        None if nullable => Some(serde_json::Value::Null),
+        default => default.clone(),
     };
     if participant.is_none() && default.is_none() {
         // An app cannot wait for an administrator the way a service does.
@@ -1569,13 +1615,6 @@ fn resolve_config_field(
             "secret config field '{name}' cannot have a default; it would be in the source"
         ));
     }
-    if let Some(value) = &default {
-        if !default_fits(&ty, value) {
-            return Err(miette!(
-                "the default of config field '{name}' does not match its type"
-            ));
-        }
-    }
     Ok(ConfigFieldDefinition {
         docs,
         ty,
@@ -1583,34 +1622,6 @@ fn resolve_config_field(
         secret: raw.secret,
         restart: raw.restart,
     })
-}
-
-/// Whether a scalar default can be a value of `ty`. Named types are checked
-/// when a value is stored, since their definitions may live in another package.
-fn default_fits(ty: &TypeExpression, value: &serde_json::Value) -> bool {
-    use serde_json::Value;
-    match (ty, value) {
-        (TypeExpression::Nullable(_), Value::Null) => true,
-        (TypeExpression::Nullable(inner), value) => default_fits(inner, value),
-        (TypeExpression::Named(_), _) => true,
-        (TypeExpression::Primitive(primitive, _), value) => match primitive {
-            Primitive::Json => true,
-            Primitive::Bool => value.is_boolean(),
-            Primitive::Number => value.is_number(),
-            Primitive::Int32 => value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
-            Primitive::Uint32 => value.as_u64().is_some_and(|n| u32::try_from(n).is_ok()),
-            Primitive::Int64 => value
-                .as_str()
-                .is_some_and(|text| text.parse::<i64>().is_ok()),
-            Primitive::Uint64 => value
-                .as_str()
-                .is_some_and(|text| text.parse::<u64>().is_ok()),
-            Primitive::String | Primitive::Bytes | Primitive::Timestamp | Primitive::Ulid => {
-                value.is_string()
-            }
-        },
-        _ => false,
-    }
 }
 
 fn resolve_resource(

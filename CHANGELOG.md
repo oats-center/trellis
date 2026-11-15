@@ -25,6 +25,17 @@ and this project adheres to
 
 - The Console's Settings section took a nullable text setting as JSON, so a
   plain value such as a password was refused. It is now taken as text.
+- The compiler accepted any scalar default for a setting typed by an enum,
+  alias, or constrained type, such as `42` for a string enum, and the service
+  then failed to start on it. Defaults are now checked against the same schema
+  Auth checks writes against, with named types resolved in their own packages.
+- A setting typed through an alias that allows null, such as
+  `type OptionalKey = string | null;`, was still required, so a service waited
+  for a value that should have defaulted to null. Such a setting, or secret, is
+  now optional.
+- Rust generation emitted duplicate `config` methods when a service KV or
+  device State was named `config`, and duplicate `Config` fields for settings
+  such as `apiURL` and `apiUrl`. It now refuses both, naming the declarations.
 
 ## [0.100.0-rc.41] - 2026-11-15
 

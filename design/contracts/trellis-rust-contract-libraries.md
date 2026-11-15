@@ -63,7 +63,11 @@ Use current Rustdoc/generated source for exact participant-specific methods.
 
 Generation rejects collisions across the complete normalized Client method
 namespace, including API accessors, resource accessors, and runtime methods,
-before replacing last-good output. Model field and enum value names are checked
+before replacing last-good output. A service's Provider methods are checked the
+same way, so a KV, store, or consumer named `config` collides with the settings
+accessor a service with settings gets, as a State named `config` does on a
+device Client. Settings whose names normalize to one Rust field, such as
+`apiURL` and `apiUrl`, are rejected too. Model field and enum value names are checked
 the same way, including against the generated `extra` field that preserves
 unknown wire fields and the `Unknown` variant that preserves unknown enum
 values. Device State accessors use an SDK-owned Watch

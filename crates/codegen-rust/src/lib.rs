@@ -411,10 +411,55 @@ fn validate_names(
                 .filter(|(_, resource)| !matches!(resource, ResourceDefinition::Job { .. }))
                 .map(|(name, _)| (name.as_str(), rust_ident(&key_to_snake(name.as_str())))),
         );
+        let has_config = !participant.config().is_empty();
+        if participant.kind() == ParticipantKind::Device && has_config {
+            methods.push(("<config settings>", "config".to_owned()));
+        }
         reject_collisions(
             &format!("participant {} Client methods", participant.identity()),
             methods,
         )?;
+        reject_collisions(
+            &format!("participant {} Config fields", participant.identity()),
+            participant
+                .config()
+                .keys()
+                .map(|name| (name.as_str(), rust_ident(&key_to_snake(name)))),
+        )?;
+        if participant.kind() == ParticipantKind::Service {
+            let mut methods = vec![("new", "new".to_owned()), ("client", "client".to_owned())];
+            if has_config {
+                methods.push(("<config settings>", "config".to_owned()));
+            }
+            methods.extend(
+                participant
+                    .implements()
+                    .iter()
+                    .map(|id| (id.as_str(), module_name(id.as_str()))),
+            );
+            for (name, resource) in participant.resources() {
+                let method = rust_ident(&key_to_snake(name.as_str()));
+                match resource {
+                    ResourceDefinition::Job { .. } => methods.extend([
+                        (name.as_str(), format!("create_{method}")),
+                        (name.as_str(), format!("submit_{method}")),
+                        (name.as_str(), format!("{method}_updates")),
+                        (name.as_str(), format!("prepare_{method}")),
+                        (name.as_str(), format!("register_{method}")),
+                        (name.as_str(), format!("register_{method}_with_concurrency")),
+                        ("<jobs client>", "jobs_client".to_owned()),
+                    ]),
+                    ResourceDefinition::State { .. } => {}
+                    _ => methods.push((name.as_str(), method)),
+                }
+            }
+            methods.sort();
+            methods.dedup();
+            reject_collisions(
+                &format!("participant {} Provider methods", participant.identity()),
+                methods,
+            )?;
+        }
     }
     for request in root.app_requests().values() {
         let mut methods = vec![("from_generated", "from_generated".to_owned())];
@@ -3151,6 +3196,62 @@ mod tests {
                 "{source}"
             );
             assert_eq!(fs::read_to_string(existing).unwrap(), "last good package");
+        }
+    }
+
+    #[test]
+    fn settings_names_cannot_collide_in_generated_rust() {
+        let setting = |name: &str| {
+            format!(
+                "config {name} {{ title \"Setting\"; description \"A setting.\"; \
+                type string; }}"
+            )
+        };
+        let value = "title \"Value\"; description \"Saved value\"; schema Value; version 1;";
+        for (source, identifier, originals) in [
+            (
+                format!(
+                    "type Value = string; service Api {{ kv config {{ {value} }} {} }}",
+                    setting("token")
+                ),
+                "config",
+                ["<config settings>", "config"],
+            ),
+            (
+                format!(
+                    "type Value = string; device Sensor {{ state config {{ {value} }} {} }}",
+                    setting("token")
+                ),
+                "config",
+                ["<config settings>", "config"],
+            ),
+            (
+                format!(
+                    "service Api {{ {} {} }}",
+                    setting("apiURL"),
+                    setting("apiUrl")
+                ),
+                "api_url",
+                ["apiURL", "apiUrl"],
+            ),
+        ] {
+            let graph = graph(&source);
+            let output = tempfile::tempdir().unwrap().path().join("generated");
+            let result = generate_rust_package(&graph, &output, "fixture", &[]);
+            let Err(CodegenRustError::IdentifierCollision {
+                identifier: found,
+                originals: mut found_originals,
+                ..
+            }) = result
+            else {
+                panic!("{source}: {result:?}");
+            };
+            found_originals.sort();
+            assert_eq!(
+                (found.as_str(), found_originals),
+                (identifier, originals.map(String::from).to_vec())
+            );
+            assert!(!output.exists());
         }
     }
 

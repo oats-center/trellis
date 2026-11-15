@@ -181,6 +181,53 @@ mod tests {
         assert!(error.contains("cannot have a default"), "{error}");
     }
 
+    #[test]
+    fn config_defaults_and_optionality_follow_resolved_named_types() {
+        let field = |ty: &str, rest: &str| {
+            format!(
+                r#"enum LogLevel {{ "info"; "debug"; }}
+                type Port = int32(min=1, max=65535);
+                type OptionalKey = string | null;
+                type Key = OptionalKey;
+                service Worker {{ config value {{
+                  title "Value"; description "A value."; type {ty}; {rest}
+                }} }}"#
+            )
+        };
+        for (ty, default) in [("LogLevel", "42"), ("Port", "0"), ("Key", "7")] {
+            let error = compile(field(ty, &format!("default {default};")))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("does not match its type"),
+                "{ty} {default}: {error}"
+            );
+        }
+        let default = |source: String| {
+            let graph = compile(source).unwrap();
+            let participant = graph.root_package().participants().values().next().unwrap();
+            participant.config()["value"].default.clone()
+        };
+        assert_eq!(
+            default(field("LogLevel", r#"default "debug";"#)),
+            Some(serde_json::json!("debug"))
+        );
+        assert_eq!(
+            default(field("Port", "default 8080;")),
+            Some(serde_json::json!(8080))
+        );
+        // A type that is nullable through aliases is optional, so a secret of
+        // it is too; nothing waits for either.
+        for rest in ["", "secret;"] {
+            assert_eq!(
+                default(field("Key", rest)),
+                Some(serde_json::Value::Null),
+                "{rest}"
+            );
+        }
+        assert_eq!(default(field("Port", "")), None);
+    }
+
     fn transfer_contract(member: &str) -> String {
         format!(
             r#"

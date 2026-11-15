@@ -79,11 +79,15 @@ service Orders {
 
 A field without a default is required, unless its type allows null: a
 `T | null` field with no default reads null until someone sets it, so nothing
-waits for it. An app's fields must all have defaults,
+waits for it. The type may allow null through an alias, local or imported,
+such as `type OptionalKey = string | null;`. An app's fields must all have defaults,
 since an app cannot wait for an administrator the way a service does. A
 default is a JSON scalar (a quoted
 string, a number, `true`, `false`, or `null`) and the compiler checks it
-against a primitive type. A secret cannot have a default, since it would sit in
+against the field's JSON Schema, the one Auth checks writes against, after
+resolving named types and their constraints in whatever package declares them.
+Auth serves a default when nothing is stored, so a default that could not be
+written is refused at compile time. A secret cannot have a default, since it would sit in
 the source; null is the one exception, so an optional secret is written
 `type string | null; secret;`. Only services may declare `secret` fields: a device runs where its
 user can read anything it holds. Enums are open in Trellis IDL, so an enum

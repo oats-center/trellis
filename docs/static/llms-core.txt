@@ -1073,8 +1073,9 @@ role's SQLite database.
 Services, devices, and apps declare the settings they read from Trellis with
 `config` members instead of environment variables:
 `config databaseUrl { title "Database URL"; description "..."; type string; restart; }`.
-A field without `default` is required, except a `T | null` field, which reads
-null until set; `secret` marks a write-only value and is allowed only in
+A field without `default` is required, except one whose type allows null
+(directly or through an alias), which reads null until set; a default must be
+a value Auth would accept for the field's type; `secret` marks a write-only value and is allowed only in
 services, and an optional secret is declared `type string | null; secret;`; `restart` marks a value read only at connect. Auth
 checks every write against the installed build's types. At connect the SDK
 reads the values before handlers start; while a required value is missing the
