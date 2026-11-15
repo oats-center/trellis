@@ -14,7 +14,7 @@ import {
 import { deriveDeviceIdentity } from "@oatscenter/trellis/auth";
 import { discoverNativeOAuth } from "@oatscenter/trellis/native";
 import { join } from "node:path";
-import { codecs } from "@oatscenter/trellis/generated";
+import { codecs, type JsonValue } from "@oatscenter/trellis/generated";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
@@ -23,6 +23,7 @@ import {
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { apps as pinnedApps } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const participant = participants.ConfiguredService.participant;
@@ -373,6 +374,21 @@ test("an app reads its own settings, which an administrator changes live", async
       assert.equal(saved.revision, 1);
       assert.equal(await changed, "welcome back");
       assert.deepEqual(client.config.revision, { app: 1 });
+      // A later build's declaration changes a default no one overrode; the
+      // connected app follows it and keeps the stored greeting.
+      const redeclared = new Promise<number>((resolve) => {
+        client.config.onChange(({ current }) => resolve(current.limit));
+      });
+      const later = pinnedApps.ConfiguredAgent.request;
+      assert.equal(later.id, request.id);
+      await runtime.callAdminRpc("authConfigAppsDeclare", {
+        clientId: request.id,
+        packageEvidence: later.packageEvidence as JsonValue,
+        requestId: later.id,
+        idempotencyKey: ulid(),
+      });
+      assert.equal(await redeclared, 20);
+      assert.equal(client.config.current.greeting, "welcome back");
     } finally {
       await client.connection.close();
     }

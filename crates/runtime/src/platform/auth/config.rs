@@ -177,6 +177,20 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                         let graph = compile_evidence(evidence)
                             .map_err(|error| AuthError::Invalid(error.to_string()))?;
                         app_fields(&graph, &input.request_id)?;
+                        // Connected users of the app reread only when told, so a
+                        // declaration that changes what they read is announced.
+                        let stored = current(connection, &target.key())?;
+                        let empty = Map::new();
+                        let settings = stored.as_ref().map_or(&empty, |stored| &stored.values);
+                        let read = |connection: &Connection| -> Result<Vec<_>, AuthError> {
+                            let declared = Declared::of_target(connection, &target)?;
+                            Ok(effective(&declared, &[(settings, &empty, "client")])?
+                                .into_iter()
+                                .map(|(name, value)| (name, value.value))
+                                .collect())
+                        };
+                        // A declaration that no longer reads is replaced, not kept.
+                        let before = read(connection).ok();
                         connection.execute(
                             "INSERT INTO auth_client_config_declarations(client_id,request_id,\
                             evidence_json,declared_by,declared_at) VALUES(?1,?2,?3,?4,?5) \
@@ -191,6 +205,10 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                                 now
                             ],
                         )?;
+                        if Some(read(connection)?) != before {
+                            let revision = stored.as_ref().map(|stored| stored.revision);
+                            announce(connection, &target, revision, now)?;
+                        }
                         response(connection, storage, &target)
                     },
                 )
@@ -774,6 +792,17 @@ fn write_revision(
             target.client()
         ],
     )?;
+    announce(connection, target, Some(revision), now)
+}
+
+/// Durably queue `Config.Changed` for a target; it commits with the change.
+/// `revision` is the target's current one, absent when nothing is stored.
+fn announce(
+    connection: &Connection,
+    target: &Target,
+    revision: Option<u32>,
+    now: i64,
+) -> Result<(), AuthError> {
     let event: AuthConfigChanged = serde_json::from_value(json!({
         "eventId": super::sqlite::id(),
         "occurredAt": timestamp(now)?,
