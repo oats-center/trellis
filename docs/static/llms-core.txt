@@ -1092,7 +1092,9 @@ at rest and never returned to administrators. Tests set values through the
 same RPCs, never through environment variables. App settings are public to
 the app's users, need defaults, and cannot be secret; register the app's
 declaration with its client using `trellis clients put FILE --source PATH
-[--app ID]` and change values with `trellis clients config CLIENT`.
+[--app ID]` and change values with `trellis clients config CLIENT`. Attach
+each new build's declaration the same way; connected apps follow changed
+defaults live.
 
 ### Resource lifecycle
 

@@ -127,43 +127,59 @@ pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> mi
         ClientsCommand::Config { .. } => unreachable!("handled before connecting"),
         ClientsCommand::Put { input, source, app } => {
             let request: auth_types::AuthOAuthClientPutRequest =
-                serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
+                serde_json::from_slice(&std::fs::read(&input).into_diagnostic()?)
                     .into_diagnostic()?;
+            // Everything local is checked before the first write, so a bad
+            // source leaves the stored registration as it was.
+            let declaration = match source {
+                Some(source) => {
+                    let root = source.canonicalize().into_diagnostic()?;
+                    let manifest = trellis_idl::project::read_manifest(&root.join("trellis.toml"))?;
+                    let compiled = crate::package::compile_project(&root, &manifest)?;
+                    let declaring = compiled
+                        .root_package()
+                        .app_requests()
+                        .values()
+                        .filter(|request| match &app {
+                            Some(id) => request.identity().as_str() == id,
+                            None => !request.config().is_empty(),
+                        })
+                        .map(|request| request.identity().as_str().to_owned())
+                        .collect::<Vec<_>>();
+                    let [request_id] = declaring.as_slice() else {
+                        return Err(miette::miette!(
+                            help = "Name the app with --app.",
+                            "{} in {}",
+                            if declaring.is_empty() {
+                                "no app declares settings".to_owned()
+                            } else {
+                                format!("several apps declare settings: {}", declaring.join(", "))
+                            },
+                            source.display()
+                        ));
+                    };
+                    Some(wire(serde_json::json!({
+                        "clientId": request.client_id,
+                        "packageEvidence": super::deploy::package_evidence(&compiled)?,
+                        "requestId": request_id,
+                        "idempotencyKey": ulid::Ulid::generate().to_string(),
+                    }))?)
+                }
+                None => None,
+            };
             let response = auth.o_auth_clients_put(&request).await.into_diagnostic()?;
-            if let Some(source) = source {
-                let root = source.canonicalize().into_diagnostic()?;
-                let manifest = trellis_idl::project::read_manifest(&root.join("trellis.toml"))?;
-                let compiled = crate::package::compile_project(&root, &manifest)?;
-                let declaring = compiled
-                    .root_package()
-                    .app_requests()
-                    .values()
-                    .filter(|request| match &app {
-                        Some(id) => request.identity().as_str() == id,
-                        None => !request.config().is_empty(),
-                    })
-                    .map(|request| request.identity().as_str().to_owned())
-                    .collect::<Vec<_>>();
-                let [request_id] = declaring.as_slice() else {
+            if let Some(declaration) = declaration {
+                if let Err(error) = auth.config_apps_declare(&declaration).await {
                     return Err(miette::miette!(
-                        help = "Name the app with --app.",
-                        "{} in {}",
-                        if declaring.is_empty() {
-                            "no app declares settings".to_owned()
-                        } else {
-                            format!("several apps declare settings: {}", declaring.join(", "))
-                        },
-                        source.display()
+                        help = format!(
+                            "Run the same command again with {}: the saved registration \
+                            replays unchanged and the settings are attached.",
+                            input.display()
+                        ),
+                        "Saved app {}, but could not attach its settings: {error}",
+                        request.client_id
                     ));
-                };
-                auth.config_apps_declare(&wire(serde_json::json!({
-                    "clientId": request.client_id,
-                    "packageEvidence": super::deploy::package_evidence(&compiled)?,
-                    "requestId": request_id,
-                    "idempotencyKey": ulid::Ulid::generate().to_string(),
-                }))?)
-                .await
-                .into_diagnostic()?;
+                }
             }
             output::emit(format, &response, |response| {
                 let client = &response["client"];

@@ -256,3 +256,8 @@ service EchoProvider {
   job work { title "Work"; description "The service's first job queue."; payload Value; result Value; }
 }
 service GrantKeeper { use auth { capability users.read; } }
+// A later build of the fixture app, with a new default limit.
+agent ConfiguredAgent {
+  config greeting { title "Greeting"; description "What the app says first."; type string; default "hello"; }
+  config limit { title "Limit"; description "Rows the app shows per page."; type int32; default 20; }
+}

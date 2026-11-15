@@ -110,9 +110,14 @@ package to depend directly on the `trellis` package.
 
 `Config.Apps.Declare` attaches an app build's package evidence and request ID to
 its registered OAuth client; Auth then checks settings written for that client
-against the declaration. `trellis clients put FILE --source PATH [--app ID]`
-registers the client and attaches the declaration in one step. A client with no
-declaration has no settings. An app reads its values with `Config.App.Get`,
+against the declaration. When a new declaration changes what the app reads,
+such as a new default for a field no one set, Auth sends `Config.Changed` for
+the client in the same transaction, without a revision if the client has no
+stored settings, so connected apps reread. `trellis clients put FILE --source
+PATH [--app ID]` compiles the source and picks the app before it saves the
+registration, then attaches the declaration. If that second step fails, running
+the same command again replays the saved registration through its idempotency
+key and retries the declaration. A client with no declaration has no settings. An app reads its values with `Config.App.Get`,
 which answers for the client of the caller's own session. The TypeScript
 browser and native app SDKs expose them as `client.config`, with `current`,
 `revision.app`, and `onChange`.
@@ -167,7 +172,7 @@ instance loaded. The participant sees them through a typed handle:
   `current()` decodes the generated `Config` struct and whose `changed()` waits
   for the next live change.
 
-`Config.Changed` carries the target and the new revision, never values. Every
+`Config.Changed` carries the target and its current revision, never values. Every
 service and device may subscribe to it, so the event only prompts the SDK to read
 `Config.Own.Get` again over its own authenticated session; its payload is never
 trusted for values. The SDK also reads again whenever its subscription is

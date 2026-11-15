@@ -1095,14 +1095,16 @@ model AuthOwnConfigResponse {
   /// Console page where an administrator sets the missing values.
   configUrl?: string;
 }
-/// Configuration changed; the payload says whose and the new revision, never values.
+/// Configuration changed; the payload says whose and the current revision, never values.
 model AuthConfigChanged {
   eventId: ulid;
   occurredAt: timestamp;
   deploymentId?: ulid;
   instanceId?: ulid;
   clientId?: AuthClientId;
-  revision: AuthConfigRevisionNumber;
+  /// Absent when a new app declaration changed what an app reads and its
+  /// client has no stored settings.
+  revision?: AuthConfigRevisionNumber;
 }
 /// Attach an app build's settings declaration to its registered client.
 model AuthConfigAppDeclareRequest {

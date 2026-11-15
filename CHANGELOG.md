@@ -50,6 +50,17 @@ and this project adheres to
 - The Account page showed only the first identity linked through a company
   sign-in provider. Every linked identity is listed with its own Disconnect, so
   a second account from the same provider can be removed on its own.
+- `trellis clients put FILE --source PATH` saved the registration before it
+  read the source, so a missing path, a project that would not compile, or an
+  app it could not pick failed after the registration had already changed. The
+  source is now checked first. If attaching the settings fails after the
+  registration is saved, the error says so, and running the same command again
+  replays the saved registration and retries the settings.
+- Attaching a new app declaration with `Config.Apps.Declare` left connected
+  users of the app on the old values when the new build changed a default.
+  Auth now sends `Config.Changed` for the client whenever a declaration changes
+  what the app reads, so connected apps reread at once. The event's `revision`
+  is absent when the client has no stored settings.
 
 ## [0.100.0-rc.41] - 2026-11-15
 
