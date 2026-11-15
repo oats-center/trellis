@@ -4,7 +4,7 @@
  * portable `@noble/hashes` object hash, the Object Store SDK's default
  * `js-sha256`, and native `node:crypto`. Single-threaded, warm, in-process.
  *
- *   node --experimental-transform-types tools/perf/frame_digest.ts
+ *   node tools/perf/frame_digest.ts
  */
 import { createHash } from "node:crypto";
 import { sha256 as noble } from "@noble/hashes/sha256";

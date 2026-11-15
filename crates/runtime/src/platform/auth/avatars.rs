@@ -74,12 +74,34 @@ impl AvatarSigner {
 
 /// The stable Trellis-hosted image URL for an active user's profile, when the
 /// installation serves remote-derived images and the profile has a source.
+/// Once every source is known to have no image, such as an email without a
+/// Gravatar, there is no URL until the profile changes or that result
+/// expires, so clients show initials without requesting a missing image.
 pub(super) fn avatar_url(
     store: &SqliteAuthorizationStore,
+    connection: &super::sqlite::Connection,
     principal: &str,
     profile: &Profile,
 ) -> Option<String> {
-    if !store.settings.avatar_external_fetch_enabled || sources(profile).is_empty() {
+    let sources = sources(profile);
+    if !store.settings.avatar_external_fetch_enabled || sources.is_empty() {
+        return None;
+    }
+    let now = crate::clock::unix_now();
+    let missing = |source: &Source| {
+        connection
+            .query_row(
+                "SELECT status FROM auth_avatar_cache \
+                WHERE principal_id=?1 AND source_fingerprint=?2 AND expires_at>?3",
+                params![principal, source.fingerprint, now],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .is_some_and(|status| status != "ok")
+    };
+    if sources.iter().all(missing) {
         return None;
     }
     let token = store
@@ -103,7 +125,9 @@ fn sources(profile: &Profile) -> Vec<Source> {
     let gravatar = profile
         .email
         .as_ref()
-        .filter(|_| profile.email_verified && profile.gravatar_enabled)
+        // Any email: Trellis cannot confirm one, and a verified address would
+        // not prove the picture shows its owner either, since anyone can
+        // upload any photo to their own Gravatar.
         .map(|email| {
             format!(
                 "https://gravatar.com/avatar/{}?s=128&d=404",
@@ -114,7 +138,6 @@ fn sources(profile: &Profile) -> Vec<Source> {
             )
         });
     [
-        ("override", profile.avatar_override.as_ref()),
         ("oidc", profile.picture.as_ref()),
         ("gravatar", gravatar.as_ref()),
     ]
@@ -356,7 +379,9 @@ impl Avatars {
         Ok(Some((mime, bytes)))
     }
 
-    pub(super) async fn get(&self, encoded: &str, now: i64) -> Result<Vec<u8>, AuthError> {
+    /// The profile image for a current URL: `Ok(None)` when the URL is right
+    /// but no source has an image, an error when the URL is unknown or stale.
+    pub(super) async fn get(&self, encoded: &str, now: i64) -> Result<Option<Vec<u8>>, AuthError> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         if !self.store.settings.avatar_external_fetch_enabled {
             return Err(AuthError::NotFound);
@@ -378,7 +403,7 @@ impl Avatars {
         }
         for source in sources(&profile) {
             match self.cached(&token, &source, now).await? {
-                Some(Some(bytes)) => return Ok(bytes),
+                Some(Some(bytes)) => return Ok(Some(bytes)),
                 Some(None) => continue,
                 None => {}
             }
@@ -404,7 +429,7 @@ impl Avatars {
                 .map_err(|_| AuthError::Unavailable)?;
             if let Some(cached) = self.cached(&token, &source, now).await? {
                 if let Some(bytes) = cached {
-                    return Ok(bytes);
+                    return Ok(Some(bytes));
                 }
                 continue;
             }
@@ -419,7 +444,7 @@ impl Avatars {
                         Ok(result) => permit = result?,
                         Err(_) => {
                             self.save(&token, &source, Err(()), now).await?;
-                            return Err(AuthError::NotFound);
+                            return Ok(None);
                         }
                     }
                 }
@@ -433,15 +458,15 @@ impl Avatars {
                     );
                     self.save(&token, &source, Err(()), now).await?;
                     if result.is_err() {
-                        return Err(AuthError::NotFound);
+                        return Ok(None);
                     }
                 }
             }
             drop(permit);
             if let Some(Some(bytes)) = self.cached(&token, &source, now).await? {
-                return Ok(bytes);
+                return Ok(Some(bytes));
             }
         }
-        Err(AuthError::NotFound)
+        Ok(None)
     }
 }

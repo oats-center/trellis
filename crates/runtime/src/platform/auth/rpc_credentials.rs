@@ -229,29 +229,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                         Administration::ManagePrincipals,
                     )?;
                 }
-                let (cursor, limit) = page_bounds(input.page.as_ref())?;
-                let mut statement = connection.prepare(
-                    "SELECT oauth_grant_id \
-                    FROM auth_oauth_grants \
-                    WHERE principal_id=?1 \
-                    AND oauth_grant_id>?2 \
-                    AND (?3 IS NULL OR client_id=?3) \
-                    AND revoked_at IS NULL \
-                    ORDER BY oauth_grant_id \
-                    LIMIT ?4",
-                )?;
-                let ids = statement
-                    .query_map(
-                        params![
-                            owner,
-                            cursor,
-                            input.client_id.as_ref().map(|id| id.as_ref()),
-                            limit + 1
-                        ],
-                        |row| row.get::<_, String>(0),
-                    )?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                page(ids, limit, |id| read_delegation(connection, id))
+                list_delegations(connection, &owner, input, crate::clock::unix_now())
             })
         }
     );
@@ -1503,4 +1481,39 @@ pub(super) fn read_chain(
         key = next;
     }
     Ok(trellis_protocol::IssuerChain { rotations })
+}
+
+/// One person's live grants: neither revoked nor expired, since an expired grant
+/// can no longer act for anyone.
+pub(super) fn list_delegations(
+    connection: &Connection,
+    owner: &str,
+    input: &AuthDelegationsListRequest,
+    now: i64,
+) -> Result<AuthDelegationsListResponse, AuthError> {
+    let (cursor, limit) = page_bounds(input.page.as_ref())?;
+    let mut statement = connection.prepare(
+        "SELECT oauth_grant_id \
+        FROM auth_oauth_grants \
+        WHERE principal_id=?1 \
+        AND oauth_grant_id>?2 \
+        AND (?3 IS NULL OR client_id=?3) \
+        AND revoked_at IS NULL \
+        AND expires_at>?5 \
+        ORDER BY oauth_grant_id \
+        LIMIT ?4",
+    )?;
+    let ids = statement
+        .query_map(
+            params![
+                owner,
+                cursor,
+                input.client_id.as_ref().map(|id| id.as_ref()),
+                limit + 1,
+                now
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    page(ids, limit, |id| read_delegation(connection, id))
 }

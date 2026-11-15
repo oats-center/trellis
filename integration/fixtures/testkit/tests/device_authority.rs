@@ -159,7 +159,6 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
         .unwrap();
     let mut node = tokio::process::Command::new("node")
         .args([
-            "--experimental-transform-types",
             "ts/packages/trellis/native/device_interop.ts",
         ])
         .current_dir("../../..")

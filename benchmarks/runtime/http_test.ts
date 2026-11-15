@@ -20,7 +20,6 @@ const digest = createHash("sha256").update(payload(size)).digest("hex");
 /** Start the Node HTTP baseline without a Trellis identity (no store mode). */
 async function startServer(output: string, httpTlsDir?: string) {
   const child = spawnTracked(process.execPath, [
-    "--experimental-transform-types",
     fileURLToPath(new URL("./http.ts", import.meta.url)),
   ]);
   const stderr: Buffer[] = [];

@@ -11,7 +11,11 @@ import {
 export class ReceiveBudget {
   #reserved = 0;
 
-  constructor(readonly total: number) {}
+  readonly total: number;
+
+  constructor(total: number) {
+    this.total = total;
+  }
 
   /** Window `[frames, bytes]` to offer now, or `undefined` when exhausted. */
   offer(maxFrameBytes: number): [number, number] | undefined {

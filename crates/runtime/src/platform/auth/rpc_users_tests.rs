@@ -564,6 +564,42 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
 }
 
 #[test]
+fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(open(&directory, SigningKey::from_bytes(&[49; 32])));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[19; 32]).unwrap();
+    let bare = AuthOIDCProviderPutRequest {
+        provider_id: None,
+        issuer: "identity.example".into(),
+        client_id: "trellis".into(),
+        title: "Company".to_string().into(),
+        scopes: vec!["openid".into()],
+        role_claim: String::new(),
+        claim_freshness_seconds: 300.into(),
+        client_secret: None,
+        expected_revision: 0.into(),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    match put_provider(&storage, &mutation(&admin, &bare), &bare, NOW) {
+        Err(AuthError::Invalid(detail)) => assert!(detail.contains("https URL"), "{detail}"),
+        other => panic!("expected an issuer validation error, got {other:?}"),
+    }
+    let fixed = AuthOIDCProviderPutRequest {
+        issuer: "https://identity.example/".into(),
+        idempotency_key: id().into(),
+        ..bare
+    };
+    let created = put_provider(&storage, &mutation(&admin, &fixed), &fixed, NOW).unwrap();
+    assert_eq!(created.provider.issuer, "https://identity.example/");
+}
+
+#[test]
 fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[47; 32])));
@@ -633,10 +669,13 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         unlink_identity(&store, &mutation(&admin, &unlink), &unlink, NOW + 1),
         Err(AuthError::NotFound)
     ));
-    assert!(matches!(
-        unlink_identity(&store, &mutation(&alice, &unlink), &unlink, NOW + 1),
-        Err(AuthError::Denied)
-    ));
+    // Her only way to sign in: refused, saying so.
+    match unlink_identity(&store, &mutation(&alice, &unlink), &unlink, NOW + 1) {
+        Err(AuthError::Invalid(detail)) => {
+            assert!(detail.contains("only way to sign in"), "{detail}")
+        }
+        other => panic!("expected the last sign-in to be kept, got {other:?}"),
+    }
     let second = AuthOIDCProviderPutRequest {
         provider_id: None,
         issuer: "https://other-identity.example".into(),
@@ -682,10 +721,12 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    assert!(matches!(
-        unlink_identity(&store, &mutation(&admin, &protected), &protected, NOW + 2),
-        Err(AuthError::Denied)
-    ));
+    match unlink_identity(&store, &mutation(&admin, &protected), &protected, NOW + 2) {
+        Err(AuthError::Invalid(detail)) => {
+            assert!(detail.contains("default administrator"), "{detail}")
+        }
+        other => panic!("expected the default administrator's sign-in to be kept, got {other:?}"),
+    }
 }
 
 #[test]
@@ -1400,4 +1441,51 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
         .is_err());
     let again = create(&manager, "alice").unwrap();
     assert_ne!(again.principal_id, alice.principal_id);
+}
+
+#[test]
+fn link_providers_lists_active_providers_by_name_and_drops_a_disabled_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(open(&directory, SigningKey::from_bytes(&[50; 32])));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[19; 32]).unwrap();
+    let put = |issuer: &str, title: &str| {
+        let input = AuthOIDCProviderPutRequest {
+            provider_id: None,
+            issuer: issuer.into(),
+            client_id: "trellis".into(),
+            title: title.to_string().into(),
+            scopes: vec!["openid".into()],
+            role_claim: String::new(),
+            claim_freshness_seconds: 300.into(),
+            client_secret: None,
+            expected_revision: 0.into(),
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+        put_provider(&storage, &mutation(&admin, &input), &input, NOW)
+            .unwrap()
+            .provider
+    };
+    let company = put("https://company.example/", "Company");
+    let retired = put("https://retired.example/", "Retired");
+    let disable = AuthOIDCProviderMutationRequest {
+        provider_id: retired.provider_id,
+        expected_revision: retired.revision,
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    disable_provider(&store, &mutation(&admin, &disable), &disable, NOW + 1).unwrap();
+    let listed = store.read(read_link_providers).unwrap().providers;
+    assert_eq!(
+        listed
+            .iter()
+            .map(|item| (item.provider_id, item.title.as_str()))
+            .collect::<Vec<_>>(),
+        [(company.provider_id, "Company")]
+    );
 }

@@ -118,15 +118,30 @@
       void load(id);
     });
   });
+  // Errors that carry the same details read once, with every name above them.
+  function errorGroups(errors: { name: string; payload?: unknown }[]) {
+    const groups = new Map<
+      string,
+      { key: string; names: string[]; payload: unknown }
+    >();
+    for (const failure of errors) {
+      const key = JSON.stringify(failure.payload ?? null);
+      const group = groups.get(key) ?? {
+        key,
+        names: [],
+        payload: failure.payload,
+      };
+      group.names.push(failure.name);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
+  }
   onDestroy(() => scope.dispose());
 </script>
 
 {#snippet schemaSection(title: string, schema: unknown)}
   {#if schema !== undefined}
-    <section class="space-y-1">
-      <h3 class="text-sm font-semibold">{title}</h3>
-      <SchemaView {schema} />
-    </section>
+    <SchemaView {title} {schema} />
   {/if}
 {/snippet}
 
@@ -320,14 +335,20 @@
               {@render schemaSection(`Signal ${name}`, schema)}
             {/each}
             {#if selected.errors.length}
-              <section class="space-y-2">
-                <h3 class="text-sm font-semibold">Errors</h3>
-                {#each selected.errors as failure (failure.name)}
-                  <div>
-                    <code class="text-sm font-medium">{failure.name}</code>
-                    {#if failure.payload !== undefined}<SchemaView
-                        schema={failure.payload}
-                      />{/if}
+              <section class="errors-card">
+                <header class="errors-header"><h3>Errors</h3></header>
+                {#each errorGroups(selected.errors) as group (group.key)}
+                  <div class="errors-row">
+                    <div class="flex flex-wrap gap-1.5">
+                      {#each group.names as name (name)}<code
+                          class="errors-name">{name}</code
+                        >{/each}
+                    </div>
+                    {#if group.payload !== undefined}
+                      <div class="mt-2">
+                        <SchemaView schema={group.payload} />
+                      </div>
+                    {/if}
                   </div>
                 {/each}
               </section>
@@ -392,6 +413,37 @@
 </section>
 
 <style>
+  .errors-card {
+    background: var(--color-base-100);
+    border: 1px solid var(--color-base-300);
+    border-radius: 0.75rem;
+    font-size: 0.875rem;
+    overflow: hidden;
+  }
+  .errors-header {
+    background: color-mix(in oklab, var(--color-base-200) 70%, transparent);
+    border-bottom: 1px solid var(--color-base-300);
+    padding: 0.55rem 0.9rem;
+  }
+  .errors-header h3 {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .errors-row {
+    padding: 0.65rem 0.9rem;
+  }
+  .errors-row + .errors-row {
+    border-top: 1px solid var(--color-base-300);
+  }
+  .errors-name {
+    background: color-mix(in oklab, var(--color-error) 10%, transparent);
+    border-radius: 0.375rem;
+    color: var(--color-error);
+    font-weight: 600;
+    padding: 0.05rem 0.4rem;
+  }
   .api-facts {
     display: grid;
     gap: 0.75rem 1.5rem;

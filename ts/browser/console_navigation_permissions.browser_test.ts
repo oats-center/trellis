@@ -105,13 +105,15 @@ test("an unavailable profile photo falls back to local initials without browser 
       page.on("request", (request) => requests.push(request.url()));
       await openConsole(page, runtime, credentials);
       await page.goto(`${runtime.consoleUrl}/console/profile`);
+      // An email without a Gravatar: Trellis finds no picture and answers
+      // the picture URL with "no content", which is not a browser error.
       await page
-        .getByLabel("Picture URL", { exact: true })
-        .fill("https://images.invalid/photo.png");
+        .getByLabel("Email", { exact: true })
+        .fill("no-gravatar-avatar-owner@example.invalid");
       const unavailable = page.waitForResponse(
         (response) =>
           new URL(response.url()).pathname.startsWith("/profile/avatars/") &&
-          response.status() === 404,
+          response.status() === 204,
       );
       await page
         .getByRole("button", { name: "Save profile", exact: true })
@@ -124,7 +126,9 @@ test("an unavailable profile photo falls back to local initials without browser 
         await page.getByLabel("Profile initials", { exact: true }).isVisible(),
       );
       assert(
-        requests.every((url) => new URL(url).hostname !== "images.invalid"),
+        requests.every(
+          (url) => !new URL(url).hostname.endsWith("gravatar.com"),
+        ),
       );
     } finally {
       await context.close();

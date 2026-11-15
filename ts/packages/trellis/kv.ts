@@ -303,14 +303,23 @@ export class TypedKV<T> {
    */
   readonly #adapters = new WeakMap<NatsConnection, KV>();
 
+  readonly name: string;
+  readonly representation: KvRepresentation<T>;
+  readonly migrations: ResourceMigrations<T>;
+  readonly isCurrent: () => boolean;
+
   private constructor(
     transport: TrellisTransportProvider,
-    readonly name: string,
-    readonly representation: KvRepresentation<T>,
-    readonly migrations: ResourceMigrations<T>,
-    readonly isCurrent: () => boolean,
+    name: string,
+    representation: KvRepresentation<T>,
+    migrations: ResourceMigrations<T>,
+    isCurrent: () => boolean,
     options: KvOpenOptions<T>,
   ) {
+    this.name = name;
+    this.representation = representation;
+    this.migrations = migrations;
+    this.isCurrent = isCurrent;
     this.#transport = transport;
     this.#options = options;
     this.#acquireTimeoutMs =

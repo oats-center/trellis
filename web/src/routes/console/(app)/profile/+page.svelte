@@ -14,15 +14,12 @@
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { getNotifications } from "$lib/notifications.svelte";
   import { getChangeAccess } from "$lib/console/change_access.ts";
-  import EmptyState from "$lib/components/EmptyState.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
+  import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
-  import {
-    getAuthenticatedUser,
-    getTrellis,
-  } from "$lib/trellis";
+  import { getAuthenticatedUser, getTrellis } from "$lib/trellis";
 
   type IdentityRecord = apis.auth.UserIdentitiesListOutput["items"][number];
   const trellis = getTrellis();
@@ -41,7 +38,33 @@
   let identities = $state.raw<IdentityRecord[]>([]);
   let identitiesPanelError = $state<string | null>(null);
   let linkPending = $state(false);
-  let providerId = $state("");
+  let linkProviders = $state.raw<{ providerId: string; title: string }[]>([]);
+  let unlinkPending = $state<string | null>(null);
+  let confirmationModal: ConfirmationModal | undefined = $state();
+  /** One row per provider, plus links to providers that are no longer offered. */
+  const signInRows = $derived([
+    ...linkProviders.map((provider) => ({
+      key: provider.providerId,
+      providerId: provider.providerId as string | null,
+      title: provider.title,
+      identity: identities.find(
+        (identity) => identity.providerId === provider.providerId,
+      ),
+    })),
+    ...identities
+      .filter(
+        (identity) =>
+          !linkProviders.some(
+            (provider) => provider.providerId === identity.providerId,
+          ),
+      )
+      .map((identity) => ({
+        key: identity.identityId,
+        providerId: null,
+        title: identity.issuer,
+        identity: identity as IdentityRecord | undefined,
+      })),
+  ]);
   let linkError = $state<string | null>(null);
   let linkUncertain = $state(false);
   let passwordChangePending = $state(false);
@@ -55,9 +78,12 @@
   let givenName = $state("");
   let familyName = $state("");
   let email = $state("");
-  let pictureOverride = $state("");
-  let clearPicture = $state(false);
-  let gravatarEnabled = $state(true);
+  let picturePending = $state(false);
+  const pictureProviderId = $derived(user?.account?.pictureProviderId);
+  const pictureProviderTitle = $derived(
+    linkProviders.find((item) => item.providerId === pictureProviderId)
+      ?.title ?? "your company sign-in",
+  );
   let profilePending = $state(false);
   let profileUncertain = $state(false);
   let profileError = $state<string | null>(null);
@@ -85,7 +111,64 @@
     confirmNewPassword = "";
   }
 
-  async function createIdentityLink() {
+  /** Show a linked provider's picture, or the Gravatar for the email with `null`. */
+  async function usePicture(providerId: string | null) {
+    if (!user?.account || picturePending) return;
+    picturePending = true;
+    try {
+      const response = await trellis
+        .usersProfileUpdate({
+          ...(providerId
+            ? {
+                pictureProviderId: apis.auth.API.actions[
+                  "rpc:Users.Profile.Update"
+                ].input.decode({
+                  pictureProviderId: providerId,
+                  expectedRevision: user.account.profileRevision,
+                  idempotencyKey: ulid(),
+                }).pictureProviderId,
+              }
+            : { useGravatar: true }),
+          expectedRevision: user.account.profileRevision,
+          idempotencyKey: ulid(),
+        })
+        .orThrow();
+      user = response.user;
+      notifications.success("Your picture was changed.", "Profile updated");
+      await authority.reload();
+    } catch (cause) {
+      notifications.error(errorMessage(cause), "Picture not changed");
+    } finally {
+      picturePending = false;
+    }
+  }
+
+  async function removeIdentity(identity: IdentityRecord, title: string) {
+    if (unlinkPending) return;
+    const confirmed = await confirmationModal?.confirm({
+      title: `Disconnect ${title}?`,
+      message: `You will no longer be able to sign in with this ${title} account.`,
+      confirmLabel: "Disconnect",
+    });
+    if (!confirmed) return;
+    unlinkPending = identity.identityId;
+    try {
+      await trellis
+        .userIdentitiesUnlink({
+          identityId: identity.identityId,
+          idempotencyKey: ulid(),
+        })
+        .orThrow();
+      notifications.success(`${title} disconnected`);
+      await loadProfile();
+    } catch (e) {
+      notifications.error(errorMessage(e), "Disconnect failed");
+    } finally {
+      unlinkPending = null;
+    }
+  }
+
+  async function createIdentityLink(providerId: string) {
     if (linkPending) return;
     linkPending = true;
     linkError = null;
@@ -172,20 +255,11 @@
               : undefined,
           email: email && email !== user.email ? email : undefined,
           clearEmail: !email && !!user.email ? true : undefined,
-          avatarOverrideUrl:
-            !clearPicture && pictureOverride ? pictureOverride : undefined,
-          clearAvatarOverride: clearPicture || undefined,
-          gravatarEnabled:
-            gravatarEnabled !== user.account.gravatarEnabled
-              ? gravatarEnabled
-              : undefined,
           expectedRevision: user.account.profileRevision,
           idempotencyKey: ulid(),
         })
         .orThrow();
       user = response.user;
-      pictureOverride = "";
-      clearPicture = false;
       email = response.user.email ?? "";
       notifications.success("Your profile was saved.", "Profile updated");
       await authority.reload();
@@ -209,9 +283,6 @@
       givenName = me.user?.givenName ?? "";
       familyName = me.user?.familyName ?? "";
       email = me.user?.email ?? "";
-      gravatarEnabled = me.user?.account?.gravatarEnabled ?? true;
-      pictureOverride = "";
-      clearPicture = false;
       profileError = null;
       profileUncertain = false;
       if (!me.user) {
@@ -223,6 +294,9 @@
       // the account information that already loaded.
       identitiesPanelError = null;
       try {
+        const offered = await trellis.usersIdentityLinkProviders({}).take();
+        if (isErr(offered)) throw offered;
+        linkProviders = offered.providers;
         const identitiesResult = await traverseAll<IdentityRecord>(
           async (pageRequest) => {
             const response = await trellis
@@ -344,6 +418,20 @@
                 ? "Verified by your company sign-in. Changing it removes the verification."
                 : "Not verified."}</span
             >
+            <span class="mt-1 text-xs text-base-content/60">
+              {#if pictureProviderId}
+                Your picture comes from {pictureProviderTitle}.
+                <button
+                  type="button"
+                  class="link"
+                  disabled={picturePending}
+                  onclick={() => void usePicture(null)}
+                  >Use your Gravatar instead</button
+                >
+              {:else}
+                Your picture is the Gravatar for this email.
+              {/if}
+            </span>
           </div>
           <label class="form-control"
             ><span class="trellis-field-label">Given name</span><input
@@ -358,40 +446,6 @@
               maxlength="256"
               bind:value={familyName}
             /></label
-          >
-          <div class="form-control sm:col-span-2">
-            <label for="profile-picture" class="trellis-field-label"
-              >Picture URL</label
-            ><input
-              id="profile-picture"
-              aria-describedby="profile-picture-help"
-              class="input input-bordered input-sm w-full"
-              type="url"
-              placeholder="https://…"
-              maxlength="2048"
-              disabled={clearPicture}
-              bind:value={pictureOverride}
-            /><span
-              id="profile-picture-help"
-              class="mt-1 text-xs text-base-content/60"
-              >Leave blank to keep your current picture.</span
-            >
-          </div>
-          <label class="flex items-start gap-2 text-sm"
-            ><input
-              class="checkbox checkbox-sm"
-              type="checkbox"
-              bind:checked={clearPicture}
-            /><span>Use the picture from my company sign-in instead</span
-            ></label
-          >
-          <label class="flex items-start gap-2 text-sm"
-            ><input
-              class="checkbox checkbox-sm"
-              type="checkbox"
-              bind:checked={gravatarEnabled}
-            /><span>Use my Gravatar picture if I don't have another one</span
-            ></label
           >
         </fieldset>
         {#if profileError}<Notice variant="error">{profileError}</Notice>{/if}
@@ -415,23 +469,6 @@
               </p>
             </div>
             <div class="space-y-3">
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <label class="form-control"
-                  ><span class="trellis-field-label">Provider</span><input
-                    class="input input-bordered input-sm"
-                    bind:value={providerId}
-                  /></label
-                >
-                <button
-                  class="btn btn-outline btn-sm"
-                  type="button"
-                  onclick={createIdentityLink}
-                  disabled={linkPending || !providerId}
-                  >{linkPending
-                    ? "Opening..."
-                    : "Connect another login"}</button
-                >
-              </div>
               {#if linkError}<Notice
                   variant={linkUncertain ? "warning" : "error"}
                   class="text-sm"
@@ -451,70 +488,88 @@
               <div
                 class="divide-y divide-base-300 rounded-box border border-base-300"
               >
-                {#each identities as identity (`${identity.providerId}:${identity.subject}`)}
-                  <div class="p-3">
-                    <div
-                      class="grid gap-3 md:grid-cols-[minmax(0,1.1fr)_minmax(0,2fr)] md:items-start"
-                    >
-                      <div class="min-w-0">
-                        <div class="truncate font-medium">
-                          {identity.issuer}
-                        </div>
-                        <div class="text-xs text-base-content/60">
-                          Company sign-in
-                        </div>
-                      </div>
-                      <div
-                        class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
-                      >
-                        <dl
-                          class="grid gap-x-4 gap-y-1 text-xs text-base-content/60 sm:grid-cols-3"
-                        >
-                          <div>
-                            <dt class="font-semibold text-base-content/70">
-                              Account
-                            </dt>
-                            <dd class="truncate">{identity.subject}</dd>
-                          </div>
-                          <div>
-                            <dt class="font-semibold text-base-content/70">
-                              Linked
-                            </dt>
-                            <dd>{formatDate(identity.linkedAt)}</dd>
-                          </div>
-                          <div>
-                            <dt class="font-semibold text-base-content/70">
-                              Provider
-                            </dt>
-                            <dd class="trellis-identifier">
-                              {identity.providerId}
-                            </dd>
-                          </div>
-                        </dl>
-                      </div>
+                <div
+                  class="flex flex-wrap items-center justify-between gap-3 p-3"
+                >
+                  <div class="min-w-0">
+                    <div class="font-medium">Username and password</div>
+                    <div class="text-xs text-base-content/60">
+                      {hasLocalIdentity
+                        ? "Set"
+                        : "Not set: this account signs in with a company account only"}
                     </div>
                   </div>
-                {:else}
-                  <div class="p-3">
-                    <EmptyState
-                      title="No sign-in methods found"
-                      description="Refresh the page or contact an administrator if you cannot sign in again."
-                    />
+                  {#if hasLocalIdentity}
+                    <button
+                      class="btn btn-outline btn-sm"
+                      type="button"
+                      onclick={openPasswordModal}>Change password</button
+                    >
+                  {/if}
+                </div>
+                {#each signInRows as row (row.key)}
+                  <div
+                    class="flex flex-wrap items-center justify-between gap-3 p-3"
+                  >
+                    <div class="min-w-0">
+                      <div class="font-medium">{row.title}</div>
+                      {#if row.identity}
+                        <div class="text-xs text-base-content/60">
+                          Connected as <span class="trellis-identifier"
+                            >{row.identity.subject}</span
+                          >
+                          · since {formatDate(row.identity.linkedAt)}
+                        </div>
+                      {:else}
+                        <div class="text-xs text-base-content/60">
+                          Not connected
+                        </div>
+                      {/if}
+                    </div>
+                    {#if row.identity}
+                      <div class="flex flex-wrap items-center gap-2">
+                        {#if row.providerId && row.providerId === pictureProviderId}
+                          <span class="badge badge-ghost">Profile image</span>
+                        {:else if row.providerId}
+                          <button
+                            class="btn btn-ghost btn-sm"
+                            type="button"
+                            disabled={picturePending}
+                            onclick={() =>
+                              row.providerId && void usePicture(row.providerId)}
+                            >Use profile image</button
+                          >
+                        {/if}
+                        <button
+                          class="btn btn-outline btn-sm"
+                          type="button"
+                          disabled={unlinkPending !== null}
+                          onclick={() =>
+                            row.identity &&
+                            void removeIdentity(row.identity, row.title)}
+                          >{unlinkPending === row.identity.identityId
+                            ? "Disconnecting..."
+                            : "Disconnect"}</button
+                        >
+                      </div>
+                    {:else if row.providerId}
+                      <button
+                        class="btn btn-outline btn-sm"
+                        type="button"
+                        disabled={linkPending}
+                        onclick={() =>
+                          row.providerId &&
+                          void createIdentityLink(row.providerId)}
+                        >{linkPending ? "Opening..." : "Connect"}</button
+                      >
+                    {/if}
                   </div>
+                {:else}
+                  <p class="p-3 text-sm text-base-content/60">
+                    Company sign-in isn't set up on this Trellis.
+                  </p>
                 {/each}
               </div>
-
-              {#if hasLocalIdentity}
-                <button
-                  class="btn btn-outline btn-xs"
-                  type="button"
-                  onclick={openPasswordModal}>Change password</button
-                >
-              {:else}
-                <p class="text-sm text-base-content/60">
-                  This account signs in with a company account only.
-                </p>
-              {/if}
             </div>
           </div>
         </section>
@@ -648,3 +703,5 @@
     </div>
   </dialog>
 {/if}
+
+<ConfirmationModal bind:this={confirmationModal} />

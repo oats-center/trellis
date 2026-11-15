@@ -35,6 +35,6 @@ cores="$(nproc)"
 # Each file drives Chromium as well as a server, so one file per two cores.
 concurrency="${TRELLIS_BROWSER_CONCURRENCY:-$(( cores / 2 > 4 ? cores / 2 : 4 ))}"
 echo "Running up to $concurrency browser test files at once on $cores cores"
-exec node --experimental-transform-types --test \
+exec node --test \
   --test-concurrency="$concurrency" \
   "$@"

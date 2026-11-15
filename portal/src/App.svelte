@@ -52,6 +52,17 @@
     providers: Provider[];
     /** Whether this sign-in's app lets people create their own account. */
     signUp: { password: boolean; providers: boolean };
+    /** What a company provider reported when it last refused this sign-in. */
+    refusal?: Refusal;
+  }
+
+  /** A company provider's own reason for refusing a sign-in. */
+  interface Refusal {
+    provider: string | null;
+    error: string;
+    description: string;
+    /** The provider's own words, rather than Trellis's account of a failed step. */
+    fromProvider: boolean;
   }
 
   /** One consent row. */
@@ -175,6 +186,7 @@
   let error = $state(false);
   let providers = $state.raw<Provider[]>([]);
   let localIdentity = $state(true);
+  let refusal = $state.raw<Refusal | undefined>(undefined);
   let signUp = $state.raw<SignIn["signUp"]>({
     password: false,
     providers: false,
@@ -400,7 +412,7 @@
       )
         enrollmentStep = "login";
       else if (enrollmentCode) void inspectEnrollment();
-      void fetch(`/portal/providers`, {
+      void fetch(`/portal/providers?review=${encodeURIComponent(reviewId)}`, {
         credentials: "same-origin",
         cache: "no-store",
       })
@@ -409,6 +421,7 @@
           const result: SignIn = await response.json();
           providers = result.providers;
           localIdentity = result.localIdentity;
+          refusal = result.refusal;
         })
         .catch(() => {});
       return;
@@ -434,6 +447,7 @@
           if (controller.signal.aborted) return;
           providers = result.providers;
           localIdentity = result.localIdentity;
+          refusal = result.refusal;
           signUp = result.signUp;
         })
         .catch(() => {
@@ -465,6 +479,22 @@
     return () => controller.abort();
   });
 </script>
+
+{#snippet upstreamRefusal()}
+  <p class="alert error" role="alert">
+    {#if refusal}
+      {@const name = refusal.provider ?? "your company sign-in"}
+      {refusal.fromProvider
+        ? `${name} refused the sign-in`
+        : `Sign-in with ${name} didn't finish`}{refusal.description
+        ? `: ${refusal.description}`
+        : "."}
+      <span class="refusal-code">({refusal.error})</span>
+    {:else}
+      Company sign-in wasn't completed. Try again.
+    {/if}
+  </p>
+{/snippet}
 
 <svelte:head
   ><title
@@ -592,9 +622,7 @@
         </p>
       {/if}
       {#if query.get("error") === "upstream_login_failed"}
-        <p class="alert error" role="alert">
-          Company sign-in wasn't completed. Try again.
-        </p>
+        {@render upstreamRefusal()}
       {/if}
       {#if providers.length}
         <div class="providers">
@@ -768,9 +796,7 @@
       </p>
     {/if}
     {#if query.get("error") === "upstream_login_failed"}
-      <p class="alert error" role="alert">
-        Company sign-in wasn't completed. Try again.
-      </p>
+      {@render upstreamRefusal()}
     {/if}
     {#if providers.length}
       <div class="providers">

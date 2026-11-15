@@ -28,7 +28,6 @@ function createdUser(userId: string, name: string | null = null): CreateOutput {
       account: {
         hasLocalPassword: false,
         profileRevision: "1",
-        gravatarEnabled: true,
         username: `user-${userId}`,
         principal: {
           principalId: userId,

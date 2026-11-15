@@ -505,7 +505,6 @@ test("generated TypeScript package exercises WO-03 B2-B4", () => {
     );
     run(
         Command::new("node")
-            .arg("--experimental-transform-types")
             .arg("--test")
             .arg(temp.path().join("fixture_test.ts")),
         "generated TypeScript test",

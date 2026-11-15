@@ -2776,7 +2776,6 @@ export async function useState(client: ConnectedTrellisClient<typeof apps.Sensor
             String::from_utf8_lossy(&output.stderr)
         );
         let output = std::process::Command::new("node")
-            .arg("--experimental-transform-types")
             .arg(root.join("consumer.ts"))
             .output()
             .unwrap();

@@ -61,7 +61,11 @@ export type StartTrellisProcessArgs = {
 export class TextTail {
   #text = "";
 
-  constructor(private readonly maxChars: number) {}
+  private readonly maxChars: number;
+
+  constructor(maxChars: number) {
+    this.maxChars = maxChars;
+  }
 
   append(text: string): void {
     this.#text += text;

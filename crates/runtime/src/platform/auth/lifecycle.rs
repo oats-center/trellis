@@ -442,21 +442,35 @@ impl SqliteAuthorizationStore {
                     &identity.actor,
                     Administration::ManagePrincipals,
                 )?;
-                let issuer =
-                    url::Url::parse(&registration.issuer).map_err(|_| AuthError::Denied)?;
-                if issuer.scheme() != "https"
-                    || issuer.host_str().is_none()
-                    || !issuer.username().is_empty()
-                    || issuer.password().is_some()
-                    || issuer.query().is_some()
-                    || issuer.fragment().is_some()
-                    || ulid::Ulid::from_string(&registration.provider_id).is_err()
-                    || registration.client_id.is_empty()
-                    || registration.display_name.is_empty()
-                    || !registration.config.is_object()
-                    || registration.claim_freshness_seconds == 0
-                {
-                    return Err(AuthError::Invalid("invalid upstream provider".into()));
+                let invalid = |detail: &str| Err(AuthError::Invalid(detail.into()));
+                let issuer = url::Url::parse(&registration.issuer).ok();
+                let Some(issuer) = issuer
+                    .filter(|issuer| issuer.scheme() == "https" && issuer.host_str().is_some())
+                else {
+                    return invalid(
+                        "issuer must be an https URL, such as https://example.us.auth0.com/",
+                    );
+                };
+                if !issuer.username().is_empty() || issuer.password().is_some() {
+                    return invalid("issuer must not contain a username or password");
+                }
+                if issuer.query().is_some() || issuer.fragment().is_some() {
+                    return invalid("issuer must not contain a query or fragment");
+                }
+                if ulid::Ulid::from_string(&registration.provider_id).is_err() {
+                    return invalid("provider ID is not valid");
+                }
+                if registration.client_id.is_empty() {
+                    return invalid("client ID must not be empty");
+                }
+                if registration.display_name.is_empty() {
+                    return invalid("name must not be empty");
+                }
+                if registration.claim_freshness_seconds == 0 {
+                    return invalid("claim freshness must be greater than zero");
+                }
+                if !registration.config.is_object() {
+                    return invalid("provider settings must be an object");
                 }
                 let current: Option<u64> = connection
                     .query_row(

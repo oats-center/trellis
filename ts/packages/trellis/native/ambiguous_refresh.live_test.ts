@@ -100,7 +100,6 @@ test(
       const child = spawn(
         process.execPath,
         [
-          "--experimental-transform-types",
           "--input-type=module",
           "-e",
           `

@@ -135,6 +135,16 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         ManagePrincipals
     );
 
+    let links = Arc::clone(&store);
+    provider.register_users_identity_link_providers(move |context, _input| {
+        let store = Arc::clone(&links);
+        async move {
+            caller(&context, None).map_err(rpc_error)?;
+            blocking(move || store.read(read_link_providers))
+                .await
+                .map_err(rpc_error)
+        }
+    });
     let identities = Arc::clone(&store);
     provider.register_user_identities_list(move |context, input| {
         let store = Arc::clone(&identities);
@@ -447,6 +457,33 @@ pub(super) fn put_provider(
     )
 }
 
+/// The providers `Users.IdentityLink.Create` accepts, by name.
+pub(super) fn read_link_providers(
+    connection: &Connection,
+) -> Result<AuthIdentityLinkProvidersResponse, AuthError> {
+    let mut statement = connection.prepare(
+        "SELECT provider_id,display_name FROM auth_oidc_providers \
+        WHERE state='active' ORDER BY display_name,provider_id",
+    )?;
+    let providers = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .map(|row| {
+            let (provider, title) = row?;
+            Ok(AuthIdentityLinkProvider {
+                provider_id: provider.parse().map_err(|_| AuthError::Unavailable)?,
+                title,
+                extra: Default::default(),
+            })
+        })
+        .collect::<Result<Vec<_>, AuthError>>()?;
+    Ok(AuthIdentityLinkProvidersResponse {
+        providers,
+        extra: Default::default(),
+    })
+}
+
 pub(super) fn read_identities(
     connection: &Connection,
     actor: &str,
@@ -545,8 +582,17 @@ pub(super) fn unlink_identity(
                 params![identity.actor, input.identity_id.to_string()],
                 |row| row.get(0),
             )?;
-            if protected || !alternative {
-                return Err(AuthError::Denied);
+            if protected {
+                return Err(AuthError::Invalid(
+                    "the default administrator's company sign-ins cannot be disconnected".into(),
+                ));
+            }
+            if !alternative {
+                return Err(AuthError::Invalid(
+                    "this is the account's only way to sign in; set a password or connect \
+                    another company sign-in first"
+                        .into(),
+                ));
             }
             let mut statement = connection.prepare(
                 "SELECT login_session_id \
@@ -714,7 +760,7 @@ pub(super) fn read_user(
         .ok_or(AuthError::NotFound)?;
     let profile = super::profiles::read(connection, principal)?;
     let avatar_url = if state == "active" {
-        super::avatars::avatar_url(store, principal, &profile)
+        super::avatars::avatar_url(store, connection, principal, &profile)
     } else {
         None
     };
@@ -734,7 +780,12 @@ pub(super) fn read_user(
                 username,
                 has_local_password: password,
                 profile_revision: AuthRevision(profile.revision.into()),
-                gravatar_enabled: profile.gravatar_enabled,
+                picture_provider_id: profile
+                    .picture_provider
+                    .as_deref()
+                    .map(str::parse)
+                    .transpose()
+                    .map_err(|_| AuthError::Unavailable)?,
                 extra: Default::default(),
             })
         } else {
@@ -886,10 +937,9 @@ pub(super) fn create_user(
                     given_name: input.given_name.clone(),
                     family_name: input.family_name.clone(),
                     email: input.email.clone(),
-                    avatar_override_url: None,
                     clear_email: None,
-                    clear_avatar_override: None,
-                    gravatar_enabled: None,
+                    picture_provider_id: None,
+                    use_gravatar: None,
                     expected_revision: AuthRevision(1u64.into()),
                     idempotency_key: input.idempotency_key.clone(),
                     extra: Default::default(),
@@ -935,9 +985,8 @@ pub(super) fn update_user(
                 family_name: input.family_name.clone(),
                 email: input.email.clone(),
                 clear_email: input.clear_email,
-                avatar_override_url: None,
-                clear_avatar_override: None,
-                gravatar_enabled: None,
+                picture_provider_id: None,
+                use_gravatar: None,
                 expected_revision: input
                     .expected_profile_revision
                     .ok_or_else(|| AuthError::Invalid("profile revision required".into()))?,

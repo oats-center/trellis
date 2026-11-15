@@ -180,7 +180,6 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
         let mut command = if sdk == "typescript" {
             let mut command = std::process::Command::new(&node);
             command.args([
-                "--experimental-transform-types",
                 "integration/fixtures/runtime/events.ts",
                 runtime.trellis_url(),
                 identity.seed(),
@@ -594,7 +593,6 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             child.wait().await.unwrap();
             child = tokio::process::Command::new(&node)
                 .args([
-                    "--experimental-transform-types",
                     "integration/fixtures/runtime/events.ts",
                     runtime.trellis_url(),
                     identity.seed(),

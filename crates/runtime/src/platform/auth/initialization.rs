@@ -539,9 +539,11 @@ mod tests {
         let storage = OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap();
         let client_id = ClientId::new(CONSOLE_CLIENT_ID);
         let client = storage.get_client(&client_id).await.unwrap().unwrap();
+        // Registered at installation for :3000, the Console follows the
+        // origin the configuration now names.
         assert_eq!(
             client.redirect_uris,
-            vec!["http://localhost:3000/console/login"]
+            vec!["http://localhost:3001/console/login"]
         );
         // Turned off, the Console signs no one in, whatever answers its callback.
         let thumbprint = oauth_as::jwt::EcdsaP256Key::generate("console")
@@ -553,11 +555,20 @@ mod tests {
         let console_sign_in = [
             ("response_type", "code"),
             ("client_id", CONSOLE_CLIENT_ID),
-            ("redirect_uri", "http://localhost:3000/console/login"),
+            ("redirect_uri", "http://localhost:3001/console/login"),
             ("code_challenge", challenge.as_str()),
             ("code_challenge_method", "S256"),
             ("dpop_jkt", thumbprint.as_str()),
         ];
+        let stale = oauth_as::authorization::AuthorizationRequest::from_pairs(console_sign_in.map(
+            |(name, value)| {
+                if name == "redirect_uri" {
+                    (name, "http://localhost:3000/console/login")
+                } else {
+                    (name, value)
+                }
+            },
+        ));
         let request = oauth_as::authorization::AuthorizationRequest::from_pairs(console_sign_in);
         let mut without_console = config.clone();
         without_console.console = Some(crate::ConsoleConfig {
@@ -577,6 +588,11 @@ mod tests {
                     .is_ok(),
                 accepted
             );
+            assert!(engine
+                .server
+                .validate_authorization_request(&stale)
+                .await
+                .is_err());
         }
         let cli_id = ClientId::new(CLI_CLIENT_ID);
         let engine =
@@ -672,7 +688,9 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .redirect_uris,
-            vec!["https://console.example/console/login"]
+            // The Console is served only at the configured origin, so its
+            // callback follows the configuration, not a stored edit.
+            vec!["http://localhost:3001/console/login"]
         );
         let disable = PolicyMutation::ClientState {
             client_id: CONSOLE_CLIENT_ID.into(),

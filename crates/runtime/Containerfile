@@ -50,7 +50,7 @@ RUN apt-get update \
 
 FROM docker.io/library/rust:bookworm AS builder
 
-COPY --from=docker.io/library/node:24-bookworm-slim /usr/local /usr/local
+COPY --from=docker.io/library/node:26-bookworm-slim /usr/local /usr/local
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates curl \

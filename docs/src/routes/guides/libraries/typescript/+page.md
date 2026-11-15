@@ -35,7 +35,7 @@ Generation never edits the consumer's manifest. Commit output when clones
 should build without regeneration or the
 Trellis source-package cache.
 
-Use `@oatscenter/trellis/service` for service bootstrap in Node 24. Pass
+Use `@oatscenter/trellis/service` for service bootstrap in Node 24 or 26. Pass
 `participant` and the immutable provisioned identity `seed` to
 `TrellisService.connect(...)`; `name` is optional. Automatic telemetry can be
 disabled with `telemetry: false`, while `runtime` configures service logging,

@@ -13,7 +13,7 @@ tools are application choices. Neither Zod nor an ORM is required.
 The npm packages `@oatscenter/trellis` and `@oatscenter/result` contain ESM
 JavaScript and TypeScript declarations. Use `import`. CommonJS output and
 `require()` support have intentionally been removed, with no compatibility
-fallback. Revision 7 targets Node 24 LTS and npm ESM for native TypeScript
+fallback. Revision 7 targets Node 24 or 26 and npm ESM for native TypeScript
 tooling, and browser ESM for browser applications. Use ordinary npm dependencies
 and Node's standard test runner for native TypeScript tools and tests.
 

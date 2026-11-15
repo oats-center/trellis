@@ -83,11 +83,7 @@ const execute = async (script: string, flags: string[], log: string) => {
   try {
     const child = spawnTracked(
       process.execPath,
-      [
-        "--experimental-transform-types",
-        `${root}/benchmarks/runtime/${script}`,
-        ...flags,
-      ],
+      [`${root}/benchmarks/runtime/${script}`, ...flags],
       { cwd: root, stdio: ["ignore", file.fd, file.fd] },
     );
     return (await child.exited).code === 0;

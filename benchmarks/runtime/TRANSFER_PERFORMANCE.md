@@ -240,12 +240,12 @@ yet; that is the next investigation (`perf record` on the provider during
 ```sh
 cargo xtask build --release -p trellis-server -p trellis-cli
 cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target
-node --experimental-transform-types tools/perf/transfer.ts --output=benchmarks/runtime/results/ts \
+node tools/perf/transfer.ts --output=benchmarks/runtime/results/ts \
   --samples=3 --warmups=1 --calls=10 --sizes=8388608,134217728 [--http-tls] [--http-chunk=262144]
-node --experimental-transform-types benchmarks/runtime/run.ts --lane=rust \
+node benchmarks/runtime/run.ts --lane=rust \
   --rust-bin=target/release/trellis-performance --output=benchmarks/runtime/results/rust \
   --samples=3 --warmups=1 --calls=10 --sizes=8388608,134217728 --sessions=1 --idle-seconds=1
-node --experimental-transform-types tools/perf/frame_digest.ts
+node tools/perf/frame_digest.ts
 ```
 
 Delayed runs wrap the same command in

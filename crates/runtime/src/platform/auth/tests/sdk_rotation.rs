@@ -140,11 +140,7 @@ async fn sdk_rotation(mode: &str) {
         shutdown.clone().cancelled_owned(),
     ));
     let mut child = tokio::process::Command::new("node")
-        .args([
-            "--experimental-transform-types",
-            "ts/browser/oauth_issuer_rotation_driver.ts",
-            mode,
-        ])
+        .args(["ts/browser/oauth_issuer_rotation_driver.ts", mode])
         .env("TRELLIS_ROTATION_ISSUER", &origin)
         .env("TRELLIS_ROTATION_BACKEND", &backend_origin)
         .env("TRELLIS_ROTATION_APP", &app_origin)
@@ -636,10 +632,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     let node = tokio::time::timeout(
         Duration::from_secs(20),
         tokio::process::Command::new("node")
-            .args([
-                "--experimental-transform-types",
-                "ts/packages/trellis/native/cold_catalog_worker.ts",
-            ])
+            .args(["ts/packages/trellis/native/cold_catalog_worker.ts"])
             .arg(&input_path)
             .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .kill_on_drop(true)
@@ -911,10 +904,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     let node = tokio::time::timeout(
         Duration::from_secs(20),
         tokio::process::Command::new("node")
-            .args([
-                "--experimental-transform-types",
-                "ts/packages/trellis/native/issuer_revocation_worker.ts",
-            ])
+            .args(["ts/packages/trellis/native/issuer_revocation_worker.ts"])
             .arg(&input_path)
             .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .kill_on_drop(true)

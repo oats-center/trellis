@@ -925,9 +925,91 @@ staticPasswords:
     let rejected = dex_login(&http, wrong_nonce, &issuer, &callback, "admin@example.com").await;
     let rejected = http.get(rejected).send().await.unwrap();
     assert_eq!(
-        rejected.json::<serde_json::Value>().await.unwrap()["error"],
-        "access_denied"
+        rejected.headers()["location"].to_str().unwrap(),
+        format!("/login?transaction={transaction}&error=upstream_login_failed")
     );
+    let sign_in: serde_json::Value = http
+        .get(format!(
+            "{origin}/portal/providers?transaction={transaction}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        sign_in["refusal"]["error"], "id_token_rejected",
+        "{sign_in}"
+    );
+    assert_eq!(sign_in["refusal"]["fromProvider"], false, "{sign_in}");
+    // Dex itself refuses a PKCE method it doesn't know and says why; the sign-in page
+    // this browser returns to can show that reason, and nobody else's can.
+    let refused = http.get(&begin).send().await.unwrap();
+    let mut refusing = url::Url::parse(refused.headers()["location"].to_str().unwrap()).unwrap();
+    let pairs = refusing
+        .query_pairs()
+        .map(|(name, value)| {
+            let value = if name == "code_challenge_method" {
+                "not-a-pkce-method".to_owned()
+            } else {
+                value.into_owned()
+            };
+            (name.into_owned(), value)
+        })
+        .collect::<Vec<_>>();
+    refusing.set_query(None);
+    refusing.query_pairs_mut().extend_pairs(pairs);
+    // Dex hands the request to its connector before it validates it.
+    let mut dex_refusal = refusing;
+    for _ in 0..4 {
+        if dex_refusal.origin() == callback.origin() {
+            break;
+        }
+        let response = http.get(dex_refusal.clone()).send().await.unwrap();
+        let location = response.headers()["location"].to_str().unwrap();
+        dex_refusal = dex_refusal.join(location).unwrap();
+    }
+    let dex_refusal = dex_refusal.to_string();
+    assert!(dex_refusal.starts_with(callback.as_str()), "{dex_refusal}");
+    let returned = http.get(&dex_refusal).send().await.unwrap();
+    assert_eq!(
+        returned.headers()["location"].to_str().unwrap(),
+        format!("/login?transaction={transaction}&error=upstream_login_failed")
+    );
+    let sign_in: serde_json::Value = http
+        .get(format!(
+            "{origin}/portal/providers?transaction={transaction}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sign_in["refusal"]["error"], "invalid_request", "{sign_in}");
+    assert!(
+        sign_in["refusal"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("not-a-pkce-method")),
+        "{sign_in}"
+    );
+    assert!(sign_in["refusal"]["provider"].is_string(), "{sign_in}");
+    let stranger: serde_json::Value = reqwest::Client::builder()
+        .no_proxy()
+        .add_root_certificate(reqwest::Certificate::from_pem(certificate.pem.as_bytes()).unwrap())
+        .build()
+        .unwrap()
+        .get(format!(
+            "{origin}/portal/providers?transaction={transaction}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(stranger.get("refusal").is_none(), "{stranger}");
     let retry = http.get(&begin).send().await.unwrap();
     let upstream_authorize =
         url::Url::parse(retry.headers()["location"].to_str().unwrap()).unwrap();
@@ -1257,10 +1339,8 @@ staticPasswords:
             "newcomer@example.com",
         )
         .await;
-        (
-            transaction,
-            newcomer_http.get(returned).send().await.unwrap(),
-        )
+        let response = newcomer_http.get(returned).send().await.unwrap();
+        (transaction, response, newcomer_http)
     };
     let newcomer = || {
         authority
@@ -1277,10 +1357,24 @@ staticPasswords:
             })
             .unwrap()
     };
-    let (_, refused) = company_sign_in().await;
+    let (transaction, refused, browser) = company_sign_in().await;
     assert_eq!(
-        refused.json::<serde_json::Value>().await.unwrap()["error"],
-        "access_denied"
+        refused.headers()["location"].to_str().unwrap(),
+        format!("/login?transaction={transaction}&error=upstream_login_failed")
+    );
+    let sign_in: serde_json::Value = browser
+        .get(format!(
+            "{origin}/portal/providers?transaction={transaction}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        sign_in["refusal"]["error"], "no_linked_account",
+        "{sign_in}"
     );
     assert_eq!(newcomer(), None);
     let revision = authority
@@ -1307,7 +1401,7 @@ staticPasswords:
         now,
     )
     .unwrap();
-    let (transaction, signed_up) = company_sign_in().await;
+    let (transaction, signed_up, _) = company_sign_in().await;
     assert_eq!(
         signed_up.headers()["location"].to_str().unwrap(),
         format!("/consent?transaction={transaction}")
@@ -1320,7 +1414,7 @@ staticPasswords:
         .unwrap();
     assert_eq!(profile.email.as_deref(), Some("newcomer@example.com"));
     // Signing in again finds the same account rather than creating another.
-    let (_, again) = company_sign_in().await;
+    let (_, again, _) = company_sign_in().await;
     assert!(again.status().is_redirection());
     assert_eq!(newcomer(), Some(created.clone()));
     // A service that deletes people upstream finds the account by the subject
@@ -1409,7 +1503,7 @@ staticPasswords:
         super::super::rpc_users::delete_user(&authority, &mutation(&f.admin, &retry), &retry, now),
         Err(AuthError::NotFound)
     ));
-    let (transaction, signed_up) = company_sign_in().await;
+    let (transaction, signed_up, _) = company_sign_in().await;
     assert_eq!(
         signed_up.headers()["location"].to_str().unwrap(),
         format!("/consent?transaction={transaction}")
@@ -1431,11 +1525,22 @@ staticPasswords:
         extra: Default::default(),
     };
     super::super::sign_in::update(&authority, &mutation(&f.admin, &off), &off, now).unwrap();
-    let (_, refused) = company_sign_in().await;
+    let (transaction, refused, browser) = company_sign_in().await;
     assert_eq!(
-        refused.json::<serde_json::Value>().await.unwrap()["error"],
-        "access_denied"
+        refused.headers()["location"].to_str().unwrap(),
+        format!("/login?transaction={transaction}&error=upstream_login_failed")
     );
+    let sign_in: serde_json::Value = browser
+        .get(format!(
+            "{origin}/portal/providers?transaction={transaction}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sign_in["refusal"]["error"], "provider_changed", "{sign_in}");
     let offered: serde_json::Value = http
         .get(format!("{origin}/portal/providers"))
         .send()

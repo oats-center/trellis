@@ -518,13 +518,7 @@ mod tests {
                 drop(ownership.take());
             }
             let output = std::process::Command::new("node")
-                .args([
-                    "--experimental-transform-types",
-                    "--input-type=module",
-                    "--eval",
-                    &script,
-                    phase,
-                ])
+                .args(["--input-type=module", "--eval", &script, phase])
                 .output()
                 .expect("run the ordinary Node allocator");
             assert!(

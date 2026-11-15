@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.npm.json",
   "compilerOptions": {
+    "erasableSyntaxOnly": true,
     "noEmit": true,
     "noUnusedLocals": true,
     "rootDir": "../../..",

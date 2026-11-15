@@ -132,7 +132,6 @@ async function startWorker(
           ? ["--http-provider"]
           : []
       : [
-          "--experimental-transform-types",
           resolve(root, "benchmarks/runtime", file),
           ...(provider ? ["--provider"] : []),
         ],
@@ -258,7 +257,6 @@ try {
   sampler = spawnTracked(
     process.execPath,
     [
-      "--experimental-transform-types",
       `${root}/benchmarks/runtime/sampler.ts`,
       String(process.pid),
       output,

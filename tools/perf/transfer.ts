@@ -43,7 +43,6 @@ const env = {
 const run = await spawnTracked(
   process.execPath,
   [
-    "--experimental-transform-types",
     `${sourceRoot}/benchmarks/runtime/run.ts`,
     "--lane=transfer",
     `--sizes=${args.sizes}`,
@@ -66,7 +65,6 @@ if (run.code !== 0) {
   const report = await spawnTracked(
     process.execPath,
     [
-      "--experimental-transform-types",
       `${root}/benchmarks/runtime/report.ts`,
       output,
       ...(args.compare ? [resolve(args.compare)] : []),

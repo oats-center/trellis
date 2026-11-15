@@ -1092,7 +1092,8 @@ impl SqliteAuthorizationStore {
         if current.principal_kind == PrincipalKind::User {
             // Handlers see their own caller's profile without directory access.
             let profile = super::profiles::read(connection, &current.principal_id)?;
-            let avatar_url = super::avatars::avatar_url(self, &current.principal_id, &profile);
+            let avatar_url =
+                super::avatars::avatar_url(self, connection, &current.principal_id, &profile);
             extensions.insert(
                 trellis_protocol::USER_PROFILE_EXTENSION.into(),
                 serde_json::to_value(trellis_protocol::CallerUser {

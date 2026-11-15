@@ -44,18 +44,24 @@ export type OutboxMessage = {
 
 /** Raised when an outbox ID is reused for different immutable content. */
 export class OutboxDuplicateIdentityError extends Error {
-  constructor(readonly id: string) {
+  readonly id: string;
+
+  constructor(id: string) {
     super(
       `Outbox message '${id}' already exists with different immutable content`,
     );
+    this.id = id;
     this.name = "OutboxDuplicateIdentityError";
   }
 }
 
 /** Raised when storage reports a duplicate but the winning row cannot be read. */
 export class OutboxStorageConflictError extends Error {
-  constructor(readonly id: string) {
+  readonly id: string;
+
+  constructor(id: string) {
     super(`Outbox message '${id}' conflicted but no stored row was found`);
+    this.id = id;
     this.name = "OutboxStorageConflictError";
   }
 }
@@ -427,11 +433,16 @@ export class MemoryInboxRepository implements InboxRepository {
 export class SqlOutboxRepository implements OutboxRepository {
   readonly tables: SqlOutboxTables;
 
+  readonly executor: SqlExecutor;
+  readonly dialect: SqlDialect;
+
   constructor(
-    readonly executor: SqlExecutor,
-    readonly dialect: SqlDialect,
+    executor: SqlExecutor,
+    dialect: SqlDialect,
     tables: SqlOutboxTables = defaultSqlOutboxTables,
   ) {
+    this.executor = executor;
+    this.dialect = dialect;
     this.tables = validateSqlOutboxTables(tables);
   }
 
@@ -589,11 +600,16 @@ export class SqlOutboxRepository implements OutboxRepository {
 export class SqlInboxRepository implements InboxRepository {
   readonly tables: SqlOutboxTables;
 
+  readonly executor: SqlExecutor;
+  readonly dialect: SqlDialect;
+
   constructor(
-    readonly executor: SqlExecutor,
-    readonly dialect: SqlDialect,
+    executor: SqlExecutor,
+    dialect: SqlDialect,
     tables: SqlOutboxTables = defaultSqlOutboxTables,
   ) {
+    this.executor = executor;
+    this.dialect = dialect;
     this.tables = validateSqlOutboxTables(tables);
   }
 
@@ -642,7 +658,11 @@ export type KvOutboxRecord = StaticDecode<typeof KvOutboxRecordSchema>;
 
 /** Durable NATS KV outbox repository for services without SQL state. */
 export class NatsKvOutboxRepository implements OutboxRepository {
-  constructor(readonly kv: OutboxKvStore) {}
+  readonly kv: OutboxKvStore;
+
+  constructor(kv: OutboxKvStore) {
+    this.kv = kv;
+  }
 
   async enqueue(rec: PreparedOutboxRecord): Promise<OutboxMessage> {
     const now = new Date().toISOString();
@@ -789,7 +809,11 @@ export class NatsKvOutboxRepository implements OutboxRepository {
 
 /** Durable NATS KV inbox repository for event-id duplicate suppression. */
 export class NatsKvInboxRepository implements InboxRepository {
-  constructor(readonly kv: TypedKV<KvInboxRecord>) {}
+  readonly kv: TypedKV<KvInboxRecord>;
+
+  constructor(kv: TypedKV<KvInboxRecord>) {
+    this.kv = kv;
+  }
 
   async record(messageId: string, now: Date = new Date()): Promise<boolean> {
     // Durable NATS KV dedupe is useful for event handlers without SQL state, but

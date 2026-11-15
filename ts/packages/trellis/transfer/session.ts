@@ -91,12 +91,21 @@ export class TransferSession {
   #cleanup: Promise<void> | undefined;
   peerGuard: LiveAuthorityGuard | undefined;
 
+  readonly grant: TransferGrant;
+  readonly lease: TransportLease;
+  readonly auth: TrellisAuth;
+  readonly provider: boolean;
+
   constructor(
-    readonly grant: TransferGrant,
-    readonly lease: TransportLease,
-    readonly auth: TrellisAuth,
-    readonly provider: boolean,
+    grant: TransferGrant,
+    lease: TransportLease,
+    auth: TrellisAuth,
+    provider: boolean,
   ) {
+    this.grant = grant;
+    this.lease = lease;
+    this.auth = auth;
+    this.provider = provider;
     const statusQueue = lease.nc.status();
     if (!(statusQueue instanceof QueuedIteratorImpl)) {
       lease.release();
@@ -519,11 +528,16 @@ export class TransferCredit {
   #work: Promise<void> | undefined;
   #closed = false;
 
+  readonly session: TransferSession;
+  readonly send: (received: bigint, consumed: bigint) => Promise<void>;
+
   constructor(
-    readonly session: TransferSession,
+    session: TransferSession,
     policy: CreditPolicy,
-    readonly send: (received: bigint, consumed: bigint) => Promise<void>,
+    send: (received: bigint, consumed: bigint) => Promise<void>,
   ) {
+    this.session = session;
+    this.send = send;
     this.#scheduler = new CreditScheduler(policy);
   }
 

@@ -12,7 +12,7 @@ Built with SvelteKit, Tailwind CSS v4 + DaisyUI, and
 The Console is compiled into `trellis-server`; the runtime does not proxy a
 Vite dev server. To try a change in the real runtime:
 
-1. Run `npm ci` at the repository root (Node 24 LTS and npm 11).
+1. Run `npm ci` at the repository root (Node 24 or 26, tested on 26, and npm 11).
 2. Run `npm run browser:embedded` at the repository root. It builds this app and
    the OAuth portal into `crates/runtime/generated/`.
 3. Rebuild and restart the server: `cargo build -p trellis-server`.

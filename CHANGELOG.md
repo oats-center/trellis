@@ -8,6 +8,67 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Trellis runs on Node 24 and Node 26, and CI and the container images use 26.
+  Node 26 rejects `--experimental-transform-types`, so nothing passes it any
+  more: the TypeScript packages use only syntax plain Node runs (constructor
+  parameter properties became declared fields), and `erasableSyntaxOnly`
+  keeps it that way. `engines` now allows `>=24 <27`.
+
+### Fixed
+
+- Adding or editing a sign-in provider with an issuer that is not an `https`
+  URL, such as a bare `example.us.auth0.com`, failed with "Not authorized". It
+  now fails with a validation error that names the issuer, and the other
+  provider checks (client ID, name, claim freshness, userinfo, query or
+  fragment in the issuer) each say which value is wrong instead of "invalid
+  upstream provider". Creating a service claim with a malformed identity public
+  key likewise reports the key format instead of "Not authorized".
+- A company sign-in that failed after the provider redirected back showed
+  `{"error":"access_denied"}`, or "Company sign-in wasn't completed". The
+  sign-in page now says why. It shows the provider's own reason, such as Auth0's
+  "parameter organization is required for this client" or an `invalid_client`
+  from the token exchange, or the step Trellis could not finish, such as no
+  Trellis account linked to that provider account. Only the browser that made
+  the attempt sees the reason, so a crafted link cannot put text on the page.
+- The Console's account page asked for a sign-in provider by its internal ID,
+  in a blank text box, so "Connect another login" looked unusable. It now lists
+  your password and every company sign-in provider, each with "Connect", or with
+  the connected account and "Disconnect". A new
+  `Auth.Users.IdentityLink.Providers` RPC, in the `identities.manage`
+  capability, returns the providers, so any app allowed to link sign-ins can
+  offer the same choice.
+- Connected apps listed one row per sign-in, including grants that had already
+  expired, so a new installation showed a long column of "Console" rows.
+  `Delegations.List` now leaves expired grants out, and the Console shows one
+  row per person and app with its number of sign-ins; "Disconnect" there signs
+  all of them out after a confirmation.
+- Changing `public_origin` or `[console] origin` in `config.toml` broke
+  Console sign-in with `invalid_request`, because the Console's callback stayed
+  at the address stored when the installation was created. The callback now
+  follows the configured origin.
+- Profile pictures come from one place. A password account shows the Gravatar
+  for its email, now whether or not the email is verified, since Trellis cannot
+  verify a typed email and a verified one would not prove whose photo it is. An
+  account created by a company sign-in shows that provider's picture and falls
+  back to Gravatar. Each linked provider on the account page has "Use profile
+  image". `Users.Profile.Update` takes `pictureProviderId` or `useGravatar`,
+  replacing the picture URL override and the Gravatar switch, which are gone
+  along with `account.gravatarEnabled`; the account now reports
+  `pictureProviderId`.
+- A profile picture URL for someone with no picture, such as an email with no
+  Gravatar, now answers `204 No Content` instead of 404, so browsers log no
+  error, and once Trellis knows no source has an image the profile stops
+  carrying a URL until it changes.
+- Disconnecting a company sign-in that is the account's last way to sign in,
+  or that belongs to the default administrator, said "Not authorized". It now
+  says which.
+- The API view's Input, Output and Errors were plain indented text. Each is now
+  a card with the section and type in a header, fields as aligned rows with
+  their types in a separate column, and errors that share a details type listed
+  together once.
+
 ## [0.100.0-rc.40] - 2026-11-14
 
 ### Fixed

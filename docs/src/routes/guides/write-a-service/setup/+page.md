@@ -18,7 +18,7 @@ workflow are shared by both languages.
 
 - Install [the Trellis CLI](/guides/install-trellis) matching your
   libraries.
-- Install Node 24 and npm 11 for this example.
+- Install Node 24 or 26 and npm 11 for this example.
 - For manual deployment, have a [running Trellis](/guides/running-trellis/development) and
   an administrator login. The [automated test](/guides/testing-trellis-services)
   instead starts an isolated runtime using `trellis-server`.

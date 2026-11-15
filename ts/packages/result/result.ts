@@ -114,7 +114,11 @@ export type MaybeAsync<T, E extends BaseError> =
  * ```
  */
 export class Result<T, E extends BaseError> {
-  private constructor(private readonly _value: ResultValue<T, E>) {}
+  private readonly _value: ResultValue<T, E>;
+
+  private constructor(_value: ResultValue<T, E>) {
+    this._value = _value;
+  }
 
   /**
    * Creates a successful Result containing a value.
@@ -755,7 +759,11 @@ export class Result<T, E extends BaseError> {
 export class AsyncResult<T, E extends BaseError> implements PromiseLike<
   Result<T, E>
 > {
-  constructor(private readonly promise: Promise<Result<T, E>>) {}
+  private readonly promise: Promise<Result<T, E>>;
+
+  constructor(promise: Promise<Result<T, E>>) {
+    this.promise = promise;
+  }
 
   /**
    * Creates an AsyncResult from a Promise of Result.

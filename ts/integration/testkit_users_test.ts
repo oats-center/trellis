@@ -107,14 +107,17 @@ test(
         );
         assert.notEqual(bob.principalId, alice.principalId);
         // A handler sees each caller's own profile, without directory access.
-        assert.deepEqual(
-          JSON.parse((await a1.echo({ value: "profile" }).orThrow()).value),
-          {
-            displayName: "Alice",
-            email: "alice@example.test",
-            emailVerified: false,
-          },
+        // An email, verified or not, gives the caller a Trellis-hosted
+        // Gravatar picture; Bob, without one, has no picture.
+        const { avatarUrl, ...aliceProfile } = JSON.parse(
+          (await a1.echo({ value: "profile" }).orThrow()).value,
         );
+        assert.deepEqual(aliceProfile, {
+          displayName: "Alice",
+          email: "alice@example.test",
+          emailVerified: false,
+        });
+        assert.match(String(avatarUrl), /\/profile\/avatars\//);
         assert.deepEqual(
           JSON.parse((await b1.echo({ value: "profile" }).orThrow()).value),
           { displayName: "Bob", emailVerified: false },

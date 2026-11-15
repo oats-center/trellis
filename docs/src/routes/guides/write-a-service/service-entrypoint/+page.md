@@ -87,7 +87,7 @@ not an individual socket. Reduced or revoked authority can interrupt affected
 work. While own coverage is unavailable, fresh application traffic either waits
 within its acquisition budget or reports unavailability.
 
-The shared `/service` entrypoint runs on Node 24. For Rust, use the generated facade described in
+The shared `/service` entrypoint runs on Node 24 or 26. For Rust, use the generated facade described in
 [the Rust guide](/guides/libraries/rust), not this TypeScript options object.
 
 ## Provision and run

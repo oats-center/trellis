@@ -222,7 +222,10 @@ refuse it, and Console paths on the Trellis host redirect there, so the
 browser isolates the two. `[console] enabled = false` serves no Console: its
 pages are absent and sign-in refuses `trellis.console` (authorization and
 refresh alike), whatever answers its callback. Its registration stays, so
-turning the Console back on needs no new installation. The listener's transport
+turning the Console back on needs no new installation. Its callback always
+follows the configured origin, `[console] origin` or else `public_origin`,
+rather than the address stored when the installation was created, so editing
+either keeps Console sign-in working. The listener's transport
 is one of:
 
 - `tls`: HTTPS with `certificate_chain` and `private_key` PEM paths resolved
@@ -377,7 +380,7 @@ links `/portal-theme/stylesheet.css`, which is empty without a stylesheet. The
 Portal CSP allows same-origin images for the logo.
 
 Console and OAuth portal are separate required frontend apps. Their build tools
-use Node 24 LTS, npm workspaces, and Vite; embedded builds compile into staging
+use Node 24 or 26 (CI runs 26), npm workspaces, and Vite; embedded builds compile into staging
 before replacing only owner-marked output. Production builds require real
 embedded assets; placeholder assets and optional Console builds are not
 substitutes for the product.
@@ -476,6 +479,19 @@ Fresh claims replace earlier observations only for the selected upstream subject
 at that provider. Two linked identities belonging to one user do not supply or
 remove each other's mapped roles. Direct grants remain independent of claim
 freshness or upstream role removal.
+
+When a company sign-in fails after the callback has matched its flow, Trellis
+returns the browser to the sign-in or device-approval page it came from, with
+`error=upstream_login_failed`. Failures before that point have no page to go
+back to and return a plain OAuth error. The reason is kept in memory for ten
+minutes, keyed by the portal session and the transaction or device review, and
+`/portal/providers` returns it to that browser only. A link alone cannot make
+the page show text. A reason is either the provider's own `error` and
+`error_description`, from its redirect or its token response, or the step
+Trellis could not complete: no linked account where the app allows no sign-up,
+a provider changed or turned off mid-flow, discovery, or ID-token
+verification. Account linking keeps the bare error, because it has no page to
+return to.
 
 ### The capability compiler (`policy.rs`)
 
@@ -852,6 +868,11 @@ navigation can only sign someone out, never in or into another account. A later
 authorization may bind the cleared app handle to another account; an uncleared
 handle still rejects a different principal, and stale tabs cannot restore it.
 
+`Delegations.List` returns live grants only: an expired grant can no longer
+act for anyone, so it is left out like a revoked one. Each sign-in to an app is
+its own grant; the Console folds one person's grants for one app into a single
+row and disconnects it by revoking each of them.
+
 `Delegations.Revoke` atomically retires the selected grant and its refresh
 families, clears remembered approval for its app binding, and queues
 enforcement. It preserves sibling grants and the Portal login. Repeating its
@@ -1049,8 +1070,15 @@ evidence. `Users.Profile.Update`, selected through `account.edit`, changes only
 the verified caller's profile using `expectedRevision` and `idempotencyKey`. Use
 the self account's `profileRevision`, not its principal-policy revision. Omitted
 fields are unchanged; set-and-clear contradictions fail atomically. Manual emails
-are unverified. Clearing email/picture overrides restores eligible
-linked-provider fallbacks; `gravatarEnabled` is a private account preference.
+are unverified. Clearing email restores an eligible linked-provider email.
+
+The picture comes from one place, `pictureProviderId` on the account: a linked
+company sign-in whose `picture` it shows, or, when absent, the Gravatar for the
+account's email. An account created by a company sign-in starts with that
+provider; one with a password starts with Gravatar, and linking a provider later
+does not change it. `Users.Profile.Update` takes `pictureProviderId`, which
+must name a provider linked to the caller, or `useGravatar`. Unlinking the
+chosen provider, or turning it off, returns the account to Gravatar.
 
 Manual names and email take precedence over standard OIDC profile claims. Each
 linked identity retains only its bounded presentation snapshot. Missing claims
@@ -1076,9 +1104,15 @@ Revoking directory access prevents new URLs but does not retire URLs already
 handed out; a photo is presentation, not authority. URLs must not be used as
 authority.
 
-Directory reads perform no outbound image work. Image GET tries owner override,
-linked OIDC picture, then opted-in verified-email Gravatar (trim/lowercase
-UTF-8, SHA-256, `s=128&d=404`). Manual/unverified email never supplies Gravatar.
+Directory reads perform no outbound image work. Image GET tries the chosen
+provider's picture, then the Gravatar for the account's email (trim/lowercase
+UTF-8, SHA-256, `s=128&d=404`). Any email supplies Gravatar, verified or not:
+Trellis cannot confirm a typed email, and a confirmed one would not prove the
+picture shows its owner, since anyone can upload any photo to their own
+Gravatar. A current URL with no image from any source answers `204 No Content`
+rather than 404, and once every source is known to have none the profile
+carries no URL until it changes or that result expires. An unknown or stale URL
+is 404.
 The provider receives an email-derived hash, not the raw email, but the hash
 remains personal information. `auth.avatar.external_fetch_enabled=false`
 disables all remote-derived delivery, including cached images; initials remain

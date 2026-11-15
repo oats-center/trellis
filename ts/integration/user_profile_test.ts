@@ -171,7 +171,6 @@ test(
         givenName: "Alice",
         familyName: "Owner",
         email: "shared@example.com",
-        gravatarEnabled: false,
         userId: codecs.ulid.decode(other.principalId),
         expectedRevision: original.account.profileRevision,
         idempotencyKey: ulid(),
@@ -182,7 +181,6 @@ test(
       assert.equal(saved.email, "shared@example.com");
       assert.equal(saved.emailVerified, false);
       assert(saved.account);
-      assert.equal(saved.account.gravatarEnabled, false);
       assert.equal(
         (await alice.usersProfileUpdate(input).orThrow()).user.account
           ?.profileRevision,
@@ -246,10 +244,11 @@ test(
           })
         ).isErr(),
       );
+      // A picture comes only from a company sign-in linked to the account.
       assert(
         (
           await alice.usersProfileUpdate({
-            avatarOverrideUrl: "https://127.0.0.1/avatar.png",
+            pictureProviderId: codecs.ulid.decode(ulid()),
             expectedRevision: saved.account.profileRevision,
             idempotencyKey: ulid(),
           })
@@ -266,11 +265,15 @@ test(
       ).user;
       assert.equal(cleared.email, undefined);
       assert.equal(cleared.emailVerified, false);
+      // Without an email or a linked provider's picture there is no photo.
+      assert.equal(cleared.avatarUrl, undefined);
       assert(cleared.account);
+      // A password account shows the Gravatar for any email it gives, served
+      // through Trellis rather than linked to.
       const picture = (
         await alice
           .usersProfileUpdate({
-            avatarOverrideUrl: "https://images.invalid/owner.png",
+            email: "owner@example.com",
             expectedRevision: cleared.account.profileRevision,
             idempotencyKey: ulid(),
           })
@@ -284,7 +287,8 @@ test(
       assert(
         new URL(picture.avatarUrl).pathname.startsWith("/profile/avatars/"),
       );
-      assert(!picture.avatarUrl.includes("images.invalid"));
+      assert(!picture.avatarUrl.includes("gravatar"));
+      assert.equal(picture.account?.pictureProviderId, undefined);
       const directoryPhoto = (
         await bob
           .usersGet({ userId: codecs.ulid.decode(owner.principalId) })
@@ -292,20 +296,10 @@ test(
       ).user;
       assert(directoryPhoto.avatarUrl);
       assert.equal(directoryPhoto.account, undefined);
-      assert.equal((await fetch(picture.avatarUrl)).status, 404);
       assert.equal(
         (await alice.usersResolve({}).orThrow()).user.displayName,
         "Chosen name",
       );
-      assert(picture.account);
-      await alice
-        .usersProfileUpdate({
-          clearAvatarOverride: true,
-          expectedRevision: picture.account.profileRevision,
-          idempotencyKey: ulid(),
-        })
-        .orThrow();
-      assert.equal((await fetch(picture.avatarUrl)).status, 404);
       await Promise.all(clients.map((client) => client.connection.close()));
       await runtime.restart();
       const login = await runtime.registerClient({
@@ -322,8 +316,8 @@ test(
       assert.equal(profile.principalId, owner.principalId);
       assert.equal(profile.displayName, "Chosen name");
       assert.equal(profile.familyName, "Owner");
-      assert.equal(profile.email, undefined);
-      assert.equal(profile.account?.gravatarEnabled, false);
+      assert.equal(profile.email, "owner@example.com");
+      assert(profile.avatarUrl);
     });
   },
 );

@@ -95,9 +95,10 @@ pub(super) struct Profile {
     pub(super) email_verified: bool,
     email_source: String,
     email_provider: Option<String>,
+    /// The picture of `picture_provider`'s linked identity, when it has one.
     pub(super) picture: Option<String>,
-    pub(super) avatar_override: Option<String>,
-    pub(super) gravatar_enabled: bool,
+    /// The linked provider whose picture the account shows; `None` is Gravatar.
+    pub(super) picture_provider: Option<String>,
     pub(super) revision: u64,
 }
 
@@ -131,7 +132,7 @@ pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, 
             ELSE display_name END,?2),given_name,family_name,\
             display_name_source,given_name_source,family_name_source,email,\
             email_verified,email_source,email_provider_id,oidc_picture_url,\
-            avatar_override_url,gravatar_enabled,version \
+            picture_provider_id,version \
             FROM auth_user_profiles \
             WHERE principal_id=?1",
             rusqlite::params![principal, fallback],
@@ -148,9 +149,8 @@ pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, 
                     email_source: row.get(8)?,
                     email_provider: row.get(9)?,
                     picture: row.get(10)?,
-                    avatar_override: row.get(11)?,
-                    gravatar_enabled: row.get(12)?,
-                    revision: row.get(13)?,
+                    picture_provider: row.get(11)?,
+                    revision: row.get(12)?,
                 })
             },
         )
@@ -167,10 +167,30 @@ pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, 
             email_source: "unset".into(),
             email_provider: None,
             picture: None,
-            avatar_override: None,
-            gravatar_enabled: true,
+            picture_provider: creation_provider(connection, principal)?,
             revision: 1,
         }))
+}
+
+/// The company sign-in an account was created with, whose picture it shows
+/// until its owner chooses another. An account with a password was not, and
+/// shows its Gravatar. This applies only before the profile is first stored.
+fn creation_provider(
+    connection: &Connection,
+    principal: &str,
+) -> Result<Option<String>, AuthError> {
+    Ok(connection
+        .query_row(
+            "SELECT i.provider FROM auth_provider_identities i \
+            JOIN auth_oidc_providers p ON p.provider_id=i.provider \
+            WHERE i.principal_id=?1 \
+            AND NOT EXISTS(SELECT 1 FROM auth_local_credentials \
+            WHERE principal_id=?1) \
+            ORDER BY i.linked_at,i.identity_id LIMIT 1",
+            [principal],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 /// Recompute nonmanual fields from verified, still-linked identities and apply
@@ -188,7 +208,7 @@ pub(super) fn write(
             return Err(AuthError::Conflict);
         }
         if (patch.email.is_some() && patch.clear_email == Some(true))
-            || (patch.avatar_override_url.is_some() && patch.clear_avatar_override == Some(true))
+            || (patch.picture_provider_id.is_some() && patch.use_gravatar == Some(true))
         {
             return Err(AuthError::Invalid("contradictory profile changes".into()));
         }
@@ -234,17 +254,24 @@ pub(super) fn write(
             current.email = None;
             current.email_source = "unset".into();
         }
-        if let Some(value) = &patch.avatar_override_url {
-            if !image_url(value) {
-                return Err(AuthError::Invalid("invalid avatar URL".into()));
+        if let Some(provider) = &patch.picture_provider_id {
+            let provider = provider.to_string();
+            let linked: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_provider_identities \
+                WHERE principal_id=?1 AND provider=?2)",
+                params![principal, provider],
+                |row| row.get(0),
+            )?;
+            if !linked {
+                return Err(AuthError::Invalid(
+                    "the picture can come only from a company sign-in linked to this account"
+                        .into(),
+                ));
             }
-            current.avatar_override = Some(value.clone());
+            current.picture_provider = Some(provider);
         }
-        if patch.clear_avatar_override == Some(true) {
-            current.avatar_override = None;
-        }
-        if let Some(enabled) = patch.gravatar_enabled {
-            current.gravatar_enabled = enabled;
+        if patch.use_gravatar == Some(true) {
+            current.picture_provider = None;
         }
     }
     let mut profiles = connection.prepare(
@@ -313,7 +340,27 @@ pub(super) fn write(
         current.email = upstream.email;
         current.email_provider = email_provider;
     }
-    current.picture = upstream.picture;
+    // The chosen provider's picture. Unlinking it, or turning the provider
+    // off, returns the account to its Gravatar.
+    let chosen = match &current.picture_provider {
+        Some(provider) => connection
+            .query_row(
+                "SELECT i.profile_json FROM auth_provider_identities i \
+                JOIN auth_oidc_providers p ON p.provider_id=i.provider \
+                WHERE i.principal_id=?1 AND i.provider=?2 AND p.state='active'",
+                params![principal, provider],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    if chosen.is_none() {
+        current.picture_provider = None;
+    }
+    current.picture = match chosen.flatten() {
+        Some(json) => serde_json::from_str::<VerifiedProfile>(&json)?.picture,
+        None => None,
+    };
     if current != before {
         current.revision += 1;
         connection.execute(
@@ -324,8 +371,8 @@ pub(super) fn write(
             "INSERT INTO auth_user_profiles(principal_id,display_name,given_name,\
             family_name,display_name_source,given_name_source,family_name_source,\
             email,email_verified,email_source,email_provider_id,oidc_picture_url,\
-            avatar_override_url,gravatar_enabled,created_at,updated_at,version) \
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15,?16) \
+            picture_provider_id,created_at,updated_at,version) \
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15) \
             ON CONFLICT(principal_id) \
             DO UPDATE SET display_name=excluded.display_name,\
             given_name=excluded.given_name,family_name=excluded.family_name,\
@@ -336,8 +383,7 @@ pub(super) fn write(
             email_source=excluded.email_source,\
             email_provider_id=excluded.email_provider_id,\
             oidc_picture_url=excluded.oidc_picture_url,\
-            avatar_override_url=excluded.avatar_override_url,\
-            gravatar_enabled=excluded.gravatar_enabled,\
+            picture_provider_id=excluded.picture_provider_id,\
             updated_at=excluded.updated_at,version=excluded.version",
             params![
                 principal,
@@ -352,8 +398,7 @@ pub(super) fn write(
                 current.email_source,
                 current.email_provider,
                 current.picture,
-                current.avatar_override,
-                current.gravatar_enabled,
+                current.picture_provider,
                 now,
                 current.revision
             ],

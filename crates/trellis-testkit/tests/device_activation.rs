@@ -8,7 +8,6 @@ async fn completed_typescript_activation_does_not_create_another_review() {
     command
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .args([
-            "--experimental-transform-types",
             "integration/fixtures/runtime/activation_recheck.ts",
             runtime.trellis_url(),
             runtime.admin_username(),

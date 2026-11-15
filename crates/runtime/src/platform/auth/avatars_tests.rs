@@ -113,6 +113,19 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
             Ok(())
         })
         .unwrap();
+    // An account an administrator created shows its Gravatar until its owner
+    // picks a linked provider's picture.
+    let revision = store
+        .transaction(|connection| profiles::read(connection, &owner))
+        .unwrap()
+        .revision;
+    let choose: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
+        "pictureProviderId":provider,
+        "expectedRevision":revision.to_string(),
+        "idempotencyKey":id()
+    }))
+    .unwrap();
+    rpc_users::update_profile(&store, &mutation(&owner, &choose), &choose, now).unwrap();
     let user = store
         .transaction(|connection| rpc_users::read_user(&store, connection, &owner, true))
         .unwrap();
@@ -122,7 +135,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
     assert_eq!(
         sources(&profile).len(),
         2,
-        "verified OIDC picture precedes the verified-email fallback"
+        "the chosen provider's picture precedes the Gravatar fallback"
     );
     let url = user.avatar_url.unwrap();
     now = crate::clock::unix_now();
@@ -136,8 +149,19 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         .await
         .unwrap();
     assert!(
-        matches!(avatars.get(encoded, now).await, Err(AuthError::NotFound)),
+        matches!(avatars.get(encoded, now).await, Ok(None)),
         "negative caches do not trigger another outbound fetch"
+    );
+    let without_image = |store: &SqliteAuthorizationStore| {
+        store
+            .transaction(|connection| rpc_users::read_user(store, connection, &owner, true))
+            .unwrap()
+            .avatar_url
+    };
+    assert_eq!(
+        without_image(&store),
+        None,
+        "with every source known to have no image, clients get no URL to request"
     );
     assert!(avatars
         .cached(&token, &source, now + 901)
@@ -191,7 +215,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
     assert_eq!((image.width(), image.height()), (128, 128));
     assert_eq!(
         avatars.get(encoded, now + 86_400).await.unwrap(),
-        bytes,
+        Some(bytes.to_vec()),
         "the same URL keeps serving the retained sanitized image a day later"
     );
     let reopened = Arc::new(open(&directory, SigningKey::from_bytes(&[37; 32])));
@@ -202,7 +226,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
             .get(encoded, now + 1)
             .await
             .unwrap(),
-        bytes,
+        Some(bytes.to_vec()),
         "cached pixels and the bearer survive reopening with retained custody"
     );
     drop(retained_custody);
@@ -265,10 +289,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
             .into_future(),
     );
     let output = tokio::process::Command::new("node")
-        .args([
-            "--experimental-transform-types",
-            "ts/browser/profile_avatar.browser_driver.ts",
-        ])
+        .args(["ts/browser/profile_avatar.browser_driver.ts"])
         .env("TRELLIS_TEST_AVATAR_APPLICATION", &app_origin)
         .env("TRELLIS_TEST_AVATAR_ORIGIN", &origin)
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
@@ -306,7 +327,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         );
     }
     let changed: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
-        "avatarOverrideUrl":"https://images.example.com/new.png",
+        "displayName":"Renamed owner",
         "expectedRevision":user.account.unwrap().profile_revision,
         "idempotencyKey":id()
     }))
@@ -327,14 +348,13 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         store
             .transaction(|connection| profiles::read(connection, &owner))
             .unwrap()
-            .avatar_override
-            .as_deref(),
-        Some("https://images.example.com/new.png")
+            .display_name,
+        "Renamed owner"
     );
 }
 
 #[test]
-fn verified_email_sources_use_official_gravatar_hash_and_opt_out() {
+fn any_email_falls_back_to_its_official_gravatar_after_the_chosen_picture() {
     let directory = tempfile::tempdir().unwrap();
     let store = open(&directory, SigningKey::from_bytes(&[37; 32]));
     store.initialize_issuer(1).unwrap();
@@ -345,12 +365,16 @@ fn verified_email_sources_use_official_gravatar_hash_and_opt_out() {
     let mut profile = store
         .transaction(|connection| profiles::read(connection, &principal))
         .unwrap();
+    assert!(sources(&profile).is_empty());
+    // A typed-in, unverified email still has its Gravatar.
     profile.email = Some(" MyEmailAddress@example.com ".into());
-    profile.email_verified = true;
     assert_eq!(sources(&profile)[0].url,"https://gravatar.com/avatar/84059b07d4be67b806386c0aad8070a23f18836bbaae342275dc0a83414c32ee?s=128&d=404");
-    profile.gravatar_enabled = false;
-    assert!(sources(&profile).is_empty());
-    profile.gravatar_enabled = true;
-    profile.email_verified = false;
-    assert!(sources(&profile).is_empty());
+    profile.picture = Some("https://images.example.com/chosen.png".into());
+    assert_eq!(
+        sources(&profile)
+            .iter()
+            .map(|source| source.category)
+            .collect::<Vec<_>>(),
+        ["oidc", "gravatar"]
+    );
 }

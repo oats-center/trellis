@@ -23,7 +23,6 @@ async fn node_worker_recovers_and_reconstructs_signed_job_history() {
         .unwrap();
     let mut node = tokio::process::Command::new("node")
         .args([
-            "--experimental-transform-types",
             "ts/packages/trellis/native/jobs_interop.ts",
         ])
         .current_dir("../../..")

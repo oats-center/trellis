@@ -33,11 +33,9 @@ async function accepts(url: URL): Promise<boolean> {
 }
 
 test("a Trellis host does not outlive the process that started it", async () => {
-  const child = spawn(
-    process.execPath,
-    ["--experimental-transform-types", "--input-type=module", "-e", SCRIPT],
-    { stdio: ["ignore", "pipe", "inherit"] },
-  );
+  const child = spawn(process.execPath, ["--input-type=module", "-e", SCRIPT], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
   let output = "";
   child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
     output += chunk;

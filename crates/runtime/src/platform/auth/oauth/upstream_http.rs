@@ -21,17 +21,42 @@ use openidconnect::{
 use serde_json::json;
 use std::sync::Arc;
 
+/// What a company provider said when it refused a sign-in.
+pub(super) struct Refusal {
+    provider_id: String,
+    error: String,
+    description: String,
+    /// The provider's own words, rather than Trellis's account of a step that failed.
+    from_provider: bool,
+    expires_at: i64,
+}
+
 /// Ways to sign in, and to create an account for the pending authorization's
-/// app when `transaction` names one.
+/// app when `transaction` names one. For this browser's sign-in on that
+/// `transaction` or device `review`, it also returns what a company provider
+/// reported when it last refused the sign-in.
 pub(super) async fn providers(
     State(engine): State<Arc<OAuthEngine>>,
+    headers: HeaderMap,
     Query(pairs): Query<Vec<(String, String)>>,
 ) -> Response {
-    let transaction = pairs
-        .into_iter()
-        .find_map(|(key, value)| (key == "transaction").then_some(value));
+    let find = |name: &str| {
+        pairs
+            .iter()
+            .find_map(|(key, value)| (key == name).then(|| value.clone()))
+    };
+    let transaction = find("transaction");
+    let page = transaction.clone().or_else(|| find("review"));
+    let cookies = portal_cookie(&headers, "__Host-trellis-portal")
+        .zip(portal_cookie(&headers, "__Host-trellis-portal-csrf"));
     let result = with_store(&engine, move |store| {
         let now = crate::clock::unix_now();
+        let session = cookies.and_then(|(cookie, csrf)| {
+            store
+                .authority
+                .portal_session_identity(&cookie, &csrf, now)
+                .ok()
+        });
         let sign_up = match &transaction {
             Some(transaction) => Some(store.authorization_sign_up(transaction, now)?),
             None => None,
@@ -58,22 +83,48 @@ pub(super) async fn providers(
             } else {
                 Vec::new()
             };
-            Ok(json!({
-                "localIdentity": settings.local_users,
-                "providers": providers,
-                "signUp": {
-                    "password": sign_up.as_ref().is_some_and(|sign_up| sign_up.password),
-                    "providers": sign_up.as_ref().is_some_and(|sign_up| sign_up.providers)
-                        && !providers.is_empty(),
-                },
-            }))
+            let names = connection
+                .prepare("SELECT provider_id,display_name FROM auth_oidc_providers")?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+            Ok((
+                json!({
+                    "localIdentity": settings.local_users,
+                    "providers": providers,
+                    "signUp": {
+                        "password": sign_up.as_ref().is_some_and(|sign_up| sign_up.password),
+                        "providers": sign_up.as_ref().is_some_and(|sign_up| sign_up.providers)
+                            && !providers.is_empty(),
+                    },
+                }),
+                session,
+                names,
+            ))
         })
     })
     .await;
-    match result {
-        Ok(sign_in) => Json(sign_in).into_response(),
-        Err(_) => error(ErrorCode::ServerError),
+    let Ok((mut sign_in, session, names)) = result else {
+        return error(ErrorCode::ServerError);
+    };
+    let now = crate::clock::unix_now();
+    let refusal = session.zip(page).and_then(|key| {
+        let refusals = engine.upstream_refusals.lock().ok()?;
+        let refusal = refusals
+            .get(&key)
+            .filter(|refusal| refusal.expires_at > now)?;
+        Some(json!({
+            "provider": names.get(&refusal.provider_id),
+            "error": refusal.error,
+            "description": refusal.description,
+            "fromProvider": refusal.from_provider,
+        }))
+    });
+    if let Some(refusal) = refusal {
+        sign_in["refusal"] = refusal;
     }
+    Json(sign_in).into_response()
 }
 
 pub(super) async fn start(
@@ -351,29 +402,66 @@ pub(super) async fn callback(
         );
         return error(ErrorCode::InvalidRequest);
     }
+    // From here on, a failure sends the browser back to the page it signed
+    // in from, which shows why. An account link has no such page.
+    let refusal_key = (
+        flow.session_id.clone(),
+        flow.device_review
+            .clone()
+            .unwrap_or_else(|| flow.authorization_transaction.clone()),
+    );
+    let return_to = match &flow.device_review {
+        Some(review) => format!("/device-enrollment?reviewId={review}&error=upstream_login_failed"),
+        None => format!(
+            "/login?transaction={}&error=upstream_login_failed",
+            flow.authorization_transaction
+        ),
+    };
+    let (refusal_provider, linking) = (
+        flow.provider.provider_id.clone(),
+        flow.account_token.is_some(),
+    );
+    let refused = |code: ErrorCode, reason: &str, description: &str, from_provider: bool| {
+        if linking {
+            return error(code);
+        }
+        // Provider text is shown as plain text; bound it and drop control
+        // characters so it stays one readable line.
+        let clean = |text: &str, limit: usize| -> String {
+            text.chars()
+                .filter(|character| !character.is_control())
+                .take(limit)
+                .collect()
+        };
+        if let Ok(mut refusals) = engine.upstream_refusals.lock() {
+            let now = crate::clock::unix_now();
+            refusals.retain(|_, refusal| refusal.expires_at > now);
+            if refusals.len() < 1024 || refusals.contains_key(&refusal_key) {
+                refusals.insert(
+                    refusal_key.clone(),
+                    Refusal {
+                        provider_id: refusal_provider.clone(),
+                        error: clean(reason, 64),
+                        description: clean(description, 300),
+                        from_provider,
+                        expires_at: now + 600,
+                    },
+                );
+            }
+        }
+        Redirect::to(&return_to).into_response()
+    };
     if let Some(reason) = form.get("error") {
         // The provider's own refusal, such as a client it doesn't recognize,
         // a redirect URL it wasn't given, or the person cancelling.
+        let description = form.get("error_description").map_or("", String::as_str);
         tracing::warn!(
             provider_id = %flow.provider.provider_id,
             error = %reason,
-            description = form.get("error_description").map(String::as_str).unwrap_or(""),
+            description,
             "company sign-in provider refused the sign-in"
         );
-        if flow.account_token.is_some() {
-            return error(ErrorCode::AccessDenied);
-        }
-        if let Some(review) = &flow.device_review {
-            return Redirect::to(&format!(
-                "/device-enrollment?reviewId={review}&error=upstream_login_failed"
-            ))
-            .into_response();
-        }
-        return Redirect::to(&format!(
-            "/login?transaction={}&error=upstream_login_failed",
-            flow.authorization_transaction
-        ))
-        .into_response();
+        return refused(ErrorCode::AccessDenied, reason, description, true);
     }
     let Some(code) = form
         .get("code")
@@ -394,7 +482,12 @@ pub(super) async fn callback(
                 error = %cause,
                 "company sign-in provider stopped being active during the sign-in",
             );
-            return error(ErrorCode::AccessDenied);
+            return refused(
+                ErrorCode::AccessDenied,
+                "provider_unavailable",
+                "The provider was turned off during the sign-in.",
+                false,
+            );
         }
     };
     if configured.revision != flow.provider.revision
@@ -405,7 +498,12 @@ pub(super) async fn callback(
             provider_id = %flow.provider.provider_id,
             "company sign-in provider was edited during the sign-in",
         );
-        return error(ErrorCode::AccessDenied);
+        return refused(
+            ErrorCode::AccessDenied,
+            "provider_changed",
+            "The provider's settings changed during the sign-in. Try again.",
+            false,
+        );
     }
     let secret = match engine
         .server
@@ -419,7 +517,12 @@ pub(super) async fn callback(
                 error = %cause,
                 "could not read the company sign-in provider's client secret",
             );
-            return error(ErrorCode::ServerError);
+            return refused(
+                ErrorCode::ServerError,
+                "client_secret_unreadable",
+                "Trellis could not read the provider's client secret.",
+                false,
+            );
         }
     };
     let snapshot = match ProviderSnapshot::discover(
@@ -432,7 +535,15 @@ pub(super) async fn callback(
     .await
     {
         Ok(snapshot) => snapshot,
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(_) => {
+            return refused(
+                ErrorCode::ServerError,
+                "discovery_failed",
+                "Trellis could not read the provider's OpenID configuration. Check that its \
+                issuer matches the provider's discovery document exactly.",
+                false,
+            )
+        }
     };
     let client = match snapshot.client(
         secret,
@@ -446,7 +557,12 @@ pub(super) async fn callback(
                 error = %cause,
                 "the company sign-in callback URL is not valid",
             );
-            return error(ErrorCode::ServerError);
+            return refused(
+                ErrorCode::ServerError,
+                "callback_invalid",
+                "This Trellis's sign-in callback URL is not valid.",
+                false,
+            );
         }
     };
     let exchange = match client.exchange_code(AuthorizationCode::new(code.clone())) {
@@ -457,7 +573,12 @@ pub(super) async fn callback(
                 error = %cause,
                 "company sign-in provider has no usable token endpoint",
             );
-            return error(ErrorCode::ServerError);
+            return refused(
+                ErrorCode::ServerError,
+                "token_endpoint_missing",
+                "The provider's OpenID configuration has no usable token endpoint.",
+                false,
+            );
         }
     };
     let tokens = match exchange
@@ -473,7 +594,22 @@ pub(super) async fn callback(
                 error = %super::oidc::error_chain(&cause),
                 "upstream OIDC token exchange rejected",
             );
-            return error(ErrorCode::AccessDenied);
+            return match &cause {
+                openidconnect::RequestTokenError::ServerResponse(response) => refused(
+                    ErrorCode::AccessDenied,
+                    response.error().as_ref(),
+                    response
+                        .error_description()
+                        .map_or("The provider would not exchange the sign-in code.", |d| d),
+                    true,
+                ),
+                _ => refused(
+                    ErrorCode::AccessDenied,
+                    "token_exchange_failed",
+                    "Trellis could not exchange the sign-in code with the provider.",
+                    false,
+                ),
+            };
         }
     };
     let mut identity = match snapshot.verify(&client, &tokens, &flow.nonce) {
@@ -483,7 +619,13 @@ pub(super) async fn callback(
                 provider_id=%flow.provider.provider_id,
                 "upstream OIDC ID token verification rejected",
             );
-            return error(ErrorCode::AccessDenied);
+            return refused(
+                ErrorCode::AccessDenied,
+                "id_token_rejected",
+                "The provider's ID token did not verify: its signature, audience, nonce or \
+                expiry was wrong.",
+                false,
+            );
         }
     };
     snapshot
@@ -552,7 +694,28 @@ pub(super) async fn callback(
                 error = %cause,
                 "upstream OIDC linked-account login rejected",
             );
-            error(ErrorCode::AccessDenied)
+            match cause {
+                super::super::AuthError::NotFound => refused(
+                    ErrorCode::AccessDenied,
+                    "no_linked_account",
+                    "No Trellis account is linked to this provider account. Sign in another \
+                    way, then link the provider from your account page.",
+                    false,
+                ),
+                super::super::AuthError::Conflict => refused(
+                    ErrorCode::AccessDenied,
+                    "provider_changed",
+                    "The provider or company sign-in was changed or turned off during the \
+                    sign-in. Try again.",
+                    false,
+                ),
+                _ => refused(
+                    ErrorCode::AccessDenied,
+                    "sign_in_expired",
+                    "This sign-in expired or was already finished. Start again.",
+                    false,
+                ),
+            }
         }
     }
 }

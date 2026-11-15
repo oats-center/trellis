@@ -800,7 +800,8 @@ inspect Trellis's internal authorization registry.
   `trellis.auth.v1:accounts.manage` additionally exposes username, password status,
   and lifecycle/revision, and permits inactive-user lookup and username search.
 - `accountProfileWrite` permits `Users.Profile.Update` on your own names, manual
-  unverified email, HTTPS picture override, and Gravatar preference. Use the self
+  unverified email, and picture source (`pictureProviderId` of a linked company
+  sign-in, or `useGravatar`). Use the self
   account's `profileRevision` and an idempotency key. Omitted fields stay
   unchanged; clear flags restore eligible linked-provider values. Manual choices
   survive OIDC login, and matching-sub bounded UserInfo enriches presentation
@@ -834,10 +835,13 @@ access to application records.
 `avatarUrl` (directory results and `caller.user`) is a stable Trellis-hosted
 image URL for the current profile revision, like an OIDC `picture`. A new photo
 or profile change gets a new URL, and a disabled account's URL stops serving.
-Render with `referrerpolicy="no-referrer"` and show local initials on error.
-Revoking `usersRead` stops new URLs, not already issued ones. Manual unverified
-email never triggers Gravatar; opted-in verified email sends its normalized
-SHA-256 hash, which remains personal information. Operators disable all
+Render with `referrerpolicy="no-referrer"` and show local initials on error; a
+current URL for someone with no picture answers `204 No Content`, which an
+`<img>` also treats as an error.
+Revoking `usersRead` stops new URLs, not already issued ones. Without a chosen
+company sign-in picture, any email, verified or not, falls back to Gravatar,
+which receives its normalized SHA-256 hash; the hash remains personal
+information. Operators disable all
 remote-derived images, including cached ones, with
 `auth.avatar.external_fetch_enabled=false`.
 
@@ -850,7 +854,8 @@ and revokes login/grant families. Bootstrap administrators use local recovery
 instead.
 
 `UserIdentities.List`, `UserIdentities.Unlink`, and `Users.IdentityLink.Create`
-target the current user. Linking returns a five-minute portal URL and requires
+target the current user. `Users.IdentityLink.Providers` lists the providers, by
+ID and name, that link creation accepts. Linking returns a five-minute portal URL and requires
 the exact initiating user and fresh verified upstream OIDC with nonce/PKCE;
 provider changes and identities owned by another user are rejected. Creation
 replay keeps the original sealed response and never revives an action.
@@ -1250,7 +1255,7 @@ tools are application choices. Neither Zod nor an ORM is required.
 The npm packages `@oatscenter/trellis` and `@oatscenter/result` contain ESM
 JavaScript and TypeScript declarations. Use `import`. CommonJS output and
 `require()` support have intentionally been removed, with no compatibility
-fallback. Revision 7 targets Node 24 LTS and npm ESM for native TypeScript
+fallback. Revision 7 targets Node 24 or 26 and npm ESM for native TypeScript
 tooling, and browser ESM for browser applications. Use ordinary npm dependencies
 and Node's standard test runner for native TypeScript tools and tests.
 

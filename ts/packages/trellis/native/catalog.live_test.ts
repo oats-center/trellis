@@ -99,7 +99,6 @@ test(
             ["update", "--root", root],
           );
           const compiled = await exec(process.execPath, [
-            "--experimental-transform-types",
             "--input-type=module",
             "-e",
             `import {participants} from ${JSON.stringify(pathToFileURL(`${root}/trellis/index.js`).href)}; console.log(JSON.stringify(participants.EchoProvider.participant.packageEvidence));`,

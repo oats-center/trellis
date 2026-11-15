@@ -26,7 +26,6 @@ async fn rust_upload_to_typescript_reads_persisted_bytes() {
     assert!(node.status.success());
     let mut provider = tokio::process::Command::new(String::from_utf8(node.stdout).unwrap().trim())
         .args([
-            "--experimental-transform-types",
             "ts/packages/trellis/native/transfer_interop_provider.ts",
         ])
         .current_dir("../../..")
@@ -325,7 +324,6 @@ async fn typescript_upload_cancellation_and_live_renewal_reduction_against_rust(
     assert!(node.status.success());
     let mut caller = tokio::process::Command::new(String::from_utf8(node.stdout).unwrap().trim())
         .args([
-            "--experimental-transform-types",
             "ts/packages/trellis/native/transfer_interop_caller.ts",
         ])
         .current_dir("../../..")

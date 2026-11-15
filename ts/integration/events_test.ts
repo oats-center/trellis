@@ -631,7 +631,6 @@ for (const sdk of ["rust", "typescript"] as const) {
         return spawnTracked(
           execPath,
           [
-            "--experimental-transform-types",
             fileURLToPath(
               new URL(
                 "../../integration/fixtures/runtime/events.ts",

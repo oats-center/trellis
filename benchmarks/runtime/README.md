@@ -30,7 +30,7 @@ npm run bench:runtime:browser:build
 npm run bench:runtime:suite -- --server=target/release/trellis-server --cli=target/release/trellis --rust-bin=target/release/trellis-performance --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/trellis-perf-suite
 ```
 
-Requires Node 24, npm 11, Linux, Python 3, `nats-server`, and Playwright Chromium
+Requires Node 24 or 26, npm 11, Linux, Python 3, `nats-server`, and Playwright Chromium
 installed beforehand (`npm exec -- playwright install chromium`). No browser download or executable compilation occurs during measured
 workloads. Every suite run gets an isolated runtime; measured cases run
 **sequentially**, with deterministic order rotation across independent repeats.
@@ -127,7 +127,7 @@ configurations as if they measure identical workloads.
 
 ### Large-object streaming Transfer measurements
 
-`node --experimental-transform-types tools/perf/transfer.ts
+`node tools/perf/transfer.ts
 --output=benchmarks/runtime/results/baseline --samples=3 --warmups=1` reuses this
 runner's focused Transfer lane, with 8 MiB and 128 MiB objects. Override `--sizes`
 for larger objects (up to the existing 512 MiB Operation upload limit). Fixture production, HTTP bodies, persisted

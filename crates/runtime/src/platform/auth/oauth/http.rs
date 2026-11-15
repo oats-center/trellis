@@ -334,12 +334,20 @@ async fn avatar(State(engine): State<Arc<OAuthEngine>>, Path(token): Path<String
     let mut response = match engine.avatars.get(&token, now).await {
         // A new photo gets a new URL; the hour bounds how long a browser keeps
         // showing a disabled account's photo.
-        Ok(bytes) => (
+        Ok(Some(bytes)) => (
             [
                 (header::CONTENT_TYPE, "image/png"),
                 (header::CACHE_CONTROL, "private, max-age=3600"),
             ],
             bytes,
+        )
+            .into_response(),
+        // The URL is current but there is no picture, such as an email with
+        // no Gravatar: not an error, so browsers log nothing, and the image
+        // falls back to initials.
+        Ok(None) => (
+            [(header::CACHE_CONTROL, "no-store")],
+            StatusCode::NO_CONTENT,
         )
             .into_response(),
         _ => ([(header::CACHE_CONTROL, "no-store")], StatusCode::NOT_FOUND).into_response(),

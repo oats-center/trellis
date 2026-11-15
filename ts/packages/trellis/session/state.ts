@@ -43,12 +43,14 @@ export class StateConflictError<T> extends BaseError {
 export class ResourceUnavailableError extends BaseError {
   override readonly name = "ResourceUnavailableError" as const;
 
+  readonly kind: string;
+  readonly resourceName: string;
+
   /** Construct an unavailable-resource failure. */
-  constructor(
-    readonly kind: string,
-    readonly resourceName: string,
-  ) {
+  constructor(kind: string, resourceName: string) {
     super(`${kind} resource '${resourceName}' is unavailable`);
+    this.kind = kind;
+    this.resourceName = resourceName;
   }
 
   override toSerializable() {

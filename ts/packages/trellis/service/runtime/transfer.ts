@@ -208,7 +208,11 @@ type SignalBody<S = TransferSignal> = S extends TransferSignal
 export class ServiceTransfer {
   readonly #sessions = new Map<string, ProviderSession>();
   readonly #owned = new Set<ProviderSession>();
-  constructor(readonly opts: ServiceTransferOpts) {}
+  readonly opts: ServiceTransferOpts;
+
+  constructor(opts: ServiceTransferOpts) {
+    this.opts = opts;
+  }
 
   async #staging(): Promise<TypedStore> {
     if (!this.opts.operationStagingBucket) {

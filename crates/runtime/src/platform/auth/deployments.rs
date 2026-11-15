@@ -66,16 +66,19 @@ pub(crate) struct DeploymentProvisioning {
 
 /// The key ID of a canonical, strong Ed25519 identity public key.
 pub(super) fn identity_key_id(public_key: &str) -> Result<String, AuthError> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(public_key)
-        .map_err(|_| AuthError::Denied)?;
-    let raw: [u8; 32] = bytes.try_into().map_err(|_| AuthError::Denied)?;
+    let invalid = || {
+        AuthError::Invalid(
+            "identity public key must be a base64url-encoded (unpadded) Ed25519 public key".into(),
+        )
+    };
+    let bytes = URL_SAFE_NO_PAD.decode(public_key).map_err(|_| invalid())?;
+    let raw: [u8; 32] = bytes.try_into().map_err(|_| invalid())?;
     if VerifyingKey::from_bytes(&raw)
-        .map_err(|_| AuthError::Denied)?
+        .map_err(|_| invalid())?
         .is_weak()
         || URL_SAFE_NO_PAD.encode(raw) != public_key
     {
-        return Err(AuthError::Denied);
+        return Err(invalid());
     }
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(raw)))
 }

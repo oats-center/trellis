@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM docker.io/library/node:24-bookworm-slim AS build
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26-bookworm-slim AS build
 
 WORKDIR /app
 

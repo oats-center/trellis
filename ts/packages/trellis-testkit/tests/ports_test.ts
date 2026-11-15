@@ -20,7 +20,6 @@ test("port reservations exclude other listeners until their release completes", 
     });
     await first.releaseForSpawn();
     await promisify(execFile)(process.execPath, [
-      "--experimental-transform-types",
       "--input-type=module",
       "--eval",
       `

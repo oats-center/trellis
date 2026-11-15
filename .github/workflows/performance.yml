@@ -13,7 +13,7 @@ permissions:
   actions: read
 
 env:
-  NODE_VERSION: 24
+  NODE_VERSION: 26
 
 concurrency:
   group: trellis-performance

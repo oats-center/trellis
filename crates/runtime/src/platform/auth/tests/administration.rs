@@ -256,3 +256,31 @@ fn only_platform_managers_let_a_client_take_administration_without_asking() {
     client.implied_capabilities = vec![Administration::ManageRoles.capability_id().into()];
     register(&manager, &client).unwrap();
 }
+
+#[test]
+fn connected_apps_list_a_live_grant_and_drop_it_once_it_expires() {
+    let f = fixture();
+    let request = trellis_runtime_apis::__types::trellis::AuthDelegationsListRequest {
+        principal_id: None,
+        client_id: None,
+        page: None,
+        extra: Default::default(),
+    };
+    let listed = |now| {
+        f.store
+            .transaction(|connection| {
+                super::super::rpc_credentials::list_delegations(
+                    connection,
+                    &f.principal,
+                    &request,
+                    now,
+                )
+            })
+            .unwrap()
+            .items
+            .len()
+    };
+    assert_eq!(listed(NOW), 1);
+    // The fixture's grant follows its one-hour login.
+    assert_eq!(listed(NOW + 3601), 0);
+}

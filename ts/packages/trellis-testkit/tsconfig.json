@@ -1,6 +1,7 @@
 {
   "extends": "../trellis/tsconfig.npm.json",
   "compilerOptions": {
+    "erasableSyntaxOnly": true,
     "noEmit": true,
     "noUnusedLocals": true,
     "declaration": false,

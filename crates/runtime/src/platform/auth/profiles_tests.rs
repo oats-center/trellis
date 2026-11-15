@@ -70,7 +70,7 @@ fn owner_profile_updates_are_replayable_revision_checked_and_durable_without_cha
         .user;
     let actor = alice.principal_id.to_string();
     let input: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
-        "displayName":"Chosen name","givenName":"Alice","familyName":"Owner","email":"same@example.com", "gravatarEnabled":false,
+        "displayName":"Chosen name","givenName":"Alice","familyName":"Owner","email":"same@example.com",
         "expectedRevision":alice.account.unwrap().profile_revision.0.0.to_string(),"idempotencyKey":id(),
         "userId":bob.principal_id,
     })).unwrap();
@@ -83,7 +83,6 @@ fn owner_profile_updates_are_replayable_revision_checked_and_durable_without_cha
     assert_eq!(updated.email.as_deref(), Some("same@example.com"));
     assert!(!updated.email_verified);
     let account = updated.account.unwrap();
-    assert!(!account.gravatar_enabled);
     let replay = rpc_users::update_profile(&store, &identity, &input, NOW + 2)
         .unwrap()
         .user;
@@ -328,4 +327,140 @@ fn saving_other_profile_fields_keeps_a_default_name_following_the_username() {
         .transaction(|connection| rpc_users::read_user(&store, connection, &admin, true))
         .unwrap();
     assert_eq!(reread.display_name, "admin");
+}
+
+#[test]
+fn the_picture_comes_from_the_creating_provider_or_the_owners_choice_else_gravatar() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = open(&directory, SigningKey::from_bytes(&[39; 32]));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator(
+            "admin",
+            Some("picture administrator password"),
+            None,
+            None,
+            NOW,
+        )
+        .unwrap()
+        .principal_id;
+    let register = |title: &str, issuer: &str| {
+        let provider = id();
+        let registration = crate::platform::auth::lifecycle::OidcProviderRegistration {
+            provider_id: provider.clone(),
+            issuer: issuer.into(),
+            display_name: title.into(),
+            client_id: "trellis".into(),
+            sealed_client_secret: None,
+            config: json!({"scopes":["openid","profile","email"]}),
+            claim_freshness_seconds: 3600,
+            expected_revision: 0,
+        };
+        store
+            .transaction(|connection| {
+                store.register_oidc_provider_in_transaction(
+                    connection,
+                    &mutation(&admin, &registration),
+                    &registration,
+                    NOW,
+                )
+            })
+            .unwrap();
+        provider
+    };
+    let company = register("Company", "https://company.example/");
+    let other = register("Other", "https://other.example/");
+    let claims = |picture: &str| {
+        VerifiedProfile::from_claims(&json!({
+            "name":"Signed up","email":"person@example.com","picture":picture
+        }))
+    };
+    let link = |principal: &str, provider: &str, picture: &str, now: i64| {
+        store
+            .transaction(|connection| {
+                SqliteAuthorizationStore::link_oidc_identity_in(
+                    connection, principal, provider, principal, now,
+                )?;
+                ingest(
+                    connection,
+                    principal,
+                    provider,
+                    principal,
+                    &claims(picture),
+                    now,
+                )
+            })
+            .unwrap();
+    };
+    let profile = |principal: &str| {
+        store
+            .transaction(|connection| read(connection, principal))
+            .unwrap()
+    };
+    let choose = |principal: &str, change: serde_json::Value, now: i64| {
+        let mut change = change;
+        change["expectedRevision"] = json!(profile(principal).revision.to_string());
+        change["idempotencyKey"] = json!(id());
+        let input: AuthUserProfileUpdateRequest = serde_json::from_value(change).unwrap();
+        rpc_users::update_profile(&store, &mutation(principal, &input), &input, now)
+    };
+
+    // A company sign-up, as the Portal creates it: no password, one identity.
+    let signed_up = id();
+    store
+        .transaction(|connection| rpc_users::insert_user(connection, &signed_up, NOW))
+        .unwrap();
+    link(&signed_up, &company, "https://company.example/a.png", NOW);
+    let created = profile(&signed_up);
+    assert_eq!(created.picture_provider.as_deref(), Some(company.as_str()));
+    assert_eq!(
+        created.picture.as_deref(),
+        Some("https://company.example/a.png")
+    );
+    // A second provider linked later does not take over the picture.
+    link(&signed_up, &other, "https://other.example/b.png", NOW + 1);
+    assert_eq!(
+        profile(&signed_up).picture.as_deref(),
+        Some("https://company.example/a.png")
+    );
+    choose(&signed_up, json!({"pictureProviderId": other}), NOW + 2).unwrap();
+    assert_eq!(
+        profile(&signed_up).picture.as_deref(),
+        Some("https://other.example/b.png")
+    );
+    choose(&signed_up, json!({"useGravatar": true}), NOW + 3).unwrap();
+    let gravatar = profile(&signed_up);
+    assert_eq!(gravatar.picture_provider, None);
+    assert_eq!(gravatar.picture, None);
+
+    // A password account keeps its Gravatar when it links a provider, and
+    // cannot take a picture from a provider it has not linked.
+    let create: AuthUserCreateRequest = serde_json::from_value(json!({
+        "username":"password-person",
+        "displayName":"Password person",
+        "password":"picture account password",
+        "idempotencyKey":id()
+    }))
+    .unwrap();
+    let password = rpc_users::create_user(&store, &mutation(&admin, &create), &create, NOW)
+        .unwrap()
+        .user
+        .principal_id
+        .to_string();
+    link(
+        &password,
+        &company,
+        "https://company.example/c.png",
+        NOW + 4,
+    );
+    assert_eq!(profile(&password).picture_provider, None);
+    assert!(matches!(
+        choose(&password, json!({"pictureProviderId": other}), NOW + 5),
+        Err(AuthError::Invalid(_))
+    ));
+    choose(&password, json!({"pictureProviderId": company}), NOW + 6).unwrap();
+    assert_eq!(
+        profile(&password).picture.as_deref(),
+        Some("https://company.example/c.png")
+    );
 }

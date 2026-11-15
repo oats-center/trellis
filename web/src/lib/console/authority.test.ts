@@ -33,7 +33,6 @@ function ready(principalId: string): AuthorityLoadResult {
         username: principalId,
         hasLocalPassword: true,
         profileRevision: 1n,
-        gravatarEnabled: true,
         principal: {
           principalId: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
           title: principalId,

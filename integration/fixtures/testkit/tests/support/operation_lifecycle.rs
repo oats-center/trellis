@@ -459,7 +459,6 @@ async fn cancelled_operation_recovers_cleanup_after_its_provider_process_is_kill
         let mut process = tokio::process::Command::new(node.trim());
         process
             .args([
-                "--experimental-transform-types",
                 "ts/packages/trellis/native/operation_lifecycle_worker.ts",
             ])
             .current_dir("../../..")

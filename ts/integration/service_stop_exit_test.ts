@@ -52,7 +52,6 @@ test("a service that stops while it owns an operation lets its process exit", as
     const child = spawn(
       process.execPath,
       [
-        "--experimental-transform-types",
         "--no-warnings",
         "--input-type=module",
         "-e",

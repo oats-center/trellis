@@ -241,6 +241,12 @@ button.link:hover {
   background: var(--error-bg);
   color: var(--error-ink);
 }
+.refusal-code {
+  opacity: 0.75;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
 .hint {
   color: var(--muted);
   font-size: 0.8125rem;

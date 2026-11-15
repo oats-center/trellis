@@ -455,10 +455,9 @@ impl SqliteAuthorizationStore {
                     given_name: None,
                     family_name: None,
                     email: (!email.is_empty()).then(|| email.to_owned()),
-                    avatar_override_url: None,
                     clear_email: None,
-                    clear_avatar_override: None,
-                    gravatar_enabled: None,
+                    picture_provider_id: None,
+                    use_gravatar: None,
                     expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(
                         1u64.into(),
                     ),

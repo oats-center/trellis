@@ -159,7 +159,7 @@ fi
 concurrency="${TRELLIS_TEST_CONCURRENCY:-$(( $(nproc) > 4 ? $(nproc) : 4 ))}"
 echo "Running up to $concurrency test files at once on $(nproc) cores"
 # A timed-out test keeps running, so without a forced exit its file never ends.
-exec node --experimental-transform-types --test \
+exec node --test \
   --test-force-exit \
   --test-timeout=600000 \
   --test-concurrency="$concurrency" \

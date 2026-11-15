@@ -86,6 +86,7 @@ import {
   AuthUserIdentityUnlinkRequest,
   AuthIdentityLinkCreateRequest,
   AuthIdentityLinkCreateResponse,
+  AuthIdentityLinkProvidersResponse,
   AuthOIDCProviderGetRequest,
   AuthOIDCProviderGetResponse,
   AuthOIDCProvidersListResponse,
@@ -260,6 +261,8 @@ api auth@v1 {
   rpc Users.Password.Change { input AuthPasswordChangeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Start linking a company sign-in to your account.
   rpc Users.IdentityLink.Create { input AuthIdentityLinkCreateRequest; output AuthIdentityLinkCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List the company sign-in providers you can link to your account.
+  rpc Users.IdentityLink.Providers { input AuthEmpty; output AuthIdentityLinkProvidersResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// List the company sign-ins linked to an account.
   rpc UserIdentities.List { input AuthPageRequest; output AuthUserIdentitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   /// Remove a linked company sign-in from an account.
@@ -424,7 +427,7 @@ api auth@v1 {
       title "Manage linked sign-ins";
       description "Link or unlink company accounts.";
       grants "Changes which accounts can sign in as you.";
-      allows { rpc Users.IdentityLink.Create; rpc UserIdentities.Unlink; }
+      allows { rpc Users.IdentityLink.Providers; rpc Users.IdentityLink.Create; rpc UserIdentities.Unlink; }
     }
     capability sessions.read {
       title "See your sign-ins";

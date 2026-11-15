@@ -46,10 +46,12 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
   #unsubscribe: () => void;
   #closed = false;
 
-  constructor(
-    private readonly owner: SessionAuthorityOwner,
-    private readonly api: RuntimeApi,
-  ) {
+  private readonly owner: SessionAuthorityOwner;
+  private readonly api: RuntimeApi;
+
+  constructor(owner: SessionAuthorityOwner, api: RuntimeApi) {
+    this.owner = owner;
+    this.api = api;
     this.#unsubscribe = owner.subscribeChanges(() => {
       void this.refresh().catch(() => undefined);
     });

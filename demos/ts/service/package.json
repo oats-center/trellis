@@ -8,6 +8,6 @@
     "generate": "trellis generate",
     "check": "tsc --project tsconfig.json --noEmit",
     "build": "tsc --project tsconfig.json && node -e \"require('node:fs').cpSync('trellis', 'build/service/trellis', {recursive: true})\"",
-    "start": "node --experimental-transform-types src/main.ts"
+    "start": "node src/main.ts"
   }
 }

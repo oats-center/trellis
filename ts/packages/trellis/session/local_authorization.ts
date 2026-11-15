@@ -77,10 +77,13 @@ export type LocalAuthorizationArgs =
     };
 
 export class EventVerificationAuthError extends AuthError {
-  constructor(readonly retryable: boolean) {
+  readonly retryable: boolean;
+
+  constructor(retryable: boolean) {
     super({
       reason: retryable ? "authorization_unavailable" : "invalid_signature",
     });
+    this.retryable = retryable;
   }
 }
 

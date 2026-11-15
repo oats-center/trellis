@@ -178,6 +178,7 @@ export const CONSOLE_OPERATIONS = {
   usersResolve: authRpc("Users.Resolve"),
   runtimeVersion: authRpc("Runtime.Version"),
   usersIdentityLinkCreate: authRpc("Users.IdentityLink.Create"),
+  usersIdentityLinkProviders: authRpc("Users.IdentityLink.Providers"),
   usersPasswordResetCreate: authRpc("Users.PasswordReset.Create"),
 
   // Auth: grants, capability groups, capabilities, issuers.

@@ -65,7 +65,6 @@ test("a program accepts a development installation's certificate by its fingerpr
         const { stdout } = await promisify(execFile)(
           process.execPath,
           [
-            "--experimental-transform-types",
             "--no-warnings",
             "--input-type=module",
             "-e",
@@ -151,7 +150,6 @@ test("a certificate accepted for one address doesn't stand in for another's pin"
       const { stdout } = await promisify(execFile)(
         process.execPath,
         [
-          "--experimental-transform-types",
           "--no-warnings",
           "--input-type=module",
           "-e",
@@ -204,7 +202,6 @@ for (const websocketOnly of [false, true])
         const child = spawn(
           process.execPath,
           [
-            "--experimental-transform-types",
             "--no-warnings",
             "--input-type=module",
             "-e",
@@ -338,7 +335,6 @@ for (const websocketOnly of [false, true])
           const child = spawn(
             process.execPath,
             [
-              "--experimental-transform-types",
               "--no-warnings",
               "--input-type=module",
               "-e",
@@ -486,7 +482,6 @@ test("an installation can't make another's address trust its certificate", async
             const { stdout } = await promisify(execFile)(
               process.execPath,
               [
-                "--experimental-transform-types",
                 "--no-warnings",
                 "--input-type=module",
                 "-e",

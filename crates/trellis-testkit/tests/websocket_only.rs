@@ -51,7 +51,6 @@ async fn clients_connect_over_the_websocket_when_native_nats_is_private() {
     command
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .args([
-            "--experimental-transform-types",
             "integration/fixtures/runtime/activation_recheck.ts",
             runtime.trellis_url(),
             runtime.admin_username(),

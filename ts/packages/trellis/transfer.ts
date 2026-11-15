@@ -101,11 +101,18 @@ class ClientSession {
   windowBytes = 0;
   #receiveWindow: [number, number] | undefined;
 
+  readonly session: TransferSession;
+  readonly activationDeadlineMs: number;
+  readonly timeoutMs: number;
+
   constructor(
-    readonly session: TransferSession,
-    readonly activationDeadlineMs: number,
-    readonly timeoutMs: number,
+    session: TransferSession,
+    activationDeadlineMs: number,
+    timeoutMs: number,
   ) {
+    this.session = session;
+    this.activationDeadlineMs = activationDeadlineMs;
+    this.timeoutMs = timeoutMs;
     // Reject only through owned cancellation races; no unobserved rejected gates.
     session.subscriptions.push(
       session.lease.nc.subscribe(session.grant.signalSubject, {
@@ -397,11 +404,19 @@ class ClientSession {
 }
 
 abstract class BaseTransferHandle {
+  readonly transport: TrellisTransportProvider;
+  readonly auth: TrellisAuth;
+  readonly timeoutMs: number;
+
   protected constructor(
-    readonly transport: TrellisTransportProvider,
-    readonly auth: TrellisAuth,
-    readonly timeoutMs: number,
-  ) {}
+    transport: TrellisTransportProvider,
+    auth: TrellisAuth,
+    timeoutMs: number,
+  ) {
+    this.transport = transport;
+    this.auth = auth;
+    this.timeoutMs = timeoutMs;
+  }
   protected async open(grant: TransferGrant): Promise<ClientSession> {
     transferParseGrant(new TextEncoder().encode(JSON.stringify(grant)));
     if (
@@ -438,13 +453,16 @@ abstract class BaseTransferHandle {
 
 /** Caller-owned upload helper. Success means backend and required Operation commit. */
 export class SendTransferHandle extends BaseTransferHandle {
+  readonly grant: SendTransferGrant;
+
   constructor(
     transport: TrellisTransportProvider,
     auth: TrellisAuth,
     timeoutMs: number,
-    readonly grant: SendTransferGrant,
+    grant: SendTransferGrant,
   ) {
     super(transport, auth, timeoutMs);
+    this.grant = grant;
   }
 
   /** Send a bounded one-way byte stream and wait for verified durable commitment. */
@@ -583,13 +601,16 @@ export class SendTransferHandle extends BaseTransferHandle {
 
 /** Caller-owned download helper; consumption/backpressure drives cumulative credit. */
 export class ReceiveTransferHandle extends BaseTransferHandle {
+  readonly grant: ReceiveTransferGrant;
+
   constructor(
     transport: TrellisTransportProvider,
     auth: TrellisAuth,
     timeoutMs: number,
-    readonly grant: ReceiveTransferGrant,
+    grant: ReceiveTransferGrant,
   ) {
     super(transport, auth, timeoutMs);
+    this.grant = grant;
   }
 
   /** Open an authenticated push stream pinned to one physical generation. */

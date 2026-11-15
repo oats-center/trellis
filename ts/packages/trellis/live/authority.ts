@@ -261,8 +261,11 @@ export class LiveAuthorityGuard {
 
 /** Typed authority-lifetime failure for the existing long-lived terminal mapping. */
 export class LiveAuthorityGuardError extends Error {
-  constructor(readonly lost: LiveAuthorityLost) {
+  readonly lost: LiveAuthorityLost;
+
+  constructor(lost: LiveAuthorityLost) {
     super(`live authority is not usable: ${lost}`);
+    this.lost = lost;
   }
 }
 

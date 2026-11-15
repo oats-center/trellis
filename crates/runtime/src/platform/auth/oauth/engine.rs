@@ -43,6 +43,12 @@ pub(crate) struct OAuthEngine {
     documents: super::ClientDocuments,
     pub(super) avatars: super::super::avatars::Avatars,
     nonces: Mutex<super::nonce::DpopNonces>,
+    /// What a company provider reported when it refused a sign-in, kept for
+    /// the page the person returns to. Keyed by the portal session and the
+    /// sign-in's transaction or device review, so a link alone cannot make the
+    /// page show text.
+    pub(super) upstream_refusals:
+        Mutex<std::collections::HashMap<(String, String), super::upstream_http::Refusal>>,
     /// Installation TLS this listener serves, for the always-on user notice.
     generated_tls: std::sync::OnceLock<bool>,
     /// Runtime connection used when a Portal approval provisions device storage.
@@ -459,6 +465,7 @@ impl OAuthEngine {
             avatars,
             upstream_http,
             device_entries: FixedWindowRateLimiter::new(),
+            upstream_refusals: Mutex::default(),
             generated_tls: std::sync::OnceLock::new(),
             operational: std::sync::OnceLock::new(),
             nonces: Mutex::new(

@@ -87,3 +87,27 @@ fn a_waiting_claim_may_only_submit_its_service_and_a_removed_one_is_turned_away(
     .unwrap();
     assert!(admit(&f, &key).is_err());
 }
+
+#[test]
+fn a_claim_with_a_malformed_identity_key_says_what_is_wrong_with_it() {
+    let f = fixture();
+    let key = SigningKey::from_bytes(&[24; 32]);
+    // Standard padded base64 instead of the unpadded base64url Trellis keys use.
+    let padded = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().as_bytes());
+    let input: AuthServiceClaimCreateRequest = serde_json::from_value(serde_json::json!({
+        "title": "third-party",
+        "instanceTitle": "third-party",
+        "identityPublicKey": padded,
+        "idempotencyKey": id(),
+    }))
+    .unwrap();
+    match super::super::service_updates::create_claim(
+        &f.store,
+        &mutation(&f.admin, &input),
+        &input,
+        NOW,
+    ) {
+        Err(AuthError::Invalid(detail)) => assert!(detail.contains("public key"), "{detail}"),
+        other => panic!("expected a key validation error, got {other:?}"),
+    }
+}

@@ -8,7 +8,7 @@
 // Usage:
 //   TRELLIS_URL=http://127.0.0.1:3000 \
 //   TRELLIS_PROFILE_DIR=/path/to/already-signed-in/profile \
-//     node --experimental-transform-types tools/perf/connect.ts \
+//     node tools/perf/connect.ts \
 //     --warmup 3 --runs 20 --asset-cache enabled \
 //     --output tools/perf/results/connect-current.json
 import { mkdir, writeFile } from "node:fs/promises";

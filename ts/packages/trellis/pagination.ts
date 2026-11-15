@@ -22,10 +22,13 @@ export type PaginationErrorData = BaseErrorSchema & {
 export class PaginationError extends BaseError<PaginationErrorData> {
   override readonly name = "PaginationError" as const;
 
-  constructor(readonly cursor: string) {
+  readonly cursor: string;
+
+  constructor(cursor: string) {
     super("The paginated RPC returned a cursor that was already visited.", {
       context: { cursor },
     });
+    this.cursor = cursor;
   }
 
   override toSerializable(): PaginationErrorData {

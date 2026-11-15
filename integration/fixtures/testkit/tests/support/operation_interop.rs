@@ -24,7 +24,6 @@ async fn rust_observes_v2_operation_updates_from_an_implementation_only_typescri
         .unwrap();
     let mut provider = tokio::process::Command::new("node")
         .args([
-            "--experimental-transform-types",
             "ts/packages/trellis/native/operation_interop_provider.ts",
         ])
         .current_dir("../../..")
@@ -217,7 +216,6 @@ async fn typescript_observes_v2_operation_updates_from_an_implementation_only_ru
         .unwrap();
     let mut caller = tokio::process::Command::new("node")
         .args([
-            "--experimental-transform-types",
             "ts/packages/trellis/native/operation_interop_caller.ts",
         ])
         .current_dir("../../..")

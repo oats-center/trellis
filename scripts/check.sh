@@ -127,7 +127,7 @@ job_testkit_tests() {
 
 job_demos() {
   build_packages
-  node --experimental-transform-types ts/tools/package_build/demo_consumers.ts
+  node ts/tools/package_build/demo_consumers.ts
   bash scripts/release-ts-dry-run.sh
   local demo
   for demo in service device; do

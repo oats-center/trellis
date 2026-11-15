@@ -38,8 +38,9 @@ session and current accepted `principals.manage`, rejects stale credentials, and
 atomically changes the password and signs out existing login/grant families.
 Bootstrap administrators use the existing local recovery path instead.
 
-`Auth.Users.IdentityLink.Create` returns a five-minute portal authorization URL
-for the current user. Sign in as that same user, then continue through the
+`Auth.Users.IdentityLink.Providers` lists the providers the current user can
+link, by ID and name. `Auth.Users.IdentityLink.Create` returns a five-minute
+portal authorization URL for the current user. Sign in as that same user, then continue through the
 identity provider's fresh OIDC authentication. Provider revision/state, nonce,
 PKCE, and current portal-user continuity are checked before the identity is linked.
 An identity belonging to another user cannot be reassigned. Creation retries
@@ -54,11 +55,13 @@ to renew it. Do not log or share this URL: access to the URL permits reading onl
 that image until expiry. Profile edits invalidate earlier URLs. Revoking
 `usersRead` prevents issuing new URLs but does not instantly revoke existing ones.
 
-Trellis tries your explicit picture URL, linked-provider picture, then Gravatar
-for a verified email when you have not opted out. Gravatar receives a normalized
-SHA-256 email hash, not raw email; the hash is still personal information. Manual
-unverified addresses never trigger Gravatar. Your browser contacts Trellis only,
-and failed image retrieval does not prevent login or directory lookup.
+Your picture is the Gravatar for your email, verified or not, unless you
+choose a linked company sign-in's picture. An account created by a company
+sign-in starts with that provider's picture. When the chosen picture is missing,
+Trellis falls back to Gravatar. Gravatar receives a normalized SHA-256 email
+hash, not raw email; the hash is still personal information. Your browser
+contacts Trellis only, and failed image retrieval does not prevent login or
+directory lookup.
 
 Operators can set `[auth.avatar] external_fetch_enabled = false` to disable all
 remote-derived images, including cached photos. Safe retrieval permits only
@@ -67,11 +70,12 @@ public HTTPS destinations with no redirects, and stores sanitized small PNGs.
 ## Own directory profile
 
 Select `trellis.auth.v1:account.edit` and call `Users.Profile.Update`
-to edit your own display/given/family names, email, picture override and Gravatar
-preference. Use `Users.Resolve`'s `user.account.profileRevision` as
+to edit your own display/given/family names, email, and picture source:
+`pictureProviderId` for a linked company sign-in's picture, or `useGravatar`. Use `Users.Resolve`'s `user.account.profileRevision` as
 `expectedRevision`, plus a fresh `idempotencyKey`. There is no target user ID.
-Omitted fields stay unchanged. Explicit `clearEmail`/`clearAvatarOverride` restore
-eligible linked-provider data; do not send a value and its clear flag together.
+Omitted fields stay unchanged. `clearEmail` restores an eligible linked-provider
+email; do not send a value and its clear flag together, or both picture
+choices.
 Manually entered email is not verified and never links or authenticates accounts.
 Manual choices survive future OIDC logins. Provider unlink removes only its
 nonmanual profile contributions, not your other sign-in methods.

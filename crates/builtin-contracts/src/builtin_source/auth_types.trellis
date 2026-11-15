@@ -606,7 +606,9 @@ model AuthUserAccountDetails {
   username: string;
   hasLocalPassword: bool;
   profileRevision: AuthRevision;
-  gravatarEnabled: bool;
+  /// The linked company sign-in whose picture the account shows. Absent, it
+  /// shows the Gravatar for its email.
+  pictureProviderId?: ulid;
 }
 model AuthUserGetRequest { userId: ulid; }
 /// Exactly one key: a user ID, or a company sign-in.
@@ -651,10 +653,11 @@ model AuthUserProfileUpdateRequest {
   givenName?: AuthName;
   familyName?: AuthName;
   email?: string;
-  avatarOverrideUrl?: string;
   clearEmail?: bool;
-  clearAvatarOverride?: bool;
-  gravatarEnabled?: bool;
+  /// Show the picture from this linked company sign-in.
+  pictureProviderId?: ulid;
+  /// Show the Gravatar for the account's email instead of a company sign-in's picture.
+  useGravatar?: bool;
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
@@ -676,6 +679,9 @@ type AuthUserIdentitiesListResponse = CursorPage<AuthUserIdentity>;
 model AuthUserIdentityUnlinkRequest { identityId: ulid; idempotencyKey: AuthIdempotencyKey; }
 model AuthIdentityLinkCreateRequest { providerId: ulid; idempotencyKey: AuthIdempotencyKey; }
 model AuthIdentityLinkCreateResponse { authorizationUrl: string; expiresAt: timestamp; }
+/** A company sign-in provider a person can link to their own account. */
+model AuthIdentityLinkProvider { providerId: ulid; title: string; }
+model AuthIdentityLinkProvidersResponse { providers: list<AuthIdentityLinkProvider>; }
 
 model AuthOIDCProvider {
   providerId: ulid;

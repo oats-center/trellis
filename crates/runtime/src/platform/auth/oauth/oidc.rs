@@ -465,7 +465,9 @@ impl super::super::SqliteAuthorizationStore {
         let principal = match linked {
             Some(principal) => principal,
             None if sign_up => super::super::sqlite::id(),
-            None => return Err(AuthError::Denied),
+            // No account has this provider identity, and this app does not let
+            // people create one by signing in.
+            None => return Err(AuthError::NotFound),
         };
         let input = (
             &flow.session_id,
@@ -499,8 +501,9 @@ impl super::super::SqliteAuthorizationStore {
                 ],
                 |row| row.get(0),
             )?;
+            // The provider was edited or turned off, or company sign-in was.
             if !current || !super::super::sign_in::read(connection)?.providers {
-                return Err(AuthError::Denied);
+                return Err(AuthError::Conflict);
             }
             if created {
                 super::super::rpc_users::insert_user(connection, &principal, now)?;

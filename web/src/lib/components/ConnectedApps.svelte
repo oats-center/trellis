@@ -2,7 +2,7 @@
   import { groupByArea } from "$lib/console/capability_areas.ts";
   import type { apis } from "trellis-web-generated";
   import { onMount } from "svelte";
-  import { resolve } from "$lib/console_paths";
+  import { isErr } from "@oatscenter/result";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { traverseAll } from "$lib/console/paging.ts";
@@ -16,15 +16,30 @@
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import { humanizeName } from "$lib/format";
+  import { ulid } from "ulid";
+  import { canPerform } from "$lib/console/operations.ts";
+  import { getNotifications } from "$lib/notifications.svelte";
+  import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
 
   type Delegation = apis.auth.DelegationsListOutput["items"][number];
   type Capability = apis.auth.CapabilitiesListOutput["items"][number];
+  /** One person's use of one app: every live sign-in it holds for them. */
+  type Connection = {
+    key: string;
+    principalId: string;
+    clientId: string;
+    origin: string | undefined;
+    delegations: Delegation[];
+  };
 
   // Own: the signed-in person's apps only, as anyone may see them.
   let { own = false }: { own?: boolean } = $props();
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("app-delegations");
+  const notifications = getNotifications();
+  let confirmationModal: ConfirmationModal | undefined = $state();
+  let disconnecting = $state<string | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let search = $state("");
@@ -35,8 +50,27 @@
   let capabilities = $state.raw<Map<string, Capability>>(new Map());
   let userNames = $state.raw<Map<string, string>>(new Map());
 
+  // Each sign-in is its own grant; people think of the app, so fold a
+  // person's grants for one app into one row.
+  const connections = $derived.by(() => {
+    const byKey = new Map<string, Connection>();
+    for (const entry of delegations) {
+      const key = `${entry.principalId} ${entry.binding.clientId} ${entry.binding.origin ?? ""}`;
+      const connection = byKey.get(key) ?? {
+        key,
+        principalId: entry.principalId,
+        clientId: entry.binding.clientId,
+        origin: entry.binding.origin,
+        delegations: [],
+      };
+      connection.delegations.push(entry);
+      byKey.set(key, connection);
+    }
+    return [...byKey.values()];
+  });
+
   const visible = $derived(
-    delegations.filter((entry) =>
+    connections.filter((entry) =>
       `${appName(entry)} ${userNames.get(entry.principalId) ?? ""}`
         .toLowerCase()
         .includes(search.trim().toLowerCase()),
@@ -48,11 +82,10 @@
     if (groupBy === "none") return [{ key: "", title: "", entries: visible }];
     const byKey = new Map<
       string,
-      { key: string; title: string; entries: Delegation[] }
+      { key: string; title: string; entries: Connection[] }
     >();
     for (const entry of visible) {
-      const key =
-        groupBy === "person" ? entry.principalId : entry.binding.clientId;
+      const key = groupBy === "person" ? entry.principalId : entry.clientId;
       const title =
         groupBy === "person"
           ? (userNames.get(entry.principalId) ?? "Unknown user")
@@ -64,8 +97,8 @@
     return [...byKey.values()].sort((a, b) => a.title.localeCompare(b.title));
   });
 
-  function appName(entry: Delegation): string {
-    return humanizeName(entry.binding.clientId);
+  function appName(entry: Connection): string {
+    return humanizeName(entry.clientId);
   }
 
   function host(origin: string | undefined): string {
@@ -77,16 +110,22 @@
     }
   }
 
-  function allowed(entry: Delegation) {
-    return entry.choices.filter((choice) => choice.decision === "approved");
+  // Everything any of the app's sign-ins was allowed, once each.
+  function allowed(entry: Connection): string[] {
+    return [
+      ...new Set(
+        entry.delegations.flatMap((delegation) =>
+          delegation.choices
+            .filter((choice) => choice.decision === "approved")
+            .map((choice) => choice.capability.capabilityId),
+        ),
+      ),
+    ];
   }
 
   // Group the allowed permissions by API area, as people chose them.
-  function groupedAccess(entry: Delegation) {
-    return groupByArea(
-      allowed(entry).map((choice) => choice.capability.capabilityId),
-      (id) => id,
-    ).map((group) => ({
+  function groupedAccess(entry: Connection) {
+    return groupByArea(allowed(entry), (id) => id).map((group) => ({
       id: group.id,
       title: group.title,
       items: group.items.map((id) => capabilities.get(id)?.title ?? id),
@@ -110,6 +149,40 @@
     delegations = [...result.items];
     error = result.complete ? null : projectConsoleError(result.error).message;
     loading = false;
+  }
+
+  async function disconnect(entry: Connection): Promise<void> {
+    if (disconnecting) return;
+    const person = own
+      ? "your account"
+      : `${userNames.get(entry.principalId) ?? "this person"}'s account`;
+    const confirmed = await confirmationModal?.confirm({
+      title: `Disconnect ${appName(entry)}?`,
+      message: `${appName(entry)} loses access to ${person} and every sign-in it holds is signed out.`,
+      confirmLabel: "Disconnect",
+    });
+    if (!confirmed) return;
+    disconnecting = entry.key;
+    let failed = 0;
+    for (const delegation of entry.delegations) {
+      const result = await trellis
+        .delegationsRevoke({
+          delegationId: delegation.delegationId,
+          expectedRevision: delegation.revision,
+          idempotencyKey: ulid(),
+        })
+        .take();
+      if (isErr(result)) failed += 1;
+    }
+    disconnecting = null;
+    if (failed)
+      notifications.error(
+        `${failed} of ${entry.delegations.length} sign-ins could not be signed out. Reload and try again.`,
+        "Disconnect incomplete",
+      );
+    else
+      notifications.success(`${appName(entry)} disconnected`, "Disconnected");
+    await load();
   }
 
   async function loadNames(): Promise<void> {
@@ -213,7 +286,7 @@
                 </th>
               </tr>
             {/if}
-            {#each section.entries as entry (entry.delegationId)}
+            {#each section.entries as entry (entry.key)}
               {@const groups = groupedAccess(entry)}
               <tr>
                 <td>
@@ -225,7 +298,9 @@
                     <span>
                       <span class="block font-medium">{appName(entry)}</span>
                       <span class="block text-xs text-base-content/60"
-                        >{host(entry.binding.origin)}</span
+                        >{host(entry.origin)}{entry.delegations.length > 1
+                          ? ` · ${entry.delegations.length} sign-ins`
+                          : ""}</span
                       >
                     </span>
                   </div>
@@ -238,12 +313,9 @@
                     <button
                       type="button"
                       class="text-left hover:underline"
-                      aria-expanded={open === entry.delegationId}
+                      aria-expanded={open === entry.key}
                       onclick={() =>
-                        (open =
-                          open === entry.delegationId
-                            ? null
-                            : entry.delegationId)}
+                        (open = open === entry.key ? null : entry.key)}
                     >
                       {groups
                         .slice(0, 3)
@@ -255,7 +327,7 @@
                         >· {allowed(entry).length} permissions</span
                       >
                     </button>
-                    {#if open === entry.delegationId}
+                    {#if open === entry.key}
                       <dl class="mt-3 space-y-2 text-sm">
                         {#each groups as group (group.id)}
                           <div>
@@ -274,19 +346,24 @@
                   {/if}
                 </td>
                 <td class="text-right">
-                  <ActionMenu
-                    widthClass="w-44"
-                    ariaLabel={`Actions for ${appName(entry)}`}
-                  >
-                    <li>
-                      <a
-                        class="text-error"
-                        href={resolve(
-                          `/admin/apps/revoke?delegationId=${entry.delegationId}`,
-                        )}>Disconnect</a
-                      >
-                    </li>
-                  </ActionMenu>
+                  {#if canPerform(authority.authority, "delegationsRevoke")}
+                    <ActionMenu
+                      widthClass="w-44"
+                      ariaLabel={`Actions for ${appName(entry)}`}
+                    >
+                      <li>
+                        <button
+                          type="button"
+                          class="text-error"
+                          disabled={disconnecting !== null}
+                          onclick={() => void disconnect(entry)}
+                          >{disconnecting === entry.key
+                            ? "Disconnecting..."
+                            : "Disconnect"}</button
+                        >
+                      </li>
+                    </ActionMenu>
+                  {/if}
                 </td>
               </tr>
             {/each}
@@ -296,3 +373,5 @@
     {/if}
   </div>
 </section>
+
+<ConfirmationModal bind:this={confirmationModal} />

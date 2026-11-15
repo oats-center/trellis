@@ -93,13 +93,25 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
   #error: unknown;
   #wake: (() => void) | undefined;
 
+  readonly maxFrameBytes: number;
+  readonly windowFrames: number;
+  readonly windowBytes: number;
+  readonly consumed: (seq: bigint, bytes: number) => void;
+  readonly direction: "upload" | "download";
+
   constructor(
-    readonly maxFrameBytes: number,
-    readonly windowFrames: number,
-    readonly windowBytes: number,
-    readonly consumed: (seq: bigint, bytes: number) => void,
-    readonly direction: "upload" | "download" = "upload",
-  ) {}
+    maxFrameBytes: number,
+    windowFrames: number,
+    windowBytes: number,
+    consumed: (seq: bigint, bytes: number) => void,
+    direction: "upload" | "download" = "upload",
+  ) {
+    this.maxFrameBytes = maxFrameBytes;
+    this.windowFrames = windowFrames;
+    this.windowBytes = windowBytes;
+    this.consumed = consumed;
+    this.direction = direction;
+  }
 
   /** Bytes retained by the downstream ingress, excluding the verification lane. */
   get bufferedBytes(): number {

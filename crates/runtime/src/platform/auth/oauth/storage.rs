@@ -1035,11 +1035,22 @@ impl Storage for OAuthStorage {
                         })
                         .collect::<Result<_, _>>()?;
                 }
+                // The Console's callback follows the configured origin, so
+                // editing `public_origin` or `[console] origin` keeps sign-in
+                // working; the address stored at installation would not.
+                let redirect_uris = match &this.authority.settings.console_origin {
+                    Some(origin) if client_id.as_str() == super::super::CONSOLE_CLIENT_ID => {
+                        super::super::console_registration(origin)
+                            .map_err(failure)?
+                            .redirect_uris
+                    }
+                    _ => serde_json::from_str(&redirects).map_err(failure)?,
+                };
                 return Ok(Some(Arc::new(Client {
                     client_id: client_id.clone(),
                     auth: ClientAuth::Public,
                     grant_types: grants,
-                    redirect_uris: serde_json::from_str(&redirects).map_err(failure)?,
+                    redirect_uris,
                     allowed_scopes: oauth_as::ScopeSet::empty(),
                     default_scopes: oauth_as::ScopeSet::empty(),
                     name: Some(name),
