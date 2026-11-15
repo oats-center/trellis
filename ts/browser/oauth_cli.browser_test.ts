@@ -115,6 +115,100 @@ test(
           accepted.api.acceptedRevision,
         );
         assert.equal(deployment.participantId, provider.id);
+        // Settings: text as written, JSON otherwise, and a secret read from a
+        // file that the CLI never shows back.
+        await run(
+          "svc",
+          "configured",
+          "create",
+          "--source",
+          new URL("../../integration/fixtures/runtime", import.meta.url)
+            .pathname,
+          "--participant",
+          "runtime-trellis.ConfiguredService",
+        );
+        type Setting = { name: string; value?: unknown; isSet: boolean };
+        const setting = (view: { fields: Setting[] }, name: string) =>
+          view.fields.find((field) => field.name === name);
+        const saved = await run(
+          "svc",
+          "configured",
+          "config",
+          "set",
+          "endpoint=9090",
+          "port=9090",
+        );
+        assert.equal(setting(saved, "endpoint")?.value, "9090");
+        assert.equal(setting(saved, "port")?.value, 9090);
+        const secretPath = `${directory}/api-key`;
+        await writeFile(secretPath, "k1\n");
+        const secret = setting(
+          await run(
+            "svc",
+            "configured",
+            "config",
+            "set-secret",
+            "apiKey",
+            "--from-file",
+            secretPath,
+          ),
+          "apiKey",
+        );
+        assert.equal(secret?.isSet, true);
+        assert.equal(secret?.value, undefined);
+        const { revisions } = await run(
+          "svc",
+          "configured",
+          "config",
+          "history",
+        );
+        assert.deepEqual(
+          revisions.map(
+            (revision: { revision: number; changedSecrets: string[] }) => [
+              revision.revision,
+              revision.changedSecrets,
+            ],
+          ),
+          [
+            [2, ["apiKey"]],
+            [1, []],
+          ],
+        );
+        // An app's settings come from the IDL registered with its client.
+        const appPath = `${directory}/configured-app.json`;
+        await writeFile(
+          appPath,
+          JSON.stringify({
+            clientId: "configured-app",
+            expectedRevision: "0",
+            title: "Configured app",
+            description: "",
+            kind: "native",
+            development: true,
+            redirectUris: ["http://127.0.0.1/callback"],
+            impliedConsent: [],
+            idempotencyKey: ulid(),
+          }),
+        );
+        await run(
+          "clients",
+          "put",
+          appPath,
+          "--source",
+          new URL("../../integration/fixtures/runtime", import.meta.url)
+            .pathname,
+          "--app",
+          "runtime-trellis.ConfiguredAgent",
+        );
+        const appSettings = await run(
+          "clients",
+          "config",
+          "configured-app",
+          "set",
+          "limit=25",
+        );
+        assert.equal(setting(appSettings, "limit")?.value, 25);
+        assert.equal(setting(appSettings, "greeting")?.value, "hello");
         const logo = `${directory}/logo.svg`;
         await writeFile(logo, '<svg xmlns="http://www.w3.org/2000/svg"/>');
         const themed = await run(

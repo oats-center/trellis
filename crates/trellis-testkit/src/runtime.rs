@@ -941,6 +941,23 @@ impl TrellisTestRuntime {
         })
     }
 
+    /// Stores settings for `service`'s deployment as a new revision, through
+    /// the same `Config.Set` an administrator uses. Secrets go in `secrets`.
+    ///
+    /// # Errors
+    /// Returns an error when Auth refuses a value or the write.
+    pub async fn set_config(
+        &self,
+        service: &TestServiceIdentity,
+        values: serde_json::Value,
+        secrets: serde_json::Value,
+    ) -> Result<(), TrellisTestError> {
+        self.ensure_running()?;
+        self.admin()?
+            .set_config(&service.deployment_id, None, values, secrets)
+            .await
+    }
+
     /// Registers `P` like [`Self::register_service`] when another deployment
     /// already serves an API `P` implements. Every deployment serving an API
     /// shares its requests at random, so Auth requires this explicit

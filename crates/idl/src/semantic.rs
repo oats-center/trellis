@@ -688,7 +688,23 @@ pub struct ParticipantDefinition {
     pub(crate) implements: BTreeSet<ApiId>,
     pub(crate) uses: BTreeMap<ApiId, InteractionSelection>,
     pub(crate) resources: BTreeMap<ResourceName, ResourceDefinition>,
+    pub(crate) config: BTreeMap<String, ConfigFieldDefinition>,
     pub(crate) companion: Option<CompanionDefinition>,
+}
+
+/// One configuration value a participant reads from Trellis.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfigFieldDefinition {
+    /// Human-facing title and description.
+    pub docs: Documentation,
+    /// Type every stored value must satisfy.
+    pub ty: TypeExpression,
+    /// Value used when none is stored; a field without one is required.
+    pub default: Option<serde_json::Value>,
+    /// Write-only: administrators set it, only the participant reads it.
+    pub secret: bool,
+    /// Read only when the participant connects, never applied live.
+    pub restart: bool,
 }
 
 impl ParticipantDefinition {
@@ -715,6 +731,10 @@ impl ParticipantDefinition {
     /// Return participant resources.
     pub fn resources(&self) -> &BTreeMap<ResourceName, ResourceDefinition> {
         &self.resources
+    }
+    /// Return the declared configuration fields, keyed by name.
+    pub fn config(&self) -> &BTreeMap<String, ConfigFieldDefinition> {
+        &self.config
     }
     /// Return the optional device companion.
     pub fn companion(&self) -> Option<&CompanionDefinition> {
@@ -748,6 +768,7 @@ pub struct AppRequestDefinition {
     pub(crate) kind: AppKind,
     pub(crate) uses: BTreeMap<ApiId, InteractionSelection>,
     pub(crate) states: BTreeMap<ResourceName, ResourceDefinition>,
+    pub(crate) config: BTreeMap<String, ConfigFieldDefinition>,
 }
 
 impl AppRequestDefinition {
@@ -770,6 +791,10 @@ impl AppRequestDefinition {
     /// Return local State codecs; these are not provisioned resources.
     pub fn states(&self) -> &BTreeMap<ResourceName, ResourceDefinition> {
         &self.states
+    }
+    /// Return the declared public configuration fields, keyed by name.
+    pub fn config(&self) -> &BTreeMap<String, ConfigFieldDefinition> {
+        &self.config
     }
 }
 

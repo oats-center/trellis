@@ -15,7 +15,23 @@ pub enum ClientsCommand {
     Get { client_id: String },
     /// Create or replace a registration using an AuthOAuthClientPutRequest JSON file.
     /// Use kind=browser, development=true and exact redirectUris for localhost apps.
-    Put { input: PathBuf },
+    Put {
+        input: PathBuf,
+        /// Also attach the settings an app declares, compiled from this source
+        /// project, so administrators can set them.
+        #[arg(long, value_name = "PATH")]
+        source: Option<PathBuf>,
+        /// The app or agent request in `--source` that declares the settings,
+        /// such as `acme-orders.Panel`; needed when the project has several.
+        #[arg(long, requires = "source", value_name = "APP")]
+        app: Option<String>,
+    },
+    /// Show or change the settings an app declares.
+    Config {
+        client_id: String,
+        #[command(flatten)]
+        args: crate::cli::ConfigArgs,
+    },
     /// Choose how people may create their own account while signing in to
     /// this app; options you leave out keep their current value.
     SignUp(ClientSignUpArgs),

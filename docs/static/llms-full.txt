@@ -1074,6 +1074,29 @@ Jobs/Events resource evidence uses authenticated `Auth.ResourceBindings.Query`
 with separate kind-scoped read capabilities; split roles never read another
 role's SQLite database.
 
+#### Settings
+
+Services, devices, and apps declare the settings they read from Trellis with
+`config` members instead of environment variables:
+`config databaseUrl { title "Database URL"; description "..."; type string; restart; }`.
+A field without `default` is required; `secret` marks a write-only value and is
+allowed only in services; `restart` marks a value read only at connect. Auth
+checks every write against the installed build's types. At connect the SDK
+reads the values before handlers start; while a required value is missing the
+participant prints a Console link and QR code and waits. Live fields follow
+changes without a restart, a `restart` field keeps its connect-time value, and
+per-instance overrides take precedence over the deployment's values.
+Administrators use `trellis svc <ID> config` (`set FIELD=VALUE`,
+`set-secret FIELD --from-file PATH`, `unset`, `history`, `rollback`,
+`delete-revision`, `--instance`), `trellis dev <ID> config` for device types,
+or the Console's Settings section; the RPCs are `Auth.Config.*` under
+`config.read`, `config.manage`, and `config.manageSecrets`. Secrets are sealed
+at rest and never returned to administrators. Tests set values through the
+same RPCs, never through environment variables. App settings are public to
+the app's users, need defaults, and cannot be secret; register the app's
+declaration with its client using `trellis clients put FILE --source PATH
+[--app ID]` and change values with `trellis clients config CLIENT`.
+
 #### Resource lifecycle
 
 Resource commitments are approvals of hard semantics; desired capacities are
@@ -1572,6 +1595,21 @@ but retains the entire object in memory. Streams fail on physical disconnect or
 closure. `TypedStore.list(...)` and file metadata lists use the shared keyset
 pagination.
 
+#### Settings
+
+A participant with `config` fields gets them as `service.config` or
+`device.config`, typed from the generated participant. `config.current` holds
+the values in effect, secrets included; `config.revision` names the deployment
+and instance revisions behind them; `config.onChange(({ previous, current,
+changed }) => ...)` runs after a live field changes and returns an unsubscribe
+function. Restart-only fields never appear in `changed`. `TrellisService.connect`
+and `TrellisDevice.connect` resolve only once every required field has a value.
+Browser and native apps get `client.config` the same way, with
+`config.revision.app`; an app with settings never waits, since its fields have
+defaults. In the testkit, `runtime.services.createInstance({ ..., config: {
+values, secrets } })` stores initial values through `Auth.Config.Set`, and
+`runtime.registerClient` attaches an app's declaration to its client.
+
 #### SQL outbox
 
 When SQL writes and event/job intents need one atomic commit, configure
@@ -2017,6 +2055,18 @@ pagination. Store readers and writers support bounded streaming through
 Tokio runtime, including cross-thread drops; cleanup retains the generation
 lease. Whole-buffer helpers consume the same reader but retain the entire
 object in memory.
+
+#### Settings
+
+A participant with `config` fields gets a generated `Config` struct with one
+field per setting. Services read it through `Provider::new(&mut service).config()`
+and devices through the generated client's `config()`; both return
+`trellis_rs::service::ConfigHandle<Config>`. `current()` decodes the values in
+effect, `revision()` names the deployment and instance revisions, and
+`changed().await` waits for the next live change. Restart-only fields keep their
+connect-time value. `connect` returns only once every required field has a
+value. In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
+stores values through `Auth.Config.Set`.
 
 #### Transfers
 

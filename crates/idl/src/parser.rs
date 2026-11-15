@@ -1,8 +1,8 @@
 use crate::{
     ast::{
-        Action, Alias, Api, ApiUse, Capability, CapabilityGroup, Declaration, Enum, Field, Import,
-        MemberValue, Model, ParsedSource, Participant, Prelude, PreludeDependency, Resource,
-        ResourceValue, Selection, Spanned, TypeExpr,
+        Action, Alias, Api, ApiUse, Capability, CapabilityGroup, ConfigField, Declaration, Enum,
+        Field, Import, MemberValue, Model, ParsedSource, Participant, Prelude, PreludeDependency,
+        Resource, ResourceValue, Selection, Spanned, TypeExpr,
     },
     lexer::{lex, Token, TokenKind},
     semantic::SourceUnit,
@@ -475,6 +475,7 @@ impl<'a> Parser<'a> {
             implements: Vec::new(),
             uses: Vec::new(),
             resources: Vec::new(),
+            config: Vec::new(),
             companion: None,
             optional,
             span: start..start,
@@ -529,6 +530,12 @@ impl<'a> Parser<'a> {
                     resource.span.start = start;
                     value.resources.push(resource)
                 }
+                "config" => {
+                    let start = self.previous_span().start;
+                    let mut field = self.config_field()?;
+                    field.span.start = start;
+                    value.config.push(field)
+                }
                 "app" | "agent" if kind == "device" => {
                     let start = self.previous_span().start;
                     if value.companion.is_some() {
@@ -554,6 +561,74 @@ impl<'a> Parser<'a> {
         self.token(TokenKind::RBrace)?;
         value.span = start..self.previous_span().end;
         Ok(value)
+    }
+
+    fn config_field(&mut self) -> miette::Result<ConfigField> {
+        let start = self.previous_span().start;
+        let name = self.ident()?;
+        self.token(TokenKind::LBrace)?;
+        let mut field = ConfigField {
+            name,
+            title: None,
+            description: None,
+            ty: None,
+            default: None,
+            secret: false,
+            restart: false,
+            span: start..start,
+        };
+        let mut members = BTreeSet::new();
+        while !self.at(TokenKind::RBrace) {
+            let member = self.word_text()?;
+            if !members.insert(member.clone()) {
+                return Err(self.error_previous(format!("duplicate config member '{member}'")));
+            }
+            match member.as_str() {
+                "title" => field.title = Some(self.string_statement()?),
+                "description" => field.description = Some(self.string_statement()?),
+                "type" => {
+                    field.ty = Some(self.ty()?);
+                    self.token(TokenKind::Semi)?;
+                }
+                "default" => {
+                    field.default = Some(self.literal()?);
+                    self.token(TokenKind::Semi)?;
+                }
+                "secret" => {
+                    self.token(TokenKind::Semi)?;
+                    field.secret = true;
+                }
+                "restart" => {
+                    self.token(TokenKind::Semi)?;
+                    field.restart = true;
+                }
+                other => {
+                    return Err(self.error_previous(format!("unsupported config member '{other}'")))
+                }
+            }
+        }
+        self.token(TokenKind::RBrace)?;
+        field.span = start..self.previous_span().end;
+        Ok(field)
+    }
+
+    /// A JSON scalar: a quoted string, a number, `true`, `false`, or `null`.
+    fn literal(&mut self) -> miette::Result<serde_json::Value> {
+        if self.at(TokenKind::String) {
+            return Ok(serde_json::Value::String(self.string()?));
+        }
+        if self.at(TokenKind::Number) {
+            let text = self.number_text()?;
+            return serde_json::from_str(&text).map_err(|_| self.error_previous("invalid number"));
+        }
+        match self.ident()?.as_str() {
+            "true" => Ok(serde_json::Value::Bool(true)),
+            "false" => Ok(serde_json::Value::Bool(false)),
+            "null" => Ok(serde_json::Value::Null),
+            _ => {
+                Err(self.error_previous("expected a quoted string, a number, true, false, or null"))
+            }
+        }
     }
 
     fn resource(&mut self, kind: String, optional: bool) -> miette::Result<Resource> {

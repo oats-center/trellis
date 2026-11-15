@@ -149,8 +149,21 @@ pub(crate) struct Participant {
     pub implements: Vec<String>,
     pub uses: Vec<ApiUse>,
     pub resources: Vec<Resource>,
+    pub config: Vec<ConfigField>,
     pub companion: Option<Box<Participant>>,
     pub optional: bool,
+    pub span: Range<usize>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ConfigField {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub ty: Option<TypeExpr>,
+    pub default: Option<serde_json::Value>,
+    pub secret: bool,
+    pub restart: bool,
     pub span: Range<usize>,
 }
 

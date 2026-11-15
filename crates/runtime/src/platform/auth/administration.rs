@@ -1,4 +1,4 @@
-//! The seven administrative capabilities: installation-wide powers in the
+//! The administrative capabilities: installation-wide powers in the
 //! reserved `trellis.*` namespace, declared by the builtin Auth contract.
 
 use std::collections::BTreeSet;
@@ -14,10 +14,13 @@ pub(crate) enum Administration {
     ForceReplaceApis,
     ManageClients,
     ManagePlatform,
+    ReadConfig,
+    ManageConfig,
+    ManageConfigSecrets,
 }
 
 impl Administration {
-    pub(crate) const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::ManageAccounts,
         Self::ManagePrincipals,
         Self::ManageRoles,
@@ -25,6 +28,9 @@ impl Administration {
         Self::ForceReplaceApis,
         Self::ManageClients,
         Self::ManagePlatform,
+        Self::ReadConfig,
+        Self::ManageConfig,
+        Self::ManageConfigSecrets,
     ];
 
     pub(crate) fn capability_id(self) -> &'static str {
@@ -36,6 +42,9 @@ impl Administration {
             Self::ForceReplaceApis => "trellis.auth.v1:apis.forceReplace",
             Self::ManageClients => "trellis.auth.v1:clients.manage",
             Self::ManagePlatform => "trellis.auth.v1:platform.manage",
+            Self::ReadConfig => "trellis.auth.v1:config.read",
+            Self::ManageConfig => "trellis.auth.v1:config.manage",
+            Self::ManageConfigSecrets => "trellis.auth.v1:config.manageSecrets",
         }
     }
 }

@@ -13,7 +13,10 @@ import type {
 import { eventDescriptorIdentity } from "./api.ts";
 import { lowerCamelSurfaceName, pascalSurfaceName } from "./surface_names.ts";
 import type { TrellisAvailability } from "../connection.ts";
-import type { AppRequestDescriptor } from "../generated_support.ts";
+import type {
+  AppRequestDescriptor,
+  ConfigFieldDescriptor,
+} from "../generated_support.ts";
 
 /** Source-owned API selections for either a provisioned participant or an OAuth application. */
 export type GeneratedCaller = GeneratedParticipant | AppRequestDescriptor;
@@ -107,6 +110,8 @@ export type GeneratedParticipant = Readonly<{
   )[];
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, GeneratedResourceDescriptor>>;
+  /** Settings the participant reads from Trellis, keyed by field name. */
+  config?: Readonly<Record<string, ConfigFieldDescriptor>>;
   companion?: Readonly<{
     request: AppRequestDescriptor;
     availability: "required" | "optional";

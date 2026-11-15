@@ -19,6 +19,7 @@
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
   import ServiceUpdates from "$lib/components/ServiceUpdates.svelte";
+  import ParticipantSettings from "$lib/components/ParticipantSettings.svelte";
 
   type Deployment = apis.auth.DeploymentsGetOutput["deployment"];
   type Instance = apis.auth.ServiceInstancesListOutput["items"][number];
@@ -339,6 +340,10 @@
         </dl>
       </details>
     </div>
+
+    {#if canPerform(authority.authority, "configGet")}<ParticipantSettings
+        deploymentId={deployment.deploymentId}
+      />{/if}
 
     <div class="trellis-section">
       <h2 class="px-5 pt-5 text-base font-semibold">Instances</h2>

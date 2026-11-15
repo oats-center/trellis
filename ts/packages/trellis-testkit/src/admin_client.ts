@@ -144,6 +144,9 @@ export class TrellisTestAdminAutomation {
             "trellis.auth.v1:apis.forceReplace",
             "trellis.auth.v1:clients.manage",
             "trellis.auth.v1:platform.manage",
+            "trellis.auth.v1:config.read",
+            "trellis.auth.v1:config.manage",
+            "trellis.auth.v1:config.manageSecrets",
           ],
         });
         this.#nativeSession = login.session;

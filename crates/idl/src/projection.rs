@@ -17,6 +17,34 @@ pub fn json_schema(graph: &PackageGraph, root: &TypeRef) -> miette::Result<Value
     Ok(schema)
 }
 
+/// Project a type expression, such as a config field's type, to Draft 2020-12
+/// JSON Schema with the named definitions it reaches.
+pub fn expression_json_schema(
+    graph: &PackageGraph,
+    root: &TypeExpression,
+) -> miette::Result<Value> {
+    let mut definitions = Map::new();
+    let mut visiting = BTreeSet::new();
+    let mut schema = project_expr(graph, root, &mut definitions, &mut visiting)?;
+    if let Value::Object(object) = &mut schema {
+        object.insert(
+            "$schema".into(),
+            Value::String("https://json-schema.org/draft/2020-12/schema".into()),
+        );
+        if !definitions.is_empty() {
+            object.insert("$defs".into(), Value::Object(definitions));
+        }
+    } else {
+        // A boolean schema (`true` for json) has no room for definitions.
+        schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "allOf": [schema],
+            "$defs": definitions,
+        });
+    }
+    Ok(schema)
+}
+
 /// [`json_schema`] with authored descriptions on each definition and field.
 /// For reading; validators and compatibility use the undescribed form.
 pub fn described_json_schema(graph: &PackageGraph, root: &TypeRef) -> miette::Result<Value> {

@@ -78,6 +78,62 @@ pub enum SvcResourceAction {
     Approve(SvcUpdateArgs),
     /// Reject the service's pending update.
     Reject(SvcUpdateArgs),
+    /// Show or change the settings Trellis keeps for the service.
+    Config(ConfigArgs),
+}
+
+/// Settings Trellis keeps for a deployment, or for one instance's overrides
+/// with `--instance`.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct ConfigArgs {
+    /// An instance of the deployment, by ID or title, whose overrides to show or change.
+    #[arg(long, global = true, value_name = "INSTANCE")]
+    pub instance: Option<String>,
+    #[command(subcommand)]
+    pub command: Option<ConfigCommand>,
+}
+
+/// One settings operation; without one, `show`.
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum ConfigCommand {
+    /// Show each setting, its value, and where the value comes from.
+    /// Secrets show only whether they are set.
+    Show,
+    /// Set one or more settings, such as `logLevel=debug port=9090`.
+    Set {
+        /// `FIELD=VALUE`. A text setting takes the text as written; any other
+        /// takes JSON, such as `9090`, `true`, or `["a","b"]`.
+        #[arg(value_name = "FIELD=VALUE", required = true)]
+        values: Vec<String>,
+    },
+    /// Set a secret from a file, or from standard input with `-`, so the value
+    /// never appears in the shell history or process list.
+    SetSecret {
+        #[arg(value_name = "FIELD")]
+        field: String,
+        /// Read the value from this file, or `-` for standard input. A text
+        /// secret takes the contents without the trailing newline; any other takes JSON.
+        #[arg(long, value_name = "PATH", default_value = "-")]
+        from_file: PathBuf,
+    },
+    /// Remove stored values so the default, or the deployment's value for an
+    /// instance, applies.
+    Unset {
+        #[arg(value_name = "FIELD", required = true)]
+        fields: Vec<String>,
+    },
+    /// List revisions, newest first.
+    History,
+    /// Make an earlier revision's values current again, as a new revision.
+    Rollback {
+        #[arg(value_name = "REVISION")]
+        revision: u32,
+    },
+    /// Delete an old revision, such as one holding a replaced password.
+    DeleteRevision {
+        #[arg(value_name = "REVISION")]
+        revision: u32,
+    },
 }
 
 /// Select a service update; omitted selects the deployment's pending one.
@@ -109,6 +165,8 @@ pub enum DevResourceAction {
     Remove(RemoveArgs),
     Instances(DevInstancesArgs),
     Provision(DevProvisionArgs),
+    /// Show or change the settings Trellis keeps for the device.
+    Config(ConfigArgs),
 }
 
 /// Create a service deployment from its native source package. Without

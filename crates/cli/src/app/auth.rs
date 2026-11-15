@@ -73,6 +73,13 @@ pub(super) async fn roles(format: OutputFormat, command: RolesCommand) -> miette
 }
 
 pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> miette::Result<()> {
+    // Settings open their own connection; the saved login holds one at a time.
+    let command = match command {
+        ClientsCommand::Config { client_id, args } => {
+            return super::config::run(format, super::config::Scope::Client(&client_id), args).await
+        }
+        command => command,
+    };
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
@@ -117,11 +124,47 @@ pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> mi
                 Ok(())
             })
         }
-        ClientsCommand::Put { input } => {
+        ClientsCommand::Config { .. } => unreachable!("handled before connecting"),
+        ClientsCommand::Put { input, source, app } => {
             let request: auth_types::AuthOAuthClientPutRequest =
                 serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
                     .into_diagnostic()?;
             let response = auth.o_auth_clients_put(&request).await.into_diagnostic()?;
+            if let Some(source) = source {
+                let root = source.canonicalize().into_diagnostic()?;
+                let manifest = trellis_idl::project::read_manifest(&root.join("trellis.toml"))?;
+                let compiled = crate::package::compile_project(&root, &manifest)?;
+                let declaring = compiled
+                    .root_package()
+                    .app_requests()
+                    .values()
+                    .filter(|request| match &app {
+                        Some(id) => request.identity().as_str() == id,
+                        None => !request.config().is_empty(),
+                    })
+                    .map(|request| request.identity().as_str().to_owned())
+                    .collect::<Vec<_>>();
+                let [request_id] = declaring.as_slice() else {
+                    return Err(miette::miette!(
+                        help = "Name the app with --app.",
+                        "{} in {}",
+                        if declaring.is_empty() {
+                            "no app declares settings".to_owned()
+                        } else {
+                            format!("several apps declare settings: {}", declaring.join(", "))
+                        },
+                        source.display()
+                    ));
+                };
+                auth.config_apps_declare(&wire(serde_json::json!({
+                    "clientId": request.client_id,
+                    "packageEvidence": super::deploy::package_evidence(&compiled)?,
+                    "requestId": request_id,
+                    "idempotencyKey": ulid::Ulid::generate().to_string(),
+                }))?)
+                .await
+                .into_diagnostic()?;
+            }
             output::emit(format, &response, |response| {
                 let client = &response["client"];
                 output::success(format!(

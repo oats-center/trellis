@@ -4,6 +4,12 @@ import {
   UnexpectedError,
   isErr,
 } from "@oatscenter/result";
+import {
+  type AppConfigOf,
+  connectAppConfig,
+  type ParticipantConfig,
+} from "../service/config.ts";
+import { logger as noopLogger } from "../globals.ts";
 import { connectAdmitted } from "../auth/connection.ts";
 import { verifyOAuthAdmissionWasm } from "../auth/protocol_wasm.ts";
 import { utf8 } from "../auth/utils.ts";
@@ -174,6 +180,8 @@ export type NativeClientConnectOptions<T extends AppRequestDescriptor> =
 export type ConnectedNativeClient<T extends AppRequestDescriptor> =
   CallerRuntime<T> & {
     readonly ownAuthority: OwnAuthorityView;
+    /** Settings an administrator keeps for this app, typed from its `config` fields. */
+    readonly config: ParticipantConfig<AppConfigOf<T>>;
     /** Refresh authenticated authority through the shared connection owner. */
     refreshAuthority(): Promise<void>;
   };
@@ -267,9 +275,19 @@ export function connectNativeClient<const T extends AppRequestDescriptor>(
         await ownAuthority.refresh();
         if (!ownAuthority.current)
           throw new AuthError({ reason: "Unavailable" });
+        const config = await connectAppConfig<AppConfigOf<T>>({
+          fields: options.request.config,
+          clientId: options.session.scope.clientId,
+          read: () => trellis.requestAppConfig(),
+          transport: connected.manager,
+          closed: connected.manager.closed(),
+          log: options.log ?? noopLogger,
+          timeoutMs: options.timeout ?? 30_000,
+        });
         return Result.ok(
           Object.assign(createCallerRuntime(trellis, options.request), {
             ownAuthority,
+            config,
             refreshAuthority: async () => {
               await connected.refreshAuthority();
               await ownAuthority.refresh();

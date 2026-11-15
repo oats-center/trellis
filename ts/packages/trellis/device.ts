@@ -8,6 +8,11 @@ import "./auth/protocol_wasm_provider.ts";
 import type { NatsConnection } from "@nats-io/nats-core";
 export { checkDeviceActivation } from "./device/activation.ts";
 export type {
+  ConfigChange,
+  ParticipantConfig,
+  ParticipantConfigOf,
+} from "./service/config.ts";
+export type {
   CheckDeviceActivationArgs,
   TrellisDeviceActivatedStatus,
   TrellisDeviceActivationRequiredStatus,
@@ -64,6 +69,15 @@ import {
   participantEvidence,
 } from "./participant_runtime/participant.ts";
 import type { AppRequestDescriptor } from "./generated_support.ts";
+import {
+  type ConfigHandle,
+  loadConfig,
+  NO_CONFIG,
+  ownReading,
+  type ParticipantConfig,
+  type ParticipantConfigOf,
+} from "./service/config.ts";
+import { API as AUTH_API } from "./internal_sdk/generated/apis/auth/mod.js";
 
 type DeviceContract = GeneratedParticipant;
 
@@ -87,6 +101,8 @@ export type TrellisDeviceConnection<
   TContract extends DeviceContract = DeviceContract,
 > = CallerRuntime<TContract> & {
   readonly health: ServiceHealth;
+  /** Settings Trellis keeps for this device, typed from its `config` fields. */
+  readonly config: ParticipantConfig<ParticipantConfigOf<TContract>>;
 } & (TContract extends {
     companion: {
       request: infer TChild extends AppRequestDescriptor;
@@ -629,6 +645,29 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
       },
       connected.inboxPrefix,
     );
+    const configFields = args.participant.config ?? {};
+    let config: ConfigHandle<Record<string, unknown>> | undefined;
+    if (Object.keys(configFields).length > 0) {
+      const read = (atConnect: boolean) => trellis.requestOwnConfig(atConnect);
+      config = await loadConfig({
+        participantId: args.participant.identity,
+        fields: configFields,
+        read,
+        log: resolveDeviceLogger(args.log),
+      });
+      config.watch({
+        transport: manager,
+        subject: AUTH_API.actions["event:Config.Changed"].subject,
+        matches: (event) =>
+          event.deploymentId === binding.deploymentId &&
+          (event.instanceId === undefined ||
+            event.instanceId === binding.instanceId),
+        read: async (atConnect) => ownReading(await read(atConnect)),
+        timeoutMs: args.timeout ?? 30_000,
+      });
+      const watching = config;
+      void manager.closed().finally(() => watching.stop());
+    }
     const health = new ServiceHealthRuntime({
       serviceName: args.participant.identity,
       kind: "device",
@@ -676,6 +715,7 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
     return Object.assign(createCallerRuntime(trellis, args.participant), {
       health,
       companion,
+      config: config ?? NO_CONFIG,
     }) as TrellisDeviceConnection<TContract>;
   } catch (error) {
     await companion?.connection.close();

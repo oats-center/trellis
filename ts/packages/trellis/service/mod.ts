@@ -116,3 +116,9 @@ export type {
   WorkerInfo,
 } from "../jobs.ts";
 export type { RpcHandlerContext } from "../session.ts";
+export type {
+  ConfigChange,
+  ConfigRevision,
+  ParticipantConfig,
+  ParticipantConfigOf,
+} from "./config.ts";

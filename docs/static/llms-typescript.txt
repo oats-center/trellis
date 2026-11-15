@@ -330,6 +330,21 @@ but retains the entire object in memory. Streams fail on physical disconnect or
 closure. `TypedStore.list(...)` and file metadata lists use the shared keyset
 pagination.
 
+### Settings
+
+A participant with `config` fields gets them as `service.config` or
+`device.config`, typed from the generated participant. `config.current` holds
+the values in effect, secrets included; `config.revision` names the deployment
+and instance revisions behind them; `config.onChange(({ previous, current,
+changed }) => ...)` runs after a live field changes and returns an unsubscribe
+function. Restart-only fields never appear in `changed`. `TrellisService.connect`
+and `TrellisDevice.connect` resolve only once every required field has a value.
+Browser and native apps get `client.config` the same way, with
+`config.revision.app`; an app with settings never waits, since its fields have
+defaults. In the testkit, `runtime.services.createInstance({ ..., config: {
+values, secrets } })` stores initial values through `Auth.Config.Set`, and
+`runtime.registerClient` attaches an app's declaration to its client.
+
 ### SQL outbox
 
 When SQL writes and event/job intents need one atomic commit, configure

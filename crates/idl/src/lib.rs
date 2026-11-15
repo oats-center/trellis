@@ -20,7 +20,7 @@ pub use compatibility::{
     SelectedCompatibilityCache,
 };
 pub use compile::SuppliedDependencies;
-pub use projection::{described_json_schema, json_schema};
+pub use projection::{described_json_schema, expression_json_schema, json_schema};
 pub use semantic::*;
 
 #[cfg(test)]
@@ -107,6 +107,66 @@ mod tests {
             canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
         let round_trip = compile(&canonical).unwrap();
         assert_eq!(round_trip.root_digest(), graph.root_digest());
+    }
+
+    fn config_contract(log_level: &str) -> String {
+        format!(
+            r#"
+            enum LogLevel {{ "info"; "debug"; }}
+            service Orders {{
+              config databaseUrl {{ title "Database URL"; description "Where orders live."; type string; restart; }}
+              config databasePassword {{ title "Database password"; description "Role password."; type string; secret; restart; }}
+              config logLevel {{ {log_level} }}
+              config batchSize {{ title "Batch size"; description "Rows per write."; type int32; default 50; }}
+            }}
+            "#
+        )
+    }
+
+    #[test]
+    fn config_fields_resolve_round_trip_and_change_the_build_only_by_shape() {
+        let level = r#"title "Log level"; description "Lowest level written."; type LogLevel; default "info";"#;
+        let graph = compile(config_contract(level)).unwrap();
+        let participant = graph.root_package().participants().values().next().unwrap();
+        let config = participant.config();
+        assert_eq!(
+            config.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["batchSize", "databasePassword", "databaseUrl", "logLevel"]
+        );
+        assert!(config["databasePassword"].secret && config["databasePassword"].restart);
+        assert_eq!(config["batchSize"].default, Some(serde_json::json!(50)));
+        assert_eq!(config["databaseUrl"].default, None);
+
+        let canonical =
+            canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
+        let round_trip = compile(&canonical).unwrap();
+        assert_eq!(round_trip.root_digest(), graph.root_digest());
+        let id = participant.identity();
+        let digest = crate::participant_digest(&graph, id).unwrap();
+        assert_eq!(crate::participant_digest(&round_trip, id).unwrap(), digest);
+
+        // Retitling a field is presentation; changing its default is a new build.
+        let retitled = compile(config_contract(&level.replace("Log level", "Verbosity"))).unwrap();
+        assert_eq!(crate::participant_digest(&retitled, id).unwrap(), digest);
+        let redefaulted =
+            compile(config_contract(&level.replace(r#""info";"#, r#""debug";"#))).unwrap();
+        assert_ne!(crate::participant_digest(&redefaulted, id).unwrap(), digest);
+    }
+
+    #[test]
+    fn config_refuses_secrets_outside_services_and_defaults_apps_cannot_wait_for() {
+        let device = r#"device Sensor { config token { title "Token"; description "Upload token."; type string; secret; } }"#;
+        let error = compile(device).unwrap_err().to_string();
+        assert!(error.contains("only services can keep a secret"), "{error}");
+        let wrong = r#"service Worker { config size { title "Size"; description "Batch size."; type int32; default "large"; } }"#;
+        let error = compile(wrong).unwrap_err().to_string();
+        assert!(error.contains("does not match its type"), "{error}");
+        let app = r#"app Panel { config theme { title "Theme"; description "Panel theme."; type string; } }"#;
+        let error = compile(app).unwrap_err().to_string();
+        assert!(error.contains("needs a default"), "{error}");
+        let published = r#"service Worker { config key { title "Key"; description "API key."; type string; secret; default "abc"; } }"#;
+        let error = compile(published).unwrap_err().to_string();
+        assert!(error.contains("cannot have a default"), "{error}");
     }
 
     fn transfer_contract(member: &str) -> String {

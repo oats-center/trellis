@@ -443,6 +443,13 @@ export type AppRequestDescriptor = Readonly<{
   uses: readonly ApiSelection[];
   /** Compiler-owned flat client names for selected API actions. */
   actionNames: Readonly<Record<string, string>>;
+  /** Settings an administrator keeps for the app, keyed by field name. */
+  config?: Readonly<Record<string, ConfigFieldDescriptor>>;
+  /**
+   * Package evidence of the build, present when the app declares settings so
+   * an administrator can attach its declaration to the app's client.
+   */
+  packageEvidence?: unknown;
   /** Local State encoding metadata, not provisioned resource declarations. */
   states: Readonly<
     Record<
@@ -460,6 +467,17 @@ export type AppRequestDescriptor = Readonly<{
   >;
 }>;
 
+/** One generated configuration field: how to decode it and how it applies. */
+export type ConfigFieldDescriptor = Readonly<{
+  codec: Readonly<{ decode(value: unknown): unknown }>;
+  /** No default: Trellis holds the participant until a value is set. */
+  required: boolean;
+  /** Write-only for administrators; only the participant reads it. */
+  secret: boolean;
+  /** Read only at connect; a change waits for the next connection. */
+  restart: boolean;
+}>;
+
 type ParticipantDescriptorInput = Readonly<{
   kind: "service" | "device";
   id: string;
@@ -471,6 +489,8 @@ type ParticipantDescriptorInput = Readonly<{
   optionalCapabilities: readonly string[];
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  /** Settings the participant reads from Trellis, keyed by field name. */
+  config?: Readonly<Record<string, ConfigFieldDescriptor>>;
   companion?: Readonly<{
     request: AppRequestDescriptor;
     availability: "required" | "optional";
@@ -732,6 +752,17 @@ export function participantDescriptor<
   for (const resource of Object.values(descriptor.resources)) {
     validateResource(resource);
     Object.freeze(resource);
+  }
+  for (const field of Object.values(descriptor.config ?? {})) {
+    if (
+      !isRecord(field) ||
+      !isCodec(field.codec) ||
+      typeof field.required !== "boolean" ||
+      typeof field.secret !== "boolean" ||
+      typeof field.restart !== "boolean"
+    )
+      fail("generated config field");
+    Object.freeze(field);
   }
   if (descriptor.companion) {
     if (

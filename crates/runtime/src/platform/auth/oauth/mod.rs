@@ -13,7 +13,7 @@ mod http;
 mod nonce;
 pub(super) mod oidc;
 mod portal;
-mod storage;
+pub(super) mod storage;
 mod theme;
 mod upstream_http;
 

@@ -153,6 +153,13 @@ export const CONSOLE_OPERATIONS = {
   serviceClaimsList: authRpc("ServiceClaims.List"),
   serviceClaimsRemove: authRpc("ServiceClaims.Remove"),
 
+  // Auth: settings services and devices declare.
+  configGet: authRpc("Config.Get"),
+  configSet: authRpc("Config.Set"),
+  configRevisionsList: authRpc("Config.Revisions.List"),
+  configRevisionsDelete: authRpc("Config.Revisions.Delete"),
+  configRollback: authRpc("Config.Rollback"),
+
   // Auth: devices, authorities, reviews.
   devicesList: authRpc("Devices.List"),
   devicesProvision: authRpc("Devices.Provision"),

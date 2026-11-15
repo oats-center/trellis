@@ -534,6 +534,26 @@ impl ServiceHandle {
         &self.client
     }
 
+    /// Move this service's own authority off `issuer_key_id` before that key
+    /// is revoked, so the service can still sign the reply that revokes it.
+    /// The Trellis runtime uses this for `Issuers.Revoke`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::Internal`] when the authority is still signed by
+    /// the key after `timeout`.
+    #[doc(hidden)]
+    pub async fn release_own_issuer(
+        &self,
+        issuer_key_id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), ServerError> {
+        self.client
+            .release_issuer(issuer_key_id, timeout)
+            .await
+            .map_err(|error| ServerError::Internal(error.to_string()))
+    }
+
     /// Return the service instance name used during bootstrap.
     pub fn service_name(&self) -> &str {
         &self.service_name
@@ -1289,6 +1309,8 @@ pub struct ConnectedServiceRuntime<C> {
     peer_routes: Vec<(String, super::provider_ingress::PeerHandler)>,
     job_hosts: Vec<WorkerHostHandle>,
     event_subscribe_needs: &'static [&'static str],
+    /// Live settings, when the participant declares any.
+    config: Option<super::config::LiveConfig>,
     _contract: PhantomData<C>,
 }
 
@@ -1355,6 +1377,7 @@ impl<C> ConnectedServiceRuntime<C> {
             peer_routes: Vec::new(),
             job_hosts: Vec::new(),
             event_subscribe_needs: &[],
+            config: None,
             _contract: PhantomData,
         }
     }
@@ -1362,6 +1385,19 @@ impl<C> ConnectedServiceRuntime<C> {
     /// Return the internal Trellis client owned by this runtime.
     pub(crate) fn client(&self) -> &Arc<TrellisClient> {
         &self.client
+    }
+
+    /// Settings Trellis keeps for this service, decoded as the generated
+    /// `Config` struct. Generated code calls this; services use the generated
+    /// `config()` accessor.
+    #[must_use]
+    pub fn generated_config<T: serde::de::DeserializeOwned>(&self) -> super::ConfigHandle<T> {
+        match &self.config {
+            Some(live) => super::ConfigHandle::new(live.state.clone()),
+            None => super::ConfigHandle::new(
+                tokio::sync::watch::channel(super::config::ConfigState::default()).1,
+            ),
+        }
     }
 
     /// Health details and checks added to this service's automatic heartbeats.
@@ -1965,6 +2001,17 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             api_id,
         );
         runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
+        if !C::CONFIG_FIELDS.is_empty() {
+            let loaded = super::config::load(&runtime.client, C::ID).await?;
+            let instance = runtime.client.own_instance_id()?;
+            runtime.config = Some(super::config::follow(
+                Arc::clone(&runtime.client),
+                C::CONFIG_FIELDS,
+                loaded,
+                runtime.provider_deployment_id.clone(),
+                instance,
+            ));
+        }
         let owner = runtime.client.authorization_owner();
         let authority = owner.own_authority()?;
         let mut implements_operations = false;

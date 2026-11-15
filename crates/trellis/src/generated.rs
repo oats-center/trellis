@@ -669,6 +669,8 @@ where
 pub struct Client {
     client: Arc<crate::client::TrellisClient>,
     optional_actions: &'static [OptionalAction],
+    /// A device's live settings, when it declares any.
+    config: Option<Arc<crate::service::config::LiveConfig>>,
 }
 
 impl Client {
@@ -676,6 +678,7 @@ impl Client {
         Self {
             client,
             optional_actions: &[],
+            config: None,
         }
     }
 
@@ -712,9 +715,33 @@ impl Client {
     where
         P: ParticipantDescriptor,
     {
-        Ok(Self::from_client(Arc::new(
-            crate::client::TrellisClient::connect_device(options).await?,
-        )))
+        let client = Arc::new(crate::client::TrellisClient::connect_device(options).await?);
+        let mut connected = Self::from_client(Arc::clone(&client));
+        if !P::CONFIG_FIELDS.is_empty() {
+            let loaded = crate::service::config::load(&client, P::ID).await?;
+            connected.config = Some(Arc::new(crate::service::config::follow(
+                Arc::clone(&client),
+                P::CONFIG_FIELDS,
+                loaded,
+                client.own_deployment_id()?,
+                client.own_instance_id()?,
+            )));
+        }
+        Ok(connected)
+    }
+
+    /// A device's settings, decoded as its generated `Config` struct.
+    /// Generated code calls this; devices use the generated `config()` accessor.
+    #[must_use]
+    pub fn generated_config<T: serde::de::DeserializeOwned>(
+        &self,
+    ) -> crate::service::ConfigHandle<T> {
+        match &self.config {
+            Some(live) => crate::service::ConfigHandle::new(live.state.clone()),
+            None => crate::service::ConfigHandle::new(
+                tokio::sync::watch::channel(crate::service::config::ConfigState::default()).1,
+            ),
+        }
     }
 
     /// Return the independently authenticated companion client, when available.
@@ -1417,6 +1444,19 @@ pub struct CompanionDescriptor {
     pub required: bool,
 }
 
+/// One setting a participant declares with `config` in its contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConfigField {
+    /// Field name as declared, such as `databaseUrl`.
+    pub name: &'static str,
+    /// No default: the participant waits at connect until a value is set.
+    pub required: bool,
+    /// Write-only for administrators; only the participant reads it.
+    pub secret: bool,
+    /// Read only at connect; a change waits for the next connection.
+    pub restart: bool,
+}
+
 /// Descriptor implemented by each generated participant module.
 pub trait ParticipantDescriptor {
     /// Qualified participant identity.
@@ -1437,6 +1477,9 @@ pub trait ParticipantDescriptor {
 
     /// APIs referenced by this participant's required or optional consumption selections.
     const CONSUMED_API_IDS: &'static [&'static str] = &[];
+
+    /// Settings this participant reads from Trellis, in field-name order.
+    const CONFIG_FIELDS: &'static [ConfigField] = &[];
 
     /// `event:<Name>` descriptor names this participant explicitly declares as
     /// subscribe needs. A declared durable consumer is not included: consumer

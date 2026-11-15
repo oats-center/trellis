@@ -290,7 +290,10 @@ impl AdminSession {
                         "trellis.auth.v1:apis.accept",
                         "trellis.auth.v1:apis.forceReplace",
                         "trellis.auth.v1:clients.manage",
-                        "trellis.auth.v1:platform.manage"
+                        "trellis.auth.v1:platform.manage",
+                        "trellis.auth.v1:config.read",
+                        "trellis.auth.v1:config.manage",
+                        "trellis.auth.v1:config.manageSecrets"
                     ],
                     "optional":crate::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES
                 }
@@ -512,6 +515,35 @@ impl AdminSession {
             ));
         }
         Ok(response.deployment.deployment_id.to_string())
+    }
+
+    /// Store settings for a deployment, or one of its instances, as a new
+    /// revision through the same `Config.Set` administrators use.
+    pub(crate) async fn set_config(
+        &self,
+        deployment_id: &str,
+        instance_id: Option<&str>,
+        values: serde_json::Value,
+        secrets: serde_json::Value,
+    ) -> Result<(), TrellisTestError> {
+        let target =
+            serde_json::json!({ "deploymentId": deployment_id, "instanceId": instance_id });
+        let current = self
+            .auth
+            .config_get(&wire(serde_json::json!({ "target": target }))?)
+            .await
+            .map_err(|error| failure(TrellisTestStage::ServiceProvisioning, error))?;
+        self.auth
+            .config_set(&wire(serde_json::json!({
+                "target": target,
+                "values": values,
+                "secrets": secrets,
+                "expectedRevision": current.revision,
+                "idempotencyKey": ulid::Ulid::generate().to_string(),
+            }))?)
+            .await
+            .map_err(|error| failure(TrellisTestStage::ServiceProvisioning, error))?;
+        Ok(())
     }
 
     pub(crate) async fn provision_service_instance(

@@ -64,6 +64,14 @@ async fn run_svc_resource(format: OutputFormat, command: SvcResourceCommand) -> 
         SvcResourceAction::Reject(args) => {
             decide_service_update(format, &command.id, &args, false).await
         }
+        SvcResourceAction::Config(args) => {
+            super::config::run(
+                format,
+                super::config::Scope::Deployment(DeploymentKind::Service, &command.id),
+                args,
+            )
+            .await
+        }
     }
 }
 
@@ -285,11 +293,19 @@ async fn run_dev_resource(format: OutputFormat, command: DevResourceCommand) -> 
         }
         DevResourceAction::Instances(args) => device_instances(format, &id, &args).await,
         DevResourceAction::Provision(args) => provision_device(format, &id, &args).await,
+        DevResourceAction::Config(args) => {
+            super::config::run(
+                format,
+                super::config::Scope::Deployment(DeploymentKind::Device, &id),
+                args,
+            )
+            .await
+        }
     }
 }
 
 #[derive(Clone, Copy)]
-enum DeploymentKind {
+pub(super) enum DeploymentKind {
     Service,
     Device,
 }
@@ -311,6 +327,39 @@ pub struct CompiledParticipantInput {
     pub package_evidence: auth_types::AuthPackageEvidence,
     /// APIs the participant implements, which must be accepted to deploy it.
     pub implemented_apis: Vec<String>,
+}
+
+/// The exact package closure evidence Auth compiles a build from.
+pub(super) fn package_evidence(
+    compiled: &trellis_idl::PackageGraph,
+) -> miette::Result<auth_types::AuthPackageEvidence> {
+    Ok(auth_types::AuthPackageEvidence {
+        root_package: auth_types::AuthName(compiled.root().as_str().to_owned()),
+        root_digest: auth_types::AuthDigest(compiled.root_digest().to_owned()),
+        packages: compiled
+            .packages()
+            .iter()
+            .map(|(id, package)| {
+                Ok(auth_types::AuthPackageSourceEvidence {
+                    name: auth_types::AuthName(id.as_str().to_owned()),
+                    version: auth_types::AuthShortName(package.version().to_string()),
+                    digest: auth_types::AuthDigest(
+                        compiled
+                            .digest(id)
+                            .expect("compiled package digest")
+                            .to_owned(),
+                    ),
+                    source: trellis_idl::canonical_package(
+                        compiled,
+                        id,
+                        CanonicalMode::Presentation,
+                    )?,
+                    extra: Default::default(),
+                })
+            })
+            .collect::<miette::Result<_>>()?,
+        extra: Default::default(),
+    })
 }
 
 /// Compile a source project and select its unique participant of the requested kind.
@@ -364,33 +413,7 @@ pub fn compile_participant_input(
         .iter()
         .map(ToString::to_string)
         .collect();
-    let package_evidence = auth_types::AuthPackageEvidence {
-        root_package: auth_types::AuthName(compiled.root().as_str().to_owned()),
-        root_digest: auth_types::AuthDigest(compiled.root_digest().to_owned()),
-        packages: compiled
-            .packages()
-            .iter()
-            .map(|(id, package)| {
-                Ok(auth_types::AuthPackageSourceEvidence {
-                    name: auth_types::AuthName(id.as_str().to_owned()),
-                    version: auth_types::AuthShortName(package.version().to_string()),
-                    digest: auth_types::AuthDigest(
-                        compiled
-                            .digest(id)
-                            .expect("compiled package digest")
-                            .to_owned(),
-                    ),
-                    source: trellis_idl::canonical_package(
-                        &compiled,
-                        id,
-                        CanonicalMode::Presentation,
-                    )?,
-                    extra: Default::default(),
-                })
-            })
-            .collect::<miette::Result<_>>()?,
-        extra: Default::default(),
-    };
+    let package_evidence = package_evidence(&compiled)?;
     Ok(CompiledParticipantInput {
         participant_id,
         participant_digest,
@@ -1093,7 +1116,10 @@ async fn resolve_update_owner(id: &str) -> miette::Result<String> {
         .ok_or_else(|| miette::miette!("service claim has no id"))
 }
 
-async fn resolve_deployment_id(kind: DeploymentKind, id: &str) -> miette::Result<String> {
+pub(super) async fn resolve_deployment_id(
+    kind: DeploymentKind,
+    id: &str,
+) -> miette::Result<String> {
     let (_state, connected) = connect_authenticated_cli_client().await?;
     find_deployment(&connected, id, kind)
         .await?

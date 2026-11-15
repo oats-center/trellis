@@ -350,6 +350,10 @@ impl Imports {
                 .resources
                 .values()
                 .for_each(|value| collect_resource(value, &package.identity, &mut refs));
+            participant
+                .config
+                .values()
+                .for_each(|field| collect_expr(&field.ty, &package.identity, &mut refs));
         }
         for request in package.app_requests.values() {
             for api in request.uses.keys() {
@@ -363,6 +367,10 @@ impl Imports {
                 .states
                 .values()
                 .for_each(|value| collect_resource(value, &package.identity, &mut refs));
+            request
+                .config
+                .values()
+                .for_each(|field| collect_expr(&field.ty, &package.identity, &mut refs));
         }
         let names = refs
             .into_iter()
@@ -758,6 +766,7 @@ fn render_participant(
     for (name, resource) in &value.resources {
         render_resource(output, name, resource, imports, mode);
     }
+    render_config(output, &value.config, imports, mode);
     if let Some(companion) = &value.companion {
         if let Some(child) = package.app_requests.get(&companion.request) {
             render_app_request(output, child, mode, imports, companion.optional);
@@ -788,7 +797,43 @@ fn render_app_request(
     for (name, state) in &value.states {
         render_resource(output, name, state, imports, mode);
     }
+    render_config(output, &value.config, imports, mode);
     output.push_str("}\n");
+}
+
+fn render_config(
+    output: &mut String,
+    config: &BTreeMap<String, ConfigFieldDefinition>,
+    imports: &Imports,
+    mode: CanonicalMode,
+) {
+    for (name, field) in config {
+        let text = |value: &str| {
+            quote(if mode == CanonicalMode::Semantic {
+                "_"
+            } else {
+                value
+            })
+        };
+        writeln!(
+            output,
+            "  config {name} {{\n    title {};\n    description {};\n    type {};",
+            text(&field.docs.title),
+            text(&field.docs.description),
+            render_expr(&field.ty, imports)
+        )
+        .unwrap();
+        if let Some(value) = &field.default {
+            writeln!(output, "    default {value};").unwrap();
+        }
+        if field.secret {
+            output.push_str("    secret;\n");
+        }
+        if field.restart {
+            output.push_str("    restart;\n");
+        }
+        output.push_str("  }\n");
+    }
 }
 
 fn render_uses(

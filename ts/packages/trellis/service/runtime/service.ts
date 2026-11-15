@@ -109,6 +109,15 @@ import {
 } from "../../provider.ts";
 import { serviceRuntimeLogger } from "./logger.ts";
 import {
+  type ConfigHandle,
+  loadConfig,
+  NO_CONFIG,
+  ownReading,
+  type ParticipantConfig,
+} from "../config.ts";
+import { API as AUTH_API } from "../../internal_sdk/generated/apis/auth/mod.js";
+import type { AuthOwnConfigResponse } from "../../internal_sdk/generated/types/index.js";
+import {
   AuthError,
   TransferError,
   TransportError,
@@ -410,6 +419,9 @@ export const SERVICE_PROVIDER_INGRESS: unique symbol = Symbol(
  * the logical connection ends (explicit close or an authoritative terminal
  * failure), not when one physical generation is reaped. @internal
  */
+/** @internal The live settings handle, when the participant declares settings. */
+export const SERVICE_CONFIG: unique symbol = Symbol("trellis.service.config");
+
 export const SERVICE_TRANSPORT_LIFETIME: unique symbol = Symbol(
   "trellis.service.transportLifetime",
 );
@@ -3220,6 +3232,32 @@ export function connectTrellisServiceWithRuntimeDeps<
         const contract = getParticipantRuntime(args.participant);
         const manager = connected.manager;
         const owner = connected.owner;
+        const configFields = args.participant.config ?? {};
+        let config: ConfigHandle<Record<string, unknown>> | undefined;
+        let readOwnConfig:
+          ((atConnect: boolean) => Promise<AuthOwnConfigResponse>) | undefined;
+        if (Object.keys(configFields).length > 0) {
+          const configClient = createTrellisInternal(
+            args.participant.identity,
+            manager.currentNats(),
+            {
+              sessionKey: connected.auth.sessionKey,
+              sign: connected.auth.sign,
+              contextDigest: () => owner.ownDigest ?? "",
+              authorityOwner: connected.auth.authorityOwner,
+            },
+            { inboxPrefix: connected.inboxPrefix, transport: manager },
+          );
+          readOwnConfig = (atConnect) =>
+            configClient.requestOwnConfig(atConnect);
+          config = await loadConfig({
+            participantId: args.participant.identity,
+            fields: configFields,
+            read: readOwnConfig,
+            log: resolveServiceLogger(args.runtime?.log),
+            ...(args.signal ? { signal: args.signal } : {}),
+          });
+        }
         const service = await createConnectedService<
           ParticipantOwnedApi<TContract>,
           ParticipantTrellisApi<TContract>,
@@ -3283,6 +3321,23 @@ export function connectTrellisServiceWithRuntimeDeps<
           registerDisposal: (handle) => generation.registerDisposal(handle),
         });
         service[SERVICE_TRANSPORT_LIFETIME] = manager;
+        if (config && readOwnConfig) {
+          const read = readOwnConfig;
+          service[SERVICE_CONFIG] = config;
+          config.watch({
+            transport: manager,
+            subject: AUTH_API.actions["event:Config.Changed"].subject,
+            matches: (event) =>
+              event.deploymentId === binding.deploymentId &&
+              (event.instanceId === undefined ||
+                event.instanceId === binding.instanceId),
+            read: async (atConnect) => ownReading(await read(atConnect)),
+            timeoutMs: args.runtime?.timeout ?? 30_000,
+          });
+          // A connection that ends without stop() must not leave the watch retrying.
+          const watching = config;
+          void manager.closed().finally(() => watching.stop());
+        }
         transitionConnectionAvailability(service.connection, true, "connected");
         return Result.ok(service);
       } catch (cause) {
@@ -3425,6 +3480,12 @@ export class TrellisServiceSession<
   declare readonly [PROVIDER_CALLER]: ProviderCaller;
   declare readonly [SERVICE_PROVIDER_INGRESS]: ServiceProviderIngress;
   declare [SERVICE_TRANSPORT_LIFETIME]: ServiceTransportLifetime;
+  declare [SERVICE_CONFIG]: ConfigHandle<Record<string, unknown>> | undefined;
+
+  /** Settings Trellis keeps for this service. */
+  get config(): ParticipantConfig<Record<string, unknown>> {
+    return this[SERVICE_CONFIG] ?? NO_CONFIG;
+  }
   /** Event lifecycle surface for service startup listeners and publishers. */
   readonly event: ActiveEventFacade<TTrellisApi>;
   readonly kv: ServiceKvFacade<TKv>;
@@ -3983,6 +4044,7 @@ export class TrellisServiceSession<
 
   async stop(): Promise<void> {
     this.#stopPromise ??= (async () => {
+      this[SERVICE_CONFIG]?.stop();
       this.connection.stopObserving();
       this.#handlerTrellis.stopEventListeners();
       for (const dispatcher of this.#ownedOutboxDispatchers) {

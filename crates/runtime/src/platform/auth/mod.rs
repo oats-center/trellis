@@ -9,6 +9,7 @@ pub(crate) use administration::Administration;
 mod authorization_sessions;
 mod broker;
 mod catalog;
+mod config;
 mod deployments;
 mod framework_storage;
 mod initialization;

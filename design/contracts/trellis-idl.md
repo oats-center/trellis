@@ -197,6 +197,16 @@ authoring has events, concurrency, replay, and retry—never ordering, ack-wait,
 max-delivery, or DLQ switches. Job progress, logs, and dead lifecycle are always
 available rather than feature flags.
 
+A `config NAME { ... }` member declares one setting Trellis keeps for the
+participant or app request. Each has a lowerCamelCase name, nonempty `title` and `description`, a `type`
+expression, and optionally a scalar `default`, `secret`, and `restart`.
+A field without a default is required; an app's fields need defaults. Only
+services may declare `secret`, and a secret cannot have a default. An app
+request with settings gains a required `trellis.auth.v1:config.readApp`
+selection and needs a direct dependency on the `trellis` package. Type, default, `secret`, and `restart` are part
+of the participant digest; title and description are not. See
+[service configuration](../core/config-patterns.md).
+
 Application requests may declare local typed State codecs, but cannot own KV,
 Store, Job, or Consumer resources. A State declaration grants no implicit
 Get/Put/Delete authority: the application must request the appropriate State

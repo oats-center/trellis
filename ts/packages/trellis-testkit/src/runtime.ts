@@ -28,6 +28,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { codecs, type JsonValue } from "@oatscenter/trellis/generated";
 import { ulid } from "ulid";
 
 import { ADMIN_USERNAME } from "./admin/methods.ts";
@@ -534,6 +535,14 @@ export class TrellisTestRuntime implements AsyncDisposable {
       deployment?: string;
       name: string;
       contract: TrellisTestParticipantLike;
+      /**
+       * Settings stored for the deployment before the instance connects, set
+       * through the same `Config.Set` an administrator uses.
+       */
+      config?: {
+        values?: Record<string, JsonValue>;
+        secrets?: Record<string, JsonValue>;
+      };
     }): Promise<TrellisTestServiceKey>;
     provisionInstanceOnly(args: {
       deployment?: string;
@@ -580,6 +589,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   #clients = new Set<ConnectedClient>();
   #nativeSessions = new Set<NativeOAuthSession>();
   #clientRegistrations = new Map<string, Promise<unknown>>();
+  #configDeclarations = new Map<string, Promise<unknown>>();
   #users = new Map<string, { user: TrellisTestUser; password: string }>();
   #stopped = false;
 
@@ -671,11 +681,26 @@ export class TrellisTestRuntime implements AsyncDisposable {
       install: ({ contract }) => this.#admin.installParticipant({ contract }),
     };
     this.services = {
-      createInstance: ({ deployment, contract }) =>
-        this.#admin.provisionServiceInstance({
+      createInstance: async ({ deployment, contract, config }) => {
+        const key = await this.#admin.provisionServiceInstance({
           deployment: deployment ?? this.#deployment,
           contract,
-        }),
+        });
+        if (config) {
+          const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+          const { revision } = await this.callAdminRpc("authConfigGet", {
+            target,
+          });
+          await this.callAdminRpc("authConfigSet", {
+            target,
+            ...(config.values ? { values: config.values } : {}),
+            ...(config.secrets ? { secrets: config.secrets } : {}),
+            ...(revision === undefined ? {} : { expectedRevision: revision }),
+            idempotencyKey: ulid(),
+          });
+        }
+        return key;
+      },
       provisionInstanceOnly: ({ deployment }) =>
         this.#admin.provisionServiceInstanceOnly({
           deployment: deployment ?? this.#deployment,
@@ -1110,6 +1135,23 @@ export class TrellisTestRuntime implements AsyncDisposable {
       this.#clientRegistrations.set(clientId, registration);
     }
     await registration;
+    if (
+      Object.keys(args.contract.config ?? {}).length > 0 &&
+      args.contract.packageEvidence !== undefined
+    ) {
+      // Attach the app's settings declaration, as an administrator would.
+      let declared = this.#configDeclarations.get(clientId);
+      if (!declared) {
+        declared = this.callAdminRpc("authConfigAppsDeclare", {
+          clientId,
+          packageEvidence: args.contract.packageEvidence as JsonValue,
+          requestId: args.contract.id,
+          idempotencyKey: ulid(),
+        });
+        this.#configDeclarations.set(clientId, declared);
+      }
+      await declared;
+    }
     if (args.user === undefined)
       await this.#admin.prepareClientCapabilities([
         ...args.contract.requiredCapabilities,

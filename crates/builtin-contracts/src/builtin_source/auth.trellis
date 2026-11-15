@@ -135,6 +135,18 @@ import {
   AuthResourceBindingsQueryRequest,
   AuthResourceBindingsQueryResponse,
   AuthSecurityEvent,
+  AuthConfigGetRequest,
+  AuthConfigResponse,
+  AuthConfigSetRequest,
+  AuthConfigRevisionsListRequest,
+  AuthConfigRevisionsListResponse,
+  AuthConfigRevisionDeleteRequest,
+  AuthConfigRollbackRequest,
+  AuthOwnConfigRequest,
+  AuthOwnConfigResponse,
+  AuthConfigChanged,
+  AuthConfigAppDeclareRequest,
+  AuthAppConfigResponse,
 } from auth_types;
 
 api auth@v1 {
@@ -380,6 +392,24 @@ api auth@v1 {
   rpc ResourceBindings.Query { input AuthResourceBindingsQueryRequest; output AuthResourceBindingsQueryResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
 
   /// Someone or something connected to Trellis.
+  /// See a deployment's, instance's, or app's configuration. Secrets show only whether they are set.
+  rpc Config.Get { input AuthConfigGetRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Change configuration values, producing a new revision.
+  rpc Config.Set { input AuthConfigSetRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List configuration revisions, newest first.
+  rpc Config.Revisions.List { input AuthConfigRevisionsListRequest; output AuthConfigRevisionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Delete an old configuration revision. The current one cannot be deleted.
+  rpc Config.Revisions.Delete { input AuthConfigRevisionDeleteRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Make an earlier revision's values current again, as a new revision.
+  rpc Config.Rollback { input AuthConfigRollbackRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// A service or device reads its own configuration, secrets included.
+  rpc Config.Own.Get { input AuthOwnConfigRequest; output AuthOwnConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Attach the settings an app build declares to its registered client.
+  rpc Config.Apps.Declare { input AuthConfigAppDeclareRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// An app reads its own settings, which are public to its users.
+  rpc Config.App.Get { input AuthEmpty; output AuthAppConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Configuration changed. Carries whose and the revision, never values.
+  event Config.Changed { payload AuthConfigChanged; }
   event Connections.Opened { payload AuthSecurityEvent; }
   /// A connection to Trellis closed.
   event Connections.Closed { payload AuthSecurityEvent; }
@@ -514,6 +544,39 @@ api auth@v1 {
       grants "Full control of this Trellis installation.";
       allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc SignInSettings.Get; rpc SignInSettings.Update; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
     }
+    capability config.read {
+      administrative;
+      title "See settings";
+      description "See the settings of services, devices, and apps. Secrets show only whether they are set.";
+      grants "Can see every service's, device's, and app's settings, but no secret.";
+      allows { rpc Config.Get; rpc Config.Revisions.List; }
+    }
+    capability config.manage {
+      administrative;
+      title "Change settings";
+      description "Change, roll back, and delete the settings of services, devices, and apps, except secrets.";
+      grants "Can change how every service, device, and app behaves.";
+      allows { rpc Config.Get; rpc Config.Set; rpc Config.Revisions.List; rpc Config.Revisions.Delete; rpc Config.Rollback; rpc Config.Apps.Declare; }
+    }
+    capability config.manageSecrets {
+      administrative;
+      title "Set secrets";
+      description "Set and replace the secret settings of services, such as passwords and keys.";
+      grants "Can replace any service's passwords and keys, though never read them.";
+      allows { rpc Config.Get; rpc Config.Set; rpc Config.Revisions.List; rpc Config.Revisions.Delete; rpc Config.Rollback; }
+    }
+    capability config.readOwn {
+      title "Read its own settings";
+      description "A service or device reads the settings Trellis keeps for it and hears when they change.";
+      grants "The service or device can read its own settings, secrets included.";
+      allows { rpc Config.Own.Get; subscribe event Config.Changed; }
+    }
+    capability config.readApp {
+      title "Read the app's settings";
+      description "An app reads the settings an administrator keeps for it and hears when they change.";
+      grants "The app can read its own settings, which every one of its users can see.";
+      allows { rpc Config.App.Get; subscribe event Config.Changed; }
+    }
     capability serviceUpdates.submit {
       title "Submit its own updates";
       description "A service submits a new version of itself for installation.";
@@ -546,6 +609,7 @@ api auth@v1 {
       capability sessions.revoke;
       capability delegations.read;
       capability delegations.revoke;
+      capability config.readApp;
     }
     group administration {
       title "Administer this Trellis";
@@ -558,6 +622,9 @@ api auth@v1 {
       capability apis.forceReplace;
       capability clients.manage;
       capability platform.manage;
+      capability config.read;
+      capability config.manage;
+      capability config.manageSecrets;
     }
   }
 }

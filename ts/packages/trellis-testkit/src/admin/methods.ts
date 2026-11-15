@@ -24,6 +24,30 @@ function adminMethod<I, O>(
 
 /** @internal Concrete Auth RPCs available to the shared test host. */
 export const adminMethods = {
+  authConfigGet: adminMethod(
+    apis.auth.API.actions["rpc:Config.Get"],
+    (client, input) => client.configGet(input).orThrow(),
+  ),
+  authConfigSet: adminMethod(
+    apis.auth.API.actions["rpc:Config.Set"],
+    (client, input) => client.configSet(input).orThrow(),
+  ),
+  authConfigRevisionsList: adminMethod(
+    apis.auth.API.actions["rpc:Config.Revisions.List"],
+    (client, input) => client.configRevisionsList(input).orThrow(),
+  ),
+  authConfigRevisionsDelete: adminMethod(
+    apis.auth.API.actions["rpc:Config.Revisions.Delete"],
+    (client, input) => client.configRevisionsDelete(input).orThrow(),
+  ),
+  authConfigAppsDeclare: adminMethod(
+    apis.auth.API.actions["rpc:Config.Apps.Declare"],
+    (client, input) => client.configAppsDeclare(input).orThrow(),
+  ),
+  authConfigRollback: adminMethod(
+    apis.auth.API.actions["rpc:Config.Rollback"],
+    (client, input) => client.configRollback(input).orThrow(),
+  ),
   authUsersList: adminMethod(
     apis.auth.API.actions["rpc:Users.List"],
     (client, input) => client.usersList(input).orThrow(),

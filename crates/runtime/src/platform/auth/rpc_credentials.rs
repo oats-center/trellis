@@ -477,32 +477,56 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
             crate::clock::unix_now()
         )
     );
-    mutate!(
-        register_issuers_revoke,
-        Some(Administration::ManagePlatform),
-        |store: &SqliteAuthorizationStore,
-         identity: &Mutation,
-         _: &AuthenticatedCaller,
-         input: &AuthIssuerRevokeRequest,
-         now| store.mutate(identity, "rpc.issuer.revoke", input, now, |connection| {
-            SqliteAuthorizationStore::require_administration(
-                connection,
-                &identity.actor,
-                Administration::ManagePlatform,
-            )?;
-            let scope = EnforcementScope::Issuer(input.key_id.to_string());
-            let root = Mutation {
-                request_digest: digest(&scope)?,
-                ..identity.clone()
-            };
-            let work = store.revoke_root_in_transaction(connection, &root, &scope, now)?;
-            Ok(AuthIssuerRevokeResponse {
-                key_id: input.key_id.clone(),
-                enforcement: read_enforcement(connection, &work)?,
-                extra: Default::default(),
+    let revoke_store = store.clone();
+    provider.register_issuers_revoke(move |context, input| {
+        let store = revoke_store.clone();
+        async move {
+            let identity = mutation(
+                &context,
+                &input.idempotency_key,
+                Some(Administration::ManagePlatform),
+                &input,
+            )
+            .map_err(rpc_error)?;
+            // Auth signs this reply with its own authority. If the key being
+            // revoked still signs that authority, renew under the current key
+            // first, or the revocation commits and the reply cannot be sent.
+            context
+                .handle()
+                .release_own_issuer(input.key_id.as_ref(), std::time::Duration::from_secs(10))
+                .await
+                .map_err(|_| {
+                    rpc_error(AuthError::Invalid(
+                        "Trellis is still moving to its current signing key; try again in a \
+                        moment"
+                            .into(),
+                    ))
+                })?;
+            blocking(move || {
+                let now = crate::clock::unix_now();
+                store.mutate(&identity, "rpc.issuer.revoke", &input, now, |connection| {
+                    SqliteAuthorizationStore::require_administration(
+                        connection,
+                        &identity.actor,
+                        Administration::ManagePlatform,
+                    )?;
+                    let scope = EnforcementScope::Issuer(input.key_id.to_string());
+                    let root = Mutation {
+                        request_digest: digest(&scope)?,
+                        ..identity.clone()
+                    };
+                    let work = store.revoke_root_in_transaction(connection, &root, &scope, now)?;
+                    Ok(AuthIssuerRevokeResponse {
+                        key_id: input.key_id.clone(),
+                        enforcement: read_enforcement(connection, &work)?,
+                        extra: Default::default(),
+                    })
+                })
             })
-        })
-    );
+            .await
+            .map_err(rpc_error)
+        }
+    });
     mutate!(
         register_issuers_rotate,
         Some(Administration::ManagePlatform),

@@ -8,6 +8,52 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Services, devices, and apps can take their settings from Trellis instead of
+  environment variables. A `config` member in IDL declares each field with a
+  type, an optional default, and `secret` or `restart` where they apply. Auth
+  keeps the values per deployment with per-instance overrides, as revisions
+  that can be rolled back or deleted, and checks every write against the
+  installed build's types. Secrets are sealed at rest, and administrators can
+  set or replace them but never read them back. At connect the SDKs read the
+  values before any handler starts; a participant missing a required value
+  prints a Console link and QR code and waits until it is set. TypeScript
+  participants get `service.config` / `device.config` with `current` and
+  `onChange`, and Rust participants a generated `Config` struct through
+  `config()`. Live fields change without a restart, while restart-only fields
+  keep their connect-time value until the participant reconnects. App settings
+  are public to the app's users, need defaults, and come from the IDL an
+  administrator registers with the app's client; TypeScript apps read them as
+  `client.config`.
+- New Auth RPCs `Config.Get`, `Config.Set`, `Config.Rollback`,
+  `Config.Revisions.List`, `Config.Revisions.Delete`, `Config.Own.Get`,
+  `Config.Apps.Declare`, and `Config.App.Get`, the
+  `Config.Changed` event, and the administrative capabilities `config.read`,
+  `config.manage`, and `config.manageSecrets`, included in the administration
+  group. Every service and device instance now also holds `config.readOwn`,
+  and the `account` group includes `config.readApp`.
+- `trellis svc <ID> config`, `trellis dev <ID> config`, and
+  `trellis clients config <CLIENT>` show and change settings (`set`,
+  `set-secret --from-file`, `unset`, `history`, `rollback`, `delete-revision`,
+  `--instance`), and `trellis clients put --source` attaches an app's
+  declaration. The Console has a Settings section on each service page, in
+  each app's editor, and on a new page per device type.
+- The testkits set settings through the same RPCs:
+  `services.createInstance({ config })` in TypeScript and
+  `TrellisTestRuntime::set_config` in Rust.
+
+### Fixed
+
+- `Issuers.Revoke` of a key that still signed Auth's own authority, such as
+  right after a rotation, revoked the key but could not send its reply, so the
+  administrator saw "connection closed". Auth now renews its own authority
+  under the current key before revoking, and refuses with "try again in a
+  moment" if it cannot within ten seconds.
+- A failed step in the service-update browser tests left the connecting service
+  retrying after the test server stopped, so the test file never exited and CI
+  ran into the job timeout instead of reporting the failure.
+
 ## [0.100.0-rc.41] - 2026-11-15
 
 ### Changed

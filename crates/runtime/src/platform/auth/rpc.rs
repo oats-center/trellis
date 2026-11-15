@@ -26,6 +26,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
     super::rpc_resource_bindings::register(provider, store.clone());
     super::rpc_users::register_user_rpc(provider, store.clone());
     super::rpc_users::register_user_provider_rpc(provider, oauth.clone());
+    super::config::register_rpc(provider, oauth.clone());
     super::rpc_credentials::register_credential_rpc(provider, store.clone());
     super::oauth::enrollment::register_rpc(provider, store.clone(), operational.clone());
     super::portal_themes::register_rpc(provider, store.clone());

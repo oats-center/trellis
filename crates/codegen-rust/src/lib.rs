@@ -812,6 +812,36 @@ fn render_expr(
     }
 }
 
+/// The participant's typed settings and the field list the SDK applies them by.
+fn render_config(participant: &ParticipantDefinition) -> String {
+    let mut out = String::from(
+        "/// Settings this participant declares, as Trellis delivers them.\n\
+        #[derive(Clone, Debug, PartialEq, serde::Deserialize)]\npub struct Config {\n",
+    );
+    let mut fields = Vec::new();
+    for (name, field) in participant.config() {
+        out.push_str(&format!(
+            "/// {}\n#[serde(rename = {name:?})]\npub {}: {},\n",
+            field.docs.title,
+            rust_ident(&key_to_snake(name)),
+            render_expr(&field.ty, None, &BTreeSet::new())
+        ));
+        fields.push(format!(
+            "trellis_rs::generated::ConfigField {{ name: {name:?}, required: {}, \
+            secret: {}, restart: {} }}",
+            field.default.is_none(),
+            field.secret,
+            field.restart
+        ));
+    }
+    out.push_str("}\n");
+    out.push_str(&format!(
+        "pub const CONFIG_FIELDS: &[trellis_rs::generated::ConfigField] = &[{}];\n",
+        fields.join(", ")
+    ));
+    out
+}
+
 fn type_path(reference: &TypeRef) -> String {
     format!(
         "crate::__types::{}::{}",
@@ -1501,7 +1531,8 @@ fn render_participant(
         const IMPLEMENTED_API_IDS: &'static [&'static str] = \
         IMPLEMENTED_API_IDS; const CONSUMED_API_IDS: &'static [&'static str] = \
         CONSUMED_API_IDS; const EVENT_SUBSCRIBE_NEEDS: &'static [&'static str] \
-        = EVENT_SUBSCRIBE_NEEDS; fn package_evidence() -> \
+        = EVENT_SUBSCRIBE_NEEDS; const CONFIG_FIELDS: &'static \
+        [trellis_rs::generated::ConfigField] = CONFIG_FIELDS; fn package_evidence() -> \
         trellis_rs::generated::PackageEvidence {{ \
         crate::__evidence::PACKAGE_EVIDENCE }} }}\n",
         participant.identity(),
@@ -1511,6 +1542,7 @@ fn render_participant(
     out.push_str("pub mod types {\n");
     out.push_str(&render_type_exports(graph, private_types, true));
     out.push_str("}\n");
+    out.push_str(&render_config(participant));
     let required = participant
         .uses()
         .values()
@@ -1783,6 +1815,13 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
         ),
         ParticipantKind::Service => {}
     }
+    if participant.kind() == ParticipantKind::Device && !participant.config().is_empty() {
+        out.push_str(
+            "/// Settings Trellis keeps for this device, live.\n\
+            pub fn config(&self) -> trellis_rs::service::ConfigHandle<Config> { \
+            self.inner.generated_config() }\n",
+        );
+    }
     if let Some(companion) = participant.companion() {
         let module = module_name(companion.request.as_str());
         if companion.optional {
@@ -1996,6 +2035,13 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
             }}\n"
                 ));
             }
+        }
+        if !participant.config().is_empty() {
+            out.push_str(
+                "/// Settings Trellis keeps for this service, live.\n\
+                pub fn config(&self) -> trellis_rs::service::ConfigHandle<Config> { \
+                self.runtime.generated_config() }\n",
+            );
         }
         let mut jobs = String::new();
         for (name, resource) in participant.resources() {
@@ -2628,6 +2674,9 @@ fn participant_reachable_types(
     participant: &ParticipantDefinition,
 ) -> BTreeSet<TypeRef> {
     let mut result = BTreeSet::new();
+    for field in participant.config().values() {
+        collect_expr(graph, &field.ty, &mut result);
+    }
     for resource in participant.resources().values() {
         match resource {
             ResourceDefinition::State {

@@ -994,3 +994,127 @@ model AuthSecurityEvent {
   issuerKeyId?: AuthKeyId;
   enforcement?: AuthEnforcementProgress;
 }
+
+// Configuration a participant declares and Trellis keeps.
+type AuthConfigRevisionNumber = uint32(min=1);
+type AuthConfigFieldName = string(min_length=1, max_length=128);
+/// Whose configuration: a deployment, one of its instances, or an app's client.
+model AuthConfigTarget {
+  deploymentId?: ulid;
+  instanceId?: ulid;
+  clientId?: AuthClientId;
+}
+/// Where a field's effective value comes from.
+enum AuthConfigSource { deployment; instance; default; unset; }
+model AuthConfigField {
+  name: AuthConfigFieldName;
+  title: string;
+  description: string;
+  /// JSON Schema of the field's type.
+  schema: json;
+  required: bool;
+  /// Write-only; its value is never returned to an administrator.
+  secret: bool;
+  /// Read only when the participant connects.
+  restart: bool;
+  default?: json;
+  /// The effective value of a setting. Never present for a secret.
+  value?: json;
+  /// A value is stored for this field here or on the deployment.
+  isSet: bool;
+  source: AuthConfigSource;
+  /// The stored value no longer matches the declared type, so it is ignored.
+  invalid?: string;
+}
+/// Which configuration an instance loaded when it last connected.
+model AuthConfigInstanceStatus {
+  instanceId: ulid;
+  title: string;
+  connectedRevision?: AuthConfigRevisionNumber;
+  connectedInstanceRevision?: AuthConfigRevisionNumber;
+  connectedAt?: timestamp;
+}
+model AuthConfigResponse {
+  target: AuthConfigTarget;
+  /// Current revision stored at this target; absent before the first write.
+  revision?: AuthConfigRevisionNumber;
+  /// For an instance target, the deployment revision under its overrides.
+  deploymentRevision?: AuthConfigRevisionNumber;
+  fields: list<AuthConfigField>;
+  /// Required fields without a value; instances wait until they are set.
+  missing: list<AuthConfigFieldName>;
+  instances: list<AuthConfigInstanceStatus>;
+}
+model AuthConfigGetRequest { target: AuthConfigTarget; }
+model AuthConfigSetRequest {
+  target: AuthConfigTarget;
+  values?: map<json>;
+  secrets?: map<json>;
+  /// Fields whose stored value is removed, so the default or deployment value applies.
+  unset?: list<AuthConfigFieldName>;
+  /// The revision this change is based on; absent only for the first write.
+  expectedRevision?: AuthConfigRevisionNumber;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthConfigRevision {
+  revision: AuthConfigRevisionNumber;
+  createdAt: timestamp;
+  createdBy: string;
+  /// Stored settings; secrets are never included.
+  values: map<json>;
+  /// Fields this revision changed from the one before it.
+  changed: list<AuthConfigFieldName>;
+  /// Secret fields whose value this revision changed.
+  changedSecrets: list<AuthConfigFieldName>;
+  current: bool;
+}
+model AuthConfigRevisionsListRequest { target: AuthConfigTarget; page?: CursorQuery; }
+type AuthConfigRevisionsListResponse = CursorPage<AuthConfigRevision>;
+model AuthConfigRevisionDeleteRequest {
+  target: AuthConfigTarget;
+  revision: AuthConfigRevisionNumber;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthConfigRollbackRequest {
+  target: AuthConfigTarget;
+  /// The earlier revision whose values become a new revision.
+  revision: AuthConfigRevisionNumber;
+  expectedRevision: AuthConfigRevisionNumber;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthOwnConfigRequest {
+  /// The caller is connecting, so its restart-only values take effect now.
+  atConnect: bool;
+}
+model AuthOwnConfigResponse {
+  deploymentRevision?: AuthConfigRevisionNumber;
+  instanceRevision?: AuthConfigRevisionNumber;
+  /// Effective values, secrets included, with defaults applied.
+  values: map<json>;
+  missing: list<AuthConfigFieldName>;
+  /// Console page where an administrator sets the missing values.
+  configUrl?: string;
+}
+/// Configuration changed; the payload says whose and the new revision, never values.
+model AuthConfigChanged {
+  eventId: ulid;
+  occurredAt: timestamp;
+  deploymentId?: ulid;
+  instanceId?: ulid;
+  clientId?: AuthClientId;
+  revision: AuthConfigRevisionNumber;
+}
+/// Attach an app build's settings declaration to its registered client.
+model AuthConfigAppDeclareRequest {
+  clientId: AuthClientId;
+  /// Package evidence of the build that declares the app.
+  packageEvidence: json;
+  /// The app or agent request in that package, such as `acme-orders.Panel`.
+  requestId: string;
+  idempotencyKey: AuthIdempotencyKey;
+}
+/// An app's own settings, as every signed-in user of it reads them.
+model AuthAppConfigResponse {
+  revision?: AuthConfigRevisionNumber;
+  values: map<json>;
+}

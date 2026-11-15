@@ -1092,3 +1092,49 @@ CREATE TRIGGER auth_issuer_rotation_retained BEFORE DELETE ON auth_issuer_rotati
 BEGIN SELECT RAISE(ABORT, 'issuer rotations are retained'); END;
 CREATE INDEX auth_device_companions_grant ON auth_device_companions(oauth_grant_id, instance_id);
 CREATE UNIQUE INDEX auth_device_companions_active_grant ON auth_device_companions(oauth_grant_id) WHERE state='active';
+
+-- Configuration a participant declares and Trellis keeps. Each write stores
+-- the complete values of one target as a new revision: a deployment, one of
+-- its instances (overrides on top of the deployment), or a registered app
+-- client. Secrets are sealed with the installation's storage key and never
+-- stored in values_json. The highest revision is current and cannot be
+-- deleted; older ones are kept until an administrator deletes them.
+CREATE TABLE auth_config_revisions (
+    target_key TEXT NOT NULL CHECK (length(target_key) > 0),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 4294967295),
+    deployment_id TEXT REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
+    instance_id TEXT REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
+    client_id TEXT REFERENCES auth_oauth_clients(client_id) ON DELETE CASCADE,
+    values_json TEXT NOT NULL CHECK (json_valid(values_json)),
+    sealed_secrets BLOB,
+    changed_json TEXT NOT NULL CHECK (json_valid(changed_json)),
+    changed_secrets_json TEXT NOT NULL CHECK (json_valid(changed_secrets_json)),
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
+    PRIMARY KEY (target_key, revision),
+    CHECK (
+        (deployment_id IS NOT NULL AND instance_id IS NULL AND client_id IS NULL
+            AND target_key = 'deployment:' || deployment_id)
+        OR (deployment_id IS NOT NULL AND instance_id IS NOT NULL AND client_id IS NULL
+            AND target_key = 'instance:' || instance_id)
+        OR (deployment_id IS NULL AND instance_id IS NULL AND client_id IS NOT NULL
+            AND target_key = 'client:' || client_id)
+    )
+);
+-- What each instance loaded when it last connected, so administrators see
+-- which instances still run settings that only apply after a restart.
+CREATE TABLE auth_config_connections (
+    instance_id TEXT PRIMARY KEY REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
+    deployment_revision INTEGER,
+    instance_revision INTEGER,
+    connected_at INTEGER NOT NULL CHECK (connected_at BETWEEN 0 AND 9007199254740991)
+);
+-- The settings an app build declares, attached to its registered client by an
+-- administrator. App settings are checked against it.
+CREATE TABLE auth_client_config_declarations (
+    client_id TEXT PRIMARY KEY REFERENCES auth_oauth_clients(client_id) ON DELETE CASCADE,
+    request_id TEXT NOT NULL CHECK (length(request_id) > 0),
+    evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json)),
+    declared_by TEXT NOT NULL,
+    declared_at INTEGER NOT NULL CHECK (declared_at BETWEEN 0 AND 9007199254740991)
+);

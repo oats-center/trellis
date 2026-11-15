@@ -113,6 +113,8 @@ import { TrellisConnection } from "./connection.ts";
 import { API as JOBS_HISTORY_API } from "./internal_sdk/generated/apis/jobs/mod.js";
 import { API as AUTH_API } from "./internal_sdk/generated/apis/auth/mod.js";
 import type {
+  AuthAppConfigResponse,
+  AuthOwnConfigResponse,
   AuthServiceUpdateResponse,
   JobsHistoryRequest,
   JobsHistoryResponse,
@@ -3504,6 +3506,51 @@ export class Trellis<
     return await this.#requestBuiltRpc<AuthServiceUpdateResponse>(
       method,
       input,
+      {
+        subject: action.subject,
+        permission: actionPermission(AUTH_API.identity, action, "call"),
+        input: action.input,
+        output: action.output,
+        callerCapabilities: [],
+        errors: action.errors.map((error) => error.type),
+        declaredErrorTypes: action.errors.map((error) => error.type),
+        runtimeErrors: action.errors,
+      },
+    ).orThrow();
+  }
+
+  /**
+   * Read this service's or device's own configuration from Auth, secrets
+   * included. `atConnect` records the revisions its restart-only values come from.
+   * @internal
+   */
+  async requestOwnConfig(atConnect: boolean): Promise<AuthOwnConfigResponse> {
+    const action = AUTH_API.actions["rpc:Config.Own.Get"];
+    return await this.#requestBuiltRpc<AuthOwnConfigResponse>(
+      "Config.Own.Get",
+      { atConnect },
+      {
+        subject: action.subject,
+        permission: actionPermission(AUTH_API.identity, action, "call"),
+        input: action.input,
+        output: action.output,
+        callerCapabilities: [],
+        errors: action.errors.map((error) => error.type),
+        declaredErrorTypes: action.errors.map((error) => error.type),
+        runtimeErrors: action.errors,
+      },
+    ).orThrow();
+  }
+
+  /**
+   * Read the signed-in app's own settings from Auth.
+   * @internal
+   */
+  async requestAppConfig(): Promise<AuthAppConfigResponse> {
+    const action = AUTH_API.actions["rpc:Config.App.Get"];
+    return await this.#requestBuiltRpc<AuthAppConfigResponse>(
+      "Config.App.Get",
+      {},
       {
         subject: action.subject,
         permission: actionPermission(AUTH_API.identity, action, "call"),

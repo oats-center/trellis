@@ -17,6 +17,7 @@
   import { traverseAll } from "$lib/console/paging.ts";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
+  import ParticipantSettings from "$lib/components/ParticipantSettings.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
 
   type Client = apis.auth.OAuthClientsGetOutput["client"];
@@ -494,6 +495,9 @@
             >{/if}
         </div>
       </form>
+      {#if selected && canPerform(authority.authority, "configGet")}<ParticipantSettings
+          clientId={selected.clientId}
+        />{/if}
     {/if}
   </div>
 </section>

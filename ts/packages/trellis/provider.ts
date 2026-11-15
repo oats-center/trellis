@@ -12,6 +12,10 @@ import {
   selectedActionAvailabilityError,
 } from "./caller.ts";
 import type { TrellisConnection } from "./connection.ts";
+import type {
+  ParticipantConfig,
+  ParticipantConfigOf,
+} from "./service/config.ts";
 import {
   type GeneratedParticipant,
   getParticipantRuntime,
@@ -190,10 +194,18 @@ type ProviderSelectedEventSubscriptions<
 };
 
 /** Connected provider facade for a generated service participant. */
+/** Live settings, for a runtime whose service carries them. */
+type ProviderConfig<TContract, TService> = TService extends {
+  readonly config: unknown;
+}
+  ? { readonly config: ParticipantConfig<ParticipantConfigOf<TContract>> }
+  : {};
+
 export type ProviderRuntime<
   TContract extends GeneratedParticipant,
   TService,
 > = ProviderBase<TService> &
+  ProviderConfig<TContract, TService> &
   ProviderHandlerClient<TContract, TService> &
   ProviderOwnedRegistrations<TContract> &
   ProviderSelectedEventSubscriptions<TContract, TService>;
@@ -267,6 +279,13 @@ export function createProviderRuntime<
     wait: service.wait.bind(service),
     stop: service.stop.bind(service),
   };
+  if ("config" in service) {
+    // A getter, so the facade always shows the values in effect now.
+    Object.defineProperty(provider, "config", {
+      enumerable: true,
+      get: () => (service as { readonly config: unknown }).config,
+    });
+  }
   const queues = service.jobs as Record<string, ProviderQueue>;
   provider.jobs = Object.fromEntries(
     Object.entries(queues).map(([name, queue]) => [

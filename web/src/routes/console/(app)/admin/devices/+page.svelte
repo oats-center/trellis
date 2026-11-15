@@ -457,6 +457,14 @@
             >
           {/each}
         </select>
+        {#if selectedDeployment && canPerform(authority.authority, "configGet")}
+          <a
+            class="btn btn-ghost btn-sm"
+            href={resolve("/admin/devices/[deploymentId]", {
+              deploymentId: selectedDeployment.deploymentId,
+            })}>Settings</a
+          >
+        {/if}
         {#if selectedDeployment?.state === "enabled"}
           <a
             class="btn btn-ghost btn-sm text-error"

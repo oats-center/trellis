@@ -21,6 +21,12 @@ import {
 } from "./connection.ts";
 import { getCallerRuntime } from "./participant_runtime/participant.ts";
 import type { AppRequestDescriptor } from "./generated_support.ts";
+import {
+  type AppConfigOf,
+  connectAppConfig,
+  type ParticipantConfig,
+} from "./service/config.ts";
+import { logger as noopLogger } from "./globals.ts";
 import type { OwnAuthorityView } from "./own_authority.ts";
 import type { RuntimeApi } from "./participant_runtime/api.ts";
 import {
@@ -101,6 +107,8 @@ export type ClientLogoutOptions = {
 export type ConnectedTrellisClient<T extends AppRequestDescriptor> =
   CallerRuntime<T> & {
     readonly ownAuthority: OwnAuthorityView;
+    /** Settings an administrator keeps for this app, typed from its `config` fields. */
+    readonly config: ParticipantConfig<AppConfigOf<T>>;
     /**
      * Revoke this application's OAuth family and close its connection. The
      * Portal login stays unless `endPortalLogin` is set, in which case the
@@ -378,6 +386,15 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           const ownAuthority = trellis.ownAuthority;
           if (!ownAuthority) throw new AuthError({ reason: "Unavailable" });
           await ownAuthority.refresh();
+          const config = await connectAppConfig<AppConfigOf<T>>({
+            fields: args.request.config,
+            clientId: args.auth.clientId,
+            read: () => trellis.requestAppConfig(),
+            transport: activeConnection.manager,
+            closed: activeConnection.manager.closed(),
+            log: args.log ?? noopLogger,
+            timeoutMs: args.timeout ?? 30_000,
+          });
           if (!ownAuthority.current)
             throw new AuthError({ reason: "Unavailable" });
           const request = {
@@ -462,6 +479,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
               ),
               {
                 ownAuthority,
+                config,
                 async logout(options?: ClientLogoutOptions) {
                   const revoked = await oauth.revoke();
                   if (revoked.isErr()) throw revoked.error;

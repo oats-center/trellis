@@ -14,6 +14,7 @@ mod authenticated_router;
 mod bindings;
 #[doc(hidden)]
 mod bootstrap_ports;
+pub(crate) mod config;
 #[doc(hidden)]
 mod core_bootstrap;
 mod error;
@@ -53,6 +54,7 @@ pub use bindings::{
 };
 #[doc(hidden)]
 pub use bootstrap_ports::BootstrapBindingInfo;
+pub use config::{ConfigHandle, ConfigRevision};
 pub use error::{
     DeclaredRpcError, HandlerResult, SchemaValidationIssue, ServerError, ValidationIssue,
 };

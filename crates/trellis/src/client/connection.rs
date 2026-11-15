@@ -1132,6 +1132,39 @@ impl TrellisClient {
         &self.authorization_provider
     }
 
+    /// Renew this connection's own authority while `issuer_key_id` signed it,
+    /// and wait until it no longer depends on that key or `timeout` passes.
+    /// Lets a key's own holder move off it before the key is revoked.
+    pub(crate) async fn release_issuer(
+        &self,
+        issuer_key_id: &str,
+        timeout: Duration,
+    ) -> Result<(), TrellisClientError> {
+        let Some(contexts) = &self.authorization_contexts else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + timeout;
+        let mut refreshed_at = None::<Instant>;
+        loop {
+            let signed_by = self
+                .authorization_provider
+                .own_authority()
+                .map(|authority| authority.authority().issuer_key_id.clone());
+            if signed_by.as_deref().is_ok_and(|key| key != issuer_key_id) {
+                return Ok(());
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(TrellisClientError::Timeout);
+            }
+            if refreshed_at.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1)) {
+                contexts.request_refresh();
+                refreshed_at = Some(now);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Return this connection owner's pinned identity from its signed context.
     ///
     /// # Errors

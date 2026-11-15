@@ -5,9 +5,9 @@ use crate::{
     semantic::{
         ActionDefinition, ActionId, ActionKind, ActionSelection, ApiDefinition, ApiId, AppKind,
         AppRequestDefinition, AppRequestId, Bounds, CapabilityDefinition,
-        CapabilityGroupDefinition, CapabilityId, CompanionDefinition, Documentation,
-        HistoricRepresentation, InteractionDirection, InteractionSelection, KeyConcurrency,
-        KeyConcurrencyPolicy, NumericBound, PackageGraph, PackageId, Pagination,
+        CapabilityGroupDefinition, CapabilityId, CompanionDefinition, ConfigFieldDefinition,
+        Documentation, HistoricRepresentation, InteractionDirection, InteractionSelection,
+        KeyConcurrency, KeyConcurrencyPolicy, NumericBound, PackageGraph, PackageId, Pagination,
         ParticipantDefinition, ParticipantId, ParticipantKind, ParticipantNeeds, Primitive, Replay,
         ResolvedDependency, ResourceDefinition, ResourceName, RetryPolicy, SemanticPackage,
         SourceSpan, SourceUnit, TypeDefinition, TypeExpression, TypeId, TypeRef,
@@ -1374,6 +1374,46 @@ fn resolve_authoring(
                 .insert(named_capability(&api, name)?);
         }
     }
+    let mut config = BTreeMap::new();
+    for field in &raw.config {
+        let definition = resolve_config_field(field, kind, source, scope)?;
+        if config.insert(field.name.clone(), definition).is_some() {
+            return Err(miette!("duplicate config field '{}'", field.name));
+        }
+    }
+    if kind.is_none() && !raw.config.is_empty() {
+        // An app reads its settings through Auth, so it asks for that itself.
+        let trellis = PackageId::new("trellis");
+        let auth_id = ApiId::new("trellis.auth@v1");
+        let apis = if scope.package == &trellis {
+            &root.apis
+        } else {
+            &scope
+                .dependencies
+                .get(&trellis)
+                .ok_or_else(|| {
+                    miette!(
+                        "application '{}' declares config, which requires a direct dependency \
+                        on the trellis package; add trellis to trellis.toml and update trellis.lock",
+                        raw.name
+                    )
+                })?
+                .apis
+        };
+        let auth = apis
+            .get(&auth_id)
+            .ok_or_else(|| miette!("the selected trellis package has no trellis.auth@v1"))?;
+        used_apis.insert(auth_id.clone(), auth.clone());
+        uses.entry(auth_id.clone())
+            .or_insert_with(|| InteractionSelection {
+                api: auth_id,
+                actions: BTreeSet::new(),
+                required_capabilities: BTreeSet::new(),
+                optional_capabilities: BTreeSet::new(),
+            })
+            .required_capabilities
+            .insert(named_capability(auth, "config.readApp")?);
+    }
     for (api_id, selected) in &mut uses {
         let api = &used_apis[api_id];
         selected
@@ -1456,6 +1496,7 @@ fn resolve_authoring(
             implements,
             uses,
             resources,
+            config,
             companion,
         })
     } else {
@@ -1469,9 +1510,100 @@ fn resolve_authoring(
             },
             uses,
             states: resources,
+            config,
         })
     };
     Ok((definition, companion_request))
+}
+
+fn resolve_config_field(
+    raw: &ast::ConfigField,
+    participant: Option<ParticipantKind>,
+    source: usize,
+    scope: &Scope<'_>,
+) -> miette::Result<ConfigFieldDefinition> {
+    let name = &raw.name;
+    let mut characters = name.chars();
+    if !characters.next().is_some_and(|c| c.is_ascii_lowercase())
+        || !characters.all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(miette!(
+            "config field '{name}' must be lowerCamelCase, such as databaseUrl"
+        ));
+    }
+    let docs = Documentation {
+        title: raw.title.clone().unwrap_or_default(),
+        description: raw.description.clone().unwrap_or_default(),
+    };
+    if docs.title.is_empty() || docs.description.is_empty() {
+        return Err(miette!(
+            "config field '{name}' requires nonempty title and description"
+        ));
+    }
+    let ty = raw
+        .ty
+        .as_ref()
+        .ok_or_else(|| miette!("config field '{name}' requires a type"))
+        .and_then(|ty| resolve_type(ty, source, scope))?;
+    if raw.secret && participant != Some(ParticipantKind::Service) {
+        // An app or device runs where its user can read anything it holds.
+        return Err(miette!(
+            "config field '{name}' is secret, but only services can keep a secret"
+        ));
+    }
+    if participant.is_none() && raw.default.is_none() {
+        // An app cannot wait for an administrator the way a service does.
+        return Err(miette!(
+            "app config field '{name}' needs a default; an app cannot wait for an administrator"
+        ));
+    }
+    if raw.secret && raw.default.is_some() {
+        return Err(miette!(
+            "secret config field '{name}' cannot have a default; it would be in the source"
+        ));
+    }
+    if let Some(value) = &raw.default {
+        if !default_fits(&ty, value) {
+            return Err(miette!(
+                "the default of config field '{name}' does not match its type"
+            ));
+        }
+    }
+    Ok(ConfigFieldDefinition {
+        docs,
+        ty,
+        default: raw.default.clone(),
+        secret: raw.secret,
+        restart: raw.restart,
+    })
+}
+
+/// Whether a scalar default can be a value of `ty`. Named types are checked
+/// when a value is stored, since their definitions may live in another package.
+fn default_fits(ty: &TypeExpression, value: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (ty, value) {
+        (TypeExpression::Nullable(_), Value::Null) => true,
+        (TypeExpression::Nullable(inner), value) => default_fits(inner, value),
+        (TypeExpression::Named(_), _) => true,
+        (TypeExpression::Primitive(primitive, _), value) => match primitive {
+            Primitive::Json => true,
+            Primitive::Bool => value.is_boolean(),
+            Primitive::Number => value.is_number(),
+            Primitive::Int32 => value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
+            Primitive::Uint32 => value.as_u64().is_some_and(|n| u32::try_from(n).is_ok()),
+            Primitive::Int64 => value
+                .as_str()
+                .is_some_and(|text| text.parse::<i64>().is_ok()),
+            Primitive::Uint64 => value
+                .as_str()
+                .is_some_and(|text| text.parse::<u64>().is_ok()),
+            Primitive::String | Primitive::Bytes | Primitive::Timestamp | Primitive::Ulid => {
+                value.is_string()
+            }
+        },
+        _ => false,
+    }
 }
 
 fn resolve_resource(
@@ -2251,6 +2383,21 @@ fn derive_participant_needs(
     for (name, resource) in &participant.resources {
         append(name.as_str());
         append(&resource_needs_json(graph, resource)?);
+    }
+    // Config shape is part of what a build needs from its deployment, so a
+    // changed field is a new build; titles and descriptions are not.
+    for (name, field) in &participant.config {
+        append("config");
+        append(name);
+        append(
+            &serde_json::json!({
+                "type": crate::expression_json_schema(graph, &field.ty)?,
+                "default": field.default,
+                "secret": field.secret,
+                "restart": field.restart,
+            })
+            .to_string(),
+        );
     }
     for capability in &required_capabilities {
         append(capability.as_str());

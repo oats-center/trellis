@@ -442,6 +442,12 @@ pub(super) fn credential_snapshot(
             {
                 required.push(super::deployments::SELF_HEALTH_CAPABILITY.into());
             }
+            if !required
+                .iter()
+                .any(|id| id == super::deployments::OWN_CONFIG_CAPABILITY)
+            {
+                required.push(super::deployments::OWN_CONFIG_CAPABILITY.into());
+            }
             if principal_kind == PrincipalKind::Service
                 && !required
                     .iter()

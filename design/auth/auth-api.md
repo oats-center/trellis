@@ -88,6 +88,7 @@ the exact request, response, and error types.
 | Service instances     | `ServiceInstances.Provision/List/Disable/Enable/Remove`                                                                                                                                           |
 | Devices               | `Devices.Provision/List/Disable/Enable/Remove`, `Devices.Reviews.*`, `DeviceCompanions.Attach/Revoke`                                                                                             |
 | Resources             | `Resources.List/Get/Remove`, `ResourceBindings.Query`                                                                                                                                             |
+| Settings              | `Config.Get/Set/Rollback`, `Config.Revisions.List/Delete`, `Config.Own.Get`, `Config.Apps.Declare`, `Config.App.Get`                                                                              |
 | Sessions              | `Sessions.Me/List/Revoke/Logout`, `AuthorizationSessions.List/Revoke`                                                                                                                             |
 | Connections           | `Connections.List`, `Connections.Kick`                                                                                                                                                            |
 | Users                 | `Users.Create/Delete/Get/List/Resolve/Update`, `Users.Profile.Update`, `Users.Password.Change`, `Users.PasswordReset.Create`, `Users.IdentityLink.Providers/Create`, `UserIdentities.List/Unlink` |
@@ -122,6 +123,19 @@ Create, Apply, and Decide all refuse to make a deployment serve an API another
 deployment serves unless the request sets `acknowledgeSharedApis`. See
 [service updates](service-updates.md). There is no materialized-authority or
 reconcile RPC family.
+
+### Settings
+
+`Config.*` keeps the settings services, devices, and apps declare with
+`config` in IDL, per deployment, per instance, and per app client. `Config.Get` and `Config.Revisions.List`
+need `trellis.auth.v1:config.read`, `config.manage`, or `config.manageSecrets`;
+`Config.Set`, `Config.Rollback`, and `Config.Revisions.Delete` need
+`config.manage` for settings and `config.manageSecrets` for secrets. Every
+instance holds `config.readOwn` for `Config.Own.Get` and the `Config.Changed`
+event. `Config.Apps.Declare` needs `config.manage`; apps read their own
+settings with `Config.App.Get` under `config.readApp`, part of the `account`
+group. Secret values are sealed at rest and never returned to an administrator.
+See [service configuration](../core/config-patterns.md).
 
 ### Resource administration
 

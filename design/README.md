@@ -90,6 +90,7 @@ These headings are intentionally named for fast human and AI lookup.
 | `core/observability-patterns.md`    | You are changing telemetry, correlation, health, or docs guidance         | Observability and request-correlation rules                                                   |
 | `core/frontend-svelte-patterns.md`  | You are changing Svelte frontend conventions                              | Trellis frontend state patterns                                                               |
 | `core/capability-patterns.md`       | You are changing capability naming or deployment-role guidance            | Capability taxonomy and assignment guidance                                                   |
+| `core/config-patterns.md`           | You are working on settings or secrets Trellis keeps for services/devices | Typed `config` in IDL, sealed write-only secrets, revisions, live delivery, no env fallback   |
 
 ## Protocol, API, And Runtime Surface Docs
 

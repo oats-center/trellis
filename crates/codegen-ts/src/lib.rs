@@ -1224,6 +1224,9 @@ fn render_app_request(
     let mut lines = vec![
         "import type { AppRequestDescriptor } from \"@oatscenter/trellis/generated\";".to_owned(),
     ];
+    if !request.config().is_empty() {
+        lines.push("import { codecs } from \"@oatscenter/trellis/generated\";".to_owned());
+    }
     let api_modules = api_modules(graph);
     let mut aliases = BTreeMap::new();
     for (index, id) in uses.keys().enumerate() {
@@ -1375,6 +1378,16 @@ fn render_app_request(
             render_resource_type(state, modules)
         ));
     }
+    lines.push("}; readonly config: {".into());
+    for (name, field) in request.config() {
+        lines.push(format!(
+            "readonly {}: {{ readonly codec: {{ decode(value: unknown): {}; }}; \
+            readonly required: false; readonly secret: false; readonly restart: {}; }};",
+            property_name(name),
+            render_type_expression(&field.ty, "", modules),
+            field.restart
+        ));
+    }
     lines.push(format!(
         "}} }} = {{ id: {}, kind: {}, requiredCapabilities: [{required}], \
         optionalCapabilities: [{optional}], uses: [{}], actionNames: {{ {} }}, \
@@ -1413,7 +1426,26 @@ fn render_app_request(
             representations[1..].join(", ")
         ));
     }
-    lines.push("} };\nexport type Request = typeof request;\nexport default request;\n".into());
+    lines.push("}, config: {".into());
+    for (name, field) in request.config() {
+        lines.push(format!(
+            "{}: {{ codec: {}, required: false, secret: false, restart: {} }},",
+            property_name(name),
+            render_codec_expression(&field.ty, "", "", modules),
+            field.restart
+        ));
+    }
+    if request.config().is_empty() {
+        lines.push("} };".into());
+    } else {
+        // An administrator attaches this evidence to the app's client so Auth
+        // can check its settings.
+        lines.push(format!(
+            "}}, packageEvidence: {} }};",
+            package_evidence(graph)?
+        ));
+    }
+    lines.push("export type Request = typeof request;\nexport default request;\n".into());
     Ok(lines.join("\n"))
 }
 
@@ -1492,8 +1524,12 @@ fn render_participant(
         .ok_or_else(|| CodegenTsError::MissingReference(participant.identity().to_string()))?;
     let api_prefix = "../../";
     let types_prefix = "../../";
-    let mut lines =
-        vec!["import { participantDescriptor } from \"@oatscenter/trellis/generated\";".to_owned()];
+    let mut lines = vec![if participant.config().is_empty() {
+        "import { participantDescriptor } from \"@oatscenter/trellis/generated\";".to_owned()
+    } else {
+        "import { codecs, participantDescriptor } from \"@oatscenter/trellis/generated\";"
+            .to_owned()
+    }];
     lines.push(
         "import type { ParticipantJobsFromResources, ParticipantKvFromResources, \
         RuntimeApiFromGenerated } from \"@oatscenter/trellis/generated\";"
@@ -1578,6 +1614,15 @@ fn render_participant(
         ));
     }
     lines.push("};".into());
+    lines.push("type __ConfigValues = {".into());
+    for (name, field) in participant.config() {
+        lines.push(format!(
+            "  readonly {}: {};",
+            property_name(name),
+            render_type_expression(&field.ty, "", modules)
+        ));
+    }
+    lines.push("};".into());
     lines.push("const __participant: {".into());
     lines.push("  readonly digest: string;".into());
     lines.push("  readonly requiredCapabilities: readonly string[];".into());
@@ -1641,6 +1686,19 @@ fn render_participant(
     lines.push("  ];".into());
     lines.push("  readonly actionNames: __ActionNames;".into());
     lines.push("  readonly resources: __Resources;".into());
+    lines.push("  readonly config: {".into());
+    for (name, field) in participant.config() {
+        lines.push(format!(
+            "    readonly {}: {{ readonly codec: {{ decode(value: unknown): {}; }}; \
+            readonly required: {}; readonly secret: {}; readonly restart: {}; }};",
+            property_name(name),
+            render_type_expression(&field.ty, "", modules),
+            field.default.is_none(),
+            field.secret,
+            field.restart
+        ));
+    }
+    lines.push("  };".into());
     lines.push("  readonly __runtimeTypes?: {".into());
     lines.push(format!(
         "    readonly ownedApi: RuntimeApiFromGenerated<{}, __ActionNames>;",
@@ -1663,6 +1721,7 @@ fn render_participant(
     ));
     lines.push("    readonly jobs: ParticipantJobsFromResources<__Resources>;".into());
     lines.push("    readonly kv: ParticipantKvFromResources<__Resources>;".into());
+    lines.push("    readonly config: __ConfigValues;".into());
     lines.push("  };".into());
     if let Some(companion) = participant.companion() {
         lines.push(format!(
@@ -1780,6 +1839,18 @@ fn render_participant(
         ));
     }
     lines.push("  },".into());
+    lines.push("  config: {".into());
+    for (name, field) in participant.config() {
+        lines.push(format!(
+            "    {}: {{ codec: {}, required: {}, secret: {}, restart: {} }},",
+            property_name(name),
+            render_codec_expression(&field.ty, "", "", modules),
+            field.default.is_none(),
+            field.secret,
+            field.restart
+        ));
+    }
+    lines.push("  },".into());
     if let Some(companion) = participant.companion() {
         lines.push(format!(
             "  companion: {{ request: Companion.request, availability: {} }},",
@@ -1802,6 +1873,7 @@ fn render_participant(
         .push("  readonly optionalCapabilities: typeof __participant.optionalCapabilities;".into());
     lines.push("  readonly actionNames: typeof __participant.actionNames;".into());
     lines.push("  readonly resources: typeof __participant.resources;".into());
+    lines.push("  readonly config: typeof __participant.config;".into());
     lines.push("  readonly __runtimeTypes?: typeof __participant.__runtimeTypes;".into());
     if participant.companion().is_some() {
         lines.push("  readonly companion: typeof __participant.companion;".into());
@@ -1965,6 +2037,21 @@ fn participant_resource_packages(participant: &ParticipantDefinition) -> BTreeSe
             }
             ResourceDefinition::Store { .. } | ResourceDefinition::Consumer { .. } => {}
         }
+    }
+    fn named<'a>(value: &'a TypeExpression, packages: &mut BTreeSet<&'a str>) {
+        match value {
+            TypeExpression::Named(reference) => {
+                packages.insert(reference.package.as_str());
+            }
+            TypeExpression::List(value, _)
+            | TypeExpression::Map(value)
+            | TypeExpression::Nullable(value)
+            | TypeExpression::CursorPage(value) => named(value, packages),
+            TypeExpression::Primitive(..) | TypeExpression::CursorQuery => {}
+        }
+    }
+    for field in participant.config().values() {
+        named(&field.ty, &mut packages);
     }
     packages
 }
