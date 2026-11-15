@@ -111,6 +111,24 @@ provider. Two providers that aren't deleted cannot share an issuer, and
 provider's row for the sign-ins that name it but frees its issuer, so a new
 provider can take it.
 
+Auth reaches a provider through the system trust store. A provider whose
+certificate nothing on the server vouches for, such as a company IdP on a
+private CA, is pinned by its issuer's SHA-256 fingerprint, the way services and
+devices accept an unvouched Trellis: `OIDCProviders.Put` takes
+`certificateFingerprint`, reads the chain the issuer's host presents without
+trusting it, and refuses the change with a validation error naming the
+presented fingerprint when the issuer that ends the chain doesn't match.
+Comparison ignores colons and case. Auth stores that issuer certificate with
+the provider and adds it as a trust root for every HTTPS call it makes for that
+provider (discovery, keys, token exchange and UserInfo) and no other, so
+ordinary chain and hostname verification still apply. Left out, a Put keeps the
+current pin; `null` removes it. When a new or unpinned provider's issuer is
+reachable, presents its issuer, and nothing vouches for it, the Put is refused
+with that fingerprint for the administrator to confirm and pin. An issuer Auth
+can't reach is saved as before. `AuthOIDCProvider.certificateFingerprint` shows
+the pin. HTTP clients are kept per pinned provider and rebuilt when its
+revision changes.
+
 ### Deployments And Provisioning
 
 Deployment Apply is the administrator's direct mutation path. A running

@@ -1,4 +1,5 @@
 use super::*;
+use crate::platform::auth::oauth::oidc::IssuerPin;
 use crate::platform::auth::tests::{mutation, open, NOW};
 use ed25519_dalek::SigningKey;
 
@@ -295,6 +296,7 @@ fn provider_disable_blocks_verified_login_and_stale_delete_cannot_remove_it() {
         display_name: "Company".into(),
         client_id: "trellis".into(),
         sealed_client_secret: None,
+        issuer_certificate: None,
         config: serde_json::json!({"scopes": ["openid"], "roleClaim": "/roles"}),
         claim_freshness_seconds: 3600,
         expected_revision: 0,
@@ -511,14 +513,15 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
         role_claim: "/roles".into(),
         claim_freshness_seconds: 300.into(),
         client_secret: Some("upstream confidential credential".into()),
+        certificate_fingerprint: None,
         expected_revision: 0.into(),
         idempotency_key: id().into(),
         extra: Default::default(),
     };
     let identity = mutation(&admin, &input);
-    let created = put_provider(&storage, &identity, &input, NOW).unwrap();
+    let created = put_provider(&storage, &identity, &input, IssuerPin::Keep, NOW).unwrap();
     assert_eq!(
-        put_provider(&storage, &identity, &input, NOW + 1).unwrap(),
+        put_provider(&storage, &identity, &input, IssuerPin::Keep, NOW + 1).unwrap(),
         created
     );
     assert!(created.provider.has_client_secret);
@@ -527,10 +530,18 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
         title: "Updated company".to_string().into(),
         expected_revision: 1.into(),
         client_secret: None,
+        certificate_fingerprint: None,
         idempotency_key: id().into(),
         ..input
     };
-    let updated = put_provider(&storage, &mutation(&admin, &update), &update, NOW + 1).unwrap();
+    let updated = put_provider(
+        &storage,
+        &mutation(&admin, &update),
+        &update,
+        IssuerPin::Keep,
+        NOW + 1,
+    )
+    .unwrap();
     assert!(updated.provider.has_client_secret);
     assert_eq!(updated.provider.title, "Updated company");
     let stale = AuthOIDCProviderPutRequest {
@@ -539,7 +550,13 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
         ..update
     };
     assert!(matches!(
-        put_provider(&storage, &mutation(&admin, &stale), &stale, NOW + 2),
+        put_provider(
+            &storage,
+            &mutation(&admin, &stale),
+            &stale,
+            IssuerPin::Keep,
+            NOW + 2
+        ),
         Err(AuthError::Conflict)
     ));
     assert_eq!(
@@ -582,11 +599,18 @@ fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
         role_claim: String::new(),
         claim_freshness_seconds: 300.into(),
         client_secret: None,
+        certificate_fingerprint: None,
         expected_revision: 0.into(),
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    match put_provider(&storage, &mutation(&admin, &bare), &bare, NOW) {
+    match put_provider(
+        &storage,
+        &mutation(&admin, &bare),
+        &bare,
+        IssuerPin::Keep,
+        NOW,
+    ) {
         Err(AuthError::Invalid(detail)) => assert!(detail.contains("https URL"), "{detail}"),
         other => panic!("expected an issuer validation error, got {other:?}"),
     }
@@ -595,7 +619,14 @@ fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
         idempotency_key: id().into(),
         ..bare
     };
-    let created = put_provider(&storage, &mutation(&admin, &fixed), &fixed, NOW).unwrap();
+    let created = put_provider(
+        &storage,
+        &mutation(&admin, &fixed),
+        &fixed,
+        IssuerPin::Keep,
+        NOW,
+    )
+    .unwrap();
     assert_eq!(created.provider.issuer, "https://identity.example/");
 }
 
@@ -618,15 +649,22 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         role_claim: "/roles".into(),
         claim_freshness_seconds: 300.into(),
         client_secret: None,
+        certificate_fingerprint: None,
         expected_revision: 0.into(),
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    let provider = put_provider(&storage, &mutation(&admin, &provider), &provider, NOW)
-        .unwrap()
-        .provider
-        .provider_id
-        .to_string();
+    let provider = put_provider(
+        &storage,
+        &mutation(&admin, &provider),
+        &provider,
+        IssuerPin::Keep,
+        NOW,
+    )
+    .unwrap()
+    .provider
+    .provider_id
+    .to_string();
     let account = AuthUserCreateRequest {
         given_name: None,
         family_name: None,
@@ -685,15 +723,22 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         role_claim: "/roles".into(),
         claim_freshness_seconds: 300.into(),
         client_secret: None,
+        certificate_fingerprint: None,
         expected_revision: 0.into(),
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    let second = put_provider(&storage, &mutation(&admin, &second), &second, NOW)
-        .unwrap()
-        .provider
-        .provider_id
-        .to_string();
+    let second = put_provider(
+        &storage,
+        &mutation(&admin, &second),
+        &second,
+        IssuerPin::Keep,
+        NOW,
+    )
+    .unwrap()
+    .provider
+    .provider_id
+    .to_string();
     store
         .transaction(|connection| {
             SqliteAuthorizationStore::link_oidc_identity_in(
@@ -1203,13 +1248,20 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
         role_claim: "/groups".into(),
         claim_freshness_seconds: 300.into(),
         client_secret: Some("upstream confidential credential".into()),
+        certificate_fingerprint: None,
         expected_revision: 0.into(),
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    let company = put_provider(&storage, &mutation(&admin, &company), &company, NOW)
-        .unwrap()
-        .provider;
+    let company = put_provider(
+        &storage,
+        &mutation(&admin, &company),
+        &company,
+        IssuerPin::Keep,
+        NOW,
+    )
+    .unwrap()
+    .provider;
     // With a provider to sign in through, turning local users off applies to the
     // next sign-in, with no restart.
     settings(1, false, true).unwrap();
@@ -1284,14 +1336,21 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
         role_claim: "/roles".into(),
         claim_freshness_seconds: 300.into(),
         client_secret: None,
+        certificate_fingerprint: None,
         expected_revision: 0.into(),
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    let provider = put_provider(&storage, &mutation(&admin, &provider), &provider, NOW)
-        .unwrap()
-        .provider
-        .provider_id;
+    let provider = put_provider(
+        &storage,
+        &mutation(&admin, &provider),
+        &provider,
+        IssuerPin::Keep,
+        NOW,
+    )
+    .unwrap()
+    .provider
+    .provider_id;
     for (principal, subject) in [(&boss, "auth0|boss"), (&admin, "auth0|admin")] {
         store
             .transaction(|connection| {
@@ -1463,13 +1522,20 @@ fn link_providers_lists_active_providers_by_name_and_drops_a_disabled_one() {
             role_claim: String::new(),
             claim_freshness_seconds: 300.into(),
             client_secret: None,
+            certificate_fingerprint: None,
             expected_revision: 0.into(),
             idempotency_key: id().into(),
             extra: Default::default(),
         };
-        put_provider(&storage, &mutation(&admin, &input), &input, NOW)
-            .unwrap()
-            .provider
+        put_provider(
+            &storage,
+            &mutation(&admin, &input),
+            &input,
+            IssuerPin::Keep,
+            NOW,
+        )
+        .unwrap()
+        .provider
     };
     let company = put("https://company.example/", "Company");
     let retired = put("https://retired.example/", "Retired");

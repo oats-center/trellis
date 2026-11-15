@@ -40,6 +40,7 @@
   let issuer = $state("");
   let clientId = $state("");
   let clientSecret = $state("");
+  let certificateFingerprint = $state("");
   let scopes = $state("");
   let groupsClaim = $state("");
 
@@ -142,6 +143,7 @@
     issuer = provider?.issuer ?? "";
     clientId = provider?.clientId ?? "";
     clientSecret = "";
+    certificateFingerprint = provider?.certificateFingerprint ?? "";
     scopes = (provider?.scopes ?? ["openid", "profile", "email"]).join(" ");
     // Most providers list a person's groups in a `groups` claim.
     groupsClaim = provider ? provider.roleClaim : "/groups";
@@ -152,6 +154,7 @@
 
   function saveProvider(event: SubmitEvent): Promise<void> {
     event.preventDefault();
+    const fingerprint = certificateFingerprint.trim();
     return run(async () => {
       await trellis
         .oidcProvidersPut({
@@ -161,6 +164,10 @@
           clientId: clientId.trim(),
           // Left empty, an existing provider keeps its secret.
           ...(clientSecret ? { clientSecret } : {}),
+          // Unchanged, the provider keeps its pin; cleared, `null` removes it.
+          ...(fingerprint === (selected?.certificateFingerprint ?? "")
+            ? {}
+            : { certificateFingerprint: fingerprint || null }),
           scopes: scopes.split(/\s+/).filter(Boolean),
           roleClaim: groupsClaim.trim(),
           claimFreshnessSeconds: selected?.claimFreshnessSeconds ?? 3600,
@@ -371,6 +378,19 @@
             />{#if selected?.hasClientSecret}<span class="trellis-field-help"
                 >Leave empty to keep the current secret.</span
               >{/if}</label
+          >
+          <label class="trellis-field"
+            ><span class="trellis-field-label">Certificate fingerprint</span
+            ><input
+              class="input w-full font-mono"
+              autocomplete="off"
+              spellcheck="false"
+              bind:value={certificateFingerprint}
+            /><span class="trellis-field-help"
+              >{selected?.certificateFingerprint
+                ? "This server trusts the provider's certificate issuer with this fingerprint. Clear it to trust only the system's certificates."
+                : "Only for a provider whose certificate this server doesn't trust. Confirm the fingerprint with the provider's operator."}</span
+            ></label
           >
           <details>
             <summary class="cursor-pointer text-sm">More settings</summary>

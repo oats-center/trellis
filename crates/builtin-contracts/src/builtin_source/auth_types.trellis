@@ -693,6 +693,10 @@ model AuthOIDCProvider {
   roleClaim: string;
   claimFreshnessSeconds: AuthPositiveSeconds;
   hasClientSecret: bool;
+  /// SHA-256 fingerprint of the issuer certificate Auth trusts for this
+  /// provider besides the system trust store, as colon-separated uppercase
+  /// hex. Absent when the provider relies on the system trust store alone.
+  certificateFingerprint?: string;
   revision: AuthRevision;
 }
 model AuthOIDCProviderGetRequest { providerId: ulid; }
@@ -707,6 +711,12 @@ model AuthOIDCProviderPutRequest {
   roleClaim: string;
   claimFreshnessSeconds: AuthPositiveSeconds;
   clientSecret?: string;
+  /// Trust the issuer certificate with this SHA-256 fingerprint for this
+  /// provider, for an issuer whose certificate nothing on the server vouches
+  /// for. Auth reads the chain the issuer presents and refuses the change when
+  /// its issuer has another fingerprint. Left out, the provider keeps its
+  /// current pin; `null` removes it.
+  certificateFingerprint?: string | null;
   expectedRevision: uint64;
   idempotencyKey: AuthIdempotencyKey;
 }

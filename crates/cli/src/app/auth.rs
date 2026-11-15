@@ -6,6 +6,7 @@ use qrcode::{render::unicode, QrCode};
 use serde_json::{json, Value};
 use trellis_rs::auth as authlib;
 use trellis_rs::generated::AppRequestDescriptor;
+use trellis_runtime_apis::__types::Nullable;
 use trellis_runtime_apis::types as auth_types;
 use ulid::Ulid;
 
@@ -780,6 +781,9 @@ async fn providers_command(
                 role_claim: args.groups_claim.trim().to_owned(),
                 claim_freshness_seconds: wire(3600)?,
                 client_secret: read_client_secret(args.client_secret_file.as_deref())?,
+                certificate_fingerprint: args
+                    .certificate_fingerprint
+                    .map(|fingerprint| Nullable::Value(fingerprint.trim().to_owned())),
                 expected_revision: 0u64.into(),
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
@@ -807,6 +811,13 @@ async fn providers_command(
                 claim_freshness_seconds: current.claim_freshness_seconds,
                 // Left out, the provider keeps its secret.
                 client_secret: read_client_secret(args.client_secret_file.as_deref())?,
+                // Left out, the provider keeps its pinned issuer.
+                certificate_fingerprint: if args.no_certificate_fingerprint {
+                    Some(Nullable::Null)
+                } else {
+                    args.certificate_fingerprint
+                        .map(|fingerprint| Nullable::Value(fingerprint.trim().to_owned()))
+                },
                 expected_revision: current.revision.0,
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
@@ -874,6 +885,12 @@ async fn providers_command(
                         .join(" "),
                 )
                 .field("Groups claim", output::field(provider, "roleClaim"))
+                .field(
+                    "Certificate issuer",
+                    provider["certificateFingerprint"]
+                        .as_str()
+                        .unwrap_or("system trust store"),
+                )
                 .field("Callback URL", callback)
                 .print();
             if action == "added" {

@@ -501,7 +501,9 @@
                         </div>
                       {:else}
                         <div class="text-xs text-base-content/60">
-                          Not connected
+                          {row.another
+                            ? "You can connect another account too"
+                            : "Not connected"}
                         </div>
                       {/if}
                     </div>
@@ -539,7 +541,11 @@
                         onclick={() =>
                           row.providerId &&
                           void createIdentityLink(row.providerId)}
-                        >{linkPending ? "Opening..." : "Connect"}</button
+                        >{linkPending
+                          ? "Opening..."
+                          : row.another
+                            ? "Connect another"
+                            : "Connect"}</button
                       >
                     {/if}
                   </div>

@@ -80,6 +80,9 @@ pub(super) fn certificate() -> Certificate {
         );
     }
     let pem = std::fs::read_to_string(&root_certificate).unwrap();
+    // Servers present the leaf and then its issuer, the chain a pin reads.
+    let leaf = std::fs::read_to_string(&certificate).unwrap();
+    std::fs::write(&certificate, format!("{leaf}{pem}")).unwrap();
     Certificate {
         directory,
         certificate,

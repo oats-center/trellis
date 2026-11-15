@@ -352,11 +352,19 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
                 &input,
             )
             .map_err(rpc_error)?;
+            let pin = super::oauth::oidc::issuer_pin(
+                &input.issuer,
+                input.certificate_fingerprint.as_ref(),
+                input.expected_revision.0 == 0,
+            )
+            .await
+            .map_err(rpc_error)?;
             blocking(move || {
                 put_provider(
                     engine.server.store(),
                     &identity,
                     &input,
+                    pin,
                     crate::clock::unix_now(),
                 )
             })
@@ -366,10 +374,13 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
     });
 }
 
+/// Stores a provider Put. `pin` is the issuer certificate decision
+/// [`super::oauth::oidc::issuer_pin`] reached for the same input.
 pub(super) fn put_provider(
     storage: &super::OAuthStorage,
     identity: &Mutation,
     input: &AuthOIDCProviderPutRequest,
+    pin: super::oauth::oidc::IssuerPin,
     now: i64,
 ) -> Result<AuthOIDCProviderGetResponse, AuthError> {
     if identity.request_digest != digest(input)? {
@@ -414,27 +425,41 @@ pub(super) fn put_provider(
         &audit,
         now,
         |connection| {
-            let previous: Option<(Option<Vec<u8>>, String)> = connection
+            let previous = connection
                 .query_row(
-                    "SELECT sealed_client_secret,state \
+                    "SELECT sealed_client_secret,state,issuer_certificate \
                     FROM auth_oidc_providers \
                     WHERE provider_id=?1",
                     [&provider],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<Vec<u8>>>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<Vec<u8>>>(2)?,
+                        ))
+                    },
                 )
                 .optional()?;
             if previous
                 .as_ref()
-                .is_some_and(|(_, state)| state == "deleted")
+                .is_some_and(|(_, state, _)| state == "deleted")
             {
                 return Err(AuthError::Conflict);
             }
+            let (previous_secret, previous_certificate) = previous
+                .map(|(secret, _, certificate)| (secret, certificate))
+                .unwrap_or_default();
             let registration = super::lifecycle::OidcProviderRegistration {
                 provider_id: provider.clone(),
                 issuer: input.issuer.clone(),
                 display_name: input.title.to_string(),
                 client_id: input.client_id.clone(),
-                sealed_client_secret: sealed.or_else(|| previous.and_then(|(secret, _)| secret)),
+                sealed_client_secret: sealed.or(previous_secret),
+                issuer_certificate: match &pin {
+                    super::oauth::oidc::IssuerPin::Keep => previous_certificate,
+                    super::oauth::oidc::IssuerPin::Remove => None,
+                    super::oauth::oidc::IssuerPin::Set(certificate) => Some(certificate.clone()),
+                },
                 config: serde_json::json!({"scopes": input.scopes, "roleClaim": input.role_claim}),
                 claim_freshness_seconds: input.claim_freshness_seconds.0,
                 expected_revision: input.expected_revision.0,
@@ -1230,29 +1255,31 @@ pub(super) fn read_provider(
     connection: &Connection,
     provider: &str,
 ) -> Result<AuthOIDCProvider, AuthError> {
-    let (issuer, title, client, secret, config, freshness, state, revision) = connection
-        .query_row(
-            "SELECT issuer,display_name,client_id,sealed_client_secret IS NOT NULL,\
-            config_json,claim_freshness_seconds,state,revision \
-            FROM auth_oidc_providers \
-            WHERE provider_id=?1 \
-            AND state!='deleted'",
-            [provider],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, bool>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, u32>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, u64>(7)?,
-                ))
-            },
-        )
-        .optional()?
-        .ok_or(AuthError::NotFound)?;
+    let (issuer, title, client, secret, config, freshness, state, revision, certificate) =
+        connection
+            .query_row(
+                "SELECT issuer,display_name,client_id,sealed_client_secret IS NOT NULL,\
+                config_json,claim_freshness_seconds,state,revision,issuer_certificate \
+                FROM auth_oidc_providers \
+                WHERE provider_id=?1 \
+                AND state!='deleted'",
+                [provider],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, u32>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, u64>(7)?,
+                        row.get::<_, Option<Vec<u8>>>(8)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(AuthError::NotFound)?;
     let config: serde_json::Value = serde_json::from_str(&config)?;
     Ok(AuthOIDCProvider {
         provider_id: provider.parse().map_err(|_| AuthError::Unavailable)?,
@@ -1260,6 +1287,8 @@ pub(super) fn read_provider(
         title,
         client_id: client,
         has_client_secret: secret,
+        certificate_fingerprint: certificate
+            .map(|certificate| trellis_rs::auth::certificate_fingerprint(&certificate.into())),
         scopes: config
             .get("scopes")
             .map(|value| serde_json::from_value(value.clone()))

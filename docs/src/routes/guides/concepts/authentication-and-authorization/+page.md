@@ -85,6 +85,15 @@ profile claims; Trellis preserves explicitly configured scope choices. Optional
 UserInfo fills missing signed-token profile fields only when its `sub` matches.
 An unavailable or malformed enrichment response does not block valid login.
 
+Trellis reaches a provider through the server's system trust store. A company
+provider on a private CA needs its certificate issuer pinned by SHA-256
+fingerprint: saving the provider without one is refused with the fingerprint
+the provider presents. Confirm that value with the provider's operator, then
+enter it in the provider's Certificate fingerprint field, or pass
+`trellis sign-in providers add|edit --certificate-fingerprint <sha256>`. Trellis
+checks it against the chain the provider presents and trusts that issuer for
+that provider only.
+
 ## Installed participants
 
 Every participant is installed in Auth before it can be granted access. An

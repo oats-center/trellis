@@ -102,7 +102,6 @@ pub(crate) struct AuthSettings {
     /// Origin that serves the Console, for links administrators open; absent
     /// when the Console is turned off, which also refuses its client.
     pub(crate) console_origin: Option<String>,
-    pub(crate) upstream_tls_roots_pem: Vec<String>,
     /// The NATS sentinel user's JWT clients connect with before the callout.
     pub(crate) nats_sentinel: Option<String>,
     pub(crate) authority_lifetime_seconds: u32,
@@ -474,7 +473,6 @@ impl SqliteAuthorizationStore {
             account: account.into(),
             oauth_issuer: config.public_origin(),
             console_origin: config.console_enabled().then_some(console_origin),
-            upstream_tls_roots_pem: Vec::new(),
             nats_sentinel: config.secrets.nats.auth_callout.sentinel_jwt.clone(),
             authority_lifetime_seconds: u32::try_from(authorization.context_lifetime_seconds)
                 .map_err(|_| {

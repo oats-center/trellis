@@ -39,6 +39,9 @@ pub(crate) struct OidcProviderRegistration {
     pub(crate) display_name: String,
     pub(crate) client_id: String,
     pub(crate) sealed_client_secret: Option<Vec<u8>>,
+    /// DER issuer certificate trusted for this provider besides the system
+    /// trust store, pinned by an administrator's fingerprint.
+    pub(crate) issuer_certificate: Option<Vec<u8>>,
     pub(crate) config: Value,
     pub(crate) claim_freshness_seconds: u32,
     pub(crate) expected_revision: u64,
@@ -509,12 +512,15 @@ impl SqliteAuthorizationStore {
                     ));
                 }
                 connection.execute(
-                    "INSERT INTO auth_oidc_providers \
-                    VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,?9,?9) \
+                    "INSERT INTO auth_oidc_providers(provider_id,issuer,display_name,\
+                    client_id,sealed_client_secret,config_json,claim_freshness_seconds,\
+                    state,revision,created_at,updated_at,issuer_certificate) \
+                    VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,?9,?9,?10) \
                     ON CONFLICT(provider_id) \
                     DO UPDATE SET display_name=excluded.display_name,\
                     client_id=excluded.client_id,\
                     sealed_client_secret=excluded.sealed_client_secret,\
+                    issuer_certificate=excluded.issuer_certificate,\
                     config_json=excluded.config_json,\
                     claim_freshness_seconds=excluded.claim_freshness_seconds,\
                     revision=excluded.revision,updated_at=excluded.updated_at",
@@ -527,7 +533,8 @@ impl SqliteAuthorizationStore {
                         json(&registration.config)?,
                         registration.claim_freshness_seconds,
                         registration.expected_revision + 1,
-                        now
+                        now,
+                        registration.issuer_certificate
                     ],
                 )?;
                 enqueue_scope(

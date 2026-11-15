@@ -52,6 +52,14 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Users.List"],
     (client, input) => client.usersList(input).orThrow(),
   ),
+  authUsersFind: adminMethod(
+    apis.auth.API.actions["rpc:Users.Find"],
+    (client, input) => client.usersFind(input).orThrow(),
+  ),
+  authOIDCProvidersList: adminMethod(
+    apis.auth.API.actions["rpc:OIDCProviders.List"],
+    (client, input) => client.oidcProvidersList(input).orThrow(),
+  ),
   authIssuersRotate: adminMethod(
     apis.auth.API.actions["rpc:Issuers.Rotate"],
     (client, input) => client.issuersRotate(input).orThrow(),

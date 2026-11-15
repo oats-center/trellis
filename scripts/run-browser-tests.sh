@@ -5,7 +5,8 @@
 #   npm run test:browser [-- <node test flags and test paths>]
 #
 # No environment variable has to be preset. Locally the runner builds the CLI
-# and server the tests launch; the testkit acquires NATS itself. With
+# and server the tests launch; the testkit acquires NATS itself, and the runner
+# downloads the pinned Dex release the company sign-in tests start. With
 # TRELLIS_TEST_STAGED=1 (as set by `scripts/check.sh`) or in CI it only checks
 # that they exist. TRELLIS_BROWSER_CONCURRENCY overrides the number of
 # concurrent test files.
@@ -25,7 +26,12 @@ for bin in "$cli_bin" "$server_bin"; do
 done
 [[ -z "${TRELLIS_TEST_BUILD_ONLY:-}" ]] || exit 0
 
+# Released dependencies are downloaded and verified, never built.
+dex_bin="${TRELLIS_TEST_DEX_BIN:-$root/target/test-identity/$(bash scripts/acquire-test-dex.sh --print-version)/dex}"
+[[ -x "$dex_bin" ]] || bash scripts/acquire-test-dex.sh --dest "$(dirname "$dex_bin")"
+
 export TRELLIS_TEST_CLI_BIN="$cli_bin" TRELLIS_TEST_SERVER_BIN="$server_bin"
+export TRELLIS_TEST_DEX_BIN="$dex_bin"
 export TRELLIS_CACHE_DIR="${TRELLIS_CACHE_DIR:-$root/target/trellis-nats-cache}"
 
 if [[ $# -eq 0 ]]; then

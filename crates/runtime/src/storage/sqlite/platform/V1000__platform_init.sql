@@ -632,6 +632,9 @@ CREATE TABLE auth_oidc_providers (
     display_name TEXT NOT NULL,
     client_id TEXT NOT NULL,
     sealed_client_secret BLOB,
+    -- DER issuer certificate an administrator pinned by fingerprint; Auth
+    -- trusts it for this provider in addition to the system trust store.
+    issuer_certificate BLOB CHECK (issuer_certificate IS NULL OR length(issuer_certificate) BETWEEN 1 AND 65536),
     config_json TEXT NOT NULL CHECK (json_valid(config_json)),
     claim_freshness_seconds INTEGER NOT NULL CHECK (claim_freshness_seconds >= 1),
     state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'deleted')),

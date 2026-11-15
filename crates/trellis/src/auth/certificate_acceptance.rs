@@ -154,7 +154,7 @@ pub async fn discover_accepting_certificate(
                 let accepted = pem_fingerprint(&file)?;
                 match presented_issuer(&host, port)
                     .await
-                    .map(|ca| fingerprint(&ca))
+                    .map(|ca| certificate_fingerprint(&ca))
                 {
                     Some(presented) if presented != accepted => {
                         Err(CertificateAcceptanceError::Changed {
@@ -176,15 +176,14 @@ pub async fn discover_accepting_certificate(
     let Some(presented) = presented_issuer(&host, port).await else {
         return Err(error.into());
     };
-    let presented_fingerprint = fingerprint(&presented);
+    let presented_fingerprint = certificate_fingerprint(&presented);
     let expected = acceptance
         .fingerprint
         .clone()
         .or_else(|| std::env::var(CERTIFICATE_FINGERPRINT_ENV).ok())
         .filter(|value| !value.trim().is_empty());
     if let Some(expected) = expected {
-        let normalize = |value: &str| value.replace(':', "").trim().to_ascii_uppercase();
-        if normalize(&expected) != normalize(&presented_fingerprint) {
+        if !fingerprints_match(&expected, &presented_fingerprint) {
             return Err(CertificateAcceptanceError::Mismatch {
                 server,
                 expected,
@@ -222,13 +221,23 @@ pub async fn discover_accepting_certificate(
     Ok(discover_native_oauth(issuer, std::slice::from_ref(&file)).await?)
 }
 
-/// The colon-separated SHA-256 fingerprint operators are shown.
-fn fingerprint(certificate: &CertificateDer<'_>) -> String {
+/// The colon-separated, uppercase SHA-256 fingerprint operators are shown for
+/// a certificate.
+#[must_use]
+pub fn certificate_fingerprint(certificate: &CertificateDer<'_>) -> String {
     Sha256::digest(certificate.as_ref())
         .iter()
         .map(|byte| format!("{byte:02X}"))
         .collect::<Vec<_>>()
         .join(":")
+}
+
+/// Whether two fingerprints name the same certificate, however they are
+/// written: colons, surrounding space and letter case don't matter.
+#[must_use]
+pub fn fingerprints_match(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| value.replace(':', "").trim().to_ascii_uppercase();
+    normalize(left) == normalize(right)
 }
 
 /// The fingerprint of the first certificate in a PEM file.
@@ -240,7 +249,7 @@ fn pem_fingerprint(path: &Path) -> Result<String, CertificateAcceptanceError> {
             format!("{} is not a PEM certificate: {error}", path.display()),
         )
     })?;
-    Ok(fingerprint(&certificate))
+    Ok(certificate_fingerprint(&certificate))
 }
 
 /// Saves `certificate` as PEM, atomically, in a folder only this user reads.
@@ -272,10 +281,11 @@ fn remember(file: &Path, certificate: &CertificateDer<'_>) -> std::io::Result<()
     std::fs::rename(&staged, file)
 }
 
-/// The issuer that ends the chain the server presents, without trusting it.
+/// The issuer certificate that ends the chain `host:port` presents, fetched
+/// without trusting it.
 ///
 /// `None` when the server can't be reached or presents only its leaf.
-async fn presented_issuer(host: &str, port: u16) -> Option<CertificateDer<'static>> {
+pub async fn presented_issuer(host: &str, port: u16) -> Option<CertificateDer<'static>> {
     let host = host.to_owned();
     tokio::task::spawn_blocking(move || {
         let verifier = Arc::new(RecordChain(Mutex::new(Vec::new())));

@@ -272,9 +272,11 @@ staticPasswords:
 
     // Resolve the pre-linked subject through a genuine, independently initiated
     // OIDC exchange. Do not manufacture Dex's subject encoding or JWT claims.
-    let upstream_http =
-        crate::platform::auth::oauth::oidc::http_client(std::slice::from_ref(&certificate.pem))
-            .unwrap();
+    let fixture_ca = {
+        use rustls::pki_types::pem::PemObject as _;
+        rustls::pki_types::CertificateDer::from_pem_slice(certificate.pem.as_bytes()).unwrap()
+    };
+    let upstream_http = crate::platform::auth::oauth::oidc::http_client(Some(&fixture_ca)).unwrap();
     let metadata = openidconnect::core::CoreProviderMetadata::discover_async(
         openidconnect::IssuerUrl::new(issuer.to_string()).unwrap(),
         &upstream_http,
@@ -328,36 +330,35 @@ staticPasswords:
 
     let mut f = fixture();
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_issuer = origin.clone();
-    Arc::get_mut(&mut f.store)
-        .unwrap()
-        .settings
-        .upstream_tls_roots_pem = vec![certificate.pem.clone()];
     let authority = f.store;
     let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
     let provider = id();
-    let registration = super::super::lifecycle::OidcProviderRegistration {
-        provider_id: provider.clone(),
+    // Nothing on this machine vouches for the fixture CA, so Auth trusts it
+    // only because the administrator pins it, through the provider Put path.
+    let put = trellis_runtime_apis::__types::trellis::AuthOIDCProviderPutRequest {
+        provider_id: Some(provider.parse().unwrap()),
         issuer: issuer.to_string(),
-        display_name: "Company identity".into(),
         client_id: "trellis-upstream".into(),
-        sealed_client_secret: Some(
-            storage
-                .seal_upstream_client_secret(&provider, secret)
-                .unwrap(),
-        ),
-        config: serde_json::json!({"scopes":["profile","email","groups"]}),
-        claim_freshness_seconds: 300,
-        expected_revision: 0,
+        title: "Company identity".to_string().into(),
+        scopes: vec!["profile".into(), "email".into(), "groups".into()],
+        role_claim: String::new(),
+        claim_freshness_seconds: 300.into(),
+        client_secret: Some(secret.into()),
+        certificate_fingerprint: Some(trellis_runtime_apis::__types::Nullable::Value(
+            trellis_rs::auth::certificate_fingerprint(&fixture_ca),
+        )),
+        expected_revision: 0u64.into(),
+        idempotency_key: id().into(),
+        extra: Default::default(),
     };
-    authority
-        .transaction(|connection| {
-            authority.register_oidc_provider_in_transaction(
-                connection,
-                &mutation(&f.admin, &registration),
-                &registration,
-                NOW,
-            )
-        })
+    let pin = crate::platform::auth::oauth::oidc::issuer_pin(
+        &put.issuer,
+        put.certificate_fingerprint.as_ref(),
+        true,
+    )
+    .await
+    .unwrap();
+    super::super::rpc_users::put_provider(&storage, &mutation(&f.admin, &put), &put, pin, NOW)
         .unwrap();
     let account = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
         given_name: None,
@@ -1569,6 +1570,7 @@ fn a_deleted_provider_frees_its_issuer_for_a_new_provider() {
             display_name: "Company identity".into(),
             client_id: "trellis".into(),
             sealed_client_secret: None,
+            issuer_certificate: None,
             config: serde_json::json!({"scopes": []}),
             claim_freshness_seconds: 300,
             expected_revision: 0,

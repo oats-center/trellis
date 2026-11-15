@@ -20,6 +20,17 @@ and this project adheres to
   for example for one instance that should go without a secret its deployment
   has, and `config set --null FIELD` does the same for a setting, where
   `FIELD=null` would store the text "null".
+- A company sign-in provider on a private CA can be pinned by the SHA-256
+  fingerprint of its certificate issuer: the Console's Certificate fingerprint
+  field, `trellis sign-in providers add|edit --certificate-fingerprint`, or
+  `certificateFingerprint` on `Auth.OIDCProviders.Put`, where `null` (or
+  `edit --no-certificate-fingerprint`) removes the pin. Auth checks the
+  fingerprint against the chain the provider presents, stores that issuer, and
+  trusts it for that provider's discovery, keys, token exchange and UserInfo
+  alone. Saving an unpinned provider nothing on the server vouches for is
+  refused with the fingerprint it presents. `AuthOIDCProvider` shows the pin.
+- The Console's Account page can connect another account through a provider
+  that already has one linked.
 
 ### Fixed
 

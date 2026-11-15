@@ -1351,6 +1351,7 @@ mod tests {
             display_name: "Identity".into(),
             client_id: "account".into(),
             sealed_client_secret: None,
+            issuer_certificate: None,
             config: serde_json::json!({}),
             claim_freshness_seconds: 300,
             expected_revision: 0,

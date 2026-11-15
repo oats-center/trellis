@@ -17,6 +17,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
         display_name: "Identity".into(),
         client_id: "trellis".into(),
         sealed_client_secret: None,
+        issuer_certificate: None,
         config: serde_json::json!({"roleClaim":"/groups"}),
         claim_freshness_seconds: 3600,
         expected_revision: 0,

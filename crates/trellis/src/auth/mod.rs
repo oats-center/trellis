@@ -20,8 +20,9 @@ pub use crate::service::payload_hash_base64url;
 pub use browser_login::generate_session_keypair;
 #[cfg(feature = "native-oauth")]
 pub use certificate_acceptance::{
-    discover_accepting_certificate, CertificateAcceptance, CertificateAcceptanceError,
-    ACCEPT_SELF_SIGNED_ENV, CERTIFICATE_FINGERPRINT_ENV,
+    certificate_fingerprint, discover_accepting_certificate, fingerprints_match, presented_issuer,
+    CertificateAcceptance, CertificateAcceptanceError, ACCEPT_SELF_SIGNED_ENV,
+    CERTIFICATE_FINGERPRINT_ENV,
 };
 pub use client::session_public_key;
 #[cfg(feature = "device")]

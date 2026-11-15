@@ -39,7 +39,7 @@ pub(crate) struct OAuthEngine {
     pub(crate) server: AuthorizationServer<OAuthStorage>,
     pub(super) verifiers: JwsVerifiers,
     pub(super) device_entries: FixedWindowRateLimiter,
-    pub(super) upstream_http: super::oidc::UpstreamHttp,
+    pub(super) upstream_http: super::oidc::UpstreamClients,
     documents: super::ClientDocuments,
     pub(super) avatars: super::super::avatars::Avatars,
     nonces: Mutex<super::nonce::DpopNonces>,
@@ -439,8 +439,7 @@ impl OAuthEngine {
         let origin = storage.authority.settings.oauth_issuer.clone();
         let documents = super::ClientDocuments::new(origin.clone())?;
         let avatars = super::super::avatars::Avatars::new(storage.authority.clone())?;
-        let upstream_http =
-            super::oidc::http_client(&storage.authority.settings.upstream_tls_roots_pem)?;
+        let upstream_http = super::oidc::UpstreamClients::new()?;
         let mut config = ServerConfig::new(&origin, format!("{origin}/device"));
         config.authorization_code_ttl = Duration::from_secs(60);
         config.access_token_ttl = Duration::from_secs(300);

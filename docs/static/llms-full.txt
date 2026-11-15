@@ -707,7 +707,16 @@ turn username-and-password sign-in, local self sign-up and company sign-in
 provider's ID, which `Auth.Users.Find` takes, and the callback URL
 (`<Trellis origin>/portal/oidc/callback`) to register with the provider, and
 reads the client secret from `--client-secret-file` (`-` for standard input).
-A disabled provider cannot be turned back on; add it again instead. People can create their
+Auth trusts a provider's certificate through the system trust store. For a
+provider on a private CA, confirm the SHA-256 fingerprint of the issuer that
+ends its chain with the provider's operator and pin it: the Console's
+Certificate fingerprint field, `--certificate-fingerprint <sha256>`, or
+`certificateFingerprint` on `Auth.OIDCProviders.Put` (`null` removes it,
+`edit --no-certificate-fingerprint` in the CLI). Auth checks the fingerprint
+against the chain the provider presents and trusts that issuer for that
+provider only. Saving an unpinned provider nothing vouches for is refused with
+the fingerprint it presents. A disabled provider cannot be turned back on; add
+it again instead. People can create their
 own account only where the installation allows it and the app they are signing
 in to does too (`trellis clients sign-up <app> --password|--providers`, the
 Console app form, or `Auth.OAuthClients.SignUp.Update`). New accounts get the

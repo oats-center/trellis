@@ -112,6 +112,11 @@ pub struct ProviderAddArgs {
     /// JSON pointer to the claim listing a person's groups, for giving roles.
     #[arg(long, default_value = "/groups")]
     pub groups_claim: String,
+    /// Trust the provider's certificate issuer with this SHA-256 fingerprint,
+    /// for a provider whose certificate nothing on the server vouches for.
+    /// Confirm it with the provider's operator first.
+    #[arg(long, value_name = "FINGERPRINT")]
+    pub certificate_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -129,6 +134,16 @@ pub struct ProviderEditArgs {
     pub scopes: Vec<String>,
     #[arg(long)]
     pub groups_claim: Option<String>,
+    /// Trust the provider's certificate issuer with this SHA-256 fingerprint.
+    #[arg(
+        long,
+        value_name = "FINGERPRINT",
+        conflicts_with = "no_certificate_fingerprint"
+    )]
+    pub certificate_fingerprint: Option<String>,
+    /// Stop trusting a pinned certificate issuer; use the system trust store alone.
+    #[arg(long)]
+    pub no_certificate_fingerprint: bool,
 }
 
 #[derive(Debug, Args)]

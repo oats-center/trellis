@@ -9,7 +9,7 @@ const identity = (identityId: string, providerId: string, subject: string) => ({
   subject,
 });
 
-test("every identity linked through one provider gets its own row to disconnect", () => {
+test("every identity linked through one provider gets its own row to disconnect, and the provider can connect another", () => {
   const first = identity("i1", "acme", "alice");
   const second = identity("i2", "acme", "alice-admin");
   const retired = identity("i3", "retired", "old");
@@ -21,12 +21,18 @@ test("every identity linked through one provider gets its own row to disconnect"
     [first, retired, second],
   );
   assert.deepEqual(
-    rows.map((row) => [row.title, row.providerId, row.identity?.subject]),
+    rows.map((row) => [
+      row.title,
+      row.providerId,
+      row.identity?.subject,
+      row.another ?? false,
+    ]),
     [
-      ["Acme", "acme", "alice"],
-      ["Acme", "acme", "alice-admin"],
-      ["Other", "other", undefined],
-      ["https://retired.example", null, "old"],
+      ["Acme", "acme", "alice", false],
+      ["Acme", "acme", "alice-admin", false],
+      ["Acme", "acme", undefined, true],
+      ["Other", "other", undefined, false],
+      ["https://retired.example", null, "old", false],
     ],
   );
   // Disconnecting the second row targets the second identity, not the first.

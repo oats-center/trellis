@@ -9,6 +9,7 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
         display_name: "Identity".into(),
         client_id: "trellis".into(),
         sealed_client_secret: None,
+        issuer_certificate: None,
         config: serde_json::json!({}),
         claim_freshness_seconds: 5,
         expected_revision: 0,

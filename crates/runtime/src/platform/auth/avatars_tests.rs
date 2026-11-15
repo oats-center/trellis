@@ -83,6 +83,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         display_name: "Identity".into(),
         client_id: "trellis".into(),
         sealed_client_secret: None,
+        issuer_certificate: None,
         config: json!({"scopes":["openid","profile","email"]}),
         claim_freshness_seconds: 3600,
         expected_revision: 0,

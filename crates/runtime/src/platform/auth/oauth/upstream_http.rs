@@ -253,12 +253,15 @@ pub(super) async fn start(
             return error(ErrorCode::AccessDenied);
         }
     };
+    let Ok(http) = engine.upstream_http.for_provider(&provider, &configured) else {
+        return error(ErrorCode::ServerError);
+    };
     let snapshot = match ProviderSnapshot::discover(
         provider,
         configured.revision,
         configured.issuer,
         configured.client_id,
-        &engine.upstream_http,
+        &http,
     )
     .await
     {
@@ -525,12 +528,23 @@ pub(super) async fn callback(
             );
         }
     };
+    let Ok(http) = engine
+        .upstream_http
+        .for_provider(&flow.provider.provider_id, &configured)
+    else {
+        return refused(
+            ErrorCode::ServerError,
+            "discovery_failed",
+            "Trellis could not trust the provider's pinned certificate.",
+            false,
+        );
+    };
     let snapshot = match ProviderSnapshot::discover(
         flow.provider.provider_id.clone(),
         configured.revision,
         configured.issuer,
         configured.client_id,
-        &engine.upstream_http,
+        &http,
     )
     .await
     {
@@ -583,7 +597,7 @@ pub(super) async fn callback(
     };
     let tokens = match exchange
         .set_pkce_verifier(PkceCodeVerifier::new(flow.pkce_verifier.clone()))
-        .request_async(&engine.upstream_http)
+        .request_async(&http)
         .await
     {
         Ok(tokens) => tokens,
@@ -628,13 +642,7 @@ pub(super) async fn callback(
             );
         }
     };
-    snapshot
-        .enrich(
-            &mut identity,
-            &tokens,
-            &authority.settings.upstream_tls_roots_pem,
-        )
-        .await;
+    snapshot.enrich(&mut identity, &tokens, &http).await;
     let now = crate::clock::unix_now();
     if flow.account_token.is_some() {
         return match with_store(&engine, move |store| {
