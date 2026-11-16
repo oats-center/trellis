@@ -1307,22 +1307,23 @@
           />
         {:else}
           <DataTable>
-            <thead><tr><th class="w-6"><span class="sr-only">Details</span></th><th>When</th><th>Event</th><th>From</th><th>Check</th><th class="hidden text-right lg:table-cell">Size</th></tr></thead>
+            <thead><tr><th class="w-6"><span class="sr-only">Details</span></th><th class="hidden sm:table-cell">When</th><th class="trellis-primary">Event</th><th class="hidden sm:table-cell">From</th><th><span class="max-sm:sr-only">Check</span></th><th class="hidden text-right lg:table-cell">Size</th></tr></thead>
             <tbody>
               {#each rows as row (`${row.streamSequence}:${row.eventId}`)}
                 {@const check = eventCheckLabel(row.verificationStatus, row.resolution)}
                 {@const open = openEventKey === eventKey(row)}
                 <tr class="event-row" class:row-selected={open} data-event-type={`${row.ownerContractId ?? ""} / ${row.ownerEventName ?? ""}`} data-publisher={row.publisherDeploymentId} onclick={() => { void toggleEvent(row); }}>
                   <td><Icon name={open ? "chevronDown" : "chevronRight"} size={14} class="text-base-content/50" /></td>
-                  <td class="whitespace-nowrap text-sm">{formatDate(row.eventTime)}</td>
-                  <td class="min-w-0">
+                  <td class="hidden whitespace-nowrap text-sm sm:table-cell">{formatDate(row.eventTime)}</td>
+                  <td class="trellis-primary min-w-0">
                     <button type="button" class="link link-hover block max-w-sm truncate text-left font-medium" aria-expanded={open} onclick={(event) => { event.stopPropagation(); void toggleEvent(row); }}>{eventLabel(row)}</button>
                     <span class="block text-xs text-base-content/60">{apiLabel(row.ownerContractId)}</span>
+                    <span class="block text-xs text-base-content/60 sm:hidden">{formatDate(row.eventTime)} · {publisherLabel(row)}</span>
                   </td>
-                  <td class="text-sm">
+                  <td class="hidden text-sm sm:table-cell">
                     {#if row.publisherDeploymentId}<button type="button" class="link link-hover text-left" title="Show only events from this sender" onclick={(event) => { event.stopPropagation(); selectPublisher(row.publisherDeploymentId); }}>{publisherLabel(row)}</button>{:else}{publisherLabel(row)}{/if}
                   </td>
-                  <td><StatusBadge label={check.label} status={check.ok ? "healthy" : row.resolution === "resolved" ? "degraded" : "unhealthy"} /></td>
+                  <td><StatusBadge compact label={check.label} status={check.ok ? "healthy" : row.resolution === "resolved" ? "degraded" : "unhealthy"} /></td>
                   <td class="hidden text-right text-sm tabular-nums lg:table-cell">{formatBytes(boundedNumber(row.payloadSizeBytes))}</td>
                 </tr>
                 {#if open}

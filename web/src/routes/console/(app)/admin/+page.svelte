@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { resolve } from "$lib/console_paths";
   import ColumnChart from "$lib/components/ColumnChart.svelte";
+  import DataTable from "$lib/components/DataTable.svelte";
   import HealthStatus from "$lib/components/HealthStatus.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
@@ -486,60 +487,68 @@
       >
     </div>
     {#if health.state === "ready" && participants.length}
-      <div class="mt-3 overflow-x-auto">
-        <table class="table trellis-table">
-          <thead>
+      <DataTable wrapperClass="mt-3">
+        <thead>
+          <tr>
+            <th class="trellis-primary">Name</th>
+            <th><span class="max-sm:sr-only">Health</span></th>
+            <th class="hidden sm:table-cell">Running</th>
+            <th class="hidden sm:table-cell">Version</th>
+            <th class="hidden sm:table-cell">Last seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each participants as participant (`${participant.participantKind}:${participant.contractId}`)}
             <tr>
-              <th>Name</th>
-              <th>Health</th>
-              <th>Running</th>
-              <th>Version</th>
-              <th>Last seen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each participants as participant (`${participant.participantKind}:${participant.contractId}`)}
-              <tr>
-                <td>
-                  <div class="flex items-center gap-3">
-                    <span
-                      class="grid h-8 w-8 place-items-center rounded-full bg-base-200 text-base-content/70"
-                      ><Icon
-                        name={participant.participantKind === "device"
-                          ? "laptop"
-                          : "box"}
-                        size={16}
-                      /></span
-                    >
-                    <div>
-                      <div class="font-medium">
-                        {humanizeName(participant.participantName)}
-                      </div>
-                      <div class="text-xs text-base-content/60">
-                        {participant.participantKind === "device"
-                          ? "Device"
-                          : "Service"}
-                      </div>
+              <td class="trellis-primary">
+                <div class="flex items-center gap-3">
+                  <span
+                    class="grid h-8 w-8 shrink-0 max-sm:hidden place-items-center rounded-full bg-base-200 text-base-content/70"
+                    ><Icon
+                      name={participant.participantKind === "device"
+                        ? "laptop"
+                        : "box"}
+                      size={16}
+                    /></span
+                  >
+                  <div class="min-w-0">
+                    <div class="font-medium">
+                      {humanizeName(participant.participantName)}
+                    </div>
+                    <div class="text-xs text-base-content/60">
+                      {participant.participantKind === "device"
+                        ? "Device"
+                        : "Service"}<span class="sm:hidden"
+                        >{` · ${count(participant.onlineInstances)} of ${
+                          count(participant.onlineInstances) +
+                          count(participant.offlineInstances)
+                        } running · seen ${ago(participant.lastSeenAt)}`}</span
+                      >
                     </div>
                   </div>
-                </td>
-                <td><HealthStatus status={participant.effectiveStatus} /></td>
-                <td class="tabular-nums"
-                  >{count(participant.onlineInstances)} / {count(
-                    participant.onlineInstances,
-                  ) + count(participant.offlineInstances)}</td
-                >
-                <td class="text-base-content/70"
-                  >{participant.versions.join(", ") || "—"}</td
-                >
-                <td class="text-base-content/70"
-                  >{ago(participant.lastSeenAt)}</td
-                >
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+                </div>
+              </td>
+              <td
+                ><HealthStatus
+                  compact
+                  status={participant.effectiveStatus}
+                /></td
+              >
+              <td class="hidden tabular-nums sm:table-cell"
+                >{count(participant.onlineInstances)} / {count(
+                  participant.onlineInstances,
+                ) + count(participant.offlineInstances)}</td
+              >
+              <td class="hidden text-base-content/70 sm:table-cell"
+                >{participant.versions.join(", ") || "—"}</td
+              >
+              <td class="hidden text-base-content/70 sm:table-cell"
+                >{ago(participant.lastSeenAt)}</td
+              >
+            </tr>
+          {/each}
+        </tbody>
+      </DataTable>
     {:else}
       <p class="px-5 py-10 text-sm text-base-content/60">
         {health.state === "loading"

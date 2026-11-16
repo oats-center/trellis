@@ -213,6 +213,42 @@
   });
 </script>
 
+{#snippet allowedAccess(
+  entry: Connection,
+  groups: ReturnType<typeof groupedAccess>,
+)}
+  {#if groups.length}
+    <button
+      type="button"
+      class="text-left hover:underline"
+      aria-expanded={open === entry.key}
+      onclick={() => (open = open === entry.key ? null : entry.key)}
+    >
+      {groups
+        .slice(0, 3)
+        .map((group) => group.title)
+        .join(", ")}{groups.length > 3 ? ` and ${groups.length - 3} more` : ""}
+      <span class="text-base-content/55"
+        >· {allowed(entry).length} permissions</span
+      >
+    </button>
+    {#if open === entry.key}
+      <dl class="mt-3 space-y-2 text-sm">
+        {#each groups as group (group.id)}
+          <div>
+            <dt class="font-medium">{group.title}</dt>
+            <dd class="text-base-content/70">
+              {group.items.join(", ")}
+            </dd>
+          </div>
+        {/each}
+      </dl>
+    {/if}
+  {:else}
+    <span class="text-base-content/55">Only what it always needs</span>
+  {/if}
+{/snippet}
+
 <section class="space-y-5">
   <PageToolbar
     title={own ? "Your apps" : "Connected apps"}
@@ -261,9 +297,9 @@
       <DataTable>
         <thead>
           <tr>
-            <th>App</th>
-            {#if !own}<th>Person</th>{/if}
-            <th>Allowed</th>
+            <th class="trellis-primary">App</th>
+            {#if !own}<th class="hidden sm:table-cell">Person</th>{/if}
+            <th class="hidden sm:table-cell">Allowed</th>
             <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
@@ -289,61 +325,35 @@
             {#each section.entries as entry (entry.key)}
               {@const groups = groupedAccess(entry)}
               <tr>
-                <td>
-                  <div class="flex items-center gap-3">
+                <td class="trellis-primary">
+                  <div class="flex items-start gap-3 sm:items-center">
                     <span
-                      class="grid h-9 w-9 place-items-center rounded-field bg-primary text-sm font-semibold text-primary-content"
+                      class="grid h-9 w-9 shrink-0 max-sm:hidden place-items-center rounded-field bg-primary text-sm font-semibold text-primary-content"
                       aria-hidden="true">{appName(entry).charAt(0)}</span
                     >
-                    <span>
+                    <div class="min-w-0">
                       <span class="block font-medium">{appName(entry)}</span>
                       <span class="block text-xs text-base-content/60"
                         >{host(entry.origin)}{entry.delegations.length > 1
                           ? ` · ${entry.delegations.length} sign-ins`
                           : ""}</span
                       >
-                    </span>
+                      {#if !own}<span
+                          class="block text-xs text-base-content/60 sm:hidden"
+                          >{userNames.get(entry.principalId) ??
+                            "Unknown user"}</span
+                        >{/if}
+                      <div class="mt-1 text-sm sm:hidden">
+                        {@render allowedAccess(entry, groups)}
+                      </div>
+                    </div>
                   </div>
                 </td>
-                {#if !own}<td
+                {#if !own}<td class="hidden sm:table-cell"
                     >{userNames.get(entry.principalId) ?? "Unknown user"}</td
                   >{/if}
-                <td class="max-w-md whitespace-normal">
-                  {#if groups.length}
-                    <button
-                      type="button"
-                      class="text-left hover:underline"
-                      aria-expanded={open === entry.key}
-                      onclick={() =>
-                        (open = open === entry.key ? null : entry.key)}
-                    >
-                      {groups
-                        .slice(0, 3)
-                        .map((group) => group.title)
-                        .join(", ")}{groups.length > 3
-                        ? ` and ${groups.length - 3} more`
-                        : ""}
-                      <span class="text-base-content/55"
-                        >· {allowed(entry).length} permissions</span
-                      >
-                    </button>
-                    {#if open === entry.key}
-                      <dl class="mt-3 space-y-2 text-sm">
-                        {#each groups as group (group.id)}
-                          <div>
-                            <dt class="font-medium">{group.title}</dt>
-                            <dd class="text-base-content/70">
-                              {group.items.join(", ")}
-                            </dd>
-                          </div>
-                        {/each}
-                      </dl>
-                    {/if}
-                  {:else}
-                    <span class="text-base-content/55"
-                      >Only what it always needs</span
-                    >
-                  {/if}
+                <td class="hidden max-w-md whitespace-normal sm:table-cell">
+                  {@render allowedAccess(entry, groups)}
                 </td>
                 <td class="text-right">
                   {#if canPerform(authority.authority, "delegationsRevoke")}

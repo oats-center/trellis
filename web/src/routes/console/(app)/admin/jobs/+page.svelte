@@ -753,12 +753,12 @@ untrack(() => {
       {:else}
         <p class="mb-2 text-sm text-base-content/60">Choose one to see its jobs. Times are typical, with the slowest one in twenty after them.</p>
         <DataTable>
-          <thead><tr><th>Job type</th><th class="text-right">Jobs</th><th class="text-right">Waiting</th><th class="text-right">Failed</th><th class="hidden text-right md:table-cell">Wait</th><th class="hidden text-right md:table-cell">Run</th></tr></thead>
+          <thead><tr><th class="trellis-primary">Job type</th><th class="text-right">Jobs</th><th class="text-right">Waiting</th><th class="text-right">Failed</th><th class="hidden text-right md:table-cell">Wait</th><th class="hidden text-right md:table-cell">Run</th></tr></thead>
           <tbody>
             {#each typeStats as item (item.key)}
               {@const failed = (item.failed ?? 0n) + (item.dead ?? 0n)}
               <tr class="type-row-link" onclick={() => openJobType(item.key)}>
-                <td class="min-w-0">
+                <td class="trellis-primary min-w-0">
                   <button type="button" class="link link-hover block max-w-xs truncate text-left font-medium" onclick={(event) => { event.stopPropagation(); openJobType(item.key); }}>{jobTypeLabel(item.label)}</button>
                   {#if item.oldestCreatedAt && (item.queued ?? 0n) > 0n}<span class="block text-xs text-base-content/60">Oldest waiting {friendlyDuration(Date.now() - new Date(item.oldestCreatedAt).getTime())}</span>{/if}
                 </td>
@@ -828,8 +828,8 @@ untrack(() => {
   {#if view === "log" && !unavailableMessage}
     <Panel title="Jobs">
       {#snippet actions()}
-        <div class="flex flex-wrap items-center gap-2">
-          <div class="trellis-segment" role="group" aria-label="Which jobs">
+        <div class="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+          <div class="trellis-segment max-w-full overflow-x-auto [&>button]:shrink-0 [&>button]:whitespace-nowrap" role="group" aria-label="Which jobs">
             {#each listTabs as tab (tab.value)}
               <button type="button" class:active={focus === tab.value || (tab.value === "running-risk" && focus === "running")} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
             {/each}
@@ -887,7 +887,7 @@ untrack(() => {
                 onchange={() => toggleAll(selectedJobs, selectableJobIds)}
               />
             </th>
-            <th>Job</th><th>Status</th><th>What's happening</th><th>Time</th><th class="text-right">Tries</th></tr></thead>
+            <th class="trellis-primary">Job</th><th><span class="max-sm:sr-only">Status</span></th><th class="hidden sm:table-cell">What's happening</th><th class="hidden sm:table-cell">Time</th><th class="hidden text-right sm:table-cell">Tries</th></tr></thead>
           <tbody>
             {#each focusedJobs as job (job.id)}
               {@const progress = jobProgress(job)}
@@ -905,17 +905,19 @@ untrack(() => {
                     />
                   {/if}
                 </td>
-                <td class="min-w-0">
+                <td class="trellis-primary min-w-0">
                   <a class="link link-hover block max-w-xs truncate font-medium" href={resolve(jobRoute(job.id))}>{jobTypeLabel(job.type)}</a>
                   <span class="block max-w-xs truncate text-xs text-base-content/60">{names.participant(job.service)}</span>
+                  <span class={["block text-xs sm:hidden", state.tone === "unhealthy" ? "text-error" : "text-base-content/60"]}>{jobNarrative(job)} · {jobDuration(job)}</span>
+                  {#if progress > 0}<span class="block sm:hidden"><span class="jobs-progress"><i style:--job-progress={`${progress}%`}></i></span></span>{/if}
                 </td>
-                <td><StatusBadge label={state.label} status={state.tone} /></td>
-                <td class="max-w-md">
+                <td><StatusBadge compact quiet={job.state === "completed"} label={state.label} status={state.tone} /></td>
+                <td class="hidden max-w-md sm:table-cell">
                   <span class={["block truncate text-sm", state.tone === "unhealthy" ? "text-error" : ""]} title={jobNarrative(job)}>{jobNarrative(job)}</span>
                   {#if progress > 0}<span class="jobs-progress"><i style:--job-progress={`${progress}%`}></i></span>{/if}
                 </td>
-                <td class="whitespace-nowrap text-sm tabular-nums">{jobDuration(job)}</td>
-                <td class="text-right text-sm tabular-nums">{job.tries} of {job.maxTries}</td>
+                <td class="hidden whitespace-nowrap text-sm tabular-nums sm:table-cell">{jobDuration(job)}</td>
+                <td class="hidden text-right text-sm tabular-nums sm:table-cell">{job.tries} of {job.maxTries}</td>
               </tr>
             {/each}
           </tbody>

@@ -71,6 +71,15 @@ boxes, and never show an empty frame where an empty state belongs.
   subtitle, primary action on the right ("+ New user").
 - **Filters** sit in one row above the content: search on the left, dropdown
   filters and segmented tabs (All / Active / Disabled) next to it.
+- **Narrow screens** (below `sm`): in a table, the data wins over labels. Mark
+  the name cell and its header `trellis-primary`; that cell takes the row's
+  width and its text wraps. Hide secondary columns (`hidden sm:table-cell`)
+  and repeat what still matters in a muted line under the name. Status stays
+  in its column through `StatusBadge compact` or `HealthStatus compact`: the
+  ordinary state shrinks to a dot whose word only screen readers hear, and
+  other states keep their word. Hide decorative row icons and visually hide
+  header text over a dot column. Row actions stay in the "⋯" menu. Desktop
+  layout does not change.
 
 ## Visual style
 

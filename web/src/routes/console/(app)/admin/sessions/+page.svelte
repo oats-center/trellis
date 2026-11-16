@@ -421,11 +421,11 @@
         <thead>
           <tr>
             <th class="w-10"><span class="sr-only">Select</span></th>
-            <th>Who</th>
-            <th>Using</th>
-            <th>Signed in</th>
-            <th>Connected</th>
-            <th>Expires</th>
+            <th class="trellis-primary">Who</th>
+            <th class="hidden sm:table-cell">Using</th>
+            <th class="hidden sm:table-cell">Signed in</th>
+            <th><span class="max-sm:sr-only">Connected</span></th>
+            <th class="hidden sm:table-cell">Expires</th>
             <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
@@ -452,10 +452,10 @@
                   }}
                 />
               </td>
-              <td>
+              <td class="trellis-primary">
                 <div class="flex items-center gap-3">
                   <span
-                    class="grid h-9 w-9 place-items-center rounded-full bg-base-200 text-base-content/70"
+                    class="grid h-9 w-9 shrink-0 max-sm:hidden place-items-center rounded-full bg-base-200 text-base-content/70"
                     ><Icon
                       name={session.principalKind === "user"
                         ? "user"
@@ -465,7 +465,7 @@
                       size={17}
                     /></span
                   >
-                  <span>
+                  <span class="min-w-0">
                     <span class="block font-medium">{who(session)}</span>
                     <span class="block text-xs text-base-content/60"
                       >{session.principalKind === "user"
@@ -476,22 +476,33 @@
                         ? ` · ${group.sessions.length} sign-ins`
                         : ""}</span
                     >
+                    <span class="block text-xs text-base-content/60 sm:hidden"
+                      >{using(session)} · {ago(session.createdAt)}</span
+                    >
                   </span>
                 </div>
               </td>
-              <td class="text-base-content/80">{using(session)}</td>
-              <td class="text-base-content/75">{ago(session.createdAt)}</td>
+              <td class="hidden text-base-content/80 sm:table-cell"
+                >{using(session)}</td
+              >
+              <td class="hidden text-base-content/75 sm:table-cell"
+                >{ago(session.createdAt)}</td
+              >
               <td>
                 {#if live}
-                  <span class="inline-flex items-center gap-2"
-                    ><span class="h-2 w-2 rounded-full bg-success"
-                    ></span>{live === 1 ? "Yes" : `${live} connections`}</span
+                  <span
+                    class="inline-flex items-center gap-2"
+                    title={live === 1 ? "Connected" : `${live} connections`}
+                    ><span class="h-2 w-2 shrink-0 rounded-full bg-success"
+                    ></span><span class="max-sm:sr-only"
+                      >{live === 1 ? "Yes" : `${live} connections`}</span
+                    ></span
                   >
                 {:else}
                   <span class="text-base-content/55">No</span>
                 {/if}
               </td>
-              <td class="text-base-content/75"
+              <td class="hidden text-base-content/75 sm:table-cell"
                 >{session.state !== "active"
                   ? session.state === "revoked"
                     ? "Signed out"
