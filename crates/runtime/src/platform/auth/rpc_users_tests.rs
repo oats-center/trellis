@@ -580,8 +580,8 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
     assert!(!exposed);
 }
 
-#[test]
-fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
+#[tokio::test]
+async fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[49; 32])));
     store.initialize_issuer(NOW).unwrap();
@@ -604,13 +604,9 @@ fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    match put_provider(
-        &storage,
-        &mutation(&admin, &bare),
-        &bare,
-        IssuerPin::Keep,
-        NOW,
-    ) {
+    // Through the whole Put, so the issuer's certificate check cannot replace
+    // the explanation with a vaguer one.
+    match put_oidc_provider(storage.clone(), mutation(&admin, &bare), bare.clone(), NOW).await {
         Err(AuthError::Invalid(detail)) => assert!(detail.contains("https URL"), "{detail}"),
         other => panic!("expected an issuer validation error, got {other:?}"),
     }

@@ -351,15 +351,15 @@ staticPasswords:
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    let pin = crate::platform::auth::oauth::oidc::issuer_pin(
-        &put.issuer,
-        put.certificate_fingerprint.as_ref(),
-        true,
+    let put_identity = mutation(&f.admin, &put);
+    let pinned = super::super::rpc_users::put_oidc_provider(
+        storage.clone(),
+        put_identity.clone(),
+        put.clone(),
+        NOW,
     )
     .await
     .unwrap();
-    super::super::rpc_users::put_provider(&storage, &mutation(&f.admin, &put), &put, pin, NOW)
-        .unwrap();
     let account = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
         given_name: None,
         family_name: None,
@@ -1280,7 +1280,7 @@ staticPasswords:
     // A first company sign-in from someone nobody linked creates their account
     // only once the app they are signing in to allows it.
     // Each attempt is a fresh browser, so none reuses an earlier Portal login.
-    let company_sign_in = || async {
+    let begin_company_sign_in = || async {
         let newcomer_http = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -1331,6 +1331,10 @@ staticPasswords:
             .send()
             .await
             .unwrap();
+        (transaction, begin, newcomer_http)
+    };
+    let company_sign_in = || async {
+        let (transaction, begin, newcomer_http) = begin_company_sign_in().await;
         let upstream = url::Url::parse(begin.headers()["location"].to_str().unwrap()).unwrap();
         let returned = dex_login(
             &newcomer_http,
@@ -1515,6 +1519,58 @@ staticPasswords:
         find_newcomer().unwrap().user.principal_id.to_string(),
         recreated
     );
+    // An administrator can withdraw the pin while the issuer still needs the
+    // private CA (issue #59). The removal is saved, and later sign-ins reach
+    // the issuer through the system store alone, which refuses it.
+    let before_unpin = authority
+        .read(|connection| super::super::rpc_users::read_provider(connection, &provider))
+        .unwrap();
+    let pin_change = |fingerprint, expected_revision: u64| {
+        trellis_runtime_apis::__types::trellis::AuthOIDCProviderPutRequest {
+            client_secret: None,
+            certificate_fingerprint: Some(fingerprint),
+            expected_revision: expected_revision.into(),
+            idempotency_key: id().into(),
+            ..put.clone()
+        }
+    };
+    let unpin = pin_change(
+        trellis_runtime_apis::__types::Nullable::Null,
+        before_unpin.revision.0 .0,
+    );
+    let unpinned = super::super::rpc_users::put_oidc_provider(
+        engine.server.store().clone(),
+        mutation(&f.admin, &unpin),
+        unpin,
+        now,
+    )
+    .await
+    .expect("removing a pin the issuer still needs is saved");
+    assert_eq!(unpinned.provider.certificate_fingerprint, None);
+    let (_, refused, _) = begin_company_sign_in().await;
+    assert_eq!(
+        refused.status(),
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        "sign-in must not reach the issuer through the removed pin"
+    );
+    // Pinning it again restores sign-in, so the refusal above was the trust
+    // store and nothing else.
+    let repin = pin_change(
+        trellis_runtime_apis::__types::Nullable::Value(trellis_rs::auth::certificate_fingerprint(
+            &fixture_ca,
+        )),
+        unpinned.provider.revision.0 .0,
+    );
+    super::super::rpc_users::put_oidc_provider(
+        engine.server.store().clone(),
+        mutation(&f.admin, &repin),
+        repin,
+        now,
+    )
+    .await
+    .unwrap();
+    let (_, restored, _) = begin_company_sign_in().await;
+    assert_eq!(restored.status(), reqwest::StatusCode::SEE_OTHER);
     // With company sign-in turned off for the installation, even a linked
     // identity no longer signs in, and the Portal offers no provider.
     let off = trellis_runtime_apis::__types::trellis::AuthSignInSettingsUpdateRequest {
@@ -1557,6 +1613,26 @@ staticPasswords:
     proxy_server.await.unwrap().unwrap();
     idp.kill().await.unwrap();
     idp.wait().await.unwrap();
+    // With the issuer offline, an exact retry of the pinned creation, as after
+    // a lost response, replays its recorded result instead of failing to read
+    // the issuer's certificate (issue #62).
+    assert!(
+        trellis_rs::auth::presented_issuer(issuer.host_str().unwrap(), issuer.port().unwrap())
+            .await
+            .is_none(),
+        "the issuer must be offline for the retry"
+    );
+    assert_eq!(
+        super::super::rpc_users::put_oidc_provider(
+            engine.server.store().clone(),
+            put_identity,
+            put,
+            now
+        )
+        .await
+        .expect("an exact retry of a completed Put replays its result"),
+        pinned
+    );
 }
 
 #[test]

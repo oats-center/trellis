@@ -200,15 +200,25 @@ pub(in crate::platform::auth) enum IssuerPin {
 /// store alone is checked the way a service checks Trellis: when nothing
 /// vouches for its certificate but its presented issuer would, the Put is
 /// refused with that issuer's fingerprint for the administrator to confirm
-/// and pin. An issuer that can't be reached is saved as before.
+/// and pin. An issuer that can't be reached is saved as before. Removing an
+/// existing provider's pin is the administrator's decision and is never
+/// checked against the issuer: the provider is then reached through the
+/// system store alone, even while its issuer still needs the removed pin.
 pub(in crate::platform::auth) async fn issuer_pin(
     issuer: &str,
     fingerprint: Option<&trellis_runtime_apis::__types::Nullable<String>>,
     creating: bool,
 ) -> Result<IssuerPin, AuthError> {
     use trellis_runtime_apis::__types::Nullable;
-    let invalid = || AuthError::Invalid("invalid upstream provider".into());
-    let url = url::Url::parse(issuer).map_err(|_| invalid())?;
+    let invalid = || {
+        AuthError::Invalid(
+            "issuer must be an https URL, such as https://example.us.auth0.com/".into(),
+        )
+    };
+    let url = url::Url::parse(issuer)
+        .ok()
+        .filter(|url| url.scheme() == "https")
+        .ok_or_else(invalid)?;
     let host = url
         .host_str()
         .map(|host| host.trim_matches(['[', ']']).to_owned())
@@ -235,6 +245,7 @@ pub(in crate::platform::auth) async fn issuer_pin(
             }
             return Ok(IssuerPin::Set(presented.to_vec()));
         }
+        Some(Nullable::Null) if !creating => return Ok(IssuerPin::Remove),
         Some(Nullable::Null) => IssuerPin::Remove,
         None if creating => IssuerPin::Keep,
         None => return Ok(IssuerPin::Keep),

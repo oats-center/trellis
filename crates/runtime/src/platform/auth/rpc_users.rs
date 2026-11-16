@@ -352,26 +352,56 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
                 &input,
             )
             .map_err(rpc_error)?;
-            let pin = super::oauth::oidc::issuer_pin(
-                &input.issuer,
-                input.certificate_fingerprint.as_ref(),
-                input.expected_revision.0 == 0,
+            put_oidc_provider(
+                engine.server.store().clone(),
+                identity,
+                input,
+                crate::clock::unix_now(),
             )
-            .await
-            .map_err(rpc_error)?;
-            blocking(move || {
-                put_provider(
-                    engine.server.store(),
-                    &identity,
-                    &input,
-                    pin,
-                    crate::clock::unix_now(),
-                )
-            })
             .await
             .map_err(rpc_error)
         }
     });
+}
+
+/// Handles an authorized provider Put. A retry of a request that already
+/// completed gets its recorded result before Auth contacts the issuer, so an
+/// issuer that went offline or changed certificates since cannot fail it.
+/// Otherwise the issuer certificate pin is resolved against the live issuer
+/// ([`super::oauth::oidc::issuer_pin`]) and [`put_provider`] stores the
+/// change, checking the idempotency record again inside its write.
+pub(super) async fn put_oidc_provider(
+    storage: super::OAuthStorage,
+    identity: Mutation,
+    input: AuthOIDCProviderPutRequest,
+    now: i64,
+) -> Result<AuthOIDCProviderGetResponse, AuthError> {
+    let audit = serde_json::json!({"requestDigest": identity.request_digest});
+    let recorded = {
+        let (storage, recorded_identity) = (
+            storage.clone(),
+            Mutation {
+                request_digest: digest(&audit)?,
+                ..identity.clone()
+            },
+        );
+        blocking(move || {
+            storage
+                .authority
+                .recorded(&recorded_identity, "rpc.oidcProviders.put")
+        })
+        .await?
+    };
+    if let Some(recorded) = recorded {
+        return Ok(recorded);
+    }
+    let pin = super::oauth::oidc::issuer_pin(
+        &input.issuer,
+        input.certificate_fingerprint.as_ref(),
+        input.expected_revision.0 == 0,
+    )
+    .await?;
+    blocking(move || put_provider(&storage, &identity, &input, pin, now)).await
 }
 
 /// Stores a provider Put. `pin` is the issuer certificate decision
@@ -1133,27 +1163,7 @@ pub(super) fn change_password(
         request_digest: digest(&audit)?,
         ..identity.clone()
     };
-    let previous = store.transaction(|connection| {
-        let previous: Option<(String, String)> = connection
-            .query_row(
-                "SELECT request_digest,result_json \
-                FROM auth_idempotency_results \
-                WHERE purpose='rpc.users.password.change' \
-                AND signer_id=?1 AND request_id=?2",
-                params![identity.actor, identity.request_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-        previous
-            .map(|(digest, result)| {
-                if digest != safe_identity.request_digest {
-                    return Err(AuthError::Conflict);
-                }
-                Ok(serde_json::from_str::<AuthMutationResult>(&result)?)
-            })
-            .transpose()
-    })?;
-    if let Some(previous) = previous {
+    if let Some(previous) = store.recorded(&safe_identity, "rpc.users.password.change")? {
         return Ok(previous);
     }
     let (hash, version): (String, u64) = store.transaction(|connection| {

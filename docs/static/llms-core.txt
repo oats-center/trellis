@@ -708,9 +708,10 @@ Certificate fingerprint field, `--certificate-fingerprint <sha256>`, or
 `certificateFingerprint` on `Auth.OIDCProviders.Put` (`null` removes it,
 `edit --no-certificate-fingerprint` in the CLI). Auth checks the fingerprint
 against the chain the provider presents and trusts that issuer for that
-provider only. Saving an unpinned provider nothing vouches for is refused with
-the fingerprint it presents. A disabled provider cannot be turned back on; add
-it again instead. People can create their
+provider only. Adding a provider nothing vouches for is refused with the
+fingerprint it presents. Removing a pin is saved even while the provider still
+needs it; its sign-ins then fail until it is pinned again. A disabled provider
+cannot be turned back on; add it again instead. People can create their
 own account only where the installation allows it and the app they are signing
 in to does too (`trellis clients sign-up <app> --password|--providers`, the
 Console app form, or `Auth.OAuthClients.SignUp.Update`). New accounts get the

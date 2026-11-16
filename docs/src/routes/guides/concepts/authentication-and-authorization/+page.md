@@ -92,7 +92,10 @@ the provider presents. Confirm that value with the provider's operator, then
 enter it in the provider's Certificate fingerprint field, or pass
 `trellis sign-in providers add|edit --certificate-fingerprint <sha256>`. Trellis
 checks it against the chain the provider presents and trusts that issuer for
-that provider only.
+that provider only. Clearing the field, or
+`trellis sign-in providers edit --no-certificate-fingerprint`, removes the pin
+even while the provider still needs it; its sign-ins then fail until you pin it
+again.
 
 ## Installed participants
 

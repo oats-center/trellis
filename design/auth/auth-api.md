@@ -122,10 +122,17 @@ Comparison ignores colons and case. Auth stores that issuer certificate with
 the provider and adds it as a trust root for every HTTPS call it makes for that
 provider (discovery, keys, token exchange and UserInfo) and no other, so
 ordinary chain and hostname verification still apply. Left out, a Put keeps the
-current pin; `null` removes it. When a new or unpinned provider's issuer is
-reachable, presents its issuer, and nothing vouches for it, the Put is refused
-with that fingerprint for the administrator to confirm and pin. An issuer Auth
-can't reach is saved as before. `AuthOIDCProvider.certificateFingerprint` shows
+current pin; `null` removes it. Removal is saved without contacting the issuer,
+even while the issuer still needs that CA: from then on Auth reaches the
+provider through the system trust store alone, so its sign-ins fail with an
+upstream TLS error until the provider is pinned again or presents a certificate
+the system trusts. When a new provider's issuer is reachable, presents its
+issuer, and nothing vouches for it, the Put is refused with that fingerprint
+for the administrator to confirm and pin. An issuer Auth can't reach is saved
+as before. An exact retry of a Put that already completed (same idempotency
+key and payload) returns the recorded result before Auth contacts the issuer,
+so a provider that has since gone offline or changed certificates cannot fail
+it. `AuthOIDCProvider.certificateFingerprint` shows
 the pin. HTTP clients are kept per pinned provider and rebuilt when its
 revision changes.
 

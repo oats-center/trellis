@@ -171,8 +171,9 @@ register with the provider; `add` and `edit` read the client secret from
 `--client-secret-file` (`-` for standard input), never the command line, and
 `edit` keeps every option left out. `--certificate-fingerprint <sha256>` pins
 the issuer of a provider's certificate when nothing on the server vouches for
-it; `edit --no-certificate-fingerprint` removes the pin. `clients sign-up` chooses
-whether people may create their own account while signing in to one app. The separately originated
+it; `edit --no-certificate-fingerprint` removes the pin, even while the
+provider still needs it, after which its sign-ins fail until it is pinned
+again. `clients sign-up` chooses whether people may create their own account while signing in to one app. The separately originated
 OAuth portal owns interactive login, device-code confirmation and consent;
 authenticated administration remains on NATS.
 

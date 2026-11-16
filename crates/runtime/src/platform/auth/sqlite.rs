@@ -853,6 +853,37 @@ impl SqliteAuthorizationStore {
         })
     }
 
+    /// The result already recorded for `identity` under `purpose`, read
+    /// before work outside the store that a retry of a completed request must
+    /// not repeat. A different request under the same key is a conflict. The
+    /// later [`Self::mutate`] still rechecks inside its transaction.
+    pub(super) fn recorded<T: DeserializeOwned>(
+        &self,
+        identity: &Mutation,
+        purpose: &str,
+    ) -> Result<Option<T>, AuthError> {
+        self.read(|connection| {
+            let previous: Option<(String, String)> = connection
+                .query_row(
+                    "SELECT request_digest,result_json \
+                    FROM auth_idempotency_results \
+                    WHERE purpose=?1 AND signer_id=?2 \
+                    AND request_id=?3",
+                    params![purpose, identity.actor, identity.request_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            previous
+                .map(|(previous_digest, result)| {
+                    if previous_digest != identity.request_digest {
+                        return Err(AuthError::Conflict);
+                    }
+                    decode(&result)
+                })
+                .transpose()
+        })
+    }
+
     pub(super) fn mutate<T: Serialize + DeserializeOwned>(
         &self,
         identity: &Mutation,
