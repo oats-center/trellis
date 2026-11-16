@@ -216,6 +216,21 @@
     }
   }
 
+  // Trellis never restarts anything, so saving a setting that applies after a
+  // restart asks first, saying the administrator restarts it themselves.
+  async function confirmRestart(fields: Field[]): Promise<boolean> {
+    const restart = fields.filter((field) => field.restart);
+    if (restart.length === 0) return true;
+    const intentKey = loadedKey;
+    const names = restart.map((field) => field.title).join(", ");
+    const confirmed = await confirmationModal?.confirm({
+      title: "Restart to apply",
+      message: `${names} ${restart.length === 1 ? "applies" : "apply"} only after a restart. Trellis doesn't restart ${loadedInstanceId ? "the instance" : "the service"}: after saving, restart ${loadedInstanceId ? "it" : "its instances"} yourself to use the new ${restart.length === 1 ? "value" : "values"}.`,
+      confirmLabel: "Save",
+    });
+    return confirmed === true && key === intentKey;
+  }
+
   async function save(): Promise<void> {
     if (!ready || !view) return;
     const current = view;
@@ -233,6 +248,14 @@
       error = cause instanceof Error ? cause.message : String(cause);
       return;
     }
+    if (
+      !(await confirmRestart(
+        current.fields.filter(
+          (field) => field.name in values || field.name in secrets,
+        ),
+      ))
+    )
+      return;
     const revision = current.revision;
     await mutate(
       loadedKey,
@@ -260,6 +283,7 @@
   ): Promise<void> {
     if (!ready || !view) return;
     const current = view;
+    if (!(await confirmRestart([field]))) return;
     const revision = current.revision;
     const nulled = { [field.name]: null };
     await mutate(

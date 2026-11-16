@@ -12,6 +12,7 @@
 
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
+  const titleId = $props.id();
 
   let dialog: HTMLDialogElement | undefined = $state();
   let request = $state<ConfirmationRequest | null>(null);
@@ -84,10 +85,10 @@
   });
 </script>
 
-<dialog bind:this={dialog} class="modal modal-bottom sm:modal-middle" oncancel={handleCancel} onclose={handleClose}>
+<dialog bind:this={dialog} class="modal modal-bottom sm:modal-middle" aria-labelledby={titleId} oncancel={handleCancel} onclose={handleClose}>
   {#if request}
     <div class="modal-box border border-error/30">
-      <h3 class="text-lg font-semibold">{request.title}</h3>
+      <h3 id={titleId} class="text-lg font-semibold">{request.title}</h3>
       <p class="mt-2 text-sm text-base-content/70">{request.message}</p>
 
       {#if request.details}

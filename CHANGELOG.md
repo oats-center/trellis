@@ -24,6 +24,9 @@ and this project adheres to
   "Reset" or "Use service-wide" to drop a value set here, "No value" for an
   empty one), and mark secrets with a lock; a secret being typed can be shown
   with an eye button.
+- Saving a setting marked "Applies after restart" in the Console asks first and
+  says to restart the service's instances yourself; Trellis never restarts
+  them.
 
 - OIDC sign-in has no separate switch: it is on exactly while at least one
   provider is on. `AuthSignInSettings.providers` and `sign-in set

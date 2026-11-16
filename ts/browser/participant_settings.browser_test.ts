@@ -79,6 +79,31 @@ test("an administrator sets a waiting service's settings from the link it printe
           await apiKey.getAttribute("placeholder"),
           "Set — type to replace",
         );
+        // Trellis restarts nothing, so a setting that applies after a restart
+        // asks first; cancelling saves nothing and keeps the edit.
+        const port = settings.getByLabel("Port", { exact: true });
+        await port.fill("9090");
+        const saveSettings = settings.getByRole("button", {
+          name: "Save settings",
+          exact: true,
+        });
+        await saveSettings.click();
+        const restart = page.getByRole("dialog", { name: "Restart to apply" });
+        await restart.getByText(/restart its instances yourself/).waitFor();
+        await restart
+          .getByRole("button", { name: "Cancel", exact: true })
+          .first()
+          .click();
+        await restart.waitFor({ state: "hidden" });
+        assert.equal(await port.inputValue(), "9090");
+        assert.equal(await saveSettings.isEnabled(), true);
+        await saveSettings.click();
+        await restart
+          .getByRole("button", { name: "Save", exact: true })
+          .click();
+        await settings.getByText("Settings saved.").waitFor();
+        assert.equal(await saveSettings.isEnabled(), false);
+        assert.equal(await port.inputValue(), "9090");
       } finally {
         await admin.close();
       }
