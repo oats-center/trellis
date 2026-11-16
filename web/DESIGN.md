@@ -79,15 +79,21 @@ nothing else.
 
 | Token        | Light     | Dark      | Use                              |
 | ------------ | --------- | --------- | -------------------------------- |
-| base-200     | `#f3f0e9` | `#1b1916` | page, sidebar                    |
-| base-100     | `#fbfaf6` | `#24211d` | panels, inputs                   |
-| base-300     | `#e3ddd1` | `#3a352e` | borders                          |
-| base-content | `#2e2924` | `#ece6db` | text                             |
-| primary      | `#8a7550` | `#b59a68` | primary buttons, active nav      |
-| success      | `#4f7a3f` | `#8fb07a` | healthy, active                  |
-| warning      | `#b8862a` | `#d9aa4c` | degraded, pending                |
-| error        | `#a33d31` | `#d7705f` | failed, destructive              |
-| info         | `#3f6283` | `#8fb0cf` | neutral highlights ("On demand") |
+| base-200     | `#f3f0e9` | `#11151b` | page, sidebar                    |
+| base-100     | `#fbfaf6` | `#1a1f27` | panels, inputs                   |
+| base-300     | `#e3ddd1` | `#2d3440` | borders                          |
+| base-content | `#2e2924` | `#e8ebf0` | text                             |
+| primary      | `#8a7550` | `#cfa66a` | primary buttons, active nav      |
+| success      | `#4f7a3f` | `#79c99b` | healthy, active                  |
+| warning      | `#b8862a` | `#f78b38` | degraded, pending                |
+| error        | `#a33d31` | `#f2837a` | failed, destructive              |
+| info         | `#3f6283` | `#80b4ee` | neutral highlights ("On demand") |
+
+- Dark pairs cool ink neutrals with the bronze primary. Its warning is orange,
+  not amber, so a warning never reads as the primary colour.
+- A state word keeps its own colour. When something is on but not working,
+  keep "On" green and state the problem beside it with a warning icon and a
+  short sentence; do not recolour the state word.
 
 - Light or dark follows the device by default. The top-bar toggle cycles
   System, Light, and Dark; its name and tooltip state the current mode. The

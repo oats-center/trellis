@@ -82,6 +82,13 @@ test("an administrator sets sign-in methods, providers and their group roles in 
         true,
       );
       assert.equal(await oidc.isChecked(), true);
+      // OIDC sign-in is on but has no provider yet, so the page says nobody
+      // sees it, until a provider is turned on.
+      const idle = admin.getByText(
+        "No provider is turned on, so nobody sees this option yet.",
+        { exact: true },
+      );
+      await idle.waitFor();
       // The same page keeps OIDC providers and the roles their
       // groups give.
       const edit = async (name: string) => {
@@ -107,6 +114,7 @@ test("an administrator sets sign-in methods, providers and their group roles in 
           .click();
         await admin.getByText("Provider saved.", { exact: true }).waitFor();
       }
+      await idle.waitFor({ state: "detached" });
       await edit("Acme login");
       await admin.getByLabel("Group", { exact: true }).fill("engineering");
       await admin.getByRole("checkbox", { name: role, exact: true }).check();

@@ -90,7 +90,7 @@
     if (!manageProviders)
       return "Users sign in with their organisation's account.";
     if (activeProviders.length === 0)
-      return "No provider is turned on, so nobody sees this option yet.";
+      return "Users sign in through a provider.";
     if (activeProviders.length > 2)
       return `Users sign in through ${activeProviders.length} providers.`;
     return `Users sign in through ${activeProviders.map((provider) => provider.title).join(" or ")}.`;
@@ -350,7 +350,7 @@
             }}
           >
             <fieldset class="space-y-2" disabled={saving || !editableSettings}>
-              <div class="method" class:on={oidcSignIn} class:idle={oidcIdle}>
+              <div class="method" class:on={oidcSignIn}>
                 <label class="method-row"
                   ><span class="method-mark"
                     ><Icon name="globe" size={18} /></span
@@ -370,10 +370,19 @@
                     type="checkbox"
                     role="switch"
                     aria-labelledby="method-oidc"
-                    aria-describedby="method-oidc-state"
+                    aria-describedby={oidcIdle
+                      ? "method-oidc-state method-oidc-idle"
+                      : "method-oidc-state"}
                     bind:checked={oidcSignIn}
                   /></label
                 >
+                {#if oidcIdle}
+                  <p class="method-warning" id="method-oidc-idle">
+                    <Icon name="alert" size={16} /><span
+                      >No provider is turned on, so nobody sees this option yet.</span
+                    >
+                  </p>
+                {/if}
               </div>
               {#if oidcLockedOut}
                 <p class="text-sm text-error" role="alert">
@@ -628,13 +637,26 @@
   .on .method-word {
     color: var(--color-success);
   }
-  .idle .method-word {
+  .method-warning {
+    align-items: center;
+    border-top: 1px solid
+      color-mix(in oklab, var(--color-warning) 35%, transparent);
     /* Warning alone is too light to read at this size on a pale panel. */
     color: color-mix(
       in oklab,
       var(--color-warning) 70%,
       var(--color-base-content)
     );
+    display: flex;
+    font-size: 0.875rem;
+    font-weight: 500;
+    gap: 0.5rem;
+    /* Lines the text up under the method's name. */
+    padding: 0.625rem 1rem 0.625rem calc(1rem + 2.25rem + 0.875rem);
+  }
+  .method-warning :global(svg) {
+    flex: none;
+    margin-left: calc(-16px - 0.5rem);
   }
   .method-unsaved {
     background: color-mix(in oklab, var(--color-warning) 16%, transparent);
@@ -670,6 +692,12 @@
   @media (max-width: 30rem) {
     .method-option {
       padding-left: 1rem;
+    }
+    .method-warning {
+      padding-left: 1rem;
+    }
+    .method-warning :global(svg) {
+      margin-left: 0;
     }
   }
   @media (prefers-reduced-motion: reduce) {

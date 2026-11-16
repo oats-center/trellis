@@ -9,9 +9,9 @@ import {
   completeConsoleEntry,
 } from "./browser_test_support.ts";
 
-// The page backgrounds of the light and dark palettes (#f3f0e9, #1b1916).
+// The page backgrounds of the light and dark palettes (#f3f0e9, #11151b).
 const LIGHT = "rgb(243, 240, 233)";
-const DARK = "rgb(27, 25, 22)";
+const DARK = "rgb(17, 21, 27)";
 
 const background = (page: Page) =>
   page.evaluate(
