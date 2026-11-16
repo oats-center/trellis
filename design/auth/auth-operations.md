@@ -21,7 +21,7 @@ Every `[auth]` key, from `AuthConfig` in `crates/runtime/src/config/mod.rs`:
 | `administration.registered_clients_only`            | no (on)  | Only administrator-registered OAuth clients may receive administrative capabilities.                 |
 
 Sign-in policy is Auth state, not configuration: which methods are on, self
-sign-up, and the minimum password length (`passwordMinLength`, 12 on a fresh
+sign-up, and the minimum password length (`passwordMinLength`, 8 on a fresh
 installation, 8 to 128) are read and changed live with `Auth.SignInSettings`
 from the Console's Sign-in page or `trellis sign-in set`. The minimum applies
 to the first administrator's password, new accounts, password changes, resets

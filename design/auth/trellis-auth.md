@@ -1054,7 +1054,7 @@ sign-in by it, including one already at the provider; the Portal stops offering
 it.
 
 The same settings hold the minimum password length (`passwordMinLength`, 8 to
-128, 12 by default). Every new local password meets it: the first
+128, 8 by default). Every new local password meets it: the first
 administrator's, new accounts, password changes, resets and sign-up. Existing
 passwords are not checked again. The Portal shows the minimum on its sign-up
 and reset forms.

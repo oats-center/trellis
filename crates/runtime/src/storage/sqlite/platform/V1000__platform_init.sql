@@ -708,7 +708,7 @@ CREATE TABLE auth_sign_in_settings (
     updated_at INTEGER NOT NULL,
     CHECK (local_users = 1 OR local_sign_up = 0)
 );
-INSERT INTO auth_sign_in_settings VALUES (1, 1, 0, 12, 1, 0);
+INSERT INTO auth_sign_in_settings VALUES (1, 1, 0, 8, 1, 0);
 
 CREATE TABLE auth_oauth_clients (
     client_id TEXT PRIMARY KEY,

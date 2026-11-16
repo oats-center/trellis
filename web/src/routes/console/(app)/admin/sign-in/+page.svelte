@@ -29,7 +29,7 @@
   let settings = $state.raw<Settings | null>(null);
   let localUsers = $state(true);
   let localSignUp = $state(false);
-  let passwordMinLength = $state<number | null>(12);
+  let passwordMinLength = $state<number | null>(8);
   let providers = $state.raw<Provider[]>([]);
   let loading = $state(true);
   let loaded = $state(false);

@@ -83,7 +83,7 @@ nonmanual profile contributions, not your other sign-in methods.
 Choose how people sign in on the Methods tab of the Console's **Platform →
 Sign-in** page, or with `trellis sign-in set` and `trellis sign-in providers`.
 Username and password sign-in, self sign-up and the minimum password length
-(12 by default, 8 to 128) apply at once; the minimum covers new and changed
+(8 by default, 8 to 128) apply at once; the minimum covers new and changed
 passwords, not existing ones. OIDC sign-in is on while at least one provider is,
 and each provider turns on and off by itself. Trellis refuses a change that
 would leave nobody able to sign in.
