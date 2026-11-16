@@ -10,7 +10,10 @@ pub struct KeysCommand {
 #[derive(Debug, Subcommand)]
 /// Trellis key operations.
 pub enum KeysSubcommand {
-    /// Generate an Ed25519 seed and public session key offline.
+    /// Generate an Ed25519 identity offline: a seed the service keeps and a
+    /// public key for an administrator to register with
+    /// `trellis svc <NAME> provision --public-key` or
+    /// `trellis svc <NAME> create --public-key`.
     New(crate::cli::KeygenArgs),
 }
 

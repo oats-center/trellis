@@ -30,14 +30,27 @@ Print the generated participant identity:
 cargo run --manifest-path demos/rust/service/Cargo.toml -- --contract
 ```
 
-Run with authenticated service bootstrap after creating and provisioning the
-service deployment:
+Create the service deployment, make an identity for the service, and register
+its public key as an instance:
+
+```sh
+trellis svc rust-field-ops create --source demos/rust/service --participant demo-rust-service.Service
+trellis keys new
+trellis svc rust-field-ops provision --public-key <public-key>
+```
+
+`trellis keys new` prints the seed and the public key; the seed stays with the
+service. Run with authenticated service bootstrap:
 
 ```sh
 cargo run --manifest-path demos/rust/service/Cargo.toml -- \
   --trellis-url http://localhost:3000 \
-  --seed <instance-seed>
+  --seed <seed>
 ```
+
+When a later build asks for more access, the service waits and prints a review
+link. Approve it in the Console under **Admin → Services**, or with
+`trellis svc rust-field-ops approve`.
 
 The service mounts generated RPC and operation handlers. Authenticated mode uses
 the resolved `siteSummaries` KV bucket and `uploads` object store.
@@ -50,7 +63,10 @@ Run the wizard with offline sample data:
 cargo run --manifest-path demos/rust/device/Cargo.toml
 ```
 
-Run as a provisioned device:
+Run as a provisioned device, after
+`trellis dev rust-field-device create --source demos/rust/device --participant demo-device.Device`
+and `trellis --format json dev rust-field-device provision`, which prints the
+`rootSecret` once:
 
 ```sh
 cargo run --manifest-path demos/rust/device/Cargo.toml -- \

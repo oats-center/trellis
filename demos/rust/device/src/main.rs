@@ -33,11 +33,12 @@ struct Args {
     #[arg(long, env = "TRELLIS_DEMO_DEVICE")]
     device: bool,
 
-    /// Base64url device root secret printed by `trellis deploy provision`.
+    /// Base64url device root secret printed by `trellis dev <name> provision`.
     #[arg(long, env = "TRELLIS_DEVICE_ROOT_SECRET")]
     device_root_secret: Option<String>,
 
-    /// Optional one-use provisioning secret printed by `trellis deploy provision`.
+    /// Optional one-use provisioning secret for a device whose identity was not
+    /// yet enrolled.
     #[arg(long, env = "TRELLIS_PROVISIONING_SECRET")]
     provisioning_secret: Option<String>,
 }

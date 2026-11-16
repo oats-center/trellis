@@ -25,7 +25,9 @@ artifacts or rewrite imports as an installation step.
 Log in to the target runtime with `trellis login <url>`. Create the service
 deployment from verified source with
 `trellis svc <name> create --source <project-root> --participant <package>.<Service>`,
-then provision an instance with `trellis svc <deployment-id> provision`. Later
+then provision an instance with
+`trellis svc <deployment-id> provision --public-key <key>`, where the key comes
+from `trellis keys new` run by whoever runs the service. Later
 releases use `trellis svc <deployment-id> apply --source <project-root>`.
 Create and apply compile and install the selected participant, accept the
 APIs it provides (new ones and compatible changes),
@@ -38,8 +40,9 @@ A service whose project you don't have can introduce itself instead: see
 
 ## Run and update
 
-Store the returned private identity seed securely and configure the service's
-documented Trellis URL and identity seed. Start its normal run command.
+Keep the seed from `trellis keys new` (or the one a bare `provision` printed)
+in the service's secret store and configure the service's documented Trellis
+URL and identity seed. Start its normal run command.
 Bootstrap resolves deployment/instance assignment, installed participant,
 grants, transports, and resource handles; application code must not
 inject NATS administrator credentials or binding payloads.

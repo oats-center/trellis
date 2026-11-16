@@ -179,13 +179,19 @@ pub enum DevResourceAction {
 
 /// Create a service deployment from its native source package. Without
 /// `--source`, create a claim instead: the first service to connect with the
-/// printed seed submits its own IDL, and approving it creates the deployment.
+/// claim's identity submits its own IDL, and approving it creates the
+/// deployment.
 #[derive(Debug, Clone, Eq, PartialEq, Args)]
 pub struct SvcCreateArgs {
     #[arg(long)]
     pub source: Option<PathBuf>,
     #[arg(long, requires = "source")]
     pub participant: Option<String>,
+    /// For a claim: the public key the service's owner made with
+    /// `trellis keys new`, so only the owner holds the seed. Without it the
+    /// CLI generates an identity and prints its seed once.
+    #[arg(long, value_name = "KEY", conflicts_with = "source")]
+    pub public_key: Option<String>,
     /// Confirm that this service may answer an API another service already
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
@@ -245,8 +251,12 @@ pub struct DevInstancesArgs {
 /// Provision or select a service identity.
 #[derive(Debug, Clone, Eq, PartialEq, Args)]
 pub struct SvcProvisionArgs {
-    #[arg(long = "instance-seed")]
-    pub instance_seed: Option<String>,
+    /// Register this public key, made by the service's owner with
+    /// `trellis keys new`, or select the instance that already has it. Only
+    /// the owner holds the seed. Without it the CLI selects the one existing
+    /// instance, or generates an identity and prints its seed once.
+    #[arg(long, value_name = "KEY")]
+    pub public_key: Option<String>,
     /// Create a replica instead of selecting an existing identity.
     #[arg(long)]
     pub new: bool,

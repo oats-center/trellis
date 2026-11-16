@@ -51,12 +51,12 @@ pub(super) fn keygen_command(format: OutputFormat, args: &KeygenArgs) -> miette:
     if output::is_json(format) {
         if derived_only {
             output::print_json(&json!({
-                "sessionKey": public_b64,
+                "publicKey": public_b64,
             }))?;
         } else {
             output::print_json(&json!({
                 "seed": seed_b64,
-                "sessionKey": public_b64,
+                "publicKey": public_b64,
             }))?;
         }
         return Ok(());
@@ -66,12 +66,12 @@ pub(super) fn keygen_command(format: OutputFormat, args: &KeygenArgs) -> miette:
         output::success(format!("Wrote the seed to {}", path.display()));
     }
     if let Some(path) = &args.pubout {
-        output::success(format!("Wrote the session key to {}", path.display()));
+        output::success(format!("Wrote the public key to {}", path.display()));
     }
     let show_seed = !derived_only && args.out.is_none();
     output::Details::untitled()
         .field(
-            "Session key",
+            "Public key",
             if args.pubout.is_none() {
                 public_b64.as_str()
             } else {
@@ -83,9 +83,16 @@ pub(super) fn keygen_command(format: OutputFormat, args: &KeygenArgs) -> miette:
     if show_seed {
         output::not_kept(
             "seed",
-            "It is the private half; anyone holding it can act as this key.",
+            "It is the private half; anyone holding it can act as this key. Give the \
+            service the seed and the administrator only the public key.",
         );
     }
+    let key = if args.pubout.is_none() {
+        public_b64.as_str()
+    } else {
+        "<KEY>"
+    };
+    output::next(&format!("trellis svc <NAME> provision --public-key {key}"));
 
     Ok(())
 }

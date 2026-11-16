@@ -58,39 +58,36 @@ contract lineage.
 
 ## Create And Start The Service
 
-Create one service deployment, review its generated participant authority, then
-provision one service instance and start the service with the provisioned
-instance seed. After deployment authority includes the service contract
-boundary, the service instance can connect and serve traffic.
+Create the service deployment from its project, make an identity for the
+service, register its public key as an instance, and start the service with the
+seed:
 
 ```sh
-trellis deploy create svc/demo.field-ops
-trellis --format json deploy provision svc/demo.field-ops
-npm --prefix demos/ts run start --workspace @trellis-demo/service -- http://localhost:3000 <instance-seed>
+trellis svc field-ops create --source demos/ts/service --participant demo-service.Service
+trellis keys new
+trellis svc field-ops provision --public-key <public-key>
+npm --prefix demos/ts run start --workspace @trellis-demo/service -- http://localhost:3000 <seed>
 ```
 
-Use Console **Admin → Services** as the primary review path for the service
-authority change before starting the runtime. For automation, the
-`trellis svc <id> authority ...` CLI flow can submit and decide the same
-boundary.
+`trellis keys new` prints the seed and the public key. The seed stays with the
+service; Trellis only stores the public key. Creating the deployment accepts the
+APIs the service provides, so the service connects and serves traffic at once.
 
-Use the `instanceSeed` field from the provision JSON as `<instance-seed>`.
+When you change the service and its new build asks for more access (a new
+capability, resource, or API), the service waits and prints a review link.
+Approve it in the Console under **Admin → Services**, or run
+`trellis svc field-ops updates` and `trellis svc field-ops approve`.
 
 ## Create And Start The Device
 
-Create one device deployment, review its generated participant authority,
-provision one device instance, then start the TUI with the provisioned root
-secret.
+Create the device deployment from its project, provision one device, then
+start the TUI with the root secret provisioning prints once:
 
 ```sh
-trellis deploy create dev/demo.field-device
-trellis --format json deploy provision dev/demo.field-device
+trellis dev field-device create --source demos/ts/device --participant demo-device.Device
+trellis --format json dev field-device provision
 npm --prefix demos/ts run start --workspace @trellis-demo/device -- http://localhost:3000 <root-secret>
 ```
-
-Use Console **Admin → Devices** to review pending device authority before
-starting the runtime. For automation, use the matching Trellis CLI authority
-flow to submit and decide the same boundary.
 
 Use the `rootSecret` field from the provision JSON as `<root-secret>`.
 
@@ -188,14 +185,12 @@ outbox.
 
 ## Cleanup
 
-Revoke activated device access and disable the deployments you created when you
-are done:
+Disable the deployments you created when you are done:
 
 ```sh
-trellis deploy activation revoke <device-instance-id>
-trellis deploy disable svc/demo.field-ops
-trellis deploy disable dev/demo.field-device
+trellis svc field-ops disable
+trellis dev field-device disable
 ```
 
-Use each provision JSON's `instanceId` field for `<service-instance-id>` and
-`<device-instance-id>`.
+`trellis svc field-ops remove` and `trellis dev field-device remove` delete them
+instead.

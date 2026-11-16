@@ -209,7 +209,7 @@ pub struct KeygenArgs {
     pub out: Option<PathBuf>,
 
     #[arg(long)]
-    /// Write the derived public session key to this file.
+    /// Write the derived public key to this file.
     pub pubout: Option<PathBuf>,
 }
 
