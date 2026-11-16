@@ -3,6 +3,7 @@
   import ArrowRight from "lucide-svelte/icons/arrow-right";
   import Bell from "lucide-svelte/icons/bell";
   import Box from "lucide-svelte/icons/box";
+  import Building2 from "lucide-svelte/icons/building-2";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Check from "lucide-svelte/icons/check";
@@ -48,6 +49,7 @@
     | "arrowRight"
     | "bell"
     | "box"
+    | "building"
     | "chevronDown"
     | "chevronRight"
     | "check"
@@ -92,6 +94,7 @@
     arrowRight: ArrowRight,
     bell: Bell,
     box: Box,
+    building: Building2,
     chevronDown: ChevronDown,
     chevronRight: ChevronRight,
     clipboard: Clipboard,
