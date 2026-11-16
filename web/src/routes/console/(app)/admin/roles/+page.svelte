@@ -64,15 +64,15 @@
       <DataTable>
         <thead>
           <tr>
-            <th>Role</th>
-            <th>Permissions</th>
+            <th class="trellis-primary">Role</th>
+            <th class="hidden sm:table-cell">Permissions</th>
             <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
           {#each roles as role (role.roleId)}
             <tr>
-              <td class="whitespace-normal">
+              <td class="trellis-primary whitespace-normal">
                 <a
                   class="font-medium hover:underline"
                   href={resolve(
@@ -84,8 +84,16 @@
                 {#if role.description}<div class="text-sm text-base-content/65">
                     {role.description}
                   </div>{/if}
+                <div class="text-xs text-base-content/60 sm:hidden">
+                  {role.capabilities.length}
+                  {role.capabilities.length === 1
+                    ? "permission"
+                    : "permissions"}
+                </div>
               </td>
-              <td class="text-base-content/75">{role.capabilities.length}</td>
+              <td class="hidden text-base-content/75 sm:table-cell"
+                >{role.capabilities.length}</td
+              >
               <td class="text-right">
                 <ActionMenu
                   widthClass="w-36"

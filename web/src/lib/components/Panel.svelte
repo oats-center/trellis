@@ -16,7 +16,7 @@
 <section class={["trellis-section trellis-panel", className]}>
   {#if title || eyebrow || actions}
     <div class="trellis-panel-header px-4 py-3 sm:px-5">
-      <div class="flex min-h-6 items-center justify-between gap-3">
+      <div class="flex min-h-6 flex-wrap items-center justify-between gap-3">
         <div class="min-w-0">
           {#if eyebrow}
             <p class="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-base-content/45">{eyebrow}</p>
@@ -26,7 +26,7 @@
           {/if}
         </div>
         {#if actions}
-          <div class="flex shrink-0 items-center gap-2">
+          <div class="flex min-w-0 max-w-full items-center gap-2">
             {@render actions()}
           </div>
         {/if}

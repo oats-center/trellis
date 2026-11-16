@@ -27,6 +27,7 @@
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import Icon from "$lib/components/Icon.svelte";
+  import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { formatDate, humanizeName } from "$lib/format";
 
   type Deployment = apis.auth.DeploymentsListOutput["items"][number];
@@ -513,10 +514,10 @@
           <thead>
             <tr>
               <th class="w-10"><span class="sr-only">Select</span></th>
-              <th>Device</th>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Added</th>
+              <th class="trellis-primary">Device</th>
+              <th class="hidden sm:table-cell">Type</th>
+              <th><span class="max-sm:sr-only">Status</span></th>
+              <th class="hidden sm:table-cell">Added</th>
               <th><span class="sr-only">Actions</span></th>
             </tr>
           </thead>
@@ -537,29 +538,35 @@
                     }}
                   />
                 </td>
-                <td>
+                <td class="trellis-primary">
                   <div class="flex items-center gap-3">
                     <span
-                      class="grid h-9 w-9 place-items-center rounded-full bg-base-200 text-base-content/70"
+                      class="grid h-9 w-9 shrink-0 max-sm:hidden place-items-center rounded-full bg-base-200 text-base-content/70"
                       ><Icon name="laptop" size={18} /></span
                     >
-                    <span class="font-medium">{deviceName(instance)}</span>
+                    <span class="min-w-0">
+                      <span class="block font-medium"
+                        >{deviceName(instance)}</span
+                      >
+                      <span class="block text-xs text-base-content/60 sm:hidden"
+                        >{typeNames.get(instance.deploymentId) ?? "—"} · Added {formatDate(
+                          instance.principal.createdAt,
+                        )}</span
+                      >
+                    </span>
                   </div>
                 </td>
-                <td class="text-base-content/75"
+                <td class="hidden text-base-content/75 sm:table-cell"
                   >{typeNames.get(instance.deploymentId) ?? "—"}</td
                 >
                 <td>
-                  <span
-                    class={[
-                      "badge badge-sm",
-                      instance.principal.enabled
-                        ? "badge-success"
-                        : "badge-neutral",
-                    ]}>{instance.principal.enabled ? "Active" : "Off"}</span
-                  >
+                  <StatusBadge
+                    compact
+                    label={instance.principal.enabled ? "Active" : "Off"}
+                    status={instance.principal.enabled ? "healthy" : "offline"}
+                  />
                 </td>
-                <td class="text-base-content/75"
+                <td class="hidden text-base-content/75 sm:table-cell"
                   >{formatDate(instance.principal.createdAt)}</td
                 >
                 <td class="text-right">

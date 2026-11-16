@@ -15,6 +15,7 @@
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
+  import StatusBadge from "$lib/components/StatusBadge.svelte";
   import GroupRoles from "./GroupRoles.svelte";
 
   type Settings = apis.auth.SignInSettingsGetOutput["settings"];
@@ -423,15 +424,34 @@
             {:else}
               <DataTable>
                 <thead
-                  ><tr><th>Name</th><th>Address</th><th>Status</th><th></th></tr
+                  ><tr
+                    ><th class="trellis-primary">Name</th><th
+                      class="hidden sm:table-cell">Address</th
+                    ><th><span class="max-sm:sr-only">Status</span></th><th
+                      ><span class="sr-only">Actions</span></th
+                    ></tr
                   ></thead
                 >
                 <tbody>
                   {#each providers as provider (provider.providerId)}
                     <tr>
-                      <td class="font-medium">{provider.title}</td>
-                      <td class="font-mono text-sm">{provider.issuer}</td>
-                      <td>{provider.enabled ? "On" : "Off"}</td>
+                      <td class="trellis-primary">
+                        <span class="block font-medium">{provider.title}</span>
+                        <span
+                          class="block font-mono text-xs text-base-content/60 sm:hidden"
+                          >{provider.issuer}</span
+                        >
+                      </td>
+                      <td class="hidden font-mono text-sm sm:table-cell"
+                        >{provider.issuer}</td
+                      >
+                      <td
+                        ><StatusBadge
+                          compact
+                          label={provider.enabled ? "On" : "Off"}
+                          status={provider.enabled ? "healthy" : "offline"}
+                        /></td
+                      >
                       <td class="text-right"
                         ><button
                           type="button"

@@ -13,6 +13,7 @@
   import EmptyState from "$lib/components/EmptyState.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import Pager from "$lib/components/Pager.svelte";
+  import StatusBadge from "$lib/components/StatusBadge.svelte";
   import PermissionGroups from "$lib/components/PermissionGroups.svelte";
   import { traverseAll } from "$lib/console/paging.ts";
   import Notice from "$lib/components/Notice.svelte";
@@ -217,48 +218,46 @@
         <DataTable>
           <thead>
             <tr>
-              <th>App</th>
-              <th>Type</th>
-              <th>Status</th>
+              <th class="trellis-primary">App</th>
+              <th class="hidden sm:table-cell">Type</th>
+              <th><span class="max-sm:sr-only">Status</span></th>
               <th><span class="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>
             {#each clients as client (client.clientId)}
+              {@const kind = `${client.kind === "native" ? "Native app" : "Web app"}${client.development ? " · local development" : ""}`}
               <tr
                 class={selected?.clientId === client.clientId && editing
                   ? "bg-primary/10"
                   : ""}
               >
-                <td>
+                <td class="trellis-primary">
                   <div class="flex items-center gap-3">
                     <span
-                      class="grid h-9 w-9 place-items-center rounded-field bg-primary text-sm font-semibold text-primary-content"
+                      class="grid h-9 w-9 shrink-0 max-sm:hidden place-items-center rounded-field bg-primary text-sm font-semibold text-primary-content"
                       aria-hidden="true"
                       >{client.title.charAt(0).toUpperCase()}</span
                     >
-                    <span>
+                    <span class="min-w-0">
                       <span class="block font-medium">{client.title}</span>
                       <span class="block text-xs text-base-content/60"
                         >{client.clientId}</span
                       >
+                      <span class="block text-xs text-base-content/60 sm:hidden"
+                        >{kind}</span
+                      >
                     </span>
                   </div>
                 </td>
-                <td class="text-base-content/75"
-                  >{client.kind === "native"
-                    ? "Native app"
-                    : "Web app"}{client.development
-                    ? " · local development"
-                    : ""}</td
+                <td class="hidden text-base-content/75 sm:table-cell">{kind}</td
                 >
                 <td>
-                  <span
-                    class={[
-                      "badge badge-sm",
-                      client.enabled ? "badge-success" : "badge-neutral",
-                    ]}>{client.enabled ? "Active" : "Disabled"}</span
-                  >
+                  <StatusBadge
+                    compact
+                    label={client.enabled ? "Active" : "Disabled"}
+                    status={client.enabled ? "healthy" : "offline"}
+                  />
                 </td>
                 <td class="text-right">
                   <button

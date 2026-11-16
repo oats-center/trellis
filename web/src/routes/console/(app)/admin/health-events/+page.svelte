@@ -443,11 +443,11 @@
           <DataTable>
             <thead>
               <tr>
-                <th>Name</th>
-                <th>Health</th>
-                <th>Running</th>
-                <th>Version</th>
-                <th>Last seen</th>
+                <th class="trellis-primary">Name</th>
+                <th><span class="max-sm:sr-only">Health</span></th>
+                <th class="hidden sm:table-cell">Running</th>
+                <th class="hidden sm:table-cell">Version</th>
+                <th class="hidden sm:table-cell">Last seen</th>
               </tr>
             </thead>
             <tbody>
@@ -456,7 +456,7 @@
                   participantKey(participant) ===
                   participantKey(selectedParticipant ?? participant)}
                 <tr class={active ? "bg-primary/10" : ""}>
-                  <td>
+                  <td class="trellis-primary">
                     <button
                       type="button"
                       class="flex items-center gap-3 text-left"
@@ -464,7 +464,7 @@
                       onclick={() => void selectParticipant(participant)}
                     >
                       <span
-                        class="grid h-9 w-9 place-items-center rounded-full bg-base-200 text-base-content/70"
+                        class="grid h-9 w-9 shrink-0 max-sm:hidden place-items-center rounded-full bg-base-200 text-base-content/70"
                         ><Icon
                           name={participant.participantKind === "device"
                             ? "laptop"
@@ -472,22 +472,32 @@
                           size={18}
                         /></span
                       >
-                      <span>
+                      <span class="min-w-0">
                         <span class="block font-medium hover:underline"
                           >{humanizeName(participant.participantName)}</span
                         >
                         <span class="block text-xs text-base-content/60"
-                          >{formatKind(participant.participantKind)}</span
+                          >{formatKind(participant.participantKind)}<span
+                            class="sm:hidden"
+                            >{` · ${onlineSummary(participant)} · ${formatRelativeTime(participant.lastSeenAt)}`}</span
+                          ></span
                         >
                       </span>
                     </button>
                   </td>
-                  <td><HealthStatus status={participant.effectiveStatus} /></td>
-                  <td class="tabular-nums">{onlineSummary(participant)}</td>
-                  <td class="text-base-content/75"
+                  <td
+                    ><HealthStatus
+                      compact
+                      status={participant.effectiveStatus}
+                    /></td
+                  >
+                  <td class="hidden tabular-nums sm:table-cell"
+                    >{onlineSummary(participant)}</td
+                  >
+                  <td class="hidden text-base-content/75 sm:table-cell"
                     >{participant.versions.join(", ") || "—"}</td
                   >
-                  <td class="text-base-content/75"
+                  <td class="hidden text-base-content/75 sm:table-cell"
                     >{formatRelativeTime(participant.lastSeenAt)}</td
                   >
                 </tr>

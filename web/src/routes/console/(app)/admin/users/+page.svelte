@@ -19,6 +19,7 @@
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Pager from "$lib/components/Pager.svelte";
+  import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { errorMessage, formatDate } from "$lib/format";
   import { traverseAll } from "$lib/console/paging.ts";
   import {
@@ -318,11 +319,13 @@
       <DataTable class="users-table" overflow="visible">
         <thead>
           <tr>
-            <th class="w-[28%]">Name</th>
+            <th class="trellis-primary sm:w-[28%]">Name</th>
             <th class="hidden w-[18%] md:table-cell">Username</th>
             <th class="hidden w-[24%] lg:table-cell">Email</th>
             <th class="hidden w-[18%] md:table-cell">Roles</th>
-            <th class="w-[7.5rem]">Status</th>
+            <th class="sm:w-[7.5rem]"
+              ><span class="max-sm:sr-only">Status</span></th
+            >
             <th class="w-[3.5rem]"><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
@@ -336,16 +339,27 @@
               ]),
             ]}
             <tr class="users-row">
-              <td class="max-w-0">
+              <td class="trellis-primary max-w-0">
                 <div class="flex min-w-0 items-center gap-3">
                   <span
-                    class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-primary text-sm font-medium text-primary-content"
+                    class="grid h-9 w-9 shrink-0 max-sm:hidden place-items-center rounded-full bg-primary text-sm font-medium text-primary-content"
                     aria-hidden="true"
                     >{getInitials({ displayName: user.displayName })}</span
                   >
-                  <span class="truncate font-medium" title={user.displayName}
-                    >{user.displayName}</span
-                  >
+                  <span class="min-w-0">
+                    <span
+                      class="block truncate font-medium"
+                      title={user.displayName}>{user.displayName}</span
+                    >
+                    {#if user.account?.username}<span
+                        class="block truncate text-xs text-base-content/60 md:hidden"
+                        >{user.account.username}</span
+                      >{/if}
+                    {#if user.email}<span
+                        class="block truncate text-xs text-base-content/60 lg:hidden"
+                        >{user.email}</span
+                      >{/if}
+                  </span>
                 </div>
               </td>
               <td class="hidden max-w-0 truncate md:table-cell"
@@ -363,18 +377,12 @@
                 </div>
               </td>
               <td>
-                <span
-                  class={[
-                    "badge badge-sm gap-1.5",
-                    active ? "badge-success" : "badge-neutral",
-                  ]}
-                  ><span
-                    class={[
-                      "h-1.5 w-1.5 rounded-full",
-                      active ? "bg-success" : "bg-base-content/40",
-                    ]}
-                  ></span>{active ? "Active" : "Inactive"}</span
-                >
+                <StatusBadge
+                  compact
+                  dot
+                  label={active ? "Active" : "Inactive"}
+                  status={active ? "healthy" : "offline"}
+                />
               </td>
               <td class="text-right">
                 {#if user.account}<ActionMenu
@@ -497,5 +505,12 @@
     min-width: 0;
     table-layout: fixed;
     width: 100%;
+  }
+
+  /* Narrow rows size to their content so the name takes what is left. */
+  @media (max-width: 39.99rem) {
+    :global(.users-table) {
+      table-layout: auto;
+    }
   }
 </style>

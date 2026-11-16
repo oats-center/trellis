@@ -21,6 +21,7 @@
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import HealthStatus from "$lib/components/HealthStatus.svelte";
   import Pager from "$lib/components/Pager.svelte";
+  import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { errorMessage, humanizeName } from "$lib/format";
   import { getTrellis } from "$lib/trellis";
 
@@ -249,12 +250,12 @@
       <DataTable>
         <thead>
           <tr>
-            <th>Service</th>
-            <th>Health</th>
-            <th>Running</th>
-            <th>Version</th>
-            <th>Status</th>
-            <th>Last seen</th>
+            <th class="trellis-primary">Service</th>
+            <th><span class="max-sm:sr-only">Health</span></th>
+            <th class="hidden sm:table-cell">Running</th>
+            <th class="hidden sm:table-cell">Version</th>
+            <th><span class="max-sm:sr-only">Status</span></th>
+            <th class="hidden sm:table-cell">Last seen</th>
             <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
@@ -264,7 +265,7 @@
               healthByDeployment.get(deployment.deploymentId) ??
               healthByDeployment.get(humanizeName(deployment.participantId))}
             <tr>
-              <td>
+              <td class="trellis-primary">
                 <a
                   class="flex items-center gap-3"
                   href={resolve("/admin/services/[deploymentId]", {
@@ -272,7 +273,7 @@
                   })}
                 >
                   <span
-                    class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-base-200 text-base-content/70"
+                    class="grid h-9 w-9 shrink-0 max-sm:hidden place-items-center rounded-full bg-base-200 text-base-content/70"
                     ><Icon name="box" size={18} /></span
                   >
                   <span class="min-w-0">
@@ -284,33 +285,45 @@
                         >{humanizeName(deployment.participantId)}</span
                       >
                     {/if}
+                    {#if health}<span
+                        class="block text-xs text-base-content/60 sm:hidden"
+                        >{Number(health.onlineInstances)} of {Number(
+                          health.onlineInstances,
+                        ) + Number(health.offlineInstances)} running · seen {ago(
+                          health.lastSeenAt,
+                        )}</span
+                      >{/if}
                   </span>
                 </a>
               </td>
               <td>
-                {#if health}<HealthStatus status={health.effectiveStatus} />
-                {:else}<span class="text-base-content/50">No reports</span>{/if}
+                {#if health}<HealthStatus
+                    compact
+                    status={health.effectiveStatus}
+                  />
+                {:else}<span class="text-base-content/50"
+                    ><span class="sm:hidden" aria-hidden="true">—</span><span
+                      class="max-sm:sr-only">No reports</span
+                    ></span
+                  >{/if}
               </td>
-              <td class="tabular-nums">
+              <td class="hidden tabular-nums sm:table-cell">
                 {#if health}{Number(health.onlineInstances)} / {Number(
                     health.onlineInstances,
                   ) + Number(health.offlineInstances)}{:else}—{/if}
               </td>
-              <td class="text-base-content/75"
+              <td class="hidden text-base-content/75 sm:table-cell"
                 >{health?.versions.join(", ") || "—"}</td
               >
               <td>
-                <span
-                  class={[
-                    "badge badge-sm",
-                    deployment.state === "enabled"
-                      ? "badge-success"
-                      : "badge-neutral",
-                  ]}
-                  >{deployment.state === "enabled"
-                    ? "Active"
-                    : "Disabled"}</span
-                >
+                <StatusBadge
+                  compact
+                  quietDot={false}
+                  label={deployment.state === "enabled" ? "Active" : "Disabled"}
+                  status={deployment.state === "enabled"
+                    ? "healthy"
+                    : "offline"}
+                />
                 {#if awaitingApproval.has(deployment.deploymentId)}<a
                     class="badge badge-sm badge-warning ml-1"
                     href={resolve("/admin/services/[deploymentId]", {
@@ -318,7 +331,7 @@
                     })}>Update waiting</a
                   >{/if}
               </td>
-              <td class="text-base-content/75"
+              <td class="hidden text-base-content/75 sm:table-cell"
                 >{health ? ago(health.lastSeenAt) : "—"}</td
               >
               <td class="text-right">

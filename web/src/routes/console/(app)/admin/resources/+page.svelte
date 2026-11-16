@@ -22,6 +22,7 @@
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Pager from "$lib/components/Pager.svelte";
+  import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { humanizeName } from "$lib/format";
 
   type Resource = apis.auth.ResourcesListOutput["items"][number];
@@ -210,6 +211,11 @@
     <span class="trellis-identifier text-[0.7rem]">{resource.resourceId}</span
     ></span
   >
+  <span class="block text-xs text-base-content/60 sm:hidden"
+    >{resource.state === "detached" ? "Was used by" : "Used by"}
+    {ownerNames.get(resource.ownerId) ??
+      humanizeName(resource.participantId ?? resource.clientId ?? "—")}</span
+  >
 {/snippet}
 
 {#snippet ownerCell(resource: Resource)}
@@ -297,16 +303,17 @@
       <DataTable>
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Was used by</th>
+            <th class="trellis-primary">Name</th>
+            <th class="hidden sm:table-cell">Was used by</th>
             <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
           {#each unused as resource (resource.resourceId)}
             <tr>
-              <td>{@render nameCell(resource)}</td>
-              <td>{@render ownerCell(resource)}</td>
+              <td class="trellis-primary">{@render nameCell(resource)}</td>
+              <td class="hidden sm:table-cell">{@render ownerCell(resource)}</td
+              >
               <td class="text-right">
                 {#if canRemove}<button
                     class="btn btn-outline btn-error btn-sm"
@@ -348,38 +355,37 @@
       <DataTable>
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Used by</th>
-            <th>Status</th>
+            <th class="trellis-primary">Name</th>
+            <th class="hidden sm:table-cell">Used by</th>
+            <th><span class="max-sm:sr-only">Status</span></th>
           </tr>
         </thead>
         <tbody>
           {#each resources as resource (resource.resourceId)}
             <tr>
-              <td>{@render nameCell(resource)}</td>
-              <td>{@render ownerCell(resource)}</td>
+              <td class="trellis-primary">{@render nameCell(resource)}</td>
+              <td class="hidden sm:table-cell">{@render ownerCell(resource)}</td
+              >
               <td>
-                <span
-                  class={[
-                    "badge badge-sm",
-                    resource.state === "ready"
-                      ? "badge-success"
-                      : resource.state === "failed"
-                        ? "badge-error"
-                        : resource.state === "pending" ||
-                            resource.state === "destroying" ||
-                            resource.state === "detached"
-                          ? "badge-warning"
-                          : "badge-neutral",
-                  ]}
-                  >{resource.state === "detached"
+                <StatusBadge
+                  compact
+                  status={resource.state === "ready"
+                    ? "healthy"
+                    : resource.state === "failed"
+                      ? "unhealthy"
+                      : resource.state === "pending" ||
+                          resource.state === "destroying" ||
+                          resource.state === "detached"
+                        ? "degraded"
+                        : "offline"}
+                  label={resource.state === "detached"
                     ? "Unused"
                     : resource.state === "ready"
                       ? "In use"
                       : resource.state === "destroying"
                         ? "Deleting"
-                        : humanizeName(resource.state)}</span
-                >
+                        : humanizeName(resource.state)}
+                />
               </td>
             </tr>
             {#if open === resource.resourceId}

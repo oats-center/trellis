@@ -645,7 +645,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
       await waitForConsoleShell(page);
       await page.getByLabel("Search users").fill(username);
       await page.getByLabel("Search users").press("Enter");
-      await page.getByText(username, { exact: true }).waitFor({
+      await page.getByRole("cell", { name: username, exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
