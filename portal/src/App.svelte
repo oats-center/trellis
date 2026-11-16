@@ -210,7 +210,9 @@
     const dark = window.matchMedia("(prefers-color-scheme: dark)");
     const paint = () => {
       const root = document.documentElement.style;
-      const palette = dark.matches
+      // theme-mode.js sets data-theme only for a saved light or dark choice.
+      const saved = document.documentElement.getAttribute("data-theme");
+      const palette = (saved ? saved === "dark" : dark.matches)
         ? { ...theme.colors, ...theme.darkColors }
         : theme.colors;
       for (const name of new Set([

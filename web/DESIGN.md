@@ -89,6 +89,12 @@ nothing else.
 | error        | `#a33d31` | `#d7705f` | failed, destructive              |
 | info         | `#3f6283` | `#8fb0cf` | neutral highlights ("On demand") |
 
+- Light or dark follows the device by default. The top-bar toggle cycles
+  System, Light, and Dark; its name and tooltip state the current mode. The
+  choice is saved in `localStorage` under `trellis.theme` and applied before
+  the first paint. The Portal, its server-rendered pages, and the Console's
+  sign-in pages read the same key, so the choice carries over when they share
+  an origin; otherwise they follow the device.
 - Radii: panels `0.75rem`, fields and buttons `0.5rem`, badges `0.375rem`.
 - Borders over shadows. No gradients, glass, or decorative imagery.
 - Type: Inter or system sans. Page title 2rem semibold; section titles 1rem

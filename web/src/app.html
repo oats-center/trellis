@@ -1,12 +1,9 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link
-      rel="icon"
-      href="%sveltekit.assets%/assets/web/trellis-logo.svg"
-    />
+    <link rel="icon" href="%sveltekit.assets%/assets/web/trellis-logo.svg" />
     <script>
       (() => {
         const url = new URL(window.location.href);
@@ -27,16 +24,21 @@
       })();
     </script>
     <script>
+      // Before paint, so a dark page never flashes light. The Portal reads
+      // the same "trellis.theme" key.
       (() => {
+        let mode = null;
         try {
-          const theme = localStorage.getItem("trellis.console.theme");
-          document.documentElement.setAttribute(
-            "data-theme",
-            theme === "trellis-dark" ? "trellis-dark" : "trellis",
-          );
-        } catch (_) {
-          document.documentElement.setAttribute("data-theme", "trellis");
-        }
+          mode = localStorage.getItem("trellis.theme");
+        } catch (_) {}
+        const dark =
+          mode === "dark" ||
+          (mode !== "light" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.setAttribute(
+          "data-theme",
+          dark ? "trellis-dark" : "trellis",
+        );
       })();
     </script>
     <script src="%sveltekit.assets%/assets/web/runtime-config.js"></script>

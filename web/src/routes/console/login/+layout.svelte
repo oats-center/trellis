@@ -21,6 +21,4 @@
   });
 </script>
 
-<div data-theme="portal" style="display: contents">
-  {@render children()}
-</div>
+{@render children()}

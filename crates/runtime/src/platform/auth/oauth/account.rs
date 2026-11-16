@@ -1038,7 +1038,7 @@ self-generated certificates and may not be suitable for production.</p>"
     let mut response = Html(format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta \
 name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title} · \
-Trellis</title>{stylesheet}</head><body>{notice}<header class=\"brand\">{MARK}<span>Trellis</span></header><main class=\"card narrow\"><h1>{title}</h1>{body}</main></body></html>"
+Trellis</title><script src=\"/portal-assets/theme-mode.js\"></script>{stylesheet}</head><body>{notice}<header class=\"brand\">{MARK}<span>Trellis</span></header><main class=\"card narrow\"><h1>{title}</h1>{body}</main></body></html>"
     ))
     .into_response();
     use axum::http::{header, HeaderValue};
@@ -1052,8 +1052,8 @@ Trellis</title>{stylesheet}</head><body>{notice}<header class=\"brand\">{MARK}<s
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self'; \
-            frame-ancestors 'none'",
+            "default-src 'none'; script-src 'self'; style-src 'self'; base-uri 'none'; \
+            form-action 'self'; frame-ancestors 'none'",
         ),
     );
     response.headers_mut().insert(

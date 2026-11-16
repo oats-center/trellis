@@ -168,19 +168,22 @@
             {/if}
           </div>
         {/if}
-        <label
-          class="swap swap-rotate btn btn-ghost btn-square"
-          title="Toggle dark mode"
+        <button
+          type="button"
+          class="btn btn-ghost btn-square"
+          title={`Theme: ${consoleTheme.label(consoleTheme.mode)}. Switch to ${consoleTheme.label(consoleTheme.next)}.`}
+          aria-label={`Theme: ${consoleTheme.label(consoleTheme.mode)}`}
+          onclick={() => consoleTheme.cycle()}
         >
-          <input
-            type="checkbox"
-            checked={consoleTheme.darkMode}
-            onchange={() => consoleTheme.toggle()}
-            aria-label="Toggle dark mode"
+          <Icon
+            name={consoleTheme.mode === "system"
+              ? "monitor"
+              : consoleTheme.mode === "light"
+                ? "sun"
+                : "moon"}
+            size={20}
           />
-          <Icon name="sun" size={20} class="swap-off" />
-          <Icon name="moon" size={20} class="swap-on" />
-        </label>
+        </button>
         {#if profile}
           <ActionMenu
             buttonBaseClass="btn btn-ghost gap-1.5 rounded-full px-1.5"

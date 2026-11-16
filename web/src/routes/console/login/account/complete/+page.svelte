@@ -4,10 +4,7 @@
 
 <svelte:head><title>Authentication complete | Trellis</title></svelte:head>
 
-<main
-  class="portal-shell flex min-h-screen justify-center p-6"
-  data-theme="portal"
->
+<main class="portal-shell flex min-h-screen justify-center p-6">
   <div class="portal-page w-full max-w-lg">
     <header class="portal-header">
       <TrellisLogo />
