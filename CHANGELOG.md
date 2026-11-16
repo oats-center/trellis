@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.45] - 2026-11-16
+
 ### Added
 
 - `Auth.OIDCProviders.Enable` and `trellis sign-in providers enable <ID>` turn
