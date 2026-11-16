@@ -8,6 +8,51 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis svc <ID> provision --public-key <KEY>` and
+  `trellis svc <NAME> create --public-key <KEY>` register a key the service's
+  owner made with `trellis keys new`, so the administrator never handles the
+  seed. Both check the key is a valid Ed25519 public key first. Running
+  `provision --public-key` again with the same key selects that instance.
+- The Console's Add service form takes an optional IDL in place of the
+  "package" toggle: with one it adds the service, without one the service
+  introduces itself on first connect. It either creates a key in the browser
+  and shows the seed once, or takes a public key the owner sends; only the
+  public key reaches Trellis.
+
+### Changed
+
+- `trellis svc <ID> provision --instance-seed` is gone; use `--public-key`.
+  `trellis keys new` prints "Public key" (JSON `publicKey`, was `sessionKey`).
+- "Company sign-in" is called OIDC sign-in everywhere: the Console, the sign-in
+  Portal, CLI help, Auth's messages, and the Auth contract's capability
+  descriptions, which changes the grants text people consent to.
+- The Console's Sign-in methods page has a Local users section and an OIDC
+  sign-in section, each with its own Save; the OIDC section holds its
+  providers. Each sign-in method shows as a tile with its state in plain words
+  and a "Not saved" badge for unsaved changes.
+- On the consent screen, Select all also selects Trellis administration, and
+  the administration step is a short caution listing what the app will be able
+  to do.
+
+### Fixed
+
+- Removing a provider's certificate pin (`certificateFingerprint: null`,
+  `edit --no-certificate-fingerprint`, or clearing it in the Console) is saved
+  even while the provider still needs that private CA; Auth then reaches it
+  through the system trust store alone.
+- An exact retry of a completed `Auth.OIDCProviders.Put` returns its recorded
+  result before Auth contacts the provider, so it succeeds while the provider
+  is offline or has changed certificates.
+- A provider whose issuer is not an https URL is refused with a message saying
+  so, not "invalid upstream provider".
+- Setting one Console setting to null, or clearing it, no longer discards other
+  unsaved settings, typed secrets included.
+- Rust codegen no longer rejects a service KV named like an events-only API the
+  service implements; a name colliding with an API that has RPCs is still
+  refused.
+
 ## [0.100.0-rc.42] - 2026-11-15
 
 ### Added
