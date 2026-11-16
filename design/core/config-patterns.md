@@ -183,6 +183,18 @@ generation, so that generation drains, subscribes on the successor, and reads
 again once that subscription is in place, so a change made during the cutover
 is not missed either.
 
+An instance reads against the declaration of the build it runs, which can
+trail its deployment's; writes are checked against the deployment's installed
+build. A new build's declaration, such as a changed default or an added field,
+therefore never changes what an already running instance reads, and Auth sends
+no `Config.Changed` when one is installed. Applying a build through
+`contracts apply` leaves running instances on their own revision. An instance
+moves to a new revision only through its own [service update](../auth/service-updates.md),
+after which the SDK connects again and reads its settings at connect before any
+handler starts. A device must run exactly its instance's installed build. Apps
+differ because an app's declaration lives on its client rather than in a
+running build, which is why `Config.Apps.Declare` announces its changes.
+
 A change to a `restart` field does not reach `onChange`. The value loaded at
 connect stays in effect until the participant connects again. A field whose
 value was removed keeps its last value until then too. Auth reports, per
