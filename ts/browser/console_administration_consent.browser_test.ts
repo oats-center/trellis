@@ -16,11 +16,10 @@ import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
 
 // Consent for an app that asks, here the CLI signing in with a device code.
-for (const selected of [
-  undefined,
-  "trellis.auth.v1:accounts.manage",
-] as const) {
-  test(`consent promotes only selected administration (${selected ?? "none"})`, async () => {
+// "select-all" grants administration through the bulk action and its caution
+// step; "ordinary" grants every other choice and leaves administration out.
+for (const selection of ["select-all", "ordinary"] as const) {
+  test(`consent grants administration only when selected (${selection})`, async () => {
     await withTrellisRuntime(async (runtime) => {
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
@@ -96,58 +95,31 @@ for (const selected of [
           .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();
 
-        // Each group's checkbox selects all of its optional access.
         const access = page.getByRole("checkbox", { name: /^Allow all: / });
         const administration = page
           .getByRole("group", { name: "Manage this Trellis", exact: true })
           .getByRole("checkbox", { name: /^Allow all: / });
-        // Consent is opt-in: optional access starts unselected.
+        // Consent is opt-in: optional access, administration included, starts
+        // unselected.
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
             strictEqual(await choice.isChecked(), false);
         }
-        await page
-          .getByRole("button", { name: "Select all", exact: true })
-          .click();
-        // Bulk selection never includes administration.
-        const administrativeLabel =
-          await administration.getAttribute("aria-label");
-        for (const choice of await access.all()) {
-          if (await choice.isEnabled())
-            strictEqual(
-              await choice.isChecked(),
-              (await choice.getAttribute("aria-label")) !== administrativeLabel,
-            );
-        }
-        await page
-          .getByRole("button", { name: "Clear all", exact: true })
-          .click();
-        for (const choice of await access.all()) {
-          if (await choice.isEnabled())
-            strictEqual(await choice.isChecked(), false);
-        }
-        // Accept ordinary capabilities but decline the separate administrative choices.
-        for (const choice of await page.getByRole("checkbox").all())
-          if (await choice.isEnabled()) await choice.check();
-        await administration.uncheck();
-        if (selected) {
+        if (selection === "select-all") {
           await page
-            .getByRole("group", { name: "Manage this Trellis", exact: true })
-            .getByRole("button")
+            .getByRole("button", { name: "Select all", exact: true })
             .click();
+        } else {
+          for (const choice of await access.all())
+            if (await choice.isEnabled()) await choice.check();
+          await administration.uncheck();
         }
-        if (selected)
-          await page.getByRole("checkbox", { name: /Manage accounts/ }).check();
         await page.getByRole("button", { name: "Allow", exact: true }).click();
-        if (selected) {
-          // Administration takes a separate confirmation step.
-          await page
-            .getByRole("heading", { name: /Allow .* to manage this Trellis\?/ })
-            .waitFor();
+        // Administration takes the caution step before it is granted.
+        if (selection === "select-all")
           await page
             .getByRole("button", { name: "Allow management", exact: true })
             .click();
-        }
         await page.waitForURL((url) =>
           url.pathname.endsWith("/device/complete"),
         );
@@ -164,7 +136,7 @@ for (const selected of [
             displayName: "Consented",
             idempotencyKey: ulid(),
           });
-          strictEqual(created.isOk(), selected !== undefined);
+          strictEqual(created.isOk(), selection === "select-all");
         } finally {
           await cli.connection.close();
         }
@@ -173,7 +145,7 @@ for (const selected of [
           new URL("./test-results/", import.meta.url),
         );
         await mkdir(results, { recursive: true });
-        const prefix = `${results}consent-${selected ?? "none"}`;
+        const prefix = `${results}consent-${selection}`;
         // Callback URLs contain one-time credentials; capture the rendered page and
         // request paths, never query strings or transport/token bodies.
         await page.screenshot({ path: `${prefix}.png`, fullPage: true });

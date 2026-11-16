@@ -71,10 +71,12 @@ confirm_on_consent = true
 registered_clients_only = true
 ```
 
-- **Confirm on consent.** After selection, a separate step states that the app
-  is asking to manage this Trellis installation itself and lists what it may
-  do; approving it confirms. Select all never selects administration, and
-  administrative choices are never remembered. An administrator's confirmed
+- **Confirm on consent.** After selection, a separate caution step asks
+  whether the app may manage this Trellis and lists the selected
+  administrative capabilities by title; approving it confirms. Nothing
+  administrative starts selected, but Select all includes it like any other
+  optional access, so the caution step is the one check. Administrative
+  choices are never remembered. An administrator's confirmed
   delegation reaches the app at once: administrators administer, and nobody
   else approves their choice.
 - **Registered clients only.** Only OAuth clients an administrator registered
