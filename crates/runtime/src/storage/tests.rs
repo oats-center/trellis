@@ -73,7 +73,7 @@ fn runtime_config() -> RuntimeConfig {
             avatar: None,
             administration: Default::default(),
             instance_id: None,
-            local_identity: None,
+            local_identity: (),
             authorization: Some(crate::AuthorizationConfig {
                 context_lifetime_seconds: 300,
                 allowed_clock_skew_seconds: 30,

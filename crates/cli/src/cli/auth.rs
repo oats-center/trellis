@@ -65,9 +65,10 @@ pub struct ClientSignUpArgs {
 /// How people sign in to this Trellis. Changes apply at once.
 #[derive(Debug, Subcommand)]
 pub enum SignInCommand {
-    /// Show which sign-in methods are on.
+    /// Show which sign-in methods are on and the minimum password length.
     Show,
-    /// Turn sign-in methods on or off; options you leave out keep their value.
+    /// Change how users sign in; options you leave out keep their value.
+    /// OIDC sign-in is on while any provider is (`trellis sign-in providers`).
     Set(SignInSetArgs),
     /// Add and change the OIDC providers people sign in with.
     #[command(subcommand)]
@@ -85,8 +86,9 @@ pub enum ProvidersCommand {
     Add(ProviderAddArgs),
     /// Change a provider; options you leave out keep their value.
     Edit(ProviderEditArgs),
-    /// Turn a provider off, ending its sign-ins. It stays listed, and
-    /// cannot be turned back on.
+    /// Turn a provider back on.
+    Enable { provider_id: String },
+    /// Turn a provider off, ending its sign-ins. It stays listed until removed.
     Disable { provider_id: String },
     /// Delete a provider, ending its sign-ins. Accounts keep their other ways in.
     Remove { provider_id: String },
@@ -149,8 +151,7 @@ pub struct ProviderEditArgs {
 #[derive(Debug, Args)]
 #[command(
     group(clap::ArgGroup::new("local_users_state").args(["local_users", "no_local_users"])),
-    group(clap::ArgGroup::new("local_sign_up_state").args(["local_sign_up", "no_local_sign_up"])),
-    group(clap::ArgGroup::new("providers_state").args(["providers", "no_providers"]))
+    group(clap::ArgGroup::new("local_sign_up_state").args(["local_sign_up", "no_local_sign_up"]))
 )]
 pub struct SignInSetArgs {
     /// Sign in with a username and password.
@@ -164,11 +165,10 @@ pub struct SignInSetArgs {
     pub local_sign_up: bool,
     #[arg(long)]
     pub no_local_sign_up: bool,
-    /// Sign in with an OIDC provider.
-    #[arg(long)]
-    pub providers: bool,
-    #[arg(long)]
-    pub no_providers: bool,
+    /// Shortest password accepted for new passwords, changes and sign-up,
+    /// 8 to 128. Existing passwords are not checked again.
+    #[arg(long, value_name = "LENGTH", value_parser = clap::value_parser!(u32).range(8..=128))]
+    pub password_min_length: Option<u32>,
 }
 
 /// Login Portal branding, for the installation or one app.

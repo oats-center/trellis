@@ -11,7 +11,6 @@
   import { traverseAll } from "$lib/console/paging.ts";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
-  import PageToolbar from "$lib/components/PageToolbar.svelte";
 
   type Theme = NonNullable<apis.auth.PortalThemesGetOutput["theme"]>;
   type Palette = Theme["colors"];
@@ -259,10 +258,6 @@
 {/snippet}
 
 <section class="space-y-5">
-  <PageToolbar
-    title="Sign-in page"
-    description="How the sign-in and approval pages look to users."
-  />
   <label class="trellis-field max-w-md"
     ><span class="trellis-field-label">Applies to</span><select
       class="select w-full"

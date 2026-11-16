@@ -148,9 +148,7 @@ async function startSplitRole(
     const auth = config.auth;
     assert(auth && typeof auth === "object" && !Array.isArray(auth));
     config.auth = Object.fromEntries(
-      Object.entries(auth).filter(
-        ([key]) => !["authorization", "local_identity"].includes(key),
-      ),
+      Object.entries(auth).filter(([key]) => key !== "authorization"),
     );
     await writeFile(configPath, stringify(config));
     await reservation.releaseForSpawn();

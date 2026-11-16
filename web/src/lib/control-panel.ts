@@ -59,8 +59,8 @@ export const routeTitles = {
   "/admin/roles/new": "New Role",
   "/admin/clients": "Apps",
   "/admin/apis": "APIs",
-  "/admin/sign-in": "Sign-in methods",
-  "/admin/branding": "Sign-in page",
+  "/admin/sign-in": "Sign-in",
+  "/admin/sign-in/appearance": "Sign-in",
 } as const;
 
 /**
@@ -81,6 +81,8 @@ export type NavItem = {
   href: AppPathname;
   label: string;
   icon: string;
+  /** Extra words the command palette matches this page by. */
+  keywords?: string;
   requires?: readonly Requirement[];
 };
 
@@ -224,9 +226,11 @@ const navSections: NavSection[] = [
       },
       {
         href: "/admin/sign-in",
-        label: "Sign-in methods",
+        label: "Sign-in",
         icon: "key",
-        // Methods need "Manage this Trellis"; providers need "Manage users".
+        keywords: "methods password oidc providers appearance branding theme",
+        // Methods need "Manage this Trellis" or "Manage users"; appearance
+        // needs the Portal themes. The page shows the tabs each allows.
         requires: [
           {
             anyPermission: [
@@ -242,22 +246,13 @@ const navSections: NavSection[] = [
                 name: "OIDCProviders.List",
                 action: "call",
               },
+              {
+                api: apis.auth.API.identity,
+                surface: "rpc",
+                name: "PortalThemes.Get",
+                action: "call",
+              },
             ],
-          },
-        ],
-      },
-      {
-        href: "/admin/branding",
-        label: "Sign-in page",
-        icon: "palette",
-        requires: [
-          {
-            permission: {
-              api: apis.auth.API.identity,
-              surface: "rpc",
-              name: "PortalThemes.Get",
-              action: "call",
-            },
           },
         ],
       },

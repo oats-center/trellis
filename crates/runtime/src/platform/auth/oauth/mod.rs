@@ -30,6 +30,8 @@ pub(crate) use engine::OAuthEngine;
 pub(crate) use engine::{TokenError, TrellisTokenResponse};
 pub(crate) use http::router;
 pub(super) use portal::ConsentPresentation;
+#[cfg(test)]
+pub(super) use portal::LocalSignUp;
 pub(crate) use storage::OAuthStorage;
 
 /// Run a handler's synchronous storage work on the blocking pool.

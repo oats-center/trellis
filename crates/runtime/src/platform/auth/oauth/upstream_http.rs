@@ -77,12 +77,6 @@ pub(super) async fn providers(
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            // With OIDC sign-in off, the Portal offers no provider at all.
-            let providers = if settings.providers {
-                providers
-            } else {
-                Vec::new()
-            };
             let names = connection
                 .prepare("SELECT provider_id,display_name FROM auth_oidc_providers")?
                 .query_map([], |row| {
@@ -92,6 +86,7 @@ pub(super) async fn providers(
             Ok((
                 json!({
                     "localIdentity": settings.local_users,
+                    "passwordMinLength": settings.password_min_length.0,
                     "providers": providers,
                     "signUp": {
                         "password": sign_up.as_ref().is_some_and(|sign_up| sign_up.password),

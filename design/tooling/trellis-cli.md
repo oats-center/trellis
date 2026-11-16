@@ -157,8 +157,8 @@ consumers and dead letters through the Events API.
 ```text
 trellis users ...
 trellis roles list|show|create|edit|delete|assign|revoke ...
-trellis sign-in show|set [--[no-]local-users] [--[no-]local-sign-up] [--[no-]providers]
-trellis sign-in providers list|show|add|edit|disable|remove ...
+trellis sign-in show|set [--[no-]local-users] [--[no-]local-sign-up] [--password-min-length <8-128>]
+trellis sign-in providers list|show|add|edit|enable|disable|remove ...
 trellis clients sign-up <client> [--[no-]password] [--[no-]providers]
 ```
 
@@ -166,9 +166,11 @@ User commands use generated Auth account operations. Role commands use
 `Auth.Roles.*`; `--capability` names each capability a role gives, and
 `--new-users`/`--no-new-users` sets whether users created afterwards get the
 role. `roles show` lists who has the role; `roles assign|revoke <role> <user>`
-gives or takes it from one user. `sign-in` turns the installation's sign-in
-methods on or off at once (`Auth.SignInSettings`). `sign-in providers` manages
-the OIDC providers (`Auth.OIDCProviders.*`): `list` and `show` print
+gives or takes it from one user. `sign-in` turns username-and-password sign-in and
+self sign-up on or off and sets the minimum password length, at once
+(`Auth.SignInSettings`). OIDC sign-in is on while any provider is.
+`sign-in providers` manages the OIDC providers (`Auth.OIDCProviders.*`):
+`enable` and `disable` turn one on and off, and `list` and `show` print
 each provider's ID, which `users find --provider` takes, and the callback URL to
 register with the provider; `add` and `edit` read the client secret from
 `--client-secret-file` (`-` for standard input), never the command line, and

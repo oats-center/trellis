@@ -67,6 +67,14 @@ const presetViews: CommandEntry[] = [
     breadcrumb: "Events",
   },
   {
+    id: "view:sign-in:appearance",
+    label: "Sign-in: appearance",
+    group: "Views",
+    href: "/admin/sign-in/appearance",
+    keywords: "sign-in page branding theme logo colours colors portal look",
+    breadcrumb: "Sign-in",
+  },
+  {
     id: "view:sessions:connections",
     label: "Sessions: connections",
     group: "Views",
@@ -88,9 +96,9 @@ export function buildCommandIndex(navSections: NavSection[]): CommandEntry[] {
       label: item.label,
       group: "Pages",
       href: item.href,
-      keywords: item.label.toLowerCase(),
+      keywords: `${item.label} ${item.keywords ?? ""}`.toLowerCase(),
       breadcrumb: section.title,
-    }))
+    })),
   );
   const byHref = new Map<string, CommandEntry>();
   for (const entry of [...pages, ...presetViews]) {
@@ -116,8 +124,8 @@ export function filterCommands(
     const score = scoreMatch(needle, haystack);
     if (score > 0) scored.push({ entry, score });
   }
-  scored.sort((a, b) =>
-    b.score - a.score || a.entry.label.length - b.entry.label.length
+  scored.sort(
+    (a, b) => b.score - a.score || a.entry.label.length - b.entry.label.length,
   );
   return scored.map((item) => item.entry);
 }

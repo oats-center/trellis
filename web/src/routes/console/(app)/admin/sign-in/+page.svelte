@@ -9,17 +9,19 @@
   import { isUncertainError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { traverseAll } from "$lib/console/paging.ts";
+  import ActionMenu from "$lib/components/ActionMenu.svelte";
   import DataTable from "$lib/components/DataTable.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
-  import PageToolbar from "$lib/components/PageToolbar.svelte";
-  import StatusBadge from "$lib/components/StatusBadge.svelte";
   import GroupRoles from "./GroupRoles.svelte";
 
   type Settings = apis.auth.SignInSettingsGetOutput["settings"];
   type Provider = apis.auth.OIDCProvidersListOutput["items"][number];
+
+  const MIN_LENGTH = 8;
+  const MAX_LENGTH = 128;
 
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
@@ -27,7 +29,7 @@
   let settings = $state.raw<Settings | null>(null);
   let localUsers = $state(true);
   let localSignUp = $state(false);
-  let oidcSignIn = $state(true);
+  let passwordMinLength = $state<number | null>(12);
   let providers = $state.raw<Provider[]>([]);
   let loading = $state(true);
   let loaded = $state(false);
@@ -54,60 +56,45 @@
   const manageProviders = $derived(
     canPerform(authority.authority, "oidcProvidersList"),
   );
+  const switchProviders = $derived(
+    canPerform(authority.authority, "oidcProvidersEnable") &&
+      canPerform(authority.authority, "oidcProvidersDisable"),
+  );
   const activeProviders = $derived(
     providers.filter((provider) => provider.enabled),
   );
-  // Each section saves its own switches with the other section's saved
-  // values, so nobody can sign in after a save when both end up off. The
-  // server refuses this too; only providers this person can see count.
-  const noActiveProvider = $derived(
-    manageProviders && activeProviders.length === 0,
+  const lengthValid = $derived(
+    passwordMinLength !== null &&
+      Number.isInteger(passwordMinLength) &&
+      passwordMinLength >= MIN_LENGTH &&
+      passwordMinLength <= MAX_LENGTH,
   );
-  const localLockedOut = $derived(
-    settings !== null &&
-      !localUsers &&
-      (!settings.providers || noActiveProvider),
+  // With username and password off, a provider that is on is the only way
+  // in. The server refuses this too; only providers this person sees count.
+  const lockedOut = $derived(
+    !localUsers && manageProviders && activeProviders.length === 0,
   );
-  const oidcLockedOut = $derived(
-    settings !== null &&
-      !settings.localUsers &&
-      (!oidcSignIn || noActiveProvider),
-  );
-  const localChanged = $derived(
+  const changed = $derived(
     settings !== null &&
       (settings.localUsers !== localUsers ||
-        settings.localSignUp !== localSignUp),
+        settings.localSignUp !== (localUsers && localSignUp) ||
+        settings.passwordMinLength !== passwordMinLength),
   );
-  const oidcChanged = $derived(
-    settings !== null && settings.providers !== oidcSignIn,
-  );
-  // On with nothing to sign in through: nobody sees the option yet.
-  const oidcIdle = $derived(
-    oidcSignIn && manageProviders && activeProviders.length === 0,
-  );
-  // Names the providers people see, when this person can list them.
-  const oidcSummary = $derived.by(() => {
-    if (!oidcSignIn) return "Nobody can sign in with an OIDC account.";
-    if (!manageProviders)
-      return "Users sign in with their organisation's account.";
+  const oidcStatus = $derived.by(() => {
     if (activeProviders.length === 0)
-      return "Users sign in through a provider.";
-    if (activeProviders.length > 2)
-      return `Users sign in through ${activeProviders.length} providers.`;
-    return `Users sign in through ${activeProviders.map((provider) => provider.title).join(" or ")}.`;
+      return "No provider is on, so OIDC sign-in is off.";
+    const through =
+      activeProviders.length > 2
+        ? `${activeProviders.length} providers`
+        : activeProviders.map((provider) => provider.title).join(" or ");
+    return `OIDC sign-in is on: users can sign in through ${through}.`;
   });
 
-  // Shows the saved settings, keeping a section's unsaved edits unless that
-  // section was the one just saved.
-  function show(next: Settings, saved?: "local" | "oidc"): void {
-    const keepLocal = localChanged && saved !== "local";
-    const keepOidc = oidcChanged && saved !== "oidc";
+  function show(next: Settings): void {
     settings = next;
-    if (!keepLocal) {
-      localUsers = next.localUsers;
-      localSignUp = next.localSignUp;
-    }
-    if (!keepOidc) oidcSignIn = next.providers;
+    localUsers = next.localUsers;
+    localSignUp = next.localSignUp;
+    passwordMinLength = next.passwordMinLength;
   }
 
   async function load(): Promise<void> {
@@ -131,7 +118,9 @@
           : Promise.resolve({ items: [] }),
       ]);
       if (!scope.isCurrent(token)) return;
-      if (current) show(current.settings);
+      // Keep unsaved local-user changes across a provider change.
+      if (current && !changed) show(current.settings);
+      else if (current) settings = current.settings;
       providers = [...listed.items];
       loaded = true;
     } catch (cause) {
@@ -157,23 +146,39 @@
     }
   }
 
-  // One update holds both sections; the other section keeps its saved values.
-  function saveSettings(section: "local" | "oidc"): Promise<void> {
+  function saveSettings(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
     return run(async () => {
-      if (!settings) return null;
-      const local = section === "local";
-      const users = local ? localUsers : settings.localUsers;
+      if (!settings || passwordMinLength === null) return null;
       const response = await trellis
         .signInSettingsUpdate({
-          localUsers: users,
-          localSignUp: users && (local ? localSignUp : settings.localSignUp),
-          providers: local ? settings.providers : oidcSignIn,
+          localUsers,
+          localSignUp: localUsers && localSignUp,
+          passwordMinLength,
           expectedRevision: settings.revision,
           idempotencyKey: ulid(),
         })
         .orThrow();
-      show(response.settings, section);
-      return local ? "Local users saved." : "OIDC sign-in saved.";
+      show(response.settings);
+      return "Local users saved.";
+    });
+  }
+
+  function turn(provider: Provider, on: boolean): Promise<void> {
+    return run(async () => {
+      const target = {
+        providerId: provider.providerId,
+        expectedRevision: provider.revision,
+        idempotencyKey: ulid(),
+      };
+      try {
+        if (on) await trellis.oidcProvidersEnable(target).orThrow();
+        else await trellis.oidcProvidersDisable(target).orThrow();
+      } finally {
+        // Shows the provider's saved state, also when the change was refused.
+        await load();
+      }
+      return `${provider.title} turned ${on ? "on" : "off"}.`;
     });
   }
 
@@ -221,28 +226,19 @@
     });
   }
 
-  function change(operation: "disable" | "delete"): Promise<void> {
+  function remove(provider: Provider): Promise<void> {
     return run(async () => {
-      if (
-        !selected ||
-        !window.confirm(
-          `${operation === "disable" ? "Turn off" : "Delete"} ${selected.title}?`,
-        )
-      )
-        return null;
-      const target = {
-        providerId: selected.providerId,
-        expectedRevision: selected.revision,
-        idempotencyKey: ulid(),
-      };
-      if (operation === "disable")
-        await trellis.oidcProvidersDisable(target).orThrow();
-      else await trellis.oidcProvidersDelete(target).orThrow();
-      editing = false;
+      if (!window.confirm(`Delete ${provider.title}?`)) return null;
+      await trellis
+        .oidcProvidersDelete({
+          providerId: provider.providerId,
+          expectedRevision: provider.revision,
+          idempotencyKey: ulid(),
+        })
+        .orThrow();
+      if (selected?.providerId === provider.providerId) editing = false;
       await load();
-      return operation === "disable"
-        ? "Provider turned off."
-        : "Provider deleted.";
+      return `${provider.title} deleted.`;
     });
   }
 
@@ -257,11 +253,7 @@
   onMount(() => () => scope.dispose());
 </script>
 
-<section class="space-y-6">
-  <PageToolbar
-    title="Sign-in methods"
-    description="Choose how users sign in to this Trellis. Each section applies when you save it."
-  />
+<div class="max-w-3xl space-y-8">
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if notice}<Notice variant="success">{notice}</Notice>{/if}
 
@@ -269,69 +261,92 @@
     <LoadingState />
   {:else}
     {#if settings}
-      <section class="space-y-3" aria-labelledby="section-local">
-        <h2 class="text-lg font-semibold" id="section-local">Local users</h2>
-        <form
-          class="max-w-2xl space-y-3"
-          onsubmit={(event) => {
-            event.preventDefault();
-            void saveSettings("local");
-          }}
-        >
-          <fieldset class="space-y-2" disabled={saving || !editableSettings}>
-            <div class="method" class:on={localUsers}>
-              <label class="method-row"
-                ><span class="method-mark"><Icon name="key" size={18} /></span
-                ><span class="min-w-0 flex-1"
-                  ><span class="method-name" id="method-local"
-                    >Username and password</span
-                  ><span class="method-state" id="method-local-state"
-                    ><span class="method-word">{localUsers ? "On" : "Off"}</span
-                    >
-                    · {localUsers
-                      ? "Users with an account here sign in with their password."
-                      : "Nobody can sign in with a password."}{#if settings.localUsers !== localUsers}<span
-                        class="method-unsaved">Not saved</span
-                      >{/if}</span
-                  ></span
-                ><input
-                  class="toggle toggle-primary"
-                  type="checkbox"
-                  role="switch"
-                  aria-labelledby="method-local"
-                  aria-describedby="method-local-state"
-                  bind:checked={localUsers}
-                /></label
-              >
-              <label class="method-option" class:muted={!localUsers}
-                ><input
-                  class="checkbox checkbox-sm"
-                  type="checkbox"
-                  bind:checked={localSignUp}
-                  disabled={!localUsers}
-                /><span
-                  >Users can create their own account <span
-                    class="text-base-content/60"
-                    >· in apps that also allow it</span
-                  >{#if settings.localSignUp !== localSignUp}<span
-                      class="method-unsaved">Not saved</span
-                    >{/if}</span
-                ></label
-              >
-            </div>
-            {#if localLockedOut}
-              <p class="text-sm text-error" role="alert">
-                {settings.providers
-                  ? "Add an active OIDC provider first, or nobody can sign in."
-                  : "Turn on OIDC sign-in and save it first, or nobody can sign in."}
-              </p>
-            {/if}
+      <section aria-labelledby="section-local">
+        <h2 class="section-title" id="section-local">Local users</h2>
+        <form onsubmit={saveSettings}>
+          <fieldset class="settings" disabled={saving || !editableSettings}>
+            <label class="setting">
+              <span class="setting-text">
+                <span class="setting-label" id="local-users"
+                  >Sign in with username and password</span
+                >
+                <span class="setting-help" id="local-users-help"
+                  >Users with an account here sign in with their password.</span
+                >
+              </span>
+              <input
+                class="toggle toggle-primary"
+                type="checkbox"
+                role="switch"
+                aria-labelledby="local-users"
+                aria-describedby="local-users-help"
+                bind:checked={localUsers}
+              />
+            </label>
+            <label class="setting" class:muted={!localUsers}>
+              <span class="setting-text">
+                <span class="setting-label" id="local-sign-up"
+                  >Users can create their own account</span
+                >
+                <span class="setting-help" id="local-sign-up-help"
+                  >Only in apps that also allow it. Needs username and password
+                  sign-in.</span
+                >
+              </span>
+              <input
+                class="toggle toggle-primary"
+                type="checkbox"
+                role="switch"
+                aria-labelledby="local-sign-up"
+                aria-describedby="local-sign-up-help"
+                checked={localUsers && localSignUp}
+                disabled={!localUsers}
+                onchange={(event) =>
+                  (localSignUp = event.currentTarget.checked)}
+              />
+            </label>
+            <label class="setting">
+              <span class="setting-text">
+                <span class="setting-label" id="password-length"
+                  >Minimum password length</span
+                >
+                <span class="setting-help" id="password-length-help"
+                  >For new passwords, password changes and sign-up. From {MIN_LENGTH}
+                  to {MAX_LENGTH} characters.</span
+                >
+              </span>
+              <span class="flex items-center gap-2">
+                <input
+                  class="input input-sm w-20 text-right tabular-nums"
+                  type="number"
+                  inputmode="numeric"
+                  min={MIN_LENGTH}
+                  max={MAX_LENGTH}
+                  step="1"
+                  required
+                  aria-labelledby="password-length"
+                  aria-describedby="password-length-help"
+                  aria-invalid={!lengthValid}
+                  bind:value={passwordMinLength}
+                /><span class="text-sm text-base-content/65" aria-hidden="true"
+                  >characters</span
+                >
+              </span>
+            </label>
           </fieldset>
+          {#if lockedOut}
+            <p class="mt-3 text-sm text-error" role="alert">
+              Turn on an OIDC provider first, or nobody can sign in.
+            </p>
+          {/if}
           {#if editableSettings}
-            <div class="flex justify-end">
+            <div class="mt-4 flex items-center justify-end gap-3">
+              {#if changed}<span class="text-sm text-base-content/65"
+                  >Unsaved changes</span
+                >{/if}
               <button
                 class="btn btn-primary"
-                disabled={saving || !localChanged || localLockedOut}
+                disabled={saving || !changed || lockedOut || !lengthValid}
                 >Save</button
               >
             </div>
@@ -340,141 +355,103 @@
       </section>
     {/if}
 
-    {#if settings || manageProviders}
+    {#if manageProviders}
       <section class="space-y-3" aria-labelledby="section-oidc">
-        <h2 class="text-lg font-semibold" id="section-oidc">OIDC sign-in</h2>
-        {#if settings}<form
-            class="max-w-2xl space-y-3"
-            onsubmit={(event) => {
-              event.preventDefault();
-              void saveSettings("oidc");
-            }}
-          >
-            <fieldset class="space-y-2" disabled={saving || !editableSettings}>
-              <div class="method" class:on={oidcSignIn}>
-                <label class="method-row"
-                  ><span class="method-mark"
-                    ><Icon name="globe" size={18} /></span
-                  ><span class="min-w-0 flex-1"
-                    ><span class="method-name" id="method-oidc"
-                      >Sign in through a provider</span
-                    ><span class="method-state" id="method-oidc-state"
-                      ><span class="method-word"
-                        >{oidcSignIn ? "On" : "Off"}</span
-                      >
-                      · {oidcSummary}{#if settings.providers !== oidcSignIn}<span
-                          class="method-unsaved">Not saved</span
-                        >{/if}</span
-                    ></span
-                  ><input
-                    class="toggle toggle-primary"
-                    type="checkbox"
-                    role="switch"
-                    aria-labelledby="method-oidc"
-                    aria-describedby={oidcIdle
-                      ? "method-oidc-state method-oidc-idle"
-                      : "method-oidc-state"}
-                    bind:checked={oidcSignIn}
-                  /></label
-                >
-                {#if oidcIdle}
-                  <p class="method-warning" id="method-oidc-idle">
-                    <Icon name="alert" size={16} /><span
-                      >No provider is turned on, so nobody sees this option yet.</span
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="section-title mb-0" id="section-oidc">OIDC providers</h2>
+          {#if canPerform(authority.authority, "oidcProvidersPut")}<button
+              type="button"
+              class="btn btn-sm"
+              disabled={saving}
+              onclick={() => edit(null)}
+              ><Icon name="plus" size={16} /> Add provider</button
+            >{/if}
+        </div>
+        <p class="oidc-status" aria-live="polite">
+          <span
+            class={[
+              "trellis-dot",
+              activeProviders.length ? "success" : "neutral",
+            ]}
+            aria-hidden="true"
+          ></span>{oidcStatus}
+        </p>
+        {#if providers.length === 0}
+          <EmptyState
+            title="No providers yet"
+            description="Add your organisation's OIDC provider so users can sign in with it."
+          />
+        {:else}
+          <DataTable>
+            <thead
+              ><tr
+                ><th class="trellis-primary">Name</th><th
+                  class="hidden sm:table-cell">Address</th
+                ><th><span class="max-sm:sr-only">On</span></th><th
+                  ><span class="sr-only">Actions</span></th
+                ></tr
+              ></thead
+            >
+            <tbody>
+              {#each providers as provider (provider.providerId)}
+                <tr>
+                  <td class="trellis-primary">
+                    <span class="block font-medium">{provider.title}</span>
+                    <span
+                      class="block font-mono text-xs break-all text-base-content/60 sm:hidden"
+                      >{provider.issuer}</span
                     >
-                  </p>
-                {/if}
-              </div>
-              {#if oidcLockedOut}
-                <p class="text-sm text-error" role="alert">
-                  {oidcSignIn
-                    ? "Add an active OIDC provider first, or nobody can sign in."
-                    : "Turn on username and password and save it first, or nobody can sign in."}
-                </p>
-              {/if}
-            </fieldset>
-            {#if editableSettings}
-              <div class="flex justify-end">
-                <button
-                  class="btn btn-primary"
-                  disabled={saving || !oidcChanged || oidcLockedOut}
-                  >Save</button
-                >
-              </div>
-            {/if}
-          </form>{/if}
-
-        {#if manageProviders}
-          <div class="space-y-3 pt-2">
-            <div class="flex items-center justify-between">
-              <h3 class="font-semibold">Providers</h3>
-              {#if canPerform(authority.authority, "oidcProvidersPut")}<button
-                  type="button"
-                  class="btn btn-sm"
-                  disabled={saving}
-                  onclick={() => edit(null)}
-                  ><Icon name="plus" size={16} /> Add provider</button
-                >{/if}
-            </div>
-            {#if providers.length === 0}
-              <EmptyState
-                title="No providers yet"
-                description="Add your organisation's OIDC provider so users can sign in with it."
-              />
-            {:else}
-              <DataTable>
-                <thead
-                  ><tr
-                    ><th class="trellis-primary">Name</th><th
-                      class="hidden sm:table-cell">Address</th
-                    ><th><span class="max-sm:sr-only">Status</span></th><th
-                      ><span class="sr-only">Actions</span></th
-                    ></tr
-                  ></thead
-                >
-                <tbody>
-                  {#each providers as provider (provider.providerId)}
-                    <tr>
-                      <td class="trellis-primary">
-                        <span class="block font-medium">{provider.title}</span>
-                        <span
-                          class="block font-mono text-xs text-base-content/60 sm:hidden"
-                          >{provider.issuer}</span
-                        >
-                      </td>
-                      <td class="hidden font-mono text-sm sm:table-cell"
-                        >{provider.issuer}</td
-                      >
-                      <td
-                        ><StatusBadge
-                          compact
-                          label={provider.enabled ? "On" : "Off"}
-                          status={provider.enabled ? "healthy" : "offline"}
-                        /></td
-                      >
-                      <td class="text-right"
-                        ><button
+                  </td>
+                  <td class="hidden font-mono text-sm sm:table-cell"
+                    >{provider.issuer}</td
+                  >
+                  <td class="w-0">
+                    <input
+                      class="toggle toggle-primary toggle-sm"
+                      type="checkbox"
+                      role="switch"
+                      aria-label={provider.title}
+                      checked={provider.enabled}
+                      disabled={saving || !switchProviders}
+                      onchange={(event) =>
+                        void turn(provider, event.currentTarget.checked)}
+                    />
+                  </td>
+                  <td class="w-0 text-right">
+                    <ActionMenu
+                      widthClass="w-36"
+                      ariaLabel={`Actions for ${provider.title}`}
+                    >
+                      <li>
+                        <button
                           type="button"
-                          class="btn btn-ghost btn-sm"
+                          disabled={saving}
                           onclick={() => edit(provider)}>Edit</button
-                        ></td
-                      >
-                    </tr>
-                  {/each}
-                </tbody>
-              </DataTable>
-            {/if}
-          </div>
+                        >
+                      </li>
+                      {#if canPerform(authority.authority, "oidcProvidersDelete")}
+                        <li>
+                          <button
+                            type="button"
+                            class="text-error"
+                            disabled={saving}
+                            onclick={() => void remove(provider)}>Delete</button
+                          >
+                        </li>
+                      {/if}
+                    </ActionMenu>
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </DataTable>
         {/if}
         {#if editing}
-          <form
-            class="trellis-panel max-w-2xl space-y-4 p-5"
-            onsubmit={saveProvider}
-          >
+          <form class="trellis-panel space-y-4 p-5" onsubmit={saveProvider}>
             <div class="flex items-center justify-between">
-              <h2 class="text-lg font-semibold">
+              <h3 class="text-base font-semibold">
                 {selected ? selected.title : "New provider"}
-              </h2>
+              </h3>
               <button
                 type="button"
                 class="btn btn-ghost btn-sm btn-square"
@@ -565,23 +542,13 @@
                 {/key}
               {/if}
             </fieldset>
-            <div
-              class="flex flex-wrap justify-between gap-2 border-t border-base-300 pt-4"
-            >
-              <div class="flex gap-2">
-                {#if selected && canPerform(authority.authority, "oidcProvidersDisable")}<button
-                    type="button"
-                    class="btn btn-outline"
-                    disabled={saving || !selected.enabled}
-                    onclick={() => void change("disable")}>Turn off</button
-                  >{/if}
-                {#if selected && canPerform(authority.authority, "oidcProvidersDelete")}<button
-                    type="button"
-                    class="btn btn-outline btn-error"
-                    disabled={saving}
-                    onclick={() => void change("delete")}>Delete</button
-                  >{/if}
-              </div>
+            <div class="flex justify-end gap-2 border-t border-base-300 pt-4">
+              <button
+                type="button"
+                class="btn btn-ghost"
+                disabled={saving}
+                onclick={() => (editing = false)}>Cancel</button
+              >
               {#if canPerform(authority.authority, "oidcProvidersPut")}<button
                   class="btn btn-primary"
                   disabled={saving}>Save provider</button
@@ -592,138 +559,59 @@
       </section>
     {/if}
   {/if}
-</section>
+</div>
 
 <style>
-  .method {
-    border: 1px solid var(--color-base-300);
-    border-radius: var(--radius-box);
-    background: var(--color-base-100);
-    transition:
-      border-color 150ms ease-out,
-      background-color 150ms ease-out;
-  }
-  .method.on {
-    border-color: color-mix(in oklab, var(--color-primary) 45%, transparent);
-    background: color-mix(
-      in oklab,
-      var(--color-primary) 5%,
-      var(--color-base-100)
-    );
-  }
-  .method:has(.toggle:focus-visible) {
-    box-shadow: var(--trellis-focus-ring);
-  }
-  .method-row {
-    align-items: center;
-    cursor: pointer;
-    display: flex;
-    gap: 0.875rem;
-    padding: 0.875rem 1rem;
-  }
-  fieldset:disabled .method-row {
-    cursor: default;
-  }
-  .method-mark {
-    align-items: center;
-    background: var(--color-base-200);
-    border-radius: var(--radius-field);
-    color: color-mix(in oklab, var(--color-base-content) 55%, transparent);
-    display: flex;
-    flex: none;
-    height: 2.25rem;
-    justify-content: center;
-    transition:
-      background-color 150ms ease-out,
-      color 150ms ease-out;
-    width: 2.25rem;
-  }
-  .on .method-mark {
-    background: color-mix(in oklab, var(--color-primary) 16%, transparent);
-    color: var(--color-primary);
-  }
-  .method-name {
-    display: block;
+  .section-title {
+    font-size: 1rem;
     font-weight: 600;
+    margin-bottom: 0.25rem;
   }
-  .method-state {
-    color: color-mix(in oklab, var(--color-base-content) 65%, transparent);
-    display: block;
-    font-size: 0.8125rem;
+  .section-title.mb-0 {
+    margin-bottom: 0;
   }
-  .method-word {
-    font-weight: 600;
+  .settings {
+    border-bottom: 1px solid var(--color-base-300);
   }
-  .on .method-word {
-    color: var(--color-success);
-  }
-  .method-warning {
-    align-items: center;
-    border-top: 1px solid
-      color-mix(in oklab, var(--color-warning) 35%, transparent);
-    /* Warning alone is too light to read at this size on a pale panel. */
-    color: color-mix(
-      in oklab,
-      var(--color-warning) 70%,
-      var(--color-base-content)
-    );
-    display: flex;
-    font-size: 0.875rem;
-    font-weight: 500;
-    gap: 0.5rem;
-    /* Lines the text up under the method's name. */
-    padding: 0.625rem 1rem 0.625rem calc(1rem + 2.25rem + 0.875rem);
-  }
-  .method-warning :global(svg) {
-    flex: none;
-    margin-left: calc(-16px - 0.5rem);
-  }
-  .method-unsaved {
-    background: color-mix(in oklab, var(--color-warning) 16%, transparent);
-    border-radius: var(--radius-selector);
-    color: var(--color-base-content);
-    font-size: 0.75rem;
-    font-weight: 500;
-    margin-left: 0.5rem;
-    padding: 0.0625rem 0.375rem;
-    white-space: nowrap;
-  }
-  .method-option {
+  .setting {
     align-items: center;
     border-top: 1px solid var(--color-base-300);
     cursor: pointer;
     display: flex;
-    font-size: 0.875rem;
-    gap: 0.75rem;
-    /* Lines the checkbox up under the method's name. */
-    padding: 0.75rem 1rem 0.75rem calc(1rem + 2.25rem + 0.875rem);
+    gap: 1rem;
+    justify-content: space-between;
+    padding: 0.875rem 0;
   }
-  .method.on .method-option {
-    border-top-color: color-mix(
-      in oklab,
-      var(--color-primary) 25%,
-      transparent
-    );
-  }
-  .method-option.muted {
-    color: color-mix(in oklab, var(--color-base-content) 50%, transparent);
+  fieldset:disabled .setting,
+  .setting.muted {
     cursor: default;
   }
-  @media (max-width: 30rem) {
-    .method-option {
-      padding-left: 1rem;
-    }
-    .method-warning {
-      padding-left: 1rem;
-    }
-    .method-warning :global(svg) {
-      margin-left: 0;
-    }
+  .setting-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 0;
   }
-  @media (prefers-reduced-motion: reduce) {
-    .method,
-    .method-mark {
-      transition: none;
-    }
+  .setting-label {
+    font-size: 0.9375rem;
+    font-weight: 500;
+  }
+  .setting-help {
+    color: color-mix(in oklab, var(--color-base-content) 65%, transparent);
+    font-size: 0.8125rem;
+  }
+  .setting.muted .setting-label {
+    color: color-mix(in oklab, var(--color-base-content) 55%, transparent);
+  }
+  .oidc-status {
+    align-items: baseline;
+    color: color-mix(in oklab, var(--color-base-content) 75%, transparent);
+    display: flex;
+    font-size: 0.875rem;
+    gap: 0.5rem;
+  }
+  /* Sits on the first line's middle, also when the sentence wraps. */
+  .oidc-status :global(.trellis-dot) {
+    transform: translateY(-0.06em);
   }
 </style>

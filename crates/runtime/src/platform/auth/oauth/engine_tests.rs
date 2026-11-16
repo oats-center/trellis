@@ -2446,7 +2446,7 @@ async fn people_create_their_own_account_only_where_the_installation_and_the_app
             let open = AuthSignInSettingsUpdateRequest {
                 local_users: true,
                 local_sign_up: true,
-                providers: true,
+                password_min_length: 12.into(),
                 expected_revision: AuthRevision(1u64.into()),
                 idempotency_key: id().into(),
                 extra: Default::default(),

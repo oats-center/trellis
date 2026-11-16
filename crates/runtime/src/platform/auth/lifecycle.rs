@@ -92,16 +92,18 @@ impl SqliteAuthorizationStore {
         principal: &str,
         username: &str,
         password: Option<&str>,
-        minimum: u16,
         now: i64,
     ) -> Result<(), AuthError> {
-        if username.trim() != username
-            || username.is_empty()
-            || password.is_some_and(|password| password.len() < usize::from(minimum))
-        {
+        if username.trim() != username || username.is_empty() {
             return Err(AuthError::Invalid(
                 "invalid administrator credentials".into(),
             ));
+        }
+        let minimum = super::sign_in::read(connection)?.password_min_length.0;
+        if password.is_some_and(|password| password.len() < minimum as usize) {
+            return Err(AuthError::Invalid(format!(
+                "the administrator password must be at least {minimum} characters"
+            )));
         }
         let hash = if let Some(password) = password {
             Some(

@@ -354,23 +354,27 @@ model AuthOAuthClientPutRequest {
   expectedRevision: uint64;
   idempotencyKey: AuthIdempotencyKey;
 }
+/// Shortest local password Auth accepts, in bytes.
+type AuthPasswordMinLength = uint32(min=8, max=128);
 /// How users may sign in to this installation. Takes effect immediately.
+/// OIDC sign-in is on exactly when an OIDC provider is enabled; at least one
+/// of local users and an enabled provider stays available.
 model AuthSignInSettings {
   /// Sign in with a username and password.
   localUsers: bool;
   /// Create your own username-and-password account, through apps that also
   /// allow it. Needs localUsers.
   localSignUp: bool;
-  /// Sign in with an active identity provider (OIDC sign-in). At least one
-  /// of localUsers and providers stays on.
-  providers: bool;
+  /// Every new or changed local password, including sign-up, is at least
+  /// this long. Existing passwords are not checked again.
+  passwordMinLength: AuthPasswordMinLength;
   revision: AuthRevision;
 }
 model AuthSignInSettingsGetResponse { settings: AuthSignInSettings; }
 model AuthSignInSettingsUpdateRequest {
   localUsers: bool;
   localSignUp: bool;
-  providers: bool;
+  passwordMinLength: AuthPasswordMinLength;
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }

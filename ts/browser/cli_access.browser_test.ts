@@ -124,12 +124,18 @@ test(
           (await run("sign-in", "show")).settings.localSignUp,
           false,
         );
-        const opened = await run("sign-in", "set", "--local-sign-up");
+        const opened = await run(
+          "sign-in",
+          "set",
+          "--local-sign-up",
+          "--password-min-length",
+          "16",
+        );
         assert.equal(opened.settings.localSignUp, true);
         assert.equal(opened.settings.localUsers, true);
-        await assert.rejects(
-          run("sign-in", "set", "--no-local-users", "--no-providers"),
-        );
+        assert.equal(opened.settings.passwordMinLength, 16);
+        // No provider is on, so password sign-in is the only way in.
+        await assert.rejects(run("sign-in", "set", "--no-local-users"));
         const joined = await run(
           "clients",
           "sign-up",

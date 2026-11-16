@@ -18,14 +18,14 @@ use super::{
 /// The installation's current sign-in settings.
 pub(super) fn read(connection: &Connection) -> Result<AuthSignInSettings, AuthError> {
     Ok(connection.query_row(
-        "SELECT local_users,local_sign_up,providers,revision \
+        "SELECT local_users,local_sign_up,password_min_length,revision \
         FROM auth_sign_in_settings WHERE singleton=1",
         [],
         |row| {
             Ok(AuthSignInSettings {
                 local_users: row.get(0)?,
                 local_sign_up: row.get(1)?,
-                providers: row.get(2)?,
+                password_min_length: AuthPasswordMinLength(row.get::<_, u32>(2)?),
                 revision: AuthRevision(row.get::<_, u64>(3)?.into()),
                 extra: Default::default(),
             })
@@ -33,13 +33,18 @@ pub(super) fn read(connection: &Connection) -> Result<AuthSignInSettings, AuthEr
     )?)
 }
 
+/// The change that [`require_a_way_in`] judges, for an error that names it.
+pub(super) enum Change {
+    Settings,
+    Provider,
+}
+
 /// Refuses a change that would leave no way to sign in fresh: with local users
-/// off, OIDC sign-in must be on with at least one active provider. Run it in
-/// the transaction making the change, after the change, so concurrent edits to
-/// settings and providers cannot each pass alone and together lock everyone out.
-pub(super) fn require_a_way_in(connection: &Connection) -> Result<(), AuthError> {
-    let settings = read(connection)?;
-    if settings.local_users {
+/// off, some OIDC provider must stay active. Run it in the transaction making
+/// the change, after the change, so concurrent edits to settings and providers
+/// cannot each pass alone and together lock everyone out.
+pub(super) fn require_a_way_in(connection: &Connection, change: Change) -> Result<(), AuthError> {
+    if read(connection)?.local_users {
         return Ok(());
     }
     let providers: bool = connection.query_row(
@@ -47,12 +52,21 @@ pub(super) fn require_a_way_in(connection: &Connection) -> Result<(), AuthError>
         [],
         |row| row.get(0),
     )?;
-    if settings.providers && providers {
+    if providers {
         return Ok(());
     }
     Err(AuthError::Invalid(
-        "nobody could sign in: keep username and password on, or add an active OIDC provider first"
-            .into(),
+        match change {
+            Change::Settings => {
+                "nobody could sign in: no OIDC provider is on, so keep username and password \
+                sign-in on or turn a provider on first"
+            }
+            Change::Provider => {
+                "nobody could sign in: this is the last OIDC provider that is on and username \
+                and password sign-in is off, so turn username and password on first"
+            }
+        }
+        .into(),
     ))
 }
 
@@ -79,13 +93,13 @@ pub(super) fn update(
             )?;
             if connection.execute(
                 "UPDATE auth_sign_in_settings \
-            SET local_users=?1,local_sign_up=?2,providers=?3,\
+            SET local_users=?1,local_sign_up=?2,password_min_length=?3,\
             revision=revision+1,updated_at=?4 \
             WHERE singleton=1 AND revision=?5",
                 params![
                     input.local_users,
                     input.local_sign_up,
-                    input.providers,
+                    input.password_min_length.0,
                     now,
                     input.expected_revision.0 .0
                 ],
@@ -93,7 +107,7 @@ pub(super) fn update(
             {
                 return Err(AuthError::Conflict);
             }
-            require_a_way_in(connection)?;
+            require_a_way_in(connection, Change::Settings)?;
             Ok(AuthSignInSettingsGetResponse {
                 settings: read(connection)?,
                 extra: Default::default(),

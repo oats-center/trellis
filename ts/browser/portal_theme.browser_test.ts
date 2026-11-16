@@ -24,7 +24,7 @@ test("themes saved in the Console brand the Portal at once, per installation and
     try {
       const page = await admin.newPage();
       await openConsole(page, runtime, BROWSER_ADMIN);
-      await page.goto(`${runtime.consoleUrl}/console/admin/branding`);
+      await page.goto(`${runtime.consoleUrl}/console/admin/sign-in/appearance`);
       const form = page.locator("form");
       await form.getByLabel("Name", { exact: true }).fill("Acme Cloud");
       await form.locator("input[type=file]").setInputFiles({

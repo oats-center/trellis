@@ -515,17 +515,6 @@ fn initialize_admin_credentials_in(
     let now = crate::clock::unix_now();
     auth.initialize_issuer(now)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let minimum = config
-        .auth
-        .as_ref()
-        .and_then(|value| value.local_identity.as_ref())
-        .and_then(|value| value.password_min_length)
-        .unwrap_or(12);
-    if password.is_some_and(|password| password.len() < usize::from(minimum)) {
-        return Err(RuntimeError::Platform(
-            "administrator password does not meet configured minimum length".into(),
-        ));
-    }
     let custody = auth::oauth_storage_key(config)?;
     let storage = auth::OAuthStorage::open(auth.clone(), &custody)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;

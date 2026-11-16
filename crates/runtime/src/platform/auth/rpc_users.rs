@@ -125,6 +125,11 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         }
     });
     admin_mutation!(
+        register_oidc_providers_enable,
+        enable_provider,
+        ManagePrincipals
+    );
+    admin_mutation!(
         register_oidc_providers_disable,
         disable_provider,
         ManagePrincipals
@@ -964,11 +969,13 @@ pub(super) fn create_user(
         request_digest: digest(&audit)?,
         ..identity.clone()
     };
-    let hash = input
-        .password
-        .as_ref()
-        .map(|password| hash_password(password.as_str(), store.settings.password_min_length))
-        .transpose()?;
+    let hash = match &input.password {
+        Some(password) => {
+            let minimum = super::sign_in::read(&*store.reader()?)?.password_min_length;
+            Some(hash_password(password.as_str(), minimum.0)?)
+        }
+        None => None,
+    };
     store.mutate(
         &safe_identity,
         "rpc.users.create",
@@ -1138,8 +1145,9 @@ pub(super) fn update_profile(
     )
 }
 
-pub(super) fn hash_password(password: &str, minimum: u16) -> Result<String, AuthError> {
-    if !(usize::from(minimum)..=4096).contains(&password.len()) {
+/// Hashes a new local password at least `minimum` bytes long.
+pub(super) fn hash_password(password: &str, minimum: u32) -> Result<String, AuthError> {
+    if !(minimum as usize..=4096).contains(&password.len()) {
         return Err(AuthError::Invalid("invalid password length".into()));
     }
     Ok(Argon2::default()
@@ -1194,10 +1202,8 @@ pub(super) fn change_password(
             &PasswordHash::new(&hash).map_err(|_| AuthError::Unavailable)?,
         )
         .map_err(|_| AuthError::Denied)?;
-    let replacement = hash_password(
-        input.new_password.as_str(),
-        store.settings.password_min_length,
-    )?;
+    let minimum = super::sign_in::read(&*store.reader()?)?.password_min_length;
+    let replacement = hash_password(input.new_password.as_str(), minimum.0)?;
     store.mutate(
         &safe_identity,
         "rpc.users.password.change",
@@ -1351,6 +1357,15 @@ pub(super) fn read_providers(
     })
 }
 
+pub(super) fn enable_provider(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthOIDCProviderMutationRequest,
+    now: i64,
+) -> Result<AuthMutationResult, AuthError> {
+    set_provider_state(store, identity, input, "active", now)
+}
+
 pub(super) fn disable_provider(
     store: &SqliteAuthorizationStore,
     identity: &Mutation,
@@ -1399,7 +1414,7 @@ fn set_provider_state(
                 return Err(AuthError::Conflict);
             }
             // The last active provider cannot go while it is the only way in.
-            super::sign_in::require_a_way_in(connection)?;
+            super::sign_in::require_a_way_in(connection, super::sign_in::Change::Provider)?;
             let mut statement = connection.prepare(
                 "SELECT DISTINCT principal_id \
                 FROM auth_provider_identities \

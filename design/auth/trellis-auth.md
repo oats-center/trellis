@@ -1040,15 +1040,24 @@ replayed or unreviewed handoffs cannot begin upstream linking.
 
 Which sign-in methods an installation offers is Auth state, edited live with
 `Auth.SignInSettings.Update` (`trellis.auth.v1:platform.manage`) from the
-Console's Sign-in methods page or `trellis sign-in set`, and providers with
-`trellis sign-in providers`; no restart and no
-configuration key. Local users (username and password) and OIDC sign-in
-(active OIDC providers) each switch on and off. A fresh sign-in must stay
-possible: with local users off, OIDC sign-in must be on with an active
-provider. That is checked in the same transaction as the settings update and as
+Methods tab of the Console's Sign-in page or `trellis sign-in set`, and
+providers with `trellis sign-in providers`; no restart and no configuration
+key. Local users (username and password) switch on and off. OIDC sign-in has no
+switch of its own: it is on exactly while at least one provider is enabled, and
+each provider turns on and off by itself (`OIDCProviders.Enable/Disable`). A
+fresh sign-in must stay possible: with local users off, some provider must stay
+enabled. That is checked in the same transaction as the settings update and as
 disabling or deleting a provider, after the change, so neither alone nor two
-concurrent changes can lock every administrator out. Turning a method off
-refuses the next sign-in by it; the Portal stops offering it.
+concurrent changes can lock every administrator out, and the refusal names
+what to turn on first. Turning a method or provider off refuses the next
+sign-in by it, including one already at the provider; the Portal stops offering
+it.
+
+The same settings hold the minimum password length (`passwordMinLength`, 8 to
+128, 12 by default). Every new local password meets it: the first
+administrator's, new accounts, password changes, resets and sign-up. Existing
+passwords are not checked again. The Portal shows the minimum on its sign-up
+and reset forms.
 
 Self sign-up needs both the installation and the app being signed in to. The
 installation's `localSignUp` (which needs local users) allows password

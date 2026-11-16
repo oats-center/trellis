@@ -742,12 +742,9 @@ impl RuntimeConfig {
         let auth = self.auth.get_or_insert_with(|| AuthConfig {
             avatar: None,
             instance_id: None,
-            local_identity: None,
+            local_identity: (),
             authorization: None,
             administration: AdministrationConfig::default(),
-        });
-        auth.local_identity.get_or_insert(LocalIdentityConfig {
-            password_min_length: Some(8),
         });
         auth.authorization.get_or_insert(AuthorizationConfig {
             context_lifetime_seconds: 300,
@@ -1171,9 +1168,11 @@ pub struct AuthConfig {
     /// Stable installation ULID, provisioned once and retained across key rotations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
-    /// Local username/password identity configuration.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_identity: Option<LocalIdentityConfig>,
+    /// Refuses the removed `[auth.local_identity]` section rather than
+    /// ignoring it: the minimum password length is Auth state now, and dropping
+    /// a stricter configured minimum without a word would weaken it.
+    #[serde(default, skip_serializing, deserialize_with = "refuse_local_identity")]
+    pub(crate) local_identity: (),
     /// Authorization trust and short-lived context runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization: Option<AuthorizationConfig>,
@@ -1364,15 +1363,11 @@ impl AuthorizationConfig {
     }
 }
 
-/// Local identity provider configuration. Whether local users and sign-up are
-/// allowed is Auth state set from the Console or CLI; an old `enabled` key is
-/// refused rather than ignored, so it cannot silently turn local sign-in back on.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct LocalIdentityConfig {
-    /// Minimum local password length.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub password_min_length: Option<u16>,
+fn refuse_local_identity<'de, D: serde::Deserializer<'de>>(_: D) -> Result<(), D::Error> {
+    Err(serde::de::Error::custom(
+        "[auth.local_identity] is no longer read: set the minimum password length with \
+        `trellis sign-in set --password-min-length` or the Console's Sign-in page",
+    ))
 }
 
 /// Configuration for a built-in runtime subsystem.

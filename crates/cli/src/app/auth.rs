@@ -656,7 +656,10 @@ pub(super) async fn sign_in(format: OutputFormat, command: SignInCommand) -> mie
                     args.no_local_sign_up,
                     current.local_sign_up,
                 ),
-                providers: choose(args.providers, args.no_providers, current.providers),
+                password_min_length: args.password_min_length.map_or(
+                    current.password_min_length,
+                    auth_types::AuthPasswordMinLength,
+                ),
                 expected_revision: current.revision,
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
@@ -674,14 +677,15 @@ pub(super) async fn sign_in(format: OutputFormat, command: SignInCommand) -> mie
         output::Details::new("Sign-in")
             .field("Username and password", on("localUsers"))
             .field("Create own account", on("localSignUp"))
-            .field("Identity providers", on("providers"))
+            .field(
+                "Minimum password length",
+                output::field(settings, "passwordMinLength"),
+            )
             .print();
-        if settings["providers"] == json!(true) {
-            output::hint(format!(
-                "List the providers with {}.",
-                output::code("trellis sign-in providers list")
-            ));
-        }
+        output::hint(format!(
+            "OIDC sign-in is on while a provider is; see {}.",
+            output::code("trellis sign-in providers list")
+        ));
         Ok(())
     })
 }
@@ -715,6 +719,7 @@ async fn providers_command(
     let action = match &command {
         ProvidersCommand::Add(_) => "added",
         ProvidersCommand::Edit(_) => "updated",
+        ProvidersCommand::Enable { .. } => "enabled",
         ProvidersCommand::Disable { .. } => "disabled",
         _ => "shown",
     };
@@ -826,6 +831,13 @@ async fn providers_command(
             .into_diagnostic()?
             .provider
         }
+        ProvidersCommand::Enable { provider_id } => {
+            let current = get(&provider_id).await?;
+            auth.oidc_providers_enable(&mutation(&current))
+                .await
+                .into_diagnostic()?;
+            get(&provider_id).await?
+        }
         ProvidersCommand::Disable { provider_id } => {
             let current = get(&provider_id).await?;
             auth.oidc_providers_disable(&mutation(&current))
@@ -860,6 +872,7 @@ async fn providers_command(
             match action {
                 "added" => output::success(format!("Added identity provider {name}")),
                 "updated" => output::success(format!("Updated identity provider {name}")),
+                "enabled" => output::success(format!("Turned on identity provider {name}")),
                 "disabled" => output::success(format!("Turned off identity provider {name}")),
                 _ => {}
             }

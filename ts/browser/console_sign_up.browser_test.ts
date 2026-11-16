@@ -12,7 +12,7 @@ import {
   openConsole,
 } from "./browser_test_support.ts";
 
-test("an administrator sets sign-in methods, providers and their group roles in the Console, and a newcomer creates an account on the Portal", async () => {
+test("an administrator sets sign-in methods, providers, their group roles and the sign-in page in the Console, and a newcomer creates an account on the Portal", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     const browser = await chromium.launch({
@@ -53,50 +53,52 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       );
       await closed.close();
 
-      await admin.goto(`${runtime.consoleUrl}/console/admin/sign-in`);
-      // Each section saves on its own: saving local users neither saves nor
-      // discards an unsaved change to OIDC sign-in.
-      const oidc = admin.getByRole("switch", {
-        name: "Sign in through a provider",
-      });
-      await oidc.uncheck();
+      // One Sign-in item leads to the methods and, on a tab, the appearance.
       await admin
-        .getByRole("checkbox", { name: /Users can create their own account/ })
-        .check();
+        .getByRole("link", { name: "Sign-in", exact: true })
+        .first()
+        .click();
+      await admin.waitForURL(/\/console\/admin\/sign-in$/);
+      const tab = (name: string) =>
+        admin
+          .getByRole("navigation", { name: "Sign-in" })
+          .getByRole("link", { name, exact: true });
+      const selfSignUp = admin.getByRole("switch", {
+        name: "Users can create their own account",
+      });
+      const minimum = admin.getByLabel("Minimum password length");
+      await selfSignUp.check();
+      await minimum.fill("20");
+      await admin.getByText("Unsaved changes", { exact: true }).waitFor();
       await admin
         .getByRole("region", { name: "Local users" })
         .getByRole("button", { name: "Save", exact: true })
         .click();
       await admin.getByText("Local users saved.", { exact: true }).waitFor();
-      assert.equal(await oidc.isChecked(), false);
       await admin.reload();
-      await admin
-        .getByRole("checkbox", { name: /Users can create their own account/ })
-        .waitFor();
-      assert.equal(
-        await admin
-          .getByRole("checkbox", {
-            name: /Users can create their own account/,
-          })
-          .isChecked(),
-        true,
-      );
-      assert.equal(await oidc.isChecked(), true);
-      // OIDC sign-in is on but has no provider yet, so the page says nobody
-      // sees it, until a provider is turned on.
-      const idle = admin.getByText(
-        "No provider is turned on, so nobody sees this option yet.",
-        { exact: true },
-      );
-      await idle.waitFor();
+      await minimum.waitFor();
+      assert.equal(await selfSignUp.isChecked(), true);
+      assert.equal(await minimum.inputValue(), "20");
+
+      await tab("Appearance").click();
+      await admin.waitForURL(/\/console\/admin\/sign-in\/appearance$/);
+      await admin.getByLabel("Footer").fill("Acme support: help@acme.test");
+      await admin.getByRole("button", { name: "Save", exact: true }).click();
+      await admin.getByText(/^Saved\./).waitFor();
+      await tab("Methods").click();
+      await admin.waitForURL(/\/console\/admin\/sign-in$/);
+
+      // Without a provider that is on, OIDC sign-in is off.
+      const status = (text: string) =>
+        admin.getByText(text, { exact: true }).waitFor();
+      await status("No provider is on, so OIDC sign-in is off.");
       // The same page keeps OIDC providers and the roles their
       // groups give.
       const edit = async (name: string) => {
         await admin
-          .getByRole("row")
-          .filter({ hasText: name })
-          .getByRole("button", { name: "Edit", exact: true })
+          .getByRole("button", { name: `Actions for ${name}`, exact: true })
           .click();
+        await admin.getByRole("button", { name: "Edit", exact: true }).click();
         await admin.getByRole("heading", { name, exact: true }).waitFor();
       };
       for (const name of ["Acme login", "Beta login"]) {
@@ -114,7 +116,20 @@ test("an administrator sets sign-in methods, providers and their group roles in 
           .click();
         await admin.getByText("Provider saved.", { exact: true }).waitFor();
       }
-      await idle.waitFor({ state: "detached" });
+      await status(
+        "OIDC sign-in is on: users can sign in through Acme login or Beta login.",
+      );
+      // Each provider turns on and off in its row.
+      const beta = admin.getByRole("switch", { name: "Beta login" });
+      await beta.uncheck();
+      await admin
+        .getByText("Beta login turned off.", { exact: true })
+        .waitFor();
+      await status("OIDC sign-in is on: users can sign in through Acme login.");
+      await beta.check();
+      await status(
+        "OIDC sign-in is on: users can sign in through Acme login or Beta login.",
+      );
       await edit("Acme login");
       await admin.getByLabel("Group", { exact: true }).fill("engineering");
       await admin.getByRole("checkbox", { name: role, exact: true }).check();
@@ -152,9 +167,14 @@ test("an administrator sets sign-in methods, providers and their group roles in 
 
       const username = `newcomer-${ulid().toLowerCase()}`;
       const newcomer = await signUp();
+      // The saved appearance and minimum reach the Portal at once.
+      await newcomer.getByText("Acme support: help@acme.test").waitFor();
       await newcomer
         .getByRole("button", { name: "Create an account", exact: true })
         .click();
+      await newcomer
+        .getByText("At least 20 characters.", { exact: true })
+        .waitFor();
       await newcomer.getByLabel("Name", { exact: true }).fill("New Person");
       await newcomer.getByLabel("Username", { exact: true }).fill(username);
       await newcomer

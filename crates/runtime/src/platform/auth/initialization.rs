@@ -182,12 +182,7 @@ impl SqliteAuthorizationStore {
                 now,
                 |connection| {
                     Self::bootstrap_administrator_in_transaction(
-                        connection,
-                        &principal,
-                        username,
-                        password,
-                        self.settings.password_min_length,
-                        now,
+                        connection, &principal, username, password, now,
                     )?;
                     // Use exactly the API ownership set used by production
                     // built-in provider initialization, never all accepted APIs.

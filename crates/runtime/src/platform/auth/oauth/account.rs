@@ -800,15 +800,21 @@ pub(super) async fn page(
             .portal_login(&current.0, &current.1, now)
             .ok()
             .map(|login| login.principal_id);
-        Ok((action, current, guest, signed_in))
+        let minimum = storage
+            .authority
+            .reader()
+            .and_then(|reader| super::super::sign_in::read(&reader))
+            .map_err(|_| ErrorCode::ServerError)?
+            .password_min_length
+            .0;
+        Ok((action, current, guest, signed_in, minimum))
     })
     .await;
-    let (action, (_, csrf), guest, signed_in) = match prepared {
+    let (action, (_, csrf), guest, signed_in, minimum) = match prepared {
         Ok(prepared) => prepared,
         Err(code) => return error(code),
     };
     let (title, body) = if kind == "reset" {
-        let minimum = engine.server.store().authority.settings.password_min_length;
         (
             "Set a new password",
             format!(
@@ -947,10 +953,9 @@ pub(super) async fn submit(
                     crate::clock::unix_now(),
                 )
             })?;
-            let hash = hash_password(
-                &password,
-                engine.server.store().authority.settings.password_min_length,
-            )?;
+            let minimum = super::super::sign_in::read(&*engine.server.store().authority.reader()?)?
+                .password_min_length;
+            let hash = hash_password(&password, minimum.0)?;
             complete_reset(
                 engine.server.store(),
                 &token,

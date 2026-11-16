@@ -288,7 +288,8 @@ OAuth login and consent belong to Trellis's portal on the Trellis origin, never
 to an app; only the bundled Console shares that origin, at `/console`, unless it
 is given its own. Dex is an upstream OIDC integration-test dependency
 only, never a required Trellis deployment component. Administrators brand the
-portal per installation or per client from the Console's **Sign-in page** or
+portal per installation or per client from the Appearance tab of the Console's
+**Sign-in** page or
 `trellis theme show|set|remove [--client <id>]` (name, logo, palette, a few
 headings and a footer, plus an installation-only stylesheet); changes apply at
 once, and apps cannot replace the portal or change what consent shows.
@@ -710,11 +711,15 @@ Console role form, or `trellis roles create|edit --new-users`) to give every
 user created afterwards a base set of permissions. Each gets an ordinary role
 assignment an administrator can revoke; existing users are unchanged.
 
-Sign-in methods are Auth state changed live, never configuration: the Console's
-Sign-in methods page, `trellis sign-in set`, or `Auth.SignInSettings.Update`
-turn username-and-password sign-in, local self sign-up and OIDC sign-in
-(OIDC providers) on or off. Providers are managed on that page or with
-`trellis sign-in providers list|show|add|edit|disable|remove`; `add` prints the
+Sign-in methods are Auth state changed live, never configuration: the Methods
+tab of the Console's Sign-in page, `trellis sign-in set`, or
+`Auth.SignInSettings.Update` turn username-and-password sign-in and local self
+sign-up on or off and set the minimum password length (`passwordMinLength`,
+`--password-min-length`, 8 to 128, 12 by default) for new and changed
+passwords. OIDC sign-in has no switch: it is on while at least one provider is
+enabled. Auth refuses a change that would leave local users off and no provider
+enabled. Providers are managed on that page or with
+`trellis sign-in providers list|show|add|edit|enable|disable|remove`; `add` prints the
 provider's ID, which `Auth.Users.Find` takes, and the callback URL
 (`<Trellis origin>/portal/oidc/callback`) to register with the provider, and
 reads the client secret from `--client-secret-file` (`-` for standard input).
@@ -727,8 +732,9 @@ Certificate fingerprint field, `--certificate-fingerprint <sha256>`, or
 against the chain the provider presents and trusts that issuer for that
 provider only. Adding a provider nothing vouches for is refused with the
 fingerprint it presents. Removing a pin is saved even while the provider still
-needs it; its sign-ins then fail until it is pinned again. A disabled provider
-cannot be turned back on; add it again instead. People can create their
+needs it; its sign-ins then fail until it is pinned again. `disable` and
+`enable` (`Auth.OIDCProviders.Disable/Enable`) turn a provider off and back on.
+People can create their
 own account only where the installation allows it and the app they are signing
 in to does too (`trellis clients sign-up <app> --password|--providers`, the
 Console app form, or `Auth.OAuthClients.SignUp.Update`). New accounts get the

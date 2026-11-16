@@ -179,8 +179,11 @@ select {
   padding: 0.18rem;
 }
 
-.trellis-segment button {
+.trellis-segment button,
+.trellis-segment a {
+  align-items: center;
   border: 0;
+  display: inline-flex;
   border-radius: calc(var(--radius-field, 0.5rem) - 0.15rem);
   color: color-mix(in oklab, var(--color-base-content) 68%, transparent);
   cursor: pointer;
@@ -190,12 +193,14 @@ select {
   padding: 0 0.9rem;
 }
 
-.trellis-segment button.active {
+.trellis-segment button.active,
+.trellis-segment a[aria-current="page"] {
   background: var(--color-primary);
   color: var(--color-primary-content);
 }
 
-.trellis-segment button:focus-visible {
+.trellis-segment button:focus-visible,
+.trellis-segment a:focus-visible {
   box-shadow: var(--trellis-focus-ring);
   outline: none;
 }
