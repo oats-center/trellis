@@ -80,6 +80,14 @@ Manually entered email is not verified and never links or authenticates accounts
 Manual choices survive future OIDC logins. Provider unlink removes only its
 nonmanual profile contributions, not your other sign-in methods.
 
+Choose how people sign in on the Methods tab of the Console's **Platform →
+Sign-in** page, or with `trellis sign-in set` and `trellis sign-in providers`.
+Username and password sign-in, self sign-up and the minimum password length
+(12 by default, 8 to 128) apply at once; the minimum covers new and changed
+passwords, not existing ones. OIDC sign-in is on while at least one provider is,
+and each provider turns on and off by itself. Trellis refuses a change that
+would leave nobody able to sign in.
+
 Configure upstream providers with `openid profile email` when you want standard
 profile claims; Trellis preserves explicitly configured scope choices. Optional
 UserInfo fills missing signed-token profile fields only when its `sub` matches.

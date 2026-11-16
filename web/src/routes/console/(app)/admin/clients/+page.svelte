@@ -49,9 +49,18 @@
   let signIn = $state.raw<apis.auth.SignInSettingsGetOutput["settings"] | null>(
     null,
   );
+  // Whether any OIDC provider is on; unknown when the viewer can't list them.
+  let oidcOn = $state<boolean | undefined>(undefined);
   const web = $derived(kind === "browser");
 
   async function loadSignIn(): Promise<void> {
+    if (canPerform(authority.authority, "oidcProvidersList"))
+      oidcOn = (
+        await traverseAll(async (page) => {
+          const response = await trellis.oidcProvidersList({ page }).orThrow();
+          return { items: response.items, cursor: response.page.nextCursor };
+        })
+      ).items.some((provider) => provider.enabled);
     if (!canPerform(authority.authority, "signInSettingsGet")) return;
     signIn = (await trellis.signInSettingsGet({}).orThrow()).settings;
   }
@@ -444,7 +453,7 @@
                   New accounts get the roles marked for new users.
                 </p>
               </div>
-              {#each [{ label: "With a username and password", allowed: signIn?.localSignUp, off: "Account creation is turned off for this Trellis." }, { label: "With an OIDC sign-in", allowed: signIn?.providers, off: "OIDC sign-in is turned off for this Trellis." }] as option, index (option.label)}
+              {#each [{ label: "With a username and password", allowed: signIn?.localSignUp, off: "Account creation is turned off for this Trellis." }, { label: "With an OIDC sign-in", allowed: oidcOn, off: "No OIDC provider is on for this Trellis." }] as option, index (option.label)}
                 <label class="flex items-start gap-3"
                   >{#if index === 0}<input
                       class="toggle toggle-sm mt-0.5"
@@ -462,7 +471,7 @@
                         class="block text-sm text-base-content/60"
                         >{option.off}
                         <a class="link" href={resolve("/admin/sign-in")}
-                          >Sign-in methods</a
+                          >Sign-in</a
                         ></span
                       >{/if}</span
                   ></label

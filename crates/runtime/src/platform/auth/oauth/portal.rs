@@ -416,10 +416,8 @@ impl SqliteAuthorizationStore {
         {
             return Err(AuthError::Invalid("invalid account".into()));
         }
-        let hash = super::super::rpc_users::hash_password(
-            &account.password,
-            self.settings.password_min_length,
-        )?;
+        let minimum = super::super::sign_in::read(&*self.reader()?)?.password_min_length;
+        let hash = super::super::rpc_users::hash_password(&account.password, minimum.0)?;
         let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
         let csrf_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes()));
         let principal = id();

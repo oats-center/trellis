@@ -698,16 +698,17 @@ CREATE INDEX auth_portal_sessions_expiry ON auth_portal_sessions(expires_at);
 
 -- How people may sign in to this installation, edited live by administrators.
 -- Apps narrow self sign-up further; see auth_oauth_clients.metadata_json.
+-- OIDC sign-in is on exactly when a provider is active.
 CREATE TABLE auth_sign_in_settings (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     local_users INTEGER NOT NULL CHECK (local_users IN (0, 1)),
     local_sign_up INTEGER NOT NULL CHECK (local_sign_up IN (0, 1)),
-    providers INTEGER NOT NULL CHECK (providers IN (0, 1)),
+    password_min_length INTEGER NOT NULL CHECK (password_min_length BETWEEN 8 AND 128),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     updated_at INTEGER NOT NULL,
     CHECK (local_users = 1 OR local_sign_up = 0)
 );
-INSERT INTO auth_sign_in_settings VALUES (1, 1, 0, 1, 1, 0);
+INSERT INTO auth_sign_in_settings VALUES (1, 1, 0, 12, 1, 0);
 
 CREATE TABLE auth_oauth_clients (
     client_id TEXT PRIMARY KEY,

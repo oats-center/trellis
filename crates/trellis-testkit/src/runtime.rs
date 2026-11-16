@@ -1284,14 +1284,14 @@ fn validate_timeouts(timeouts: &TestTimeouts) -> Result<(), TrellisTestError> {
 fn validate_admin_credentials(username: &str, password: &str) -> Result<(), TrellisTestError> {
     if username.is_empty()
         || username.chars().any(char::is_control)
-        || password.chars().count() < 8
+        || password.chars().count() < 12
         || password.contains(['\r', '\n'])
     {
         return Err(TrellisTestError::new(
             TrellisTestErrorKind::InvalidConfiguration,
             TrellisTestStage::Validation,
             "administrator username must be nonempty without controls and password \
-            at least 8 characters without line breaks",
+            at least 12 characters without line breaks",
         ));
     }
     Ok(())

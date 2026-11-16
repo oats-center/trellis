@@ -216,6 +216,7 @@ export const CONSOLE_OPERATIONS = {
   signInSettingsUpdate: authRpc("SignInSettings.Update"),
   oidcProvidersList: authRpc("OIDCProviders.List"),
   oidcProvidersPut: authRpc("OIDCProviders.Put"),
+  oidcProvidersEnable: authRpc("OIDCProviders.Enable"),
   oidcProvidersDisable: authRpc("OIDCProviders.Disable"),
   oidcProvidersDelete: authRpc("OIDCProviders.Delete"),
   oidcRoleMappingsList: authRpc("OIDCRoleMappings.List"),

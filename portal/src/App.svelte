@@ -52,6 +52,8 @@
     providers: Provider[];
     /** Whether this sign-in's app lets people create their own account. */
     signUp: { password: boolean; providers: boolean };
+    /** Shortest password a new account may have. */
+    passwordMinLength: number;
     /** What an OIDC provider reported when it last refused this sign-in. */
     refusal?: Refusal;
   }
@@ -190,6 +192,7 @@
     password: false,
     providers: false,
   });
+  let passwordMinLength = $state<number | null>(null);
   let creating = $state(query.get("sign_up") === "1");
   let providerError = $state(false);
   // The server marks pages it serves with Trellis-generated certificates.
@@ -445,6 +448,7 @@
           localIdentity = result.localIdentity;
           refusal = result.refusal;
           signUp = result.signUp;
+          passwordMinLength = result.passwordMinLength;
         })
         .catch(() => {
           if (!controller.signal.aborted) providerError = true;
@@ -767,8 +771,14 @@
         name="password"
         type="password"
         autocomplete="new-password"
+        minlength={passwordMinLength}
+        maxlength="512"
+        aria-describedby={passwordMinLength ? "password-hint" : undefined}
         required
       />
+      {#if passwordMinLength}<p class="hint" id="password-hint">
+          At least {passwordMinLength} characters.
+        </p>{/if}
       <button class="primary block" type="submit" disabled={!csrf}
         >Create account</button
       >

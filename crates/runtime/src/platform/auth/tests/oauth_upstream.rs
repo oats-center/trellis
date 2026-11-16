@@ -1561,7 +1561,7 @@ staticPasswords:
         )),
         unpinned.provider.revision.0 .0,
     );
-    super::super::rpc_users::put_oidc_provider(
+    let repinned = super::super::rpc_users::put_oidc_provider(
         engine.server.store().clone(),
         mutation(&f.admin, &repin),
         repin,
@@ -1571,18 +1571,30 @@ staticPasswords:
     .unwrap();
     let (_, restored, _) = begin_company_sign_in().await;
     assert_eq!(restored.status(), reqwest::StatusCode::SEE_OTHER);
-    // With OIDC sign-in turned off for the installation, even a linked
-    // identity no longer signs in, and the Portal offers no provider.
-    let off = trellis_runtime_apis::__types::trellis::AuthSignInSettingsUpdateRequest {
-        local_users: true,
-        local_sign_up: false,
-        providers: false,
-        expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1u64.into()),
-        idempotency_key: id().into(),
-        extra: Default::default(),
-    };
-    super::super::sign_in::update(&authority, &mutation(&f.admin, &off), &off, now).unwrap();
-    let (transaction, refused, browser) = company_sign_in().await;
+    // Turning the only provider off turns OIDC sign-in off: a sign-in already
+    // at the provider no longer completes, and the Portal offers no provider.
+    let (transaction, begin, browser) = begin_company_sign_in().await;
+    let upstream = url::Url::parse(begin.headers()["location"].to_str().unwrap()).unwrap();
+    let state_change =
+        |revision| trellis_runtime_apis::__types::trellis::AuthOIDCProviderMutationRequest {
+            provider_id: repinned.provider.provider_id,
+            expected_revision: revision,
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+    let off = state_change(repinned.provider.revision);
+    let off =
+        super::super::rpc_users::disable_provider(&authority, &mutation(&f.admin, &off), &off, now)
+            .unwrap();
+    let returned = dex_login(
+        &browser,
+        upstream,
+        &issuer,
+        &callback,
+        "newcomer@example.com",
+    )
+    .await;
+    let refused = browser.get(returned).send().await.unwrap();
     assert_eq!(
         refused.headers()["location"].to_str().unwrap(),
         format!("/login?transaction={transaction}&error=upstream_login_failed")
@@ -1597,16 +1609,29 @@ staticPasswords:
         .json()
         .await
         .unwrap();
-    assert_eq!(sign_in["refusal"]["error"], "provider_changed", "{sign_in}");
-    let offered: serde_json::Value = http
-        .get(format!("{origin}/portal/providers"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
+    assert_eq!(
+        sign_in["refusal"]["error"], "provider_unavailable",
+        "{sign_in}"
+    );
+    let offered = || async {
+        http.get(format!("{origin}/portal/providers"))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()["providers"]
+            .clone()
+    };
+    assert_eq!(offered().await, serde_json::json!([]));
+    // Turned back on, the Portal offers it again.
+    let on = state_change(off.revision);
+    super::super::rpc_users::enable_provider(&authority, &mutation(&f.admin, &on), &on, now)
         .unwrap();
-    assert_eq!(offered["providers"], serde_json::json!([]));
+    assert_eq!(
+        offered().await[0]["providerId"],
+        repinned.provider.provider_id.to_string()
+    );
     shutdown.cancel();
     server.await.unwrap().unwrap();
     proxy_handle.graceful_shutdown(Some(Duration::from_secs(3)));

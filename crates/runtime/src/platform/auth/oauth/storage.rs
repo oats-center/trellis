@@ -583,8 +583,8 @@ impl OAuthStorage {
 
     /// How someone signing in to a pending authorization may create an account:
     /// what its active registered client allows, with password sign-up also
-    /// needing the installation to allow local users and local sign-up, and
-    /// provider sign-up needing it to allow OIDC sign-in.
+    /// needing the installation to allow local users and local sign-up.
+    /// Provider sign-up needs an active provider, which the callback checks.
     pub(super) fn authorization_sign_up(
         &self,
         id: &str,
@@ -617,7 +617,6 @@ impl OAuthStorage {
         )?;
         let settings = super::super::sign_in::read(&*self.authority.reader()?)?;
         sign_up.password &= settings.local_users && settings.local_sign_up;
-        sign_up.providers &= settings.providers;
         Ok(sign_up)
     }
 
@@ -1569,7 +1568,6 @@ mod tests {
                 ed25519_dalek::SigningKey::from_bytes(&[21; 32]),
                 super::super::super::sqlite::AuthSettings {
                     avatar_external_fetch_enabled: true,
-                    password_min_length: 12,
                     administration: Default::default(),
                     instance_id: ulid::Ulid::generate().to_string(),
                     account: "cimd-retention".into(),

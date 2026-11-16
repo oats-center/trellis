@@ -323,7 +323,6 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
         key,
         AuthSettings {
             avatar_external_fetch_enabled: true,
-            password_min_length: 12,
             administration: Default::default(),
             nats_sentinel: Some("sentinel-user-jwt".into()),
             instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),

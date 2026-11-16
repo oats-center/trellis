@@ -5,7 +5,7 @@ description: "Give the sign-in and consent page your name, logo, colours and tex
 
 The sign-in and consent page can carry your name, logo and colours, for the
 whole installation and for individual apps. Edit it in the Console under
-**Platform → Sign-in page**, or with the CLI:
+**Platform → Sign-in**, on the Appearance tab, or with the CLI:
 
 ```sh
 trellis theme set \

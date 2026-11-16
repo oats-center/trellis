@@ -1174,16 +1174,35 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
         .is_ok());
 }
 
+fn sign_in_settings(
+    store: &SqliteAuthorizationStore,
+    admin: &str,
+    revision: u64,
+    local_users: bool,
+    password_min_length: u32,
+) -> Result<AuthSignInSettingsGetResponse, AuthError> {
+    let input = AuthSignInSettingsUpdateRequest {
+        local_users,
+        local_sign_up: local_users,
+        password_min_length: AuthPasswordMinLength(password_min_length),
+        expected_revision: AuthRevision(revision.into()),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    crate::platform::auth::sign_in::update(store, &mutation(admin, &input), &input, NOW)
+}
+
 #[test]
-fn local_identity_settings_govern_password_length_and_password_sign_in() {
+fn the_sign_in_settings_minimum_governs_created_changed_and_signed_up_passwords() {
     let directory = tempfile::tempdir().unwrap();
-    let mut store = open(&directory, SigningKey::from_bytes(&[45; 32]));
-    store.settings.password_min_length = 20;
+    let store = open(&directory, SigningKey::from_bytes(&[45; 32]));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
         .initialize_administrator("admin", Some("an administrator password"), None, None, NOW)
         .map(|initialized| initialized.principal_id)
         .unwrap();
+    // 19 and 20 bytes, either side of the minimum set below.
+    let (short, exact) = ("nineteen characters", "twenty characters ok");
     let account = |username: &str, password: &str| AuthUserCreateRequest {
         given_name: None,
         family_name: None,
@@ -1194,45 +1213,104 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
         idempotency_key: id().into(),
         extra: Default::default(),
     };
-    let short = account("short", "nineteen characters");
+    // The default minimum of 12 lets the shorter password in.
+    let before = account("before", short);
+    create_user(&store, &mutation(&admin, &before), &before, NOW).unwrap();
+    let saved = sign_in_settings(&store, &admin, 1, true, 20).unwrap();
+    assert_eq!(saved.settings.password_min_length.0, 20);
+
+    let refused = account("short", short);
     assert!(matches!(
-        create_user(&store, &mutation(&admin, &short), &short, NOW),
+        create_user(&store, &mutation(&admin, &refused), &refused, NOW),
         Err(AuthError::Invalid(_))
     ));
-    let long = account("long", "twenty characters ok");
-    create_user(&store, &mutation(&admin, &long), &long, NOW).unwrap();
-    let sign_in = |store: &SqliteAuthorizationStore| {
+    let created = account("exact", exact);
+    let exact_id = create_user(&store, &mutation(&admin, &created), &created, NOW)
+        .unwrap()
+        .user
+        .principal_id
+        .to_string();
+
+    // Existing passwords still sign in; only new ones must meet the minimum.
+    let sign_in = |username: &str, password: &str| {
         let cookie = store.create_portal_session(NOW).unwrap();
         store.portal_local_login(
             &cookie.cookie,
             &cookie.csrf,
             &format!("{}{}", id(), "e".repeat(17)),
-            ("long", "twenty characters ok"),
+            (username, password),
             &id(),
             NOW,
         )
     };
-    sign_in(&store).unwrap();
-
-    // Local users stay on while nothing else lets anyone sign in: OIDC
-    // sign-in is on by default, but no provider is configured yet.
-    let store = Arc::new(store);
-    let settings = |revision: u64, local_users: bool, providers: bool| {
-        let input = AuthSignInSettingsUpdateRequest {
-            local_users,
-            local_sign_up: false,
-            providers,
-            expected_revision: AuthRevision(revision.into()),
+    sign_in("before", short).unwrap();
+    let login = sign_in("exact", exact).unwrap();
+    let change = |new_password: &str| {
+        let input = AuthPasswordChangeRequest {
+            current_password: exact.to_string().into(),
+            new_password: new_password.to_string().into(),
             idempotency_key: id().into(),
             extra: Default::default(),
         };
-        crate::platform::auth::sign_in::update(&store, &mutation(&admin, &input), &input, NOW)
+        change_password(
+            &store,
+            &mutation(&exact_id, &input),
+            &input,
+            &login.login_session_id,
+            NOW,
+        )
+    };
+    assert!(matches!(change(short), Err(AuthError::Invalid(_))));
+    change("another twenty chars").unwrap();
+
+    let sign_up = |username: &str, password: &str| {
+        let guest = store.create_portal_session(NOW).unwrap();
+        store.portal_local_sign_up(
+            &guest.cookie,
+            &guest.csrf,
+            &crate::platform::auth::oauth::LocalSignUp {
+                username: username.into(),
+                password: password.into(),
+                name: "Newcomer".into(),
+                email: String::new(),
+            },
+            NOW,
+        )
     };
     assert!(matches!(
-        settings(1, false, true),
+        sign_up("newcomer", short),
         Err(AuthError::Invalid(_))
     ));
-    sign_in(&store).unwrap();
+    sign_up("newcomer", exact).unwrap();
+    sign_in("newcomer", exact).unwrap();
+}
+
+#[test]
+fn sign_in_settings_and_providers_always_leave_a_way_to_sign_in() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(open(&directory, SigningKey::from_bytes(&[46; 32])));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("an administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    let sign_in = || {
+        let cookie = store.create_portal_session(NOW).unwrap();
+        store.portal_local_login(
+            &cookie.cookie,
+            &cookie.csrf,
+            &format!("{}{}", id(), "e".repeat(17)),
+            ("admin", "an administrator password"),
+            &id(),
+            NOW,
+        )
+    };
+    // With no provider, username and password is the only way in.
+    assert!(matches!(
+        sign_in_settings(&store, &admin, 1, false, 12),
+        Err(AuthError::Invalid(_))
+    ));
+    sign_in().unwrap();
 
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[21; 32]).unwrap();
     let company = AuthOIDCProviderPutRequest {
@@ -1258,30 +1336,41 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
     )
     .unwrap()
     .provider;
-    // With a provider to sign in through, turning local users off applies to the
-    // next sign-in, with no restart.
-    settings(1, false, true).unwrap();
-    assert!(matches!(sign_in(&store), Err(AuthError::Denied)));
-    // OIDC sign-in cannot go off too, and neither can its last provider.
-    let both_off = settings(2, false, false);
-    assert!(
-        matches!(both_off, Err(AuthError::Invalid(_))),
-        "{both_off:?}"
-    );
-    let disable = AuthOIDCProviderMutationRequest {
+    let change = |revision: AuthRevision| AuthOIDCProviderMutationRequest {
         provider_id: company.provider_id,
-        expected_revision: company.revision,
+        expected_revision: revision,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
+    // A provider that is off is no way in either.
+    let off = change(company.revision);
+    let off = disable_provider(&store, &mutation(&admin, &off), &off, NOW).unwrap();
     assert!(matches!(
-        disable_provider(&store, &mutation(&admin, &disable), &disable, NOW),
+        sign_in_settings(&store, &admin, 1, false, 12),
         Err(AuthError::Invalid(_))
     ));
-    // Once local users are back, the provider can go.
-    settings(2, true, true).unwrap();
-    sign_in(&store).unwrap();
-    disable_provider(&store, &mutation(&admin, &disable), &disable, NOW).unwrap();
+    let on = change(off.revision);
+    let on = enable_provider(&store, &mutation(&admin, &on), &on, NOW).unwrap();
+    // With a provider on, turning local users off applies to the next
+    // sign-in, with no restart.
+    sign_in_settings(&store, &admin, 1, false, 12).unwrap();
+    assert!(matches!(sign_in(), Err(AuthError::Denied)));
+    // The last provider that is on can then neither be turned off nor removed.
+    let last = change(on.revision);
+    assert!(matches!(
+        disable_provider(&store, &mutation(&admin, &last), &last, NOW),
+        Err(AuthError::Invalid(_))
+    ));
+    let last = change(on.revision);
+    assert!(matches!(
+        delete_provider(&store, &mutation(&admin, &last), &last, NOW),
+        Err(AuthError::Invalid(_))
+    ));
+    // Once local users are back, it can go.
+    sign_in_settings(&store, &admin, 2, true, 12).unwrap();
+    sign_in().unwrap();
+    let last = change(on.revision);
+    disable_provider(&store, &mutation(&admin, &last), &last, NOW).unwrap();
 }
 
 #[test]

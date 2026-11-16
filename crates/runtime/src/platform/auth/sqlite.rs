@@ -92,8 +92,6 @@ pub(crate) enum AuthError {
 #[derive(Clone, Debug)]
 pub(crate) struct AuthSettings {
     pub(crate) avatar_external_fetch_enabled: bool,
-    /// Shortest accepted local password, in bytes.
-    pub(crate) password_min_length: u16,
     pub(crate) administration: crate::config::AdministrationConfig,
     pub(crate) instance_id: String,
     pub(crate) account: String,
@@ -451,19 +449,12 @@ impl SqliteAuthorizationStore {
             .and_then(|auth| auth.instance_id.clone())
             .ok_or_else(|| RuntimeError::Platform("auth.instance_id is required".into()))?;
         let signer = SigningKey::from_bytes(&issuer_signing_key(config)?);
-        let local_identity = config
-            .auth
-            .as_ref()
-            .and_then(|auth| auth.local_identity.as_ref());
         let settings = AuthSettings {
             avatar_external_fetch_enabled: config
                 .auth
                 .as_ref()
                 .and_then(|auth| auth.avatar.as_ref())
                 .is_none_or(|avatar| avatar.external_fetch_enabled),
-            password_min_length: local_identity
-                .and_then(|local| local.password_min_length)
-                .unwrap_or(12),
             administration: config
                 .auth
                 .as_ref()

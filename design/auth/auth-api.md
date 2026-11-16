@@ -105,6 +105,13 @@ stored after ordinary rotation; explicit issuer revocation remains separate.
 
 ### Upstream Identity Providers
 
+`SignInSettings` holds `localUsers`, `localSignUp` and `passwordMinLength`.
+There is no OIDC switch: OIDC sign-in is on exactly while a provider is enabled,
+and `OIDCProviders.Enable` and `OIDCProviders.Disable` turn one provider on and
+off. Auth refuses a settings update, provider disable or provider delete that
+would leave local users off and no provider enabled, and the error says which
+to turn on first.
+
 A provider's issuer never changes; pointing at a different issuer means a new
 provider. Two providers that aren't deleted cannot share an issuer, and
 `OIDCProviders.Put` refuses the second with a validation error. Delete keeps the

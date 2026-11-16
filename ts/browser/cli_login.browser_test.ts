@@ -276,6 +276,10 @@ test("CLI login keeps one durable login that later commands connect with", async
         );
         assert.equal(disabled.enabled, false);
         assert.equal((await listed())[0]?.enabled, false);
+        const enabled = types.AuthOIDCProviderCodec.decode(
+          (await providers("enable", provider.providerId))["provider"],
+        );
+        assert.equal(enabled.enabled, true);
         // Scripts read the removal from JSON, like every other result.
         assert.deepEqual(await providers("remove", provider.providerId), {
           removed: true,

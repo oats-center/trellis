@@ -85,6 +85,9 @@ test(
         await page.getByText("Provider saved.").waitFor();
         const [provider] = await listed();
         assert.equal(provider?.certificateFingerprint, dex.fingerprint);
+        await page
+          .getByRole("button", { name: "Actions for Company", exact: true })
+          .click();
         await page.getByRole("button", { name: "Edit", exact: true }).click();
         assert.equal(await fingerprint.inputValue(), dex.fingerprint);
 
