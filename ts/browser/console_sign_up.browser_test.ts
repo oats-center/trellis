@@ -61,7 +61,7 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       });
       await oidc.uncheck();
       await admin
-        .getByRole("checkbox", { name: /People can create their own account/ })
+        .getByRole("checkbox", { name: /Users can create their own account/ })
         .check();
       await admin
         .getByRole("region", { name: "Local users" })
@@ -71,12 +71,12 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       assert.equal(await oidc.isChecked(), false);
       await admin.reload();
       await admin
-        .getByRole("checkbox", { name: /People can create their own account/ })
+        .getByRole("checkbox", { name: /Users can create their own account/ })
         .waitFor();
       assert.equal(
         await admin
           .getByRole("checkbox", {
-            name: /People can create their own account/,
+            name: /Users can create their own account/,
           })
           .isChecked(),
         true,

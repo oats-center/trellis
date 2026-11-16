@@ -261,7 +261,7 @@
 <section class="space-y-5">
   <PageToolbar
     title="Sign-in page"
-    description="How the sign-in and approval pages look to people."
+    description="How the sign-in and approval pages look to users."
   />
   <label class="trellis-field max-w-md"
     ><span class="trellis-field-label">Applies to</span><select

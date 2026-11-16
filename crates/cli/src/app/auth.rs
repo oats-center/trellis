@@ -667,7 +667,7 @@ pub(super) async fn sign_in(format: OutputFormat, command: SignInCommand) -> mie
     };
     output::emit(format, &result, |result| {
         if changed {
-            output::success("Updated how people sign in");
+            output::success("Updated how users sign in");
         }
         let settings = &result["settings"];
         let on = |key: &str| output::state(output::on_off(settings[key] == json!(true)));

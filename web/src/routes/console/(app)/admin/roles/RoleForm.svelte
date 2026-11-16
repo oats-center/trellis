@@ -188,7 +188,7 @@
   title={roleId ? (role?.title ?? "Edit role") : "New role"}
   description={roleId
     ? undefined
-    : "Choose a name and what people with it can do."}
+    : "Choose a name and what users with it can do."}
 />
 
 {#if error}<Notice variant="error"
@@ -218,7 +218,7 @@
         ><span class="trellis-field-label">Description</span><input
           class="input w-full"
           bind:value={description}
-          placeholder="What people with this role do"
+          placeholder="What users with this role do"
           disabled={saving}
         /></label
       >
@@ -231,8 +231,8 @@
         /><span
           ><span class="font-medium">Give to new users</span><span
             class="block text-sm text-base-content/65"
-            >Everyone added from now on starts with this role. People who
-            already have accounts keep the roles they have.</span
+            >Everyone added from now on starts with this role. Users who already
+            have accounts keep the roles they have.</span
           ></span
         ></label
       >
@@ -241,7 +241,7 @@
       <div>
         <h2 class="text-base font-semibold">Permissions</h2>
         <p class="text-sm text-base-content/65">
-          What people with this role can do.
+          What users with this role can do.
         </p>
       </div>
       {#if catalogError}<Notice variant="warning"

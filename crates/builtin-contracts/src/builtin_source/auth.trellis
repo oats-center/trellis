@@ -172,7 +172,7 @@ api auth@v1 {
   rpc RoleAssignments.Assign { input AuthRoleAssignRequest; output AuthRoleAssignResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Take a role away from a person.
   rpc RoleAssignments.Revoke { input AuthRoleRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// List permissions given directly to people, outside roles.
+  /// List permissions given directly to users, outside roles.
   rpc CapabilityGrants.List { input AuthCapabilityGrantsListRequest; output AuthCapabilityGrantsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   /// Give a person one permission or group directly, optionally until a set time.
   rpc CapabilityGrants.Grant { input AuthCapabilityGrantRequest; output AuthCapabilityGrantResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -202,19 +202,19 @@ api auth@v1 {
   rpc OAuthClients.Get { input AuthOAuthClientGetRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Register an app or change its settings.
   rpc OAuthClients.Put { input AuthOAuthClientPutRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  // Whether people signing in to this app may create their own account.
-  /// Choose whether people signing in to this app may create their own account.
+  // Whether users signing in to this app may create their own account.
+  /// Choose whether users signing in to this app may create their own account.
   rpc OAuthClients.SignUp.Update { input AuthOAuthClientSignUpUpdateRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// Turn an app off. People can no longer sign in to it.
+  /// Turn an app off. Users can no longer sign in to it.
   rpc OAuthClients.Disable { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Delete a registered app.
   rpc OAuthClients.Delete { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // The installation theme needs platform.manage; an app's theme clients.manage.
-  // How people may sign in to this installation; platform.manage.
-  /// How people may sign in to this installation.
+  // How users may sign in to this installation; platform.manage.
+  /// How users may sign in to this installation.
   rpc SignInSettings.Get { input AuthEmpty; output AuthSignInSettingsGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// Change how people may sign in. Takes effect immediately.
+  /// Change how users may sign in. Takes effect immediately.
   rpc SignInSettings.Update { input AuthSignInSettingsUpdateRequest; output AuthSignInSettingsGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// List sign-in page themes.
   rpc PortalThemes.List { input AuthPageRequest; output AuthPortalThemesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
@@ -227,7 +227,7 @@ api auth@v1 {
 
   // These handlers scope ordinary delegated access to the verified user.
   // Cross-user administration additionally requires trellis.managePrincipals.
-  /// List the apps people have allowed to act for them.
+  /// List the apps users have allowed to act for them.
   rpc Delegations.List { input AuthDelegationsListRequest; output AuthDelegationsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   /// See exactly what one app was allowed to do for a person.
   rpc Delegations.Review { input AuthDelegationReviewRequest; output AuthDelegationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -290,7 +290,7 @@ api auth@v1 {
   rpc Users.Find { input AuthUserFindRequest; output AuthUserFindResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Get one person's account.
   rpc Users.Get { input AuthUserGetRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// List people, optionally matching a search or status.
+  /// List users, optionally matching a search or status.
   rpc Users.List { input AuthPageRequest; output AuthUsersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   /// Create an account. It gets the roles marked for new users.
   rpc Users.Create { input AuthUserCreateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -485,14 +485,14 @@ api auth@v1 {
     }
     capability users.read {
       title "See users";
-      description "Find people and see their names, emails, and photos.";
+      description "Find users and see their names, emails, and photos.";
       grants "Can see everyone's name, email, and photo.";
       allows { rpc Users.List; rpc Users.Get; }
     }
     capability accounts.manage {
       administrative;
       title "Manage accounts";
-      description "Find, add, change and delete people's accounts and send them password reset links.";
+      description "Find, add, change and delete users' accounts and send them password reset links.";
       grants "Can create, change, sign out and delete any account except the default administrator's.";
       allows { rpc Users.Find; rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.Delete; rpc Users.PasswordReset.Create; }
     }
@@ -521,14 +521,14 @@ api auth@v1 {
       administrative;
       title "Force API replacements";
       description "Install API updates that break compatibility.";
-      grants "Affected apps lose access and are signed out until people approve them again.";
+      grants "Affected apps lose access and are signed out until users approve them again.";
       allows { rpc Apis.List; rpc Apis.Get; rpc Apis.Review; rpc Apis.ForceReplace; }
     }
     capability clients.manage {
       administrative;
       title "Manage apps";
       description "Register apps and change their sign-in settings.";
-      grants "Decides which apps can ask people for access.";
+      grants "Decides which apps can ask users for access.";
       allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.SignUp.Update; rpc OAuthClients.Disable; rpc OAuthClients.Delete; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
     }
     capability security.observe {

@@ -218,7 +218,7 @@
     title={own ? "Your apps" : "Connected apps"}
     description={own
       ? "Apps you have allowed to use your account."
-      : "Apps people have allowed to use their account."}
+      : "Apps users have allowed to use their account."}
   />
   {#if error}<Notice variant="warning">{error}</Notice>{/if}
 
@@ -277,8 +277,8 @@
                     >· {section.entries.length}
                     {groupBy === "app"
                       ? section.entries.length === 1
-                        ? "person"
-                        : "people"
+                        ? "user"
+                        : "users"
                       : section.entries.length === 1
                         ? "app"
                         : "apps"}</span

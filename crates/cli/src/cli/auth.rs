@@ -32,7 +32,7 @@ pub enum ClientsCommand {
         #[command(flatten)]
         args: crate::cli::ConfigArgs,
     },
-    /// Choose how people may create their own account while signing in to
+    /// Choose how users may create their own account while signing in to
     /// this app; options you leave out keep their current value.
     SignUp(ClientSignUpArgs),
     /// Disable a client at the explicit expected revision.
@@ -41,7 +41,7 @@ pub enum ClientsCommand {
     Delete(ClientMutationArgs),
 }
 
-/// How people may create their own account while signing in to one app.
+/// How users may create their own account while signing in to one app.
 #[derive(Debug, Args)]
 #[command(
     group(clap::ArgGroup::new("password_state").args(["password", "no_password"])),

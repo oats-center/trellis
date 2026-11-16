@@ -359,7 +359,7 @@
                       <span class="text-base-content/65"
                         >· {change.description === "Removed"
                           ? "removed"
-                          : "meaning changed; people will be asked again"}</span
+                          : "meaning changed; users will be asked again"}</span
                       >
                     </li>
                   {/each}
@@ -428,7 +428,7 @@
                   type="checkbox"
                   class="checkbox checkbox-sm"
                   bind:checked={acknowledgeConsentImpact}
-                />I understand people may need to approve access again.</label
+                />I understand users may need to approve access again.</label
               >
               <button
                 class="btn btn-error"

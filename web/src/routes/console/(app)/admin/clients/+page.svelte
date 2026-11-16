@@ -184,7 +184,7 @@
 <section class="space-y-5">
   <PageToolbar
     title="Apps"
-    description="Apps people can sign in to with Trellis."
+    description="Apps users can sign in to with Trellis."
   >
     {#snippet actions()}
       {#if canPerform(authority.authority, "oAuthClientsPut")}<button
@@ -211,7 +211,7 @@
         <EmptyState
           class="m-4"
           title="No apps yet"
-          description="Register an app so people can sign in to it."
+          description="Register an app so users can sign in to it."
         />
       {:else}
         <DataTable>
@@ -378,7 +378,7 @@
               <div class="trellis-field">
                 <span class="trellis-field-label">Return addresses</span>
                 <span class="trellis-field-help"
-                  >Where people come back to after signing in.</span
+                  >Where users come back to after signing in.</span
                 >
                 {#each redirects as _, index (index)}
                   <div class="flex gap-2">
@@ -426,7 +426,7 @@
               <div>
                 <h3 class="font-semibold">Allowed without asking</h3>
                 <p class="text-sm text-base-content/60">
-                  People who hold these aren't asked to approve them. When this
+                  Users who hold these aren't asked to approve them. When this
                   covers everything the app asks for, signing in asks nothing.
                 </p>
               </div>

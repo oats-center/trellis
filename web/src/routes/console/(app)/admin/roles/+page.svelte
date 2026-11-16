@@ -44,7 +44,7 @@
 <section class="space-y-5">
   <PageToolbar
     title="Roles"
-    description="Sets of permissions you give to people."
+    description="Sets of permissions you give to users."
   >
     {#snippet actions()}{#if canPerform(authority.authority, "rolesPut")}<a
           class="btn btn-primary"
@@ -58,7 +58,7 @@
       <EmptyState
         class="m-4"
         title="No roles yet"
-        description="Create a role to give people a set of permissions at once."
+        description="Create a role to give users a set of permissions at once."
       />
     {:else}
       <DataTable>

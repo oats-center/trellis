@@ -109,7 +109,7 @@
   <div>
     <span class="trellis-field-label">Roles from groups</span>
     <p class="trellis-field-help">
-      People in a group at this provider get these roles while they sign in with
+      Users in a group at this provider get these roles while they sign in with
       it.
     </p>
   </div>

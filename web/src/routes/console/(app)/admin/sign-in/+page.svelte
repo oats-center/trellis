@@ -88,12 +88,12 @@
   const oidcSummary = $derived.by(() => {
     if (!oidcSignIn) return "Nobody can sign in with an OIDC account.";
     if (!manageProviders)
-      return "People sign in with their organisation's account.";
+      return "Users sign in with their organisation's account.";
     if (activeProviders.length === 0)
       return "No provider is turned on, so nobody sees this option yet.";
     if (activeProviders.length > 2)
-      return `People sign in through ${activeProviders.length} providers.`;
-    return `People sign in through ${activeProviders.map((provider) => provider.title).join(" or ")}.`;
+      return `Users sign in through ${activeProviders.length} providers.`;
+    return `Users sign in through ${activeProviders.map((provider) => provider.title).join(" or ")}.`;
   });
 
   // Shows the saved settings, keeping a section's unsaved edits unless that
@@ -259,7 +259,7 @@
 <section class="space-y-6">
   <PageToolbar
     title="Sign-in methods"
-    description="Choose how people sign in to this Trellis. Each section applies when you save it."
+    description="Choose how users sign in to this Trellis. Each section applies when you save it."
   />
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if notice}<Notice variant="success">{notice}</Notice>{/if}
@@ -288,7 +288,7 @@
                     ><span class="method-word">{localUsers ? "On" : "Off"}</span
                     >
                     · {localUsers
-                      ? "People with an account here sign in with their password."
+                      ? "Users with an account here sign in with their password."
                       : "Nobody can sign in with a password."}{#if settings.localUsers !== localUsers}<span
                         class="method-unsaved">Not saved</span
                       >{/if}</span
@@ -309,7 +309,7 @@
                   bind:checked={localSignUp}
                   disabled={!localUsers}
                 /><span
-                  >People can create their own account <span
+                  >Users can create their own account <span
                     class="text-base-content/60"
                     >· in apps that also allow it</span
                   >{#if settings.localSignUp !== localSignUp}<span
@@ -409,7 +409,7 @@
             {#if providers.length === 0}
               <EmptyState
                 title="No providers yet"
-                description="Add your organisation's OIDC provider so people can sign in with it."
+                description="Add your organisation's OIDC provider so users can sign in with it."
               />
             {:else}
               <DataTable>

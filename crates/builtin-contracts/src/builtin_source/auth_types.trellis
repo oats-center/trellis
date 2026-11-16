@@ -74,7 +74,7 @@ model AuthActionSummary {
   kind: AuthActionKind;
   direction: AuthActionDirection;
 }
-/// The presentation group people choose access by; ungrouped capabilities
+/// The presentation group users choose access by; ungrouped capabilities
 /// belong to their API's own group.
 enum AuthCapabilityKind { capability; group; }
 /// A capability, or a developer-defined group that stands for its members.
@@ -354,7 +354,7 @@ model AuthOAuthClientPutRequest {
   expectedRevision: uint64;
   idempotencyKey: AuthIdempotencyKey;
 }
-/// How people may sign in to this installation. Takes effect immediately.
+/// How users may sign in to this installation. Takes effect immediately.
 model AuthSignInSettings {
   /// Sign in with a username and password.
   localUsers: bool;

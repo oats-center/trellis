@@ -265,7 +265,7 @@
 </script>
 
 <section class="space-y-5">
-  <PageToolbar title="Users" description="People who can sign in to Trellis.">
+  <PageToolbar title="Users" description="Everyone who can sign in to Trellis.">
     {#snippet actions()}
       <a class="btn btn-primary" href={resolve("/admin/users/new")}
         ><Icon name="plus" size={18} />New user</a
