@@ -259,7 +259,7 @@
 <section class="space-y-6">
   <PageToolbar
     title="Sign-in methods"
-    description="Choose how people sign in to this Trellis. Changes apply at once."
+    description="Choose how people sign in to this Trellis. Each section applies when you save it."
   />
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if notice}<Notice variant="success">{notice}</Notice>{/if}
