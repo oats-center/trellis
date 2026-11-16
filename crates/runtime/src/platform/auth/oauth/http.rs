@@ -252,7 +252,10 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                     .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                     .map(|peer| peer.0.ip());
                 let now = Instant::now();
-                let allowed = {
+                // The Portal's own built files are static and change nothing, so
+                // they never spend a peer's sign-in budget; otherwise every page
+                // load would, and users behind one address run out sooner.
+                let allowed = request.uri().path().starts_with("/portal-assets/") || {
                     let Ok(mut requests) = requests.lock() else {
                         return error(ErrorCode::ServerError);
                     };

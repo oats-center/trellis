@@ -626,6 +626,14 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
         .await
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    // The Portal's static files still load for a peer that spent its budget,
+    // so a page load never pushes users behind one address over the limit.
+    let asset = http
+        .get(format!("{origin}/portal-assets/theme-mode.js"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(asset.status(), reqwest::StatusCode::OK);
     stop.cancel();
     host.await.unwrap();
 }

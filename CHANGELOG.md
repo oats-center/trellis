@@ -24,6 +24,12 @@ and this project adheres to
   details such as username and email under it, ordinary states shrink to a
   coloured dot, and no page scrolls sideways.
 
+### Fixed
+
+- The sign-in Portal's static files no longer count against the per-address
+  request limit, so users signing in from one address (an office, or the new
+  theme script on every page load) don't get an empty page from a 429.
+
 ## [0.100.0-rc.43] - 2026-11-16
 
 ### Added
