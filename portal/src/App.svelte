@@ -70,7 +70,6 @@
     id: string;
     title: string;
     description: string;
-    grants: string;
     members: string[];
     administrative: boolean;
     required: boolean;
@@ -258,7 +257,6 @@
       id: capability.capabilityId,
       title: capability.title,
       description: capability.description,
-      grants: capability.grants,
       members: capability.members?.map((member) => member.title) ?? [],
       administrative: capability.administrative,
       required: capability.required,
@@ -323,14 +321,10 @@
   let needsConfirmation = $derived(
     (view?.confirmAdministration ?? false) && selectedAdministration.length > 0,
   );
-  // Administration is never selected in bulk.
   let optional = $derived(
     groups
       .flatMap((group) => group.choices)
-      .filter(
-        (choice) =>
-          !choice.required && choice.available && !choice.administrative,
-      ),
+      .filter((choice) => !choice.required && choice.available),
   );
   let blocked = $derived(
     groups.some((group) =>
@@ -920,8 +914,7 @@
               class="link"
               onclick={() => {
                 const select = !allOptionalSelected;
-                for (const group of groups)
-                  if (!group.admin) setGroup(group, select);
+                for (const group of groups) setGroup(group, select);
               }}>{allOptionalSelected ? "Clear all" : "Select all"}</button
             >
           {/if}
@@ -1024,21 +1017,37 @@
       </div>
 
       {#if confirming}
+        {@const shown =
+          selectedAdministration.length > 4
+            ? selectedAdministration.slice(0, 3)
+            : selectedAdministration}
         <section
-          class="alert administration"
+          class="alert warn administration"
           aria-labelledby="administration-title"
         >
           <h2 id="administration-title">
-            Allow {appName} to manage this Trellis?
+            Let {appName} manage this Trellis?
           </h2>
-          <p>Only allow this if you expected it. {appName} will be able to:</p>
+          <p>It will be able to:</p>
           <ul>
-            {#each selectedAdministration as choice (choice.id)}
-              <li>
-                <strong>{choice.title}</strong>{#if choice.grants}: {choice.grants}{/if}
-              </li>
+            {#each shown as choice (choice.id)}
+              <li>{choice.title}</li>
             {/each}
+            {#if shown.length < selectedAdministration.length}
+              <li>
+                <details>
+                  <summary
+                    >{selectedAdministration.length - shown.length} more</summary
+                  >
+                  {selectedAdministration
+                    .slice(shown.length)
+                    .map((choice) => choice.title)
+                    .join(", ")}
+                </details>
+              </li>
+            {/if}
           </ul>
+          <p>Allow this only if you trust {appName}.</p>
           <input type="hidden" name="confirm_administration" value="true" />
         </section>
       {/if}

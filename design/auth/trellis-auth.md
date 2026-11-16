@@ -387,9 +387,9 @@ substitutes for the product.
 
 Interactive OAuth approval initially selects only required access and
 capabilities the user previously remembered for the client; optional
-capabilities and groups start unselected. Select all and Unselect all are
-explicit actions over optional access, and Select all never selects
-administration; required access stays selected and unavailable access stays
+capabilities and groups start unselected. Select all and Clear all are
+explicit actions over all optional access the user may grant, administration
+included; required access stays selected and unavailable access stays
 disabled. Administrative choices are never remembered and take a separate
 confirmation step. A requested group is shown with the capabilities it
 includes. Selection is presentation, not authorization: the user must still
