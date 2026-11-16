@@ -184,8 +184,10 @@ that identity.
   `Auth.ServiceClaims.Remove` turns the identity away and rejects anything
   pending.
 
-`trellis svc <name> create` without `--source` creates a claim and prints a
-generated seed; the Console's Add service form takes the public key instead.
+`trellis svc <name> create --public-key <key>` without `--source` creates a
+claim for the public key the service's owner made with `trellis keys new`, as
+the Console's Add service form does; without `--public-key` it generates the
+identity and prints its seed once.
 While waiting, the review URL names the claim:
 `<origin>/console/admin/services/<claimId>?update=<updateId>`.
 
