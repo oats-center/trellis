@@ -8,6 +8,22 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.44] - 2026-11-16
+
+### Changed
+
+- The Console and the sign-in Portal follow the device's light or dark setting.
+  The Console's theme button cycles System, Light and Dark, and the choice
+  carries to the Portal when both are on the same origin. A choice saved under
+  the old setting is not kept.
+- New dark colours: cool ink neutrals with the bronze accent, and an orange
+  warning that is distinct from the accent.
+- On the Sign-in methods page, a method's On is always green; OIDC sign-in that
+  is on with no provider turned on shows a separate warning.
+- Console lists put the data first at phone width: the name takes the row with
+  details such as username and email under it, ordinary states shrink to a
+  coloured dot, and no page scrolls sideways.
+
 ## [0.100.0-rc.43] - 2026-11-16
 
 ### Added
