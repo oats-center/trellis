@@ -707,7 +707,7 @@ assignment an administrator can revoke; existing users are unchanged.
 
 Sign-in methods are Auth state changed live, never configuration: the Console's
 Sign-in methods page, `trellis sign-in set`, or `Auth.SignInSettings.Update`
-turn username-and-password sign-in, local self sign-up and company sign-in
+turn username-and-password sign-in, local self sign-up and OIDC sign-in
 (OIDC providers) on or off. Providers are managed on that page or with
 `trellis sign-in providers list|show|add|edit|disable|remove`; `add` prints the
 provider's ID, which `Auth.Users.Find` takes, and the callback URL
@@ -816,7 +816,7 @@ inspect Trellis's internal authorization registry.
   `trellis.auth.v1:accounts.manage` additionally exposes username, password status,
   and lifecycle/revision, and permits inactive-user lookup and username search.
 - `accountProfileWrite` permits `Users.Profile.Update` on your own names, manual
-  unverified email, and picture source (`pictureProviderId` of a linked company
+  unverified email, and picture source (`pictureProviderId` of a linked OIDC
   sign-in, or `useGravatar`). Use the self
   account's `profileRevision` and an idempotency key. Omitted fields stay
   unchanged; clear flags restore eligible linked-provider values. Manual choices
@@ -855,7 +855,7 @@ Render with `referrerpolicy="no-referrer"` and show local initials on error; a
 current URL for someone with no picture answers `204 No Content`, which an
 `<img>` also treats as an error.
 Revoking `usersRead` stops new URLs, not already issued ones. Without a chosen
-company sign-in picture, any email, verified or not, falls back to Gravatar,
+OIDC sign-in picture, any email, verified or not, falls back to Gravatar,
 which receives its normalized SHA-256 hash; the hash remains personal
 information. Operators disable all
 remote-derived images, including cached ones, with

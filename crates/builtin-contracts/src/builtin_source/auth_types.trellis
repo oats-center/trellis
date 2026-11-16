@@ -361,7 +361,7 @@ model AuthSignInSettings {
   /// Create your own username-and-password account, through apps that also
   /// allow it. Needs localUsers.
   localSignUp: bool;
-  /// Sign in with an active identity provider (company sign-in). At least one
+  /// Sign in with an active identity provider (OIDC sign-in). At least one
   /// of localUsers and providers stays on.
   providers: bool;
   revision: AuthRevision;
@@ -606,19 +606,19 @@ model AuthUserAccountDetails {
   username: string;
   hasLocalPassword: bool;
   profileRevision: AuthRevision;
-  /// The linked company sign-in whose picture the account shows. Absent, it
+  /// The linked OIDC sign-in whose picture the account shows. Absent, it
   /// shows the Gravatar for its email.
   pictureProviderId?: ulid;
 }
 model AuthUserGetRequest { userId: ulid; }
-/// Exactly one key: a user ID, or a company sign-in.
+/// Exactly one key: a user ID, or an OIDC sign-in.
 model AuthUserFindRequest { userId?: ulid; identity?: AuthUserFindIdentity; }
-/// A company sign-in: the configured provider's ID and the provider's exact `sub`.
+/// An OIDC sign-in: the configured provider's ID and the provider's exact `sub`.
 model AuthUserFindIdentity { providerId: ulid; subject: string; }
 /// Absent when no account matches.
 model AuthUserFindResponse { found?: AuthUserFindMatch; }
 /// The account, with its state and revision in `user.account.principal`, and
-/// every company sign-in linked to it.
+/// every OIDC sign-in linked to it.
 model AuthUserFindMatch { user: AuthUser; identities: list<AuthUserIdentity>; }
 model AuthUserGetResponse { user: AuthUser; }
 type AuthUsersListResponse = CursorPage<AuthUser>;
@@ -654,9 +654,9 @@ model AuthUserProfileUpdateRequest {
   familyName?: AuthName;
   email?: string;
   clearEmail?: bool;
-  /// Show the picture from this linked company sign-in.
+  /// Show the picture from this linked OIDC sign-in.
   pictureProviderId?: ulid;
-  /// Show the Gravatar for the account's email instead of a company sign-in's picture.
+  /// Show the Gravatar for the account's email instead of an OIDC sign-in's picture.
   useGravatar?: bool;
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
@@ -679,7 +679,7 @@ type AuthUserIdentitiesListResponse = CursorPage<AuthUserIdentity>;
 model AuthUserIdentityUnlinkRequest { identityId: ulid; idempotencyKey: AuthIdempotencyKey; }
 model AuthIdentityLinkCreateRequest { providerId: ulid; idempotencyKey: AuthIdempotencyKey; }
 model AuthIdentityLinkCreateResponse { authorizationUrl: string; expiresAt: timestamp; }
-/** A company sign-in provider a person can link to their own account. */
+/** An OIDC provider a person can link to their own account. */
 model AuthIdentityLinkProvider { providerId: ulid; title: string; }
 model AuthIdentityLinkProvidersResponse { providers: list<AuthIdentityLinkProvider>; }
 

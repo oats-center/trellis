@@ -1240,7 +1240,7 @@ async fn users_find_command(format: OutputFormat, args: &UserFindArgs) -> miette
         .ok_or_else(|| miette::miette!("no user has that sign-in"))?;
     output::emit(format, &found, |found| {
         print_user(&found["user"])
-            .section("Company sign-ins")
+            .section("OIDC sign-ins")
             .items(output::list(found, "identities").iter().map(|identity| {
                 format!(
                     "{}  {}  {}",

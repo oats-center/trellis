@@ -407,7 +407,7 @@ fn the_picture_comes_from_the_creating_provider_or_the_owners_choice_else_gravat
         rpc_users::update_profile(&store, &mutation(principal, &input), &input, now)
     };
 
-    // A company sign-up, as the Portal creates it: no password, one identity.
+    // An OIDC sign-up, as the Portal creates it: no password, one identity.
     let signed_up = id();
     store
         .transaction(|connection| rpc_users::insert_user(connection, &signed_up, NOW))

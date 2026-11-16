@@ -1,5 +1,5 @@
-// A real Dex for company sign-in tests, served from a private CA nothing on
-// the machine trusts, the way a company identity provider often is.
+// A real Dex for OIDC sign-in tests, served from a private CA nothing on
+// the machine trusts, the way an OIDC provider often is.
 
 import { execFileSync, spawn } from "node:child_process";
 import { X509Certificate } from "node:crypto";

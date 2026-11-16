@@ -639,13 +639,13 @@ pub(super) fn unlink_identity(
             )?;
             if protected {
                 return Err(AuthError::Invalid(
-                    "the default administrator's company sign-ins cannot be disconnected".into(),
+                    "the default administrator's OIDC sign-ins cannot be disconnected".into(),
                 ));
             }
             if !alternative {
                 return Err(AuthError::Invalid(
                     "this is the account's only way to sign in; set a password or connect \
-                    another company sign-in first"
+                    another OIDC sign-in first"
                         .into(),
                 ));
             }
@@ -712,7 +712,7 @@ pub(super) fn directory_account_access(
 }
 
 /// Find one user, enabled or not, by ID or by the exact provider and subject of
-/// a linked company sign-in. A miss is an empty result, not an error.
+/// a linked OIDC sign-in. A miss is an empty result, not an error.
 pub(super) fn find_user(
     store: &SqliteAuthorizationStore,
     connection: &Connection,

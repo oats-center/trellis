@@ -54,14 +54,35 @@ test("an administrator sets sign-in methods, providers and their group roles in 
       await closed.close();
 
       await admin.goto(`${runtime.consoleUrl}/console/admin/sign-in`);
+      // Each section saves on its own: saving local users neither saves nor
+      // discards an unsaved change to OIDC sign-in.
+      const oidc = admin.getByRole("switch", {
+        name: "Sign in through a provider",
+      });
+      await oidc.uncheck();
       await admin
         .getByRole("checkbox", { name: /People can create their own account/ })
         .check();
-      await admin.getByRole("button", { name: "Save", exact: true }).click();
       await admin
-        .getByText("Sign-in methods saved.", { exact: true })
+        .getByRole("region", { name: "Local users" })
+        .getByRole("button", { name: "Save", exact: true })
+        .click();
+      await admin.getByText("Local users saved.", { exact: true }).waitFor();
+      assert.equal(await oidc.isChecked(), false);
+      await admin.reload();
+      await admin
+        .getByRole("checkbox", { name: /People can create their own account/ })
         .waitFor();
-      // The same page keeps company sign-in providers and the roles their
+      assert.equal(
+        await admin
+          .getByRole("checkbox", {
+            name: /People can create their own account/,
+          })
+          .isChecked(),
+        true,
+      );
+      assert.equal(await oidc.isChecked(), true);
+      // The same page keeps OIDC providers and the roles their
       // groups give.
       const edit = async (name: string) => {
         await admin

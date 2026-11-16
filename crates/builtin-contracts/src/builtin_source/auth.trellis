@@ -271,13 +271,13 @@ api auth@v1 {
   rpc Users.Profile.Update { input AuthUserProfileUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Change your own password. Your other sign-ins end.
   rpc Users.Password.Change { input AuthPasswordChangeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// Start linking a company sign-in to your account.
+  /// Start linking an OIDC sign-in to your account.
   rpc Users.IdentityLink.Create { input AuthIdentityLinkCreateRequest; output AuthIdentityLinkCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// List the company sign-in providers you can link to your account.
+  /// List the OIDC providers you can link to your account.
   rpc Users.IdentityLink.Providers { input AuthEmpty; output AuthIdentityLinkProvidersResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// List the company sign-ins linked to an account.
+  /// List the OIDC sign-ins linked to an account.
   rpc UserIdentities.List { input AuthPageRequest; output AuthUserIdentitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
-  /// Remove a linked company sign-in from an account.
+  /// Remove a linked OIDC sign-in from an account.
   rpc UserIdentities.Unlink { input AuthUserIdentityUnlinkRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   /// List an account's sign-ins.
   rpc Sessions.List { input AuthPageRequest; output AuthSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
@@ -286,7 +286,7 @@ api auth@v1 {
 
   // trellis.auth.v1:accounts.manage, for every account but the default
   // administrator's. Administrative account access grants no domain data.
-  /// Find one person's account, enabled or not, by its user ID or by a linked company sign-in.
+  /// Find one person's account, enabled or not, by its user ID or by a linked OIDC sign-in.
   rpc Users.Find { input AuthUserFindRequest; output AuthUserFindResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Get one person's account.
   rpc Users.Get { input AuthUserGetRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -302,15 +302,15 @@ api auth@v1 {
   rpc Users.PasswordReset.Create { input AuthPasswordResetCreateRequest; output AuthPasswordResetCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.auth.v1:users.manage.
-  /// List company sign-in providers.
+  /// List OIDC providers.
   rpc OIDCProviders.List { input AuthPageRequest; output AuthOIDCProvidersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
-  /// Get one company sign-in provider.
+  /// Get one OIDC provider.
   rpc OIDCProviders.Get { input AuthOIDCProviderGetRequest; output AuthOIDCProviderGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// Add a company sign-in provider or change its settings.
+  /// Add an OIDC provider or change its settings.
   rpc OIDCProviders.Put { input AuthOIDCProviderPutRequest; output AuthOIDCProviderGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// Turn a company sign-in provider off.
+  /// Turn an OIDC provider off.
   rpc OIDCProviders.Disable { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
-  /// Delete a company sign-in provider.
+  /// Delete an OIDC provider.
   rpc OIDCProviders.Delete { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.auth.v1:roles.manage; mappings apply only to verified claims from this provider.
@@ -449,13 +449,13 @@ api auth@v1 {
     }
     capability identities.read {
       title "See linked sign-ins";
-      description "See which company accounts you can sign in with.";
+      description "See which OIDC accounts you can sign in with.";
       grants "Can see your linked accounts.";
       allows { rpc UserIdentities.List; }
     }
     capability identities.manage {
       title "Manage linked sign-ins";
-      description "Link or unlink company accounts.";
+      description "Link or unlink OIDC accounts.";
       grants "Changes which accounts can sign in as you.";
       allows { rpc Users.IdentityLink.Providers; rpc Users.IdentityLink.Create; rpc UserIdentities.Unlink; }
     }
@@ -506,7 +506,7 @@ api auth@v1 {
     capability roles.manage {
       administrative;
       title "Manage roles and access";
-      description "Change roles, who has them, what each person may do, and roles given by company sign-in.";
+      description "Change roles, who has them, what each person may do, and roles given by OIDC sign-in.";
       grants "Can give any person or app access to anything in this Trellis.";
       allows { rpc Roles.List; rpc Roles.Get; rpc Roles.Put; rpc Roles.Delete; rpc RoleAssignments.List; rpc RoleAssignments.Assign; rpc RoleAssignments.Revoke; rpc CapabilityGrants.List; rpc CapabilityGrants.Grant; rpc CapabilityGrants.Revoke; rpc Capabilities.List; rpc OIDCRoleMappings.List; rpc OIDCRoleMappings.Put; rpc OIDCRoleMappings.Delete; rpc Principals.EffectiveAccess; }
     }

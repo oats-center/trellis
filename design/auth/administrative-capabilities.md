@@ -38,11 +38,11 @@ people's accounts: every account except the default administrator's, whatever
 capabilities the account holds. Its holders are administrators, and what a
 target account can do does not limit them. `Users.Find` looks one account up,
 enabled or not, by user ID or by the exact provider and `sub` of a linked
-company sign-in, and returns its lifecycle state, revision, and linked
+OIDC sign-in, and returns its lifecycle state, revision, and linked
 sign-ins; a miss is an empty result. Deleting an account revokes the principal,
 signing it out everywhere, and removes its sign-ins, profile, and access; the
-principal ID stays behind for the audit record, and the username and company
-sign-ins are free again, so that person's next company sign-in creates a new
+principal ID stays behind for the audit record, and the username and OIDC
+sign-ins are free again, so that person's next OIDC sign-in creates a new
 account.
 
 ## Services

@@ -172,7 +172,7 @@ pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, 
         }))
 }
 
-/// The company sign-in an account was created with, whose picture it shows
+/// The OIDC sign-in an account was created with, whose picture it shows
 /// until its owner chooses another. An account with a password was not, and
 /// shows its Gravatar. This applies only before the profile is first stored.
 fn creation_provider(
@@ -264,8 +264,7 @@ pub(super) fn write(
             )?;
             if !linked {
                 return Err(AuthError::Invalid(
-                    "the picture can come only from a company sign-in linked to this account"
-                        .into(),
+                    "the picture can come only from an OIDC sign-in linked to this account".into(),
                 ));
             }
             current.picture_provider = Some(provider);

@@ -61,7 +61,7 @@
   const pictureProviderId = $derived(user?.account?.pictureProviderId);
   const pictureProviderTitle = $derived(
     linkProviders.find((item) => item.providerId === pictureProviderId)
-      ?.title ?? "your company sign-in",
+      ?.title ?? "your OIDC sign-in",
   );
   let profilePending = $state(false);
   let profileUncertain = $state(false);
@@ -394,7 +394,7 @@
               id="profile-email-help"
               class="mt-1 text-xs text-base-content/60"
               >{user.emailVerified
-                ? "Verified by your company sign-in. Changing it removes the verification."
+                ? "Verified by your OIDC sign-in. Changing it removes the verification."
                 : "Not verified."}</span
             >
             <span class="mt-1 text-xs text-base-content/60">
@@ -475,7 +475,7 @@
                     <div class="text-xs text-base-content/60">
                       {hasLocalIdentity
                         ? "Set"
-                        : "Not set: this account signs in with a company account only"}
+                        : "Not set: this account signs in with an OIDC account only"}
                     </div>
                   </div>
                   {#if hasLocalIdentity}
@@ -551,7 +551,7 @@
                   </div>
                 {:else}
                   <p class="p-3 text-sm text-base-content/60">
-                    Company sign-in isn't set up on this Trellis.
+                    OIDC sign-in isn't set up on this Trellis.
                   </p>
                 {/each}
               </div>

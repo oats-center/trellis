@@ -193,7 +193,7 @@ test("CLI login keeps one durable login that later commands connect with", async
           login.principalId,
         );
 
-        // An operator adds a company sign-in provider and gets the ID that
+        // An operator adds an OIDC provider and gets the ID that
         // `users find` takes and the callback URL to register upstream. The
         // secret comes from a file, never the command line.
         const providers = async (...args: string[]) => {

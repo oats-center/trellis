@@ -6,7 +6,7 @@
 #
 # No environment variable has to be preset. Locally the runner builds the CLI
 # and server the tests launch; the testkit acquires NATS itself, and the runner
-# downloads the pinned Dex release the company sign-in tests start. With
+# downloads the pinned Dex release the OIDC sign-in tests start. With
 # TRELLIS_TEST_STAGED=1 (as set by `scripts/check.sh`) or in CI it only checks
 # that they exist. TRELLIS_BROWSER_CONCURRENCY overrides the number of
 # concurrent test files.
