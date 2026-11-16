@@ -8,6 +8,35 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `Auth.OIDCProviders.Enable` and `trellis sign-in providers enable <ID>` turn
+  a disabled provider back on.
+- The minimum password length is a live sign-in setting
+  (`passwordMinLength`, 8 to 128, default 12), set in the Console or with
+  `trellis sign-in set --password-min-length N`. It applies to new passwords,
+  password changes, resets and sign-up; the Portal's sign-up form shows it.
+
+### Changed
+
+- OIDC sign-in has no separate switch: it is on exactly while at least one
+  provider is on. `AuthSignInSettings.providers` and `sign-in set
+--[no-]providers` are gone. Auth still refuses a change that would leave
+  neither username and password sign-in nor any provider on.
+- `[auth.local_identity]` is no longer configuration; a config that still has
+  it fails to start with a pointer to the new setting. The effective minimum
+  for existing installations becomes 12 (it was 8 unless configured).
+- The Console's Sign-in methods and Sign-in page are one Sign-in page with
+  Methods and Appearance tabs. Methods lists local-user settings as plain rows
+  and the OIDC providers with an on/off switch each.
+- The Console's service page shows each instance by its own name, ID and key
+  fingerprint (instances provisioned by the CLI all looked like the service),
+  with its state, connection, build and actions (turn on, turn off, settings,
+  remove); a status line in the header; Enable and Remove service; and an
+  always-visible update history saying what each update changed and who
+  decided it. Service updates now report `decidedBy`, and instances report
+  `state` and `upToDate`. The Devices list names devices the same way.
+
 ## [0.100.0-rc.44] - 2026-11-16
 
 ### Changed
