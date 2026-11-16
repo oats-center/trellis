@@ -75,9 +75,8 @@ cargo run --manifest-path demos/rust/device/Cargo.toml -- \
   --device-root-secret <root-secret>
 ```
 
-For a device whose identity has not yet been enrolled, also pass the one-use
-`--provisioning-secret <provisioning-secret>` argument returned by provisioning.
-Omit it when reconnecting an already enrolled, ready device.
+`dev provision` returns no one-use provisioning secret today
+(`provisioningSecret: null`), so leave out `--provisioning-secret`.
 
 The generated participant facade provides the `fieldOps` RPC, operation, event,
 transfer, and state APIs used by the device.
