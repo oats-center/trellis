@@ -12,9 +12,10 @@ import {
   browserRuntimeOptions,
   loginCliAsAdministrator,
 } from "./browser_test_support.ts";
+import { startDex } from "./dex_support.ts";
 
 test(
-  "CLI explicitly consents to administration, resumes custody, and manages clients, catalog revisions, service identities, and Portal themes",
+  "CLI explicitly consents to administration, resumes custody, and manages clients, catalog revisions, service identities, Portal themes, and sign-in providers' pinned certificates",
   { timeout: 120_000 },
   async () => {
     await withTrellisRuntime(async (runtime) => {
@@ -363,6 +364,61 @@ test(
           (await run("theme", "show", "--client", "trellis.console")).theme,
           undefined,
         );
+        // The server trusts only the system's certificates and Dex is served
+        // from a private CA, so Auth reaches Dex only through the CLI's pin.
+        // This catches the CLI dropping --certificate-fingerprint, an edit
+        // that leaves it out losing the pin, and --no-certificate-fingerprint
+        // not clearing it.
+        const dex = await startDex({
+          directory,
+          redirectUri: `${runtime.trellisUrl}/portal/oidc/callback`,
+          emails: [],
+        });
+        try {
+          const add = (...flags: string[]) =>
+            run(
+              "sign-in",
+              "providers",
+              "add",
+              "--name",
+              "Company",
+              "--issuer",
+              dex.issuer,
+              "--client-id",
+              dex.clientId,
+              ...flags,
+            );
+          const pinned = async () =>
+            (await run("sign-in", "providers", "list")).items.map(
+              (item: { certificateFingerprint?: string | null }) =>
+                item.certificateFingerprint ?? null,
+            );
+          await assert.rejects(
+            add(),
+            // The CLI wraps its error text, so compare it without the wrapping.
+            (error: Error) =>
+              error.message
+                .replace(/[\s│]/g, "")
+                .includes(`issuer'sSHA-256fingerprintis${dex.fingerprint}`),
+          );
+          assert.deepEqual(await pinned(), []);
+          const { provider } = await add(
+            "--certificate-fingerprint",
+            dex.fingerprint,
+          );
+          assert.equal(provider.certificateFingerprint, dex.fingerprint);
+          const edit = (...flags: string[]) =>
+            run("sign-in", "providers", "edit", provider.providerId, ...flags);
+          const renamed = await edit("--name", "Company SSO");
+          assert.equal(renamed.provider.title, "Company SSO");
+          assert.deepEqual(await pinned(), [dex.fingerprint]);
+          await edit("--no-certificate-fingerprint");
+          assert.deepEqual(await pinned(), [null]);
+          await edit("--certificate-fingerprint", dex.fingerprint);
+          assert.deepEqual(await pinned(), [dex.fingerprint]);
+        } finally {
+          await dex.stop();
+        }
         await run("logout");
         await assert.rejects(run("clients", "list"));
       } finally {
