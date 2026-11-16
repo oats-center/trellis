@@ -19,6 +19,12 @@ and this project adheres to
 
 ### Changed
 
+- The Console's service and device settings mark required settings Required
+  instead of listing them in a banner, use plain words ("Clear" for no value,
+  "Reset" or "Use service-wide" to drop a value set here, "No value" for an
+  empty one), and mark secrets with a lock; a secret being typed can be shown
+  with an eye button.
+
 - OIDC sign-in has no separate switch: it is on exactly while at least one
   provider is on. `AuthSignInSettings.providers` and `sign-in set
 --[no-]providers` are gone. Auth still refuses a change that would leave

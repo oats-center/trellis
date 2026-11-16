@@ -14,6 +14,7 @@
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import Notice from "$lib/components/Notice.svelte";
+  import Icon from "$lib/components/Icon.svelte";
 
   type View = apis.auth.ConfigGetOutput;
   type Field = View["fields"][number];
@@ -54,6 +55,9 @@
   // What the administrator typed for the loaded target, by field name.
   // Untouched fields are absent; switching targets discards them.
   let drafts = $state<Record<string, string>>({});
+  // Secrets typed here that the administrator chose to see; a saved secret is
+  // never sent back, so only a draft can be shown.
+  let revealed = $state<Record<string, boolean>>({});
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
   let busy = $state(false);
@@ -148,16 +152,9 @@
 
   function placeholder(field: Field): string {
     if (field.secret) return field.isSet ? "Set — type to replace" : "Not set";
-    if (field.value === null) return "null";
+    if (field.value === null) return "No value";
     if (field.default === undefined) return "";
     return `Default: ${typeof field.default === "string" ? field.default : JSON.stringify(field.default)}`;
-  }
-
-  // Whether the value is stored at the loaded target itself, not inherited.
-  function setHere(field: Field): boolean {
-    return loadedInstanceId
-      ? field.source === "instance"
-      : field.source === "deployment";
   }
 
   function sourceLabel(field: Field): string {
@@ -165,7 +162,7 @@
       case "instance":
         return "Set for this instance";
       case "deployment":
-        return loadedInstanceId ? "From the service" : "Set";
+        return loadedInstanceId ? "Same as every instance" : "Set";
       case "default":
         return "Default";
       default:
@@ -365,14 +362,6 @@
     </div>
     {#if notice}<Notice variant="success">{notice}</Notice>{/if}
     {#if error}<Notice variant="error">{error}</Notice>{/if}
-    {#if view.missing.length > 0}<Notice variant="warning"
-        >Its instances wait until {view.missing.length === 1
-          ? "this is"
-          : "these are"} set: {view.fields
-          .filter((field) => view?.missing.includes(field.name))
-          .map((field) => field.title)
-          .join(", ")}.</Notice
-      >{/if}
     {#if behind.length > 0}<Notice variant="info"
         >{behind.map(nameOf).join(", ")}
         {behind.length === 1 ? "uses" : "use"} the settings from when
@@ -393,8 +382,15 @@
             <label class="trellis-field-label" for={`setting-${field.name}`}
               >{field.title}</label
             >
-            {#if field.required && field.source === "unset"}<span
-                class="badge badge-warning badge-sm">Required</span
+            {#if field.required}<span
+                class={[
+                  "badge badge-sm",
+                  field.source === "unset" ? "badge-warning" : "badge-ghost",
+                ]}>Required</span
+              >{/if}
+            {#if field.secret}<span
+                class="inline-flex items-center gap-1 text-xs text-base-content/60"
+                ><Icon name="lock" size={12} />Secret</span
               >{/if}
             {#if field.restart}<span class="badge badge-neutral badge-sm"
                 >Applies after restart</span
@@ -404,38 +400,74 @@
             >
           </span>
           <span class="flex gap-2">
-            <input
-              id={`setting-${field.name}`}
-              class={["input w-full", !isText(field) && "font-mono"]}
-              type={field.secret ? "password" : "text"}
-              autocomplete="off"
-              disabled={!editable || busy || !ready}
-              placeholder={placeholder(field)}
-              value={drafts[field.name] ?? (field.secret ? "" : shown(field))}
-              oninput={(event) => {
-                drafts = {
-                  ...drafts,
-                  [field.name]: event.currentTarget.value,
-                };
-              }}
-            />
-            {#if editable && types(field).includes("null") && !(field.value === null && setHere(field))}<button
+            <label
+              class={[
+                "input w-full",
+                !isText(field) && "font-mono",
+                (!editable || busy || !ready) && "input-disabled",
+              ]}
+              ><input
+                id={`setting-${field.name}`}
+                class="grow"
+                type={field.secret &&
+                !(revealed[field.name] && drafts[field.name])
+                  ? "password"
+                  : "text"}
+                autocomplete="off"
+                disabled={!editable || busy || !ready}
+                placeholder={placeholder(field)}
+                value={drafts[field.name] ?? (field.secret ? "" : shown(field))}
+                oninput={(event) => {
+                  drafts = {
+                    ...drafts,
+                    [field.name]: event.currentTarget.value,
+                  };
+                }}
+              />{#if field.secret}<button
+                  type="button"
+                  class="btn btn-ghost btn-xs btn-square -mr-2"
+                  aria-label={`${revealed[field.name] ? "Hide" : "Show"} ${field.title}`}
+                  aria-pressed={revealed[field.name] ?? false}
+                  disabled={!drafts[field.name]}
+                  title={drafts[field.name]
+                    ? undefined
+                    : "A saved secret is never shown; type a new one to see it."}
+                  onclick={() => {
+                    revealed = {
+                      ...revealed,
+                      [field.name]: !revealed[field.name],
+                    };
+                  }}
+                  ><Icon
+                    name={revealed[field.name] ? "eyeOff" : "eye"}
+                    size={16}
+                  /></button
+                >{/if}</label
+            >
+            {#if editable && types(field).includes("null") && (field.secret ? field.isSet : field.value !== null)}<button
                 type="button"
                 class="btn btn-ghost btn-sm whitespace-nowrap"
                 disabled={busy || !ready}
-                aria-label={`Set ${field.title} to null`}
+                aria-label={`Clear ${field.title}`}
                 onclick={() =>
-                  void store(field, "null", `${field.title} set to null.`)}
-                >Set to null</button
+                  void store(field, "null", `${field.title} cleared.`)}
+                >Clear</button
               >{/if}
             {#if editable && field.isSet && (!loadedInstanceId || field.source === "instance")}<button
                 type="button"
                 class="btn btn-ghost btn-sm"
                 disabled={busy || !ready}
-                aria-label={`Clear ${field.title}`}
+                aria-label={loadedInstanceId
+                  ? `Use the service-wide ${field.title}`
+                  : `Reset ${field.title}`}
                 onclick={() =>
-                  void store(field, "unset", `${field.title} cleared.`)}
-                >Clear</button
+                  void store(
+                    field,
+                    "unset",
+                    loadedInstanceId
+                      ? `${field.title} uses the service-wide value again.`
+                      : `${field.title} reset.`,
+                  )}>{loadedInstanceId ? "Use service-wide" : "Reset"}</button
               >{/if}
           </span>
           <span class="trellis-field-help">{field.description}</span>

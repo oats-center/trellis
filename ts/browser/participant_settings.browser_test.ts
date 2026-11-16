@@ -48,15 +48,24 @@ test("an administrator sets a waiting service's settings from the link it printe
         );
         await completeConsoleEntry(page, BROWSER_ADMIN);
         const settings = page.getByRole("region", { name: "Settings" });
-        await settings
-          .getByText(
-            "Its instances wait until these are set: API key, Endpoint.",
-          )
-          .waitFor();
+        // The settings its instances wait for are the ones marked required.
+        await settings.getByLabel("Endpoint", { exact: true }).waitFor();
+        assert.equal(
+          await settings.getByText("Required", { exact: true }).count(),
+          2,
+        );
         await settings
           .getByLabel("Endpoint", { exact: true })
           .fill("https://one.example");
         await settings.getByLabel("API key", { exact: true }).fill("k1");
+        // A secret is typed hidden, and only what was typed can be shown.
+        const typedKey = settings.getByLabel("API key", { exact: true });
+        assert.equal(await typedKey.getAttribute("type"), "password");
+        await settings
+          .getByRole("button", { name: "Show API key", exact: true })
+          .click();
+        assert.equal(await typedKey.getAttribute("type"), "text");
+        assert.equal(await typedKey.inputValue(), "k1");
         // A nullable secret takes plain text, not JSON.
         await settings.getByLabel("Signing key", { exact: true }).fill("s1");
         await settings
@@ -155,7 +164,7 @@ test("an administrator overrides the only instance's settings, null included, wi
           assert.equal(await region.isDisabled(), true);
           await save.click({ timeout: 1_000 }).catch(() => {});
           wired.releaseToPage();
-          await settings.getByText("From the service").first().waitFor();
+          await settings.getByText("Same as every instance").first().waitFor();
           await runtime.waitFor(() => region.isEnabled());
           assert.equal(
             await region.inputValue(),
@@ -173,24 +182,24 @@ test("an administrator overrides the only instance's settings, null included, wi
           await endpoint.fill("https://two.example");
           await apiKey.fill("k2");
           await settings
-            .getByRole("button", { name: "Set Region to null", exact: true })
+            .getByRole("button", { name: "Clear Region", exact: true })
             .click();
-          await settings.getByText("Region set to null.").waitFor();
+          await settings.getByText("Region cleared.").waitFor();
           assert.equal(await region.inputValue(), "");
-          assert.equal(await region.getAttribute("placeholder"), "null");
+          assert.equal(await region.getAttribute("placeholder"), "No value");
           await settings
             .getByRole("button", {
-              name: "Set Signing key to null",
+              name: "Clear Signing key",
               exact: true,
             })
             .click();
-          await settings.getByText("Signing key set to null.").waitFor();
+          await settings.getByText("Signing key cleared.").waitFor();
           assert.equal(await endpoint.inputValue(), "https://two.example");
           assert.equal(await apiKey.inputValue(), "k2");
           await save.click();
           await settings.getByText("Settings saved.").waitFor();
           assert.equal(await region.inputValue(), "");
-          assert.equal(await region.getAttribute("placeholder"), "null");
+          assert.equal(await region.getAttribute("placeholder"), "No value");
         } finally {
           wired.gate.dispose();
         }

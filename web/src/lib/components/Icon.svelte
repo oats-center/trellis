@@ -10,6 +10,8 @@
   import Cpu from "lucide-svelte/icons/cpu";
   import Database from "lucide-svelte/icons/database";
   import Ellipsis from "lucide-svelte/icons/ellipsis";
+  import Eye from "lucide-svelte/icons/eye";
+  import EyeOff from "lucide-svelte/icons/eye-off";
   import Globe from "lucide-svelte/icons/globe";
   import Key from "lucide-svelte/icons/key";
   import LayoutGrid from "lucide-svelte/icons/layout-grid";
@@ -83,9 +85,13 @@
     | "laptop"
     | "braces"
     | "logOut"
-    | "lock";
+    | "lock"
+    | "eye"
+    | "eyeOff";
 
   const components = {
+    eye: Eye,
+    eyeOff: EyeOff,
     check: Check,
     activity: Activity,
     alert: TriangleAlert,
