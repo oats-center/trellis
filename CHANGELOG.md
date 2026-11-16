@@ -25,7 +25,7 @@ and this project adheres to
 
 - `trellis svc <ID> provision --instance-seed` is gone; use `--public-key`.
   `trellis keys new` prints "Public key" (JSON `publicKey`, was `sessionKey`).
-- "Company sign-in" is called OIDC sign-in everywhere: the Console, the sign-in
+- "Company sign-in" is called OIDC sign-in, and "people" is "users", everywhere: the Console, the sign-in
   Portal, CLI help, Auth's messages, and the Auth contract's capability
   descriptions, which changes the grants text people consent to.
 - The Console's Sign-in methods page has a Local users section and an OIDC
