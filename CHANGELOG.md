@@ -15,11 +15,15 @@ and this project adheres to
   owner made with `trellis keys new`, so the administrator never handles the
   seed. Both check the key is a valid Ed25519 public key first. Running
   `provision --public-key` again with the same key selects that instance.
-- The Console's Add service form takes an optional IDL in place of the
-  "package" toggle: with one it adds the service, without one the service
-  introduces itself on first connect. It either creates a key in the browser
-  and shows the seed once, or takes a public key the owner sends; only the
-  public key reaches Trellis.
+- The Console's Add service form takes the service's own IDL files
+  (`trellis.toml` and `.trellis`, by file or folder) in place of the "package"
+  toggle; without them the service introduces itself on first connect. Auth
+  resolves the dependencies itself (`Auth.Packages.Resolve`) from its built-in
+  packages and the packages of services already installed, choosing the highest
+  matching version, and the form asks for the files of any package it doesn't
+  have. Nothing is fetched from a registry. The form either creates a key in the
+  browser and shows the seed once, or takes a public key the owner sends; only
+  the public key reaches Trellis.
 
 ### Changed
 
