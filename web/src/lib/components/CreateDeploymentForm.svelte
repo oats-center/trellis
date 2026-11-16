@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apis } from "trellis-web-generated";
+  import { type apis } from "trellis-web-generated";
   import {
     base64urlDecode,
     base64urlEncode,
@@ -22,10 +22,24 @@
   const authority = getConsoleAuthority();
   const noun = $derived(kind === "service" ? "service" : "device type");
   let title = $state("");
-  // The IDL file is the exact source closure the service was built from (the
-  // JSON Auth recompiles). Without it a service is added as a claim: whatever
-  // first connects with its key presents its own IDL for approval.
-  let idl = $state("");
+  // The IDL is the service's own trellis.toml and .trellis files. Auth builds
+  // the evidence from them, taking dependencies from the packages it holds;
+  // the user supplies files for any it lacks. Without an IDL a service is added
+  // as a claim: whatever first connects with its key presents its own IDL for
+  // approval.
+  type PackageFiles = {
+    manifest?: string;
+    files: { path: string; text: string }[];
+    names: string[];
+  };
+  let root = $state<PackageFiles | null>(null);
+  let packageName = $state("");
+  let packageVersion = $state("");
+  let extras = $state<Record<string, PackageFiles>>({});
+  let resolution = $state<apis.auth.PackagesResolveOutput | null>(null);
+  let resolving = $state(false);
+  let resolveError = $state<string | null>(null);
+  let resolveGeneration = 0;
   let chosenParticipant = $state("");
   let keyMode = $state<"create" | "existing">("create");
   let publicKey = $state("");
@@ -43,51 +57,43 @@
   let seed = $state<string | null>(null);
   let seedDialog: HTMLDialogElement | undefined = $state();
 
-  type ParsedIdl =
-    | { ok: true; evidence: unknown; participants: string[] }
-    | { ok: false; message: string };
-  const parsed = $derived.by((): ParsedIdl | null => {
-    if (!idl.trim()) return null;
-    let value: unknown;
-    try {
-      value = JSON.parse(idl);
-    } catch {
-      return { ok: false, message: "This isn't an IDL file." };
-    }
-    if (typeof value !== "object" || value === null)
-      return { ok: false, message: "This isn't an IDL file." };
-    const { rootPackage, packages } = value as {
-      rootPackage?: unknown;
-      packages?: unknown;
-    };
-    const root = Array.isArray(packages)
-      ? (packages as { name?: unknown; source?: unknown }[]).find(
-          (entry) => entry?.name === rootPackage,
-        )
-      : undefined;
-    if (typeof rootPackage !== "string" || typeof root?.source !== "string")
-      return { ok: false, message: "This isn't an IDL file." };
-    // The source is presentation-canonical, so every top-level participant
-    // starts a line with its kind and name.
-    const pattern = new RegExp(`^${kind} ([A-Za-z_][A-Za-z0-9_]*) \\{$`, "gm");
-    const participants = [...root.source.matchAll(pattern)].map(
-      (match) => `${rootPackage}.${match[1]}`,
-    );
-    if (participants.length === 0)
-      return {
-        ok: false,
-        message: `This IDL doesn't declare a ${kind}.`,
-      };
-    return { ok: true, evidence: value, participants };
-  });
+  const participants = $derived(
+    (resolution?.participants ?? [])
+      .filter((participant) => participant.kind === kind)
+      .map((participant) => participant.participantId),
+  );
   const participantId = $derived(
-    parsed?.ok
-      ? parsed.participants.length === 1
-        ? parsed.participants[0]
-        : parsed.participants.includes(chosenParticipant)
-          ? chosenParticipant
-          : ""
-      : "",
+    participants.length === 1
+      ? participants[0]
+      : participants.includes(chosenParticipant)
+        ? chosenParticipant
+        : "",
+  );
+  const evidence = $derived(resolution?.packageEvidence);
+  const idlProblem = $derived.by((): string | null => {
+    if (!root) return null;
+    if (root.files.length === 0) return "Choose its .trellis files too.";
+    if (!root.manifest && (!packageName.trim() || !packageVersion.trim()))
+      return "Without trellis.toml, give the package's name and version.";
+    if (resolveError) return resolveError;
+    if (!resolution) return null;
+    if (resolution.unknownImports.length > 0)
+      return `Add its trellis.toml. It imports from ${resolution.unknownImports.join(", ")}, which Trellis doesn't have.`;
+    if (resolution.missing.length > 0) return null;
+    if (participants.length === 0) return `This IDL doesn't declare a ${kind}.`;
+    return null;
+  });
+  const usedPackages = $derived(
+    (resolution?.dependencies ?? []).map(
+      (dependency) =>
+        `${dependency.name} ${dependency.version} (${
+          dependency.origin === "builtin"
+            ? "built in"
+            : dependency.origin === "supplied"
+              ? "your files"
+              : "installed"
+        }${dependency.otherVersions.length > 0 ? `; highest of ${dependency.otherVersions.length + 1} that match` : ""})`,
+    ),
   );
   const publicKeyError = $derived.by(() => {
     const value = publicKey.trim();
@@ -103,24 +109,124 @@
     }
     return "A public key is 43 letters, digits, - or _.";
   });
-  const withIdl = $derived(kind === "device" || parsed !== null);
+  const withIdl = $derived(kind === "device" || root !== null);
   const ready = $derived(
     !busy &&
       !uncertain &&
+      !resolving &&
       title.trim() !== "" &&
-      (withIdl ? parsed?.ok === true && participantId !== "" : true) &&
+      (withIdl ? evidence !== undefined && participantId !== "" : true) &&
       (sharing === null || sharingUnderstood) &&
       (kind === "device" ||
         keyMode === "create" ||
         (publicKey.trim() !== "" && publicKeyError === null)),
   );
 
-  async function chooseFile(event: Event): Promise<void> {
+  /** Read a package's trellis.toml and .trellis files from a file selection. */
+  async function readPackage(
+    list: FileList | null | undefined,
+  ): Promise<PackageFiles | null> {
+    const picked = [...(list ?? [])]
+      .map((file) => ({ file, path: file.webkitRelativePath || file.name }))
+      .filter(
+        ({ path }) =>
+          path.endsWith(".trellis") ||
+          path === "trellis.toml" ||
+          path.endsWith("/trellis.toml"),
+      );
+    if (picked.length === 0) return null;
+    // In a folder, the shallowest trellis.toml is the package's; source paths
+    // are relative to it.
+    const [manifest] = picked
+      .filter(({ path }) => !path.endsWith(".trellis"))
+      .sort((a, b) => a.path.split("/").length - b.path.split("/").length);
+    const base = manifest ? manifest.path.slice(0, -"trellis.toml".length) : "";
+    const sources = picked.filter(
+      ({ path }) => path.endsWith(".trellis") && path.startsWith(base),
+    );
+    return {
+      manifest: manifest ? await manifest.file.text() : undefined,
+      files: await Promise.all(
+        sources.map(async ({ file, path }) => ({
+          path: path.slice(base.length),
+          text: await file.text(),
+        })),
+      ),
+      names: [...(manifest ? [manifest] : []), ...sources].map(
+        ({ path }) => path,
+      ),
+    };
+  }
+
+  async function chooseRoot(event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    idl = await file.text();
+    const chosen = await readPackage(input.files);
     input.value = "";
+    if (disposed) return;
+    root = chosen;
+    extras = {};
+    sharing = null;
+    await resolvePackages();
+  }
+
+  async function chooseExtra(name: string, event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const chosen = await readPackage(input.files);
+    input.value = "";
+    if (disposed || !chosen) return;
+    extras = { ...extras, [name]: chosen };
+    await resolvePackages();
+  }
+
+  /** Ask Auth to build the evidence, or to name what it still needs. */
+  async function resolvePackages(): Promise<void> {
+    const generation = ++resolveGeneration;
+    resolution = null;
+    resolveError = null;
+    const current = root;
+    if (
+      !current ||
+      current.files.length === 0 ||
+      (!current.manifest && (!packageName.trim() || !packageVersion.trim()))
+    ) {
+      resolving = false;
+      return;
+    }
+    const supplied = Object.entries(extras);
+    const unnamed = supplied.find(([, files]) => !files.manifest);
+    if (unnamed) {
+      resolveError = `Include ${unnamed[0]}'s trellis.toml with its files.`;
+      resolving = false;
+      return;
+    }
+    resolving = true;
+    try {
+      const response = await trellis
+        .packagesResolve({
+          root: {
+            files: current.files,
+            ...(current.manifest
+              ? { manifest: current.manifest }
+              : { name: packageName.trim(), version: packageVersion.trim() }),
+          },
+          ...(supplied.length > 0
+            ? {
+                packages: supplied.map(([, files]) => ({
+                  manifest: files.manifest,
+                  files: files.files,
+                })),
+              }
+            : {}),
+        })
+        .orThrow();
+      if (disposed || generation !== resolveGeneration) return;
+      resolution = response;
+    } catch (cause) {
+      if (disposed || generation !== resolveGeneration) return;
+      resolveError = projectConsoleError(cause).message;
+    } finally {
+      if (!disposed && generation === resolveGeneration) resolving = false;
+    }
   }
 
   async function submit(): Promise<void> {
@@ -164,20 +270,19 @@
             deploymentId: response.claim.claimId,
           }),
         };
-      } else if (parsed?.ok) {
-        const input = apis.auth.API.actions[
-          "rpc:Deployments.Create"
-        ].input.decode({
-          title: name,
-          kind,
-          participantId,
-          packageEvidence: parsed.evidence,
-          ...(sharing && sharingUnderstood
-            ? { acknowledgeSharedApis: true }
-            : {}),
-          idempotencyKey: ulid(),
-        });
-        const response = await trellis.deploymentsCreate(input).orThrow();
+      } else if (evidence) {
+        const response = await trellis
+          .deploymentsCreate({
+            title: name,
+            kind,
+            participantId,
+            packageEvidence: evidence,
+            ...(sharing && sharingUnderstood
+              ? { acknowledgeSharedApis: true }
+              : {}),
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
         if (disposed) return;
         const deploymentId = response.deployment.deploymentId;
         added = {
@@ -291,37 +396,156 @@
       <div class="trellis-field">
         <label class="trellis-field-label" for="deployment-idl"
           >{kind === "service" ? "Service IDL (optional)" : "Device IDL"}</label
-        ><textarea
-          id="deployment-idl"
-          class="textarea min-h-32 w-full font-mono text-xs"
-          bind:value={idl}
-          required={kind === "device"}
-          spellcheck="false"
-          disabled={busy || uncertain}
-          aria-describedby="deployment-idl-help"
-          aria-invalid={parsed?.ok === false}
-        ></textarea>
+        >
         <div class="flex flex-wrap items-center gap-2">
           <input
+            id="deployment-idl"
             type="file"
+            multiple
             class="file-input file-input-sm w-full sm:w-auto"
-            accept=".json,application/json"
-            aria-label="Choose an IDL file"
+            accept=".trellis,.toml"
+            required={kind === "device" && root === null}
             disabled={busy || uncertain}
-            onchange={(event) => void chooseFile(event)}
+            aria-describedby="deployment-idl-help"
+            aria-invalid={idlProblem !== null}
+            onchange={(event) => void chooseRoot(event)}
           />
+          <label
+            class={[
+              "btn btn-outline btn-sm",
+              (busy || uncertain) && "btn-disabled",
+            ]}
+            >Choose a folder<input
+              type="file"
+              class="sr-only"
+              webkitdirectory
+              disabled={busy || uncertain}
+              onchange={(event) => void chooseRoot(event)}
+            /></label
+          >
         </div>
+        {#if root}
+          <ul
+            class="font-mono text-xs text-base-content/70"
+            aria-label="Chosen IDL files"
+          >
+            {#each root.names as name (name)}<li>{name}</li>{/each}
+          </ul>
+          <button
+            type="button"
+            class="btn btn-ghost btn-xs self-start"
+            disabled={busy || uncertain}
+            onclick={() => {
+              root = null;
+              extras = {};
+              sharing = null;
+              void resolvePackages();
+            }}>Remove IDL</button
+          >
+        {/if}
         <span id="deployment-idl-help" class="trellis-field-help"
-          >{#if parsed?.ok === false}<span class="text-error"
-              >{parsed.message}</span
-            >{:else if parsed?.ok && parsed.participants.length === 1}Adds {parsed
-              .participants[0]}.{:else if kind === "service"}Paste or choose the
-            service's IDL file. Without it, the service introduces itself when
-            it first connects and you approve what it asks for.{:else}Paste or
-            choose the device's IDL file.{/if}</span
+          >{#if idlProblem}<span class="text-error">{idlProblem}</span
+            >{:else if resolving}Checking its IDL…{:else if evidence}{#if participants.length === 1}Adds
+              {participants[0]}.{/if}
+            {#if usedPackages.length > 0}Uses {usedPackages.join(
+                ", ",
+              )}.{/if}{:else if resolution}Add the packages below.{:else if kind === "service"}Choose
+            its trellis.toml and .trellis files, or their folder. Without them,
+            the service introduces itself when it first connects and you approve
+            what it asks for.{:else}Choose its trellis.toml and .trellis files,
+            or their folder.{/if}</span
         >
       </div>
-      {#if parsed?.ok && parsed.participants.length > 1}
+      {#if root && !root.manifest}
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="trellis-field"
+            ><span class="trellis-field-label">Package name</span><input
+              class="input w-full font-mono"
+              bind:value={packageName}
+              autocomplete="off"
+              spellcheck="false"
+              required
+              disabled={busy || uncertain}
+              onchange={() => void resolvePackages()}
+            /></label
+          >
+          <label class="trellis-field"
+            ><span class="trellis-field-label">Package version</span><input
+              class="input w-full font-mono"
+              bind:value={packageVersion}
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="1.0.0"
+              required
+              disabled={busy || uncertain}
+              onchange={() => void resolvePackages()}
+            /></label
+          >
+        </div>
+      {/if}
+      {#if resolution && resolution.missing.length > 0}
+        <section class="trellis-field" aria-labelledby="missing-packages">
+          <h3 id="missing-packages" class="trellis-field-label">
+            Packages Trellis doesn't have
+          </h3>
+          <ul class="space-y-2">
+            {#each resolution.missing as missing (missing.name)}
+              <li class="rounded-box border border-base-300 p-3">
+                <p class="text-sm">
+                  <span class="font-mono">{missing.name}</span>
+                  <span class="text-base-content/60"
+                    >{missing.requirements.length > 0
+                      ? missing.requirements.join(", ")
+                      : "any version"}</span
+                  >
+                </p>
+                {#if missing.availableVersions.length > 0}
+                  <p class="text-xs text-base-content/60">
+                    {missing.availableVersions.join(", ")}
+                    {missing.availableVersions.length === 1
+                      ? "doesn't"
+                      : "don't"} match.
+                  </p>
+                {/if}
+                <div class="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    type="file"
+                    multiple
+                    class="file-input file-input-sm w-full sm:w-auto"
+                    accept=".trellis,.toml"
+                    aria-label={`Files for ${missing.name}`}
+                    disabled={busy || uncertain}
+                    onchange={(event) => void chooseExtra(missing.name, event)}
+                  />
+                  <label
+                    class={[
+                      "btn btn-outline btn-sm",
+                      (busy || uncertain) && "btn-disabled",
+                    ]}
+                    >Choose a folder<input
+                      type="file"
+                      class="sr-only"
+                      webkitdirectory
+                      aria-label={`Folder for ${missing.name}`}
+                      disabled={busy || uncertain}
+                      onchange={(event) =>
+                        void chooseExtra(missing.name, event)}
+                    /></label
+                  >
+                </div>
+                {#if extras[missing.name]}
+                  <ul class="mt-2 font-mono text-xs text-base-content/70">
+                    {#each extras[missing.name].names as name (name)}<li>
+                        {name}
+                      </li>{/each}
+                  </ul>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+      {#if participants.length > 1}
         <label class="trellis-field"
           ><span class="trellis-field-label">Which {kind}</span><select
             class="select w-full"
@@ -330,7 +554,7 @@
             disabled={busy || uncertain}
           >
             <option value="" disabled>Choose one</option>
-            {#each parsed.participants as participant (participant)}
+            {#each participants as participant (participant)}
               <option value={participant}
                 >{participant.slice(participant.lastIndexOf(".") + 1)}</option
               >

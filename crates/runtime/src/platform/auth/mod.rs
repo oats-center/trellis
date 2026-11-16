@@ -18,6 +18,7 @@ mod lifecycle;
 mod native_projection;
 mod oauth;
 mod own_context;
+mod packages;
 pub(crate) use own_context::OwnContextService;
 mod avatars;
 mod policy;

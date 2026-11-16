@@ -84,7 +84,7 @@ the exact request, response, and error types.
 | Portal themes         | `PortalThemes.List/Get/Put/Delete`                                                                                                                                                                |
 | Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                                           |
 | Issuers               | `Issuers.Rotate`, `Issuers.Revoke`                                                                                                                                                                |
-| Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`                                                                                                                                         |
+| Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`, `Packages.Resolve`                                                                                                                     |
 | Service instances     | `ServiceInstances.Provision/List/Disable/Enable/Remove`                                                                                                                                           |
 | Devices               | `Devices.Provision/List/Disable/Enable/Remove`, `Devices.Reviews.*`, `DeviceCompanions.Attach/Revoke`                                                                                             |
 | Resources             | `Resources.List/Get/Remove`, `ResourceBindings.Query`                                                                                                                                             |
@@ -137,6 +137,19 @@ the pin. HTTP clients are kept per pinned provider and rebuilt when its
 revision changes.
 
 ### Deployments And Provisioning
+
+`Deployments.Create` and `Deployments.Apply` take package evidence: the
+complete closure of the build's packages with canonical source. A client that
+has only the service's own IDL, such as the Console, first calls
+`Packages.Resolve` with the root package's `trellis.toml` (or its name and
+version) and `.trellis` files. Auth builds the evidence itself, taking every
+dependency from the packages it holds and from packages the client supplies,
+and returns it for `Create`, or lists the dependencies nothing satisfies by
+name and version requirement, so the client can supply them and ask again. It
+fetches nothing. `Packages.Resolve` requires `trellis.auth.v1:users.manage`,
+like `Create`, and changes nothing; `Create` still recompiles and checks the
+evidence it returns. See
+[server-side resolution](../contracts/trellis-idl.md#server-side-resolution).
 
 Deployment Apply is the administrator's direct mutation path. A running
 service can also submit its own build: `ServiceUpdates.Submit` and

@@ -477,6 +477,54 @@ pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<Arc<Package
     Ok(graph)
 }
 
+/// Build the evidence of a compiled graph: its complete package closure, each
+/// package once in identity order with presentation-canonical source.
+///
+/// # Errors
+///
+/// Returns an error when a package cannot be rendered canonically.
+pub fn package_evidence(graph: &PackageGraph) -> miette::Result<PackageEvidence> {
+    Ok(PackageEvidence {
+        root_package: graph.root().as_str().to_owned(),
+        root_digest: graph.root_digest().to_owned(),
+        packages: graph
+            .packages()
+            .iter()
+            .map(|(id, package)| {
+                Ok(PackageSourceEvidence {
+                    name: id.as_str().to_owned(),
+                    version: package.version().clone(),
+                    digest: graph
+                        .digest(id)
+                        .expect("compiled package digest")
+                        .to_owned(),
+                    source: canonical_package(graph, id, CanonicalMode::Presentation)?,
+                })
+            })
+            .collect::<miette::Result<_>>()?,
+    })
+}
+
+/// Name what a package's sources import from outside the package: every
+/// `import ... from X` whose `X` is not another source of the same set.
+///
+/// # Errors
+///
+/// Returns source-aware syntax diagnostics.
+pub fn external_imports(sources: &[SourceUnit]) -> miette::Result<BTreeSet<String>> {
+    let parsed = parser::parse(sources)?;
+    let own = parsed
+        .iter()
+        .map(|unit| unit.alias.as_str())
+        .collect::<BTreeSet<_>>();
+    Ok(parsed
+        .iter()
+        .flat_map(|unit| unit.imports.values())
+        .filter(|import| !own.contains(import.from.as_str()))
+        .map(|import| import.from.clone())
+        .collect())
+}
+
 fn compile_evidence_package(
     name: &str,
     entries: &BTreeMap<&str, &PackageSourceEvidence>,

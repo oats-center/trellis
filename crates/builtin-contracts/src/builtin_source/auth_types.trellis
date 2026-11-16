@@ -770,6 +770,59 @@ model AuthDeploymentCreateRequest {
   acknowledgeSharedApis?: bool;
   idempotencyKey: AuthIdempotencyKey;
 }
+/// One IDL file of a package.
+model AuthPackageFile {
+  /// The file's path relative to the package's trellis.toml, or just its name.
+  path: AuthPath;
+  text: string;
+}
+/// A package's own IDL: its manifest when it has one, and its `.trellis` files.
+model AuthPackageSources {
+  /// The package's trellis.toml. Its listed sources are found among `files` by path, or by file name when only one file has it.
+  manifest?: string;
+  /// The package name, when there is no manifest.
+  name?: AuthName;
+  /// The package version, when there is no manifest.
+  version?: AuthShortName;
+  files: list<AuthPackageFile>;
+}
+model AuthPackageResolveRequest {
+  /// The package that declares the service or device.
+  root: AuthPackageSources;
+  /// Packages supplied for dependencies Trellis does not hold. Each is used before any package Trellis holds with the same name.
+  packages?: list<AuthPackageSources>;
+}
+enum AuthPackageOrigin { builtin; installed; supplied; }
+/// The package chosen for one dependency.
+model AuthResolvedPackage {
+  name: AuthName;
+  version: AuthShortName;
+  origin: AuthPackageOrigin;
+  /// Other versions Trellis holds that also match, newest first. The highest matching version is chosen.
+  otherVersions: list<AuthShortName>;
+}
+/// A dependency no held or supplied package satisfies.
+model AuthMissingPackage {
+  name: AuthName;
+  /// The version requirements its dependents state; empty when any version does.
+  requirements: list<string>;
+  /// The packages that depend on it.
+  requiredBy: list<AuthName>;
+  /// Versions held or supplied that do not match, newest first.
+  availableVersions: list<AuthShortName>;
+}
+model AuthResolvedParticipant { participantId: string; kind: AuthDeploymentKind; }
+model AuthPackageResolveResponse {
+  /// The complete evidence for `Deployments.Create`, once every dependency resolved.
+  packageEvidence?: AuthPackageEvidence;
+  /// The root package's services and devices.
+  participants: list<AuthResolvedParticipant>;
+  /// The package chosen for each dependency, by name.
+  dependencies: list<AuthResolvedPackage>;
+  missing: list<AuthMissingPackage>;
+  /// Imports, in a package without trellis.toml, that name no package Trellis holds or was supplied. Only its trellis.toml can say what they are.
+  unknownImports: list<string>;
+}
 model AuthDeploymentGetRequest { deploymentId: ulid; }
 model AuthDeploymentGetResponse { deployment: AuthDeployment; }
 type AuthDeploymentsListResponse = CursorPage<AuthDeployment>;

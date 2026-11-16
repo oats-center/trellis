@@ -42,6 +42,7 @@ nkeys.workspace = true
 oauth-as.workspace = true
 ring = "0.17.14"
 openidconnect.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true
@@ -77,5 +78,6 @@ rcgen.workspace = true
 reqwest = { workspace = true, features = ["http2", "cookies"] }
 scraper = "0.29.0"
 tokio = { workspace = true, features = ["process", "io-util"] }
+trellis-cli = { path = "../cli" }
 trellis-local-nats = { path = "../local-nats" }
 tempfile.workspace = true

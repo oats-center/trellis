@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import nacl from "tweetnacl";
 import { ulid } from "ulid";
@@ -24,6 +25,12 @@ import {
   waitForConsoleShell,
 } from "./console_test_support.ts";
 
+const fixtureIdl = ["trellis.toml", "contract.trellis"].map((name) =>
+  fileURLToPath(
+    new URL(`../../integration/fixtures/runtime/${name}`, import.meta.url),
+  ),
+);
+
 test("B01 adding a service with its IDL and a created key lets the service connect with that key", async () => {
   const services: Promise<{ stop(): Promise<void> }>[] = [];
   try {
@@ -44,13 +51,11 @@ test("B01 adding a service with its IDL and a created key lets the service conne
 
         const displayName = `ct-b01-${ulid()}`;
         await page.getByLabel("Name", { exact: true }).fill(displayName);
+        // The fixture's own trellis.toml and source; Auth resolves its
+        // dependency on the trellis package from the packages it ships.
         await page
           .getByLabel("Service IDL (optional)")
-          .fill(
-            JSON.stringify(
-              participants.EchoProvider.participant.packageEvidence,
-            ),
-          );
+          .setInputFiles(fixtureIdl);
         // The fixture IDL declares several services, so the form asks which.
         await page
           .getByLabel("Which service")
@@ -128,6 +133,115 @@ test("B01 adding a service with its IDL and a created key lets the service conne
         () => {},
       );
   }
+});
+
+const GAUGES_MANIFEST = `[package]
+name = "gauges"
+version = "1.0.0"
+
+[sources]
+gauges = "gauges.trellis"
+
+[dependencies]
+units = { package = "units", version = "^2.1.0", registry = "ghcr.io/example" }
+`;
+const GAUGES = `import { Measure } from units;
+api gauges@v1 {
+  title "Gauges";
+  description "Gauge readings.";
+  rpc Read { input Measure; output Measure; }
+  capabilities {
+    capability gauges.read { title "Read gauges"; description "Read gauge values."; grants "Sees gauge values."; allows { rpc Read; } }
+  }
+}
+service Gauge { implements gauges; }
+`;
+const UNITS_MANIFEST = `[package]
+name = "units"
+version = "2.1.3"
+
+[sources]
+units = "units.trellis"
+`;
+const UNITS = `model Measure { value: string; }
+api units@v1 {
+  title "Units";
+  description "Units of measure.";
+  rpc Convert { input Measure; output Measure; }
+  capabilities {
+    capability units.convert { title "Convert"; description "Convert units."; grants "Converts units."; allows { rpc Convert; } }
+  }
+}
+`;
+
+test("B01c a dependency Trellis doesn't have is listed, and adding its files lets the service be added", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const errors = await captureBrowserErrors(page);
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForConsoleShell(page);
+
+      const file = (name: string, text: string) => ({
+        name,
+        mimeType: "text/plain",
+        buffer: Buffer.from(text),
+      });
+      const displayName = `ct-b01c-${ulid()}`;
+      await page.getByLabel("Name", { exact: true }).fill(displayName);
+      await page
+        .getByLabel("Service IDL (optional)")
+        .setInputFiles([
+          file("trellis.toml", GAUGES_MANIFEST),
+          file("gauges.trellis", GAUGES),
+        ]);
+      const missing = page.getByRole("region", {
+        name: "Packages Trellis doesn't have",
+      });
+      await missing.getByText("units", { exact: true }).waitFor();
+      await missing.getByText("^2.1.0", { exact: true }).waitFor();
+      const add = page.getByRole("button", {
+        name: "Add service",
+        exact: true,
+      });
+      assert.equal(
+        await add.isDisabled(),
+        true,
+        "a service with a missing dependency cannot be added",
+      );
+
+      await missing
+        .getByLabel("Files for units")
+        .setInputFiles([
+          file("trellis.toml", UNITS_MANIFEST),
+          file("units.trellis", UNITS),
+        ]);
+      await page.getByText("Adds gauges.Gauge.").waitFor();
+      await missing.waitFor({ state: "detached" });
+      await add.click();
+      const dialog = page.getByRole("dialog", {
+        name: "Save the service's key",
+      });
+      await dialog
+        .getByRole("button", { name: "I've saved it", exact: true })
+        .click();
+      const deploymentId = codecs.ulid.decode(
+        await page.getByTestId("created-id").textContent(),
+      );
+      const stored = await runtime.callAdminRpc("authDeploymentsGet", {
+        deploymentId,
+      });
+      assert.equal(stored.deployment.participantId, "gauges.Gauge");
+      assert.equal(stored.deployment.title, displayName);
+      await assertNoBrowserErrors(errors);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
 });
 
 test("B01b adding a service without its IDL and with its own public key waits for that service to introduce itself", async () => {
@@ -430,9 +544,7 @@ test("B06 device creation persists the authored participant and returns its allo
 
       const displayName = `ct-b06-${ulid()}`;
       await page.getByLabel("Name", { exact: true }).fill(displayName);
-      await page
-        .getByLabel("Device IDL")
-        .fill(JSON.stringify(participants.Device.participant.packageEvidence));
+      await page.getByLabel("Device IDL").setInputFiles(fixtureIdl);
       await page
         .getByLabel("Which device")
         .selectOption(participants.Device.participant.identity);
