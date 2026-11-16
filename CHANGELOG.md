@@ -47,6 +47,11 @@ and this project adheres to
   decided it. Service updates now report `decidedBy`, and instances report
   `state` and `upToDate`. The Devices list names devices the same way.
 
+### Fixed
+
+- `@oatscenter/trellis` loads with `@nats-io/nkeys` 2.1.0, which no longer
+  exposes the internal file the SDK imported to encode a session's NATS seed.
+
 ## [0.100.0-rc.44] - 2026-11-16
 
 ### Changed

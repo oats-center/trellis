@@ -1,6 +1,5 @@
 import { type Authenticator, nkeyAuthenticator } from "@nats-io/nats-core";
 import { fromSeed, Prefix } from "@nats-io/nkeys";
-import { Codec } from "@nats-io/nkeys/lib/codec.js";
 
 import type { SessionAuthorityOwner } from "./authority.ts";
 import { trellisCrypto } from "./crypto.ts";
@@ -65,7 +64,7 @@ export async function createAuth(opts: {
   const seed = base64urlDecode(opts.sessionKeySeed);
   const signer = await (await trellisCrypto()).signerFromSeed(seed);
   const sessionKey = signer.publicKey;
-  const encodedSeed = Codec.encodeSeed(Prefix.User, seed);
+  const encodedSeed = encodeNatsSeed(Prefix.User, seed);
   const sessionNkey = fromSeed(encodedSeed).getPublicKey();
   let serverClockOffsetMs = 0;
   const resolveContextDigest = (): string => {
@@ -125,4 +124,40 @@ export async function createAuth(opts: {
       });
     },
   };
+}
+
+/**
+ * A raw 32-byte Ed25519 seed as a NATS seed string (`SU…`), the form nkeys
+ * reads. nkeys does not export its encoder, so this follows its format: the
+ * seed prefix and key type in two bytes, the seed, a little-endian CRC-16
+ * (XMODEM) of those, all in unpadded RFC 4648 base32.
+ */
+function encodeNatsSeed(prefix: number, seed: Uint8Array): Uint8Array {
+  const seedPrefix = 18 << 3;
+  const raw = new Uint8Array(2 + seed.length + 2);
+  raw[0] = seedPrefix | (prefix >> 5);
+  raw[1] = (prefix & 31) << 3;
+  raw.set(seed, 2);
+  let crc = 0;
+  for (const byte of raw.subarray(0, raw.length - 2)) {
+    crc ^= byte << 8;
+    for (let bit = 0; bit < 8; bit++)
+      crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+  }
+  raw[raw.length - 2] = crc & 0xff;
+  raw[raw.length - 1] = crc >> 8;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let text = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of raw) {
+    buffer = (buffer << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      text += alphabet[(buffer >> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) text += alphabet[(buffer << (5 - bits)) & 31];
+  return new TextEncoder().encode(text);
 }
