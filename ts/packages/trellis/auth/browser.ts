@@ -24,6 +24,7 @@ export type {
   BrowserAuthRecoveryKind,
 } from "./browser_recovery.ts";
 export { decodeTrellisHttpError, TrellisHttpError } from "./http_error.ts";
+export { publicKeyBase64urlFromSeed } from "./keys.ts";
 export {
   base64urlDecode,
   base64urlEncode,

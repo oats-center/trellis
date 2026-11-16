@@ -51,12 +51,14 @@ trellis svc partner-orders create --public-key <key>
 ```
 
 The service's owner makes the key with `trellis keys new`, keeps the seed, and
-sends you only the public key, so the private seed never leaves them. The
-Console's **Add service** form does the same when you choose "It will introduce
-itself". Without `--public-key`, `create` generates an identity and prints its
-`instanceSeed` once for you to hand over. The first service to connect with the
-claim's identity submits its own IDL and waits;
-`trellis svc <claim-id> updates` shows what it asks for, and
+sends you only the public key, so the private seed never leaves them. Without
+`--public-key`, `create` generates an identity and prints its `instanceSeed`
+once for you to hand over. In the Console, use **Add service** and leave the IDL
+empty: either let the Console create the key (it shows the seed once, and only
+its public key reaches Trellis) or choose "I already have a key" and paste the
+owner's public key. The first service to connect with the claim's identity
+submits its own IDL and waits; `trellis svc <claim-id> updates` shows what it
+asks for, and
 `trellis svc <claim-id> approve` adds it, accepting the APIs it provides. The
 service then connects as an instance of the new deployment, so skip the
 provisioning step below.

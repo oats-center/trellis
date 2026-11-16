@@ -185,9 +185,11 @@ that identity.
   pending.
 
 `trellis svc <name> create --public-key <key>` without `--source` creates a
-claim for the public key the service's owner made with `trellis keys new`, as
-the Console's Add service form does; without `--public-key` it generates the
-identity and prints its seed once.
+claim for the public key the service's owner made with `trellis keys new`;
+without `--public-key` it generates the identity and prints its seed once. The
+Console's Add service form makes a claim when no IDL is given; it either
+generates the key pair in the browser and shows the seed once, or takes a public
+key the service's owner supplies. Only the public key reaches Auth either way.
 While waiting, the review URL names the claim:
 `<origin>/console/admin/services/<claimId>?update=<updateId>`.
 
