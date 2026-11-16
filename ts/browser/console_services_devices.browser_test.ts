@@ -1,12 +1,15 @@
 // Console service journeys. Real runtime, real generated client.
 
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import nacl from "tweetnacl";
 import { ulid } from "ulid";
 import { codecs } from "@oatscenter/trellis/generated";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
+import { TrellisService } from "../packages/trellis/service/mod.ts";
 import {
   browserRuntimeOptions,
   launchProfile,
@@ -21,66 +24,188 @@ import {
   waitForConsoleShell,
 } from "./console_test_support.ts";
 
-test("B01 creating a native service deployment opens its persisted implementation", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    await runtime.contracts.install({
-      contract: participants.EchoProvider.participant,
-    });
-    const context = await launchProfile(runtime);
-    try {
-      const page = await context.newPage();
-      const errors = await captureBrowserErrors(page);
-      await openConsoleAsRuntimeAdmin(page, runtime);
-
-      await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
-        waitUntil: "domcontentloaded",
+test("B01 adding a service with its IDL and a created key lets the service connect with that key", async () => {
+  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  try {
+    await withTrellisRuntime(async (runtime) => {
+      await runtime.contracts.install({
+        contract: participants.EchoProvider.participant,
       });
-      await waitForConsoleShell(page);
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        const errors = await captureBrowserErrors(page);
+        await openConsoleAsRuntimeAdmin(page, runtime);
 
-      const displayName = `ct-b01-${ulid()}`;
-      await page.getByLabel("Name", { exact: true }).fill(displayName);
-      await page
-        .getByLabel("Participant name")
-        .fill(participants.EchoProvider.participant.identity);
-      await page
-        .getByLabel("Package", { exact: true })
-        .fill(
-          JSON.stringify(participants.EchoProvider.participant.packageEvidence),
-        );
-      await page
-        .getByRole("button", { name: "Add service", exact: true })
-        .click();
-      await page
-        .getByRole("link", { name: "Open service", exact: true })
-        .click();
-
-      await page
-        .getByRole("heading", { name: displayName, exact: true })
-        .waitFor({
-          state: "visible",
-          timeout: 30_000,
+        await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
+          waitUntil: "domcontentloaded",
         });
-      const deploymentId = codecs.ulid.decode(
-        new URL(page.url()).pathname.split("/").at(-1),
+        await waitForConsoleShell(page);
+
+        const displayName = `ct-b01-${ulid()}`;
+        await page.getByLabel("Name", { exact: true }).fill(displayName);
+        await page
+          .getByLabel("Service IDL (optional)")
+          .fill(
+            JSON.stringify(
+              participants.EchoProvider.participant.packageEvidence,
+            ),
+          );
+        // The fixture IDL declares several services, so the form asks which.
+        await page
+          .getByLabel("Which service")
+          .selectOption(participants.EchoProvider.participant.identity);
+        // "Create a key" is the default.
+        await page
+          .getByRole("button", { name: "Add service", exact: true })
+          .click();
+
+        const dialog = page.getByRole("dialog", {
+          name: "Save the service's key",
+        });
+        const seed = (
+          await dialog.getByLabel("Service key").textContent()
+        )?.trim();
+        assert(seed, "the dialog shows the generated key");
+        await dialog
+          .getByRole("button", { name: "I've saved it", exact: true })
+          .click();
+        await dialog.waitFor({ state: "hidden" });
+        assert.equal(
+          (await page.content()).includes(seed),
+          false,
+          "closing the dialog removes the key from the page",
+        );
+
+        await page
+          .getByRole("link", { name: "Open service", exact: true })
+          .click();
+        await page
+          .getByRole("heading", { name: displayName, exact: true })
+          .waitFor({ state: "visible", timeout: 30_000 });
+        const deploymentId = codecs.ulid.decode(
+          new URL(page.url()).pathname.split("/").at(-1),
+        );
+        const stored = await runtime.callAdminRpc("authDeploymentsGet", {
+          deploymentId,
+        });
+        assert.equal(
+          stored.deployment.participantId,
+          participants.EchoProvider.participant.identity,
+        );
+
+        // The key the browser created is the instance's identity: a service
+        // started with it connects as that instance.
+        const connecting = TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: participants.EchoProvider.participant,
+          seed,
+        }).orThrow();
+        services.push(connecting);
+        await connecting;
+        const { items } = await runtime.callAdminRpc(
+          "authServiceInstancesList",
+          { deploymentId },
+        );
+        assert.deepEqual(
+          items.map((instance) => instance.identityPublicKey),
+          [
+            Buffer.from(
+              nacl.sign.keyPair.fromSeed(Buffer.from(seed, "base64url"))
+                .publicKey,
+            ).toString("base64url"),
+          ],
+        );
+        await assertNoBrowserErrors(errors);
+      } finally {
+        await context.close();
+      }
+    }, browserRuntimeOptions());
+  } finally {
+    for (const connecting of services)
+      await connecting.then(
+        (service) => service.stop(),
+        () => {},
       );
-      const stored = await runtime.callAdminRpc("authDeploymentsGet", {
-        deploymentId,
-      });
-      assert.equal(stored.deployment.title, displayName);
-      assert.equal(
-        stored.deployment.participantId,
-        participants.EchoProvider.participant.identity,
+  }
+});
+
+test("B01b adding a service without its IDL and with its own public key waits for that service to introduce itself", async () => {
+  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  try {
+    await withTrellisRuntime(async (runtime) => {
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        const errors = await captureBrowserErrors(page);
+        await openConsoleAsRuntimeAdmin(page, runtime);
+
+        await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
+          waitUntil: "domcontentloaded",
+        });
+        await waitForConsoleShell(page);
+
+        const displayName = `ct-b01b-${ulid()}`;
+        const seed = randomBytes(32);
+        await page.getByLabel("Name", { exact: true }).fill(displayName);
+        await page.getByLabel("I already have a key").check();
+        const publicKey = page.getByLabel("Public key", { exact: true });
+        await publicKey.fill("not-a-key");
+        await page.getByText("A public key is 43 letters").waitFor();
+        assert.equal(
+          await page
+            .getByRole("button", { name: "Add service", exact: true })
+            .isDisabled(),
+          true,
+          "a malformed public key cannot be submitted",
+        );
+        await publicKey.fill(
+          Buffer.from(nacl.sign.keyPair.fromSeed(seed).publicKey).toString(
+            "base64url",
+          ),
+        );
+        await page
+          .getByRole("button", { name: "Add service", exact: true })
+          .click();
+        await page
+          .getByRole("link", { name: "Open service", exact: true })
+          .click();
+        await page
+          .getByRole("heading", { name: displayName, exact: true })
+          .waitFor({ state: "visible", timeout: 30_000 });
+        await page.getByText("Waiting for its service").waitFor();
+        const claimId = new URL(page.url()).pathname.split("/").at(-1);
+
+        // The service holding the matching seed introduces itself to this
+        // claim and waits for approval.
+        const connecting = TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: participants.EchoProvider.participant,
+          seed: seed.toString("base64url"),
+        }).orThrow();
+        services.push(connecting);
+        await runtime.waitFor(async () => {
+          const { items } = await runtime.callAdminRpc(
+            "authServiceUpdatesList",
+            {},
+          );
+          return items.find(
+            (update) =>
+              update.deploymentId === claimId && update.state === "pending",
+          );
+        });
+        await assertNoBrowserErrors(errors);
+      } finally {
+        await context.close();
+      }
+    }, browserRuntimeOptions());
+  } finally {
+    for (const connecting of services)
+      await connecting.then(
+        (service) => service.stop(),
+        () => {},
       );
-      assert.deepEqual(
-        new URL(page.url()).pathname.startsWith("/console/admin/services/"),
-        true,
-        "creating a profile must land on its own detail route",
-      );
-      await assertNoBrowserErrors(errors);
-    } finally {
-      await context.close();
-    }
-  }, browserRuntimeOptions());
+  }
 });
 
 test("B02 installed service resources render from real evidence", async () => {
@@ -306,11 +431,11 @@ test("B06 device creation persists the authored participant and returns its allo
       const displayName = `ct-b06-${ulid()}`;
       await page.getByLabel("Name", { exact: true }).fill(displayName);
       await page
-        .getByLabel("Participant name")
-        .fill(participants.Device.participant.identity);
-      await page
-        .getByLabel("Package", { exact: true })
+        .getByLabel("Device IDL")
         .fill(JSON.stringify(participants.Device.participant.packageEvidence));
+      await page
+        .getByLabel("Which device")
+        .selectOption(participants.Device.participant.identity);
       await page
         .getByRole("button", { name: "Add device type", exact: true })
         .click();

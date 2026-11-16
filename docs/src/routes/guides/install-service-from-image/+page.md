@@ -51,9 +51,10 @@ trellis svc partner-orders create
 ```
 
 That prints a claim ID and a generated `instanceSeed`. Give the seed to the
-service (or, in the Console's **Add service** form, choose "It will introduce
-itself" and paste the public key its owner sends you, so the private seed never
-leaves them). The first service to connect with it submits its own IDL and
+service. In the Console, use **Add service** and leave the IDL empty: either
+let the Console create the key (it shows the seed once, and only its public key
+reaches Trellis) or choose "I already have a key" and paste the public key the
+service's owner sends you, so the private seed never leaves them. The first service to connect with it submits its own IDL and
 waits; `trellis svc <claim-id> updates` shows what it asks for, and
 `trellis svc <claim-id> approve` adds it, accepting the APIs it provides. The
 service then connects as an instance of the new deployment, so skip the
