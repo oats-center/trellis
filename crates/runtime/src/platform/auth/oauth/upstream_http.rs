@@ -21,7 +21,7 @@ use openidconnect::{
 use serde_json::json;
 use std::sync::Arc;
 
-/// What a company provider said when it refused a sign-in.
+/// What an OIDC provider said when it refused a sign-in.
 pub(super) struct Refusal {
     provider_id: String,
     error: String,
@@ -33,7 +33,7 @@ pub(super) struct Refusal {
 
 /// Ways to sign in, and to create an account for the pending authorization's
 /// app when `transaction` names one. For this browser's sign-in on that
-/// `transaction` or device `review`, it also returns what a company provider
+/// `transaction` or device `review`, it also returns what an OIDC provider
 /// reported when it last refused the sign-in.
 pub(super) async fn providers(
     State(engine): State<Arc<OAuthEngine>>,
@@ -77,7 +77,7 @@ pub(super) async fn providers(
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            // With company sign-in off, the Portal offers no provider at all.
+            // With OIDC sign-in off, the Portal offers no provider at all.
             let providers = if settings.providers {
                 providers
             } else {
@@ -248,7 +248,7 @@ pub(super) async fn start(
             tracing::warn!(
                 provider_id = %provider,
                 error = %cause,
-                "company sign-in started with a provider that is not active",
+                "OIDC sign-in started with a provider that is not active",
             );
             return error(ErrorCode::AccessDenied);
         }
@@ -278,7 +278,7 @@ pub(super) async fn start(
             tracing::error!(
                 provider_id = %snapshot.identity.provider_id,
                 error = %cause,
-                "could not read the company sign-in provider's client secret",
+                "could not read the OIDC provider's client secret",
             );
             return error(ErrorCode::ServerError);
         }
@@ -293,7 +293,7 @@ pub(super) async fn start(
                 provider_id = %snapshot.identity.provider_id,
                 oauth_issuer = %authority.settings.oauth_issuer,
                 error = %cause,
-                "the company sign-in callback URL is not valid",
+                "the OIDC sign-in callback URL is not valid",
             );
             return error(ErrorCode::ServerError);
         }
@@ -338,7 +338,7 @@ pub(super) async fn start(
     {
         tracing::error!(
             error = ?cause,
-            "could not save a company sign-in before sending the user to the provider",
+            "could not save an OIDC sign-in before sending the user to the provider",
         );
         return error(ErrorCode::ServerError);
     }
@@ -401,7 +401,7 @@ pub(super) async fn callback(
             provider_id = %flow.provider.provider_id,
             expected = %flow.provider.issuer,
             returned = %issuer,
-            "company sign-in provider returned a different issuer",
+            "OIDC provider returned a different issuer",
         );
         return error(ErrorCode::InvalidRequest);
     }
@@ -462,7 +462,7 @@ pub(super) async fn callback(
             provider_id = %flow.provider.provider_id,
             error = %reason,
             description,
-            "company sign-in provider refused the sign-in"
+            "OIDC provider refused the sign-in"
         );
         return refused(ErrorCode::AccessDenied, reason, description, true);
     }
@@ -483,7 +483,7 @@ pub(super) async fn callback(
             tracing::warn!(
                 provider_id = %flow.provider.provider_id,
                 error = %cause,
-                "company sign-in provider stopped being active during the sign-in",
+                "OIDC provider stopped being active during the sign-in",
             );
             return refused(
                 ErrorCode::AccessDenied,
@@ -499,7 +499,7 @@ pub(super) async fn callback(
     {
         tracing::warn!(
             provider_id = %flow.provider.provider_id,
-            "company sign-in provider was edited during the sign-in",
+            "OIDC provider was edited during the sign-in",
         );
         return refused(
             ErrorCode::AccessDenied,
@@ -518,7 +518,7 @@ pub(super) async fn callback(
             tracing::error!(
                 provider_id = %flow.provider.provider_id,
                 error = %cause,
-                "could not read the company sign-in provider's client secret",
+                "could not read the OIDC provider's client secret",
             );
             return refused(
                 ErrorCode::ServerError,
@@ -569,7 +569,7 @@ pub(super) async fn callback(
                 provider_id = %flow.provider.provider_id,
                 oauth_issuer = %authority.settings.oauth_issuer,
                 error = %cause,
-                "the company sign-in callback URL is not valid",
+                "the OIDC sign-in callback URL is not valid",
             );
             return refused(
                 ErrorCode::ServerError,
@@ -585,7 +585,7 @@ pub(super) async fn callback(
             tracing::error!(
                 provider_id = %flow.provider.provider_id,
                 error = %cause,
-                "company sign-in provider has no usable token endpoint",
+                "OIDC provider has no usable token endpoint",
             );
             return refused(
                 ErrorCode::ServerError,
@@ -652,8 +652,8 @@ pub(super) async fn callback(
         {
             Ok(()) => super::account::html(
                 &engine,
-                "Company sign-in linked",
-                "<p class=\"muted\">You can now sign in with your company account. You can \
+                "OIDC sign-in linked",
+                "<p class=\"muted\">You can now sign in with your OIDC account. You can \
                 close this window.</p>",
             ),
             Err(_) => error(ErrorCode::AccessDenied),
@@ -713,7 +713,7 @@ pub(super) async fn callback(
                 super::super::AuthError::Conflict => refused(
                     ErrorCode::AccessDenied,
                     "provider_changed",
-                    "The provider or company sign-in was changed or turned off during the \
+                    "The provider or OIDC sign-in was changed or turned off during the \
                     sign-in. Try again.",
                     false,
                 ),

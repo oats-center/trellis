@@ -1054,7 +1054,7 @@ staticPasswords:
     assert_eq!(consent["capabilities"][0]["capabilityId"], f.write);
     assert_eq!(consent["capabilities"][0]["available"], true);
 
-    // Company sign-in started from the device approval page, which has no OAuth
+    // OIDC sign-in started from the device approval page, which has no OAuth
     // transaction, returns there signed in: the review is then refused only for
     // its code, not for a missing login.
     let review = id();
@@ -1277,7 +1277,7 @@ staticPasswords:
         .unwrap(),
         deleted
     );
-    // A first company sign-in from someone nobody linked creates their account
+    // A first OIDC sign-in from someone nobody linked creates their account
     // only once the app they are signing in to allows it.
     // Each attempt is a fresh browser, so none reuses an earlier Portal login.
     let company_sign_in = || async {
@@ -1407,7 +1407,7 @@ staticPasswords:
         signed_up.headers()["location"].to_str().unwrap(),
         format!("/consent?transaction={transaction}")
     );
-    let created = newcomer().expect("the company sign-in created a linked account");
+    let created = newcomer().expect("the OIDC sign-in created a linked account");
     let profile = authority
         .transaction(|connection| {
             super::super::rpc_users::read_user(&authority, connection, &created, true)
@@ -1515,7 +1515,7 @@ staticPasswords:
         find_newcomer().unwrap().user.principal_id.to_string(),
         recreated
     );
-    // With company sign-in turned off for the installation, even a linked
+    // With OIDC sign-in turned off for the installation, even a linked
     // identity no longer signs in, and the Portal offers no provider.
     let off = trellis_runtime_apis::__types::trellis::AuthSignInSettingsUpdateRequest {
         local_users: true,

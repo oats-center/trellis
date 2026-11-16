@@ -34,7 +34,7 @@ pub(super) fn read(connection: &Connection) -> Result<AuthSignInSettings, AuthEr
 }
 
 /// Refuses a change that would leave no way to sign in fresh: with local users
-/// off, company sign-in must be on with at least one active provider. Run it in
+/// off, OIDC sign-in must be on with at least one active provider. Run it in
 /// the transaction making the change, after the change, so concurrent edits to
 /// settings and providers cannot each pass alone and together lock everyone out.
 pub(super) fn require_a_way_in(connection: &Connection) -> Result<(), AuthError> {
@@ -51,7 +51,8 @@ pub(super) fn require_a_way_in(connection: &Connection) -> Result<(), AuthError>
         return Ok(());
     }
     Err(AuthError::Invalid(
-        "nobody could sign in: keep username and password on, or add an active company sign-in provider first".into(),
+        "nobody could sign in: keep username and password on, or add an active OIDC provider first"
+            .into(),
     ))
 }
 

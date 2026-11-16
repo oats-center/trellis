@@ -818,9 +818,9 @@ pub(super) async fn page(
     } else {
         match signed_in {
             Some(principal) if principal == action.target => (
-                "Link company sign-in",
+                "Link OIDC sign-in",
                 format!(
-                    r#"<p class="muted">Add your company sign-in to this account so you can use it next time.</p><form method="post" action="/portal/account/link"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><button class="primary block">Continue</button></form>"#
+                    r#"<p class="muted">Add your OIDC sign-in to this account so you can use it next time.</p><form method="post" action="/portal/account/link"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><button class="primary block">Continue</button></form>"#
                 ),
             ),
             Some(_) => return error(ErrorCode::AccessDenied),
@@ -910,9 +910,9 @@ pub(super) async fn submit(
             Ok(token) => {
                 let mut response = html(
                     &engine,
-                    "Continue to your company sign-in",
+                    "Continue to your OIDC sign-in",
                     &format!(
-                        r#"<p class="muted">Sign in with your company account to finish linking it.</p><a class="button primary block" href="/account/continue?token={token}" rel="noreferrer">Continue</a>"#
+                        r#"<p class="muted">Sign in with your OIDC account to finish linking it.</p><a class="button primary block" href="/account/continue?token={token}" rel="noreferrer">Continue</a>"#
                     ),
                 );
                 response.headers_mut().insert(

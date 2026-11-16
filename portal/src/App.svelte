@@ -52,11 +52,11 @@
     providers: Provider[];
     /** Whether this sign-in's app lets people create their own account. */
     signUp: { password: boolean; providers: boolean };
-    /** What a company provider reported when it last refused this sign-in. */
+    /** What an OIDC provider reported when it last refused this sign-in. */
     refusal?: Refusal;
   }
 
-  /** A company provider's own reason for refusing a sign-in. */
+  /** An OIDC provider's own reason for refusing a sign-in. */
   interface Refusal {
     provider: string | null;
     error: string;
@@ -477,7 +477,7 @@
 {#snippet upstreamRefusal()}
   <p class="alert error" role="alert">
     {#if refusal}
-      {@const name = refusal.provider ?? "your company sign-in"}
+      {@const name = refusal.provider ?? "your OIDC sign-in"}
       {refusal.fromProvider
         ? `${name} refused the sign-in`
         : `Sign-in with ${name} didn't finish`}{refusal.description
@@ -485,7 +485,7 @@
         : "."}
       <span class="refusal-code">({refusal.error})</span>
     {:else}
-      Company sign-in wasn't completed. Try again.
+      OIDC sign-in wasn't completed. Try again.
     {/if}
   </p>
 {/snippet}
@@ -806,7 +806,7 @@
       {#if localIdentity}<p class="divider"><span>or</span></p>{/if}
     {/if}
     {#if providerError}<p class="alert" role="status">
-        Company sign-in is unavailable right now.
+        OIDC sign-in is unavailable right now.
       </p>{/if}
     {#if localIdentity}<form method="post" action={`/portal/login`}>
         <input type="hidden" name="csrf" value={csrf} />
@@ -844,7 +844,7 @@
       </p>
     {:else if signUp.providers}
       <p class="hint">
-        New here? Continue with your company account to create one.
+        New here? Continue with your OIDC account to create one.
       </p>
     {/if}
   </main>

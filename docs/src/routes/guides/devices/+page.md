@@ -78,7 +78,7 @@ signal, never an online credential.
 ## 5. Approve in Portal or Console
 
 Open the activation link on any browser, sign in with a Trellis account or your
-company sign-in, and enter the code the device displays. The Portal shows the
+OIDC sign-in, and enter the code the device displays. The Portal shows the
 device's name, type, and software, and asks you to approve or reject it.
 Administrators can do the same from **Devices → Requests** in the Console.
 Either way, approving requires the `principals.manage` administrator privilege,

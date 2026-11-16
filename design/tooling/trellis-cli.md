@@ -168,7 +168,7 @@ User commands use generated Auth account operations. Role commands use
 role. `roles show` lists who has the role; `roles assign|revoke <role> <user>`
 gives or takes it from one user. `sign-in` turns the installation's sign-in
 methods on or off at once (`Auth.SignInSettings`). `sign-in providers` manages
-the company identity providers (`Auth.OIDCProviders.*`): `list` and `show` print
+the OIDC providers (`Auth.OIDCProviders.*`): `list` and `show` print
 each provider's ID, which `users find --provider` takes, and the callback URL to
 register with the provider; `add` and `edit` read the client secret from
 `--client-secret-file` (`-` for standard input), never the command line, and

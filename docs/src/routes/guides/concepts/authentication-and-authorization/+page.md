@@ -56,7 +56,7 @@ that image until expiry. Profile edits invalidate earlier URLs. Revoking
 `usersRead` prevents issuing new URLs but does not instantly revoke existing ones.
 
 Your picture is the Gravatar for your email, verified or not, unless you
-choose a linked company sign-in's picture. An account created by a company
+choose a linked OIDC sign-in's picture. An account created by an OIDC
 sign-in starts with that provider's picture. When the chosen picture is missing,
 Trellis falls back to Gravatar. Gravatar receives a normalized SHA-256 email
 hash, not raw email; the hash is still personal information. Your browser
@@ -71,7 +71,7 @@ public HTTPS destinations with no redirects, and stores sanitized small PNGs.
 
 Select `trellis.auth.v1:account.edit` and call `Users.Profile.Update`
 to edit your own display/given/family names, email, and picture source:
-`pictureProviderId` for a linked company sign-in's picture, or `useGravatar`. Use `Users.Resolve`'s `user.account.profileRevision` as
+`pictureProviderId` for a linked OIDC sign-in's picture, or `useGravatar`. Use `Users.Resolve`'s `user.account.profileRevision` as
 `expectedRevision`, plus a fresh `idempotencyKey`. There is no target user ID.
 Omitted fields stay unchanged. `clearEmail` restores an eligible linked-provider
 email; do not send a value and its clear flag together, or both picture
@@ -85,7 +85,7 @@ profile claims; Trellis preserves explicitly configured scope choices. Optional
 UserInfo fills missing signed-token profile fields only when its `sub` matches.
 An unavailable or malformed enrichment response does not block valid login.
 
-Trellis reaches a provider through the server's system trust store. A company
+Trellis reaches a provider through the server's system trust store. An OIDC
 provider on a private CA needs its certificate issuer pinned by SHA-256
 fingerprint: saving the provider without one is refused with the fingerprint
 the provider presents. Confirm that value with the provider's operator, then

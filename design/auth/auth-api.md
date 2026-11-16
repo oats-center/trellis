@@ -112,7 +112,7 @@ provider's row for the sign-ins that name it but frees its issuer, so a new
 provider can take it.
 
 Auth reaches a provider through the system trust store. A provider whose
-certificate nothing on the server vouches for, such as a company IdP on a
+certificate nothing on the server vouches for, such as an OIDC provider on a
 private CA, is pinned by its issuer's SHA-256 fingerprint, the way services and
 devices accept an unvouched Trellis: `OIDCProviders.Put` takes
 `certificateFingerprint`, reads the chain the issuer's host presents without
@@ -198,7 +198,7 @@ asks never calls out, and an unreachable GitHub only omits `update`.
 Account management needs `trellis.auth.v1:accounts.manage` and reaches every
 account except the default administrator's, whatever the account holds.
 `Auth.Users.Find` takes exactly one of `userId` or `identity { providerId,
-subject }`, an exact match on a linked company sign-in (never email or
+subject }`, an exact match on a linked OIDC sign-in (never email or
 username), finds disabled accounts too, and returns `found` with the user and
 its linked identities, or no `found` on a miss. `Auth.Users.Delete` checks `expectedRevision`, revokes the
 principal, and removes its sign-ins, profile, avatar, roles, direct grants,

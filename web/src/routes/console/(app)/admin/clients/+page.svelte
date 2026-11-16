@@ -445,7 +445,7 @@
                   New accounts get the roles marked for new users.
                 </p>
               </div>
-              {#each [{ label: "With a username and password", allowed: signIn?.localSignUp, off: "Account creation is turned off for this Trellis." }, { label: "With a company sign-in", allowed: signIn?.providers, off: "Company sign-in is turned off for this Trellis." }] as option, index (option.label)}
+              {#each [{ label: "With a username and password", allowed: signIn?.localSignUp, off: "Account creation is turned off for this Trellis." }, { label: "With an OIDC sign-in", allowed: signIn?.providers, off: "OIDC sign-in is turned off for this Trellis." }] as option, index (option.label)}
                 <label class="flex items-start gap-3"
                   >{#if index === 0}<input
                       class="toggle toggle-sm mt-0.5"

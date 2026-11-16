@@ -43,7 +43,7 @@ pub(crate) struct OAuthEngine {
     documents: super::ClientDocuments,
     pub(super) avatars: super::super::avatars::Avatars,
     nonces: Mutex<super::nonce::DpopNonces>,
-    /// What a company provider reported when it refused a sign-in, kept for
+    /// What an OIDC provider reported when it refused a sign-in, kept for
     /// the page the person returns to. Keyed by the portal session and the
     /// sign-in's transaction or device review, so a link alone cannot make the
     /// page show text.

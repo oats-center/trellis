@@ -617,7 +617,7 @@ impl super::super::SqliteAuthorizationStore {
                 ],
                 |row| row.get(0),
             )?;
-            // The provider was edited or turned off, or company sign-in was.
+            // The provider was edited or turned off, or OIDC sign-in was.
             if !current || !super::super::sign_in::read(connection)?.providers {
                 return Err(AuthError::Conflict);
             }

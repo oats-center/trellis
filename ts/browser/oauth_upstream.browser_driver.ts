@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 
-test("company sign-in navigates through Dex and returns to Trellis consent under CSP", async () => {
+test("OIDC sign-in navigates through Dex and returns to Trellis consent under CSP", async () => {
   const authorization = process.env.TRELLIS_TEST_OAUTH_AUTHORIZATION_URI;
   const issuer = process.env.TRELLIS_TEST_OIDC_ISSUER;
   if (!authorization || !issuer)

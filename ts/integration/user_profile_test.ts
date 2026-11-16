@@ -244,7 +244,7 @@ test(
           })
         ).isErr(),
       );
-      // A picture comes only from a company sign-in linked to the account.
+      // A picture comes only from an OIDC sign-in linked to the account.
       assert(
         (
           await alice.usersProfileUpdate({

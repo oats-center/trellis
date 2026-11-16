@@ -108,7 +108,7 @@ test(
             .getByRole("button", { name: connect, exact: true })
             .click();
           await user
-            .getByRole("heading", { name: "Link company sign-in" })
+            .getByRole("heading", { name: "Link OIDC sign-in" })
             .waitFor();
           await user
             .getByRole("button", { name: "Continue", exact: true })
@@ -123,7 +123,7 @@ test(
           await user.locator('input[name="password"]').fill("password");
           await user.locator('button[type="submit"]').click();
           await user
-            .getByRole("heading", { name: "Company sign-in linked" })
+            .getByRole("heading", { name: "OIDC sign-in linked" })
             .waitFor();
         };
         await link("first@example.com", "Connect");

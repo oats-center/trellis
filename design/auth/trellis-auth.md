@@ -480,7 +480,7 @@ at that provider. Two linked identities belonging to one user do not supply or
 remove each other's mapped roles. Direct grants remain independent of claim
 freshness or upstream role removal.
 
-When a company sign-in fails after the callback has matched its flow, Trellis
+When an OIDC sign-in fails after the callback has matched its flow, Trellis
 returns the browser to the sign-in or device-approval page it came from, with
 `error=upstream_login_failed`. Failures before that point have no page to go
 back to and return a plain OAuth error. The reason is kept in memory for ten
@@ -1042,9 +1042,9 @@ Which sign-in methods an installation offers is Auth state, edited live with
 `Auth.SignInSettings.Update` (`trellis.auth.v1:platform.manage`) from the
 Console's Sign-in methods page or `trellis sign-in set`, and providers with
 `trellis sign-in providers`; no restart and no
-configuration key. Local users (username and password) and company sign-in
+configuration key. Local users (username and password) and OIDC sign-in
 (active OIDC providers) each switch on and off. A fresh sign-in must stay
-possible: with local users off, company sign-in must be on with an active
+possible: with local users off, OIDC sign-in must be on with an active
 provider. That is checked in the same transaction as the settings update and as
 disabling or deleting a provider, after the change, so neither alone nor two
 concurrent changes can lock every administrator out. Turning a method off
@@ -1073,8 +1073,8 @@ fields are unchanged; set-and-clear contradictions fail atomically. Manual email
 are unverified. Clearing email restores an eligible linked-provider email.
 
 The picture comes from one place, `pictureProviderId` on the account: a linked
-company sign-in whose `picture` it shows, or, when absent, the Gravatar for the
-account's email. An account created by a company sign-in starts with that
+OIDC sign-in whose `picture` it shows, or, when absent, the Gravatar for the
+account's email. An account created by an OIDC sign-in starts with that
 provider; one with a password starts with Gravatar, and linking a provider later
 does not change it. `Users.Profile.Update` takes `pictureProviderId`, which
 must name a provider linked to the caller, or `useGravatar`. Unlinking the

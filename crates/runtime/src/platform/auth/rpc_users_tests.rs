@@ -1218,7 +1218,7 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
     };
     sign_in(&store).unwrap();
 
-    // Local users stay on while nothing else lets anyone sign in: company
+    // Local users stay on while nothing else lets anyone sign in: OIDC
     // sign-in is on by default, but no provider is configured yet.
     let store = Arc::new(store);
     let settings = |revision: u64, local_users: bool, providers: bool| {
@@ -1266,7 +1266,7 @@ fn local_identity_settings_govern_password_length_and_password_sign_in() {
     // next sign-in, with no restart.
     settings(1, false, true).unwrap();
     assert!(matches!(sign_in(&store), Err(AuthError::Denied)));
-    // Company sign-in cannot go off too, and neither can its last provider.
+    // OIDC sign-in cannot go off too, and neither can its last provider.
     let both_off = settings(2, false, false);
     assert!(
         matches!(both_off, Err(AuthError::Invalid(_))),
@@ -1451,7 +1451,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
         delete_user(&store, &mutation(&manager, &retry), &retry, NOW + 3),
         Err(AuthError::NotFound)
     ));
-    // The sign-in is free: the person's next company sign-in links a new account.
+    // The sign-in is free: the person's next OIDC sign-in links a new account.
     let fresh = create(&admin, "boss-again")
         .unwrap()
         .principal_id

@@ -69,12 +69,12 @@ pub enum SignInCommand {
     Show,
     /// Turn sign-in methods on or off; options you leave out keep their value.
     Set(SignInSetArgs),
-    /// Add and change the company identity providers people sign in with.
+    /// Add and change the OIDC providers people sign in with.
     #[command(subcommand)]
     Providers(ProvidersCommand),
 }
 
-/// Company identity providers (OpenID Connect).
+/// OIDC (OpenID Connect) providers.
 #[derive(Debug, Subcommand)]
 pub enum ProvidersCommand {
     /// List every provider with its ID, which `trellis users find` takes.
@@ -164,7 +164,7 @@ pub struct SignInSetArgs {
     pub local_sign_up: bool,
     #[arg(long)]
     pub no_local_sign_up: bool,
-    /// Sign in with a company identity provider.
+    /// Sign in with an OIDC provider.
     #[arg(long)]
     pub providers: bool,
     #[arg(long)]
@@ -320,7 +320,7 @@ pub enum UsersSubcommand {
     List,
     /// Show one user by Trellis user ID.
     Show(UserRefArgs),
-    /// Find the user a company sign-in belongs to, by provider ID and exact subject.
+    /// Find the user an OIDC sign-in belongs to, by provider ID and exact subject.
     Find(UserFindArgs),
     /// Create one Trellis user.
     Create(UserCreateArgs),
@@ -430,7 +430,7 @@ pub struct UserRefArgs {
 }
 
 #[derive(Debug, Args)]
-/// Find a user by a linked company sign-in.
+/// Find a user by a linked OIDC sign-in.
 pub struct UserFindArgs {
     /// The sign-in provider's Trellis ID.
     #[arg(long, value_name = "PROVIDER_ID")]

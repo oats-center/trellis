@@ -584,7 +584,7 @@ impl OAuthStorage {
     /// How someone signing in to a pending authorization may create an account:
     /// what its active registered client allows, with password sign-up also
     /// needing the installation to allow local users and local sign-up, and
-    /// provider sign-up needing it to allow company sign-in.
+    /// provider sign-up needing it to allow OIDC sign-in.
     pub(super) fn authorization_sign_up(
         &self,
         id: &str,
