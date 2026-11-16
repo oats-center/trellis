@@ -1169,6 +1169,20 @@ fn decide(
     )
 }
 
+/// `auth_service_updates` columns `read_update` selects, in order.
+type UpdateRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<i64>,
+    Option<String>,
+    u64,
+);
+
 fn read_update(
     connection: &Connection,
     store: &SqliteAuthorizationStore,
@@ -1185,18 +1199,7 @@ fn read_update(
         decided,
         actor,
         revision,
-    ): (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        Option<i64>,
-        Option<String>,
-        u64,
-    ) = connection
+    ): UpdateRow = connection
         .query_row(
             "SELECT deployment_id,instance_id,participant_id,participant_digest,changes_json,\
             state,requested_at,decided_at,decided_by,revision FROM auth_service_updates \

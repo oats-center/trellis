@@ -742,7 +742,7 @@ impl RuntimeConfig {
         let auth = self.auth.get_or_insert_with(|| AuthConfig {
             avatar: None,
             instance_id: None,
-            local_identity: (),
+            local_identity: RemovedSection,
             authorization: None,
             administration: AdministrationConfig::default(),
         });
@@ -1172,7 +1172,7 @@ pub struct AuthConfig {
     /// ignoring it: the minimum password length is Auth state now, and dropping
     /// a stricter configured minimum without a word would weaken it.
     #[serde(default, skip_serializing, deserialize_with = "refuse_local_identity")]
-    pub(crate) local_identity: (),
+    pub(crate) local_identity: RemovedSection,
     /// Authorization trust and short-lived context runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization: Option<AuthorizationConfig>,
@@ -1363,7 +1363,14 @@ impl AuthorizationConfig {
     }
 }
 
-fn refuse_local_identity<'de, D: serde::Deserializer<'de>>(_: D) -> Result<(), D::Error> {
+/// A configuration section Trellis no longer reads; present only so that
+/// reading a config which still has it fails with a pointer to its replacement.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RemovedSection;
+
+fn refuse_local_identity<'de, D: serde::Deserializer<'de>>(
+    _: D,
+) -> Result<RemovedSection, D::Error> {
     Err(serde::de::Error::custom(
         "[auth.local_identity] is no longer read: set the minimum password length with \
         `trellis sign-in set --password-min-length` or the Console's Sign-in page",
