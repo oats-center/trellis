@@ -435,6 +435,7 @@ fn validate_names(
                 participant
                     .implements()
                     .iter()
+                    .filter(|id| has_provider_accessor(graph, id))
                     .map(|id| (id.as_str(), module_name(id.as_str()))),
             );
             for (name, resource) in participant.resources() {
@@ -2059,21 +2060,7 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
         );
         for api in participant.implements() {
             let module = module_name(api.as_str());
-            if graph
-                .packages()
-                .values()
-                .find_map(|package| package.apis().get(api))
-                .is_some_and(|definition| {
-                    definition.actions().values().any(|action| {
-                        matches!(
-                            action,
-                            ActionDefinition::Rpc { .. }
-                                | ActionDefinition::Live { .. }
-                                | ActionDefinition::Operation { .. }
-                        )
-                    })
-                })
-            {
+            if has_provider_accessor(graph, api) {
                 out.push_str(&format!(
                     "pub fn {module}(&mut self) -> crate::apis::{module}::Provider<'_, \
             Participant> {{ crate::apis::{module}::Provider::new(self.runtime) \
@@ -2989,6 +2976,25 @@ fn string_slice<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
     )
 }
 
+/// Whether a service Provider gets an accessor for an implemented API. Only APIs
+/// with handlers to register (RPC, live, or operation actions) have one.
+fn has_provider_accessor(graph: &PackageGraph, api: &ApiId) -> bool {
+    graph
+        .packages()
+        .values()
+        .find_map(|package| package.apis().get(api))
+        .is_some_and(|definition| {
+            definition.actions().values().any(|action| {
+                matches!(
+                    action,
+                    ActionDefinition::Rpc { .. }
+                        | ActionDefinition::Live { .. }
+                        | ActionDefinition::Operation { .. }
+                )
+            })
+        })
+}
+
 fn module_name(value: &str) -> String {
     rust_ident(&key_to_snake(value))
 }
@@ -3196,6 +3202,40 @@ mod tests {
                 "{source}"
             );
             assert_eq!(fs::read_to_string(existing).unwrap(), "last good package");
+        }
+    }
+
+    #[test]
+    fn provider_collisions_follow_emitted_api_accessors() {
+        // An events-only API has no Provider accessor, so a KV that normalizes to
+        // its module name is the only Provider method with that name.
+        for (action, allows, collides) in [
+            ("event Posted { payload Value; }", "subscribe event", false),
+            ("rpc Posted { input Value; output Value; }", "rpc", true),
+        ] {
+            let source = format!(
+                "type Value = string; api feed@v1 {{ title \"Feed\"; \
+                description \"Feed API.\"; {action} capabilities {{ public {{ \
+                allows {{ {allows} Posted; }} }} }} }} service Feeder {{ \
+                implements feed; kv fixtureFeedV1 {{ title \"Feed\"; \
+                description \"Saved feed\"; schema Value; version 1; }} }}"
+            );
+            let graph = graph(&source);
+            let directory = tempfile::tempdir().unwrap();
+            let result =
+                generate_rust_package(&graph, &directory.path().join("generated"), "fixture", &[]);
+            if collides {
+                assert!(
+                    matches!(
+                        &result,
+                        Err(CodegenRustError::IdentifierCollision { identifier, .. })
+                            if identifier == "fixture_feed_v1"
+                    ),
+                    "{source}: {result:?}"
+                );
+            } else {
+                result.unwrap_or_else(|error| panic!("{source}: {error}"));
+            }
         }
     }
 

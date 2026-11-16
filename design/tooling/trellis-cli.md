@@ -99,10 +99,10 @@ manifest, trust-floor, offline-signing, or compatibility command exists.
 
 ```text
 trellis svc <name> create --source <project> ... [--acknowledge-shared-apis]
-trellis svc <name> create
+trellis svc <name> create [--public-key <key>]
 trellis svc apply <deployment-id> <project> ... [--acknowledge-shared-apis]
 trellis svc get <deployment-id>
-trellis svc provision <deployment-id> ...
+trellis svc <deployment-id> provision [--public-key <key>] [--new]
 trellis svc enable|disable|remove ...
 trellis svc <deployment-id> updates
 trellis svc <deployment-id> approve|reject [<update-id>] [--acknowledge-shared-apis]
@@ -119,8 +119,11 @@ selected participant, installs the participant revision when needed, then calls
 the direct deployment mutation. Inspection uses `Auth.Deployments.Get`.
 
 `svc <name> create` without `--source` creates a service claim
-(`Auth.ServiceClaims.Create`) with a locally generated identity and prints its
-seed; see `design/auth/service-updates.md`. `updates`, `approve`, and `reject`
+(`Auth.ServiceClaims.Create`) for the owner's `--public-key`, or for a locally
+generated identity whose seed it prints once; see
+`design/auth/service-updates.md`. `svc <id> provision --public-key <key>`
+registers the owner's key as an instance, or selects the instance that already
+has it, and prints no seed. `updates`, `approve`, and `reject`
 accept a waiting claim's ID or name as well as a deployment's.
 
 `svc updates` lists the builds a service submitted for itself
@@ -287,8 +290,12 @@ trellis version
 trellis completion <shell>
 ```
 
-Key commands generate or derive the requested online issuer, identity, or
-session-compatible key material without introducing offline trust artifacts.
+`trellis keys new` makes an Ed25519 identity offline for whoever will run a
+service: it prints a seed, which the service keeps, and the public key, which
+the administrator registers with `svc <id> provision --public-key` or a claim's
+`svc <name> create --public-key`. Only the owner ever holds the seed. `--seed`
+derives the public key of an existing seed. Without `--public-key`, `provision`
+and claim `create` generate the identity and print its seed once.
 
 ## Errors And Output
 

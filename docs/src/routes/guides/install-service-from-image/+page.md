@@ -47,14 +47,18 @@ When you don't have the service's project, for instance a third party's service
 that should talk to your Trellis, create the service without `--source`:
 
 ```sh
-trellis svc partner-orders create
+trellis svc partner-orders create --public-key <key>
 ```
 
-That prints a claim ID and a generated `instanceSeed`. Give the seed to the
-service (or, in the Console's **Add service** form, choose "It will introduce
-itself" and paste the public key its owner sends you, so the private seed never
-leaves them). The first service to connect with it submits its own IDL and
-waits; `trellis svc <claim-id> updates` shows what it asks for, and
+The service's owner makes the key with `trellis keys new`, keeps the seed, and
+sends you only the public key, so the private seed never leaves them. Without
+`--public-key`, `create` generates an identity and prints its `instanceSeed`
+once for you to hand over. In the Console, use **Add service** and leave the IDL
+empty: either let the Console create the key (it shows the seed once, and only
+its public key reaches Trellis) or choose "I already have a key" and paste the
+owner's public key. The first service to connect with the claim's identity
+submits its own IDL and waits; `trellis svc <claim-id> updates` shows what it
+asks for, and
 `trellis svc <claim-id> approve` adds it, accepting the APIs it provides. The
 service then connects as an instance of the new deployment, so skip the
 provisioning step below.
@@ -62,20 +66,23 @@ provisioning step below.
 ## 3. Provision an instance
 
 ```sh
-trellis svc "$DEPLOYMENT_ID" provision --format json
+trellis svc "$DEPLOYMENT_ID" provision --public-key <key> --format json
 ```
 
-Provisioning returns private identity material once. Put the seed in the secret
-manager used by the container platform. Trellis stores only the immutable public
-identity.
+Whoever runs the container makes the identity with `trellis keys new`, puts the
+seed in the container platform's secret manager, and gives you the public key.
+Trellis stores only the public key, and nobody else handles the seed.
+
+Without `--public-key`, `provision` generates an identity and returns its seed
+once. The seed cannot be recovered, so store it then.
 
 Provisioning is idempotent by identity: the Ed25519 identity key is the stable
-identity. A bare `provision` returns the deployment's current instance when one
-exists, reactivating a revivable instance in place, and only mints a new identity
-when none exists. The original private seed cannot be recovered, so store it at
-first provision. Pass `--new` to add another replica deliberately, or
-`--instance-seed <seed>` to select a known identity. A bare provision with more
-than one current instance fails as ambiguous instead of guessing.
+identity. `--public-key` selects the instance that already has that key, or
+registers a new instance for it. A bare `provision` returns the deployment's
+current instance when one exists, reactivating a revivable instance in place,
+and only mints a new identity when none exists. Pass `--new` to add another
+replica deliberately. A bare provision with more than one current instance
+fails as ambiguous instead of guessing.
 
 ## 4. Run the container
 
@@ -85,7 +92,7 @@ service's configuration:
 ```sh
 podman run --rm \
   -e TRELLIS_URL="http://host.containers.internal:3000" \
-  -e MY_SERVICE_IDENTITY_SEED="<seed from provision>" \
+  -e MY_SERVICE_IDENTITY_SEED="<seed from trellis keys new>" \
   ghcr.io/my-org/my-service:1.2.3
 ```
 

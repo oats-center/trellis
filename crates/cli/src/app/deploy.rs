@@ -494,7 +494,7 @@ async fn create_service(
     args: &SvcCreateArgs,
 ) -> miette::Result<()> {
     let Some(source) = &args.source else {
-        return create_service_claim(format, id).await;
+        return create_service_claim(format, id, args.public_key.as_deref()).await;
     };
     let participant = compile_participant_input(
         source,
@@ -525,17 +525,28 @@ async fn create_service(
     Ok(())
 }
 
-/// Create a claim the first service to connect with the generated seed fills
-/// in, for a service whose IDL the administrator does not have beforehand.
-async fn create_service_claim(format: OutputFormat, id: &str) -> miette::Result<()> {
-    let (seed, key) = generate_session_keypair();
+/// Create a claim the first service to connect with its identity fills in, for
+/// a service whose IDL the administrator does not have beforehand. The identity
+/// is the owner's public key, or one generated here whose seed is printed once.
+async fn create_service_claim(
+    format: OutputFormat,
+    id: &str,
+    public_key: Option<&str>,
+) -> miette::Result<()> {
+    let (seed, key) = match public_key {
+        Some(key) => (None, parse_public_key(key)?),
+        None => {
+            let (seed, key) = generate_session_keypair();
+            (Some(seed), key)
+        }
+    };
     let (_, connected) = connect_authenticated_cli_client().await?;
     let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1()
         .service_claims_create(&auth_types::AuthServiceClaimCreateRequest {
             title: wire(id)?,
             instance_title: wire(id)?,
-            identity_public_key: wire(key)?,
+            identity_public_key: wire(&key)?,
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
@@ -550,14 +561,34 @@ async fn create_service_claim(format: OutputFormat, id: &str) -> miette::Result<
     ));
     output::Details::untitled()
         .field("Claim", response.claim.claim_id)
-        .field("Instance seed", &seed)
+        .field("Identity key", &key)
+        .field("Instance seed", seed.as_deref().unwrap_or_default())
         .print();
-    output::not_kept(
-        "instance seed",
-        "Give it to the service; when it connects it asks for what it needs.",
-    );
+    if seed.is_some() {
+        output::not_kept(
+            "instance seed",
+            "Give it to the service; when it connects it asks for what it needs.",
+        );
+    } else {
+        output::hint("When the service connects with this key's seed, it asks for what it needs.");
+    }
     output::next(&format!("trellis svc {id} updates"));
     Ok(())
+}
+
+/// Check that `key` is an Ed25519 public key in base64url, so a typo is refused
+/// before it names an identity no service can prove.
+fn parse_public_key(key: &str) -> miette::Result<String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(key)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+    miette::ensure!(
+        bytes.is_some_and(|bytes| ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_ok()),
+        help = "Pass the public key `trellis keys new` printed.",
+        "--public-key is not a base64url Ed25519 public key"
+    );
+    Ok(key.to_owned())
 }
 
 /// Auth refuses to let a deployment answer an API another one serves unless the
@@ -782,6 +813,11 @@ async fn provision_service(
     id: &str,
     args: &SvcProvisionArgs,
 ) -> miette::Result<()> {
+    let supplied_key = args
+        .public_key
+        .as_deref()
+        .map(parse_public_key)
+        .transpose()?;
     let deployment_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
     let (_, connected) = connect_authenticated_cli_client().await?;
     let client = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
@@ -799,45 +835,40 @@ async fn provision_service(
         .try_collect::<Vec<_>>()
         .await
         .into_diagnostic()?;
-    let supplied_key = args
-        .instance_seed
-        .as_deref()
-        .map(authlib::session_public_key)
-        .transpose()
-        .into_diagnostic()?;
+    let existing = current.iter().find(|item| {
+        supplied_key.as_ref().is_some_and(|key| {
+            item.identity_public_key
+                .as_ref()
+                .is_some_and(|public| public.as_ref() == key)
+        })
+    });
     if !args.new {
-        let candidates = current
-            .iter()
-            .filter(|item| {
-                supplied_key.as_ref().is_none_or(|key| {
-                    item.identity_public_key
-                        .as_ref()
-                        .is_some_and(|public| public.as_ref() == key)
-                })
-            })
-            .collect::<Vec<_>>();
-        match candidates.as_slice() {
-            [existing] => return print_service_provision_result(format, existing, None, true),
-            [] if current.is_empty() => {}
-            _ => {
+        // An owner's key selects its instance or registers a new one; without
+        // a key, re-running provision selects the only instance.
+        match (&supplied_key, existing, current.as_slice()) {
+            (Some(_), Some(existing), _) | (None, _, [existing]) => {
+                return print_service_provision_result(format, existing, None, true)
+            }
+            (Some(_), None, _) | (None, _, []) => {}
+            (None, _, _) => {
                 return Err(miette::miette!(
-                    "existing service identity is ambiguous or different; use --new or \
-                    --instance-seed to select it"
+                    "the service has several instances; use --new for another, or \
+                    --public-key to select one"
                 ))
             }
         }
     }
-    let (seed, key) = match (&args.instance_seed, supplied_key) {
-        (Some(seed), Some(key)) => (seed.clone(), key),
-        _ => generate_session_keypair(),
-    };
     miette::ensure!(
-        !current.iter().any(|item| item
-            .identity_public_key
-            .as_ref()
-            .is_some_and(|public| public.as_ref() == key)),
+        existing.is_none(),
         "identity already belongs to an existing instance"
     );
+    let (seed, key) = match supplied_key {
+        Some(key) => (None, key),
+        None => {
+            let (seed, key) = generate_session_keypair();
+            (Some(seed), key)
+        }
+    };
     let response = client
         .service_instances_provision(&auth_types::AuthInstanceProvisionRequest {
             deployment_id: wire(deployment_id)?,
@@ -848,12 +879,7 @@ async fn provision_service(
         })
         .await
         .into_diagnostic()?;
-    print_service_provision_result(
-        format,
-        &response.instance,
-        args.instance_seed.is_none().then_some(seed.as_str()),
-        false,
-    )
+    print_service_provision_result(format, &response.instance, seed.as_deref(), false)
 }
 
 async fn provision_device(
@@ -1011,6 +1037,7 @@ fn print_service_provision_result<T: serde::Serialize>(
     }
     output::Details::untitled()
         .field("Instance", output::field(&value, "instanceId"))
+        .field("Identity key", output::field(&value, "identityPublicKey"))
         .field("Instance seed", generated_seed.unwrap_or_default())
         .print();
     if generated_seed.is_some() {

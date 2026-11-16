@@ -165,10 +165,19 @@ test("an administrator overrides the only instance's settings, null included, wi
           assert.equal(await save.isDisabled(), true);
 
           // Null is stored for the instance, unlike Clear, which inherits.
+          // Setting one field to null keeps the other unsaved edits, a typed
+          // secret included, pending for Save.
+          const endpoint = settings.getByLabel("Endpoint", { exact: true });
+          const apiKey = settings.getByLabel("API key", { exact: true });
+          await region.fill("west");
+          await endpoint.fill("https://two.example");
+          await apiKey.fill("k2");
           await settings
             .getByRole("button", { name: "Set Region to null", exact: true })
             .click();
           await settings.getByText("Region set to null.").waitFor();
+          assert.equal(await region.inputValue(), "");
+          assert.equal(await region.getAttribute("placeholder"), "null");
           await settings
             .getByRole("button", {
               name: "Set Signing key to null",
@@ -176,9 +185,8 @@ test("an administrator overrides the only instance's settings, null included, wi
             })
             .click();
           await settings.getByText("Signing key set to null.").waitFor();
-          await settings
-            .getByLabel("Endpoint", { exact: true })
-            .fill("https://two.example");
+          assert.equal(await endpoint.inputValue(), "https://two.example");
+          assert.equal(await apiKey.inputValue(), "k2");
           await save.click();
           await settings.getByText("Settings saved.").waitFor();
           assert.equal(await region.inputValue(), "");
@@ -224,7 +232,7 @@ test("an administrator overrides the only instance's settings, null included, wi
       assert.equal(service.config.current.endpoint, "https://two.example");
       assert.equal(service.config.current.region, null);
       assert.equal(service.config.current.signingKey, null);
-      assert.equal(service.config.current.apiKey, "k1");
+      assert.equal(service.config.current.apiKey, "k2");
     }, browserRuntimeOptions());
   } finally {
     for (const service of services) await service.stop();

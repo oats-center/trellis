@@ -5,15 +5,17 @@ import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
 import { participants } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
+import { participants as runtimeParticipants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
+import { TrellisService } from "../packages/trellis/service/mod.ts";
 import {
   browserRuntimeOptions,
   loginCliAsAdministrator,
 } from "./browser_test_support.ts";
 
 test(
-  "CLI explicitly consents to administration, resumes custody, and manages clients, catalog revisions, and Portal themes",
-  { timeout: 90_000 },
+  "CLI explicitly consents to administration, resumes custody, and manages clients, catalog revisions, service identities, and Portal themes",
+  { timeout: 120_000 },
   async () => {
     await withTrellisRuntime(async (runtime) => {
       const browser = await chromium.launch({
@@ -22,6 +24,7 @@ test(
       });
       const page = await browser.newPage();
       page.setDefaultTimeout(10_000);
+      const services: Promise<{ stop(): Promise<void> }>[] = [];
       try {
         const { directory, run } = await loginCliAsAdministrator(runtime, page);
         const clientId = `cli-development-${ulid()}`;
@@ -115,6 +118,68 @@ test(
           accepted.api.acceptedRevision,
         );
         assert.equal(deployment.participantId, provider.id);
+        // The service's owner makes its identity and hands over only the
+        // public key: provisioning registers it and prints no seed, and the
+        // service connects with the seed only the owner held.
+        const owned = await run("keys", "new");
+        const provisioned = await run(
+          "svc",
+          "provider",
+          "provision",
+          "--public-key",
+          owned.publicKey,
+        );
+        assert.equal(provisioned.instanceSeed, null);
+        assert.equal(provisioned.instance.identityPublicKey, owned.publicKey);
+        const connected = TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: provider,
+          seed: owned.seed,
+        }).orThrow();
+        services.push(connected);
+        await (await connected).stop();
+        // The same key selects that instance again instead of adding one.
+        const selected = await run(
+          "svc",
+          "provider",
+          "provision",
+          "--public-key",
+          owned.publicKey,
+        );
+        assert.equal(selected.reused, true);
+        assert.equal(
+          selected.instance.instanceId,
+          provisioned.instance.instanceId,
+        );
+        // A service that introduces itself does the same through a claim.
+        const introduced = await run("keys", "new");
+        const claimCreated = await run(
+          "svc",
+          "introduced",
+          "create",
+          "--public-key",
+          introduced.publicKey,
+        );
+        assert.equal(claimCreated.instanceSeed, null);
+        const introducing = TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: runtimeParticipants.Provider.participant,
+          seed: introduced.seed,
+        }).orThrow();
+        services.push(introducing);
+        await runtime.waitFor(async () => {
+          const { updates } = await run("svc", "introduced", "updates");
+          return updates.find(
+            (update: { state: string }) => update.state === "pending",
+          );
+        });
+        assert.equal(
+          (await run("svc", "introduced", "approve")).update.state,
+          "applied",
+        );
+        const claimed = await introducing;
+        await claimed.kv.records.put("added", { value: "cli" }).orThrow();
+        await claimed.stop();
         // Settings: text as written, JSON otherwise, and a secret read from a
         // file that the CLI never shows back.
         await run(
@@ -301,6 +366,9 @@ test(
         await run("logout");
         await assert.rejects(run("clients", "list"));
       } finally {
+        // A failed step can leave a service waiting for approval.
+        for (const service of services)
+          await service.then((connected) => connected.stop()).catch(() => {});
         await browser.close();
       }
     }, browserRuntimeOptions());

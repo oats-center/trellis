@@ -66,6 +66,25 @@
         settings.providers !== companySignIn),
   );
 
+  const activeProviders = $derived(
+    providers.filter((provider) => provider.enabled),
+  );
+  // On with nothing to sign in through: nobody sees the option yet.
+  const companyIdle = $derived(
+    companySignIn && manageProviders && activeProviders.length === 0,
+  );
+  // Names the providers people see, when this person can list them.
+  const companySummary = $derived.by(() => {
+    if (!companySignIn) return "Nobody can sign in with a company account.";
+    if (!manageProviders)
+      return "People sign in with their organisation's account.";
+    if (activeProviders.length === 0)
+      return "No provider is turned on, so nobody sees this option yet.";
+    if (activeProviders.length > 2)
+      return `People sign in through ${activeProviders.length} providers.`;
+    return `People sign in through ${activeProviders.map((provider) => provider.title).join(" or ")}.`;
+  });
+
   function show(next: Settings): void {
     settings = next;
     localUsers = next.localUsers;
@@ -229,40 +248,76 @@
     <LoadingState />
   {:else}
     {#if settings}<form
-        class="trellis-panel max-w-2xl space-y-4 p-5"
+        class="trellis-panel max-w-2xl space-y-4 py-5 sm:px-5"
         onsubmit={(event) => {
           event.preventDefault();
           void saveSettings();
         }}
       >
-        <fieldset class="space-y-3" disabled={saving || !editableSettings}>
-          <label class="flex items-center gap-3"
-            ><input
-              class="toggle toggle-sm toggle-primary"
-              type="checkbox"
-              bind:checked={localUsers}
-            /><span>Username and password</span></label
-          >
-          <label class="flex items-center gap-3 pl-8"
-            ><input
-              class="checkbox checkbox-sm"
-              type="checkbox"
-              bind:checked={localSignUp}
-              disabled={!localUsers}
-            /><span
-              >People can create their own account <span
-                class="text-sm text-base-content/60"
-                >· in apps that also allow it</span
-              ></span
-            ></label
-          >
-          <label class="flex items-center gap-3"
-            ><input
-              class="toggle toggle-sm toggle-primary"
-              type="checkbox"
-              bind:checked={companySignIn}
-            /><span>Company sign-in</span></label
-          >
+        <fieldset class="space-y-2" disabled={saving || !editableSettings}>
+          <legend class="sr-only">Ways to sign in</legend>
+          <div class="method" class:on={localUsers}>
+            <label class="method-row"
+              ><span class="method-mark"><Icon name="key" size={18} /></span
+              ><span class="min-w-0 flex-1"
+                ><span class="method-name" id="method-local"
+                  >Username and password</span
+                ><span class="method-state" id="method-local-state"
+                  ><span class="method-word">{localUsers ? "On" : "Off"}</span>
+                  · {localUsers
+                    ? "People with an account here sign in with their password."
+                    : "Nobody can sign in with a password."}{#if settings.localUsers !== localUsers}<span
+                      class="method-unsaved">Not saved</span
+                    >{/if}</span
+                ></span
+              ><input
+                class="toggle toggle-primary"
+                type="checkbox"
+                role="switch"
+                aria-labelledby="method-local"
+                aria-describedby="method-local-state"
+                bind:checked={localUsers}
+              /></label
+            >
+            <label class="method-option" class:muted={!localUsers}
+              ><input
+                class="checkbox checkbox-sm"
+                type="checkbox"
+                bind:checked={localSignUp}
+                disabled={!localUsers}
+              /><span
+                >People can create their own account <span
+                  class="text-base-content/60"
+                  >· in apps that also allow it</span
+                ></span
+              ></label
+            >
+          </div>
+          <div class="method" class:on={companySignIn} class:idle={companyIdle}>
+            <label class="method-row"
+              ><span class="method-mark"
+                ><Icon name="building" size={18} /></span
+              ><span class="min-w-0 flex-1"
+                ><span class="method-name" id="method-company"
+                  >Company sign-in</span
+                ><span class="method-state" id="method-company-state"
+                  ><span class="method-word"
+                    >{companySignIn ? "On" : "Off"}</span
+                  >
+                  · {companySummary}{#if settings.providers !== companySignIn}<span
+                      class="method-unsaved">Not saved</span
+                    >{/if}</span
+                ></span
+              ><input
+                class="toggle toggle-primary"
+                type="checkbox"
+                role="switch"
+                aria-labelledby="method-company"
+                aria-describedby="method-company-state"
+                bind:checked={companySignIn}
+              /></label
+            >
+          </div>
           {#if lockedOut}
             <p class="text-sm text-error" role="alert">
               {companySignIn
@@ -448,3 +503,118 @@
     {/if}
   {/if}
 </section>
+
+<style>
+  .method {
+    border: 1px solid var(--color-base-300);
+    border-radius: var(--radius-box);
+    background: var(--color-base-100);
+    transition:
+      border-color 150ms ease-out,
+      background-color 150ms ease-out;
+  }
+  .method.on {
+    border-color: color-mix(in oklab, var(--color-primary) 45%, transparent);
+    background: color-mix(
+      in oklab,
+      var(--color-primary) 5%,
+      var(--color-base-100)
+    );
+  }
+  .method:has(.toggle:focus-visible) {
+    box-shadow: var(--trellis-focus-ring);
+  }
+  .method-row {
+    align-items: center;
+    cursor: pointer;
+    display: flex;
+    gap: 0.875rem;
+    padding: 0.875rem 1rem;
+  }
+  fieldset:disabled .method-row {
+    cursor: default;
+  }
+  .method-mark {
+    align-items: center;
+    background: var(--color-base-200);
+    border-radius: var(--radius-field);
+    color: color-mix(in oklab, var(--color-base-content) 55%, transparent);
+    display: flex;
+    flex: none;
+    height: 2.25rem;
+    justify-content: center;
+    transition:
+      background-color 150ms ease-out,
+      color 150ms ease-out;
+    width: 2.25rem;
+  }
+  .on .method-mark {
+    background: color-mix(in oklab, var(--color-primary) 16%, transparent);
+    color: var(--color-primary);
+  }
+  .method-name {
+    display: block;
+    font-weight: 600;
+  }
+  .method-state {
+    color: color-mix(in oklab, var(--color-base-content) 65%, transparent);
+    display: block;
+    font-size: 0.8125rem;
+  }
+  .method-word {
+    font-weight: 600;
+  }
+  .on .method-word {
+    color: var(--color-success);
+  }
+  .idle .method-word {
+    /* Warning alone is too light to read at this size on a pale panel. */
+    color: color-mix(
+      in oklab,
+      var(--color-warning) 70%,
+      var(--color-base-content)
+    );
+  }
+  .method-unsaved {
+    background: color-mix(in oklab, var(--color-warning) 16%, transparent);
+    border-radius: var(--radius-selector);
+    color: var(--color-base-content);
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin-left: 0.5rem;
+    padding: 0.0625rem 0.375rem;
+    white-space: nowrap;
+  }
+  .method-option {
+    align-items: center;
+    border-top: 1px solid var(--color-base-300);
+    cursor: pointer;
+    display: flex;
+    font-size: 0.875rem;
+    gap: 0.75rem;
+    /* Lines the checkbox up under the method's name. */
+    padding: 0.75rem 1rem 0.75rem calc(1rem + 2.25rem + 0.875rem);
+  }
+  .method.on .method-option {
+    border-top-color: color-mix(
+      in oklab,
+      var(--color-primary) 25%,
+      transparent
+    );
+  }
+  .method-option.muted {
+    color: color-mix(in oklab, var(--color-base-content) 50%, transparent);
+    cursor: default;
+  }
+  @media (max-width: 30rem) {
+    .method-option {
+      padding-left: 1rem;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .method,
+    .method-mark {
+      transition: none;
+    }
+  }
+</style>

@@ -402,10 +402,11 @@ implemented API changed incompatibly is refused until the API is force-replaced.
 `trellis svc <deployment-id> apply` still installs a build ahead of time.
 
 A service whose IDL the administrator does not have, such as a third party's,
-starts from a claim: `trellis svc <name> create` without `--source` (or
-`Auth.ServiceClaims.Create` with the service's public key) creates one, and the
-first service to connect with that identity submits itself as the claim's
-update. Approving it (`trellis svc <claim-id> approve`, or the Console review
+starts from a claim: `trellis svc <name> create --public-key <key>` without
+`--source` (or `Auth.ServiceClaims.Create` with the service's public key)
+creates one; without `--public-key` the CLI generates the identity and prints
+its seed once. The first service to connect with that identity submits itself
+as the claim's update. Approving it (`trellis svc <claim-id> approve`, or the Console review
 link) creates the deployment, accepts the APIs it provides and the unaccepted
 ones it uses, and provisions an
 instance holding that identity; the service then connects as that instance.
@@ -470,8 +471,13 @@ CONNECT. Provisioning supplies broker endpoints and pinned installation/issuer
 trust; obtain trust from initialization or authenticated provisioning, never an
 unsigned discovery response. Immediate `ServiceInstances.Provision` and
 `Devices.Provision` require `identityPublicKey` from a client-owned Ed25519 key;
-Trellis never stores or returns its private seed. Missing `identityPublicKey`
-returns `identity_public_key_required` without provisioning or consuming the
+Trellis never stores or returns its private seed. From the CLI, whoever runs
+the service makes the key with `trellis keys new`, keeps the seed, and gives
+the administrator the public key for
+`trellis svc <id> provision --public-key <key>`, which registers it or selects
+the instance that already has it. A bare `provision` generates the key pair
+itself and prints the seed once. Missing `identityPublicKey` returns
+`identity_public_key_required` without provisioning or consuming the
 idempotency key, and `provisioningSecret` is null. `ServiceInstances.Provision`
 awaits the native resource producer before success (empty declarations and KV
 are supported; other declarations fail explicitly). Retry the same request after
