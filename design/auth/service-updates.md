@@ -135,6 +135,14 @@ capability. Approval rechecks inside its transaction that the update is still
 pending and that the deployment's binding has not changed since submission; a
 changed binding supersedes the update and the service submits again.
 
+A decided update carries `decidedBy`: `user`, with the user's ID and display
+name, when a person approved or rejected it, and `automatic` when no person
+did, as when a build that asked for nothing new installed itself. The Console's
+update history shows it beside each update. `ServiceInstances.List` reports
+each instance's `state` (`active`, `disabled`, or `removed`) and `upToDate`,
+whether it holds the deployment's installed revision; an instance that does not
+cannot be enabled until it connects with that build.
+
 ## Built-in services
 
 Trellis's own services (`trellis.platform`, `trellis.healthRuntime`,

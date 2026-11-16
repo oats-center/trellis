@@ -753,18 +753,21 @@ pub(super) fn read_instance(
     connection: &Connection,
     instance_id: &str,
 ) -> Result<AuthProvisionedInstance, AuthError> {
-    let (deployment, principal, revision, key, title): (
+    let (deployment, principal, revision, key, title, instance_state, up_to_date): (
         String,
         String,
         u64,
         Option<String>,
         String,
+        String,
+        bool,
     ) = connection
         .query_row(
             "SELECT i.deployment_id,i.principal_id,i.version,p.identity_public_key,\
-            i.title \
+            i.title,i.state,coalesce(i.installed_revision=b.installed_revision,1) \
             FROM auth_instances i \
             LEFT JOIN auth_provisioned_identities p USING(instance_id) \
+            LEFT JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id \
             WHERE i.instance_id=?1",
             [instance_id],
             |row| {
@@ -774,6 +777,8 @@ pub(super) fn read_instance(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
@@ -789,6 +794,12 @@ pub(super) fn read_instance(
         deployment_id: deployment.parse().map_err(|_| AuthError::Unavailable)?,
         identity_public_key: key.map(Into::into),
         revision: AuthRevision(revision.into()),
+        state: match instance_state.as_str() {
+            "active" => AuthInstanceState::Active,
+            "revoked" => AuthInstanceState::Removed,
+            _ => AuthInstanceState::Disabled,
+        },
+        up_to_date,
         principal: AuthPrincipal {
             principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
             title,

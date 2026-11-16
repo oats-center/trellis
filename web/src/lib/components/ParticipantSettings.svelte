@@ -22,13 +22,29 @@
   // Settings a service or device declares, for the deployment or one of its
   // instances' overrides.
   // A service or device deployment, or an app's registered client.
-  let { deploymentId, clientId }: { deploymentId?: string; clientId?: string } =
-    $props();
+  type Props = {
+    deploymentId?: string;
+    clientId?: string;
+    /** The instance whose overrides are shown; empty for every instance. */
+    instanceId?: string;
+    /** Names to show for instances, by instance ID, instead of their titles. */
+    instanceNames?: ReadonlyMap<string, string>;
+    /** Set once loaded: whether there are settings to show. */
+    available?: boolean;
+  };
+  let {
+    deploymentId,
+    clientId,
+    instanceId = $bindable(""),
+    instanceNames,
+    available = $bindable(false),
+  }: Props = $props();
 
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("participant-settings");
-  let instanceId = $state("");
+  const nameOf = (instance: { instanceId: string; title: string }) =>
+    instanceNames?.get(instance.instanceId) ?? instance.title;
   let view = $state.raw<View | null>(null);
   // Whose settings `view` holds, so edits wait until it matches the selector.
   let loadedKey = $state("");
@@ -86,7 +102,10 @@
       if (!scope.isCurrent(token)) return;
       view = loaded;
       loadedKey = loading;
-      if (!input.target.instanceId) instances = loaded.instances;
+      if (!input.target.instanceId) {
+        instances = loaded.instances;
+        available = loaded.fields.length > 0;
+      }
       revisions = history.items;
       error = null;
     } catch (cause) {
@@ -335,7 +354,7 @@
             bind:value={instanceId}
             ><option value="">Every instance</option
             >{#each instances as instance (instance.instanceId)}<option
-                value={instance.instanceId}>{instance.title}</option
+                value={instance.instanceId}>{nameOf(instance)}</option
               >{/each}</select
           >{#if !ready && !error}<span
               class="loading loading-spinner loading-xs"
@@ -355,7 +374,7 @@
           .join(", ")}.</Notice
       >{/if}
     {#if behind.length > 0}<Notice variant="info"
-        >{behind.map((instance) => instance.title).join(", ")}
+        >{behind.map(nameOf).join(", ")}
         {behind.length === 1 ? "uses" : "use"} the settings from when
         {behind.length === 1 ? "it" : "they"} last connected. Restart
         {behind.length === 1 ? "it" : "them"} to apply settings marked “Applies after

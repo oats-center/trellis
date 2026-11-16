@@ -1174,22 +1174,80 @@ fn read_update(
     store: &SqliteAuthorizationStore,
     update: &str,
 ) -> Result<AuthServiceUpdate, AuthError> {
-    let (deployment, instance, participant, digest, changes, state, requested, decided, revision): (
-        String, String, String, String, String, String, i64, Option<i64>, u64,
+    let (
+        deployment,
+        instance,
+        participant,
+        digest,
+        changes,
+        state,
+        requested,
+        decided,
+        actor,
+        revision,
+    ): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<String>,
+        u64,
     ) = connection
         .query_row(
             "SELECT deployment_id,instance_id,participant_id,participant_digest,changes_json,\
-            state,requested_at,decided_at,revision FROM auth_service_updates WHERE update_id=?1",
+            state,requested_at,decided_at,decided_by,revision FROM auth_service_updates \
+            WHERE update_id=?1",
             [update],
             |row| {
                 Ok((
-                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?,
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
                 ))
             },
         )
         .optional()?
         .ok_or(AuthError::NotFound)?;
+    // A person decided when the recorded actor is a user. Any other actor (the
+    // submitting instance for a build that asked for no more access, or
+    // Trellis for a built-in's build) decided without asking anyone.
+    let decided_by = match actor {
+        None => None,
+        Some(actor) => {
+            let name: Option<String> = connection
+                .query_row(
+                    "SELECT coalesce(u.display_name,(SELECT c.normalized_username \
+                    FROM auth_local_credentials c WHERE c.principal_id=p.principal_id),\
+                    p.principal_id) FROM auth_principals p \
+                    LEFT JOIN auth_user_profiles u ON u.principal_id=p.principal_id \
+                    WHERE p.principal_id=?1 AND p.kind='user'",
+                    [&actor],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Some(AuthServiceUpdateDecider {
+                kind: if name.is_some() {
+                    AuthServiceUpdateDeciderKind::User
+                } else {
+                    AuthServiceUpdateDeciderKind::Automatic
+                },
+                principal_id: name.as_ref().and_then(|_| actor.parse().ok()),
+                name,
+                extra: Default::default(),
+            })
+        }
+    };
     let ulid = |value: &str| value.parse().map_err(|_| AuthError::Unavailable);
     Ok(AuthServiceUpdate {
         update_id: ulid(update)?,
@@ -1206,6 +1264,7 @@ fn read_update(
             .map(|origin| format!("{origin}/console/admin/services/{deployment}?update={update}")),
         requested_at: timestamp(requested)?,
         decided_at: decided.map(timestamp).transpose()?,
+        decided_by,
         revision: AuthRevision(revision.into()),
         extra: Default::default(),
     })

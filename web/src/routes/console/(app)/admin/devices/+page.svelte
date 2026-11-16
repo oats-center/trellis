@@ -15,6 +15,7 @@
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
+  import { instanceIdentities } from "$lib/console/instance_identity.ts";
   import { bulkExpectedCount, bulkTargetDetails, runBulk } from "$lib/bulk.ts";
   import { getTrellis } from "$lib/trellis";
   import BulkActionBar from "$lib/components/BulkActionBar.svelte";
@@ -80,15 +81,17 @@
     ),
   );
 
-  // Devices have no authored name; show the principal title when it is one,
-  // otherwise a short form of the ID people can match against the device.
-  function deviceName(item: {
-    principal: { title: string };
-    instanceId: string;
-  }) {
-    return item.principal.title && item.principal.title !== item.instanceId
-      ? item.principal.title
-      : `Device ${item.instanceId.slice(-6)}`;
+  // Devices often share a title (provisioning may name each after its type),
+  // so a title shows only when it tells the device apart; otherwise a short
+  // form of the ID people can match against the device.
+  const identities = $derived(
+    instanceIdentities(instances, typeNames, "Device"),
+  );
+  function deviceName(item: { instanceId: string }) {
+    return (
+      identities.get(item.instanceId)?.name ??
+      `Device ${item.instanceId.slice(-6)}`
+    );
   }
 
   function reviewName(item: Review): string {
@@ -548,6 +551,12 @@
                       <span class="block font-medium"
                         >{deviceName(instance)}</span
                       >
+                      {#if identities.get(instance.instanceId)?.key}<span
+                          class="block text-xs text-base-content/60 max-sm:hidden"
+                          >Key <span class="trellis-identifier"
+                            >{identities.get(instance.instanceId)?.key}</span
+                          ></span
+                        >{/if}
                       <span class="block text-xs text-base-content/60 sm:hidden"
                         >{typeNames.get(instance.deploymentId) ?? "—"} · Added {formatDate(
                           instance.principal.createdAt,

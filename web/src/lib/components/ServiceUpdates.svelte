@@ -8,38 +8,40 @@
   import { canPerform } from "$lib/console/operations.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { traverseAll } from "$lib/console/paging.ts";
-  import { capabilityArea } from "$lib/console/capability_areas.ts";
-  import { apiLabel, sentenceName } from "$lib/console/plain_labels.ts";
+  import { apiLabel } from "$lib/console/plain_labels.ts";
+  import { describeUpdateChanges } from "$lib/console/service_update_changes.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import Notice from "$lib/components/Notice.svelte";
 
   type Update = apis.auth.ServiceUpdatesGetOutput["update"];
-  type Resource = Update["changes"]["addedResources"][number];
 
+  // The update waiting for a decision, or the one a review link opened. The
+  // deployment's updates and the capability titles they name are bound out
+  // for the page's update history.
   type Props = {
     deploymentId: string;
     /** The update a review link opened, shown even once it is decided. */
     focus?: string;
     /** Called after an approval installs the update. */
     onapplied?: () => void;
+    /** Every update of the deployment, newest first, once loaded. */
+    updates?: Update[];
+    /** Capability titles by capability ID, for describing changes. */
+    titles?: Map<string, string>;
   };
-  let { deploymentId, focus, onapplied }: Props = $props();
+  let {
+    deploymentId,
+    focus,
+    onapplied,
+    updates = $bindable([]),
+    titles = $bindable(new Map()),
+  }: Props = $props();
 
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("service-updates");
-  const RESOURCE_KINDS: Record<string, string> = {
-    kv: "Key-value store",
-    store: "File store",
-    state: "Saved state",
-    job: "Job queue",
-    eventConsumer: "Event delivery",
-  };
-
-  let updates = $state.raw<Update[]>([]);
-  let titles = $state.raw<Map<string, string>>(new Map());
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
   let busy = $state(false);
@@ -54,9 +56,6 @@
     updates.find((update) => update.updateId === focus) ??
       updates.find((update) => update.state === "pending"),
   );
-  const history = $derived(
-    updates.filter((update) => update.updateId !== shown?.updateId),
-  );
 
   $effect(() => {
     const target = `${deploymentId}:${focus ?? ""}`;
@@ -67,15 +66,19 @@
   async function load(): Promise<void> {
     const token = scope.begin();
     try {
-      const response = await trellis
-        .serviceUpdatesList(
-          apis.auth.API.actions["rpc:ServiceUpdates.List"].input.decode({
-            deploymentId,
-            page: { limit: 20 },
-          }),
-        )
-        .orThrow();
-      let listed = response.items;
+      const response = await traverseAll(async (page) => {
+        const result = await trellis
+          .serviceUpdatesList(
+            apis.auth.API.actions["rpc:ServiceUpdates.List"].input.decode({
+              deploymentId,
+              page,
+            }),
+          )
+          .orThrow();
+        return { items: result.items, cursor: result.page.nextCursor };
+      });
+      if (!response.complete) throw response.error;
+      let listed = [...response.items];
       if (focus && !listed.some((update) => update.updateId === focus)) {
         const { update } = await trellis
           .serviceUpdatesGet(
@@ -105,20 +108,6 @@
     titles = new Map(
       listed.items.map((item) => [String(item.capabilityId), item.title]),
     );
-  }
-
-  function capabilityLabel(capabilityId: string): string {
-    const title = titles.get(capabilityId);
-    if (title) return title;
-    const area = capabilityArea(capabilityId);
-    // Everything after the area is the action, which may itself be dotted.
-    const local = capabilityId.slice(capabilityId.indexOf(":") + 1);
-    const action = local.slice(local.indexOf(".") + 1);
-    return `${area.title}: ${sentenceName(action).toLowerCase()} (${area.api})`;
-  }
-
-  function resourceLabel(resource: Resource): string {
-    return `${RESOURCE_KINDS[resource.kind] ?? sentenceName(resource.kind)} “${resource.name}”`;
   }
 
   async function decide(update: Update, approve: boolean): Promise<void> {
@@ -240,6 +229,7 @@
   >{/if}
 {#if shown}
   {@const changes = shown.changes}
+  {@const described = describeUpdateChanges(changes, titles)}
   <section
     class={[
       "trellis-section space-y-4 p-5",
@@ -261,52 +251,9 @@
       {@render stateBadge(shown)}
     </div>
     <div class="grid gap-4 sm:grid-cols-2">
-      {@render changeList(
-        "Asks for",
-        [
-          ...changes.addedCapabilities.map(capabilityLabel),
-          ...changes.addedResources.map(resourceLabel),
-          ...changes.reattachedResources.map(
-            (resource) =>
-              `${resourceLabel(resource)} again, with the data it kept`,
-          ),
-          ...changes.addedApis.map((api) =>
-            changes.sharedApis.includes(api)
-              ? `To offer ${apiLabel(api)}, which another service already offers`
-              : `To offer ${apiLabel(api)}`,
-          ),
-          ...changes.changedResources.map(
-            (resource) => `${resourceLabel(resource)}, with more room`,
-          ),
-          ...changes.acceptedUsedApis.map(
-            (api) =>
-              `To add ${apiLabel(api)}, which it uses, before any service offers it`,
-          ),
-        ],
-        "bg-warning",
-      )}
-      {@render changeList(
-        "Gives up",
-        [
-          ...changes.removedCapabilities.map(capabilityLabel),
-          ...changes.removedResources.map(
-            (resource) => `${resourceLabel(resource)} (its data is kept)`,
-          ),
-        ],
-        "bg-base-content/40",
-      )}
-      {@render changeList(
-        "Provides",
-        [
-          ...changes.removedApis.map(
-            (api) => `Stops offering ${apiLabel(api)}`,
-          ),
-          ...changes.acceptedApis.map(
-            (api) => `Installs the new version of ${apiLabel(api)}`,
-          ),
-        ],
-        "bg-info",
-      )}
+      {@render changeList("Asks for", described.asks, "bg-warning")}
+      {@render changeList("Gives up", described.givesUp, "bg-base-content/40")}
+      {@render changeList("Provides", described.provides, "bg-info")}
     </div>
     {#if shown.state === "pending" && changes.sharedApis.length}
       <div class="alert alert-warning block space-y-2" role="alert">
@@ -348,18 +295,5 @@
       </div>
     {/if}
   </section>
-{/if}
-{#if history.length}
-  <details class="trellis-section px-5 py-3 text-sm">
-    <summary class="cursor-pointer font-medium">Earlier updates</summary>
-    <ul class="mt-2 divide-y divide-base-300">
-      {#each history as update (update.updateId)}
-        <li class="flex items-center justify-between gap-3 py-2">
-          <span>{formatDate(update.requestedAt)}</span>
-          {@render stateBadge(update)}
-        </li>
-      {/each}
-    </ul>
-  </details>
 {/if}
 <ConfirmationModal bind:this={confirmationModal} />

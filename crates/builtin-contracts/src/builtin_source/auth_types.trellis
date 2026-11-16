@@ -857,6 +857,16 @@ model AuthServiceUpdateChanges {
   acceptedApis: list<AuthApiId>;
   acceptedUsedApis: list<AuthApiId>;
 }
+enum AuthServiceUpdateDeciderKind { user; automatic; }
+/// Who decided a service update.
+model AuthServiceUpdateDecider {
+  /// `user` for a person's decision; `automatic` when Trellis decided without asking, such as installing a build that asked for no more access.
+  kind: AuthServiceUpdateDeciderKind;
+  /// The user who decided, for `user`.
+  principalId?: ulid;
+  /// The user's display name, or their username, for `user`.
+  name?: string;
+}
 model AuthServiceUpdate {
   updateId: ulid;
   deploymentId: ulid;
@@ -868,6 +878,7 @@ model AuthServiceUpdate {
   reviewUrl?: string;
   requestedAt: timestamp;
   decidedAt?: timestamp;
+  decidedBy?: AuthServiceUpdateDecider;
   revision: AuthRevision;
 }
 model AuthServiceUpdateSubmitRequest { participantId: string; packageEvidence: AuthPackageEvidence; }
@@ -908,10 +919,15 @@ model AuthServiceUpdateDecideRequest {
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
+enum AuthInstanceState { active; disabled; removed; }
 model AuthProvisionedInstance {
   instanceId: ulid;
   principal: AuthPrincipal;
   deploymentId: ulid;
+  /// `removed` instances keep their record but can never connect or be turned on again.
+  state: AuthInstanceState;
+  /// Whether the instance runs the deployment's installed build. One that does not cannot be turned on until it connects with that build.
+  upToDate: bool;
   identityPublicKey?: AuthPublicKey;
   revision: AuthRevision;
 }

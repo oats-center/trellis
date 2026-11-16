@@ -98,6 +98,12 @@ and only mints a new identity when none exists. Pass `--new` to add another
 replica deliberately. A bare provision with more than one current instance
 fails as ambiguous instead of guessing.
 
+In the Console, open the service and choose **Add an instance**. The Instances
+table names each instance by its own title, or by its ID when several share a
+title, and shows the start of its identity key, whether it is connected, and
+the build it last ran. Its **⋯** menu turns the instance off or on, opens its
+settings, and removes it. Removing is permanent: the identity stops working.
+
 ## 4. Run the container
 
 Pass only the runtime URL and the provisioned identity material required by the
@@ -127,6 +133,10 @@ differs from the one its instance runs and submits its own IDL:
   it as a QR code; open it, or run `trellis svc "$DEPLOYMENT_ID" updates` and
   `trellis svc "$DEPLOYMENT_ID" approve`. The service connects as soon as the
   update is approved.
+
+The service's page in the Console keeps the update history: when each build
+asked, what it changed, whether it was installed, rejected, or replaced, and
+whether a person approved it or Trellis installed it automatically.
 
 A build that drops a resource only gives up access to it; the data stays until
 you remove it under Resources. A later build that declares it again asks for it
