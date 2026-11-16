@@ -88,7 +88,6 @@
       loadedKey = loading;
       if (!input.target.instanceId) instances = loaded.instances;
       revisions = history.items;
-      drafts = {};
       error = null;
     } catch (cause) {
       if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
@@ -165,11 +164,13 @@
   }
 
   // Runs a change captured for `intentKey`. Its outcome is shown only while
-  // the selector still names that target.
+  // the selector still names that target. On success the drafts of `settled`
+  // fields go, or every draft when it is omitted; the rest stay pending.
   async function mutate(
     intentKey: string,
     run: () => Promise<View>,
     done: string,
+    settled?: readonly string[],
   ): Promise<void> {
     if (busy) return;
     busy = true;
@@ -181,7 +182,11 @@
       view = result;
       loadedKey = intentKey;
       // A saved secret is never shown back, so what was typed goes at once.
-      drafts = {};
+      drafts = settled
+        ? Object.fromEntries(
+            Object.entries(drafts).filter(([name]) => !settled.includes(name)),
+          )
+        : {};
       notice = done;
       await load();
     } catch (cause) {
@@ -230,7 +235,8 @@
   }
 
   // Unset removes the value stored here, so the default or deployment
-  // applies; null stores null here, overriding them.
+  // applies; null stores null here, overriding them. Only this field's draft
+  // is dropped; other unsaved edits stay pending.
   async function store(
     field: Field,
     change: "unset" | "null",
@@ -256,6 +262,7 @@
           })
           .orThrow(),
       done,
+      [field.name],
     );
   }
 
