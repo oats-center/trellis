@@ -283,6 +283,31 @@ compiler output, never policy, resource eligibility, or authorization decisions.
 Generated Rust constructors and runtime descriptors are compiler output, not
 contract-as-code builders.
 
+### Server-side resolution
+
+Auth can also build the evidence itself from a root package's own files
+(`Auth.Packages.Resolve`), so a client holding only a service's IDL never builds
+the closure. The client sends the root's `trellis.toml` and `.trellis` files.
+A listed source is matched to a file by its path relative to the manifest, or
+by file name when exactly one file has it. Without a manifest the client gives
+the package name and version, every `.trellis` file is a source named after its
+file, and each import from outside the package names the package of that name;
+an import naming no package Auth holds or was given is reported, since only
+the package's own manifest can say what it is.
+
+Each dependency is satisfied by name and version requirement from three
+places: packages the client supplies with the request (each its own manifest
+and files), the built-in `trellis` package the server ships, and the packages
+in every installed participant's stored evidence. A path dependency has no
+requirement, so any version matches. A supplied package wins; otherwise the
+highest matching version does, the built-in copy on a tie, and the result
+names the other versions that also matched. A held package's own dependencies
+are exact, so choosing it pins them, and resolution repeats until the choices
+settle. Nothing is fetched from a registry: a dependency nothing satisfies is
+returned by name, requirements, dependents, and the versions that do not
+match, for the client to supply. Resolution writes nothing, and the evidence it
+returns is checked again by `Deployments.Create` like any other.
+
 Published OCI source bundles contain the manifest, listed source, and frozen
 resolution metadata—not canonical API JSON. Generated implementations are
 disposable build/release artifacts, not committed source; run generation before

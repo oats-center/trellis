@@ -373,6 +373,17 @@ them without a deployment. An incompatible change needs `trellis apis force-repl
 explicit breakage/consent acknowledgements. Console exposes OAuth clients and the
 API catalog.
 
+The Console's Add service form takes only the service's `trellis.toml` and
+`.trellis` files (or their folder), no `trellis.lock`. `Auth.Packages.Resolve`
+(`trellis.auth.v1:users.manage`, like `Deployments.Create`) builds the package
+evidence from them: each dependency comes from packages supplied with the
+request, the `trellis` package the server ships, or an installed participant's
+packages, by name and version requirement (a path dependency takes any
+version; the highest match wins and the result says which). A dependency none
+of these satisfy is returned by name and requirement for the caller to supply;
+nothing is fetched from a registry. The returned evidence goes to
+`Deployments.Create`, which checks it like any other.
+
 A running service updates itself. When its generated participant digest differs
 from the revision its instance runs, the service SDK submits its package evidence
 (`Auth.ServiceUpdates.Submit`, which every service instance may call) and

@@ -98,6 +98,8 @@ import {
   AuthOIDCRoleMappingPutResponse,
   AuthOIDCRoleMappingDeleteRequest,
   AuthDeploymentCreateRequest,
+  AuthPackageResolveRequest,
+  AuthPackageResolveResponse,
   AuthDeploymentGetRequest,
   AuthDeploymentGetResponse,
   AuthDeploymentsListResponse,
@@ -332,6 +334,8 @@ api auth@v1 {
   rpc DeviceCompanions.Attach { input AuthDeviceCompanionAttachRequest; output AuthDeviceCompanion; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Detach a device's companion app.
   rpc DeviceCompanions.Revoke { input AuthDeviceCompanionRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Build a service's or device's package evidence from its own IDL files, taking its dependencies from Trellis's built-in packages, the packages of installed services and devices, and the packages supplied with it. Nothing is fetched; dependencies none of these satisfy are listed instead.
+  rpc Packages.Resolve { input AuthPackageResolveRequest; output AuthPackageResolveResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Create a deployment for a service or device kind.
   rpc Deployments.Create { input AuthDeploymentCreateRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Get one deployment.
@@ -501,7 +505,7 @@ api auth@v1 {
       title "Manage sign-in and services";
       description "Change sign-in providers, services, devices, storage, sessions, and connections.";
       grants "Can change any service or device in this Trellis and sign anyone out.";
-      allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
+      allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Packages.Resolve; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
     }
     capability roles.manage {
       administrative;

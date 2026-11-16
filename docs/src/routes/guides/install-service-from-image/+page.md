@@ -41,6 +41,20 @@ native IDL in memory, installs an immutable participant revision, sets up
 deployment resources, and writes the participant-scoped binding; later releases
 use `apply` or let the service submit its own build (below).
 
+### From the Console
+
+**Add service** in the Console takes the same project. Give the service a name,
+then under **Service IDL** choose the project's `trellis.toml` and `.trellis`
+files, or its folder. The Console doesn't need `trellis.lock`: Trellis finds
+each dependency itself among the `trellis` package it ships and the packages of
+services already installed, picking the highest version that matches, and the
+form says which it used. A dependency Trellis doesn't have is listed with the
+version it needs; choose that package's `trellis.toml` and `.trellis` files
+beside it. Trellis never downloads a package. When the project declares several
+services, pick which one. Then either let the Console create the instance's key
+(it shows the seed once) or paste a public key the service's operator made, and
+skip the provisioning step below.
+
 ### Without the release's project
 
 When you don't have the service's project, for instance a third party's service
@@ -53,8 +67,8 @@ trellis svc partner-orders create --public-key <key>
 The service's owner makes the key with `trellis keys new`, keeps the seed, and
 sends you only the public key, so the private seed never leaves them. Without
 `--public-key`, `create` generates an identity and prints its `instanceSeed`
-once for you to hand over. In the Console, use **Add service** and leave the IDL
-empty: either let the Console create the key (it shows the seed once, and only
+once for you to hand over. In the Console, use **Add service** and choose no
+IDL: either let the Console create the key (it shows the seed once, and only
 its public key reaches Trellis) or choose "I already have a key" and paste the
 owner's public key. The first service to connect with the claim's identity
 submits its own IDL and waits; `trellis svc <claim-id> updates` shows what it

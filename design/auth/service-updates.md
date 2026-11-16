@@ -9,8 +9,12 @@ once, and holds one that asks for new access until an administrator approves it.
 
 The administrator-driven path (`trellis svc create|apply`) stays; like an
 approved update, it accepts the APIs the build provides and the ones it uses
-that the catalog does not hold yet. A service update is the same install,
-started by the service.
+that the catalog does not hold yet. The Console's Add service form installs
+the same way from just the service's `trellis.toml` and `.trellis` files: Auth
+builds the evidence with `Auth.Packages.Resolve`, taking dependencies from the
+packages it holds and asking the administrator for files of any it lacks (see
+[server-side resolution](../contracts/trellis-idl.md#server-side-resolution)).
+A service update is the same install, started by the service.
 
 ## Principles
 

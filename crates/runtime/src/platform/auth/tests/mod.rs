@@ -34,6 +34,7 @@ mod oauth_renewal;
 mod oauth_transport;
 mod oauth_upstream;
 mod own_context;
+mod packages;
 mod policy;
 mod policy_aggregates;
 mod resources;

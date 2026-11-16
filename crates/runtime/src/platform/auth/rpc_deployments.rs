@@ -84,6 +84,28 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             connection, input, "device"
         )
     );
+    let resolver = Arc::clone(&store);
+    provider.register_packages_resolve(move |context, input| {
+        let store = Arc::clone(&resolver);
+        async move {
+            let actor =
+                caller(&context, Some(Administration::ManagePrincipals)).map_err(rpc_error)?;
+            blocking(move || {
+                // Compiling happens outside the transaction; it only reads.
+                let held = store.transaction(|connection| {
+                    SqliteAuthorizationStore::require_administration(
+                        connection,
+                        &actor,
+                        Administration::ManagePrincipals,
+                    )?;
+                    super::packages::held_evidence(connection)
+                })?;
+                super::packages::resolve(held, &input)
+            })
+            .await
+            .map_err(rpc_error)
+        }
+    });
     let reviews = Arc::clone(&store);
     provider.register_apis_review(move |context, input| {
         let store = Arc::clone(&reviews);
