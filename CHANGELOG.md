@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.43] - 2026-11-16
+
 ### Added
 
 - `trellis svc <ID> provision --public-key <KEY>` and
