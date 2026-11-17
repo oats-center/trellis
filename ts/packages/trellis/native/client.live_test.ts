@@ -299,13 +299,13 @@ test(
         const grants = await admin
           .capabilityGrantsList({
             principalId: subject.user.principalId,
-            capabilityId: sessionsRead,
+            capabilityId: manageAccounts,
           })
           .orThrow();
         const grant = grants.items.find(
           (item) =>
             item.principalId === subject.user.principalId &&
-            item.capability.capabilityId === sessionsRead,
+            item.capability.capabilityId === manageAccounts,
         );
         assert.ok(
           grant,
@@ -382,14 +382,14 @@ test(
           );
           assert.equal(
             current.authority.capabilities.some(
-              (capability) => capability.capabilityId === sessionsRead,
+              (capability) => capability.capabilityId === manageAccounts,
             ),
             false,
           );
           assert.equal(
             await current.allows("trellis.auth@v1", {
               kind: "rpc",
-              name: "Sessions.List",
+              name: "Users.Create",
               direction: "call",
             }),
             false,
