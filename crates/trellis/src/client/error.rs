@@ -295,6 +295,13 @@ pub enum TrellisClientError {
     #[error("nats connect error: {0}")]
     NatsConnect(String),
 
+    /// The broker can't be connected to with these settings, and retrying
+    /// fails the same way: it doesn't offer the TLS asked for, its certificate
+    /// isn't issued for the expected name or doesn't chain to a trusted CA, or
+    /// the server URLs and TLS settings can't be used together.
+    #[error("nats connect error that retrying won't fix: {0}")]
+    NatsConnectConfig(String),
+
     #[error("nats request error: {0}")]
     NatsRequest(String),
 

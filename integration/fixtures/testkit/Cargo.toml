@@ -13,7 +13,7 @@ trellis-test-fixture = { path = "crates/trellis-test-fixture" }
 
 [dev-dependencies]
 trellis-rs = { version = "0.100.0-rc.47" }
-async-nats = "0.52"
+async-nats = "0.53"
 runtime-trellis = { path = "../runtime/crates/runtime-trellis" }
 trellis-runtime-apis = { path = "../../../crates/runtime-apis" }
 trellis-idl = { path = "../../../crates/idl" }

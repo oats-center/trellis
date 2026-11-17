@@ -360,15 +360,8 @@ pub(crate) fn nats_connect_options(
     let options = async_nats::ConnectOptions::with_credentials(credentials)
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
     let roots: Vec<_> = nats.ca_certificate.iter().cloned().collect();
-    Ok(match &nats.tls_server_name {
-        Some(name) => options.tls_client_config(
-            trellis_rs::__internal::named_server_tls(&roots, name)
-                .map_err(|error| RuntimeError::Nats(error.to_string()))?,
-        ),
-        None => roots
-            .into_iter()
-            .fold(options, async_nats::ConnectOptions::add_root_certificates),
-    })
+    trellis_rs::__internal::nats_tls_options(options, &roots, nats.tls_server_name.as_deref())
+        .map_err(|error| RuntimeError::Nats(error.to_string()))
 }
 
 /// How long a NATS connection that fails in transit is tried again.
@@ -398,7 +391,7 @@ pub(crate) async fn connect_nats(
         let transient = matches!(
             error.kind(),
             ConnectErrorKind::Io | ConnectErrorKind::TimedOut | ConnectErrorKind::Dns
-        );
+        ) && !trellis_rs::__internal::connect_error_is_permanent(&error);
         if !transient || stopping() || tokio::time::Instant::now() + delay >= give_up {
             return Err(RuntimeError::Nats(error.to_string()));
         }

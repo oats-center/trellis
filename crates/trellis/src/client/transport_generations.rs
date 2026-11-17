@@ -2699,23 +2699,26 @@ async fn open_generation(
             inner.on_generation_event(id, event);
         }
     })
-    .custom_inbox_prefix(runtime.inbox_prefix.clone());
-    let options = match &native.server_name {
-        Some(name) => options.tls_client_config(crate::client::nats_tls::named_server_tls(
-            &native.root_certificates,
-            name,
-        )?),
-        None => native
-            .root_certificates
-            .iter()
-            .cloned()
-            .fold(options, ConnectOptions::add_root_certificates),
-    };
+    .custom_inbox_prefix(runtime.inbox_prefix.clone())
+    // A generation never reconnects, so servers the broker reports are never
+    // dialled, and the connect needn't wait for the INFO that lists them.
+    .ignore_discovered_servers();
+    let options = crate::client::nats_tls::nats_tls_options(
+        options,
+        &native.root_certificates,
+        native.server_name.as_deref(),
+    )?;
     let nats = match options.connect(native.nats_servers.clone()).await {
         Ok(nats) => nats,
         Err(error) => {
             inner.clear_opening(id);
-            return Err(TrellisClientError::NatsConnect(error.to_string()));
+            return Err(
+                if crate::client::nats_tls::connect_error_is_permanent(&error) {
+                    TrellisClientError::NatsConnectConfig(error.to_string())
+                } else {
+                    TrellisClientError::NatsConnect(error.to_string())
+                },
+            );
         }
     };
     // The raw socket exists but is not yet owned by a managed generation: this

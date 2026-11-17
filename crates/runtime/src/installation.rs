@@ -280,18 +280,18 @@ async fn push_nats_accounts(
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
-    let mut options =
-        async_nats::ConnectOptions::with_credentials(&provisioning.system_user.creds())
-            .map_err(|error| InstallationError::Nats(error.to_string()))?
-            .name("trellis-provisioning")
-            .connection_timeout(Duration::from_secs(10));
-    if let Some(ca) = config
+    let options = async_nats::ConnectOptions::with_credentials(&provisioning.system_user.creds())
+        .map_err(|error| InstallationError::Nats(error.to_string()))?
+        .name("trellis-provisioning")
+        .connection_timeout(Duration::from_secs(10));
+    let roots: Vec<_> = config
         .nats
         .as_ref()
         .and_then(|nats| nats.ca_certificate.clone())
-    {
-        options = options.add_root_certificates(ca);
-    }
+        .into_iter()
+        .collect();
+    let options = trellis_rs::__internal::nats_tls_options(options, &roots, None)
+        .map_err(|error| InstallationError::Nats(error.to_string()))?;
     let urls: Vec<String> = servers
         .split(',')
         .map(|server| server.trim().to_owned())
@@ -331,16 +331,20 @@ async fn accounts_resolve(config: &RuntimeConfig, secrets: &Secrets) -> bool {
         seed: user.seed.clone(),
     }
     .creds();
-    let Ok(mut options) = async_nats::ConnectOptions::with_credentials(&creds) else {
+    let Ok(options) = async_nats::ConnectOptions::with_credentials(&creds) else {
         return false;
     };
-    options = options
+    let options = options
         .name("trellis-provisioning")
         .connection_timeout(Duration::from_secs(10));
     let nats = config.nats.as_ref();
-    if let Some(ca) = nats.and_then(|nats| nats.ca_certificate.clone()) {
-        options = options.add_root_certificates(ca);
-    }
+    let roots: Vec<_> = nats
+        .and_then(|nats| nats.ca_certificate.clone())
+        .into_iter()
+        .collect();
+    let Ok(options) = trellis_rs::__internal::nats_tls_options(options, &roots, None) else {
+        return false;
+    };
     let urls: Vec<String> = nats
         .and_then(|nats| nats.servers.clone())
         .unwrap_or_default()
