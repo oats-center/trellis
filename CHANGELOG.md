@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- The Console's capability request is declared once, as the built-in
+  `app console`; the Console's separate `web/contract.trellis` copy, which had
+  drifted from it, is gone, and its types come from the built-in package.
+
 ## [0.100.0-rc.47] - 2026-11-17
 
 ### Changed
