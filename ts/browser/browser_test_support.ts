@@ -352,7 +352,7 @@ export async function waitForConsoleReady(
     .waitFor({ state: "visible", timeout: timeoutMs });
 }
 
-/** Creates a local-password Console user with its required non-administrative capabilities. */
+/** Creates a local-password user with no role or grant: only their own account. */
 export async function createOrdinaryUserWithPassword(
   runtime: TrellisTestRuntime,
   user: { username: string; password: string; name?: string },
@@ -363,24 +363,7 @@ export async function createOrdinaryUserWithPassword(
     username: user.username,
     password: user.password,
   });
-  const principalId = created.user.principalId;
-  for (const capabilityId of [
-    "trellis.auth.v1:account.read",
-    "trellis.auth.v1:account.edit",
-    "trellis.auth.v1:identities.read",
-    "trellis.auth.v1:identities.manage",
-    "trellis.auth.v1:account.changePassword",
-    "trellis.auth.v1:sessions.read",
-    "trellis.auth.v1:sessions.revoke",
-  ]) {
-    await runtime.callAdminRpc("authCapabilityGrantsGrant", {
-      principalId,
-      capabilityId,
-      expectedRevision: 0n,
-      idempotencyKey: ulid(),
-    });
-  }
-  return principalId;
+  return created.user.principalId;
 }
 
 /**

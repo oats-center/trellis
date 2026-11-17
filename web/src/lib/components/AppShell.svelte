@@ -184,48 +184,53 @@
             size={20}
           />
         </button>
-        {#if profile}
-          <ActionMenu
-            buttonBaseClass="btn btn-ghost gap-1.5 rounded-full px-1.5"
-            widthClass="w-64"
-            ariaLabel="Open user menu"
-          >
-            {#snippet summary()}
-              <span
-                class="grid h-9 w-9 place-items-center rounded-full bg-primary text-sm font-medium text-primary-content"
-                >{getInitials(profile)}</span
-              >
-              <Icon name="chevronDown" size={16} class="opacity-60" />
-            {/snippet}
-            <li class="menu-title px-2 py-2 normal-case">
-              <div class="min-w-0">
+        <!-- Signing out never depends on what the account may do, so the
+             menu is there for everyone signed in. -->
+        <ActionMenu
+          buttonBaseClass="btn btn-ghost gap-1.5 rounded-full px-1.5"
+          widthClass="w-64"
+          ariaLabel="Open user menu"
+        >
+          {#snippet summary()}
+            <span
+              class="grid h-9 w-9 place-items-center rounded-full bg-primary text-sm font-medium text-primary-content"
+              >{#if profile}{getInitials(profile)}{:else}<Icon
+                  name="user"
+                  size={18}
+                />{/if}</span
+            >
+            <Icon name="chevronDown" size={16} class="opacity-60" />
+          {/snippet}
+          <li class="menu-title px-2 py-2 normal-case">
+            <div class="min-w-0">
+              {#if profile}
                 <p class="truncate text-sm font-medium text-base-content">
                   {profile.displayName}
                 </p>
-                <p class="text-xs text-base-content/60">
-                  {getRoleLabel(authority)}
+              {/if}
+              <p class="text-xs text-base-content/60">
+                {getRoleLabel(authority)}
+              </p>
+              {#if runtimeVersion}
+                <p class="text-xs text-base-content/60 sm:hidden">
+                  Trellis {runtimeVersion.version}{runtimeVersion.update
+                    ? ` · ${runtimeVersion.update.version} available`
+                    : ""}
                 </p>
-                {#if runtimeVersion}
-                  <p class="text-xs text-base-content/60 sm:hidden">
-                    Trellis {runtimeVersion.version}{runtimeVersion.update
-                      ? ` · ${runtimeVersion.update.version} available`
-                      : ""}
-                  </p>
-                {/if}
-              </div>
-            </li>
-            <li>
-              <a href={resolve("/profile")}
-                ><Icon name="user" size={16} />Account</a
-              >
-            </li>
-            <li>
-              <button type="button" onclick={onSignOut}
-                ><Icon name="logOut" size={16} />Sign out</button
-              >
-            </li>
-          </ActionMenu>
-        {/if}
+              {/if}
+            </div>
+          </li>
+          <li>
+            <a href={resolve("/profile")}
+              ><Icon name="user" size={16} />Account</a
+            >
+          </li>
+          <li>
+            <button type="button" onclick={onSignOut}
+              ><Icon name="logOut" size={16} />Sign out</button
+            >
+          </li>
+        </ActionMenu>
       </div>
     </header>
 
@@ -264,7 +269,10 @@
 
     <aside class="trellis-sidebar flex min-h-full w-[244px] flex-col px-3 pb-4">
       <div class="flex h-16 items-center px-3">
-        <a href={resolve("/admin")} aria-label="Trellis home">
+        <a
+          href={resolve(navSections[0]?.items[0]?.href ?? "/profile")}
+          aria-label="Trellis home"
+        >
           <TrellisLogo size={26} />
         </a>
         <button

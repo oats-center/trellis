@@ -91,7 +91,12 @@ transaction:
 1. **Holdings.** The union of the principal's direct grants, role assignments,
    and, for an OIDC login, roles mapped from that login's fresh verified claims.
    A held group counts as its current members. The initialized administrator
-   additionally holds every administrative capability inherently. A role marked
+   additionally holds every administrative capability inherently, and every
+   active user holds the `trellis.auth.v1:account` group inherently: their own
+   profile, password, sign-ins, linked sign-ins, connected apps, device links,
+   and app settings. Those RPCs act only on the caller's own account, so
+   using one's own account needs no role, and no role or grant can take it
+   away; an app still receives it only through the user's consent. A role marked
    `assignToNewUsers` is assigned, as an ordinary revocable assignment, to each
    user `Users.Create` makes afterwards; marking it is the policy decision, so
    creating the user needs no role-management rights. Existing users are not

@@ -29,7 +29,9 @@ test("an administrator sets sign-in methods, providers, their group roles and th
         .getByRole("group", { name: "Auth", exact: true })
         .getByRole("button", { name: /^More/ })
         .click();
-      await admin.getByRole("checkbox", { name: /See your profile/ }).check();
+      // The role marked for new users gives nothing for their own account:
+      // every user has that without one.
+      await admin.getByRole("checkbox", { name: /See users/ }).check();
       await admin.getByRole("checkbox", { name: /Give to new users/ }).check();
       await admin
         .getByRole("button", { name: "Save role", exact: true })
@@ -260,6 +262,39 @@ test("an administrator sets sign-in methods, providers, their group roles and th
         .getByRole("heading", { name: "Your account", exact: true })
         .waitFor();
       assert.match(await newcomer.locator("main").innerText(), /New Person/);
+      // Their own account is theirs to use: the navigation offers it and
+      // nothing administrative, and they change their name.
+      const nav = newcomer.getByRole("navigation", { name: "Primary" });
+      await nav.getByRole("link", { name: "Account", exact: true }).waitFor();
+      assert.equal(
+        await nav.getByRole("link", { name: "Users", exact: true }).count(),
+        0,
+      );
+      await newcomer
+        .getByLabel("Display name", { exact: true })
+        .fill("Newly Named");
+      await newcomer
+        .getByRole("button", { name: "Save profile", exact: true })
+        .click();
+      await newcomer
+        .getByRole("heading", { name: "Newly Named", exact: true })
+        .waitFor();
+      await newcomer.reload();
+      await newcomer
+        .getByRole("heading", { name: "Newly Named", exact: true })
+        .waitFor();
+      // Signing out ends the Portal login too and returns to signing in.
+      const header = newcomer.locator("header");
+      await header
+        .getByRole("button", { name: "Open user menu", exact: true })
+        .click();
+      await header
+        .getByRole("button", { name: "Sign out", exact: true })
+        .click();
+      await newcomer
+        .getByRole("heading", { name: "Sign in", exact: true })
+        .waitFor();
+      await newcomer.getByLabel("Username", { exact: true }).waitFor();
 
       // The new account holds the role marked for new users.
       await admin.goto(`${runtime.consoleUrl}/console/admin/users`);

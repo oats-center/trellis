@@ -183,3 +183,129 @@ async fn registered_native_app_authenticates_multiple_users_and_sessions() {
     assert!(serving.await.unwrap_err().is_cancelled());
     runtime.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn users_without_roles_use_their_own_account_and_not_anyone_elses() {
+    use serde_json::json;
+    use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
+    use trellis_runtime_apis::apps::trellis_cli::Request as Cli;
+    fn input<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> T {
+        serde_json::from_value(value).unwrap()
+    }
+    let key = || ulid::Ulid::generate().to_string();
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    // Neither user is given a role or a capability.
+    let alice = runtime.create_user("Alice").await.unwrap();
+    let bob = runtime.create_user("Bob").await.unwrap();
+    let app = runtime
+        .register_native_application::<Cli>("account self-service")
+        .await
+        .unwrap();
+    let mut logins = Vec::new();
+    for user in [&alice, &alice, &bob] {
+        let login = runtime
+            .login_native_application_as(&app, user)
+            .await
+            .unwrap();
+        let id = login.login_session_id().to_owned();
+        let client = GeneratedClient::connect_user(login.connect_options())
+            .await
+            .unwrap();
+        logins.push((id, client));
+    }
+    let [(_, alice_client), (alice_second_login, alice_second), (bob_login, bob_client)] =
+        <[_; 3]>::try_from(logins).ok().unwrap();
+    let alice_auth = AuthClient::from_generated(alice_client.clone());
+    let bob_auth = AuthClient::from_generated(bob_client.clone());
+
+    // Alice reads and renames her own account.
+    let own = alice_auth
+        .users_resolve(&input(json!({})))
+        .await
+        .unwrap()
+        .user;
+    assert_eq!(own.principal_id.to_string(), alice.principal_id());
+    let renamed = alice_auth
+        .users_profile_update(&input(json!({
+            "displayName": "Alice Renamed",
+            "expectedRevision": own.account.unwrap().profile_revision,
+            "idempotencyKey": key(),
+        })))
+        .await
+        .unwrap()
+        .user;
+    assert_eq!(renamed.principal_id.to_string(), alice.principal_id());
+    assert_eq!(renamed.display_name, "Alice Renamed");
+    // She sees her own sign-ins and connected apps, and only hers.
+    let sessions = alice_auth
+        .sessions_list(&input(json!({})))
+        .await
+        .unwrap()
+        .items;
+    assert!(sessions
+        .iter()
+        .any(|login| login.login_session_id.to_string() == alice_second_login));
+    assert!(sessions
+        .iter()
+        .all(|login| login.principal_id.to_string() == alice.principal_id()));
+    let delegations = alice_auth
+        .delegations_list(&input(json!({})))
+        .await
+        .unwrap()
+        .items;
+    assert!(!delegations.is_empty());
+    assert!(delegations
+        .iter()
+        .all(|delegation| delegation.principal_id.to_string() == alice.principal_id()));
+    alice_auth
+        .user_identities_list(&input(json!({})))
+        .await
+        .unwrap();
+
+    // Nothing reaches Bob's account: not his sign-ins, apps, or profile.
+    assert!(alice_auth
+        .sessions_revoke(&input(
+            json!({"loginSessionId": bob_login, "idempotencyKey": key()})
+        ))
+        .await
+        .is_err());
+    assert!(alice_auth
+        .delegations_list(&input(json!({"principalId": bob.principal_id()})))
+        .await
+        .is_err());
+    let bob_delegation = bob_auth
+        .delegations_list(&input(json!({})))
+        .await
+        .unwrap()
+        .items
+        .remove(0);
+    assert!(alice_auth
+        .delegations_review(&input(
+            json!({"delegationId": bob_delegation.delegation_id})
+        ))
+        .await
+        .is_err());
+    assert!(alice_auth
+        .users_get(&input(json!({"userId": bob.principal_id()})))
+        .await
+        .is_err());
+    bob_client.refresh_authorization_context().await.unwrap();
+    let bob_own = bob_auth
+        .users_resolve(&input(json!({})))
+        .await
+        .unwrap()
+        .user;
+    assert_eq!(bob_own.display_name, "Bob");
+
+    // Alice can end one of her own sign-ins.
+    alice_auth
+        .sessions_revoke(&input(json!({
+            "loginSessionId": alice_second_login,
+            "idempotencyKey": key(),
+        })))
+        .await
+        .unwrap();
+    assert!(alice_second.refresh_authorization_context().await.is_err());
+    alice_client.refresh_authorization_context().await.unwrap();
+    runtime.shutdown().await.unwrap();
+}

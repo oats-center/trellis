@@ -63,7 +63,9 @@ test(
       let phase = "open browser";
       const page = await browser.newPage();
       try {
-        for (const decision of ["unavailable", "denied", "approved"]) {
+        // The user holds no role or grant: every user may let an app read
+        // their own account.
+        for (const decision of ["denied", "approved"]) {
           phase = `${decision}: start device`;
           const flow = (
             await custody.startDevice(request, { signal: t.signal })
@@ -73,7 +75,7 @@ test(
           await page
             .getByRole("button", { name: "Continue", exact: true })
             .click();
-          if (decision === "unavailable") {
+          if (decision === "denied") {
             phase = `${decision}: sign in`;
             await page
               .getByLabel("Username", { exact: true })
@@ -91,7 +93,7 @@ test(
             name: "Allow",
             exact: true,
           });
-          assert.equal(await approve.isDisabled(), decision === "unavailable");
+          assert.equal(await approve.isDisabled(), false);
           if (decision === "approved") {
             await page.screenshot({
               path: "target/review-account-consent.png",
@@ -141,13 +143,6 @@ test(
             });
             assert(denied.isErr());
             assert.equal(denied.error.reason, "OAuthAuthorizationDenied");
-            if (decision === "unavailable")
-              await runtime.callAdminRpc("authCapabilityGrantsGrant", {
-                principalId: user.principalId,
-                capabilityId: "trellis.auth.v1:account.read",
-                expectedRevision: 0n,
-                idempotencyKey: ulid(),
-              });
           }
         }
       } catch (error) {

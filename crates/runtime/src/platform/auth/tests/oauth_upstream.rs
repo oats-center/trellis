@@ -1296,15 +1296,13 @@ staticPasswords:
         now,
     )
     .unwrap();
-    assert!(authority
-        .transaction(|connection| crate::platform::auth::policy::entitlements(
-            connection,
-            &f.principal,
-            Some(&login),
-            now
-        ))
-        .unwrap()
-        .is_empty());
+    let access = authority
+        .transaction(|connection| {
+            crate::platform::auth::policy::entitlements(connection, &f.principal, Some(&login), now)
+        })
+        .unwrap();
+    assert!(!access.contains_key(&f.read));
+    assert!(!access.contains_key(&f.write));
     assert_eq!(
         crate::platform::auth::rpc_users::delete_mapping(
             &authority,

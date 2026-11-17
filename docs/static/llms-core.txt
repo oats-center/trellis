@@ -814,6 +814,12 @@ inspect Trellis's internal authorization registry.
 
 ## Accounts And Directory
 
+Every active user holds the `trellis.auth.v1:account` group without a role or
+grant: their own profile, password, sign-ins, linked sign-ins, connected apps,
+device links, and app settings. No role or grant can take it away. An app
+still gets these capabilities only when the user consents, and each of their
+RPCs acts on the caller's own account.
+
 - `accountRead` reveals your own profile (names, email and verification status,
   and photo), account details, and current session, and permits signing out of
   the current login and its application sessions. `Users.Resolve` is self-only
