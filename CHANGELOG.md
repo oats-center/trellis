@@ -8,6 +8,28 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Saving the Console's local-user sign-in settings after a provider change no
+  longer undoes another administrator's change; it conflicts and offers to
+  reload.
+- The minimum password length counts characters everywhere, so a password with
+  accented letters or emoji is no longer wrongly refused (or allowed) by the
+  Portal or Auth. A too-short password on the Portal's reset page shows an
+  error instead of an access-denied page. The first administrator's password
+  follows the same minimum (it was fixed at 12).
+- An exact retry of a completed `Auth.Users.Create` returns its result even
+  after the password minimum was raised.
+- The Console's service page names the installed build from the service itself,
+  so a build applied directly is not shown as older.
+- In the Console's Add service form, a dependency selection missing its
+  `trellis.toml` shows the problem on its own row without dropping the other
+  selections.
+- A secret shown while typing starts hidden again after saving, emptying the
+  field, or switching instance.
+- A service connect waiting for approval ends when its abort signal fires
+  during a status check.
+
 ## [0.100.0-rc.45] - 2026-11-16
 
 ### Added
