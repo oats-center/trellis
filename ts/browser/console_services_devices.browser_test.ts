@@ -356,6 +356,69 @@ test("B01e an invalid package chosen first is refused without costing the valid 
   }, browserRuntimeOptions());
 });
 
+test("B01f a package uploaded under another package's row is refused on that row and not kept", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForConsoleShell(page);
+      const file = (name: string, text: string) => ({
+        name,
+        mimeType: "text/plain",
+        buffer: Buffer.from(text),
+      });
+      await page.getByLabel("Name", { exact: true }).fill(`ct-b01f-${ulid()}`);
+      await page
+        .getByLabel("Service IDL (optional)")
+        .setInputFiles([
+          file("trellis.toml", METERS_MANIFEST),
+          file("meters.trellis", METERS),
+        ]);
+      const missing = page.getByRole("region", {
+        name: "Packages Trellis doesn't have",
+      });
+      await missing.getByText("scales", { exact: true }).waitFor();
+      // A valid units package uploaded under scales' row is refused on that
+      // row and not kept, so it never rides along in later requests.
+      await missing
+        .getByLabel("Files for scales", { exact: true })
+        .setInputFiles([
+          file("trellis.toml", UNITS_MANIFEST),
+          file("units.trellis", UNITS),
+        ]);
+      await missing
+        .getByRole("alert")
+        .getByText("These files don't provide a scales that matches.")
+        .waitFor();
+      assert.equal(
+        await missing.getByLabel("Files used for scales").count(),
+        0,
+      );
+      // Each package under its own row is then used, and the service added.
+      await missing
+        .getByLabel("Files for units", { exact: true })
+        .setInputFiles([
+          file("trellis.toml", UNITS_MANIFEST),
+          file("units.trellis", UNITS),
+        ]);
+      await missing.getByLabel("Files used for units").waitFor();
+      await missing
+        .getByLabel("Files for scales", { exact: true })
+        .setInputFiles([
+          file("trellis.toml", SCALES_MANIFEST),
+          file("scales.trellis", SCALES),
+        ]);
+      await page.getByText("Adds meters.Meter.").waitFor();
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 test("B01c a dependency Trellis doesn't have is listed, and adding its files lets the service be added", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);

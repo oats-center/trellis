@@ -831,6 +831,9 @@ model AuthPackageResolveResponse {
 }
 /// A supplied package that doesn't compile.
 model AuthRejectedPackage {
+  /// Its position in the request's `packages`, which says which files were at fault whatever their manifest names.
+  index: uint32;
+  /// The package name its trellis.toml gives.
   name: AuthName;
   reason: string;
 }

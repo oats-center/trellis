@@ -32,8 +32,9 @@ and this project adheres to
 - In the Console's Add service form, dependency changes are made one at a time,
   so a package chosen while another is resolving, or removed meanwhile, is
   never lost. `Auth.Packages.Resolve` names a supplied package that doesn't
-  compile in its new `rejected` list, so the error lands on that package and
-  the others are kept.
+  compile in its new `rejected` list, with its position in the request, so the
+  error lands on the row that supplied it and the others are kept. Files
+  uploaded under another package's row are refused there and not kept.
 - A password over Auth's 4096-byte limit is called too long, not too short, on
   the Portal's sign-up and reset forms.
 

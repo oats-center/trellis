@@ -278,15 +278,25 @@
         .orThrow();
       if (disposed || resolvingFor !== epoch) return;
       if (response.rejected.length > 0) {
-        // Auth names each supplied package that doesn't compile; that package
-        // carries the error and is dropped, and the rest are resolved again.
-        const rejected = new Set(response.rejected.map((item) => item.name));
-        extraErrors = {
-          ...extraErrors,
-          ...Object.fromEntries(
-            response.rejected.map((item) => [item.name, item.reason]),
-          ),
-        };
+        // Auth names each supplied package that doesn't compile by its place
+        // in the request, so the error lands on the row that supplied the
+        // files whatever name their trellis.toml gives. Those files are
+        // dropped and the rest resolved again.
+        const rows = Object.keys(supplied);
+        const rejected = new Map(
+          response.rejected.flatMap((item) => {
+            const row = rows[item.index];
+            return row === undefined ? [] : [[row, item.reason] as const];
+          }),
+        );
+        if (rejected.size === 0) {
+          // Nothing to drop, so asking again would get the same answer.
+          resolveError = response.rejected
+            .map((item) => `${item.name}: ${item.reason}`)
+            .join(" ");
+          return;
+        }
+        extraErrors = { ...extraErrors, ...Object.fromEntries(rejected) };
         await resolvePackages(
           Object.fromEntries(
             Object.entries(supplied).filter(([name]) => !rejected.has(name)),
@@ -295,25 +305,39 @@
         );
         return;
       }
-      resolution = response;
-      // Only packages Auth actually used are kept: files that don't provide a
-      // matching package would otherwise ride along in every later request
-      // and fail it in another package's name.
+      // Only files Auth used for the package their row is for are kept:
+      // anything else would ride along in every later request, and could
+      // stand in for a package its row isn't for.
       const used = new Set(
         response.dependencies
           .filter((dependency) => dependency.origin === "supplied")
           .map((dependency) => dependency.name),
       );
-      extras = Object.fromEntries(
+      const kept = Object.fromEntries(
         Object.entries(supplied).filter(([name]) => used.has(name)),
       );
-      if (attempted)
-        extraErrors = used.has(attempted)
-          ? without(extraErrors, attempted)
-          : {
-              ...extraErrors,
-              [attempted]: `These files don't provide a ${attempted} that matches.`,
-            };
+      const dropped = Object.keys(supplied).filter((name) => !(name in kept));
+      if (dropped.length > 0) {
+        extraErrors = {
+          ...extraErrors,
+          ...Object.fromEntries(
+            dropped.map((name) => [
+              name,
+              `These files don't provide a ${name} that matches.`,
+            ]),
+          ),
+        };
+        // The answer counted the dropped files, so it may say a package is
+        // satisfied when nothing kept provides it; ask again without them.
+        await resolvePackages(
+          kept,
+          attempted && !dropped.includes(attempted) ? attempted : undefined,
+        );
+        return;
+      }
+      resolution = response;
+      extras = kept;
+      if (attempted) extraErrors = without(extraErrors, attempted);
       wanted = [
         ...response.missing,
         ...wanted.filter(

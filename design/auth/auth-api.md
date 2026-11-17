@@ -153,7 +153,8 @@ version) and `.trellis` files. Auth builds the evidence itself, taking every
 dependency from the packages it holds and from packages the client supplies,
 and returns it for `Create`, or lists the dependencies nothing satisfies by
 name and version requirement, so the client can supply them and ask again. A
-supplied package that doesn't compile comes back in `rejected` with the reason,
+supplied package that doesn't compile comes back in `rejected` with the reason and its position in the request's
+`packages`,
 so the client knows which package to fix and can ask again without it. It
 fetches nothing. `Packages.Resolve` requires `trellis.auth.v1:users.manage`,
 like `Create`, and changes nothing; `Create` still recompiles and checks the

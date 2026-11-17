@@ -266,6 +266,7 @@ fn a_dependency_nothing_holds_is_reported_by_name_until_its_files_are_supplied()
         panic!("{:?}", broken.rejected)
     };
     assert_eq!(rejected.name.0, "units");
+    assert_eq!(rejected.index, 0);
 
     let supplied = resolve_with(
         &f,

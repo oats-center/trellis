@@ -69,8 +69,8 @@ enum CandidateSource {
 struct Authored {
     manifest: PackageManifest,
     sources: Vec<SourceUnit>,
-    /// Whether the client sent it as a dependency, not as the root.
-    supplied: bool,
+    /// Its position in the request's `packages`; `None` for the root.
+    supplied: Option<usize>,
 }
 
 /// What a package asks of one of its dependencies.
@@ -147,7 +147,7 @@ pub(super) fn resolve(
     let mut authored_packages = Vec::with_capacity(supplied.len());
     for package in supplied {
         let mut package = authored(package, &known, &mut unknown_imports)?;
-        package.supplied = true;
+        package.supplied = Some(authored_packages.len());
         candidates.push(Candidate {
             name: package.manifest.package.name.clone(),
             version: package.manifest.package.version.clone(),
@@ -387,8 +387,9 @@ pub(super) fn resolve(
         let graph =
             trellis_idl::compile_project(&package.manifest, package.sources.clone(), supplied)
                 .map_err(|error| {
-                    if package.supplied && rejected.is_none() {
+                    if let (Some(index), None) = (package.supplied, &rejected) {
                         *rejected = Some(AuthRejectedPackage {
+                            index: index as u32,
                             name: AuthName(name.clone()),
                             reason: error.to_string(),
                             extra: Default::default(),
@@ -604,7 +605,7 @@ fn authored(
         return Ok(Authored {
             manifest,
             sources,
-            supplied: false,
+            supplied: None,
         });
     }
     let (name, version) = identity(package)?;
@@ -680,6 +681,6 @@ fn authored(
     Ok(Authored {
         manifest,
         sources,
-        supplied: false,
+        supplied: None,
     })
 }
