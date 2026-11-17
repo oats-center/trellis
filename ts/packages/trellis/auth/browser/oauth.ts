@@ -377,14 +377,20 @@ export class BrowserOAuthClient {
           throw new AuthError({ reason: "OAuthRecoveryRequired" });
       },
       async () => {
-        // Only a document read moments ago stands in for a fresh one.
+        // Only a document read moments ago stands in for a fresh one, and
+        // only while it still authenticates: if the signer changed since,
+        // discovery is read again before anything is spent.
         const discovered = this.#discovered;
         this.#discovered = undefined;
-        await this.#prepareTrust(
-          discovered && Date.now() - discovered.at < 30_000
-            ? discovered.metadata
-            : undefined,
-        );
+        if (discovered && Date.now() - discovered.at < 30_000) {
+          try {
+            await this.#prepareTrust(discovered.metadata);
+            return;
+          } catch {
+            // Stale; fall through to a fresh read.
+          }
+        }
+        await this.#prepareTrust(undefined);
       },
     );
   }

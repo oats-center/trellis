@@ -428,7 +428,9 @@ async function browser() {
       assert.deepEqual(await call(page, "rotation-double", "resume"), {
         error: "OAuthTrustUnavailable",
       });
-      assert.equal(tampered[malformed], priorTampering + 1);
+      // The tampered document was served and checked; a reload that reused
+      // its opening copy reads it once more before giving up.
+      assert.ok(tampered[malformed] > priorTampering);
       assert.equal(await call(page, "rotation-double", "tokenDigest"), before);
       assert.equal(
         refreshRequests,
