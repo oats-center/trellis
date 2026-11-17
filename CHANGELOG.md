@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Signing in to the Console takes one page load behind one loading screen: the
+  sign-in callback hands its connected client to the app instead of reloading,
+  the browser client uses the DPoP nonce Auth already sent (no rejected first
+  `/token`), discovery is read once, and the shell appears with its navigation,
+  version and page together. The Portal's sign-in and consent pages carry their
+  data with the page, so the provider button no longer pops in.
+
 ## [0.100.0-rc.47] - 2026-11-17
 
 ### Changed
