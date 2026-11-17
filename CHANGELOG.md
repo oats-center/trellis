@@ -29,8 +29,11 @@ and this project adheres to
   field, or switching instance.
 - A service connect waiting for approval ends when its abort signal fires
   during a status check.
-- In the Console's Add service form, choosing a second missing package while
-  the first is still resolving keeps both.
+- In the Console's Add service form, dependency changes are made one at a time,
+  so a package chosen while another is resolving, or removed meanwhile, is
+  never lost. `Auth.Packages.Resolve` names a supplied package that doesn't
+  compile in its new `rejected` list, so the error lands on that package and
+  the others are kept.
 - A password over Auth's 4096-byte limit is called too long, not too short, on
   the Portal's sign-up and reset forms.
 

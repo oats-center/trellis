@@ -251,6 +251,22 @@ fn a_dependency_nothing_holds_is_reported_by_name_until_its_files_are_supplied()
     assert!(old.package_evidence.is_none());
     assert_eq!(old.missing[0].available_versions[0].0, "2.0.0");
 
+    // A supplied package that doesn't compile is named, not failed as a
+    // whole request, so the client can tell which package to fix.
+    let broken = resolve_with(
+        &f,
+        serde_json::json!({ "root": root, "packages": [package(
+            "[package]\nname = \"units\"\nversion = \"2.1.3\"\n\n[sources]\nunits = \"units.trellis\"\n",
+            "units.trellis",
+            "model Measure { value: }",
+        )] }),
+    );
+    assert!(broken.package_evidence.is_none());
+    let [rejected] = broken.rejected.as_slice() else {
+        panic!("{:?}", broken.rejected)
+    };
+    assert_eq!(rejected.name.0, "units");
+
     let supplied = resolve_with(
         &f,
         serde_json::json!({ "root": root, "packages": [units("2.1.3")] }),

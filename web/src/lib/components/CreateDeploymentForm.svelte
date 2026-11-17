@@ -36,10 +36,13 @@
   let packageName = $state("");
   let packageVersion = $state("");
   let extras = $state<Record<string, PackageFiles>>({});
-  // Package selections Auth hasn't answered for yet. Every resolve sends them
-  // all, so choosing a second package while the first is still resolving
-  // doesn't drop the first.
-  let pending: Record<string, PackageFiles> = {};
+  // Dependency changes run one at a time, each against the packages Auth has
+  // already accepted, so a refusal is blamed on the package that caused it and
+  // a selection made while another resolves is never lost. `epoch` changes with
+  // the IDL; a change queued for an earlier IDL is skipped.
+  let changes: Promise<void> = Promise.resolve();
+  let queued = 0;
+  let epoch = 0;
   type Missing = apis.auth.PackagesResolveOutput["missing"][number];
   // Every package the IDL needed that Trellis doesn't have, with the ones the
   // administrator supplied. A row stays while its files are in use or a
@@ -50,7 +53,6 @@
   let resolution = $state<apis.auth.PackagesResolveOutput | null>(null);
   let resolving = $state(false);
   let resolveError = $state<string | null>(null);
-  let resolveGeneration = 0;
   let chosenParticipant = $state("");
   let keyMode = $state<"create" | "existing">("create");
   let publicKey = $state("");
@@ -175,12 +177,29 @@
     input.value = "";
     if (disposed) return;
     root = chosen;
+    epoch++;
     extras = {};
-    pending = {};
     wanted = [];
     extraErrors = {};
     sharing = null;
-    await resolvePackages();
+    await queue(() => resolvePackages());
+  }
+
+  /** Run a dependency change after every change queued before it. */
+  function queue(change: () => Promise<void>): Promise<void> {
+    const queuedIn = epoch;
+    queued++;
+    resolving = true;
+    const run = async () => {
+      try {
+        if (!disposed && queuedIn === epoch) await change();
+      } finally {
+        queued--;
+        if (!disposed && queued === 0) resolving = false;
+      }
+    };
+    changes = changes.then(run, run);
+    return changes;
   }
 
   // A selection for one package is used only once Auth accepts it; a refused
@@ -201,14 +220,15 @@
       };
       return;
     }
-    pending = { ...pending, [name]: chosen };
-    await resolvePackages({ ...extras, ...pending }, name);
+    // `extras` is read when the change runs, after every earlier one settled.
+    await queue(() => resolvePackages({ ...extras, [name]: chosen }, name));
   }
 
   function removeExtra(name: string): void {
     extraErrors = without(extraErrors, name);
-    pending = without(pending, name);
-    if (name in extras) void resolvePackages(without(extras, name));
+    void queue(async () => {
+      if (name in extras) await resolvePackages(without(extras, name));
+    });
   }
 
   function without<T>(record: Record<string, T>, name: string) {
@@ -226,7 +246,7 @@
     supplied: Record<string, PackageFiles> = extras,
     attempted?: string,
   ): Promise<void> {
-    const generation = ++resolveGeneration;
+    const resolvingFor = epoch;
     if (!attempted) resolution = null;
     resolveError = null;
     const current = root;
@@ -234,12 +254,9 @@
       !current ||
       current.files.length === 0 ||
       (!current.manifest && (!packageName.trim() || !packageVersion.trim()))
-    ) {
-      resolving = false;
+    )
       return;
-    }
     const packages = Object.values(supplied);
-    resolving = true;
     try {
       const response = await trellis
         .packagesResolve({
@@ -259,15 +276,44 @@
             : {}),
         })
         .orThrow();
-      if (disposed || generation !== resolveGeneration) return;
+      if (disposed || resolvingFor !== epoch) return;
+      if (response.rejected.length > 0) {
+        // Auth names each supplied package that doesn't compile; that package
+        // carries the error and is dropped, and the rest are resolved again.
+        const rejected = new Set(response.rejected.map((item) => item.name));
+        extraErrors = {
+          ...extraErrors,
+          ...Object.fromEntries(
+            response.rejected.map((item) => [item.name, item.reason]),
+          ),
+        };
+        await resolvePackages(
+          Object.fromEntries(
+            Object.entries(supplied).filter(([name]) => !rejected.has(name)),
+          ),
+          attempted && !rejected.has(attempted) ? attempted : undefined,
+        );
+        return;
+      }
       resolution = response;
-      extras = supplied;
-      pending = Object.fromEntries(
-        Object.entries(pending).filter(
-          ([key, files]) => supplied[key] !== files,
-        ),
+      // Only packages Auth actually used are kept: files that don't provide a
+      // matching package would otherwise ride along in every later request
+      // and fail it in another package's name.
+      const used = new Set(
+        response.dependencies
+          .filter((dependency) => dependency.origin === "supplied")
+          .map((dependency) => dependency.name),
       );
-      if (attempted) extraErrors = without(extraErrors, attempted);
+      extras = Object.fromEntries(
+        Object.entries(supplied).filter(([name]) => used.has(name)),
+      );
+      if (attempted)
+        extraErrors = used.has(attempted)
+          ? without(extraErrors, attempted)
+          : {
+              ...extraErrors,
+              [attempted]: `These files don't provide a ${attempted} that matches.`,
+            };
       wanted = [
         ...response.missing,
         ...wanted.filter(
@@ -277,21 +323,10 @@
         ),
       ];
     } catch (cause) {
-      if (disposed || generation !== resolveGeneration) return;
+      if (disposed || resolvingFor !== epoch) return;
       const message = projectConsoleError(cause).message;
-      if (attempted) {
-        extraErrors = { ...extraErrors, [attempted]: message };
-        // The refused package is dropped; the others still waiting are tried
-        // again without it.
-        pending = without(pending, attempted);
-        const retry = Object.keys(pending).at(-1);
-        if (retry) {
-          void resolvePackages({ ...extras, ...pending }, retry);
-          return;
-        }
-      } else resolveError = message;
-    } finally {
-      if (!disposed && generation === resolveGeneration) resolving = false;
+      if (attempted) extraErrors = { ...extraErrors, [attempted]: message };
+      else resolveError = message;
     }
   }
 
@@ -503,11 +538,12 @@
             disabled={busy || uncertain}
             onclick={() => {
               root = null;
+              epoch++;
               extras = {};
               wanted = [];
               extraErrors = {};
               sharing = null;
-              void resolvePackages();
+              void queue(() => resolvePackages());
             }}>Remove IDL</button
           >
         {/if}
@@ -534,7 +570,7 @@
               spellcheck="false"
               required
               disabled={busy || uncertain}
-              onchange={() => void resolvePackages()}
+              onchange={() => void queue(() => resolvePackages())}
             /></label
           >
           <label class="trellis-field"
@@ -546,7 +582,7 @@
               placeholder="1.0.0"
               required
               disabled={busy || uncertain}
-              onchange={() => void resolvePackages()}
+              onchange={() => void queue(() => resolvePackages())}
             /></label
           >
         </div>
@@ -604,10 +640,6 @@
                 {#if extraErrors[missing.name]}
                   <p class="mt-2 text-xs text-error" role="alert">
                     {extraErrors[missing.name]}
-                  </p>
-                {:else if extras[missing.name] && resolution?.missing.some((item) => item.name === missing.name)}
-                  <p class="mt-2 text-xs text-error">
-                    These files don't provide a {missing.name} that matches.
                   </p>
                 {/if}
                 {#if extras[missing.name]}

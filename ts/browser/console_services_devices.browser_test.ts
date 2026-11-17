@@ -265,8 +265,8 @@ test("B01d a second dependency chosen while the first is still resolving keeps b
             file("trellis.toml", SCALES_MANIFEST),
             file("scales.trellis", SCALES),
           ]);
-        await page.getByText("Adds meters.Meter.").waitFor();
         wired.releaseToPage();
+        await page.getByText("Adds meters.Meter.").waitFor();
         await missing.getByLabel("Files used for units").waitFor();
         await missing.getByLabel("Files used for scales").waitFor();
         assert.equal(
@@ -274,6 +274,79 @@ test("B01d a second dependency chosen while the first is still resolving keeps b
           1,
           "the held answer for one package undid the later one",
         );
+      } finally {
+        wired.gate.dispose();
+      }
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
+test("B01e an invalid package chosen first is refused without costing the valid one chosen after it", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const wired = await wireNatsGate(page);
+      try {
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
+          waitUntil: "domcontentloaded",
+        });
+        await waitForConsoleShell(page);
+        const file = (name: string, text: string) => ({
+          name,
+          mimeType: "text/plain",
+          buffer: Buffer.from(text),
+        });
+        await page
+          .getByLabel("Name", { exact: true })
+          .fill(`ct-b01e-${ulid()}`);
+        await page
+          .getByLabel("Service IDL (optional)")
+          .setInputFiles([
+            file("trellis.toml", METERS_MANIFEST),
+            file("meters.trellis", METERS),
+          ]);
+        const missing = page.getByRole("region", {
+          name: "Packages Trellis doesn't have",
+        });
+        await missing.getByText("scales", { exact: true }).waitFor();
+        // The units package doesn't compile; Auth's answer to it is held
+        // while a valid scales package is chosen.
+        const held = wired.gate.armNextReply(
+          authApi.actions["rpc:Packages.Resolve"].subject,
+        );
+        await missing
+          .getByLabel("Files for units", { exact: true })
+          .setInputFiles([
+            file("trellis.toml", UNITS_MANIFEST),
+            file("units.trellis", "model Measure { value: }"),
+          ]);
+        await held;
+        await missing
+          .getByLabel("Files for scales", { exact: true })
+          .setInputFiles([
+            file("trellis.toml", SCALES_MANIFEST),
+            file("scales.trellis", SCALES),
+          ]);
+        wired.releaseToPage();
+        // Scales is accepted; only units is refused, and it stays missing.
+        await missing.getByLabel("Files used for scales").waitFor();
+        assert.equal(
+          await missing.getByLabel("Files used for units").count(),
+          0,
+          "the package that failed to compile was used",
+        );
+        await missing
+          .getByLabel("Files for units", { exact: true })
+          .setInputFiles([
+            file("trellis.toml", UNITS_MANIFEST),
+            file("units.trellis", UNITS),
+          ]);
+        await page.getByText("Adds meters.Meter.").waitFor();
+        await missing.getByLabel("Files used for scales").waitFor();
       } finally {
         wired.gate.dispose();
       }

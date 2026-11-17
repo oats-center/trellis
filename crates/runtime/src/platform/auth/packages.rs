@@ -16,8 +16,8 @@ use trellis_idl::project::{Dependency, GenerateConfig, PackageManifest, PackageM
 use trellis_idl::{PackageEvidence, PackageGraph, ParticipantKind, SourceUnit};
 use trellis_runtime_apis::__types::trellis::{
     AuthDeploymentKind, AuthMissingPackage, AuthName, AuthPackageOrigin, AuthPackageResolveRequest,
-    AuthPackageResolveResponse, AuthPackageSources, AuthResolvedPackage, AuthResolvedParticipant,
-    AuthShortName,
+    AuthPackageResolveResponse, AuthPackageSources, AuthRejectedPackage, AuthResolvedPackage,
+    AuthResolvedParticipant, AuthShortName,
 };
 
 use super::sqlite::{decode, AuthError, Connection};
@@ -69,6 +69,8 @@ enum CandidateSource {
 struct Authored {
     manifest: PackageManifest,
     sources: Vec<SourceUnit>,
+    /// Whether the client sent it as a dependency, not as the root.
+    supplied: bool,
 }
 
 /// What a package asks of one of its dependencies.
@@ -144,7 +146,8 @@ pub(super) fn resolve(
     }
     let mut authored_packages = Vec::with_capacity(supplied.len());
     for package in supplied {
-        let package = authored(package, &known, &mut unknown_imports)?;
+        let mut package = authored(package, &known, &mut unknown_imports)?;
+        package.supplied = true;
         candidates.push(Candidate {
             name: package.manifest.package.name.clone(),
             version: package.manifest.package.version.clone(),
@@ -328,13 +331,17 @@ pub(super) fn resolve(
             dependencies,
             missing,
             unknown_imports: unknown_imports.into_iter().collect(),
+            rejected: Vec::new(),
             extra: Default::default(),
         });
     }
 
-    // Compile every chosen package from the leaves up, then the root.
+    // Compile every chosen package from the leaves up, then the root. A
+    // supplied package that doesn't compile is reported by name, so a client
+    // can tell which of the packages it sent is at fault.
     let mut compiled = BTreeMap::<String, PackageGraph>::new();
     let mut compiling = BTreeSet::<String>::new();
+    let mut rejected = None::<AuthRejectedPackage>;
     #[allow(clippy::too_many_arguments)]
     fn compile(
         package: &Authored,
@@ -345,6 +352,7 @@ pub(super) fn resolve(
         held_graph: &mut dyn FnMut(usize) -> Result<Arc<PackageGraph>, AuthError>,
         compiled: &mut BTreeMap<String, PackageGraph>,
         compiling: &mut BTreeSet<String>,
+        rejected: &mut Option<AuthRejectedPackage>,
     ) -> Result<PackageGraph, AuthError> {
         let name = &package.manifest.package.name;
         if let Some(graph) = compiled.get(name) {
@@ -368,6 +376,7 @@ pub(super) fn resolve(
                     held_graph,
                     compiled,
                     compiling,
+                    rejected,
                 )?,
                 CandidateSource::Held { closure, entry } => {
                     held_package(&held[closure].evidence, entry, &*held_graph(closure)?)?
@@ -377,12 +386,21 @@ pub(super) fn resolve(
         }
         let graph =
             trellis_idl::compile_project(&package.manifest, package.sources.clone(), supplied)
-                .map_err(|error| AuthError::Invalid(format!("{name}: {error}")))?;
+                .map_err(|error| {
+                    if package.supplied && rejected.is_none() {
+                        *rejected = Some(AuthRejectedPackage {
+                            name: AuthName(name.clone()),
+                            reason: error.to_string(),
+                            extra: Default::default(),
+                        });
+                    }
+                    AuthError::Invalid(format!("{name}: {error}"))
+                })?;
         compiling.remove(name);
         compiled.insert(name.clone(), graph.clone());
         Ok(graph)
     }
-    let graph = compile(
+    let graph = match compile(
         &root,
         &chosen,
         &candidates,
@@ -391,7 +409,22 @@ pub(super) fn resolve(
         &mut held_graph,
         &mut compiled,
         &mut compiling,
-    )?;
+        &mut rejected,
+    ) {
+        Ok(graph) => graph,
+        Err(_) if rejected.is_some() => {
+            return Ok(AuthPackageResolveResponse {
+                package_evidence: None,
+                participants: Vec::new(),
+                dependencies,
+                missing,
+                unknown_imports: Vec::new(),
+                rejected: rejected.into_iter().collect(),
+                extra: Default::default(),
+            })
+        }
+        Err(error) => return Err(error),
+    };
     let evidence = trellis_idl::package_evidence(&graph)
         .map_err(|error| AuthError::Invalid(error.to_string()))?;
     // The same check Deployments.Create makes, so evidence returned here is
@@ -421,6 +454,7 @@ pub(super) fn resolve(
         dependencies,
         missing,
         unknown_imports: Vec::new(),
+        rejected: Vec::new(),
         extra: Default::default(),
     })
 }
@@ -567,7 +601,11 @@ fn authored(
                 source: found.1.to_owned(),
             });
         }
-        return Ok(Authored { manifest, sources });
+        return Ok(Authored {
+            manifest,
+            sources,
+            supplied: false,
+        });
     }
     let (name, version) = identity(package)?;
     let mut sources = BTreeMap::new();
@@ -639,5 +677,9 @@ fn authored(
             manifest.package.name
         ))
     })?;
-    Ok(Authored { manifest, sources })
+    Ok(Authored {
+        manifest,
+        sources,
+        supplied: false,
+    })
 }

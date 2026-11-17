@@ -826,6 +826,13 @@ model AuthPackageResolveResponse {
   missing: list<AuthMissingPackage>;
   /// Imports, in a package without trellis.toml, that name no package Trellis holds or was supplied. Only its trellis.toml can say what they are.
   unknownImports: list<string>;
+  /// Supplied packages that don't compile, with why. Nothing else was compiled; resolve again without them.
+  rejected: list<AuthRejectedPackage>;
+}
+/// A supplied package that doesn't compile.
+model AuthRejectedPackage {
+  name: AuthName;
+  reason: string;
 }
 model AuthDeploymentGetRequest { deploymentId: ulid; }
 model AuthDeploymentGetResponse { deployment: AuthDeployment; }
