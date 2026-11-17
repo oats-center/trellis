@@ -713,3 +713,41 @@ pub(super) fn error_chain(error: &dyn std::error::Error) -> String {
     }
     text
 }
+
+#[cfg(test)]
+mod tests {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use openidconnect::TokenResponse as _;
+
+    /// Auth0 sends the standard `updated_at` claim as an RFC 3339 date rather
+    /// than seconds, and some providers send `email_verified` as a string. A
+    /// token response carrying either must still be read, or every sign-in
+    /// through such a provider fails at the token exchange.
+    #[test]
+    fn a_token_response_with_auth0_style_claims_is_read() {
+        let part = |value: serde_json::Value| URL_SAFE_NO_PAD.encode(value.to_string());
+        let id_token = format!(
+            "{}.{}.{}",
+            part(serde_json::json!({ "alg": "RS256", "typ": "JWT" })),
+            part(serde_json::json!({
+                "iss": "https://tenant.example.auth0.com/",
+                "sub": "auth0|1",
+                "aud": "client",
+                "exp": 2_000_000_000,
+                "iat": 1_900_000_000,
+                "updated_at": "2026-11-17T14:15:40.123Z",
+                "email": "person@example.com",
+                "email_verified": "true",
+            })),
+            URL_SAFE_NO_PAD.encode([0_u8; 256]),
+        );
+        let response: super::TokenResponse = serde_json::from_value(serde_json::json!({
+            "access_token": "access",
+            "token_type": "Bearer",
+            "id_token": id_token,
+        }))
+        .expect("an Auth0-style token response is read");
+        assert!(response.id_token().is_some());
+    }
+}

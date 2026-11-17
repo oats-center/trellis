@@ -123,7 +123,7 @@ opentelemetry-otlp = { version = "0.33.1", default-features = false, features = 
 tracing-opentelemetry = "0.34.0"
 axum = "0.8.8"
 axum-server = { version = "0.9.0", default-features = false, features = ["tls-rustls-no-provider"] }
-openidconnect = { version = "4.1.0", default-features = false }
+openidconnect = { version = "4.1.0", default-features = false, features = ["accept-rfc3339-timestamps", "accept-string-booleans"] }
 oauth-as = { version = "=1.0.1", default-features = false, features = ["axum", "dpop", "jwt-p256", "rar", "cimd"] }
 nats-jwt-rs = "0.1.1"
 tower = { version = "0.5.3", default-features = false, features = ["util"] }

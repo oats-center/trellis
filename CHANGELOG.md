@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Signing in through Auth0 works: Auth reads an ID token whose `updated_at` is
+  an RFC 3339 date (as Auth0 sends it) or whose `email_verified` is the string
+  `"true"`, instead of failing the token exchange.
+
 ## [0.100.0-rc.46] - 2026-11-17
 
 ### Fixed
