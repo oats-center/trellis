@@ -13,12 +13,13 @@ import {
   browserRuntimeOptions,
   completeConsoleEntry,
   launchProfile,
+  startedServices,
 } from "./browser_test_support.ts";
 
 const DEPLOYMENT = "console-service-update";
 
 test("an administrator approves a waiting service update from its review link", async () => {
-  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  const services = startedServices();
   try {
     await withTrellisRuntime(async (runtime) => {
       await runtime.ensureAdmin();
@@ -35,8 +36,9 @@ test("an administrator approves a waiting service update from its review link", 
         trellisUrl: runtime.trellisUrl,
         participant: extendedParticipants.Provider.participant,
         seed: instance.seed,
+        signal: services.signal,
       }).orThrow();
-      services.push(connecting);
+      services.add(connecting);
       const pending = await runtime.waitFor(async () => {
         const { items } = await runtime.callAdminRpc(
           "authServiceUpdatesList",
@@ -79,18 +81,13 @@ test("an administrator approves a waiting service update from its review link", 
       }
     }, browserRuntimeOptions());
   } finally {
-    // A failed step leaves the connecting service running. With the runtime
-    // gone its approval wait ends, so stop it here or the file never exits.
-    for (const connecting of services)
-      await connecting.then(
-        (service) => service.stop(),
-        () => {},
-      );
+    // Aborts a connect still waiting for approval, then stops the rest.
+    await services.stop();
   }
 });
 
 test("a service's page shows the build applied after an earlier self-update", async () => {
-  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  const services = startedServices();
   try {
     await withTrellisRuntime(async (runtime) => {
       await runtime.ensureAdmin();
@@ -108,8 +105,9 @@ test("a service's page shows the build applied after an earlier self-update", as
         trellisUrl: runtime.trellisUrl,
         participant: extendedParticipants.Provider.participant,
         seed: first.seed,
+        signal: services.signal,
       }).orThrow();
-      services.push(updating);
+      services.add(updating);
       const pending = await runtime.waitFor(async () => {
         const { items } = await runtime.callAdminRpc(
           "authServiceUpdatesList",
@@ -124,7 +122,6 @@ test("a service's page shows the build applied after an earlier self-update", as
         idempotencyKey: ulid(),
       });
       await (await updating).stop();
-      services.splice(services.indexOf(updating), 1);
 
       // Then an administrator applies a build directly, which leaves no
       // update in the history, and a new instance connects running it.
@@ -138,8 +135,9 @@ test("a service's page shows the build applied after an earlier self-update", as
         trellisUrl: runtime.trellisUrl,
         participant: base,
         seed: second.seed,
+        signal: services.signal,
       }).orThrow();
-      services.push(running);
+      services.add(running);
       await running;
 
       const admin = await launchProfile(runtime);
@@ -174,16 +172,12 @@ test("a service's page shows the build applied after an earlier self-update", as
       }
     }, browserRuntimeOptions());
   } finally {
-    for (const connecting of services)
-      await connecting.then(
-        (service) => service.stop(),
-        () => {},
-      );
+    await services.stop();
   }
 });
 
 test("an administrator adds a service that introduced itself from its review link", async () => {
-  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  const services = startedServices();
   try {
     await withTrellisRuntime(async (runtime) => {
       await runtime.ensureAdmin();
@@ -200,8 +194,9 @@ test("an administrator adds a service that introduced itself from its review lin
         trellisUrl: runtime.trellisUrl,
         participant: participants.Provider.participant,
         seed: seed.toString("base64url"),
+        signal: services.signal,
       }).orThrow();
-      services.push(connecting);
+      services.add(connecting);
       const pending = await runtime.waitFor(async () => {
         const { items } = await runtime.callAdminRpc(
           "authServiceUpdatesList",
@@ -253,12 +248,7 @@ test("an administrator adds a service that introduced itself from its review lin
       }
     }, browserRuntimeOptions());
   } finally {
-    // A failed step leaves the connecting service running. With the runtime
-    // gone its approval wait ends, so stop it here or the file never exits.
-    for (const connecting of services)
-      await connecting.then(
-        (service) => service.stop(),
-        () => {},
-      );
+    // Aborts a connect still waiting for approval, then stops the rest.
+    await services.stop();
   }
 });
