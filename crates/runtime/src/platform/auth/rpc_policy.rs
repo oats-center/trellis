@@ -804,6 +804,8 @@ pub(super) fn read_effective_access(
                                 AuthCapabilitySourceKind::Role
                             } else if origin == "administrator" {
                                 AuthCapabilitySourceKind::Administrator
+                            } else if origin == "account" {
+                                AuthCapabilitySourceKind::Account
                             } else {
                                 AuthCapabilitySourceKind::Direct
                             },

@@ -708,9 +708,17 @@ fn roles_marked_for_new_users_are_given_to_users_created_afterwards() {
             .store
             .transaction(|connection| read_effective_access(connection, &user, now))
             .unwrap();
+        // Every user also holds their own account's capabilities; only what
+        // a role gives is in question here.
         access
             .capabilities
             .iter()
+            .filter(|capability| {
+                capability
+                    .sources
+                    .iter()
+                    .any(|source| source.kind == AuthCapabilitySourceKind::Role)
+            })
             .map(|capability| capability.definition.identity.capability_id.to_string())
             .collect::<Vec<_>>()
     };

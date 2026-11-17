@@ -28,7 +28,10 @@ enum AuthEnforcementState { queued; running; completed; }
 enum AuthAuthorizationSessionState { active; superseded; revoked; }
 enum AuthAttachmentState { pending; admitted; closed; }
 enum AuthDecision { approved; declined; }
-enum AuthCapabilitySourceKind { role; direct; oidcRole; administrator; }
+/// How a principal holds a capability: a role, a direct grant, a role an
+/// identity provider's group gives, being the default administrator, or, for
+/// the "account" group, being an active user.
+enum AuthCapabilitySourceKind { role; direct; oidcRole; administrator; account; }
 enum AuthActionKind { rpc; operation; event; live; transfer; }
 enum AuthActionDirection { call; invoke; observe; cancel; control; publish; subscribe; read; write; delete; submit; process; consume; }
 enum AuthRevocationReason {

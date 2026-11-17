@@ -226,16 +226,10 @@ test("B25 users list renders and exact edit reloads on query change", async () =
         state: "visible",
         timeout: 30_000,
       });
-      // A given group shows as held, along with everything it includes.
+      // Every user has their own account without being given it, so its
+      // group shows as held, along with everything it includes.
       const auth = page.getByRole("group", { name: "Auth", exact: true });
       const account = auth.getByRole("checkbox", { name: /^Your account/ });
-      await page
-        .getByRole("button", { name: "Add permissions", exact: true })
-        .click();
-      await account.check();
-      await page
-        .getByRole("button", { name: "Give 1 permission", exact: true })
-        .click();
       await page
         .getByRole("button", { name: "Add permissions", exact: true })
         .click();

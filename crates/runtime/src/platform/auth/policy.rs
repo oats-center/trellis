@@ -310,6 +310,17 @@ pub(super) fn entitlements(
             ));
         }
     }
+    // Every active user holds the "account" group: using one's own account
+    // needs no role. Its RPCs act only on the caller's own account.
+    let user: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_principals \
+        WHERE principal_id=?1 AND kind='user' AND state='active')",
+        [principal],
+        |row| row.get(0),
+    )?;
+    if user {
+        sources.push(("trellis.auth.v1:account".into(), None, "account".into()));
+    }
     // Holding a group is holding its current members.
     let mut expanded = Vec::new();
     for (id, deadline, source) in &sources {
