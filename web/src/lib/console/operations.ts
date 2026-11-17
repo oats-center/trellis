@@ -12,7 +12,7 @@
  * unrelated optional read failed.
  */
 
-import { apis } from "trellis-web-generated";
+import { apis } from "../trellis-apis.ts";
 
 import { type Authority, hasExactPermission } from "../control-panel.ts";
 

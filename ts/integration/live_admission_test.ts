@@ -15,7 +15,7 @@ import { test } from "node:test";
 import type { SessionRequest } from "@oatscenter/trellis/auth";
 import { connectNativeClient } from "@oatscenter/trellis/native";
 import { ulid } from "ulid";
-import { apis as webApis } from "../../web/trellis/index.js";
+import { apis as webApis } from "../packages/trellis/internal_sdk/generated/index.js";
 import { apps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { withTrellisRuntime } from "./_support/runtime.ts";

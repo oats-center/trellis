@@ -13,7 +13,7 @@
  * request, so no route mount or dispatch depends on this state.
  */
 
-import type { apis } from "trellis-web-generated";
+import type { apis } from "../trellis-apis.ts";
 
 import type { Authority } from "../control-panel.ts";
 

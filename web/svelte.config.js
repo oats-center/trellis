@@ -40,7 +40,6 @@ const config = {
         rootDir,
         "../ts/packages/trellis/device.ts",
       ),
-      "trellis-web-generated": resolve(rootDir, "trellis"),
       "@oatscenter/trellis/service": resolve(
         rootDir,
         "../ts/packages/trellis/service/mod.ts",

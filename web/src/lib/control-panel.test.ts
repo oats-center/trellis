@@ -1,6 +1,6 @@
 import { equal, ok } from "node:assert/strict";
 import { test } from "node:test";
-import { apis } from "trellis-web-generated";
+import { apis } from "./trellis-apis.ts";
 import {
   type Authority,
   canAccessRoute,

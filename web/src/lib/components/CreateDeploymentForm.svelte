@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { type apis } from "trellis-web-generated";
+  import { type apis } from "$lib/trellis-apis";
   import {
     base64urlDecode,
     base64urlEncode,

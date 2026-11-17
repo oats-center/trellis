@@ -1,4 +1,4 @@
-import { apis } from "trellis-web-generated";
+import { apis } from "./trellis-apis.ts";
 
 import type { OwnAuthoritySnapshot } from "@oatscenter/trellis";
 

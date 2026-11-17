@@ -3,7 +3,7 @@
   import { formatDate, humanizeName } from "$lib/format";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
-  import { apis } from "trellis-web-generated";
+  import { apis } from "$lib/trellis-apis";
   import { onMount, tick } from "svelte";
   import { ulid } from "ulid";
   import { getTrellis } from "$lib/trellis";

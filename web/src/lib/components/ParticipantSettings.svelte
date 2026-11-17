@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apis } from "trellis-web-generated";
+  import { apis } from "$lib/trellis-apis";
   import type { JsonValue } from "@oatscenter/trellis/generated";
   import { onMount } from "svelte";
   import { ulid } from "ulid";

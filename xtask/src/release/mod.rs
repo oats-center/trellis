@@ -393,7 +393,6 @@ mod tests {
         let projects = [
             ("crates/builtin-contracts", "trellis"),
             ("ts/packages/trellis-testkit", "trellis-testkit-generated"),
-            ("web", "trellis-web-generated"),
         ];
         for (project, name) in projects {
             let dir = root.join(project);

@@ -1,5 +1,5 @@
 import { AsyncResult, BaseError, isErr } from "@oatscenter/result";
-import { type apis } from "trellis-web-generated";
+import { type apis } from "./trellis-apis.ts";
 
 export type JobsMetrics = apis.jobs.MetricsOutput;
 

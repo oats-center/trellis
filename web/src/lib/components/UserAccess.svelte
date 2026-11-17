@@ -4,7 +4,7 @@
   import { capabilityArea } from "$lib/console/capability_areas.ts";
   import { onDestroy, untrack } from "svelte";
   import { ulid } from "ulid";
-  import { apis } from "trellis-web-generated";
+  import { apis } from "$lib/trellis-apis";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";

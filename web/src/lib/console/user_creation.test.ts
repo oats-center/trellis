@@ -1,7 +1,7 @@
 import { deepEqual, equal } from "node:assert/strict";
 
 import { test } from "node:test";
-import { apis } from "trellis-web-generated";
+import { apis } from "../trellis-apis.ts";
 
 import { UserCreationController } from "./user_creation.ts";
 

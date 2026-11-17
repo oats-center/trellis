@@ -142,7 +142,6 @@ fn release_manifest_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
     for relative_path in [
         "crates/builtin-contracts/trellis.toml",
         "ts/packages/trellis-testkit/trellis.toml",
-        "web/trellis.toml",
         "integration/fixtures/testkit/trellis.toml",
         "benchmarks/runtime/trellis.toml",
         "web/package.json",

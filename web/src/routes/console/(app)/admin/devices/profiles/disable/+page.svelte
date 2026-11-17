@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ulid } from "ulid";
   import { isErr } from "@oatscenter/result";
-  import { apis } from "trellis-web-generated";
+  import { apis } from "$lib/trellis-apis";
   import { resolve } from "$lib/console_paths";
   import { page } from "$app/state";
   import { onDestroy, untrack } from "svelte";

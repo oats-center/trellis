@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { apis } from "trellis-web-generated";
+  import type { apis } from "$lib/trellis-apis";
   import { onMount } from "svelte";
   import { ulid } from "ulid";
   import { SvelteSet } from "svelte/reactivity";

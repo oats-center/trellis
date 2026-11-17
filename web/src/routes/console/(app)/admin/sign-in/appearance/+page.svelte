@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { apis } from "trellis-web-generated";
+  import type { apis } from "$lib/trellis-apis";
   import { isErr } from "@oatscenter/result";
   import { ulid } from "ulid";
   import { getTrellis } from "$lib/trellis";

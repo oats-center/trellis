@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { type apis } from "trellis-web-generated";
+  import { type apis } from "$lib/trellis-apis";
   import { onMount } from "svelte";
   import { resolve } from "$lib/console_paths";
   import ColumnChart from "$lib/components/ColumnChart.svelte";

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
-  import type { apis } from "trellis-web-generated";
+  import type { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";

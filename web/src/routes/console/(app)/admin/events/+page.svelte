@@ -43,7 +43,7 @@
     sentenceName,
   } from "$lib/console/plain_labels.ts";
   import { createServiceNames } from "$lib/console/service_names.svelte.ts";
-  import { type apis } from "trellis-web-generated";
+  import { type apis } from "$lib/trellis-apis";
   import { subjectMatches } from "./subject";
 
   const names = createServiceNames();

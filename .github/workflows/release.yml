@@ -175,7 +175,6 @@ jobs:
             crates/models/generated
             crates/trellis-testkit/generated
             crates/runtime-apis/generated
-            web/trellis
             ts/packages/trellis-testkit/trellis
             integration/fixtures/runtime/packages/runtime-trellis
             integration/fixtures/runtime/v2/packages/runtime-trellis

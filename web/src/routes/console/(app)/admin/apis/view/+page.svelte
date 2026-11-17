@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apis } from "trellis-web-generated";
+  import { apis } from "$lib/trellis-apis";
   import { page } from "$app/state";
   import { onDestroy, untrack } from "svelte";
   import { getTrellis } from "$lib/trellis";

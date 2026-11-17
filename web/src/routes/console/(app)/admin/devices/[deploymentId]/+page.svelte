@@ -1,7 +1,7 @@
 <script lang="ts">
   import { humanizeName } from "$lib/format";
   import { page } from "$app/state";
-  import { apis } from "trellis-web-generated";
+  import { apis } from "$lib/trellis-apis";
   import { onMount } from "svelte";
   import { getTrellis } from "$lib/trellis";
   import { resolve } from "$lib/console_paths";

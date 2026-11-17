@@ -34,15 +34,24 @@ docker run -e TRELLIS_ORIGIN=https://trellis.example.com \
   -e CONSOLE_ORIGIN=https://console.example.com -p 8080:80 trellis-console
 ```
 
-`trellis install` refreshes the locked contract artifacts and local SDK. The
-local Trellis context binds `createTrellisApp` to the console contract and
-derives `TrellisConsoleClient` with `TrellisClientFor<typeof contract>`, so
-console pages call `getTrellis()` with explicit RPC, event, and state types
-without importing a generated `client.ts` facade.
+## Contract
 
-The console is an app contract, not a control-plane extension. Its contract
-declares the exact Auth, Health, and Jobs surfaces it calls or subscribes to;
-runtime permissions come from those `uses` declarations plus the authenticated
-user's admin capabilities. Admin device revoke/disable flows now also clear the
+The Console has no contract source of its own. It is the built-in `app console`
+declared in `crates/builtin-contracts/src/builtin_source/participants.trellis`,
+and that declaration is the only description of its capability request. Change
+what the Console asks for there.
+
+`cargo xtask install` generates the built-in package's TypeScript into
+`ts/packages/trellis/internal_sdk/generated`. `src/lib/trellis-context.svelte.ts`
+binds `createTrellisApp` to that package's `console` request and derives
+`TrellisConsoleClient` with `TrellisClientFor<typeof consoleRequest>`, so pages
+call `getTrellis()` with explicit RPC, event, and state types.
+`src/lib/trellis-apis.ts` re-exports the same package's `apis` for the
+descriptors and types pages import.
+
+The Console is an app participant, not a control-plane extension. Its
+declaration lists the exact Auth, Core, State, Health, Jobs, and Events
+capabilities it may call or subscribe to; runtime permissions come from those
+`use` declarations plus the authenticated user's admin capabilities. Admin device revoke/disable flows now also clear the
 device's durable session by public identity key so console state reflects the
 runtime access decision.

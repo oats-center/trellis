@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getInitials } from "$lib/control-panel.ts";
   import { ulid } from "ulid";
-  import { apis } from "trellis-web-generated";
+  import { apis } from "$lib/trellis-apis";
   import { page } from "$app/state";
   import { beforeNavigate, goto } from "$app/navigation";
   import { onDestroy, untrack } from "svelte";

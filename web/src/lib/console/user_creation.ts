@@ -16,7 +16,7 @@
  *   stays committed and an explicit retry remains available.
  */
 
-import type { apis } from "trellis-web-generated";
+import type { apis } from "../trellis-apis.ts";
 import { ulid } from "ulid";
 
 import {

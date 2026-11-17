@@ -10,7 +10,7 @@
     type WatchAttempt,
   } from "$lib/console/live_refresh.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
-  import { type apis } from "trellis-web-generated";
+  import { type apis } from "$lib/trellis-apis";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import BulkActionBar from "$lib/components/BulkActionBar.svelte";
   import BulkResult from "$lib/components/BulkResult.svelte";

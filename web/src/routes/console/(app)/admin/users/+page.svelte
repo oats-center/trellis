@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ulid } from "ulid";
   import { isErr } from "@oatscenter/result";
-  import { type apis } from "trellis-web-generated";
+  import { type apis } from "$lib/trellis-apis";
   import { resolve, consoleUrl } from "$lib/console_paths";
   import { onMount } from "svelte";
   import { captureIntent, MutationController } from "$lib/console/mutation.ts";

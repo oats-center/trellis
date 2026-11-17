@@ -3,7 +3,7 @@ import { equal } from "node:assert/strict";
 import { resolveRequestedTarget } from "./target.ts";
 import { err, ok } from "@oatscenter/result";
 import { test } from "node:test";
-import { apis } from "trellis-web-generated";
+import { apis } from "../trellis-apis.ts";
 
 function authFailure(code: string) {
   return new apis.auth.AuthError({

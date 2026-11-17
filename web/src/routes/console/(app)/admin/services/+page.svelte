@@ -1,6 +1,6 @@
 <script lang="ts">
   import { isErr } from "@oatscenter/result";
-  import { type apis } from "trellis-web-generated";
+  import { type apis } from "$lib/trellis-apis";
   import { SvelteSet } from "svelte/reactivity";
 
   import { resolve } from "$lib/console_paths";

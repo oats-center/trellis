@@ -1,7 +1,7 @@
 import { AsyncResult, UnexpectedError } from "@oatscenter/result";
 import { deepEqual } from "node:assert/strict";
 import { test } from "node:test";
-import { type apis } from "trellis-web-generated";
+import { type apis } from "./trellis-apis.ts";
 
 import { loadJobsMetrics } from "./jobs_metrics.ts";
 

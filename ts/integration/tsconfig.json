@@ -15,8 +15,7 @@
       "@oatscenter/result": ["../packages/result/mod.ts"],
       "@oatscenter/trellis": ["../packages/trellis/index.ts"],
       "@oatscenter/trellis/*": ["../packages/trellis/*"],
-      "@oatscenter/trellis-testkit": ["../packages/trellis-testkit/index.ts"],
-      "trellis-web-generated": ["../../web/trellis/index.js"]
+      "@oatscenter/trellis-testkit": ["../packages/trellis-testkit/index.ts"]
     }
   },
   "include": ["*.ts", "_support/*.ts", "../browser/*.ts"]

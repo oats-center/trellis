@@ -118,7 +118,6 @@ const TRELLIS_PROJECTS: &[&str] = &[
     // discovery only if maintaining it becomes a real problem.
     "crates/builtin-contracts",
     "ts/packages/trellis-testkit",
-    "web",
     "integration/fixtures/runtime",
     "integration/fixtures/runtime/v2",
     "integration/fixtures/runtime-removed",

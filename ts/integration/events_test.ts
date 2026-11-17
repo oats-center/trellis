@@ -11,7 +11,7 @@ import { codecs } from "@oatscenter/trellis/generated";
 import { ulid } from "ulid";
 import { AuthError, Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { apis as webApis } from "../../web/trellis/index.js";
+import { apis as webApis } from "../packages/trellis/internal_sdk/generated/index.js";
 import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 
 import {

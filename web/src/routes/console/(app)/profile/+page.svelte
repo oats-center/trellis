@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ulid } from "ulid";
   import { isErr } from "@oatscenter/result";
-  import { apis } from "trellis-web-generated";
+  import { apis } from "$lib/trellis-apis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { onMount } from "svelte";
   import { catalogPage, traverseAll } from "$lib/console/paging.ts";
