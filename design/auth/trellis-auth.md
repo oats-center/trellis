@@ -1056,8 +1056,11 @@ it.
 The same settings hold the minimum password length (`passwordMinLength`, 8 to
 128, 8 by default). Every new local password meets it: the first
 administrator's, new accounts, password changes, resets and sign-up. Existing
-passwords are not checked again. The Portal shows the minimum on its sign-up
-and reset forms.
+passwords are not checked again. The minimum counts characters, meaning Unicode
+code points, not bytes, so eight emoji meet a minimum of 8. A separate 4096-byte
+cap bounds the hashing work one request can cause. The Portal shows the minimum
+on its sign-up and reset forms and counts code points the same way before
+submitting.
 
 Self sign-up needs both the installation and the app being signed in to. The
 installation's `localSignUp` (which needs local users) allows password

@@ -817,9 +817,7 @@ pub(super) async fn page(
     let (title, body) = if kind == "reset" {
         (
             "Set a new password",
-            format!(
-                r#"<p class="muted">Choose a new password. You'll be signed out everywhere else.</p><form method="post" action="/portal/account/reset"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label class="field" for="password">New password</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="{minimum}" maxlength="4096" required><p class="hint">At least {minimum} characters.</p><button class="primary block">Set password</button></form>"#
-            ),
+            reset_form(token, &csrf, minimum, false),
         )
     } else {
         match signed_in {
@@ -937,6 +935,7 @@ pub(super) async fn submit(
     let csrf = csrf.clone();
     let password = password.clone();
     if kind == "reset" {
+        let (form_token, form_csrf) = (token.clone(), csrf.clone());
         let reset_engine = engine.clone();
         let result = blocking(move || {
             let engine = reset_engine;
@@ -955,7 +954,12 @@ pub(super) async fn submit(
             })?;
             let minimum = super::super::sign_in::read(&*engine.server.store().authority.reader()?)?
                 .password_min_length;
-            let hash = hash_password(&password, minimum.0)?;
+            let hash = match hash_password(&password, minimum.0) {
+                Ok(hash) => hash,
+                // Only a page without its script sends a password that is too short.
+                Err(AuthError::Invalid(_)) => return Ok(Some(minimum.0)),
+                Err(other) => return Err(other),
+            };
             complete_reset(
                 engine.server.store(),
                 &token,
@@ -964,10 +968,16 @@ pub(super) async fn submit(
                 &hash,
                 crate::clock::unix_now(),
             )
+            .map(|()| None)
         })
         .await;
         return match result {
-            Ok(()) => html(
+            Ok(Some(minimum)) => html(
+                &engine,
+                "Set a new password",
+                &reset_form(&form_token, &form_csrf, minimum, true),
+            ),
+            Ok(None) => html(
                 &engine,
                 "Password changed",
                 "<p class=\"muted\">Your new password is set and you were signed out everywhere \
@@ -1021,6 +1031,26 @@ pub(super) async fn submit(
         };
     }
     error(ErrorCode::InvalidRequest)
+}
+
+/// The password reset form. `password-length.js` counts the new password's
+/// characters as Unicode code points, as Auth does, and says when it is too short;
+/// HTML `minlength` would count UTF-16 code units instead.
+fn reset_form(token: &str, csrf: &str, minimum: u32, too_short: bool) -> String {
+    let (invalid, described, error) = if too_short {
+        (
+            r#" aria-invalid="true""#,
+            "password-error",
+            format!(
+                r#"<p class="alert error" id="password-error" role="alert">Use at least {minimum} characters.</p>"#
+            ),
+        )
+    } else {
+        ("", "password-hint", String::new())
+    };
+    format!(
+        r#"<p class="muted">Choose a new password. You'll be signed out everywhere else.</p><form method="post" action="/portal/account/reset" data-password-minimum="{minimum}"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label class="field" for="password">New password</label><input id="password" name="password" type="password" autocomplete="new-password" maxlength="4096" required aria-describedby="{described}"{invalid}>{error}<p class="hint" id="password-hint">At least {minimum} characters.</p><button class="primary block">Set password</button></form><script src="/portal-assets/password-length.js"></script>"#
+    )
 }
 
 /// The leaf mark from art/trellis-mark.svg, inlined because Portal pages load no images.

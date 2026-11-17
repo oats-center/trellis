@@ -166,7 +166,8 @@ pub struct SignInSetArgs {
     #[arg(long)]
     pub no_local_sign_up: bool,
     /// Shortest password accepted for new passwords, changes and sign-up,
-    /// 8 to 128. Existing passwords are not checked again.
+    /// 8 to 128 characters (Unicode code points, not bytes). Existing
+    /// passwords are not checked again.
     #[arg(long, value_name = "LENGTH", value_parser = clap::value_parser!(u32).range(8..=128))]
     pub password_min_length: Option<u32>,
 }

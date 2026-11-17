@@ -152,7 +152,7 @@ impl SqliteAuthorizationStore {
     ) -> Result<InitializationResult, AuthError> {
         if username.trim() != username
             || username.is_empty()
-            || password.is_some_and(|password| password.len() < 12)
+            || password.is_some_and(|password| password.chars().count() < 12)
         {
             return Err(AuthError::Invalid(
                 "invalid administrator credentials".into(),

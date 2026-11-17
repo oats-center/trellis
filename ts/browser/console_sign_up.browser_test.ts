@@ -130,6 +130,61 @@ test("an administrator sets sign-in methods, providers, their group roles and th
       await status(
         "OIDC sign-in is on: users can sign in through Acme login or Beta login.",
       );
+
+      // A draft keeps the revision it was made from across a provider change,
+      // so saving it cannot undo another administrator's change.
+      const saveLocal = (page: typeof admin) =>
+        page
+          .getByRole("region", { name: "Local users" })
+          .getByRole("button", { name: "Save", exact: true })
+          .click();
+      await minimum.fill("8");
+      const other = await context.newPage();
+      await other.goto(`${runtime.consoleUrl}/console/admin/sign-in`);
+      const otherSignUp = other.getByRole("switch", {
+        name: "Users can create their own account",
+      });
+      await otherSignUp.uncheck();
+      await saveLocal(other);
+      await other.getByText("Local users saved.", { exact: true }).waitFor();
+      await beta.uncheck();
+      await admin
+        .getByText("Beta login turned off.", { exact: true })
+        .waitFor();
+      await saveLocal(admin);
+      await admin
+        .getByText(/^Another administrator changed these settings/)
+        .waitFor();
+      await other.reload();
+      const otherMinimum = other.getByLabel("Minimum password length");
+      await otherMinimum.waitFor();
+      assert.equal(await otherSignUp.isChecked(), false);
+      assert.equal(await otherMinimum.inputValue(), "20");
+      await other.close();
+      await admin
+        .getByRole("button", { name: "Reload settings", exact: true })
+        .click();
+      await admin
+        .getByRole("switch", {
+          name: "Users can create their own account",
+          checked: false,
+        })
+        .waitFor();
+      assert.equal(await minimum.inputValue(), "20");
+      assert.equal(
+        await admin
+          .getByText(/^Another administrator changed these settings/)
+          .count(),
+        0,
+      );
+      await selfSignUp.check();
+      await minimum.fill("8");
+      await saveLocal(admin);
+      await admin.getByText("Local users saved.", { exact: true }).waitFor();
+      await beta.check();
+      await status(
+        "OIDC sign-in is on: users can sign in through Acme login or Beta login.",
+      );
       await edit("Acme login");
       await admin.getByLabel("Group", { exact: true }).fill("engineering");
       await admin.getByRole("checkbox", { name: role, exact: true }).check();
@@ -173,16 +228,26 @@ test("an administrator sets sign-in methods, providers, their group roles and th
         .getByRole("button", { name: "Create an account", exact: true })
         .click();
       await newcomer
-        .getByText("At least 20 characters.", { exact: true })
+        .getByText("At least 8 characters.", { exact: true })
         .waitFor();
       await newcomer.getByLabel("Name", { exact: true }).fill("New Person");
       await newcomer.getByLabel("Username", { exact: true }).fill(username);
+      // The minimum counts characters: seven emoji are 14 UTF-16 code units
+      // and 28 bytes but too short; eight mixed characters are enough.
+      const password = newcomer.getByLabel("Password", { exact: true });
+      await password.fill("🔑".repeat(7));
+      const create = newcomer.getByRole("button", {
+        name: "Create account",
+        exact: true,
+      });
+      await create.click();
       await newcomer
-        .getByLabel("Password", { exact: true })
-        .fill("a long enough password");
-      await newcomer
-        .getByRole("button", { name: "Create account", exact: true })
-        .click();
+        .getByRole("alert")
+        .getByText("Use at least 8 characters.", { exact: true })
+        .waitFor();
+      assert.equal(await password.getAttribute("aria-invalid"), "true");
+      await password.fill("Grüße🔑ok");
+      await create.click();
       await newcomer
         .getByRole("heading", { name: "Your account", exact: true })
         .waitFor();

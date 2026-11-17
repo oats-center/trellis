@@ -22,8 +22,9 @@ Every `[auth]` key, from `AuthConfig` in `crates/runtime/src/config/mod.rs`:
 
 Sign-in policy is Auth state, not configuration: which methods are on, self
 sign-up, and the minimum password length (`passwordMinLength`, 8 on a fresh
-installation, 8 to 128) are read and changed live with `Auth.SignInSettings`
-from the Console's Sign-in page or `trellis sign-in set`. The minimum applies
+installation, 8 to 128 characters, counted as Unicode code points) are read
+and changed live with `Auth.SignInSettings` from the Console's Sign-in page or
+`trellis sign-in set`. The minimum applies
 to the first administrator's password, new accounts, password changes, resets
 and sign-up; existing passwords are not checked again. An `[auth.local_identity]`
 section is refused at startup rather than ignored, so a stricter minimum set

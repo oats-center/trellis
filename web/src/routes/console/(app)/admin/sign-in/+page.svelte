@@ -6,7 +6,7 @@
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
-  import { isUncertainError } from "$lib/console/mutation.ts";
+  import { isConflictError, isUncertainError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { traverseAll } from "$lib/console/paging.ts";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
@@ -36,6 +36,8 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
+  // Another administrator saved local-user settings after this draft began.
+  let stale = $state(false);
   // The provider being edited; `null` with `editing` adds a new one.
   let editing = $state(false);
   let selected = $state.raw<Provider | null>(null);
@@ -95,6 +97,13 @@
     localUsers = next.localUsers;
     localSignUp = next.localSignUp;
     passwordMinLength = next.passwordMinLength;
+    stale = false;
+  }
+
+  // Drops the draft and shows the settings as they are saved now.
+  function reloadSettings(): Promise<void> {
+    if (settings) show(settings);
+    return load();
   }
 
   async function load(): Promise<void> {
@@ -118,9 +127,10 @@
           : Promise.resolve({ items: [] }),
       ]);
       if (!scope.isCurrent(token)) return;
-      // Keep unsaved local-user changes across a provider change.
+      // Unsaved local-user changes survive a provider change, together with
+      // the revision they were made from: saving them after another
+      // administrator's change then conflicts instead of undoing it.
       if (current && !changed) show(current.settings);
-      else if (current) settings = current.settings;
       providers = [...listed.items];
       loaded = true;
     } catch (cause) {
@@ -150,15 +160,22 @@
     event.preventDefault();
     return run(async () => {
       if (!settings || passwordMinLength === null) return null;
-      const response = await trellis
-        .signInSettingsUpdate({
-          localUsers,
-          localSignUp: localUsers && localSignUp,
-          passwordMinLength,
-          expectedRevision: settings.revision,
-          idempotencyKey: ulid(),
-        })
-        .orThrow();
+      let response;
+      try {
+        response = await trellis
+          .signInSettingsUpdate({
+            localUsers,
+            localSignUp: localUsers && localSignUp,
+            passwordMinLength,
+            expectedRevision: settings.revision,
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+      } catch (cause) {
+        if (!isConflictError(cause)) throw cause;
+        stale = true;
+        return null;
+      }
       show(response.settings);
       return "Local users saved.";
     });
@@ -334,6 +351,21 @@
               </span>
             </label>
           </fieldset>
+          {#if stale}
+            <div class="mt-3 flex flex-wrap items-center gap-3" role="alert">
+              <p class="text-sm text-error">
+                Another administrator changed these settings since you started.
+                Nothing was saved. Reload to see their changes, then make yours
+                again.
+              </p>
+              <button
+                type="button"
+                class="btn btn-sm"
+                disabled={saving}
+                onclick={() => void reloadSettings()}>Reload settings</button
+              >
+            </div>
+          {/if}
           {#if lockedOut}
             <p class="mt-3 text-sm text-error" role="alert">
               Turn on an OIDC provider first, or nobody can sign in.

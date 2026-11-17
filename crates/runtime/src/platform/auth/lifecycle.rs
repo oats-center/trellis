@@ -100,7 +100,7 @@ impl SqliteAuthorizationStore {
             ));
         }
         let minimum = super::sign_in::read(connection)?.password_min_length.0;
-        if password.is_some_and(|password| password.len() < minimum as usize) {
+        if password.is_some_and(|password| password.chars().count() < minimum as usize) {
             return Err(AuthError::Invalid(format!(
                 "the administrator password must be at least {minimum} characters"
             )));

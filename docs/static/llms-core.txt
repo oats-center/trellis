@@ -715,9 +715,9 @@ Sign-in methods are Auth state changed live, never configuration: the Methods
 tab of the Console's Sign-in page, `trellis sign-in set`, or
 `Auth.SignInSettings.Update` turn username-and-password sign-in and local self
 sign-up on or off and set the minimum password length (`passwordMinLength`,
-`--password-min-length`, 8 to 128, 8 by default) for new and changed
-passwords. OIDC sign-in has no switch: it is on while at least one provider is
-enabled. Auth refuses a change that would leave local users off and no provider
+`--password-min-length`, 8 to 128 characters, 8 by default) for new and changed
+passwords. The minimum counts Unicode code points, not bytes. OIDC sign-in
+has no switch: it is on while at least one provider is enabled. Auth refuses a change that would leave local users off and no provider
 enabled. Providers are managed on that page or with
 `trellis sign-in providers list|show|add|edit|enable|disable|remove`; `add` prints the
 provider's ID, which `Auth.Users.Find` takes, and the callback URL

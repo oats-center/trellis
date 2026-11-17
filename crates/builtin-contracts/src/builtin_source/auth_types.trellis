@@ -354,7 +354,7 @@ model AuthOAuthClientPutRequest {
   expectedRevision: uint64;
   idempotencyKey: AuthIdempotencyKey;
 }
-/// Shortest local password Auth accepts, in bytes.
+/// Shortest local password Auth accepts, in characters (Unicode code points).
 type AuthPasswordMinLength = uint32(min=8, max=128);
 /// How users may sign in to this installation. Takes effect immediately.
 /// OIDC sign-in is on exactly when an OIDC provider is enabled; at least one

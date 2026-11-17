@@ -1286,6 +1286,73 @@ fn the_sign_in_settings_minimum_governs_created_changed_and_signed_up_passwords(
 }
 
 #[test]
+fn the_password_minimum_counts_characters_not_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = open(&directory, SigningKey::from_bytes(&[47; 32]));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("an administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    sign_in_settings(&store, &admin, 1, true, 8).unwrap();
+    // Eight characters in 16 bytes meet the minimum; seven in 28 bytes do not.
+    let enough = "é".repeat(8);
+    let short = "🔑".repeat(7);
+    let account = |username: &str, password: &str| AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
+        username: username.to_string().into(),
+        display_name: "Multibyte".to_string().into(),
+        password: Some(password.to_string().into()),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let refused = account("short", &short);
+    assert!(matches!(
+        create_user(&store, &mutation(&admin, &refused), &refused, NOW),
+        Err(AuthError::Invalid(_))
+    ));
+    let created = account("created", &enough);
+    create_user(&store, &mutation(&admin, &created), &created, NOW).unwrap();
+
+    let sign_up = |username: &str, password: &str| {
+        let guest = store.create_portal_session(NOW).unwrap();
+        store.portal_local_sign_up(
+            &guest.cookie,
+            &guest.csrf,
+            &crate::platform::auth::oauth::LocalSignUp {
+                username: username.into(),
+                password: password.into(),
+                name: "Newcomer".into(),
+                email: String::new(),
+            },
+            NOW,
+        )
+    };
+    assert!(matches!(
+        sign_up("newcomer", &short),
+        Err(AuthError::Invalid(_))
+    ));
+    sign_up("newcomer", &enough).unwrap();
+
+    // Both accounts sign in with the password they were given.
+    for username in ["created", "newcomer"] {
+        let cookie = store.create_portal_session(NOW).unwrap();
+        store
+            .portal_local_login(
+                &cookie.cookie,
+                &cookie.csrf,
+                &format!("{}{}", id(), "e".repeat(17)),
+                (username, &enough),
+                &id(),
+                NOW,
+            )
+            .unwrap();
+    }
+}
+
+#[test]
 fn sign_in_settings_and_providers_always_leave_a_way_to_sign_in() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[46; 32])));
