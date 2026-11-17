@@ -3409,16 +3409,18 @@ async function awaitServiceUpdate(
             : `\n${participant.identity} needs an administrator to approve its update.\nOpen ${reviewUrl}\nor scan:\n${renderUnicodeCompact(reviewUrl)}`,
         );
       }
+      // An abort during the last Status request has already fired.
+      signal?.throwIfAborted();
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, delay);
-        signal?.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(timer);
-            reject(signal.reason);
-          },
-          { once: true },
-        );
+        const abort = () => {
+          clearTimeout(timer);
+          reject(signal?.reason);
+        };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", abort);
+          resolve();
+        }, delay);
+        signal?.addEventListener("abort", abort, { once: true });
       });
       delay = Math.min(delay * 2, 15_000);
       update = (

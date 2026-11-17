@@ -11,13 +11,14 @@ import {
   browserRuntimeOptions,
   completeConsoleEntry,
   launchProfile,
+  startedServices,
 } from "./browser_test_support.ts";
 import { wireNatsGate } from "./console_test_support.ts";
 
 const participant = participants.ConfiguredService.participant;
 
 test("an administrator sets a waiting service's settings from the link it printed", async () => {
-  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  const services = startedServices();
   try {
     await withTrellisRuntime(async (runtime) => {
       await runtime.ensureAdmin();
@@ -27,12 +28,14 @@ test("an administrator sets a waiting service's settings from the link it printe
         contract: participant,
       });
       // The service has no endpoint or key yet, so it waits and prints a link.
-      const connecting = TrellisService.connect({
-        trellisUrl: runtime.trellisUrl,
-        participant,
-        seed: key.seed,
-      }).orThrow();
-      services.push(connecting);
+      const connecting = services.add(
+        TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant,
+          seed: key.seed,
+          signal: services.signal,
+        }).orThrow(),
+      );
       const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
       await runtime.waitFor(async () => {
         const view = await runtime.callAdminRpc("authConfigGet", { target });
@@ -114,13 +117,8 @@ test("an administrator sets a waiting service's settings from the link it printe
       assert.equal(service.config.current.signingKey, "s1");
     }, browserRuntimeOptions());
   } finally {
-    // A failed step leaves the connecting service running. With the runtime
-    // gone its wait ends, so stop it here or the file never exits.
-    for (const connecting of services)
-      await connecting.then(
-        (service) => service.stop(),
-        () => {},
-      );
+    // A failed step leaves the service waiting for its settings.
+    await services.stop();
   }
 });
 

@@ -14,6 +14,7 @@ import { TrellisService } from "../packages/trellis/service/mod.ts";
 import {
   browserRuntimeOptions,
   launchProfile,
+  startedServices,
 } from "./browser_test_support.ts";
 import {
   assertNoBrowserErrors,
@@ -32,7 +33,7 @@ const fixtureIdl = ["trellis.toml", "contract.trellis"].map((name) =>
 );
 
 test("B01 adding a service with its IDL and a created key lets the service connect with that key", async () => {
-  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  const services = startedServices();
   try {
     await withTrellisRuntime(async (runtime) => {
       await runtime.contracts.install({
@@ -101,12 +102,14 @@ test("B01 adding a service with its IDL and a created key lets the service conne
 
         // The key the browser created is the instance's identity: a service
         // started with it connects as that instance.
-        const connecting = TrellisService.connect({
-          trellisUrl: runtime.trellisUrl,
-          participant: participants.EchoProvider.participant,
-          seed,
-        }).orThrow();
-        services.push(connecting);
+        const connecting = services.add(
+          TrellisService.connect({
+            trellisUrl: runtime.trellisUrl,
+            participant: participants.EchoProvider.participant,
+            seed,
+            signal: services.signal,
+          }).orThrow(),
+        );
         await connecting;
         const { items } = await runtime.callAdminRpc(
           "authServiceInstancesList",
@@ -127,11 +130,7 @@ test("B01 adding a service with its IDL and a created key lets the service conne
       }
     }, browserRuntimeOptions());
   } finally {
-    for (const connecting of services)
-      await connecting.then(
-        (service) => service.stop(),
-        () => {},
-      );
+    await services.stop();
   }
 });
 
@@ -245,7 +244,7 @@ test("B01c a dependency Trellis doesn't have is listed, and adding its files let
 });
 
 test("B01b adding a service without its IDL and with its own public key waits for that service to introduce itself", async () => {
-  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  const services = startedServices();
   try {
     await withTrellisRuntime(async (runtime) => {
       const context = await launchProfile(runtime);
@@ -292,12 +291,14 @@ test("B01b adding a service without its IDL and with its own public key waits fo
 
         // The service holding the matching seed introduces itself to this
         // claim and waits for approval.
-        const connecting = TrellisService.connect({
-          trellisUrl: runtime.trellisUrl,
-          participant: participants.EchoProvider.participant,
-          seed: seed.toString("base64url"),
-        }).orThrow();
-        services.push(connecting);
+        services.add(
+          TrellisService.connect({
+            trellisUrl: runtime.trellisUrl,
+            participant: participants.EchoProvider.participant,
+            seed: seed.toString("base64url"),
+            signal: services.signal,
+          }).orThrow(),
+        );
         await runtime.waitFor(async () => {
           const { items } = await runtime.callAdminRpc(
             "authServiceUpdatesList",
@@ -314,11 +315,7 @@ test("B01b adding a service without its IDL and with its own public key waits fo
       }
     }, browserRuntimeOptions());
   } finally {
-    for (const connecting of services)
-      await connecting.then(
-        (service) => service.stop(),
-        () => {},
-      );
+    await services.stop();
   }
 });
 

@@ -44,6 +44,37 @@ export function browserRuntimeOptions(
   };
 }
 
+/** A service a test starts, connected or still connecting. */
+type StartedService = Promise<{ stop(): Promise<void> }>;
+
+/**
+ * Tracks the services a test connects so a failed step cannot leave one
+ * running. Pass `signal` to each `TrellisService.connect` and `add` the
+ * result; `stop` aborts the connects still waiting, for approval or settings,
+ * and stops the ones that connected.
+ */
+export function startedServices() {
+  const abort = new AbortController();
+  const started: StartedService[] = [];
+  return {
+    signal: abort.signal,
+    /** Records a connect and returns it unchanged. */
+    add<T extends { stop(): Promise<void> }>(connecting: Promise<T>) {
+      started.push(connecting);
+      return connecting;
+    },
+    /** Aborts unfinished connects, then stops every connected service. */
+    async stop() {
+      abort.abort(new Error("The test ended before this service connected"));
+      for (const connecting of started)
+        await connecting.then(
+          (service) => service.stop(),
+          () => {},
+        );
+    },
+  };
+}
+
 /** Launches a persistent Chromium profile owned by the test runtime workdir. */
 export async function launchProfile(
   runtime: TrellisTestRuntime,

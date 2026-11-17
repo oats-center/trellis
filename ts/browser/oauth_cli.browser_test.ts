@@ -11,6 +11,7 @@ import { TrellisService } from "../packages/trellis/service/mod.ts";
 import {
   browserRuntimeOptions,
   loginCliAsAdministrator,
+  startedServices,
 } from "./browser_test_support.ts";
 import { startDex } from "./dex_support.ts";
 
@@ -25,7 +26,7 @@ test(
       });
       const page = await browser.newPage();
       page.setDefaultTimeout(10_000);
-      const services: Promise<{ stop(): Promise<void> }>[] = [];
+      const services = startedServices();
       try {
         const { directory, run } = await loginCliAsAdministrator(runtime, page);
         const clientId = `cli-development-${ulid()}`;
@@ -132,12 +133,14 @@ test(
         );
         assert.equal(provisioned.instanceSeed, null);
         assert.equal(provisioned.instance.identityPublicKey, owned.publicKey);
-        const connected = TrellisService.connect({
-          trellisUrl: runtime.trellisUrl,
-          participant: provider,
-          seed: owned.seed,
-        }).orThrow();
-        services.push(connected);
+        const connected = services.add(
+          TrellisService.connect({
+            trellisUrl: runtime.trellisUrl,
+            participant: provider,
+            seed: owned.seed,
+            signal: services.signal,
+          }).orThrow(),
+        );
         await (await connected).stop();
         // The same key selects that instance again instead of adding one.
         const selected = await run(
@@ -162,12 +165,14 @@ test(
           introduced.publicKey,
         );
         assert.equal(claimCreated.instanceSeed, null);
-        const introducing = TrellisService.connect({
-          trellisUrl: runtime.trellisUrl,
-          participant: runtimeParticipants.Provider.participant,
-          seed: introduced.seed,
-        }).orThrow();
-        services.push(introducing);
+        const introducing = services.add(
+          TrellisService.connect({
+            trellisUrl: runtime.trellisUrl,
+            participant: runtimeParticipants.Provider.participant,
+            seed: introduced.seed,
+            signal: services.signal,
+          }).orThrow(),
+        );
         await runtime.waitFor(async () => {
           const { updates } = await run("svc", "introduced", "updates");
           return updates.find(
@@ -423,8 +428,7 @@ test(
         await assert.rejects(run("clients", "list"));
       } finally {
         // A failed step can leave a service waiting for approval.
-        for (const service of services)
-          await service.then((connected) => connected.stop()).catch(() => {});
+        await services.stop();
         await browser.close();
       }
     }, browserRuntimeOptions());
