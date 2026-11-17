@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.46] - 2026-11-17
+
 ### Fixed
 
 - Saving the Console's local-user sign-in settings after a provider change no

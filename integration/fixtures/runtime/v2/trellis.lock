@@ -4,12 +4,12 @@ root = "runtime-trellis"
 [[packages]]
 name = "runtime-trellis"
 version = "0.100.0"
-digest = "d6E9HZiPXbOTH9go_W3MUx3BnBBxODi41vt6lXjg2tM"
-distribution-digest = "sha256:941b53861ab9972a9b8050b4d8fcc65b2ce0509c79bbfb6ff27342ecb31b8d25"
+digest = "RYMiLVUhQAfsYt5ckNQsEtMSDbuM3YXXZ-jJRbgC1is"
+distribution-digest = "sha256:f0a08d9f9a47d0390b47f72b46b5a500a1deab261ac68fe9e091dbe4004cf6a5"
 
 [[packages.dependencies]]
 name = "trellis"
-version = "0.100.0-rc.45"
+version = "0.100.0-rc.46"
 digest = "fjAUSJeco4P3ee588QZhMNnCKoqNhENyTylkIXukQjY"
 
 [packages.source]
@@ -18,9 +18,9 @@ path = "."
 
 [[packages]]
 name = "trellis"
-version = "0.100.0-rc.45"
+version = "0.100.0-rc.46"
 digest = "fjAUSJeco4P3ee588QZhMNnCKoqNhENyTylkIXukQjY"
-distribution-digest = "sha256:c800a13b8f09854a4973263240d355990532cbece82499344e1e0d5860881ed6"
+distribution-digest = "sha256:6ff2d04cba166d6e26506a3735ce17b36ccd0a8b217ba872d1af40ec8efe851c"
 dependencies = []
 
 [packages.source]
