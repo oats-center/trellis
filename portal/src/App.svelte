@@ -89,6 +89,22 @@
   const query = new URL(window.location.href).searchParams;
   const path = window.location.pathname;
 
+  // What the server rendered into the page, so the sign-in and consent pages
+  // show whole from their first paint instead of shifting as requests answer.
+  const served = ((): {
+    signIn?: SignIn | null;
+    consent?: Consent;
+    theme?: Theme | null;
+  } => {
+    try {
+      return JSON.parse(
+        document.getElementById("portal-data")?.textContent ?? "{}",
+      );
+    } catch {
+      return {};
+    }
+  })();
+
   /** Uppercases a typed device code and groups it as `XXXX-XXXX`. */
   function formatDeviceCode(value: string): string {
     const code = value
@@ -180,19 +196,27 @@
       .map((cookie) => cookie.trim())
       .find((cookie) => cookie.startsWith("__Host-trellis-portal-csrf="))
       ?.slice("__Host-trellis-portal-csrf=".length) ?? "";
-  let view = $state.raw<Consent | null>(null);
-  let selected = $state<string[]>([]);
+  let view = $state.raw<Consent | null>(served.consent ?? null);
+  let selected = $state<string[]>(
+    served.consent?.capabilities
+      .filter((item) => item.selected)
+      .map((item) => item.capabilityId) ?? [],
+  );
   let expanded = $state<string[]>([]);
   let confirming = $state(false);
   let error = $state(false);
-  let providers = $state.raw<Provider[]>([]);
-  let localIdentity = $state(true);
-  let refusal = $state.raw<Refusal | undefined>(undefined);
-  let signUp = $state.raw<SignIn["signUp"]>({
-    password: false,
-    providers: false,
-  });
-  let passwordMinLength = $state<number | null>(null);
+  let providers = $state.raw<Provider[]>(served.signIn?.providers ?? []);
+  let localIdentity = $state(served.signIn?.localIdentity ?? true);
+  let refusal = $state.raw<Refusal | undefined>(served.signIn?.refusal);
+  let signUp = $state.raw<SignIn["signUp"]>(
+    served.signIn?.signUp ?? {
+      password: false,
+      providers: false,
+    },
+  );
+  let passwordMinLength = $state<number | null>(
+    served.signIn?.passwordMinLength ?? null,
+  );
   // Auth counts a password's characters as Unicode code points, so a string's
   // spread length, not the UTF-16 count HTML minlength uses.
   let signUpPassword = $state("");
@@ -204,13 +228,15 @@
   // The server marks pages it serves with Trellis-generated certificates.
   const generatedTls =
     document.documentElement.hasAttribute("data-generated-tls");
-  let theme = $state.raw<Theme>({
-    name: null,
-    logo: null,
-    colors: {},
-    darkColors: {},
-    copy: {},
-  });
+  let theme = $state.raw<Theme>(
+    served.theme ?? {
+      name: null,
+      logo: null,
+      colors: {},
+      darkColors: {},
+      copy: {},
+    },
+  );
   const brand = $derived(theme.name ?? "Trellis");
 
   // The server picks the theme from its own record of this transaction.
@@ -233,6 +259,11 @@
         else root.removeProperty(`--${name}`);
       }
     };
+    dark.addEventListener("change", paint);
+    if ("theme" in served) {
+      paint();
+      return () => dark.removeEventListener("change", paint);
+    }
     void fetch(
       `/portal/theme${transaction ? `?transaction=${encodeURIComponent(transaction)}` : ""}`,
       { credentials: "same-origin", signal: controller.signal },
@@ -244,7 +275,6 @@
         paint();
       })
       .catch(() => {});
-    dark.addEventListener("change", paint);
     return () => {
       controller.abort();
       dark.removeEventListener("change", paint);
@@ -436,53 +466,18 @@
       error = true;
       return;
     }
-    const controller = new AbortController();
+    // The sign-in and consent pages arrive with their data.
     if (login) {
-      void fetch(
-        `/portal/providers?transaction=${encodeURIComponent(transaction)}`,
-        {
-          signal: controller.signal,
-          credentials: "same-origin",
-          cache: "no-store",
-        },
-      )
-        .then(async (response) => {
-          if (!response.ok) throw new Error("providers_unavailable");
-          const result: SignIn = await response.json();
-          if (controller.signal.aborted) return;
-          providers = result.providers;
-          localIdentity = result.localIdentity;
-          refusal = result.refusal;
-          signUp = result.signUp;
-          passwordMinLength = result.passwordMinLength;
-        })
-        .catch(() => {
-          if (!controller.signal.aborted) providerError = true;
-        });
-      return () => controller.abort();
+      if (!served.signIn) providerError = true;
+      return;
     }
-    void fetch(`/portal/authorization/${encodeURIComponent(transaction)}`, {
-      signal: controller.signal,
-      credentials: "same-origin",
-      cache: "no-store",
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("authorization_unavailable");
-        const result: Consent = await response.json();
-        if (!controller.signal.aborted) {
-          selected = result.capabilities
-            .filter((item) => item.selected)
-            .map((item) => item.capabilityId);
-          view = result;
-          // A short request is easier to review fully open.
-          if (result.capabilities.length <= 6)
-            expanded = groups.map((group) => group.key);
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) error = true;
-      });
-    return () => controller.abort();
+    if (!view) {
+      error = true;
+      return;
+    }
+    // A short request is easier to review fully open.
+    if (view.capabilities.length <= 6)
+      expanded = groups.map((group) => group.key);
   });
 </script>
 

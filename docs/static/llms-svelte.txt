@@ -84,7 +84,12 @@ or report unavailability.
 
 Use Svelte context, not module-global mutable state, for app-scoped Trellis
 clients. `@oatscenter/trellis-svelte` owns the app context created by
-`createTrellisApp(...)`.
+`createTrellisApp(...)`. The one exception is a callback page that connects
+with `TrellisClient.connect` and then opens the app in the same document
+(`goto`, not a full load): it holds that client only until the destination's
+`TrellisProvider` takes it through the `connected` prop, which uses it instead
+of connecting again. A page load makes a new runtime key and spends a refresh
+token, so loading the app again after the callback doubles the work.
 
 ## Cross-participant clients
 

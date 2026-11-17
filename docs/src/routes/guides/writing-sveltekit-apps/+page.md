@@ -81,7 +81,12 @@ Do not subscribe through raw NATS or recreate signed wire envelopes.
 
 Let the provider own browser authentication redirects and the returned callback.
 An expired plain callback starts a new flow; explicit approval denial remains a
-user-visible outcome. The browser's durable trust floor survives logout, so do
+user-visible outcome. An app with its own callback page that connects with
+`TrellisClient.connect` can open the next page in the same document and pass
+that client to the provider's `connected` prop. The provider then uses it
+instead of connecting again, so sign-in costs one page load and one token
+exchange. Hand the client over once; a provider mounted later connects for
+itself. The browser's durable trust floor survives logout, so do
 not clear IndexedDB as a routine recovery technique.
 
 ## Verify a browser consumer

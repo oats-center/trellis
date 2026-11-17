@@ -136,6 +136,18 @@ nothing else.
   **Change access** action — not an error banner.
 - Hide navigation for areas the user cannot use at all.
 
+## Loading
+
+- From the sign-in callback until the shell can show, the Console draws one
+  loading screen: the logo and a spinner on the page background. Each step
+  draws the same screen, so nothing jumps between them.
+- The shell appears whole, with its navigation and header filled in. It does
+  not appear empty and fill in piece by piece.
+- Pages load their data in parallel and show one loading state, not a
+  sequence of them.
+- Portal pages arrive with what they show (sign-in methods, the consent
+  request, the theme), so a form never moves when something loads.
+
 ## Data correctness
 
 - A page of results is not a total; label counts with their scope ("Showing

@@ -772,7 +772,9 @@ Refresh-successor checkpoints apply only to an actual in-progress refresh, never
 to a separate Device Code authorization. Rejected cross-principal
 reauthorization preserves the previous credential. Browser refresh reloads
 durable cross-tab trust under the custody lock and discovers the current signer
-before spending its token, even when the OAuth client object remains open.
+before spending its token, even when the OAuth client object remains open. The
+first refresh after a page load authenticates the discovery document the client
+opened with moments before rather than fetching it again.
 Node-native replacement attachments reuse admission only while the shared
 verifier accepts its lifetime, scope, session key, and current pinned issuer.
 Transport loss alone does not spend OAuth refresh custody. Renewal authenticates
@@ -835,8 +837,9 @@ retries an ambiguous token exchange. An HTTP 429 is not ambiguous: a rate
 limiter, Trellis's own or a proxy's, refuses before anything reads the token, so
 the SDK clears the spent marker (`abandon_rotation` / `abandonRotation`) and
 reports the issuer busy rather than demanding a new login. Discovery offers the
-token endpoint's current DPoP nonce in a `DPoP-Nonce` header, so a refresh
-needs one token request instead of a challenge and a retry. Failed acquisition does not release another
+token endpoint's current DPoP nonce in a `DPoP-Nonce` header, which browser
+apps on other origins may read too, so a native or browser code exchange or
+refresh needs one token request instead of a challenge and a retry. Failed acquisition does not release another
 owner's lease. Credential scope and account binding cannot change on reuse.
 
 The SDK ships no persistent Node backend. Existing Node SQLite credential files

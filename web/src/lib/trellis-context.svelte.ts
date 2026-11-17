@@ -19,6 +19,13 @@ export const trellisApp = createTrellisApp({
   trellisUrl: () => selectedTrellisUrl,
 });
 
+/**
+ * The client the sign-in callback page connected, held for the Console shell
+ * it navigates to, so the destination neither reloads nor connects again. The
+ * shell takes it once; a shell mounted later connects for itself.
+ */
+export const signInHandoff: { client?: TrellisConsoleClient } = {};
+
 export function getTrellis(): TrellisConsoleClient {
   return trellisApp.getTrellis();
 }

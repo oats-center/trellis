@@ -4,9 +4,11 @@
   import { onMount } from "svelte";
   import {
     setSelectedTrellisUrl,
+    signInHandoff,
     trellisApp,
   } from "$lib/trellis-context.svelte";
   import AuthenticatedApp from "$lib/components/AuthenticatedApp.svelte";
+  import LoadingScreen from "$lib/components/LoadingScreen.svelte";
   import AdminAccountRedirect from "$lib/components/AdminAccountRedirect.svelte";
   import { buildConsoleLoginUrl, consoleReturnKey } from "$lib/auth";
   import {
@@ -20,6 +22,9 @@
     children: Snippet;
   };
   let { children }: Props = $props();
+  // Arriving from sign-in, the shell uses the session it just connected.
+  const connected = signInHandoff.client;
+  signInHandoff.client = undefined;
   let initialized = $state(false);
   let adminAccountToken = $state<string | null>(null);
   let showConnectingModal = $state(false);
@@ -109,11 +114,12 @@
   <TrellisProvider
     {trellisApp}
     auth={consoleAuthOptions()}
+    {connected}
     onAuthRequired={redirectToLogin}
     onRecoverableAuthError={recoverAuth}
   >
-    {#snippet loading()}{/snippet}
-    {#snippet recoveringAuth()}{/snippet}
+    {#snippet loading()}<LoadingScreen />{/snippet}
+    {#snippet recoveringAuth()}<LoadingScreen />{/snippet}
 
     {#snippet error(connectError)}
       <div
@@ -183,10 +189,5 @@
     </dialog>
   {/if}
 {:else}
-  <div
-    class="flex min-h-screen flex-col items-center justify-center gap-3 bg-base-200 px-4 py-10 text-center"
-  >
-    <h1 class="text-lg font-semibold">Loading console</h1>
-    <span class="loading loading-spinner loading-md"></span>
-  </div>
+  <LoadingScreen />
 {/if}

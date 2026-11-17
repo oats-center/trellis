@@ -31,10 +31,8 @@ pub(super) struct Refusal {
     expires_at: i64,
 }
 
-/// Ways to sign in, and to create an account for the pending authorization's
-/// app when `transaction` names one. For this browser's sign-in on that
-/// `transaction` or device `review`, it also returns what an OIDC provider
-/// reported when it last refused the sign-in.
+/// The sign-in methods for a `transaction` or device-approval `review` (see
+/// [`sign_in`]). The sign-in page carries them in the page itself.
 pub(super) async fn providers(
     State(engine): State<Arc<OAuthEngine>>,
     headers: HeaderMap,
@@ -45,11 +43,26 @@ pub(super) async fn providers(
             .iter()
             .find_map(|(key, value)| (key == name).then(|| value.clone()))
     };
-    let transaction = find("transaction");
-    let page = transaction.clone().or_else(|| find("review"));
-    let cookies = portal_cookie(&headers, "__Host-trellis-portal")
-        .zip(portal_cookie(&headers, "__Host-trellis-portal-csrf"));
-    let result = with_store(&engine, move |store| {
+    match sign_in(&engine, &headers, find("transaction"), find("review")).await {
+        Some(sign_in) => Json(sign_in).into_response(),
+        None => error(ErrorCode::ServerError),
+    }
+}
+
+/// Ways to sign in, and to create an account for the pending authorization's
+/// app when `transaction` names one. For this browser's sign-in on that
+/// `transaction` or device `review`, it also returns what an OIDC provider
+/// reported when it last refused the sign-in.
+pub(super) async fn sign_in(
+    engine: &OAuthEngine,
+    headers: &HeaderMap,
+    transaction: Option<String>,
+    review: Option<String>,
+) -> Option<serde_json::Value> {
+    let page = transaction.clone().or(review);
+    let cookies = portal_cookie(headers, "__Host-trellis-portal")
+        .zip(portal_cookie(headers, "__Host-trellis-portal-csrf"));
+    let result = with_store(engine, move |store| {
         let now = crate::clock::unix_now();
         let session = cookies.and_then(|(cookie, csrf)| {
             store
@@ -100,9 +113,7 @@ pub(super) async fn providers(
         })
     })
     .await;
-    let Ok((mut sign_in, session, names)) = result else {
-        return error(ErrorCode::ServerError);
-    };
+    let (mut sign_in, session, names) = result.ok()?;
     let now = crate::clock::unix_now();
     let refusal = session.zip(page).and_then(|key| {
         let refusals = engine.upstream_refusals.lock().ok()?;
@@ -119,7 +130,7 @@ pub(super) async fn providers(
     if let Some(refusal) = refusal {
         sign_in["refusal"] = refusal;
     }
-    Json(sign_in).into_response()
+    Some(sign_in)
 }
 
 pub(super) async fn start(

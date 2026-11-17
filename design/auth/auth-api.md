@@ -24,31 +24,31 @@ All routes are served only by the Trellis listener (`[http]`), beside
 `[console] origin`, a second hostname the same listener answers; none with
 `[console] enabled = false`). No other application router is mounted there.
 
-| Method | Route                                     | Purpose                                                                                         |
-| ------ | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `GET`  | `/.well-known/oauth-authorization-server` | Public OAuth metadata plus the Trellis installation, issuer, and NATS endpoint extension        |
-| `GET`  | `/.well-known/trellis/issuer-chain`       | Public authenticated issuer rotation chain                                                      |
-| `GET`  | `/authorize`                              | Authorization Code with PKCE for browser and native clients with callbacks                      |
-| `POST` | `/token`                                  | DPoP-bound `authorization_code`, `refresh_token`, and Device Code grants with Trellis admission |
-| `POST` | `/device_authorization`                   | Start an RFC 8628 Device Code authorization bound to the client's DPoP key                      |
-| `POST` | `/revoke`                                 | RFC 7009 token revocation                                                                       |
-| `POST` | `/auth/device/enroll`                     | Create or resume a proof-bound device review                                                    |
-| `GET`  | `/login`, `/consent`, `/device`           | Portal pages for sign-in, capability consent, and Device Code entry                             |
-| `GET`  | `/device/complete`                        | Portal page shown after a Device Code decision                                                  |
-| `GET`  | `/logout`                                 | `end_session_endpoint`: ends the portal login, then returns to `post_logout_redirect_uri`       |
-| `GET`  | `/portal-assets/{path}`                   | Embedded portal assets                                                                          |
-| `POST` | `/portal/session`                         | Create a portal session cookie and CSRF token                                                   |
-| `POST` | `/portal/login`                           | Local username/password sign-in                                                                 |
-| `POST` | `/portal/logout`                          | End the portal login                                                                            |
-| `GET`  | `/portal/providers`                       | List enabled upstream OIDC providers, and this browser's last provider refusal for a sign-in    |
-| `GET`  | `/portal/oidc/{provider}/begin`           | Start upstream OIDC with server-owned state, nonce, and PKCE                                    |
-| `GET`  | `/portal/oidc/callback`                   | Verify the upstream OIDC callback                                                               |
-| `GET`  | `/portal/authorization/{transaction}`     | Read a pending authorization's consent view                                                     |
-| `POST` | `/portal/approve`                         | Apply a fresh, transaction-bound consent decision                                               |
-| `POST` | `/portal/device`                          | Submit a Device Code user code for consent                                                      |
-| `GET`  | `/account/{kind}`                         | One-use account action page (`reset` for password reset, `link` for identity linking)           |
-| `POST` | `/portal/account/{kind}`                  | Complete an Origin-checked, CSRF-protected account action                                       |
-| `GET`  | `/profile/avatars/{token}`                | Expiring, sanitized profile image reference                                                     |
+| Method | Route                                     | Purpose                                                                                                                          |
+| ------ | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/.well-known/oauth-authorization-server` | Public OAuth metadata plus the Trellis installation, issuer, and NATS endpoint extension                                         |
+| `GET`  | `/.well-known/trellis/issuer-chain`       | Public authenticated issuer rotation chain                                                                                       |
+| `GET`  | `/authorize`                              | Authorization Code with PKCE for browser and native clients with callbacks                                                       |
+| `POST` | `/token`                                  | DPoP-bound `authorization_code`, `refresh_token`, and Device Code grants with Trellis admission                                  |
+| `POST` | `/device_authorization`                   | Start an RFC 8628 Device Code authorization bound to the client's DPoP key                                                       |
+| `POST` | `/revoke`                                 | RFC 7009 token revocation                                                                                                        |
+| `POST` | `/auth/device/enroll`                     | Create or resume a proof-bound device review                                                                                     |
+| `GET`  | `/login`, `/consent`, `/device`           | Portal pages for sign-in, capability consent, and Device Code entry; sign-in and consent embed their methods, request, and theme |
+| `GET`  | `/device/complete`                        | Portal page shown after a Device Code decision                                                                                   |
+| `GET`  | `/logout`                                 | `end_session_endpoint`: ends the portal login, then returns to `post_logout_redirect_uri`                                        |
+| `GET`  | `/portal-assets/{path}`                   | Embedded portal assets                                                                                                           |
+| `POST` | `/portal/session`                         | Create a portal session cookie and CSRF token                                                                                    |
+| `POST` | `/portal/login`                           | Local username/password sign-in                                                                                                  |
+| `POST` | `/portal/logout`                          | End the portal login                                                                                                             |
+| `GET`  | `/portal/providers`                       | List enabled upstream OIDC providers, and this browser's last provider refusal for a sign-in                                     |
+| `GET`  | `/portal/oidc/{provider}/begin`           | Start upstream OIDC with server-owned state, nonce, and PKCE                                                                     |
+| `GET`  | `/portal/oidc/callback`                   | Verify the upstream OIDC callback                                                                                                |
+| `GET`  | `/portal/authorization/{transaction}`     | Read a pending authorization's consent view                                                                                      |
+| `POST` | `/portal/approve`                         | Apply a fresh, transaction-bound consent decision                                                                                |
+| `POST` | `/portal/device`                          | Submit a Device Code user code for consent                                                                                       |
+| `GET`  | `/account/{kind}`                         | One-use account action page (`reset` for password reset, `link` for identity linking)                                            |
+| `POST` | `/portal/account/{kind}`                  | Complete an Origin-checked, CSRF-protected account action                                                                        |
+| `GET`  | `/profile/avatars/{token}`                | Expiring, sanitized profile image reference                                                                                      |
 
 Discovery and the issuer chain allow credential-free cross-origin GETs. Token,
 Device Code, enrollment, and revocation endpoints allow CORS only from validated

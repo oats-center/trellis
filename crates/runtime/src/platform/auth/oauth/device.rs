@@ -82,12 +82,12 @@ pub(super) async fn page(State(engine): State<Arc<OAuthEngine>>, headers: Header
     })
     .await;
     match guest {
-        Ok(None) => super::assets::page(&engine, None),
+        Ok(None) => super::assets::page(&engine, None, None),
         Ok(Some(guest)) => super::http::cookie_response(
             &guest.cookie,
             Some(&guest.csrf),
             600,
-            super::assets::page(&engine, None),
+            super::assets::page(&engine, None, None),
         ),
         Err(_) => super::http::error(ErrorCode::ServerError),
     }

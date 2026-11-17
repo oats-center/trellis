@@ -10,6 +10,7 @@ import {
   boundedJson,
   dpopThumbprint,
   postWithDpop,
+  usableNonce,
   verifyAdmission,
 } from "../oauth_core.ts";
 import {
@@ -99,15 +100,21 @@ export class BrowserOAuthClient {
   #nonce?: string;
   #runtime?: Promise<{ auth: TrellisAuth; runtimeId: string }>;
   #owner?: SessionAuthorityOwner;
+  // Discovery read while opening. The refresh a page load starts with
+  // authenticates it instead of reading the same document again.
+  #discovered?: { metadata: BrowserOAuthMetadata; at: number };
 
   private constructor(
     metadata: BrowserOAuthMetadata,
     scope: BrowserOAuthScope,
     store: BrowserSessionStore,
+    nonce: string | undefined,
   ) {
     this.metadata = metadata;
     this.scope = scope;
     this.store = store;
+    this.#nonce = nonce;
+    this.#discovered = { metadata, at: Date.now() };
   }
 
   /** Discover the selected issuer and reopen the exact app's credential custody. */
@@ -141,6 +148,9 @@ export class BrowserOAuthClient {
       );
       if (!response.ok)
         return err(new AuthError({ reason: "OAuthUnavailable" }));
+      // Discovery offers the token endpoint's current DPoP nonce, so the
+      // first token request needs no challenge and retry.
+      const nonce = usableNonce(response.headers.get("DPoP-Nonce"));
       const metadata = metadataSchema.parse(await boundedJson(response));
       if (
         new URL(metadata.issuer).href !== issuer.href ||
@@ -175,7 +185,7 @@ export class BrowserOAuthClient {
         })
       ).take();
       if (isErr(opened)) return err(opened.error);
-      return ok(new BrowserOAuthClient(metadata, scope, opened));
+      return ok(new BrowserOAuthClient(metadata, scope, opened, nonce));
     } catch {
       return err(new AuthError({ reason: "OAuthUnavailable" }));
     }
@@ -277,6 +287,9 @@ export class BrowserOAuthClient {
   ): Promise<
     Result<{ value: BrowserOAuthAdmission; refreshToken: string }, AuthError>
   > {
+    // A later refresh renews a session, perhaps after the signer changed, so
+    // it discovers afresh.
+    this.#discovered = undefined;
     try {
       const raw = sessionStorage.getItem(this.#pendingKey());
       if (!raw) return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
@@ -364,7 +377,14 @@ export class BrowserOAuthClient {
           throw new AuthError({ reason: "OAuthRecoveryRequired" });
       },
       async () => {
-        await this.#prepareTrust();
+        // Only a document read moments ago stands in for a fresh one.
+        const discovered = this.#discovered;
+        this.#discovered = undefined;
+        await this.#prepareTrust(
+          discovered && Date.now() - discovered.at < 30_000
+            ? discovered.metadata
+            : undefined,
+        );
       },
     );
   }

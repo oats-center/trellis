@@ -115,7 +115,9 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         .layer(
             CorsLayer::new()
                 .allow_origin(tower_http::cors::Any)
-                .allow_methods([axum::http::Method::GET]),
+                .allow_methods([axum::http::Method::GET])
+                // A browser app on another origin reads discovery's nonce too.
+                .expose_headers([HeaderName::from_static("dpop-nonce")]),
         );
     // Proof-bearing endpoints remain client-origin-bound. Cookie-authenticated
     // portal routes deliberately do not enable CORS.
@@ -148,7 +150,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         .route(
             "/device/complete",
             get(|State(engine): State<Arc<OAuthEngine>>| async move {
-                super::assets::page(&engine, None)
+                super::assets::page(&engine, None, None)
             }),
         )
         .route("/portal/device", post(super::device::begin))
@@ -595,13 +597,14 @@ async fn login_page(
     };
     let now = crate::clock::unix_now();
     let transaction = transaction.clone();
+    let pending_transaction = transaction.clone();
     let pending = super::with_store(&engine, move |store| {
         let session = store
             .authority
             .portal_session_identity(&cookie, &csrf, now)
             .map_err(|_| ErrorCode::AccessDenied)?;
         let flow = store
-            .authorization(&transaction, &session, now)
+            .authorization(&pending_transaction, &session, now)
             .map_err(|_| ErrorCode::InvalidRequest)?;
         // An app that signs in without asking leaves the Portal straight from
         // this page's form, so its callback is an allowed form destination.
@@ -613,10 +616,21 @@ async fn login_page(
         })
     })
     .await;
-    match pending {
-        Ok(callback) => super::assets::page(&engine, callback.as_deref()),
-        Err(code) => error(code),
-    }
+    let callback = match pending {
+        Ok(callback) => callback,
+        Err(code) => return error(code),
+    };
+    // The page arrives with its sign-in methods and theme, so its form never
+    // shifts when they load. Without them it still offers what it can.
+    let (sign_in, theme) = tokio::join!(
+        super::upstream_http::sign_in(&engine, &headers, Some(transaction.clone()), None),
+        super::theme::portal_theme(&engine, Some(transaction)),
+    );
+    super::assets::page(
+        &engine,
+        callback.as_deref(),
+        Some(serde_json::json!({ "signIn": sign_in, "theme": theme })),
+    )
 }
 
 /// Serves the Portal's sign-out page for an app that wants the Portal login
@@ -653,7 +667,7 @@ async fn logout_page(
     {
         return error(ErrorCode::InvalidRequest);
     }
-    super::assets::page(&engine, None)
+    super::assets::page(&engine, None, None)
 }
 
 async fn consent_page(
@@ -678,7 +692,17 @@ async fn consent_page(
     if let Some(response) = approve_without_asking(&engine, &headers, transaction, &view).await {
         return response;
     }
-    super::assets::page(&engine, view.get("redirectUri").and_then(Value::as_str))
+    // The page arrives with what it asks about and its theme.
+    let theme = super::theme::portal_theme(&engine, Some(transaction.clone())).await;
+    let callback = view
+        .get("redirectUri")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    super::assets::page(
+        &engine,
+        callback.as_deref(),
+        Some(serde_json::json!({ "consent": view, "theme": theme })),
+    )
 }
 
 /// A registered web app whose "allowed without asking" covers everything it

@@ -22,7 +22,7 @@ pub(super) struct ThemeQuery {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ThemeView {
+pub(super) struct ThemeView {
     name: Option<String>,
     logo: Option<String>,
     colors: BTreeMap<String, String>,
@@ -37,19 +37,33 @@ pub(super) async fn view(
     State(engine): State<std::sync::Arc<super::OAuthEngine>>,
     Query(query): Query<ThemeQuery>,
 ) -> Response {
+    let Some(theme) = portal_theme(&engine, query.transaction).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let mut response = Json(theme).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// The theme for a pending `transaction`'s client, or the installation's, as
+/// the Portal shows it. Pages that know their transaction carry it inline.
+pub(super) async fn portal_theme(
+    engine: &super::OAuthEngine,
+    transaction: Option<String>,
+) -> Option<ThemeView> {
     let store = engine.server.store().clone();
-    let view = crate::blocking::spawn(move || {
+    let theme = crate::blocking::spawn(move || {
         let now = crate::clock::unix_now();
-        let client = query
-            .transaction
+        let client = transaction
             .and_then(|transaction| store.authorization_client(&transaction, now).ok())
             .flatten();
         portal_themes::portal_view(&*store.authority.reader()?, client.as_deref())
     })
-    .await;
-    let Ok(Ok(theme)) = view else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
+    .await
+    .ok()?
+    .ok()?;
     let logo = theme.logo_owner.map(|owner| match owner {
         Some(client) => format!(
             "/portal-theme/logo?client={}",
@@ -57,18 +71,13 @@ pub(super) async fn view(
         ),
         None => "/portal-theme/logo".to_owned(),
     });
-    let mut response = Json(ThemeView {
+    Some(ThemeView {
         name: theme.name,
         logo,
         colors: theme.colors,
         dark_colors: theme.dark_colors,
         copy: theme.copy,
     })
-    .into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
 }
 
 /// A theme logo. Logos are public branding, so the client may be named.

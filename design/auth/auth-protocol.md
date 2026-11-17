@@ -66,7 +66,11 @@ capability meaning and incompatible application APIs require current eligibility
 and fresh consent.
 
 Native authorization uses Device Code and durable Node/Rust credential custody;
-browser custody uses IndexedDB. Bind every token exchange to the correct client,
+browser custody uses IndexedDB. A browser runtime key lives only in its
+document, so every page load spends a refresh token on a new one. A callback
+page therefore opens the app in the same document on the connection it made,
+as the Console does, rather than loading the app again and exchanging twice.
+Bind every token exchange to the correct client,
 grant, proof key, and selected installation. Refresh credentials are one-use:
 transport retry must not replay a spent credential. Reuse a verified, unexpired
 admission when valid rather than rotating custody to open another carrier.

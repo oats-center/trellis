@@ -43,6 +43,60 @@ test("Console sign-in recovery returns to the protected page it left", async () 
   }, browserRuntimeOptions());
 });
 
+// Each Console document load spends a refresh token on a fresh session key and
+// shows another loading screen, and an unanswered DPoP nonce costs a refused
+// token request first. Signing in must open the Console with the session the
+// callback established, and a reload must refresh once, nonce in hand.
+test("signing in opens the Console in one page load and one token exchange", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      let traffic = { documents: 0, discovery: 0, tokens: [] as number[] };
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        if (
+          request.resourceType() === "document" &&
+          url.pathname.startsWith("/console")
+        )
+          traffic.documents++;
+        if (url.pathname === "/.well-known/oauth-authorization-server")
+          traffic.discovery++;
+      });
+      page.on("response", (response) => {
+        if (new URL(response.url()).pathname === "/token")
+          traffic.tokens.push(response.status());
+      });
+      const settled = async () => {
+        await waitForConsoleReady(page);
+        await page.getByRole("heading", { name: "Your account" }).waitFor();
+        await page.waitForLoadState("networkidle");
+      };
+
+      await page.goto(`${runtime.consoleUrl}/console/profile`, {
+        waitUntil: "domcontentloaded",
+      });
+      await page.getByLabel("Username", { exact: true }).waitFor();
+      traffic = { documents: 0, discovery: 0, tokens: [] };
+      await signInIfPrompted(page, {
+        username: runtime.adminUsername,
+        password: runtime.adminPassword,
+      });
+      await settled();
+      assert.deepEqual(traffic, { documents: 1, discovery: 1, tokens: [200] });
+      assert.equal(new URL(page.url()).pathname, "/console/profile");
+
+      traffic = { documents: 0, discovery: 0, tokens: [] };
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await settled();
+      assert.deepEqual(traffic, { documents: 1, discovery: 1, tokens: [200] });
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 test("Console reaches NATS on the Trellis origin when the runtime relays WebSockets", async () => {
   await withTrellisRuntime(
     async (runtime) => {

@@ -255,6 +255,37 @@
   async function loadProfile() {
     loading = true;
     error = null;
+    // The account and how it signs in load together. The sign-in panel
+    // reports its own failure: it must not erase the account information.
+    const signIn = Promise.all([
+      trellis.usersIdentityLinkProviders({}).take(),
+      traverseAll<IdentityRecord>(async (pageRequest) => {
+        const response = await trellis
+          .userIdentitiesList({
+            page: catalogPage(pageRequest.cursor),
+          })
+          .take();
+        if (isErr(response)) throw response;
+        return { items: response.items, cursor: response.page.nextCursor };
+      }),
+    ]).then(
+      ([offered, identitiesResult]) => {
+        identitiesPanelError = null;
+        if (isErr(offered)) {
+          identitiesPanelError = errorMessage(offered);
+          return;
+        }
+        linkProviders = offered.providers;
+        if (!identitiesResult.complete) {
+          identitiesPanelError = errorMessage(identitiesResult.error);
+          return;
+        }
+        identities = [...identitiesResult.items];
+      },
+      (cause: unknown) => {
+        identitiesPanelError = errorMessage(cause);
+      },
+    );
     try {
       const me = await getAuthenticatedUser(trellis);
       user = me.user;
@@ -264,37 +295,8 @@
       email = me.user?.email ?? "";
       profileError = null;
       profileUncertain = false;
-      if (!me.user) {
-        identities = [];
-        return;
-      }
-
-      // The identity panel loads independently: a failure here must not erase
-      // the account information that already loaded.
-      identitiesPanelError = null;
-      try {
-        const offered = await trellis.usersIdentityLinkProviders({}).take();
-        if (isErr(offered)) throw offered;
-        linkProviders = offered.providers;
-        const identitiesResult = await traverseAll<IdentityRecord>(
-          async (pageRequest) => {
-            const response = await trellis
-              .userIdentitiesList({
-                page: catalogPage(pageRequest.cursor),
-              })
-              .take();
-            if (isErr(response)) throw response;
-            return { items: response.items, cursor: response.page.nextCursor };
-          },
-        );
-        if (!identitiesResult.complete) {
-          identitiesPanelError = errorMessage(identitiesResult.error);
-          return;
-        }
-        identities = [...identitiesResult.items];
-      } catch (cause) {
-        identitiesPanelError = errorMessage(cause);
-      }
+      await signIn;
+      if (!me.user) identities = [];
     } catch (e) {
       error = errorMessage(e);
     } finally {

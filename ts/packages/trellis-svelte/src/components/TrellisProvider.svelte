@@ -1,6 +1,6 @@
 <script lang="ts" generics="TContract extends TrellisAppRequest">
   import { classifyBrowserAuthError, TrellisClient } from "@oatscenter/trellis";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type {
     TrellisClientFor,
     TrellisAppRequest,
@@ -13,6 +13,7 @@
     trellisApp,
     auth,
     client,
+    connected,
     children,
     loading,
     recoveringAuth,
@@ -23,9 +24,14 @@
 
   type ProviderState = "connecting" | "connected" | "auth_handled" | "failed";
 
-  let trellis = $state<TrellisClientFor<TContract> | null>(null);
+  // A client connected before this provider mounted renders from the first
+  // frame; a later change to the prop does not replace it.
+  const adopted = untrack(() => connected);
+  let trellis = $state<TrellisClientFor<TContract> | null>(adopted ?? null);
   let connectError = $state<unknown>(null);
-  let providerState = $state<ProviderState>("connecting");
+  let providerState = $state<ProviderState>(
+    adopted ? "connected" : "connecting",
+  );
 
   type SerializableTrellisError = {
     message?: unknown;
@@ -80,6 +86,16 @@
 
   onMount(() => {
     let active = true;
+    const close = () => {
+      active = false;
+      const current = trellis;
+      trellis = null;
+      providerState = "connecting";
+      if (current) {
+        void current.connection.close();
+      }
+    };
+    if (adopted) return close;
 
     const connectAuth = {
       ...auth,
@@ -153,15 +169,7 @@
       }
     })();
 
-    return () => {
-      active = false;
-      const connected = trellis;
-      trellis = null;
-      providerState = "connecting";
-      if (connected) {
-        void connected.connection.close();
-      }
-    };
+    return close;
   });
 </script>
 

@@ -6,8 +6,8 @@ import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_tru
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
+  completeConsoleEntry,
   createOrdinaryUserWithPassword,
-  openConsole,
   waitForConsoleConnected,
 } from "./browser_test_support.ts";
 import { openConsoleAsRuntimeAdmin } from "./console_test_support.ts";
@@ -99,9 +99,39 @@ test(
           runtime,
           credentials,
         );
-        page = await (await browser.newContext()).newPage();
+        // The sign-in page arrives with its providers: "Continue with
+        // Company" is there the moment the form is, so the form never moves
+        // down when they load.
+        const signIn = await browser.newContext();
+        await signIn.addInitScript(() => {
+          const seen = new MutationObserver(() => {
+            if (!document.getElementById("username")) return;
+            seen.disconnect();
+            Object.assign(window, {
+              providersWithForm: document.querySelector(
+                'a[href*="/portal/oidc/"]',
+              )?.textContent,
+            });
+          });
+          seen.observe(document, { childList: true, subtree: true });
+        });
+        page = await signIn.newPage();
         page.setDefaultTimeout(30_000);
-        await openConsole(page, runtime, credentials);
+        await page.goto(`${runtime.consoleUrl}/console`, {
+          waitUntil: "domcontentloaded",
+        });
+        await page.getByLabel("Username", { exact: true }).waitFor();
+        assert.equal(
+          (
+            await page.evaluate(() =>
+              "providersWithForm" in window
+                ? String(window.providersWithForm)
+                : "",
+            )
+          ).trim(),
+          "Continue with Company",
+        );
+        await completeConsoleEntry(page, credentials);
         const account = `${runtime.consoleUrl}/console/profile`;
         const user = page;
         const link = async (email: string, connect: string) => {

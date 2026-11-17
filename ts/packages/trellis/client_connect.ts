@@ -152,14 +152,17 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           );
           return Result.err(new AuthError({ reason: "OAuthApprovalWindow" }));
         }
-        await initializeProtocolWasm();
-        const opened = (
-          await BrowserOAuthClient.open({
+        // Discovery and custody need no protocol module, so they load
+        // alongside it.
+        const [, discovered] = await Promise.all([
+          initializeProtocolWasm(),
+          BrowserOAuthClient.open({
             issuer: args.trellisUrl,
             clientId: args.auth.clientId,
             credentialHandle: args.auth.credentialHandle ?? args.auth.clientId,
-          })
-        ).take();
+          }),
+        ]);
+        const opened = discovered.take();
         if (isErr(opened)) return Result.err(opened.error);
         const oauth = opened;
         let connected: Awaited<ReturnType<typeof connectAdmitted>> | undefined;

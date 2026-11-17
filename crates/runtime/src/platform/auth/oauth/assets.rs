@@ -49,7 +49,13 @@ pub(super) fn asset(path: &str) -> Response {
         .into_response()
 }
 
-pub(super) fn page(engine: &super::OAuthEngine, callback: Option<&str>) -> Response {
+/// A Portal page. `data` is what the page shows from its first paint, such as
+/// the sign-in methods, so nothing moves when a later request answers.
+pub(super) fn page(
+    engine: &super::OAuthEngine,
+    callback: Option<&str>,
+    data: Option<serde_json::Value>,
+) -> Response {
     let mut form_action = String::from("'self'");
     if let Some(callback) = callback {
         let Ok(callback) = url::Url::parse(callback) else {
@@ -77,11 +83,17 @@ pub(super) fn page(engine: &super::OAuthEngine, callback: Option<&str>) -> Respo
             html = html.replacen("<html", "<html data-generated-tls", 1);
         }
         // After the Portal's own stylesheet, so the installation's wins.
-        html = html.replacen(
-            "</head>",
-            "<link rel=\"stylesheet\" href=\"/portal-theme/stylesheet.css\"></head>",
-            1,
-        );
+        let mut head =
+            String::from("<link rel=\"stylesheet\" href=\"/portal-theme/stylesheet.css\">");
+        if let Some(data) = data {
+            // A data block, never run as script. Escaping `<` keeps text
+            // such as a provider's name from closing the element.
+            head.push_str("<script type=\"application/json\" id=\"portal-data\">");
+            head.push_str(&data.to_string().replace('<', "\\u003c"));
+            head.push_str("</script>");
+        }
+        head.push_str("</head>");
+        html = html.replacen("</head>", &head, 1);
         *response.body_mut() = html.into();
     }
     response

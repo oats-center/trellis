@@ -20,6 +20,7 @@
   import { setChangeAccess } from "../console/change_access.ts";
   import { canPerform } from "../console/operations.ts";
   import AppShell, { type RuntimeVersion } from "./AppShell.svelte";
+  import LoadingScreen from "./LoadingScreen.svelte";
 
   type Props = {
     children: Snippet;
@@ -97,27 +98,41 @@
   // The server's version, and a newer release when an administrator asks. A
   // failed read only leaves the header without it.
   let runtimeVersion = $state<RuntimeVersion | null>(null);
+  // The shell stays behind the loading screen until its first account check
+  // settles, so it appears whole instead of filling in piece by piece.
+  let revealed = $state(false);
 
-  function finishAuthorityLoad(
-    token: ReturnType<typeof currentNavigationToken>,
-    result: { state: string },
-  ): void {
-    if (result.state === "auth-required") redirectToLogin();
-    completeNavigation(token, result.state === "ready" ? "ok" : "error");
-    if (
-      result.state === "ready" &&
-      canPerform(authority.authority, "runtimeVersion")
-    ) {
-      void trellis
-        .runtimeVersion({})
-        .orThrow()
-        .then(
-          (version) => {
-            runtimeVersion = version;
-          },
-          () => undefined,
-        );
-    }
+  // The account check and the version read run together, so the header's
+  // version comes with the shell. An administrator's read can wait on GitHub
+  // for an hourly release check; the shell waits for it only briefly.
+  function loadAuthority(): void {
+    const token = currentNavigationToken();
+    const version = canPerform(
+      trellis.ownAuthority.current ?? null,
+      "runtimeVersion",
+    )
+      ? trellis
+          .runtimeVersion({})
+          .orThrow()
+          .then(
+            (value) => {
+              runtimeVersion = value;
+            },
+            () => undefined,
+          )
+      : undefined;
+    void Promise.all([
+      authority.reload(),
+      version &&
+        Promise.race([
+          version,
+          new Promise((resolve) => setTimeout(resolve, 750)),
+        ]),
+    ]).then(([result]) => {
+      revealed = true;
+      if (result.state === "auth-required") redirectToLogin();
+      completeNavigation(token, result.state === "ready" ? "ok" : "error");
+    });
   }
 
   // Exactly one initial Me request per usable connection, plus one after each
@@ -133,18 +148,8 @@
     }
     if (wasConnected) return;
     wasConnected = true;
-    const token = currentNavigationToken();
-    void authority
-      .reload()
-      .then((result) => finishAuthorityLoad(token, result));
+    loadAuthority();
   });
-
-  function retryAuthority(): void {
-    const token = currentNavigationToken();
-    void authority
-      .reload()
-      .then((result) => finishAuthorityLoad(token, result));
-  }
 
   onDestroy(() => {
     // Ends pending validations without dispatching more RPCs or redirects.
@@ -166,9 +171,13 @@
   accountNotAllowed={snapshot.state === "error" &&
     snapshot.failure?.code === "not_allowed"}
   onSignOut={signOut}
-  onRetryAuthority={retryAuthority}
+  onRetryAuthority={loadAuthority}
 >
   <div data-testid="console-ready" class="contents">
     {@render children()}
   </div>
 </AppShell>
+
+{#if !revealed && connectionStatus === "connected"}
+  <LoadingScreen />
+{/if}
