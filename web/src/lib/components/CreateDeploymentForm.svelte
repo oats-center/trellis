@@ -189,10 +189,10 @@
       extraErrors = {
         ...extraErrors,
         [name]: !chosen
-          ? `Choose ${name}'s trellis.toml and .trellis files.`
+          ? `Choose the trellis.toml and .trellis files for ${name}.`
           : !chosen.manifest
-            ? `Include ${name}'s trellis.toml with its files.`
-            : `Include ${name}'s .trellis files with its trellis.toml.`,
+            ? `Add the trellis.toml for ${name} with its files.`
+            : `Add the .trellis files for ${name} with its trellis.toml.`,
       };
       return;
     }

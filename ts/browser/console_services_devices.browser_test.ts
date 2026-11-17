@@ -219,7 +219,7 @@ test("B01c a dependency Trellis doesn't have is listed, and adding its files let
       const unitsFiles = missing.getByLabel("Files for units", { exact: true });
       await unitsFiles.setInputFiles([file("units.trellis", UNITS)]);
       await missing
-        .getByText("Include units's trellis.toml with its files.")
+        .getByText("Add the trellis.toml for units with its files.")
         .waitFor();
       await unitsFiles.setInputFiles([
         file("trellis.toml", UNITS_MANIFEST),
@@ -230,7 +230,7 @@ test("B01c a dependency Trellis doesn't have is listed, and adding its files let
       await missing.getByLabel("Files used for units").waitFor();
       assert.equal(
         await missing
-          .getByText("Include units's trellis.toml with its files.")
+          .getByText("Add the trellis.toml for units with its files.")
           .count(),
         0,
       );
