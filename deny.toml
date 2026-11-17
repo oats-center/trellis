@@ -16,6 +16,11 @@ ignore = [
   # openidconnect, which verifies providers' RS256 signatures with public
   # keys; the attack needs private-key operations.
   { id = "RUSTSEC-2023-0071", reason = "rsa used only to verify signatures with public keys" },
+  # chrono is marked unmaintained (not a vulnerability) and has no maintained
+  # successor these crates accept. Trellis reaches it only through oauth2 and
+  # openidconnect (token and ID-token timestamps) and oci-client (image
+  # metadata in the CLI). Drop this once they move off chrono.
+  { id = "RUSTSEC-2026-0543", reason = "chrono reached only through oauth2, openidconnect and oci-client; unmaintained, not vulnerable" },
 ]
 
 [licenses]

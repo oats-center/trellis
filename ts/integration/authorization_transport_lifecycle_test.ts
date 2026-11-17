@@ -9,7 +9,7 @@ import {
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
+import { apps as boundedApps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
 import { admitRawNativeClient } from "./_support/client_session.ts";
 import {
@@ -45,7 +45,10 @@ test("a non-renewing native attachment cannot outlive its required capability gr
       const expiresAt = codecs.timestamp.decode(
         new Date(Date.now() + 25_000).toISOString(),
       );
-      for (const capabilityId of adminParticipant.requiredCapabilities)
+      // Every user holds their own account's capabilities with no grant, so
+      // the request needs one only a grant gives: users.read.
+      const request = boundedApps.DirectoryCaller.request;
+      for (const capabilityId of request.requiredCapabilities)
         await runtime.callAdminRpc("authCapabilityGrantsGrant", {
           principalId: created.user.principalId,
           capabilityId,
@@ -56,10 +59,10 @@ test("a non-renewing native attachment cannot outlive its required capability gr
       const login = await loginNativeTestClient({
         issuer: runtime.trellisUrl,
         clientId,
-        request: adminParticipant,
+        request,
         username,
         password,
-        approvedCapabilities: [...adminParticipant.requiredCapabilities],
+        approvedCapabilities: [...request.requiredCapabilities],
       });
       let raw: Awaited<ReturnType<typeof admitRawNativeClient>> | undefined;
       try {
