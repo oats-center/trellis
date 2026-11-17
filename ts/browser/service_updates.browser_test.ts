@@ -89,6 +89,99 @@ test("an administrator approves a waiting service update from its review link", 
   }
 });
 
+test("a service's page shows the build applied after an earlier self-update", async () => {
+  const services: Promise<{ stop(): Promise<void> }>[] = [];
+  try {
+    await withTrellisRuntime(async (runtime) => {
+      await runtime.ensureAdmin();
+      const deployment = "console-applied-build";
+      const base = participants.Provider.participant;
+      await runtime.deployments.create({ id: deployment, contract: base });
+      await runtime.contracts.apply({ deployment, contract: base });
+      const first = await runtime.services.createInstance({
+        name: deployment,
+        deployment,
+        contract: base,
+      });
+      // The instance updates itself to a new build, approved as usual.
+      const updating = TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: extendedParticipants.Provider.participant,
+        seed: first.seed,
+      }).orThrow();
+      services.push(updating);
+      const pending = await runtime.waitFor(async () => {
+        const { items } = await runtime.callAdminRpc(
+          "authServiceUpdatesList",
+          {},
+        );
+        return items.find((update) => update.state === "pending");
+      });
+      await runtime.callAdminRpc("authServiceUpdatesDecide", {
+        updateId: pending.updateId,
+        decision: "approved",
+        expectedRevision: pending.revision,
+        idempotencyKey: ulid(),
+      });
+      await (await updating).stop();
+      services.splice(services.indexOf(updating), 1);
+
+      // Then an administrator applies a build directly, which leaves no
+      // update in the history, and a new instance connects running it.
+      await runtime.contracts.apply({ deployment, contract: base });
+      const second = await runtime.services.createInstance({
+        name: deployment,
+        deployment,
+        contract: base,
+      });
+      const running = TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: base,
+        seed: second.seed,
+      }).orThrow();
+      services.push(running);
+      await running;
+
+      const admin = await launchProfile(runtime);
+      try {
+        const page = await admin.newPage();
+        await page.goto(
+          `${runtime.trellisUrl}/console/admin/services/${first.deploymentId}`,
+          { waitUntil: "domcontentloaded" },
+        );
+        await completeConsoleEntry(page, BROWSER_ADMIN);
+        const row = page.locator(`tr[data-instance-id="${second.instanceId}"]`);
+        // Health is read once per load, so reload until it reports the
+        // instance connected.
+        await runtime.waitFor(async () => {
+          await row.waitFor();
+          if ((await row.getByText(/^Seen /).count()) > 0) return true;
+          await page.reload({ waitUntil: "domcontentloaded" });
+          return false;
+        });
+        const summary = page.locator("p", { hasText: /instances? on/ }).first();
+        // The heading names the applied build, the one the instance reports,
+        // not the self-update's; no update installed it, so it has no date.
+        const updated = pending.participantDigest.slice(0, 8);
+        const text = await summary.innerText();
+        const build = await row.locator("td").nth(3).innerText();
+        assert.equal(text.includes(build), true, `${text} / ${build}`);
+        assert.equal(text.includes(updated), false, text);
+        assert.equal(text.includes("installed"), false, text);
+        assert.equal(await row.getByText("Runs an older build").count(), 0);
+      } finally {
+        await admin.close();
+      }
+    }, browserRuntimeOptions());
+  } finally {
+    for (const connecting of services)
+      await connecting.then(
+        (service) => service.stop(),
+        () => {},
+      );
+  }
+});
+
 test("an administrator adds a service that introduced itself from its review link", async () => {
   const services: Promise<{ stop(): Promise<void> }>[] = [];
   try {

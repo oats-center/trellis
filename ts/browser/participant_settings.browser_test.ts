@@ -79,6 +79,11 @@ test("an administrator sets a waiting service's settings from the link it printe
           await apiKey.getAttribute("placeholder"),
           "Set — type to replace",
         );
+        // Showing lasted only as long as the saved draft: a new key starts
+        // hidden. Emptying it again leaves the saved key alone.
+        await apiKey.fill("k2");
+        assert.equal(await apiKey.getAttribute("type"), "password");
+        await apiKey.fill("");
         // Trellis restarts nothing, so a setting that applies after a restart
         // asks first; cancelling saves nothing and keeps the edit.
         const port = settings.getByLabel("Port", { exact: true });
@@ -172,6 +177,12 @@ test("an administrator overrides the only instance's settings, null included, wi
           // A draft typed for the whole service, then the only instance is
           // chosen while its settings are still on the way.
           await region.fill("everywhere");
+          const apiKey = settings.getByLabel("API key", { exact: true });
+          await apiKey.fill("kx");
+          await settings
+            .getByRole("button", { name: "Show API key", exact: true })
+            .click();
+          assert.equal(await apiKey.getAttribute("type"), "text");
           const held = wired.gate.armNextReply(
             authApi.actions["rpc:Config.Get"].subject,
           );
@@ -202,10 +213,12 @@ test("an administrator overrides the only instance's settings, null included, wi
           // Setting one field to null keeps the other unsaved edits, a typed
           // secret included, pending for Save.
           const endpoint = settings.getByLabel("Endpoint", { exact: true });
-          const apiKey = settings.getByLabel("API key", { exact: true });
           await region.fill("west");
           await endpoint.fill("https://two.example");
           await apiKey.fill("k2");
+          // What was shown for the service stays with it: the instance's new
+          // key is typed hidden.
+          assert.equal(await apiKey.getAttribute("type"), "password");
           await settings
             .getByRole("button", { name: "Clear Region", exact: true })
             .click();

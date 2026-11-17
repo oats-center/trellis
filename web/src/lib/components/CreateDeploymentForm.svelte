@@ -36,6 +36,13 @@
   let packageName = $state("");
   let packageVersion = $state("");
   let extras = $state<Record<string, PackageFiles>>({});
+  type Missing = apis.auth.PackagesResolveOutput["missing"][number];
+  // Every package the IDL needed that Trellis doesn't have, with the ones the
+  // administrator supplied. A row stays while its files are in use or a
+  // selection for it failed, so it can be retried or removed.
+  let wanted = $state.raw<Missing[]>([]);
+  // Why the last selection for a package wasn't used, by package name.
+  let extraErrors = $state<Record<string, string>>({});
   let resolution = $state<apis.auth.PackagesResolveOutput | null>(null);
   let resolving = $state(false);
   let resolveError = $state<string | null>(null);
@@ -165,23 +172,55 @@
     if (disposed) return;
     root = chosen;
     extras = {};
+    wanted = [];
+    extraErrors = {};
     sharing = null;
     await resolvePackages();
   }
 
+  // A selection for one package is used only once Auth accepts it; a refused
+  // one leaves the IDL and every other package as they were.
   async function chooseExtra(name: string, event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
     const chosen = await readPackage(input.files);
     input.value = "";
-    if (disposed || !chosen) return;
-    extras = { ...extras, [name]: chosen };
-    await resolvePackages();
+    if (disposed) return;
+    if (!chosen?.manifest || chosen.files.length === 0) {
+      extraErrors = {
+        ...extraErrors,
+        [name]: !chosen
+          ? `Choose ${name}'s trellis.toml and .trellis files.`
+          : !chosen.manifest
+            ? `Include ${name}'s trellis.toml with its files.`
+            : `Include ${name}'s .trellis files with its trellis.toml.`,
+      };
+      return;
+    }
+    await resolvePackages({ ...extras, [name]: chosen }, name);
   }
 
-  /** Ask Auth to build the evidence, or to name what it still needs. */
-  async function resolvePackages(): Promise<void> {
+  function removeExtra(name: string): void {
+    extraErrors = without(extraErrors, name);
+    if (name in extras) void resolvePackages(without(extras, name));
+  }
+
+  function without<T>(record: Record<string, T>, name: string) {
+    return Object.fromEntries(
+      Object.entries(record).filter(([key]) => key !== name),
+    );
+  }
+
+  /**
+   * Ask Auth to build the evidence from the IDL and `supplied` packages, or to
+   * name what it still needs. When `attempted` names the package just chosen,
+   * a refusal is shown on its row and the previous result stands.
+   */
+  async function resolvePackages(
+    supplied: Record<string, PackageFiles> = extras,
+    attempted?: string,
+  ): Promise<void> {
     const generation = ++resolveGeneration;
-    resolution = null;
+    if (!attempted) resolution = null;
     resolveError = null;
     const current = root;
     if (
@@ -192,13 +231,7 @@
       resolving = false;
       return;
     }
-    const supplied = Object.entries(extras);
-    const unnamed = supplied.find(([, files]) => !files.manifest);
-    if (unnamed) {
-      resolveError = `Include ${unnamed[0]}'s trellis.toml with its files.`;
-      resolving = false;
-      return;
-    }
+    const packages = Object.values(supplied);
     resolving = true;
     try {
       const response = await trellis
@@ -209,9 +242,9 @@
               ? { manifest: current.manifest }
               : { name: packageName.trim(), version: packageVersion.trim() }),
           },
-          ...(supplied.length > 0
+          ...(packages.length > 0
             ? {
-                packages: supplied.map(([, files]) => ({
+                packages: packages.map((files) => ({
                   manifest: files.manifest,
                   files: files.files,
                 })),
@@ -221,9 +254,21 @@
         .orThrow();
       if (disposed || generation !== resolveGeneration) return;
       resolution = response;
+      extras = supplied;
+      if (attempted) extraErrors = without(extraErrors, attempted);
+      wanted = [
+        ...response.missing,
+        ...wanted.filter(
+          (entry) =>
+            entry.name in supplied &&
+            !response.missing.some((item) => item.name === entry.name),
+        ),
+      ];
     } catch (cause) {
       if (disposed || generation !== resolveGeneration) return;
-      resolveError = projectConsoleError(cause).message;
+      const message = projectConsoleError(cause).message;
+      if (attempted) extraErrors = { ...extraErrors, [attempted]: message };
+      else resolveError = message;
     } finally {
       if (!disposed && generation === resolveGeneration) resolving = false;
     }
@@ -438,6 +483,8 @@
             onclick={() => {
               root = null;
               extras = {};
+              wanted = [];
+              extraErrors = {};
               sharing = null;
               void resolvePackages();
             }}>Remove IDL</button
@@ -483,13 +530,13 @@
           >
         </div>
       {/if}
-      {#if resolution && resolution.missing.length > 0}
+      {#if root && wanted.length > 0}
         <section class="trellis-field" aria-labelledby="missing-packages">
           <h3 id="missing-packages" class="trellis-field-label">
             Packages Trellis doesn't have
           </h3>
           <ul class="space-y-2">
-            {#each resolution.missing as missing (missing.name)}
+            {#each wanted as missing (missing.name)}
               <li class="rounded-box border border-base-300 p-3">
                 <p class="text-sm">
                   <span class="font-mono">{missing.name}</span>
@@ -533,12 +580,33 @@
                     /></label
                   >
                 </div>
+                {#if extraErrors[missing.name]}
+                  <p class="mt-2 text-xs text-error" role="alert">
+                    {extraErrors[missing.name]}
+                  </p>
+                {:else if extras[missing.name] && resolution?.missing.some((item) => item.name === missing.name)}
+                  <p class="mt-2 text-xs text-error">
+                    These files don't provide a {missing.name} that matches.
+                  </p>
+                {/if}
                 {#if extras[missing.name]}
-                  <ul class="mt-2 font-mono text-xs text-base-content/70">
+                  <ul
+                    class="mt-2 font-mono text-xs text-base-content/70"
+                    aria-label={`Files used for ${missing.name}`}
+                  >
                     {#each extras[missing.name].names as name (name)}<li>
                         {name}
                       </li>{/each}
                   </ul>
+                {/if}
+                {#if extras[missing.name] || extraErrors[missing.name]}
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-xs mt-1"
+                    disabled={busy || uncertain}
+                    aria-label={`Remove files for ${missing.name}`}
+                    onclick={() => removeExtra(missing.name)}>Remove</button
+                  >
                 {/if}
               </li>
             {/each}

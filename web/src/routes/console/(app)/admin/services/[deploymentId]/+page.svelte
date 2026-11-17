@@ -100,11 +100,16 @@
       return report !== undefined && report.effectiveStatus !== "offline";
     }).length,
   );
+  // The deployment names its installed build. An administrator can apply a
+  // build directly, which leaves no update behind, so the history only dates
+  // the build when one of its applied updates installed exactly that build.
+  const installedDigest = $derived(deployment?.implementationDigest);
   const installed = $derived(
-    updates.find((update) => update.state === "applied"),
-  );
-  const installedDigest = $derived(
-    installed?.participantDigest ?? deployment?.implementationDigest,
+    updates.find(
+      (update) =>
+        update.state === "applied" &&
+        update.participantDigest === installedDigest,
+    ),
   );
   // The installed build, by the version an instance running it reports.
   const installedText = $derived.by(() => {
@@ -721,7 +726,7 @@
                       : `Connected · seen ${ago(report.observedAt)}`
                     : "Never connected"} · {build}</span
                 >
-                {#if report && report.effectiveStatus !== "offline" && report.contractDigest !== installedDigest}<span
+                {#if report && report.effectiveStatus !== "offline" && !instance.upToDate}<span
                     class="mt-0.5 flex items-center gap-1 text-xs text-warning"
                     ><Icon name="alert" size={12} />Runs an older build</span
                   >{:else if instance.state === "disabled" && !instance.upToDate}<span
