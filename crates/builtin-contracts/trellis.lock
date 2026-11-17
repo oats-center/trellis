@@ -3,9 +3,9 @@ root = "trellis"
 
 [[packages]]
 name = "trellis"
-version = "0.100.0-rc.47"
+version = "0.100.0-rc.48"
 digest = "eqEHSI9GWcwmJwyZZBYcKEoXDH7aQVQSXN3xyudqn1o"
-distribution-digest = "sha256:930970219284398709b72c638f61dc33b9cce068cdda65cea4c86857bd0ab99c"
+distribution-digest = "sha256:d96796878efb739af66a66dd6f6482a2808e0b3c7a760a43581ae191029d92b4"
 dependencies = []
 
 [packages.source]

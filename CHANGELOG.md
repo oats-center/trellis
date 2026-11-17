@@ -8,8 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.48] - 2026-11-18
+
 ### Changed
 
+- async-nats 0.53, with its TLS and cluster discovery security fixes. Trellis
+  keeps choosing TLS per server: a CA file is a trust anchor, not a demand for
+  TLS, so a plaintext loopback broker still works. A broker certificate that
+  doesn't verify (wrong name or CA) fails at once instead of being retried, and
+  a role's built-in provider with one stops the process rather than standing
+  by. Rust clients ignore servers the broker discovers, since a transport
+  generation never reconnects. `TrellisClientError::NatsConnectConfig` is new.
 - Signing in to the Console takes one page load behind one loading screen: the
   sign-in callback hands its connected client to the app instead of reloading,
   the browser client uses the DPoP nonce Auth already sent (no rejected first
