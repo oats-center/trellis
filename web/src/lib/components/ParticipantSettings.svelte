@@ -56,7 +56,8 @@
   // Untouched fields are absent; switching targets discards them.
   let drafts = $state<Record<string, string>>({});
   // Secrets typed here that the administrator chose to see; a saved secret is
-  // never sent back, so only a draft can be shown.
+  // never sent back, so only a draft can be shown. A choice lasts only as long
+  // as its draft: the next value typed for that field starts masked.
   let revealed = $state<Record<string, boolean>>({});
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
@@ -89,6 +90,7 @@
   $effect(() => {
     scope.setKey(key);
     drafts = {};
+    revealed = {};
     void load();
   });
 
@@ -201,6 +203,13 @@
       drafts = settled
         ? Object.fromEntries(
             Object.entries(drafts).filter(([name]) => !settled.includes(name)),
+          )
+        : {};
+      revealed = settled
+        ? Object.fromEntries(
+            Object.entries(revealed).filter(
+              ([name]) => !settled.includes(name),
+            ),
           )
         : {};
       notice = done;
@@ -442,10 +451,12 @@
                 placeholder={placeholder(field)}
                 value={drafts[field.name] ?? (field.secret ? "" : shown(field))}
                 oninput={(event) => {
-                  drafts = {
-                    ...drafts,
-                    [field.name]: event.currentTarget.value,
-                  };
+                  const text = event.currentTarget.value;
+                  drafts = { ...drafts, [field.name]: text };
+                  // Emptying the field ends the draft that was shown.
+                  if (!text && revealed[field.name]) {
+                    revealed = { ...revealed, [field.name]: false };
+                  }
                 }}
               />{#if field.secret}<button
                   type="button"

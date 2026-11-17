@@ -214,14 +214,26 @@ test("B01c a dependency Trellis doesn't have is listed, and adding its files let
         "a service with a missing dependency cannot be added",
       );
 
+      // A selection without its trellis.toml is refused on the package's own
+      // row; the row stays so the files can be chosen again.
+      const unitsFiles = missing.getByLabel("Files for units", { exact: true });
+      await unitsFiles.setInputFiles([file("units.trellis", UNITS)]);
       await missing
-        .getByLabel("Files for units")
-        .setInputFiles([
-          file("trellis.toml", UNITS_MANIFEST),
-          file("units.trellis", UNITS),
-        ]);
+        .getByText("Include units's trellis.toml with its files.")
+        .waitFor();
+      await unitsFiles.setInputFiles([
+        file("trellis.toml", UNITS_MANIFEST),
+        file("units.trellis", UNITS),
+      ]);
+      // The service's own IDL was never chosen again.
       await page.getByText("Adds gauges.Gauge.").waitFor();
-      await missing.waitFor({ state: "detached" });
+      await missing.getByLabel("Files used for units").waitFor();
+      assert.equal(
+        await missing
+          .getByText("Include units's trellis.toml with its files.")
+          .count(),
+        0,
+      );
       await add.click();
       const dialog = page.getByRole("dialog", {
         name: "Save the service's key",
