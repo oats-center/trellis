@@ -36,6 +36,10 @@
   let packageName = $state("");
   let packageVersion = $state("");
   let extras = $state<Record<string, PackageFiles>>({});
+  // Package selections Auth hasn't answered for yet. Every resolve sends them
+  // all, so choosing a second package while the first is still resolving
+  // doesn't drop the first.
+  let pending: Record<string, PackageFiles> = {};
   type Missing = apis.auth.PackagesResolveOutput["missing"][number];
   // Every package the IDL needed that Trellis doesn't have, with the ones the
   // administrator supplied. A row stays while its files are in use or a
@@ -172,6 +176,7 @@
     if (disposed) return;
     root = chosen;
     extras = {};
+    pending = {};
     wanted = [];
     extraErrors = {};
     sharing = null;
@@ -196,11 +201,13 @@
       };
       return;
     }
-    await resolvePackages({ ...extras, [name]: chosen }, name);
+    pending = { ...pending, [name]: chosen };
+    await resolvePackages({ ...extras, ...pending }, name);
   }
 
   function removeExtra(name: string): void {
     extraErrors = without(extraErrors, name);
+    pending = without(pending, name);
     if (name in extras) void resolvePackages(without(extras, name));
   }
 
@@ -255,6 +262,11 @@
       if (disposed || generation !== resolveGeneration) return;
       resolution = response;
       extras = supplied;
+      pending = Object.fromEntries(
+        Object.entries(pending).filter(
+          ([key, files]) => supplied[key] !== files,
+        ),
+      );
       if (attempted) extraErrors = without(extraErrors, attempted);
       wanted = [
         ...response.missing,
@@ -267,8 +279,17 @@
     } catch (cause) {
       if (disposed || generation !== resolveGeneration) return;
       const message = projectConsoleError(cause).message;
-      if (attempted) extraErrors = { ...extraErrors, [attempted]: message };
-      else resolveError = message;
+      if (attempted) {
+        extraErrors = { ...extraErrors, [attempted]: message };
+        // The refused package is dropped; the others still waiting are tried
+        // again without it.
+        pending = without(pending, attempted);
+        const retry = Object.keys(pending).at(-1);
+        if (retry) {
+          void resolvePackages({ ...extras, ...pending }, retry);
+          return;
+        }
+      } else resolveError = message;
     } finally {
       if (!disposed && generation === resolveGeneration) resolving = false;
     }

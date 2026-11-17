@@ -196,7 +196,9 @@
   // Auth counts a password's characters as Unicode code points, so a string's
   // spread length, not the UTF-16 count HTML minlength uses.
   let signUpPassword = $state("");
-  let passwordTooShort = $state(false);
+  // Why the typed password can't be used: too short in characters, or past
+  // Auth's 4096-byte limit, which maxlength (UTF-16 units) doesn't catch.
+  let passwordProblem = $state<string | null>(null);
   let creating = $state(query.get("sign_up") === "1");
   let providerError = $state(false);
   // The server marks pages it serves with Trellis-generated certificates.
@@ -756,10 +758,14 @@
       method="post"
       action={`/portal/sign-up`}
       onsubmit={(event) => {
-        passwordTooShort =
-          passwordMinLength !== null &&
-          [...signUpPassword].length < passwordMinLength;
-        if (passwordTooShort) {
+        passwordProblem =
+          new TextEncoder().encode(signUpPassword).length > 4096
+            ? "That password is too long."
+            : passwordMinLength !== null &&
+                [...signUpPassword].length < passwordMinLength
+              ? `Use at least ${passwordMinLength} characters.`
+              : null;
+        if (passwordProblem) {
           event.preventDefault();
           document.getElementById("password")?.focus();
         }
@@ -789,21 +795,21 @@
         autocomplete="new-password"
         maxlength="4096"
         bind:value={signUpPassword}
-        oninput={() => (passwordTooShort = false)}
-        aria-invalid={passwordTooShort}
-        aria-describedby={passwordTooShort
+        oninput={() => (passwordProblem = null)}
+        aria-invalid={passwordProblem !== null}
+        aria-describedby={passwordProblem
           ? "password-error"
           : passwordMinLength
             ? "password-hint"
             : undefined}
         required
       />
-      {#if passwordTooShort}<p
+      {#if passwordProblem}<p
           class="alert error"
           id="password-error"
           role="alert"
         >
-          Use at least {passwordMinLength} characters.
+          {passwordProblem}
         </p>{:else if passwordMinLength}<p class="hint" id="password-hint">
           At least {passwordMinLength} characters.
         </p>{/if}

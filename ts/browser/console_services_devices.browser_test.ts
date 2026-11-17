@@ -24,7 +24,9 @@ import {
   seedServiceWithResources,
   seedServiceWithoutResources,
   waitForConsoleShell,
+  wireNatsGate,
 } from "./console_test_support.ts";
+import { API as authApi } from "../packages/trellis/internal_sdk/generated/apis/auth/mod.js";
 
 const fixtureIdl = ["trellis.toml", "contract.trellis"].map((name) =>
   fileURLToPath(
@@ -172,6 +174,114 @@ api units@v1 {
   }
 }
 `;
+
+const METERS_MANIFEST = `[package]
+name = "meters"
+version = "1.0.0"
+
+[sources]
+meters = "meters.trellis"
+
+[dependencies]
+units = { package = "units", version = "^2.1.0", registry = "ghcr.io/example" }
+scales = { package = "scales", version = "^1.0.0", registry = "ghcr.io/example" }
+`;
+const METERS = `import { Measure } from units;
+import { Scale } from scales;
+model Reading { measure: Measure; scale: Scale; }
+api meters@v1 {
+  title "Meters";
+  description "Meter readings.";
+  rpc Read { input Reading; output Reading; }
+  capabilities {
+    capability meters.read { title "Read meters"; description "Read meter values."; grants "Sees meter values."; allows { rpc Read; } }
+  }
+}
+service Meter { implements meters; }
+`;
+const SCALES_MANIFEST = `[package]
+name = "scales"
+version = "1.0.2"
+
+[sources]
+scales = "scales.trellis"
+`;
+const SCALES = `model Scale { name: string; }
+api scales@v1 {
+  title "Scales";
+  description "Scales.";
+  rpc Name { input Scale; output Scale; }
+  capabilities {
+    capability scales.name { title "Name"; description "Name scales."; grants "Names scales."; allows { rpc Name; } }
+  }
+}
+`;
+
+test("B01d a second dependency chosen while the first is still resolving keeps both", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const wired = await wireNatsGate(page);
+      try {
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
+          waitUntil: "domcontentloaded",
+        });
+        await waitForConsoleShell(page);
+        const file = (name: string, text: string) => ({
+          name,
+          mimeType: "text/plain",
+          buffer: Buffer.from(text),
+        });
+        await page
+          .getByLabel("Name", { exact: true })
+          .fill(`ct-b01d-${ulid()}`);
+        await page
+          .getByLabel("Service IDL (optional)")
+          .setInputFiles([
+            file("trellis.toml", METERS_MANIFEST),
+            file("meters.trellis", METERS),
+          ]);
+        const missing = page.getByRole("region", {
+          name: "Packages Trellis doesn't have",
+        });
+        await missing.getByText("scales", { exact: true }).waitFor();
+        // Auth's answer for the first package is held while the second is
+        // chosen.
+        const held = wired.gate.armNextReply(
+          authApi.actions["rpc:Packages.Resolve"].subject,
+        );
+        await missing
+          .getByLabel("Files for units", { exact: true })
+          .setInputFiles([
+            file("trellis.toml", UNITS_MANIFEST),
+            file("units.trellis", UNITS),
+          ]);
+        await held;
+        await missing
+          .getByLabel("Files for scales", { exact: true })
+          .setInputFiles([
+            file("trellis.toml", SCALES_MANIFEST),
+            file("scales.trellis", SCALES),
+          ]);
+        await page.getByText("Adds meters.Meter.").waitFor();
+        wired.releaseToPage();
+        await missing.getByLabel("Files used for units").waitFor();
+        await missing.getByLabel("Files used for scales").waitFor();
+        assert.equal(
+          await page.getByText("Adds meters.Meter.").count(),
+          1,
+          "the held answer for one package undid the later one",
+        );
+      } finally {
+        wired.gate.dispose();
+      }
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
 
 test("B01c a dependency Trellis doesn't have is listed, and adding its files lets the service be added", async () => {
   await withTrellisRuntime(async (runtime) => {

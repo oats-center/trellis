@@ -246,6 +246,14 @@ test("an administrator sets sign-in methods, providers, their group roles and th
         .getByText("Use at least 8 characters.", { exact: true })
         .waitFor();
       assert.equal(await password.getAttribute("aria-invalid"), "true");
+      // 1400 three-byte characters fit maxlength but pass Auth's 4096-byte
+      // limit, so the form says too long rather than sending it.
+      await password.fill("語".repeat(1400));
+      await create.click();
+      await newcomer
+        .getByRole("alert")
+        .getByText("That password is too long.", { exact: true })
+        .waitFor();
       await password.fill("Grüße🔑ok");
       await create.click();
       await newcomer

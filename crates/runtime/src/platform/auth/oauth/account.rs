@@ -817,7 +817,7 @@ pub(super) async fn page(
     let (title, body) = if kind == "reset" {
         (
             "Set a new password",
-            reset_form(token, &csrf, minimum, false),
+            reset_form(token, &csrf, minimum, None),
         )
     } else {
         match signed_in {
@@ -954,10 +954,19 @@ pub(super) async fn submit(
             })?;
             let minimum = super::super::sign_in::read(&*engine.server.store().authority.reader()?)?
                 .password_min_length;
+            // Only a page without its script sends a password that doesn't
+            // fit; the form comes back saying which way, and the link still works.
+            if password.len() > 4096 {
+                return Ok(Some((minimum.0, "That password is too long.".to_owned())));
+            }
             let hash = match hash_password(&password, minimum.0) {
                 Ok(hash) => hash,
-                // Only a page without its script sends a password that is too short.
-                Err(AuthError::Invalid(_)) => return Ok(Some(minimum.0)),
+                Err(AuthError::Invalid(_)) => {
+                    return Ok(Some((
+                        minimum.0,
+                        format!("Use at least {} characters.", minimum.0),
+                    )))
+                }
                 Err(other) => return Err(other),
             };
             complete_reset(
@@ -972,10 +981,10 @@ pub(super) async fn submit(
         })
         .await;
         return match result {
-            Ok(Some(minimum)) => html(
+            Ok(Some((minimum, problem))) => html(
                 &engine,
                 "Set a new password",
-                &reset_form(&form_token, &form_csrf, minimum, true),
+                &reset_form(&form_token, &form_csrf, minimum, Some(&problem)),
             ),
             Ok(None) => html(
                 &engine,
@@ -1033,17 +1042,15 @@ pub(super) async fn submit(
     error(ErrorCode::InvalidRequest)
 }
 
-/// The password reset form. `password-length.js` counts the new password's
-/// characters as Unicode code points, as Auth does, and says when it is too short;
-/// HTML `minlength` would count UTF-16 code units instead.
-fn reset_form(token: &str, csrf: &str, minimum: u32, too_short: bool) -> String {
-    let (invalid, described, error) = if too_short {
+/// The password reset form, with `problem` shown when the last password didn't
+/// fit. `password-length.js` checks characters (Unicode code points) and bytes
+/// as Auth does; HTML `minlength` and `maxlength` count UTF-16 code units.
+fn reset_form(token: &str, csrf: &str, minimum: u32, problem: Option<&str>) -> String {
+    let (invalid, described, error) = if let Some(problem) = problem {
         (
             r#" aria-invalid="true""#,
             "password-error",
-            format!(
-                r#"<p class="alert error" id="password-error" role="alert">Use at least {minimum} characters.</p>"#
-            ),
+            format!(r#"<p class="alert error" id="password-error" role="alert">{problem}</p>"#),
         )
     } else {
         ("", "password-hint", String::new())

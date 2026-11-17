@@ -818,6 +818,25 @@ staticPasswords:
                 .await
                 .unwrap()
                 .contains(r#"role="alert">Use at least 8 characters."#));
+            // 1400 three-byte characters are well over the minimum but past
+            // the 4096-byte limit: the form says it is too long, not too short.
+            let long = http
+                .post(format!("{origin}/portal/account/reset"))
+                .header("Origin", &origin)
+                .form(&[
+                    ("token", reset.token.as_str()),
+                    ("csrf", csrf.as_str()),
+                    ("password", "語".repeat(1400).as_str()),
+                ])
+                .send()
+                .await
+                .unwrap();
+            assert!(long.status().is_success());
+            assert!(long
+                .text()
+                .await
+                .unwrap()
+                .contains(r#"role="alert">That password is too long."#));
             assert!(http
                 .post(format!("{origin}/portal/account/reset"))
                 .header("Origin", &origin)

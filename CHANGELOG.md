@@ -29,6 +29,10 @@ and this project adheres to
   field, or switching instance.
 - A service connect waiting for approval ends when its abort signal fires
   during a status check.
+- In the Console's Add service form, choosing a second missing package while
+  the first is still resolving keeps both.
+- A password over Auth's 4096-byte limit is called too long, not too short, on
+  the Portal's sign-up and reset forms.
 
 ## [0.100.0-rc.45] - 2026-11-16
 
