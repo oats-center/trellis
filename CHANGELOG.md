@@ -12,6 +12,10 @@ and this project adheres to
 
 ### Fixed
 
+- A runtime whose jobs, health or events work can't reach Auth while
+  restarting (for example because another server took the platform lease)
+  stands by and retries, not ready, instead of exiting. A misconfigured
+  built-in authority still fails as before.
 - Saving the Console's local-user sign-in settings after a provider change no
   longer undoes another administrator's change; it conflicts and offers to
   reload.
