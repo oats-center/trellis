@@ -1215,9 +1215,14 @@ fn the_sign_in_settings_minimum_governs_created_changed_and_signed_up_passwords(
     };
     // The default minimum of 12 lets the shorter password in.
     let before = account("before", short);
-    create_user(&store, &mutation(&admin, &before), &before, NOW).unwrap();
+    let creation = mutation(&admin, &before);
+    let original = create_user(&store, &creation, &before, NOW).unwrap();
     let saved = sign_in_settings(&store, &admin, 1, true, 20).unwrap();
     assert_eq!(saved.settings.password_min_length.0, 20);
+    // A retry of the completed creation, say after a lost response, gets its
+    // recorded result even though the password no longer meets the minimum.
+    let retried = create_user(&store, &creation, &before, NOW + 1).unwrap();
+    assert_eq!(retried.user.principal_id, original.user.principal_id);
 
     let refused = account("short", short);
     assert!(matches!(

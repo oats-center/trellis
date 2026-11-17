@@ -969,6 +969,12 @@ pub(super) fn create_user(
         request_digest: digest(&audit)?,
         ..identity.clone()
     };
+    // The caller is already authorized. A retry of a creation that completed
+    // gets its recorded result before the password meets the current minimum,
+    // which an administrator may have raised since. The write checks again.
+    if let Some(previous) = store.recorded(&safe_identity, "rpc.users.create")? {
+        return Ok(previous);
+    }
     let hash = match &input.password {
         Some(password) => {
             let minimum = super::sign_in::read(&*store.reader()?)?.password_min_length;
