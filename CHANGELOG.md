@@ -8,7 +8,21 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.47] - 2026-11-17
+
+### Changed
+
+- Every active user holds the "Your account" capabilities (see and edit their
+  profile, change their password, see and end their sign-ins, linked
+  identities, connected apps and devices, and an app's settings) without a role.
+  Each acts only on the user's own account. A new self-signed-up user can use
+  the Console's Your account page instead of seeing "Not allowed yet".
+  `Principals.EffectiveAccess` reports this source as `account`.
+
 ### Fixed
+
+- The Console's header menu, with Sign out, shows for anyone signed in, even
+  on a page they can't use.
 
 - Signing in through Auth0 works: Auth reads an ID token whose `updated_at` is
   an RFC 3339 date (as Auth0 sends it) or whose `email_verified` is the string
