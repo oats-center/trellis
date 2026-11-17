@@ -83,27 +83,59 @@ async fn start_broker(
     .unwrap()
 }
 
+/// The producer-built `trellis-server`.
+fn server_binary() -> PathBuf {
+    std::env::var_os("TRELLIS_TEST_SERVER_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/release/trellis-server")
+        })
+}
+
 /// Writes an installation the way an operator does: a one-server NATS
 /// cluster from `trellis-server nats new` as its broker's config, and a
 /// `config.toml` serving `origin` with `transport` on `ports[0]`. Starts the
 /// broker, then prepares the installation as a first start does.
+///
+/// With `broker_tls`, a folder `trellis-server tls issue` wrote for
+/// `localhost`, the broker serves TLS with its certificate and Trellis reaches
+/// it at `tls://localhost`, trusting its CA; otherwise at plaintext loopback.
 async fn installation(
     root: &std::path::Path,
     ports: &[u16],
     origin: &str,
     transport: &str,
+    broker_tls: Option<&std::path::Path>,
 ) -> (crate::RuntimeConfig, trellis_local_nats::LocalNats) {
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let server = std::env::var_os("TRELLIS_TEST_SERVER_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace.join("target/release/trellis-server"));
     let config_dir = root.join("config");
-    let made = tokio::process::Command::new(&server)
+    let mut nats_new = tokio::process::Command::new(server_binary());
+    nats_new
         .args(["nats", "new", "--servers", "1", "--out"])
         .arg(config_dir.join("nats"))
         .args(["--client-port", &ports[1].to_string()])
         .args(["--monitor-port", &ports[2].to_string()])
-        .args(["--websocket-port", &ports[3].to_string()])
+        .args(["--websocket-port", &ports[3].to_string()]);
+    let servers = match broker_tls {
+        Some(certificates) => {
+            nats_new
+                .arg("--tls-certificate")
+                .arg(certificates.join("server.crt"))
+                .arg("--tls-private-key")
+                .arg(certificates.join("server.key"));
+            // A managed broker serves TLS with its bundle's certificate.
+            std::fs::create_dir_all(config_dir.join("tls")).unwrap();
+            for (from, to) in [("server.crt", "nats.crt"), ("server.key", "nats.key")] {
+                std::fs::copy(certificates.join(from), config_dir.join("tls").join(to)).unwrap();
+            }
+            format!(
+                "\"tls://localhost:{}\"\nca_certificate = {:?}",
+                ports[1],
+                certificates.join("ca.crt").display().to_string()
+            )
+        }
+        None => format!("\"nats://127.0.0.1:{}\"", ports[1]),
+    };
+    let made = nats_new
         .output()
         .await
         .expect("provide the producer-built server through TRELLIS_TEST_SERVER_BIN");
@@ -123,11 +155,10 @@ async fn installation(
             "[http]\npublic_origin = \"{origin}\"\nport = {port}\nbind_address = \"127.0.0.1\"\n\
             nats_websocket_upstream = \"127.0.0.1:{websocket}\"\n\n\
             [http.transport]\nmode = \"{transport}\"\n\n\
-            [nats]\nservers = \"nats://127.0.0.1:{nats}\"\n\
+            [nats]\nservers = {servers}\n\
             system_credentials = \"nats/system.creds\"\n\
             operator_signing_key = \"nats/trellis-operator.nk\"\n",
             port = ports[0],
-            nats = ports[1],
             websocket = ports[3],
         ),
     )
@@ -171,7 +202,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
     let oauth_origin = format!("http://127.0.0.1:{}", ports[0]);
     let (config, mut broker) =
-        installation(root, &ports, &oauth_origin, "loopback_development").await;
+        installation(root, &ports, &oauth_origin, "loopback_development", None).await;
     let (mut stop, mut runtime) = start_runtime(&config, &oauth_origin, &[]).await;
     let discovered = discover_native_oauth(&oauth_origin, &[])
         .await
@@ -503,6 +534,7 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
         &ports,
         &format!("https://localhost:{}", ports[0]),
         "generated",
+        None,
     )
     .await;
     let ca = config
@@ -788,7 +820,7 @@ async fn a_runtime_that_loses_a_lease_stands_by_for_that_work_alone() {
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
     let origin = format!("http://127.0.0.1:{}", ports[0]);
     let (mut config, mut broker) =
-        installation(root, &ports, &origin, "loopback_development").await;
+        installation(root, &ports, &origin, "loopback_development", None).await;
     let leases = config
         .leases
         .as_mut()
@@ -957,7 +989,7 @@ async fn a_role_whose_provider_auth_cannot_admit_stands_by_until_it_can() {
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
     let origin = format!("http://127.0.0.1:{}", ports[0]);
     let (mut config, mut broker) =
-        installation(root, &ports, &origin, "loopback_development").await;
+        installation(root, &ports, &origin, "loopback_development", None).await;
     let leases = config
         .leases
         .as_mut()
@@ -1096,7 +1128,8 @@ async fn a_stop_requested_during_startup_ends_the_runtime() {
         .collect();
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
     let origin = format!("http://127.0.0.1:{}", ports[0]);
-    let (config, mut broker) = installation(root, &ports, &origin, "loopback_development").await;
+    let (config, mut broker) =
+        installation(root, &ports, &origin, "loopback_development", None).await;
     let nats = config.resolve_nats_runtime().unwrap();
     let client = crate::supervisor::nats_connect_options(&nats, &nats.trellis_creds)
         .unwrap()
@@ -1178,7 +1211,8 @@ async fn a_nats_connection_that_fails_in_transit_is_retried() {
         .collect();
     let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
     let origin = format!("http://127.0.0.1:{}", ports[0]);
-    let (config, mut broker) = installation(root, &ports, &origin, "loopback_development").await;
+    let (config, mut broker) =
+        installation(root, &ports, &origin, "loopback_development", None).await;
     let nats = config.resolve_nats_runtime().unwrap();
     let (auth_creds, _) = nats.platform_creds().unwrap();
     let pid = std::fs::read_to_string(root.join("runtime/nats-server.pid")).unwrap();
@@ -1207,6 +1241,163 @@ async fn a_nats_connection_that_fails_in_transit_is_retried() {
         .expect("a connection that timed out was not tried again");
     assert!(started.elapsed() > Duration::from_secs(7));
     client.flush().await.unwrap();
+
+    tokio::task::spawn_blocking(move || broker.stop().unwrap())
+        .await
+        .unwrap();
+    drop(reserved);
+}
+
+/// A broker certificate that doesn't verify ends a connection attempt at
+/// once: one not issued for the address dialled, or from a CA Trellis doesn't
+/// trust. The runtime doesn't retry it, and a role's built-in provider ends
+/// rather than standing by, while a broker that doesn't answer leaves the
+/// provider standing by. Named as its certificate names it, the same broker
+/// serves, also at a `nats://` URL, and the runtime's connection reconnects to
+/// it over TLS after it restarts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_broker_certificate_that_does_not_verify_is_refused_at_once() {
+    use futures_util::StreamExt as _;
+    use trellis_rs::client::RuntimeAuthorizationTrust;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let reserved: Vec<_> = (0..5)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    // A certificate for localhost alone, and a CA that didn't issue it.
+    let mut issued = Vec::new();
+    for name in ["certificates", "other"] {
+        let out = root.join(name);
+        let made = tokio::process::Command::new(server_binary())
+            .args(["tls", "issue", "--host", "localhost", "--out"])
+            .arg(&out)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            made.status.success(),
+            "tls issue failed: {}",
+            String::from_utf8_lossy(&made.stderr)
+        );
+        issued.push(out);
+    }
+    let (certificates, other) = (&issued[0], &issued[1]);
+    let origin = format!("http://127.0.0.1:{}", ports[0]);
+    let (config, mut broker) = installation(
+        root,
+        &ports,
+        &origin,
+        "loopback_development",
+        Some(certificates),
+    )
+    .await;
+    let (stop, mut runtime) = start_runtime(&config, &origin, &[]).await;
+    let nats = config.resolve_nats_runtime().unwrap();
+    let at = |servers: &str, ca: &std::path::Path, name: Option<&str>| {
+        crate::config::ResolvedRuntimeNatsConfig {
+            servers: servers.replace("PORT", &ports[1].to_string()),
+            ca_certificate: Some(ca.join("ca.crt")),
+            tls_server_name: name.map(str::to_owned),
+            ..nats.clone()
+        }
+    };
+
+    for (refused, why) in [
+        (
+            at("tls://127.0.0.1:PORT", certificates, None),
+            "not valid for",
+        ),
+        (
+            at("tls://localhost:PORT", other, None),
+            "invalid peer certificate",
+        ),
+    ] {
+        let started = tokio::time::Instant::now();
+        match crate::supervisor::connect_nats(&refused, &refused.trellis_creds, || false).await {
+            Ok(_) => panic!(
+                "{} connected with a certificate that doesn't verify",
+                refused.servers
+            ),
+            Err(error) => {
+                assert!(error.to_string().contains(why), "{error}");
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "a certificate that doesn't verify was retried: {error}"
+                );
+            }
+        }
+    }
+    for served in [
+        at("tls://127.0.0.1:PORT", certificates, Some("localhost")),
+        at("nats://localhost:PORT", certificates, None),
+    ] {
+        crate::supervisor::connect_nats(&served, &served.trellis_creds, || false)
+            .await
+            .unwrap_or_else(|error| panic!("{} was refused: {error}", served.servers))
+            .flush()
+            .await
+            .unwrap();
+    }
+
+    let seed =
+        crate::platform::load_live_provider_seed(&config, crate::platform::LiveProviderRole::Jobs)
+            .unwrap();
+    let trust = discover_native_oauth(&origin, &[]).await.unwrap().trust;
+    for (servers, ca, stands_by) in [
+        (format!("tls://127.0.0.1:{}", ports[1]), certificates, false),
+        (format!("tls://localhost:{}", ports[1]), other, false),
+        // Nothing listens there.
+        (format!("tls://localhost:{}", ports[4]), certificates, true),
+    ] {
+        let connected = crate::platform::connect_builtin_live_provider(
+            crate::platform::LiveProviderRole::Jobs,
+            &seed,
+            crate::platform::BuiltinLiveProviderConnectOptions {
+                nats_servers: vec![servers.clone()],
+                trust: RuntimeAuthorizationTrust {
+                    root_certificates: vec![ca.join("ca.crt")],
+                    ..trust.clone()
+                },
+                timeout_ms: 5_000,
+            },
+        )
+        .await;
+        match (connected, stands_by) {
+            (Err(crate::RuntimeError::AuthUnavailable(_)), true)
+            | (Err(crate::RuntimeError::Platform(_)), false) => {}
+            (Err(error), _) => panic!("{servers}: {error:?}"),
+            (Ok(_), _) => panic!("{servers}: the provider connected"),
+        }
+    }
+    stop.stop();
+    tokio::time::timeout(Duration::from_secs(30), &mut runtime)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+
+    let client = crate::supervisor::connect_nats(&nats, &nats.trellis_creds, || false)
+        .await
+        .unwrap();
+    let mut received = client.subscribe("restart.check").await.unwrap();
+    tokio::task::spawn_blocking(move || broker.stop().unwrap())
+        .await
+        .unwrap();
+    let mut broker = start_broker(root, &root.join("config"), [ports[1], ports[2], ports[3]]).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let _ = client.publish("restart.check", "after".into()).await;
+            if let Ok(Some(message)) =
+                tokio::time::timeout(Duration::from_millis(500), received.next()).await
+            {
+                break message;
+            }
+        }
+    })
+    .await
+    .expect("the connection did not come back after the broker restarted");
 
     tokio::task::spawn_blocking(move || broker.stop().unwrap())
         .await

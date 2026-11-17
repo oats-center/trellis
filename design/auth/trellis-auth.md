@@ -301,7 +301,15 @@ WebSocket ones, never a mix in one connection. Both HTTP listeners answer
 addresses a target directly can probe them. Runtime startup selects its rustls provider before
 opening NATS. `[nats] ca_certificate` names a private CA the runtime trusts for
 its own broker connections, built-in providers, and split-role Auth discovery;
-publicly trusted brokers omit it.
+publicly trusted brokers omit it. Every NATS connection Trellis makes, the
+runtime's and each Rust client's, takes TLS from its server URL: `tls://` and
+`wss://` always use it, and so does a server whose INFO requires it. A CA file
+or broker name only says what to trust, so a plaintext loopback `nats://`
+broker still connects beside a private CA for HTTPS. A broker certificate not
+issued for the name dialled (or `RuntimeAuthorizationTrust.nats_server_name`),
+or not chaining to a trusted CA, fails the attempt at once and is not retried.
+A Rust client never dials servers the broker reports: it reconnects by opening
+a new transport generation over the advertised list.
 
 ### Installation TLS (`crates/bootstrap/src/tls.rs`, `tls.rs`)
 
@@ -1248,7 +1256,8 @@ cannot be reached, the role keeps its lease but stands by, is not counted as
 running, and tries again, waiting 250 ms at first and doubling to 15 s, until
 the provider connects, the lease is lost, or the process stops. A provider that
 can never connect as configured, such as one whose installed authority does not
-match its generated role, still ends the process. The platform's own provider
+match its generated role or whose broker certificate does not verify, still
+ends the process. The platform's own provider
 connects to the Auth it runs, which serves until the platform stops, so it does
 not wait this way.
 

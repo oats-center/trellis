@@ -1916,6 +1916,13 @@ and the returned trust carries it into the broker connection. A known CA file
 still works through `discover_native_oauth(issuer, &[ca_path])`. Never disable
 certificate verification.
 
+The broker connection uses TLS when its URL is `tls://` or `wss://` or the
+broker requires it; the trusted CA only says what to trust, so a plaintext
+loopback `nats://` broker still connects. A broker certificate not issued for
+the URL's host, or not chaining to the trusted CA, fails with
+`TrellisClientError::NatsConnectConfig`, which retrying won't fix; other
+connect failures are `TrellisClientError::NatsConnect` and can pass.
+
 When the build differs from the revision its instance runs, `connect` submits
 the build and returns once it installs. A build that asks for new access waits
 for an administrator, logging the review link and printing it as a QR code on

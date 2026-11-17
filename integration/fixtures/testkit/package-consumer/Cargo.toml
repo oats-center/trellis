@@ -7,7 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
-async-nats = "0.50"
+async-nats = "0.53"
 futures-util = "0.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json", "form"] }
 serde_json = "1"

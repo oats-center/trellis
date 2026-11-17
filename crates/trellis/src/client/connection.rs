@@ -1844,6 +1844,7 @@ impl TrellisClient {
             | TrellisClientError::Codec(_)
             | TrellisClientError::Subject(_)
             | TrellisClientError::Bootstrap(_)
+            | TrellisClientError::NatsConnectConfig(_)
             | TrellisClientError::OperationProtocol(_)
             | TrellisClientError::TransferProtocol(_)
             | TrellisClientError::EventSubscriptionProtocol(_)
