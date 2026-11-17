@@ -1151,9 +1151,12 @@ pub(super) fn update_profile(
     )
 }
 
-/// Hashes a new local password at least `minimum` bytes long.
+/// Hashes a new local password at least `minimum` characters long.
+///
+/// Characters are Unicode scalar values, the unit the Portal and Console count.
+/// The separate 4096-byte cap bounds the hashing work a request can cause.
 pub(super) fn hash_password(password: &str, minimum: u32) -> Result<String, AuthError> {
-    if !(minimum as usize..=4096).contains(&password.len()) {
+    if password.len() > 4096 || password.chars().count() < minimum as usize {
         return Err(AuthError::Invalid("invalid password length".into()));
     }
     Ok(Argon2::default()

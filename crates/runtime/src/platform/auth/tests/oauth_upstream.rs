@@ -799,6 +799,25 @@ staticPasswords:
                     .status(),
                 reqwest::StatusCode::BAD_REQUEST
             );
+            // Seven emoji are 28 bytes but fewer characters than the minimum
+            // of 8: the form comes back saying so, and the link still works.
+            let short = http
+                .post(format!("{origin}/portal/account/reset"))
+                .header("Origin", &origin)
+                .form(&[
+                    ("token", reset.token.as_str()),
+                    ("csrf", csrf.as_str()),
+                    ("password", "🔑".repeat(7).as_str()),
+                ])
+                .send()
+                .await
+                .unwrap();
+            assert!(short.status().is_success());
+            assert!(short
+                .text()
+                .await
+                .unwrap()
+                .contains(r#"role="alert">Use at least 8 characters."#));
             assert!(http
                 .post(format!("{origin}/portal/account/reset"))
                 .header("Origin", &origin)

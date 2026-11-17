@@ -228,6 +228,21 @@ test("browser admin bootstrap reaches the authorized console and survives reload
         await page.goto(await runtime.bootstrapUrl(), {
           waitUntil: "domcontentloaded",
         });
+        // The page counts the new password's characters as Auth does: seven
+        // emoji are 14 UTF-16 code units, which HTML minlength would accept,
+        // but fewer than the minimum of 8, so the form is never sent.
+        const resetUrl = page.url();
+        await page
+          .getByLabel("New password", { exact: true })
+          .fill("🔑".repeat(7));
+        await page
+          .getByRole("button", { name: "Set password", exact: true })
+          .click();
+        await page
+          .getByRole("alert")
+          .getByText("Use at least 8 characters.", { exact: true })
+          .waitFor();
+        assert.equal(page.url(), resetUrl);
         await completeAdminBootstrapInBrowser(page, runtime, BROWSER_ADMIN);
         await page.waitForURL((url) => url.origin === runtime.trellisUrl);
         await completeConsoleEntry(page, BROWSER_ADMIN);

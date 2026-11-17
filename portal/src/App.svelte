@@ -193,6 +193,10 @@
     providers: false,
   });
   let passwordMinLength = $state<number | null>(null);
+  // Auth counts a password's characters as Unicode code points, so a string's
+  // spread length, not the UTF-16 count HTML minlength uses.
+  let signUpPassword = $state("");
+  let passwordTooShort = $state(false);
   let creating = $state(query.get("sign_up") === "1");
   let providerError = $state(false);
   // The server marks pages it serves with Trellis-generated certificates.
@@ -748,7 +752,19 @@
         Your account wasn't created. Try again.
       </p>
     {/if}
-    <form method="post" action={`/portal/sign-up`}>
+    <form
+      method="post"
+      action={`/portal/sign-up`}
+      onsubmit={(event) => {
+        passwordTooShort =
+          passwordMinLength !== null &&
+          [...signUpPassword].length < passwordMinLength;
+        if (passwordTooShort) {
+          event.preventDefault();
+          document.getElementById("password")?.focus();
+        }
+      }}
+    >
       <input type="hidden" name="csrf" value={csrf} />
       <input type="hidden" name="request_id" value={transaction} />
       <label class="field" for="name">Name</label>
@@ -771,12 +787,24 @@
         name="password"
         type="password"
         autocomplete="new-password"
-        minlength={passwordMinLength}
-        maxlength="512"
-        aria-describedby={passwordMinLength ? "password-hint" : undefined}
+        maxlength="4096"
+        bind:value={signUpPassword}
+        oninput={() => (passwordTooShort = false)}
+        aria-invalid={passwordTooShort}
+        aria-describedby={passwordTooShort
+          ? "password-error"
+          : passwordMinLength
+            ? "password-hint"
+            : undefined}
         required
       />
-      {#if passwordMinLength}<p class="hint" id="password-hint">
+      {#if passwordTooShort}<p
+          class="alert error"
+          id="password-error"
+          role="alert"
+        >
+          Use at least {passwordMinLength} characters.
+        </p>{:else if passwordMinLength}<p class="hint" id="password-hint">
           At least {passwordMinLength} characters.
         </p>{/if}
       <button class="primary block" type="submit" disabled={!csrf}
