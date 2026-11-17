@@ -1234,7 +1234,15 @@ ready once every role has first started or stood by, while some role runs and,
 when the process includes the platform, the platform runs. A role other than
 the platform restarting on its own leaves readiness unchanged. When the
 platform runs elsewhere, a non-platform role prepares its built-in provider by
-trusting the configured Auth origin, as a split role does.
+trusting the configured Auth origin, as a split role does. When Auth cannot
+admit that provider, because Auth stands by, is moving to another server, or
+cannot be reached, the role keeps its lease but stands by, is not counted as
+running, and tries again, waiting 250 ms at first and doubling to 15 s, until
+the provider connects, the lease is lost, or the process stops. A provider that
+can never connect as configured, such as one whose installed authority does not
+match its generated role, still ends the process. The platform's own provider
+connects to the Auth it runs, which serves until the platform stops, so it does
+not wait this way.
 
 `Auth.ResourceBindings.Query` is the native-IDL, paginated read boundary for
 runtime Job and Event consumer evidence. `trellis.auth.v1:bindings.readJobs` and

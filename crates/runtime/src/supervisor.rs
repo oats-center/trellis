@@ -557,6 +557,10 @@ pub enum RuntimeError {
     /// Platform authorization setup or runtime failed.
     #[error("platform subsystem failed: {0}")]
     Platform(String),
+    /// Auth or the broker could not admit a built-in provider now; a later
+    /// attempt can succeed.
+    #[error("Auth is unavailable: {0}")]
+    AuthUnavailable(String),
     /// A subsystem scaffold failed to start.
     #[error("failed to start runtime subsystem {subsystem}: {reason}")]
     Subsystem {
@@ -686,7 +690,8 @@ enum GroupState {
     Starting,
     /// Doing its work.
     Running,
-    /// Waiting for its lease while another runtime or a broker failure keeps it.
+    /// Waiting for its lease while another runtime or a broker failure keeps
+    /// it, or holding it while Auth cannot yet admit its built-in provider.
     StandingBy,
 }
 
@@ -1165,15 +1170,40 @@ async fn run_owned_group(
         context.serve_platform_routes(Some(context.take_http_router()?));
     }
     let mut handles = vec![handle];
-    // A built-in provider's bootstrap failure fails the group, never a
-    // dispatch-time fallback.
+    // A role other than the platform waits out Auth that cannot admit its
+    // built-in provider, as when Auth stops serving or moves to another
+    // server, and stands by until it can. Any other bootstrap failure fails the
+    // group, never a dispatch-time fallback. The platform's provider connects
+    // to its own Auth, which serves until this group stops.
+    let bootstrap = async {
+        let mut delay = PROVIDER_RETRY_INITIAL;
+        loop {
+            match bootstrap_live_provider(context, role).await {
+                Err(RuntimeError::AuthUnavailable(reason)) if group != OwnerGroup::Platform => {
+                    // Equal jitter keeps roles that failed together from
+                    // retrying together.
+                    let wait = delay - delay.mul_f64(rand::random_range(0.0..0.5));
+                    tracing::warn!(
+                        %subsystem,
+                        error = %reason,
+                        retry_in_ms = wait.as_millis(),
+                        "Auth cannot admit this work's built-in provider yet; it stands by"
+                    );
+                    context.groups.set(group, GroupState::StandingBy);
+                    tokio::time::sleep(wait).await;
+                    delay = (delay * 2).min(PROVIDER_RETRY_MAX);
+                }
+                result => break result,
+            }
+        }
+    };
     let bootstrap_failure = tokio::select! {
         biased;
         lost = ownership.wait_for_renewal_failure() => {
             Some((Err(lost), RuntimeStopCause::OwnershipLost))
         }
         () = stop.stopped() => Some((Ok(()), RuntimeStopCause::Signal)),
-        result = bootstrap_live_provider(context, role) => {
+        result = bootstrap => {
             result.err().map(|error| (Err(error), RuntimeStopCause::SubsystemFailed))
         }
     };
@@ -1248,6 +1278,10 @@ fn preserve_run_primary(
 
 /// Bound on one built-in live provider's ordinary native bootstrap.
 const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 35_000;
+/// First wait before a provider Auth could not admit tries again.
+const PROVIDER_RETRY_INITIAL: Duration = Duration::from_millis(250);
+/// Longest wait between a provider's attempts while Auth cannot admit it.
+const PROVIDER_RETRY_MAX: Duration = Duration::from_secs(15);
 
 /// Connects the built-in live provider for one role and delivers it to the
 /// subsystem that serves its live routes.
@@ -1294,7 +1328,14 @@ async fn bootstrap_live_provider(
             trellis_rs::auth::discover_native_oauth(&origin, &root_certificates)
                 .await
                 .map_err(|error| {
-                    RuntimeError::Platform(format!("discover configured Auth origin: {error}"))
+                    let message = format!("discover configured Auth origin: {error}");
+                    match error {
+                        trellis_rs::auth::NativeOAuthError::Unavailable
+                        | trellis_rs::auth::NativeOAuthError::Busy => {
+                            RuntimeError::AuthUnavailable(message)
+                        }
+                        _ => RuntimeError::Platform(message),
+                    }
                 })?
                 .trust
         }

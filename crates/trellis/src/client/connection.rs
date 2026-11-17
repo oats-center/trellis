@@ -1404,7 +1404,7 @@ impl TrellisClient {
                 ..
             } if kind == trellis_protocol::PrincipalKind::Device && bound == participant_id => (),
             _ => {
-                return Err(TrellisClientError::AuthorizationUnavailable(
+                return Err(TrellisClientError::Bootstrap(
                     "provisioned binding mismatch".into(),
                 ))
             }

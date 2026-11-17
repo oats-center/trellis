@@ -2,7 +2,7 @@
 
 use trellis_protocol::SessionBinding;
 use trellis_rs::client::{
-    RuntimeAuthorizationTrust, ServiceConnectWithContractOptions, TrellisClient,
+    RuntimeAuthorizationTrust, ServiceConnectWithContractOptions, TrellisClient, TrellisClientError,
 };
 use trellis_rs::generated::ParticipantDescriptor;
 
@@ -91,6 +91,8 @@ pub struct BuiltinLiveProviderConnectOptions {
 ///
 /// # Errors
 /// Admission or a mismatch with the generated role and persisted record fails.
+/// [`RuntimeError::AuthUnavailable`] means Auth or the broker could not admit
+/// the provider now, and a later attempt can succeed.
 pub async fn connect_builtin_live_provider(
     role: LiveProviderRole,
     identity_seed_base64url: &str,
@@ -142,7 +144,23 @@ async fn connect<C: ParticipantDescriptor>(
     })
     .await
     .map_err(|error| {
-        RuntimeError::Platform(format!("built-in native provider connect: {error}"))
+        let message = format!("built-in native provider connect: {error}");
+        // Auth or the broker failing to admit the provider now, as when Auth
+        // stops serving or moves to another server, can pass; anything else
+        // fails the same way on every attempt.
+        match error {
+            TrellisClientError::Timeout
+            | TrellisClientError::Nats(_)
+            | TrellisClientError::NatsConnect(_)
+            | TrellisClientError::NatsRequest(_)
+            | TrellisClientError::ServiceUnavailable(_)
+            | TrellisClientError::AuthorizationUnavailable(_)
+            | TrellisClientError::TransportUnavailable(_) => RuntimeError::AuthUnavailable(message),
+            TrellisClientError::BootstrapHttp { status, .. } if status >= 500 => {
+                RuntimeError::AuthUnavailable(message)
+            }
+            _ => RuntimeError::Platform(message),
+        }
     })?;
     let context = client
         .authorization_context()

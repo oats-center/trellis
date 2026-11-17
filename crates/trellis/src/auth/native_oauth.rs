@@ -90,6 +90,11 @@ pub async fn discover_native_oauth(
         if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             return Err(NativeOAuthError::Busy);
         }
+        // A server that cannot answer now, such as one whose Auth stands by or
+        // a proxy with no Auth behind it, is unavailable, not mismatched.
+        if response.status().is_server_error() {
+            return Err(NativeOAuthError::Unavailable);
+        }
         let json = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -109,6 +114,9 @@ pub async fn discover_native_oauth(
             .send()
             .await
             .map_err(|_| NativeOAuthError::Unavailable)?;
+        if response.status().is_server_error() {
+            return Err(NativeOAuthError::Unavailable);
+        }
         if !response.status().is_success() {
             return Err(NativeOAuthError::InvalidResponse);
         }
@@ -292,7 +300,8 @@ pub enum NativeOAuthError {
     /// Device authorization expired before approval.
     #[error("OAuth device authorization expired")]
     Expired,
-    /// A bounded HTTP exchange failed; durable credentials remain stored.
+    /// A bounded HTTP exchange failed, or discovery got a server error, as
+    /// from an Auth that is not serving; durable credentials remain stored.
     #[error("OAuth endpoint unavailable")]
     Unavailable,
     /// A discovery hint could not be authenticated from the retained issuer pin.

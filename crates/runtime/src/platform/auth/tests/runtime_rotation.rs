@@ -940,6 +940,148 @@ async fn a_runtime_that_loses_a_lease_stands_by_for_that_work_alone() {
     drop(reserved);
 }
 
+/// A role that takes its lease while Auth cannot admit its built-in provider,
+/// because another owner holds the platform's lease, stands by instead of
+/// ending the process: its provider never connects meanwhile, and connects
+/// once Auth serves here again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_role_whose_provider_auth_cannot_admit_stands_by_until_it_can() {
+    use futures_util::StreamExt as _;
+    use trellis_rs::generated::ParticipantDescriptor as _;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let reserved: Vec<_> = (0..4)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    let origin = format!("http://127.0.0.1:{}", ports[0]);
+    let (mut config, mut broker) =
+        installation(root, &ports, &origin, "loopback_development").await;
+    let leases = config
+        .leases
+        .as_mut()
+        .expect("an installation configures leases");
+    leases.ttl_ms = Some(3_000);
+    leases.renew_ms = Some(1_000);
+    let (stop, mut runtime) = start_runtime(&config, &origin, &[]).await;
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let ready = || async {
+        http.get(format!("{origin}/readyz"))
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
+    };
+    let nats = config.resolve_nats_runtime().unwrap();
+    let client = crate::supervisor::nats_connect_options(&nats, &nats.trellis_creds)
+        .unwrap()
+        .connect(nats.server_urls())
+        .await
+        .unwrap();
+    let leases = async_nats::jetstream::new(client.clone())
+        .get_key_value(config.resolve_leases().unwrap().bucket)
+        .await
+        .unwrap();
+    let owner = leases.entry("jobs.owner").await.unwrap().unwrap().value;
+    macro_rules! within {
+        ($what:literal, $done:expr) => {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    tokio::select! {
+                        result = &mut runtime => panic!("runtime exited: {result:?}"),
+                        () = tokio::time::sleep(Duration::from_millis(200)) => {}
+                    }
+                    if $done {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect($what)
+        };
+    }
+
+    // Another owner holds the platform lease, so nothing serves Auth.
+    let other = AbortOnDropHandle::new(tokio::spawn({
+        let leases = leases.clone();
+        async move {
+            loop {
+                leases
+                    .put("platform.owner", "another-runtime".into())
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }));
+    within!("the server went unready without its platform lease", {
+        !ready().await
+    });
+
+    // Jobs loses its lease and takes it back, so it starts again and connects
+    // its provider while Auth cannot admit it.
+    let before = leases.entry("jobs.owner").await.unwrap().unwrap().revision;
+    leases.purge("jobs.owner").await.unwrap();
+    within!("the runtime took its jobs lease back", {
+        leases
+            .entry("jobs.owner")
+            .await
+            .unwrap()
+            .is_some_and(|entry| entry.value == owner && entry.revision > before)
+    });
+    // A connected provider reports to Health at once.
+    let jobs = <trellis_runtime_apis::participants::trellis_jobs_runtime::Participant>::ID;
+    let mut heartbeats = client
+        .subscribe(crate::health::HEALTH_SUBJECT)
+        .await
+        .unwrap()
+        .filter(|message| {
+            let heartbeat =
+                serde_json::from_slice::<serde_json::Value>(&message.payload).unwrap_or_default();
+            std::future::ready(heartbeat.pointer("/participant/contractId") == Some(&jobs.into()))
+        });
+    let waited = tokio::time::Instant::now();
+    while waited.elapsed() < Duration::from_secs(5) {
+        tokio::select! {
+            result = &mut runtime => panic!("runtime exited while Auth stood by: {result:?}"),
+            heartbeat = heartbeats.next() => {
+                panic!("jobs connected its provider without Auth: {heartbeat:?}")
+            }
+            () = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+        assert!(!ready().await, "the server served Auth without its lease");
+    }
+
+    // Once Auth serves here again, jobs's provider connects.
+    drop(other);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::select! {
+            result = &mut runtime => panic!("runtime exited: {result:?}"),
+            heartbeat = heartbeats.next() => heartbeat.expect("heartbeat subscription"),
+        }
+    })
+    .await
+    .expect("jobs connected its provider once Auth served again");
+    within!("Auth resumed once the other owner's lease expired", {
+        ready().await
+    });
+
+    stop.stop();
+    tokio::time::timeout(Duration::from_secs(30), &mut runtime)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::task::spawn_blocking(move || broker.stop().unwrap())
+        .await
+        .unwrap();
+    drop(reserved);
+}
+
 /// An owner's stop request ends the runtime whenever it arrives during
 /// startup: one made before the runtime runs, and one made while it is still
 /// connecting and taking its leases. Either way it returns promptly and leaves
