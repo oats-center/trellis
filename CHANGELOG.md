@@ -17,6 +17,15 @@ and this project adheres to
   version and page together. The Portal's sign-in and consent pages carry their
   data with the page, so the provider button no longer pops in.
 
+### Fixed
+
+- A runtime whose jobs, health or events work fails while its built-in
+  provider waits for Auth stops that work and gives up its lease, instead of
+  renewing the lease with nothing running so no other instance could take over.
+- In the Console's Add service form, dependency files still being read when the
+  IDL changes are dropped instead of reaching the new draft, and a later choice
+  of IDL wins over an earlier one still being read.
+
 ## [0.100.0-rc.47] - 2026-11-17
 
 ### Changed

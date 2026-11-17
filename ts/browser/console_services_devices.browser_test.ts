@@ -419,6 +419,95 @@ test("B01f a package uploaded under another package's row is refused on that row
   }, browserRuntimeOptions());
 });
 
+test("B01g files for a dependency still being read when the IDL changes never reach the new draft", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      // Reading units.trellis waits until the test lets it finish, so the IDL
+      // can change in between.
+      await page.addInitScript(() => {
+        const read = File.prototype.text;
+        const state = window as unknown as {
+          holdUnits?: boolean;
+          releaseUnits?: () => void;
+          unitsRead?: boolean;
+        };
+        File.prototype.text = async function (this: File) {
+          if (this.name === "units.trellis" && state.holdUnits) {
+            await new Promise<void>((resolve) => {
+              state.releaseUnits = resolve;
+            });
+            const text = await read.call(this);
+            state.unitsRead = true;
+            return text;
+          }
+          return await read.call(this);
+        };
+      });
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForConsoleShell(page);
+      const file = (name: string, text: string) => ({
+        name,
+        mimeType: "text/plain",
+        buffer: Buffer.from(text),
+      });
+      await page.getByLabel("Name", { exact: true }).fill(`ct-b01g-${ulid()}`);
+      const idl = page.getByLabel("Service IDL (optional)");
+      await idl.setInputFiles([
+        file("trellis.toml", METERS_MANIFEST),
+        file("meters.trellis", METERS),
+      ]);
+      const missing = page.getByRole("region", {
+        name: "Packages Trellis doesn't have",
+      });
+      await missing.getByText("scales", { exact: true }).waitFor();
+      await page.evaluate(() => {
+        (window as unknown as { holdUnits: boolean }).holdUnits = true;
+      });
+      await missing
+        .getByLabel("Files for units", { exact: true })
+        .setInputFiles([
+          file("trellis.toml", UNITS_MANIFEST),
+          file("units.trellis", UNITS),
+        ]);
+      await page.waitForFunction(
+        () =>
+          typeof (window as unknown as { releaseUnits?: () => void })
+            .releaseUnits === "function",
+      );
+      // The IDL changes to one that needs only units, then the held read ends.
+      await idl.setInputFiles([
+        file("trellis.toml", GAUGES_MANIFEST),
+        file("gauges.trellis", GAUGES),
+      ]);
+      await missing.getByText("^2.1.0", { exact: true }).waitFor();
+      await page.evaluate(() => {
+        (window as unknown as { releaseUnits: () => void }).releaseUnits();
+      });
+      await page.waitForFunction(
+        () => (window as unknown as { unitsRead?: boolean }).unitsRead === true,
+      );
+      // Had the old selection been kept, the new draft would resolve within
+      // one round trip; it must stay waiting for units.
+      for (let check = 0; check < 10; check++) {
+        assert.equal(
+          await page.getByText("Adds gauges.Gauge.").count(),
+          0,
+          "files chosen for the earlier IDL reached the new draft",
+        );
+        await page.waitForTimeout(150);
+      }
+      assert.equal(await missing.getByLabel("Files used for units").count(), 0);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 test("B01c a dependency Trellis doesn't have is listed, and adding its files lets the service be added", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);

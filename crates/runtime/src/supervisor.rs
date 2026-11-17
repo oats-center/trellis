@@ -1203,6 +1203,18 @@ async fn run_owned_group(
             Some((Err(lost), RuntimeStopCause::OwnershipLost))
         }
         () = stop.stopped() => Some((Ok(()), RuntimeStopCause::Signal)),
+        // The work can fail while its provider waits for Auth; it then gives
+        // up its lease rather than holding it with nothing running.
+        (index, task_result) = wait_for_subsystem(&mut handles), if !handles.is_empty() => {
+            let error = subsystem_failure(
+                &mut handles,
+                index,
+                task_result,
+                &context.groups.components,
+                &[component_label(subsystem)],
+            );
+            Some((Err(error), RuntimeStopCause::SubsystemFailed))
+        }
         result = bootstrap => {
             result.err().map(|error| (Err(error), RuntimeStopCause::SubsystemFailed))
         }
@@ -1421,23 +1433,37 @@ where
             RuntimeStopCause::HttpFinished,
         ),
         (index, task_result) = wait_for_subsystem(handles), if !handles.is_empty() => {
-            let failed = handles.swap_remove(index);
-            // The failing component is no longer ready; the supervisor records
-            // the transition before reporting the failure.
-            let label = component_label(failed.name);
-            if component_names.contains(&label) {
-                readiness.set(label, 0.0);
-            }
-            let result = match task_result {
-                Ok(Ok(())) => Err(RuntimeError::SubsystemExited { subsystem: failed.name }),
-                Ok(Err(error)) => Err(error),
-                Err(source) => Err(RuntimeError::SubsystemTask {
-                    subsystem: failed.name,
-                    source,
-                }),
-            };
-            (result, false, RuntimeStopCause::SubsystemFailed)
+            let error = subsystem_failure(handles, index, task_result, readiness, component_names);
+            (Err(error), false, RuntimeStopCause::SubsystemFailed)
         }
+    }
+}
+
+/// Removes the subsystem task that ended from `handles`, marks its component
+/// unready, and says why it ended: a subsystem task never ends on its own.
+fn subsystem_failure(
+    handles: &mut Vec<SubsystemHandle>,
+    index: usize,
+    task_result: Result<Result<(), RuntimeError>, tokio::task::JoinError>,
+    readiness: &crate::telemetry::snapshots::ComponentReadiness,
+    component_names: &[&'static str],
+) -> RuntimeError {
+    let failed = handles.swap_remove(index);
+    // The failing component is no longer ready; the supervisor records the
+    // transition before reporting the failure.
+    let label = component_label(failed.name);
+    if component_names.contains(&label) {
+        readiness.set(label, 0.0);
+    }
+    match task_result {
+        Ok(Ok(())) => RuntimeError::SubsystemExited {
+            subsystem: failed.name,
+        },
+        Ok(Err(error)) => error,
+        Err(source) => RuntimeError::SubsystemTask {
+            subsystem: failed.name,
+            source,
+        },
     }
 }
 

@@ -41,6 +41,7 @@
   // a selection made while another resolves is never lost. `epoch` changes with
   // the IDL; a change queued for an earlier IDL is skipped.
   let changes: Promise<void> = Promise.resolve();
+  let rootPicks = 0;
   let queued = 0;
   let epoch = 0;
   type Missing = apis.auth.PackagesResolveOutput["missing"][number];
@@ -173,9 +174,11 @@
 
   async function chooseRoot(event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
+    // Reading files takes time; a later choice of IDL wins over this one.
+    const pick = ++rootPicks;
     const chosen = await readPackage(input.files);
     input.value = "";
-    if (disposed) return;
+    if (disposed || pick !== rootPicks) return;
     root = chosen;
     epoch++;
     extras = {};
@@ -206,9 +209,12 @@
   // one leaves the IDL and every other package as they were.
   async function chooseExtra(name: string, event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
+    // Files chosen for one IDL never reach a draft for another, even when
+    // the IDL changes while they are still being read.
+    const chosenFor = epoch;
     const chosen = await readPackage(input.files);
     input.value = "";
-    if (disposed) return;
+    if (disposed || chosenFor !== epoch) return;
     if (!chosen?.manifest || chosen.files.length === 0) {
       extraErrors = {
         ...extraErrors,
@@ -562,6 +568,7 @@
             disabled={busy || uncertain}
             onclick={() => {
               root = null;
+              rootPicks++;
               epoch++;
               extras = {};
               wanted = [];
