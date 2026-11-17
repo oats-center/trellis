@@ -150,10 +150,9 @@ impl SqliteAuthorizationStore {
         setup_storage: Option<&super::OAuthStorage>,
         now: i64,
     ) -> Result<InitializationResult, AuthError> {
-        if username.trim() != username
-            || username.is_empty()
-            || password.is_some_and(|password| password.chars().count() < 12)
-        {
+        // The password is checked against the sign-in settings' minimum when
+        // the administrator is recorded, inside the transaction below.
+        if username.trim() != username || username.is_empty() {
             return Err(AuthError::Invalid(
                 "invalid administrator credentials".into(),
             ));
