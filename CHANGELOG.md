@@ -16,6 +16,9 @@ and this project adheres to
   `/token`), discovery is read once, and the shell appears with its navigation,
   version and page together. The Portal's sign-in and consent pages carry their
   data with the page, so the provider button no longer pops in.
+- The Console's page draws its loading screen itself, in the device's theme,
+  so there is no blank frame before the app starts. The header's version loads
+  on its own and fades in when it arrives, instead of holding back the shell.
 
 ### Fixed
 

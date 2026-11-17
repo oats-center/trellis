@@ -77,3 +77,47 @@ test("light or dark follows the device until the Console's choice overrides it, 
     }
   }, browserRuntimeOptions());
 });
+
+test("the Console shows its loading screen in the device's theme before its scripts run, and drops it once they do", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const browser = await chromium.launch({
+      headless: true,
+      env: browserTrustEnvironment(),
+    });
+    try {
+      const context = await browser.newContext({ colorScheme: "dark" });
+      const page = await context.newPage();
+      // The app's code never arrives, as on a slow first load: what the page
+      // itself draws is all that shows.
+      await page.route("**/assets/web/immutable/**", (route) => route.abort());
+      await page.route("**/assets/web/bootstrap.js", (route) => route.abort());
+      await page.goto(`${runtime.consoleUrl}/console`, {
+        waitUntil: "domcontentloaded",
+      });
+      const boot = page.locator("#trellis-boot");
+      await boot.getByText("Trellis", { exact: true }).waitFor();
+      assert.equal(
+        await boot.evaluate(
+          (element) => getComputedStyle(element).backgroundColor,
+        ),
+        DARK,
+      );
+
+      // With its code, the app takes over and the page's screen goes.
+      await page.unrouteAll();
+      await page.goto(`${runtime.consoleUrl}/console`, {
+        waitUntil: "domcontentloaded",
+      });
+      await completeConsoleEntry(page, {
+        username: runtime.adminUsername,
+        password: runtime.adminPassword,
+      });
+      await page
+        .getByRole("heading", { name: "Your account", exact: true })
+        .waitFor();
+      assert.equal(await page.locator("#trellis-boot").count(), 0);
+    } finally {
+      await browser.close();
+    }
+  }, browserRuntimeOptions());
+});

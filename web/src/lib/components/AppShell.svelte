@@ -12,6 +12,7 @@
   import { base, resolve } from "$lib/console_paths";
   import { page } from "$app/state";
   import type { Snippet } from "svelte";
+  import { fade } from "svelte/transition";
   import type { ConnectionStatus } from "../trellis";
   import { consoleTheme } from "../theme.svelte";
   import {
@@ -153,6 +154,7 @@
           <div
             class="hidden items-center gap-2 text-xs text-base-content/65 sm:flex"
             data-testid="runtime-version"
+            in:fade={{ duration: 150 }}
           >
             <span class="whitespace-nowrap"
               >Trellis {runtimeVersion.version}</span

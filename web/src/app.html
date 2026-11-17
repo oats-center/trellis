@@ -41,10 +41,107 @@
         );
       })();
     </script>
+    <style>
+      /* Shown from the first frame until the app's own loading screen takes
+         over, and drawn the same way, so there is no blank page between. */
+      html {
+        background: #f3f0e9;
+      }
+      html[data-theme="trellis-dark"] {
+        background: #11151b;
+      }
+      #trellis-boot {
+        position: fixed;
+        inset: 0;
+        z-index: 70;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.5rem;
+        background: #f3f0e9;
+        color: #2e2924;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      html[data-theme="trellis-dark"] #trellis-boot {
+        background: #11151b;
+        color: #e8ebf0;
+      }
+      #trellis-boot .logo {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.625rem;
+      }
+      #trellis-boot .name {
+        font-size: 1.75rem;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -0.03em;
+      }
+      #trellis-boot .spin {
+        width: 1.5rem;
+        height: 1.5rem;
+        border-radius: 9999px;
+        opacity: 0.6;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        animation: trellis-boot-spin 0.75s linear infinite;
+      }
+      @keyframes trellis-boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #trellis-boot .spin {
+          animation-duration: 1.5s;
+        }
+      }
+    </style>
     <script src="%sveltekit.assets%/assets/web/runtime-config.js"></script>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">
+    <div id="trellis-boot" role="status" aria-live="polite">
+      <span class="logo"
+        ><svg width="30" height="38" viewBox="0 0 330 420" aria-hidden="true">
+          <path
+            fill="#6b6540"
+            d="M3 145h54c13 0 25 5 35 15l63 66c11 12 17 24 17 40v149h-32V290c0-25-18-41-42-41H70c-37 0-67-27-67-64z"
+          />
+          <path
+            fill="#8e7f47"
+            d="M233 2v83c0 45-38 80-75 115-33-35-58-60-54-95 4-45 56-80 129-103z"
+          />
+          <path
+            fill="#c2a86e"
+            d="M325 142v28c0 55-40 97-93 97h-50v-35c0-52 38-90 93-90z"
+          />
+          <path
+            fill="#ccc7b0"
+            d="M3 268h72c30 0 53 24 53 54v48H78c-42 0-75-33-75-70z"
+          /></svg
+        ><span class="name">Trellis</span></span
+      >
+      <span class="spin" aria-hidden="true"></span>
+      <span
+        style="
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          overflow: hidden;
+          clip: rect(0 0 0 0);
+        "
+        >Loading Trellis</span
+      >
+    </div>
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>

@@ -102,33 +102,22 @@
   // settles, so it appears whole instead of filling in piece by piece.
   let revealed = $state(false);
 
-  // The account check and the version read run together, so the header's
-  // version comes with the shell. An administrator's read can wait on GitHub
-  // for an hourly release check; the shell waits for it only briefly.
+  // The account check alone decides when the shell shows. The version read
+  // runs on its own, since an administrator's can wait on GitHub for an
+  // hourly release check; the header shows the version whenever it arrives.
   function loadAuthority(): void {
     const token = currentNavigationToken();
-    const version = canPerform(
-      trellis.ownAuthority.current ?? null,
-      "runtimeVersion",
-    )
-      ? trellis
-          .runtimeVersion({})
-          .orThrow()
-          .then(
-            (value) => {
-              runtimeVersion = value;
-            },
-            () => undefined,
-          )
-      : undefined;
-    void Promise.all([
-      authority.reload(),
-      version &&
-        Promise.race([
-          version,
-          new Promise((resolve) => setTimeout(resolve, 750)),
-        ]),
-    ]).then(([result]) => {
+    if (canPerform(trellis.ownAuthority.current ?? null, "runtimeVersion"))
+      void trellis
+        .runtimeVersion({})
+        .orThrow()
+        .then(
+          (value) => {
+            runtimeVersion = value;
+          },
+          () => undefined,
+        );
+    void authority.reload().then((result) => {
       revealed = true;
       if (result.state === "auth-required") redirectToLogin();
       completeNavigation(token, result.state === "ready" ? "ok" : "error");
