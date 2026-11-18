@@ -8,6 +8,19 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.49] - 2026-11-18
+
+### Changed
+
+- Hovering a generated TypeScript client or handler method (`client.get`,
+  `service.handleGet`, `publishX`, `onX`) shows its IDL docs, errors and
+  allowing capabilities, the same text as its action descriptor. Signatures
+  are unchanged.
+- A service's heartbeats, and any wait without a deadline, keep the idle
+  reconnect backoff (1, 2, 4, then 8 s). Only work with a deadline (requests,
+  operations, Live openings, publishes) still retries within a second, so a
+  running service no longer retries once a second for a whole outage.
+
 ## [0.100.0-rc.48] - 2026-11-18
 
 ### Added
