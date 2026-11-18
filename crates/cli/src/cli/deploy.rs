@@ -190,7 +190,12 @@ pub struct SvcCreateArgs {
     /// For a claim: the public key the service's owner made with
     /// `trellis keys new`, so only the owner holds the seed. Without it the
     /// CLI generates an identity and prints its seed once.
-    #[arg(long, value_name = "KEY", conflicts_with = "source")]
+    #[arg(
+        long,
+        value_name = "KEY",
+        conflicts_with = "source",
+        allow_hyphen_values = true
+    )]
     pub public_key: Option<String>,
     /// Confirm that this service may answer an API another service already
     /// serves, splitting callers' requests between the two.
@@ -255,7 +260,7 @@ pub struct SvcProvisionArgs {
     /// `trellis keys new`, or select the instance that already has it. Only
     /// the owner holds the seed. Without it the CLI selects the one existing
     /// instance, or generates an identity and prints its seed once.
-    #[arg(long, value_name = "KEY")]
+    #[arg(long, value_name = "KEY", allow_hyphen_values = true)]
     pub public_key: Option<String>,
     /// Create a replica instead of selecting an existing identity.
     #[arg(long)]
