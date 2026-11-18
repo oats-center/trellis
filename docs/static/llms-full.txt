@@ -187,8 +187,9 @@ Generated Rust ABI 2 shares primitive wire wrappers, nullable values, and cursor
 pages in `trellis-protocol`. Authored model identity and wire serialization do
 not change. Regenerate with the matching CLI and SDK; ABI mismatches fail
 compilation. Generated Rust packages select `trellis-models` bundles directly by
-exact native package identity, version, and semantic digest;
-compilation rejects a mismatched provider. Model bundles are versioned
+exact native package identity and semantic digest, using the bundle version the
+consuming Cargo graph resolves; compilation rejects a provider with a different
+digest. Model bundles are versioned
 independently of SDK implementation releases: old bundles can coexist with newer
 SDK models, and compatible SDK fixes do not require regeneration. A model
 snapshot change that alters generated Rust types takes an incompatible Cargo
@@ -1885,10 +1886,14 @@ connection boundary and only the declared caller/provider surfaces. Its
 constants carry source-package/participant evidence; applications do not supply
 digests to service bootstrap. Matching built-in models come from
 `trellis-models` rather than being copied into each generated package;
-package-name equality alone never substitutes one schema for another; the
-`trellis` dependency's locked version must equal the CLI's bundled
-`trellis-models` package version, not only its digest. Run `trellis generate -v`
-to see, per package, whether models were reused or inlined and why. A
+package-name equality alone never substitutes one schema for another.
+Generation binds the `trellis-models` version your `Cargo.lock` resolves (the
+CLI's own version when there is no lock yet) and reuses it when its semantic
+digest equals the `trellis` dependency's; the two package versions may differ.
+A resolved version missing from the local Cargo cache is inlined; run
+`cargo fetch` and generate again. Run `trellis generate -v` to see the resolved
+version, where its models were read, and, per package, whether models were
+reused or inlined and why. A
 support-ABI mismatch fails compilation and is not resolved through compatibility
 wrappers.
 

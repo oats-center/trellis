@@ -9,21 +9,26 @@ pub use scalars::{
     Uint64,
 };
 
-/// Exact native package identity for compiled models, not authority evidence.
+/// Native package identity for compiled models, not authority evidence.
 #[derive(Clone, Copy, Debug)]
 pub struct ModelPackage {
     /// Native package identity.
     pub name: &'static str,
-    /// Authored package version.
+    /// Authored package version. The semantic digest excludes it, so it only
+    /// labels the snapshot.
     pub version: &'static str,
     /// Semantic digest including pinned dependency identities.
     pub digest: &'static str,
 }
 
 /// Reject a generated binding to different compiled models at compile time.
+///
+/// Models are the same when package identity and semantic digest match. The
+/// authored versions may differ: a later model crate release that carries an
+/// unchanged snapshot provides the same models.
 pub const fn assert_model_binding(expected: ModelPackage, actual: ModelPackage) {
-    let expected = [expected.name, expected.version, expected.digest];
-    let actual = [actual.name, actual.version, actual.digest];
+    let expected = [expected.name, expected.digest];
+    let actual = [actual.name, actual.digest];
     let mut part = 0;
     while part < expected.len() {
         let left = expected[part].as_bytes();

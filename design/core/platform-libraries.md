@@ -100,13 +100,15 @@ snapshots do not acquire different SDK-owned primitive types.
 
 SDK archives include producer-generated, package-relative built-in bindings;
 downstream SDK builds do not compile IDL or generators. Matching native packages
-reuse a separately versioned model bundle through exact identity/version/digest
+reuse a separately versioned model bundle through exact identity/digest
 bindings, checked against the compiled provider. Generated
 crates depend directly on their model bundle; they do not borrow the SDK's
 current snapshot. Old bundles can coexist with the SDK's newer models. Shared
 model metadata is not authority evidence and does not change runtime authorization.
-The CLI embeds its selected model bindings at build time; generation does not
-read the compiler producer's checkout at runtime.
+The CLI embeds the binding for its own model bundle at build time. For another
+bundle version the consumer's Cargo graph resolves, it reads the binding from
+that bundle's published generated source; generation never reads the compiler
+producer's checkout at runtime.
 
 The protocol, native-contract, and model versions move only when their
 contents change. `release prepare` compares each with what was published (the
