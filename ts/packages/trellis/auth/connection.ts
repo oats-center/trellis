@@ -48,6 +48,8 @@ export type ProvisionedConnectionOptions = {
 /** Subjects on which Auth announces a new provider of an API the session calls. */
 const PROVIDERS_NOTICE_SUBJECT_PREFIX = "trellis.auth.providers.";
 const ISSUER_NOTICE_SUBJECT = "trellis.auth.issuers";
+/** Pause before renewing again after a renewal Auth did not answer. */
+const RENEWAL_RETRY_MS = 1_000;
 
 const policySchema = z.object({
   format: z.literal("trellis.transport-authorization.v1"),
@@ -556,6 +558,8 @@ export async function connectAdmitted(options: {
     // Set when the attachment this renewal leased closed under it: ordinary
     // transport recovery then owns readmission, and this failure ends nothing.
     let withdrawn = false;
+    // Set when the renewal failed without Auth refusing it, so another runs.
+    let retry = false;
     const task = (async () => {
       // A reduction can withdraw the attachment while the existing admission
       // pipeline is preparing its replacement. Explicit renewal must join that
@@ -629,16 +633,13 @@ export async function connectAdmitted(options: {
     renewalTask = task
       .catch(async (error) => {
         if (!signal.aborted && !manager.isClosed() && !withdrawn) {
-          await manager.terminate(
-            error instanceof AuthError || error instanceof TransportError
-              ? error
-              : new TransportError({
-                  code: "trellis.transport.unavailable",
-                  message: "Authority renewal is unavailable.",
-                  hint: "Reconnect when the runtime is available.",
-                  cause: error,
-                }),
-          );
+          // Only a verified answer that retires or reduces this session ends
+          // it. Auth sends no unsigned refusal: when it is overloaded or slow,
+          // the admission reply never comes and the renewal times out. That is
+          // unavailability, so renewal runs again; once the installed
+          // authority expires, it no longer authorizes application work.
+          if (error instanceof AuthError) await manager.terminate(error);
+          else retry = true;
         }
         throw error;
       })
@@ -647,17 +648,22 @@ export async function connectAdmitted(options: {
           renewalTask = undefined;
           renewalAbort = undefined;
         }
+        if (renewalTask || manager.isClosed() || options.signal?.aborted)
+          return;
         // One trailing renewal covers every notice received meanwhile.
-        if (
-          renewalNoticed &&
-          !renewalTask &&
-          !manager.isClosed() &&
-          !options.signal?.aborted
-        ) {
+        if (renewalNoticed) {
           renewalNoticed = false;
           void refreshAuthority().catch(() => {
             /* typed failure is retained by closed() */
           });
+        } else if (retry) {
+          if (renewalTimer !== undefined) clearTimeout(renewalTimer);
+          renewalTimer = setTimeout(() => {
+            renewalTimer = undefined;
+            void refreshAuthority().catch(() => {
+              /* each failure schedules its own retry */
+            });
+          }, RENEWAL_RETRY_MS);
         }
       });
     return renewalTask;
