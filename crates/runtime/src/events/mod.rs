@@ -105,6 +105,9 @@ impl ConsumerBindingResolver for ConsumerBindingReader {
     }
 }
 
+/// How often recorded events and settled dead letters past retention are removed.
+const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 fn runtime_error(error: ServerError) -> RuntimeError {
     RuntimeError::Nats(error.to_string())
 }
@@ -454,6 +457,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         start_dead_letter_projector(context.trellis_nats.clone(), store.clone())
             .await
             .map_err(runtime_error)?;
+    let retention_store = store.clone();
+    let retention_journal = journal.clone();
+    let history = crate::resources::days(context.config.events_history_retention_days());
+    let dead_letter_days = crate::resources::days(context.config.dead_letter_retention_days());
     let mut replay_dispatcher = start_replay_dispatcher(context.trellis_nats.clone(), journal)
         .await
         .map_err(runtime_error)?;
@@ -483,6 +490,31 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 task_stop.clone(),
             )),
         ]);
+        // Retention failures are retried on the next pass; they never stop
+        // recording.
+        let retention_loop = async move {
+            let mut ticks = tokio::time::interval(RETENTION_INTERVAL);
+            loop {
+                ticks.tick().await;
+                match trellis_events_runtime::apply_retention(
+                    &retention_store,
+                    &retention_journal,
+                    history,
+                    dead_letter_days,
+                )
+                .await
+                {
+                    Ok(pass) if pass != Default::default() => tracing::info!(
+                        events = pass.events,
+                        dead_letters = pass.dead_letters,
+                        "removed Events history past its retention"
+                    ),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "retrying Events retention"),
+                }
+            }
+        };
+        tokio::pin!(retention_loop);
         let api_stop = task_stop.clone();
         let api_loop = async move {
             let mut live_owner = live_owner;
@@ -500,6 +532,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             tokio::select! {
                 biased;
                 () = task_stop.stopped() => Ok(()),
+                () = &mut retention_loop => Ok(()),
                 result = &mut api_loop => result.map_err(runtime_error),
                 result = projector.wait() => {
                     match result {

@@ -835,6 +835,70 @@ pub(crate) async fn run_health_sampler(
     }
 }
 
+/// Publishes each data class's disk use, record count and oldest record age.
+///
+/// The read is the same one `Health.Storage` answers with; a class this
+/// process cannot see is absent rather than zero.
+pub(crate) async fn run_storage_sampler(
+    config: crate::RuntimeConfig,
+    nats: async_nats::Client,
+    stop: StopHandle,
+) {
+    if !metrics_enabled() {
+        return;
+    }
+    let source = SnapshotSource::register(
+        Some("storage"),
+        &[
+            ObservableFamily::StorageBytes,
+            ObservableFamily::StorageRecords,
+            ObservableFamily::StorageOldestAge,
+        ],
+    );
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(SAMPLER_INTERVAL) => {}
+            _ = stop.stopped() => return,
+        }
+        let poll = SourcePoll::start();
+        let Some(classes) = poll
+            .within(crate::health::storage::collect(&config, &nats))
+            .await
+        else {
+            source.record_failure("storage", "timeout");
+            continue;
+        };
+        if stop.is_stopped() {
+            return;
+        }
+        let now = time::OffsetDateTime::now_utc();
+        let mut gauges = Vec::new();
+        for class in classes {
+            let attributes = vec![KeyValue::new("trellis.data_class", class.name)];
+            gauges.push((
+                ObservableFamily::StorageBytes,
+                class.bytes as f64,
+                attributes.clone(),
+            ));
+            if let Some(records) = class.records {
+                gauges.push((
+                    ObservableFamily::StorageRecords,
+                    records as f64,
+                    attributes.clone(),
+                ));
+            }
+            if let Some(oldest) = class.oldest {
+                gauges.push((
+                    ObservableFamily::StorageOldestAge,
+                    (now - oldest).as_seconds_f64().max(0.0),
+                    attributes,
+                ));
+            }
+        }
+        source.publish(gauges);
+    }
+}
+
 /// Exact durable consumer name for one Health projection identity.
 fn health_projector_consumer_name(projection_id: &str) -> String {
     format!("health-projector-{}", projection_id).to_lowercase()

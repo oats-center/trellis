@@ -1,6 +1,7 @@
 //! Rust-owned participant health projection and API subsystem.
 
 mod query;
+pub(crate) mod storage;
 mod store;
 
 use std::collections::HashSet;
@@ -23,7 +24,7 @@ use trellis_runtime_apis::apis::trellis_health_v1::events::StatusChanged as Heal
 use trellis_runtime_apis::apis::trellis_health_v1::lives::Watch as HealthWatchLiveDescriptor;
 use trellis_runtime_apis::apis::trellis_health_v1::rpc::{
     Inspect as HealthInspectRpc, Metrics as HealthMetricsRpc, Query as HealthQueryRpc,
-    Summary as HealthSummaryRpc,
+    Storage as HealthStorageRpc, Summary as HealthSummaryRpc,
 };
 use trellis_runtime_apis::types::{
     Bytes as WireBytes, HealthSummaryRequest, HealthWatchFrame,
@@ -62,6 +63,7 @@ struct InvalidationChange {
 }
 
 struct OwnerConfig {
+    runtime: crate::RuntimeConfig,
     projection_id: String,
     invalidation_subject: String,
     history_days: i64,
@@ -95,10 +97,16 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let owner = context.owner(OwnerGroup::Health)?;
     let invalidation_subject = format!("{INVALIDATION_PREFIX}.{projection_id}");
     let (invalidation_tx, _) = broadcast::channel(256);
-    let router = build_router(store.clone(), invalidation_tx.clone());
+    let router = build_router(
+        store.clone(),
+        invalidation_tx.clone(),
+        context.config.clone(),
+        context.trellis_nats.clone(),
+    );
     let stop = StopHandle::new();
     let task_stop = stop.clone();
     let nats = context.trellis_nats.clone();
+    let runtime_config = context.config.clone();
     let history_days = context
         .config
         .health
@@ -128,6 +136,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 owner,
                 store,
                 OwnerConfig {
+                    runtime: runtime_config,
                     projection_id,
                     invalidation_subject,
                     history_days,
@@ -170,8 +179,43 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     })
 }
 
-fn build_router(store: HealthStore, invalidations: broadcast::Sender<Invalidation>) -> Router {
+fn build_router(
+    store: HealthStore,
+    invalidations: broadcast::Sender<Invalidation>,
+    config: crate::RuntimeConfig,
+    nats: async_nats::Client,
+) -> Router {
     let mut router = Router::new();
+    let storage_config = std::sync::Arc::new(config);
+    router.register_rpc::<HealthStorageRpc, _, _>(move |_context, _input| {
+        let config = std::sync::Arc::clone(&storage_config);
+        let nats = nats.clone();
+        async move {
+            let classes = storage::collect(&config, &nats).await;
+            let format = |at: OffsetDateTime| {
+                at.format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default()
+            };
+            serde_json::from_value(json!({
+                "asOf": format(OffsetDateTime::now_utc()),
+                "classes": classes
+                    .into_iter()
+                    .map(|class| {
+                        json!({
+                            "name": class.name,
+                            "location": class.location,
+                            // 64-bit integers travel as decimal strings.
+                            "bytes": class.bytes.to_string(),
+                            "records": class.records.map(|records| records.to_string()),
+                            "oldestAt": class.oldest.map(format),
+                            "retention": class.retention,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            }))
+            .map_err(|error| ServerError::Internal(error.to_string()))
+        }
+    });
     let query_store = store.clone();
     router.register_rpc::<HealthQueryRpc, _, _>(move |_context, input| {
         let store = query_store.clone();
@@ -292,14 +336,19 @@ async fn run_owner(
         "starting health owner loop"
     );
     // Telemetry samplers own their tasks and never own business lifetime.
-    let _samplers = crate::telemetry::snapshots::SamplerOwner::start(vec![Box::pin(
-        crate::telemetry::snapshots::run_health_sampler(
+    let _samplers = crate::telemetry::snapshots::SamplerOwner::start(vec![
+        Box::pin(crate::telemetry::snapshots::run_health_sampler(
             nats.clone(),
             HEALTH_STREAM.to_string(),
             config.projection_id.clone(),
             stop.clone(),
-        ),
-    )]);
+        )),
+        Box::pin(crate::telemetry::snapshots::run_storage_sampler(
+            config.runtime.clone(),
+            nats.clone(),
+            stop.clone(),
+        )),
+    ]);
     let stream = jetstream
         .get_stream(HEALTH_STREAM)
         .await

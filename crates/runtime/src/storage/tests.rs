@@ -23,7 +23,7 @@ fn subsystem_config(path: PathBuf) -> crate::SubsystemConfig {
         history_retention_days: None,
         transport_retention_hours: None,
         transport_max_bytes: None,
-        retention_days: None,
+        dead_letter_retention_days: None,
     }
 }
 
@@ -41,7 +41,7 @@ fn invalid_postgres_subsystem_config() -> crate::SubsystemConfig {
         history_retention_days: None,
         transport_retention_hours: None,
         transport_max_bytes: None,
-        retention_days: None,
+        dead_letter_retention_days: None,
     }
 }
 

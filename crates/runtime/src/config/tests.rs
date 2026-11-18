@@ -280,6 +280,49 @@ fn nats_websocket_upstream_must_be_host_and_port() {
 }
 
 #[test]
+fn retention_settings_are_validated_where_they_are_read() {
+    let with = |section: &str, line: &str| {
+        from_toml(&COMPLETE_CONFIG.replace(
+            &format!("[{section}.storage]"),
+            &format!("[{section}]\n{line}\n\n[{section}.storage]"),
+        ))
+        .expect("parse config")
+        .validate_for_mode(RuntimeMode::All)
+    };
+    with("events", "history_retention_days = 365").expect("a longer event history");
+    with("events", "dead_letter_retention_days = 7").expect("the event stream's retention");
+    // A dead letter removed while its original can still be delivered would
+    // be recorded again instead of deduplicated.
+    let error = with("events", "dead_letter_retention_days = 6").unwrap_err();
+    assert!(matches!(
+        error,
+        ConfigError::InvalidRetention {
+            section: "events",
+            field: "dead_letter_retention_days",
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("at least 7"));
+    assert!(matches!(
+        with("jobs", "history_retention_days = 0"),
+        Err(ConfigError::InvalidRetention {
+            section: "jobs",
+            field: "history_retention_days",
+            ..
+        })
+    ));
+    // A setting in a section that never reads it would silently do nothing.
+    assert!(matches!(
+        with("jobs", "dead_letter_retention_days = 30"),
+        Err(ConfigError::InvalidRetention {
+            section: "jobs",
+            field: "dead_letter_retention_days",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn rejects_shared_sqlite_paths_across_subsystems() {
     let source = COMPLETE_CONFIG.replace("./data/health.sqlite", "./data/platform.sqlite");
     let config = from_toml(&source).expect("parse config");

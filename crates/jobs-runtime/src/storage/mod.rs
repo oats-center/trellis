@@ -1438,6 +1438,86 @@ impl SqliteJobsStore {
             .transpose()
     }
 
+    /// Remove up to `batch` settled jobs last changed before `cutoff`, with
+    /// their timeline, metadata, lineage, waits and search entries, and drop
+    /// error groups and worker registrations last seen before it.
+    ///
+    /// Only completed, cancelled, expired, skipped, stale and dismissed jobs
+    /// are removed. Failed and dead jobs stay, because retry and replay
+    /// publish their payload from this row, and so does every job still
+    /// running. Returns how many jobs were removed; fewer than `batch` means
+    /// none older remain.
+    pub fn prune_settled_jobs(
+        &self,
+        cutoff: OffsetDateTime,
+        batch: u64,
+    ) -> Result<u64, SqliteJobsStoreError> {
+        let cutoff_ns = i64::try_from(cutoff.unix_timestamp_nanos()).map_err(|_| {
+            SqliteJobsStoreError::Validation {
+                field: "cutoff",
+                details: "outside the representable range".to_owned(),
+            }
+        })?;
+        let batch = i64::try_from(batch).unwrap_or(i64::MAX);
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| SqliteJobsStoreError::Poisoned)?;
+        let transaction = connection.transaction()?;
+        let settled = {
+            let mut statement = transaction.prepare(
+                "SELECT service, job_type, id FROM jobs_projection \
+                WHERE state IN ('completed', 'cancelled', 'expired', 'skipped', 'stale', \
+                'dismissed') AND updated_at_nanos < ?1 \
+                ORDER BY updated_at_nanos LIMIT ?2",
+            )?;
+            let rows = statement
+                .query_map(params![cutoff_ns, batch], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        for (service, job_type, id) in &settled {
+            let old_fts = fts_row_for_job(&transaction, service, job_type, id)?;
+            replace_fts_row(&transaction, old_fts.as_ref(), None)?;
+            for table in [
+                "jobs_projection",
+                "jobs_metadata_projection",
+                "jobs_lineage_projection",
+                "jobs_events_projection",
+                "jobs_wait_projection",
+            ] {
+                transaction.execute(
+                    &format!(
+                        "DELETE FROM {table} WHERE service = ?1 AND job_type = ?2 AND id = ?3"
+                    ),
+                    params![service, job_type, id],
+                )?;
+            }
+        }
+        transaction.execute(
+            "DELETE FROM jobs_error_projection WHERE last_seen_nanos < ?1",
+            [cutoff_ns],
+        )?;
+        transaction.execute(
+            "DELETE FROM worker_presence_projection \
+            WHERE julianday(heartbeat_at) < julianday(?1)",
+            [cutoff
+                .format(&Rfc3339)
+                .map_err(|error| SqliteJobsStoreError::Validation {
+                    field: "cutoff",
+                    details: error.to_string(),
+                })?],
+        )?;
+        transaction.commit()?;
+        Ok(settled.len() as u64)
+    }
+
     /// Reads the telemetry snapshot without mutating or claiming any row.
     ///
     /// A malformed ready anchor fails the snapshot instead of counting as a
@@ -4185,5 +4265,126 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["fresh"]
         );
+    }
+
+    fn search(store: &SqliteJobsStore, text: &str) -> Vec<String> {
+        store
+            .query_jobs(&JobsWorkbenchFilter {
+                search: Some(text.to_string()),
+                sort: JobsWorkbenchSort::default(),
+                after: None,
+                limit: 10,
+                service: None,
+                job_type: None,
+                states: None,
+                since: None,
+                queue_key: None,
+                runtime_band: None,
+                trigger: None,
+                group_by: None,
+            })
+            .expect("search jobs")
+            .entries
+            .into_iter()
+            .map(|entry| entry.job.id)
+            .collect()
+    }
+
+    #[test]
+    fn pruning_removes_settled_jobs_in_batches_and_keeps_replayable_ones() {
+        let store = SqliteJobsStore::open_in_memory().expect("store should open");
+        let old = "2026-01-01T00:00:00Z";
+        let cutoff = OffsetDateTime::parse("2026-02-01T00:00:00Z", &Rfc3339).unwrap();
+        for (id, state) in [
+            ("dead", JobState::Dead),
+            ("failed", JobState::Failed),
+            ("active", JobState::Active),
+            ("cancelled", JobState::Cancelled),
+        ] {
+            store
+                .upsert_job(&job(id, "svc", "import", old, state))
+                .expect("insert job");
+        }
+        store
+            .upsert_job(&job(
+                "fresh",
+                "svc",
+                "import",
+                "2026-03-01T00:00:00Z",
+                JobState::Completed,
+            ))
+            .expect("insert fresh job");
+        let mut completed = job("completed", "svc", "import", old, JobState::Completed);
+        completed.logs = Some(vec![JobLogEntry {
+            timestamp: old.to_string(),
+            level: JobLogLevel::Info,
+            message: "obsoletetoken".to_string(),
+        }]);
+        store.upsert_job(&completed).expect("insert completed job");
+        let timeline = event(
+            &completed,
+            JobEventType::Completed,
+            JobState::Completed,
+            old,
+        );
+        store
+            .project_timeline_event(&timeline, &json!({}), Some(true), None)
+            .expect("project timeline");
+        store
+            .upsert_worker_presence(&worker("svc", "import", "gone", old))
+            .expect("old worker");
+        store
+            .upsert_worker_presence(&worker("svc", "import", "live", "2026-03-01T00:00:00Z"))
+            .expect("live worker");
+        assert_eq!(search(&store, "obsoletetoken"), vec!["completed"]);
+
+        assert_eq!(store.prune_settled_jobs(cutoff, 1).expect("first batch"), 1);
+        assert_eq!(
+            store.prune_settled_jobs(cutoff, 1).expect("second batch"),
+            1
+        );
+        assert_eq!(
+            store.prune_settled_jobs(cutoff, 1).expect("nothing older"),
+            0
+        );
+
+        let remaining = store
+            .list_jobs(&ListJobsFilter::default())
+            .expect("list jobs")
+            .jobs
+            .into_iter()
+            .map(|job| job.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            remaining,
+            ["active", "dead", "failed", "fresh"]
+                .map(str::to_string)
+                .into_iter()
+                .collect()
+        );
+        assert!(store
+            .list_timeline_events("completed", 10)
+            .expect("timeline")
+            .is_empty());
+        // A new job that takes the removed row's place is not found by the
+        // removed job's search text.
+        store
+            .upsert_job(&job(
+                "next",
+                "svc",
+                "import",
+                "2026-03-02T00:00:00Z",
+                JobState::Pending,
+            ))
+            .expect("insert next job");
+        assert!(search(&store, "obsoletetoken").is_empty());
+        assert!(store
+            .get_worker_presence("svc", "import", "gone")
+            .expect("read old worker")
+            .is_none());
+        assert!(store
+            .get_worker_presence("svc", "import", "live")
+            .expect("read live worker")
+            .is_some());
     }
 }

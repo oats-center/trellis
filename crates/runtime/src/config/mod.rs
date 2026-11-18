@@ -14,6 +14,15 @@ pub use secrets::{
     AuthCalloutSecrets, LiveProviderSeeds, NatsSecrets, NatsUser, NatsUsers, Secrets, SECRETS_FILE,
 };
 
+/// Days the Events projection keeps recorded events when `[events]` does not say.
+pub const DEFAULT_EVENTS_HISTORY_DAYS: u32 = 90;
+/// Days settled dead letters are kept when `[events]` does not say.
+pub const DEFAULT_DEAD_LETTER_RETENTION_DAYS: u32 = 90;
+/// Days of job lifecycle kept when `[jobs]` does not say.
+pub const DEFAULT_JOBS_HISTORY_DAYS: u32 = 30;
+/// Days the `trellis` event stream keeps events.
+pub const EVENT_STREAM_RETENTION_DAYS: u32 = 7;
+
 /// TOML runtime configuration for `trellis-server`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimeConfig {
@@ -616,7 +625,103 @@ impl RuntimeConfig {
 
         storage.resolve_backend(storage_section_name(name))?;
 
+        let section = name.as_str();
+        let invalid = |field: &'static str, reason: String| ConfigError::InvalidRetention {
+            section,
+            field,
+            reason,
+        };
+        let (history, transport, dead_letters) = match name {
+            SubsystemName::Platform => (false, false, false),
+            SubsystemName::Jobs => (true, false, false),
+            SubsystemName::Health => (true, true, false),
+            SubsystemName::Events => (true, false, true),
+        };
+        for (field, read, set) in [
+            (
+                "history_retention_days",
+                history,
+                subsystem.history_retention_days.is_some(),
+            ),
+            (
+                "transport_retention_hours",
+                transport,
+                subsystem.transport_retention_hours.is_some(),
+            ),
+            (
+                "transport_max_bytes",
+                transport,
+                subsystem.transport_max_bytes.is_some(),
+            ),
+            (
+                "dead_letter_retention_days",
+                dead_letters,
+                subsystem.dead_letter_retention_days.is_some(),
+            ),
+        ] {
+            if set && !read {
+                return Err(invalid(field, "is not read in this section".to_owned()));
+            }
+        }
+        for (field, zero) in [
+            (
+                "history_retention_days",
+                subsystem.history_retention_days == Some(0),
+            ),
+            (
+                "transport_retention_hours",
+                subsystem.transport_retention_hours == Some(0),
+            ),
+            (
+                "transport_max_bytes",
+                subsystem.transport_max_bytes == Some(0),
+            ),
+        ] {
+            if zero {
+                return Err(invalid(field, "must be greater than zero".to_owned()));
+            }
+        }
+        // A removed dead letter must not be recorded again: its original
+        // event stays deliverable for the event stream's whole retention, and
+        // the journal entry is what makes a repeated exhaustion a duplicate.
+        if subsystem
+            .dead_letter_retention_days
+            .is_some_and(|days| days < EVENT_STREAM_RETENTION_DAYS)
+        {
+            return Err(invalid(
+                "dead_letter_retention_days",
+                format!(
+                    "must be at least {EVENT_STREAM_RETENTION_DAYS}, the event stream's \
+                    retention, so a removed dead letter cannot be recorded again"
+                ),
+            ));
+        }
+
         Ok(())
+    }
+
+    /// Days the Events projection keeps recorded events.
+    pub fn events_history_retention_days(&self) -> u32 {
+        self.events
+            .as_ref()
+            .and_then(|events| events.history_retention_days)
+            .unwrap_or(DEFAULT_EVENTS_HISTORY_DAYS)
+    }
+
+    /// Days a resolved or dismissed dead letter and an unconsumed replay are kept.
+    pub fn dead_letter_retention_days(&self) -> u32 {
+        self.events
+            .as_ref()
+            .and_then(|events| events.dead_letter_retention_days)
+            .unwrap_or(DEFAULT_DEAD_LETTER_RETENTION_DAYS)
+    }
+
+    /// Days of job lifecycle the Jobs streams and settled job rows are kept.
+    pub fn jobs_history_retention_days(&self) -> u32 {
+        self.jobs
+            .as_ref()
+            .and_then(|jobs| jobs.history_retention_days)
+            .unwrap_or(DEFAULT_JOBS_HISTORY_DAYS)
     }
 
     fn subsystem_storage_backend(
@@ -717,17 +822,28 @@ impl RuntimeConfig {
                     history_retention_days: history,
                     transport_retention_hours: hours,
                     transport_max_bytes: bytes,
-                    retention_days: days,
+                    dead_letter_retention_days: days,
                 }
             };
         for (section, retention) in [
             (&mut self.platform, (None, None, None, None)),
-            (&mut self.jobs, (None, None, None, None)),
+            (
+                &mut self.jobs,
+                (Some(DEFAULT_JOBS_HISTORY_DAYS), None, None, None),
+            ),
             (
                 &mut self.health,
                 (Some(30), Some(24), Some(1_073_741_824), None),
             ),
-            (&mut self.events, (None, None, None, Some(7))),
+            (
+                &mut self.events,
+                (
+                    Some(DEFAULT_EVENTS_HISTORY_DAYS),
+                    None,
+                    None,
+                    Some(DEFAULT_DEAD_LETTER_RETENTION_DAYS),
+                ),
+            ),
         ] {
             let (history, hours, bytes, days) = retention;
             let filled = section.get_or_insert_with(|| subsystem(history, hours, bytes, days));
@@ -1383,18 +1499,21 @@ pub struct SubsystemConfig {
     /// Storage configuration for the subsystem.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage: Option<StorageConfig>,
-    /// Health history retention in days.
+    /// Days of SQL history kept: health intervals and metric buckets, recorded
+    /// events, or settled job history (also the Jobs streams' maximum age).
+    /// Read by `[health]`, `[events]` and `[jobs]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_retention_days: Option<u32>,
-    /// Health transport replay retention in hours.
+    /// Health transport replay retention in hours. Read by `[health]` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport_retention_hours: Option<u32>,
-    /// Health transport maximum retained bytes.
+    /// Health transport maximum retained bytes. Read by `[health]` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport_max_bytes: Option<u64>,
-    /// Events retention in days.
+    /// Days a resolved or dismissed dead letter, and an unconsumed replay, is
+    /// kept. Read by `[events]` only.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub retention_days: Option<u32>,
+    pub dead_letter_retention_days: Option<u32>,
 }
 
 /// Storage configuration for a built-in runtime subsystem.
@@ -1560,6 +1679,16 @@ pub enum ConfigError {
         field: &'static str,
         /// Validation failure reason.
         reason: &'static str,
+    },
+    /// A subsystem retention setting is out of range or set where it is not read.
+    #[error("invalid runtime config section [{section}]: {field} {reason}")]
+    InvalidRetention {
+        /// Invalid section name.
+        section: &'static str,
+        /// Invalid field name.
+        field: &'static str,
+        /// Validation failure reason.
+        reason: String,
     },
     /// A required lease field is missing or empty.
     #[error("invalid runtime config section [{section}]: {field} {reason}")]

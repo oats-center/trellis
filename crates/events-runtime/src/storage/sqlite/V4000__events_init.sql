@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS events (
     payload_json TEXT,
     payload_text TEXT,
     decode_error TEXT,
-    projected_at TEXT NOT NULL
+    projected_at TEXT NOT NULL,
+    projected_at_ns INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_event_id ON events (event_id);
@@ -96,7 +97,8 @@ CREATE TABLE IF NOT EXISTS consumer_dead_letters (
 CREATE INDEX IF NOT EXISTS idx_consumer_dead_letters_resource_state
     ON consumer_dead_letters (resource_id, state, updated_at_ns DESC, id);
 -- The Console's failed-delivery panel lists open dead letters across every
--- consumer, newest first, one page at a time.
+-- consumer, newest first, one page at a time; retention purges settled ones
+-- by state and age through the same index.
 CREATE INDEX IF NOT EXISTS idx_consumer_dead_letters_state
     ON consumer_dead_letters (state, updated_at_ns DESC, id);
 CREATE INDEX IF NOT EXISTS idx_consumer_dead_letters_original

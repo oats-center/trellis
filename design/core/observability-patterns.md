@@ -77,6 +77,9 @@ Heartbeat behavior:
   Console reads the Rust-owned health projection through `Health.Query`,
   `Health.Inspect`, and `Health.Metrics`, then uses `Health.Watch` as a
   post-commit invalidation live
+- `Health.Storage` reports each runtime data class's disk use, record count,
+  oldest record, and retention policy; see
+  [data-retention.md](./data-retention.md)
 
 ### Live Observation Telemetry
 
@@ -155,10 +158,11 @@ Events subsystem rules:
   queryable metadata plus raw payloads for those events
 - jobs lifecycle and worker-presence subjects are jobs subsystem stream traffic,
   not initial Events input
-- Events stores full NATS-valid payloads unless a later explicit storage or
-  retention policy defines a different bound
-- Events stores bounded history according to runtime config, with a default of 7
-  days when not overridden
+- Events stores full NATS-valid payloads
+- Events keeps recorded events for `[events] history_retention_days`, default
+  90 days, longer than the event stream's 7. Removal follows
+  [data-retention.md](./data-retention.md): one stream-sequence prefix by
+  recording time, and a removed sequence is never recorded again
 - Events projector and retention loops are singleton runtime loops coordinated
   with NATS KV leases
 - the projector tracks the highest stream sequence it has received separately
@@ -171,7 +175,9 @@ Events subsystem rules:
   broker evidence: an unprojected sequence the stream no longer holds because
   it expired, was purged, or was deleted. A sequence the stream still holds is
   pending, and one holding a subject outside `events.v1.>` is skipped. The
-  marker is durable and never cleared by later projection
+  marker is durable and never cleared by later projection. History removed by
+  the retention policy is not missing: `prunedBefore` reports it, and once the
+  removed prefix covers every missing sequence `gapDetected` is false
 
 Stats example:
 

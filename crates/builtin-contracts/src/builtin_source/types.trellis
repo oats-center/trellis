@@ -428,6 +428,40 @@ model HealthProjectionDiagnostics {
   revision: uint64;
 }
 
+model HealthStorageRequest {
+
+}
+
+model HealthStorageResponse {
+  asOf: string;
+  classes: list<HealthStorageClass>;
+}
+
+model HealthStorageClass {
+  bytes: uint64;
+  location: string;
+  name: HealthStorageClassName;
+  oldestAt?: string;
+  records?: uint64;
+  retention: string;
+}
+
+enum HealthStorageClassName {
+  authDatabase;
+  deadLetterJournal;
+  deadLetters;
+  eventStream;
+  eventsDatabase;
+  healthDatabase;
+  healthStream;
+  jobAdvisories;
+  jobHistory;
+  jobWork;
+  jobsDatabase;
+  recordedEvents;
+  replayStream;
+}
+
 model HealthQueryRequest {
   contractIds?: list<HealthQueryRequestContractIdsItem>;
   deploymentIds?: list<HealthQueryRequestDeploymentIdsItem>;
@@ -3661,6 +3695,7 @@ model EventsDiagnosticsResponse {
   completeSince?: string;
   gapDetected: bool;
   lastStreamSequence: uint64;
+  prunedBefore?: string;
   retainedFrom?: string;
   revision: uint64;
 }

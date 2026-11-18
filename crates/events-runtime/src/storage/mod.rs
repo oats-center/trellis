@@ -195,6 +195,8 @@ impl EventsStore {
             ("retention_gap_sequence", "0"),
             ("complete_since_sequence", "0"),
             ("complete_since", ""),
+            ("pruned_through_sequence", "0"),
+            ("pruned_before", ""),
         ] {
             connection.execute(
                 "INSERT OR IGNORE INTO events_projection_metadata (key, value) VALUES (?1, ?2)",
@@ -225,11 +227,143 @@ impl EventsStore {
             .connection
             .lock()
             .map_err(|_| EventsStoreError::Poisoned)?;
+        // A sequence the retention policy removed was recorded once; a late
+        // redelivery must not bring it back.
+        if stream_sequence as u64 <= metadata_sequence(&connection, "pruned_through_sequence")? {
+            return Ok(true);
+        }
         Ok(connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM events WHERE stream_sequence = ?1)",
             [stream_sequence],
             |row| row.get(0),
         )?)
+    }
+
+    /// Remove recorded events older than `cutoff`, at most `batch` per call.
+    ///
+    /// Removal walks stream order from the oldest row and stops at the first
+    /// one recorded at or after `cutoff`, or at the first sequence not yet
+    /// projected, so the removed history is always one stream-sequence prefix.
+    /// That prefix is history removed by policy: a missing-history marker
+    /// inside it no longer describes retained history. Returns how many rows
+    /// were removed; fewer than `batch` means nothing older remains.
+    pub fn prune_history(
+        &self,
+        cutoff: OffsetDateTime,
+        batch: u64,
+    ) -> Result<u64, EventsStoreError> {
+        let cutoff_ns = i64::try_from(cutoff.unix_timestamp_nanos())
+            .map_err(|_| EventsStoreError::InvalidTimestamp(cutoff.to_string()))?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let transaction = connection.transaction()?;
+        let projected_through = metadata_sequence(&transaction, "projected_through_sequence")?;
+        let mut removed = 0_u64;
+        let mut through = None;
+        {
+            let mut statement = transaction.prepare(
+                "SELECT stream_sequence, projected_at_ns FROM events \
+                WHERE stream_sequence <= ?1 ORDER BY stream_sequence LIMIT ?2",
+            )?;
+            let mut rows = statement.query(params![
+                sql_sequence(projected_through)?,
+                sql_sequence(batch)?
+            ])?;
+            while let Some(row) = rows.next()? {
+                if row.get::<_, i64>(1)? >= cutoff_ns {
+                    break;
+                }
+                through = Some(row.get::<_, u64>(0)?);
+                removed += 1;
+            }
+        }
+        let Some(through) = through else {
+            return Ok(0);
+        };
+        transaction.execute(
+            "DELETE FROM events WHERE stream_sequence <= ?1",
+            [sql_sequence(through)?],
+        )?;
+        if metadata_sequence(&transaction, "pruned_through_sequence")? < through {
+            set_metadata(
+                &transaction,
+                "pruned_through_sequence",
+                &through.to_string(),
+            )?;
+        }
+        set_metadata(
+            &transaction,
+            "pruned_before",
+            &cutoff
+                .format(&Rfc3339)
+                .map_err(|_| EventsStoreError::InvalidTimestamp(cutoff.to_string()))?,
+        )?;
+        transaction.commit()?;
+        Ok(removed)
+    }
+
+    /// List up to `batch` resolved or dismissed dead letters last changed
+    /// before `cutoff`, with the journal sequence of their latest transition.
+    ///
+    /// The retention loop purges each entry's journal records through that
+    /// sequence before [`Self::remove_settled_dead_letter`] drops its rows, so
+    /// a failed purge leaves the entry listed for the next pass.
+    pub fn settled_dead_letters_before(
+        &self,
+        cutoff: OffsetDateTime,
+        batch: u64,
+    ) -> Result<Vec<(String, u64)>, EventsStoreError> {
+        let cutoff_ns = i64::try_from(cutoff.unix_timestamp_nanos())
+            .map_err(|_| EventsStoreError::InvalidTimestamp(cutoff.to_string()))?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT id, last_journal_sequence FROM consumer_dead_letters \
+            WHERE state IN ('resolved', 'dismissed') AND updated_at_ns < ?1 \
+            ORDER BY updated_at_ns, id LIMIT ?2",
+        )?;
+        let rows = statement
+            .query_map(params![cutoff_ns, sql_sequence(batch)?], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Remove one settled dead letter whose journal records through
+    /// `journal_sequence` were purged. Returns whether it was removed: an
+    /// entry that moved on since keeps its rows.
+    pub fn remove_settled_dead_letter(
+        &self,
+        id: &str,
+        journal_sequence: u64,
+    ) -> Result<bool, EventsStoreError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let transaction = connection.transaction()?;
+        let removed = transaction.execute(
+            "DELETE FROM consumer_dead_letters WHERE id = ?1 AND last_journal_sequence = ?2 \
+            AND state IN ('resolved', 'dismissed')",
+            params![id, sql_sequence(journal_sequence)?],
+        )? > 0;
+        if removed {
+            transaction.execute(
+                "DELETE FROM consumer_dlq_commands WHERE dead_letter_id = ?1",
+                [id],
+            )?;
+            transaction.execute(
+                "DELETE FROM consumer_dlq_transitions WHERE dead_letter_id = ?1",
+                [id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(removed)
     }
 
     /// Record that the broker retains event history only from `first_sequence`.
@@ -313,6 +447,7 @@ impl EventsStore {
     pub fn insert_event(&self, event: &ProjectedEvent) -> Result<(), EventsStoreError> {
         sql_sequence(event.stream_sequence)?;
         let event_time_ns = timestamp_nanos(&event.event_time)?;
+        let projected_at_ns = timestamp_nanos(&event.projected_at)?;
         let mut connection = self
             .connection
             .lock()
@@ -327,10 +462,10 @@ impl EventsStore {
                 publisher_principal_id, publisher_connection_id, publisher_login_session_id,
                 authorization_context_digest, trace_id, traceparent,
                 payload_size_bytes, payload_bytes, headers_json, payload_json, payload_text,
-                decode_error, projected_at
+                decode_error, projected_at, projected_at_ns
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
             )
             "#,
             params![
@@ -360,6 +495,7 @@ impl EventsStore {
                 event.payload_text,
                 event.decode_error,
                 event.projected_at,
+                projected_at_ns,
             ],
         )?;
         raise_observed(&transaction, event.stream_sequence)?;
@@ -1058,11 +1194,20 @@ impl EventsStore {
         let retention_gap_sequence = metadata_sequence(&connection, "retention_gap_sequence")?;
         let projected_through = metadata_sequence(&connection, "projected_through_sequence")?;
         let observed = metadata_sequence(&connection, "observed_sequence")?;
-        let complete_since: String = connection.query_row(
-            "SELECT value FROM events_projection_metadata WHERE key='complete_since'",
-            [],
-            |row| row.get(0),
-        )?;
+        let pruned_through = metadata_sequence(&connection, "pruned_through_sequence")?;
+        let metadata_text = |key: &str| {
+            connection.query_row(
+                "SELECT value FROM events_projection_metadata WHERE key=?1",
+                [key],
+                |row| row.get::<_, String>(0),
+            )
+        };
+        let complete_since = metadata_text("complete_since")?;
+        let pruned_before = metadata_text("pruned_before")?;
+        // Missing history lies below the gap marker. Once the retention policy
+        // has removed everything below it, retained history has no hole.
+        let gap_detected =
+            retention_gap_sequence > 0 && retention_gap_sequence > pruned_through.saturating_add(1);
         let retained_from: Option<String> = connection
             .query_row(
                 "SELECT event_time FROM events ORDER BY event_time_ns, stream_sequence LIMIT 1",
@@ -1075,8 +1220,9 @@ impl EventsStore {
             "projectedThroughSequence": projected_through,
             "awaitingRedelivery": projected_through < observed,
             "deadLetterProjectionSequence": dead_letter_sequence,
-            "gapDetected": retention_gap_sequence > 0,
-            "completeSince": (!complete_since.is_empty()).then_some(complete_since),
+            "gapDetected": gap_detected,
+            "completeSince": (gap_detected && !complete_since.is_empty()).then_some(complete_since),
+            "prunedBefore": (!pruned_before.is_empty()).then_some(pruned_before),
             "retainedFrom": retained_from,
         }))
     }
@@ -2195,5 +2341,197 @@ mod tests {
             .inspect_dead_letter(&id)
             .expect("inspect reset")
             .is_none());
+    }
+
+    fn recorded(stream_sequence: u64, at: &str) -> ProjectedEvent {
+        ProjectedEvent {
+            event_time: at.to_owned(),
+            projected_at: at.to_owned(),
+            ..event(stream_sequence)
+        }
+    }
+
+    fn at(value: &str) -> time::OffsetDateTime {
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+            .expect("timestamp")
+    }
+
+    fn all_sequences(store: &EventsStore) -> Vec<u64> {
+        let (rows, _) = store
+            .query_events(&EventsFilter {
+                limit: 100,
+                sort_field: "streamSequence".to_owned(),
+                sort_direction: "asc".to_owned(),
+                ..Default::default()
+            })
+            .expect("query events");
+        rows.iter()
+            .map(|row| row["streamSequence"].as_u64().expect("sequence"))
+            .collect()
+    }
+
+    #[test]
+    fn pruning_removes_only_policy_history_and_retires_gaps_it_covers() {
+        let old = "2026-01-01T00:00:00Z";
+        let new = "2026-03-01T00:00:00Z";
+        let cutoff = at("2026-02-01T00:00:00Z");
+        let store = EventsStore::open_in_memory().expect("open store");
+        store.insert_event(&recorded(1, old)).expect("record 1");
+        store.insert_event(&recorded(2, old)).expect("record 2");
+        // Sequence 3 expired from the broker before it was recorded.
+        store
+            .record_stream_bounds(4)
+            .expect("record expired sequence");
+        for sequence in [4, 5] {
+            store
+                .insert_event(&recorded(sequence, old))
+                .expect("record old");
+        }
+        for sequence in [6, 7] {
+            store
+                .insert_event(&recorded(sequence, new))
+                .expect("record new");
+        }
+        let before = store.diagnostics().expect("diagnostics");
+        assert_eq!(before["gapDetected"], true);
+        assert_eq!(before["completeSince"], old);
+        assert_eq!(before["prunedBefore"], serde_json::Value::Null);
+
+        // Batches are bounded, and the gap stays reported while retained
+        // history still reaches below it.
+        assert_eq!(store.prune_history(cutoff, 2).expect("first batch"), 2);
+        assert_eq!(all_sequences(&store), vec![4, 5, 6, 7]);
+        assert_eq!(
+            store.diagnostics().expect("diagnostics")["gapDetected"],
+            true
+        );
+
+        assert_eq!(store.prune_history(cutoff, 2).expect("second batch"), 2);
+        assert_eq!(store.prune_history(cutoff, 2).expect("nothing older"), 0);
+        assert_eq!(all_sequences(&store), vec![6, 7]);
+        let after = store.diagnostics().expect("diagnostics");
+        assert_eq!(after["gapDetected"], false);
+        assert_eq!(after["completeSince"], serde_json::Value::Null);
+        assert_eq!(after["prunedBefore"], "2026-02-01T00:00:00Z");
+        assert_eq!(after["retainedFrom"], new);
+        assert!(store
+            .inspect_event(None, Some(6))
+            .expect("inspect retained")
+            .is_some());
+        assert!(store
+            .inspect_event(None, Some(4))
+            .expect("inspect removed")
+            .is_none());
+
+        // A late redelivery of removed history is not recorded again.
+        assert!(store.contains_stream_sequence(4).expect("removed sequence"));
+        assert!(!store.contains_stream_sequence(8).expect("next sequence"));
+
+        // History that expires after pruning is still missing, not policy.
+        store.record_stream_bounds(10).expect("record new expiry");
+        store.insert_event(&recorded(10, new)).expect("record 10");
+        let missing = store.diagnostics().expect("diagnostics");
+        assert_eq!(missing["gapDetected"], true);
+        assert_eq!(missing["completeSince"], new);
+    }
+
+    #[test]
+    fn pruning_stops_at_a_sequence_still_awaiting_projection() {
+        let old = "2026-01-01T00:00:00Z";
+        let store = EventsStore::open_in_memory().expect("open store");
+        store.insert_event(&recorded(1, old)).expect("record 1");
+        // Sequence 2 was received but could not be verified yet.
+        store.insert_event(&recorded(3, old)).expect("record 3");
+        assert_eq!(
+            store
+                .prune_history(at("2026-02-01T00:00:00Z"), 100)
+                .expect("prune"),
+            1
+        );
+        assert_eq!(all_sequences(&store), vec![3]);
+        assert!(!store.contains_stream_sequence(2).expect("pending sequence"));
+    }
+
+    #[test]
+    fn settled_dead_letters_leave_the_projection_and_open_ones_stay() {
+        let store = EventsStore::open_in_memory().expect("open store");
+        let dead = |resource: &str, sequence: u64| DeadLetterTransition {
+            id: dead_letter_id(resource, "trellis", sequence),
+            resource_id: resource.to_owned(),
+            revision: 1,
+            previous_subject_sequence: 0,
+            generation: 0,
+            state: DeadLetterState::Dead,
+            occurred_at: "2026-01-01T00:00:00Z".to_owned(),
+            request_id: None,
+            request_digest: None,
+            cause: DeadLetterCause::Exhausted,
+            original: Some(OriginalEvent {
+                stream: "trellis".to_owned(),
+                sequence,
+                published_at: "2026-01-01T00:00:00Z".to_owned(),
+                event_id: None,
+                subject: "events.v1.orders.Created".to_owned(),
+                payload_bytes: vec![1],
+                headers: BTreeMap::new(),
+                api_id: None,
+                event_name: None,
+                context_digest: None,
+                verification_status: "verified".to_owned(),
+            }),
+            original_record_sequence: 0,
+            deliveries: 3,
+            last_error: None,
+            replay_stream_sequence: None,
+        };
+        let open = dead("consumer", 1);
+        let settled = dead("consumer", 2);
+        store.project_dead_letter(&open, 1).expect("project open");
+        store
+            .project_dead_letter(&settled, 2)
+            .expect("project settled");
+        let dismissed = DeadLetterTransition {
+            revision: 2,
+            previous_subject_sequence: 2,
+            state: DeadLetterState::Dismissed,
+            cause: DeadLetterCause::Dismissed,
+            request_id: Some("dismiss".to_owned()),
+            request_digest: Some("digest".to_owned()),
+            original: None,
+            original_record_sequence: 2,
+            occurred_at: "2026-01-02T00:00:00Z".to_owned(),
+            ..settled.clone()
+        };
+        store
+            .project_dead_letter(&dismissed, 3)
+            .expect("project dismissal");
+
+        assert!(store
+            .settled_dead_letters_before(at("2026-01-02T00:00:00Z"), 10)
+            .expect("list before dismissal")
+            .is_empty());
+        let listed = store
+            .settled_dead_letters_before(at("2026-02-01T00:00:00Z"), 10)
+            .expect("list settled");
+        assert_eq!(listed, vec![(settled.id.clone(), 3)]);
+        // An entry that moved on after it was listed keeps its rows.
+        assert!(!store
+            .remove_settled_dead_letter(&settled.id, 2)
+            .expect("stale removal"));
+        assert!(store
+            .remove_settled_dead_letter(&settled.id, 3)
+            .expect("remove settled"));
+        assert!(store
+            .inspect_dead_letter(&settled.id)
+            .expect("inspect removed")
+            .is_none());
+        assert!(store
+            .dead_letter_command(&settled.id, "dismiss")
+            .expect("command removed")
+            .is_none());
+        assert!(store
+            .inspect_dead_letter(&open.id)
+            .expect("inspect open")
+            .is_some());
     }
 }

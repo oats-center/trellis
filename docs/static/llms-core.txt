@@ -450,6 +450,17 @@ records, so retain existing installations unchanged and use fresh
 development/test state. Unsupported records fail visibly; the runtime never
 deletes or recreates them as empty state.
 
+Runtime data has explicit retention. `[events] history_retention_days`
+(default 90) keeps the recorded event history beyond the event stream's 7 days;
+`[events] dead_letter_retention_days` (default 90, at least 7) keeps resolved
+and dismissed dead letters, while open ones stay until settled;
+`[jobs] history_retention_days` (default 30) bounds the job lifecycle streams
+and settled jobs, while failed and dead jobs stay for retry and replay. A
+changed limit is applied to the existing streams at the next start.
+`Health.Storage`, the Console Health page, and the `trellis.storage.bytes`,
+`trellis.storage.records` and `trellis.storage.oldest.age` gauges report each
+data class's size and oldest record.
+
 For several development installations on one machine, give each its own
 `--dev --config <dir>` folder, then its own `[http] port` and `nats.conf`
 ports. The development defaults are 3000/4222/8222/8080; installations use a

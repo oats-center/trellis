@@ -8,6 +8,7 @@ pub mod dead_letters;
 mod management;
 mod projector;
 mod query;
+pub mod retention;
 mod router;
 pub mod storage;
 pub mod telemetry;
@@ -27,6 +28,7 @@ pub use projector::{
     EventsProjectorHandle, EventsRuntime, VerifiedEventPublisher,
 };
 pub use query::{EventsQuery, EventsQueryError};
+pub use retention::{apply_retention, RetentionPass};
 pub use router::build_router_with_query;
 pub use storage::{EventsStore, EventsStoreError, ProjectedEvent};
 pub use watch::register_events_watch_live;

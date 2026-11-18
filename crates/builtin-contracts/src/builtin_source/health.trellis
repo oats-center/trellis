@@ -1,4 +1,8 @@
 import {
+  HealthStorageClass,
+  HealthStorageClassName,
+  HealthStorageRequest,
+  HealthStorageResponse,
   HealthSummaryRequest,
   HealthSummaryResponse,
   Empty,
@@ -424,6 +428,12 @@ api health@v1 {
     errors [UnexpectedError, ValidationError];
     pagination cursor;
   }
+  /// How much disk each kind of Trellis data uses and how old it is.
+  rpc Storage {
+    input HealthStorageRequest;
+    output HealthStorageResponse;
+    errors [UnexpectedError];
+  }
   /// How many services and devices are healthy, degraded or down.
   rpc Summary {
     input HealthSummaryRequest;
@@ -466,7 +476,7 @@ api health@v1 {
       title "See health metrics";
       description "See health measurements over time.";
       grants "Can see health metrics.";
-      allows { rpc Metrics; }
+      allows { rpc Metrics; rpc Storage; }
     }
     capability health.observe {
       title "Watch health live";

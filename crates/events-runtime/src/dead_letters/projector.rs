@@ -62,10 +62,19 @@ pub async fn start_dead_letter_projector(
         .state
         .last_sequence;
     for sequence in checkpoint.saturating_add(1)..=last_sequence {
-        let raw = stream
-            .get_raw_message(sequence)
-            .await
-            .map_err(|error| ServerError::Internal(error.to_string()))?;
+        let raw = match stream.get_raw_message(sequence).await {
+            Ok(raw) => raw,
+            // Retention purged a settled entry's records.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    jetstream::stream::RawMessageErrorKind::NoMessageFound
+                ) =>
+            {
+                continue
+            }
+            Err(error) => return Err(ServerError::Internal(error.to_string())),
+        };
         let transition = serde_json::from_slice::<DeadLetterTransition>(&raw.payload)
             .map_err(ServerError::Json)?;
         store
