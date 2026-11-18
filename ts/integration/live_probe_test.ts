@@ -19,6 +19,9 @@ import { spawnTracked, type ProcessExit } from "./_support/process.ts";
 
 const BUSY_TOTAL = 1026n;
 const TWO_HEARTBEATS_MS = 21_000;
+// Longer than one 10 s heartbeat plus its 2 s unchanged re-send, so a caller
+// stalled this long receives one challenge at least twice.
+const PAST_A_RESENT_CHALLENGE_MS = 13_000;
 
 type KeyState = {
   through: bigint;
@@ -380,8 +383,13 @@ test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
 async function runRustLiveProbeCaller(
   runtime: TrellisTestRuntime,
   configDir: string,
+  mode: "probe" | "stall" = "probe",
 ): Promise<Record<string, number>> {
-  const child = spawnTracked("setsid", rustFixtureArgv("live_probe_caller"), {
+  const argv = rustFixtureArgv(
+    "live_probe_caller",
+    mode === "stall" ? ["stall"] : [],
+  );
+  const child = spawnTracked("setsid", argv, {
     env: {
       ...process.env,
       TRELLIS_URL: runtime.trellisUrl,
@@ -406,6 +414,13 @@ async function runRustLiveProbeCaller(
   let result: Record<string, number> | undefined;
   for await (const line of createInterface({ input: child.stdout })) {
     output += `${line}\n`;
+    if (line === "LIVE_PROBE_CALLER_STALL" && child.pid !== undefined) {
+      // Stop the whole caller as a starved process is stopped, then resume it.
+      process.kill(-child.pid, "SIGSTOP");
+      await delay(PAST_A_RESENT_CHALLENGE_MS);
+      process.kill(-child.pid, "SIGCONT");
+      child.stdin.write("\n");
+    }
     if (line.startsWith(loginMarker)) {
       const login = z
         .object({
@@ -539,6 +554,78 @@ test("V3 Rust caller drives Rust liveprobe provider", async () => {
       );
     } finally {
       await installer.connection.close();
+      provider.kill();
+      await provider.status;
+    }
+  });
+});
+
+test("a caller stalled past a re-sent challenge keeps its Feed's credit flowing", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const provider = startRustProvider(runtime);
+    const caller = await runtime.connectClient({
+      name: "stalled-ts-caller",
+      contract: apps.LiveProbeCaller.request,
+    });
+    try {
+      await runtime.waitFor(
+        async () =>
+          (
+            await caller.inspect(
+              { runId: "readiness", streamId: "readiness" },
+              { timeout: 1_000 },
+            )
+          ).isOk(),
+        { timeoutMs: 120_000 },
+      );
+      const runId = ulid();
+      const stream = await caller.watch({ runId, streamId: "stall" }).orThrow();
+      const indexes: bigint[] = [];
+      const task = (async () => {
+        for await (const frame of stream) indexes.push(frame.index);
+      })();
+      await runtime.waitFor(
+        async () =>
+          (await caller.inspect({ runId, streamId: "stall" }).orThrow())
+            .active === 1n,
+        { timeoutMs: 30_000 },
+      );
+      // Block this process, the TypeScript caller included, as a starved
+      // caller is blocked: the provider's challenge then arrives again after
+      // it is answered. Every frame past the provider's 64-frame window
+      // needs the caller's later consumption credit.
+      Atomics.wait(
+        new Int32Array(new SharedArrayBuffer(4)),
+        0,
+        0,
+        PAST_A_RESENT_CHALLENGE_MS,
+      );
+      await caller
+        .release({
+          runId,
+          streamId: "stall",
+          throughIndex: 300n,
+          finish: true,
+          fail: false,
+        })
+        .orThrow();
+      await runtime.waitFor(() => indexes.length === 300, {
+        timeoutMs: 20_000,
+      });
+      await task;
+      assert.deepEqual(
+        indexes,
+        Array.from({ length: 300 }, (_, index) => BigInt(index + 1)),
+      );
+
+      const summary = await runRustLiveProbeCaller(
+        runtime,
+        "stalled-rust-caller",
+        "stall",
+      );
+      assert.equal(summary.stallFrames, 300, "the Rust caller's Feed");
+    } finally {
+      await caller.connection.close();
       provider.kill();
       await provider.status;
     }

@@ -166,6 +166,13 @@ fn source_stream(
             if cursor.generation == 0 {
                 cursor.generation = cursor.state.start();
             }
+            // Register for the next release before reading the current one;
+            // `notify_waiters` wakes only registered waiters, so a release
+            // landing after the read would otherwise never wake this source.
+            let state = Arc::clone(&cursor.state);
+            let released = state.notify.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
             let (through, finish, fail, payload_bytes, padding_bytes) = cursor.state.snapshot();
             if cursor.next_index <= through {
                 let frame = LiveProbeFrame {
@@ -192,7 +199,7 @@ fn source_stream(
                 ));
             }
             tokio::select! {
-                _ = cursor.state.notify.notified() => {}
+                _ = &mut released => {}
                 _ = cursor.cancellation.cancelled() => {}
             }
         }

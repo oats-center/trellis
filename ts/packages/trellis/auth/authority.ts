@@ -82,6 +82,12 @@ export type PendingSessionRequest = {
   expectedDeploymentId: string | null;
 };
 
+/**
+ * Verification evidence that is only briefly unavailable, such as a revocation
+ * mirror catching up. A change notification from the owner may make it current.
+ */
+export class AuthorityUnavailableError extends Error {}
+
 /** Short-lived typed identity lease; cannot be constructed from unverified JSON. */
 export class VerifiedAuthority {
   readonly #owner: SessionAuthorityOwner;
@@ -771,8 +777,9 @@ export class SessionAuthorityOwner {
 
   /** Borrow the current own authority, which peer-cache pressure can never evict. */
   own(): VerifiedAuthority {
-    if (!this.#own || !this.#ownAvailable)
-      throw new Error("own authority unavailable");
+    if (!this.#own) throw new Error("own authority unavailable");
+    if (!this.#ownAvailable)
+      throw new AuthorityUnavailableError("own authority unavailable");
     this.assertCurrent(this.#own);
     return VerifiedAuthority.acquire(authorityLeaseToken, this, this.#own);
   }
@@ -1104,7 +1111,7 @@ export class SessionAuthorityOwner {
       updates = this.#mirrorUpdates;
       await updates;
       if (epoch !== this.#mirrorEpoch)
-        throw new Error("authority mirror superseded");
+        throw new AuthorityUnavailableError("authority mirror superseded");
     } while (updates !== this.#mirrorUpdates);
     // This waits only for updates already received, never for lost coverage or
     // a replacement mirror. Callers still perform their normal live checks.
@@ -1112,8 +1119,10 @@ export class SessionAuthorityOwner {
 
   /** Recheck observed revocation and expiry after every cold asynchronous boundary. */
   assertCurrent(entry: CachedAuthority): void {
-    if (this.#stopped || this.#overloaded || !this.#mirrorCovered)
+    if (this.#stopped || this.#overloaded)
       throw new Error("authority owner unavailable");
+    if (!this.#mirrorCovered)
+      throw new AuthorityUnavailableError("revocation mirror is not current");
     const issuer = this.#liveIssuer(entry.authority.issuerKeyId);
     if (issuer?.state !== "active")
       throw new Error("issuer unavailable for live authority");
@@ -1406,8 +1415,9 @@ export class SessionAuthorityOwner {
     kind: "authority" | "catalog" | "provider" | "rotation",
     key: string,
   ): Promise<Uint8Array> {
-    if (!this.#material || this.#stopped)
-      throw new Error("authority material unavailable");
+    if (this.#stopped) throw new Error("authority material unavailable");
+    if (!this.#material)
+      throw new AuthorityUnavailableError("authority material unavailable");
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(key))
       throw new Error("invalid material lookup key");
     const prefix =

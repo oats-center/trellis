@@ -5,12 +5,16 @@ import {
   type SessionRequest,
 } from "../auth/protocol_wasm.ts";
 import { type Msg } from "@nats-io/nats-core";
-import { type SessionAuthorityOwner } from "../auth/authority.ts";
+import {
+  AuthorityUnavailableError,
+  type SessionAuthorityOwner,
+} from "../auth/authority.ts";
 import { type PermissionAtom as DescriptorPermissionAtom } from "../participant_runtime/api.ts";
 import { AuthError } from "../errors/index.ts";
 import { Result, err, ok } from "@oatscenter/result";
 
 import { recordCatalogDuration } from "../telemetry/mod.ts";
+import { SERVICE_AVAILABILITY_WAIT_MS } from "./wire.ts";
 
 export type RuntimeRpcErrorDesc = {
   type: string;
@@ -98,7 +102,8 @@ export async function verifyLocalAuthorization(
       outcome = "denied";
       return err(new AuthError({ reason: "insufficient_permissions" }));
     }
-    if (!args.cache) {
+    const cache = args.cache;
+    if (!cache) {
       outcome = "unavailable";
       return err(new AuthError({ reason: "invalid_signature" }));
     }
@@ -174,13 +179,43 @@ export async function verifyLocalAuthorization(
           issuedAt: iat,
           requestId,
         };
-        const verified = await args.cache.verifyRequest(
-          request,
-          args.proofPayload ?? args.message.data,
-          proof,
-          action,
-          args.kind === "provider-request" ? "provider" : "consumer",
-        );
+        // An unverified request gets no reply. Evidence that is only briefly
+        // unavailable, such as the revocation mirror catching up, is waited
+        // for as a caller waits for a briefly absent provider; rejecting the
+        // request instead would leave its caller waiting out its whole
+        // deadline for a provider that is serving.
+        let changed = Promise.withResolvers<boolean>();
+        const unsubscribe = cache.subscribeChanges(() => changed.resolve(true));
+        const waitUntil = performance.now() + SERVICE_AVAILABILITY_WAIT_MS;
+        let verified: Awaited<ReturnType<typeof cache.verifyRequest>>;
+        try {
+          for (;;) {
+            try {
+              verified = await cache.verifyRequest(
+                request,
+                args.proofPayload ?? args.message.data,
+                proof,
+                action,
+                args.kind === "provider-request" ? "provider" : "consumer",
+              );
+              break;
+            } catch (error) {
+              const remaining = waitUntil - performance.now();
+              if (
+                !(error instanceof AuthorityUnavailableError) ||
+                remaining <= 0
+              )
+                throw error;
+              const timer = setTimeout(() => changed.resolve(false), remaining);
+              const woke = await changed.promise;
+              clearTimeout(timer);
+              if (!woke) throw error;
+              changed = Promise.withResolvers<boolean>();
+            }
+          }
+        } finally {
+          unsubscribe();
+        }
         try {
           const sessionKey = args.message.headers?.get("session-key");
           if (
@@ -206,7 +241,7 @@ export async function verifyLocalAuthorization(
         ) {
           return err(new AuthError({ reason: "invalid_signature" }));
         }
-        const caller = await args.cache.verifyEvent(
+        const caller = await cache.verifyEvent(
           {
             authorityDigest: contextDigest,
             apiId,
@@ -229,6 +264,16 @@ export async function verifyLocalAuthorization(
         return ok({ type: "verified", ...caller });
       }
     } catch (error) {
+      if (error instanceof AuthorityUnavailableError) {
+        // A durable event is redelivered later rather than discarded as
+        // forged; a request was already given the bounded wait.
+        outcome = "unavailable";
+        return err(
+          args.kind === "event"
+            ? new EventVerificationAuthError(true)
+            : new AuthError({ reason: "authorization_unavailable" }),
+        );
+      }
       outcome = "error";
       return err(new AuthError({ reason: "invalid_signature" }));
     }

@@ -147,6 +147,15 @@ uses Transfer v1.
   unanswered challenge is re-sent unchanged every 2 s. Only a fresh challenge
   answer extends the peer-inactivity deadline; ordinary data and duplicate
   controls do not.
+- Control sequences are contiguous, and the provider consumes one only for a
+  control it accepts. The consumer therefore answers each challenge with one
+  logical pulse: a copy of a challenge it has already answered gets that same
+  pulse again, identical body and sequence with a fresh proof, or nothing once
+  the pulse was acknowledged. A second pulse for one challenge would be refused
+  without consuming its sequence, every later control would then be a gap, and
+  the session would stop receiving credit and end silent at the inactivity
+  bound. A consumer stalled past a re-send, as under load, receives such
+  copies.
 - A quiet, owned, authorized session stays active indefinitely. There is no
   total session age limit and no lifetime message quota.
 - A stalled application backlog (outstanding data with no consumption progress)

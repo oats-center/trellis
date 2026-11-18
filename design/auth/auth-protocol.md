@@ -129,10 +129,12 @@ a timeout without reaching the broker.
 
 A provider gives an unverified request no reply. When it cannot verify one only
 because its authorization evidence is briefly unavailable, as while its
-revocation mirror catches up on a replacement transport generation that already
-serves the route, the Rust provider waits up to five seconds for that evidence
-and verifies again instead of dropping the request, which would leave the
-caller waiting out its whole deadline.
+revocation mirror catches up on a replacement transport generation or after
+losing its mirror consumer on a socket that still serves the route, the
+provider waits up to five seconds for that evidence and verifies again instead
+of dropping the request, which would leave the caller waiting out its whole
+deadline. A durable event whose evidence is still unavailable after that wait
+is redelivered later, not discarded as forged.
 
 Events retain signed authority by digest. Historical verification uses original
 JetStream publication time/sequence and the signed revocation cutoff, not replay
