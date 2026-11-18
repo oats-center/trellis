@@ -1,4 +1,4 @@
-import type { NatsConnection } from "@nats-io/nats-core";
+import { ClosedConnectionError, type NatsConnection } from "@nats-io/nats-core";
 import { z } from "zod";
 import { SessionAuthorityOwner, type VerifiedAuthority } from "./authority.ts";
 import { requestOwnAdmission } from "./admission.ts";
@@ -125,6 +125,25 @@ export async function connectProvisioned(
   });
   owner = connected.owner;
   return connected;
+}
+
+/**
+ * Make a generation's flush settle when its connection closes.
+ *
+ * nats.js fails a pending flush only when it redials in place. A generation
+ * never does, so without this a flush awaiting a lost connection's `PONG`
+ * would wait forever instead of failing with the loss.
+ */
+function settleFlushOnClose(nc: NatsConnection): NatsConnection {
+  const flush = nc.flush.bind(nc);
+  nc.flush = () =>
+    Promise.race([
+      flush(),
+      nc.closed().then((error) => {
+        throw error ?? new ClosedConnectionError();
+      }),
+    ]);
+  return nc;
 }
 
 /** One signed-admission connection path for OAuth and provisioned runtimes. */
@@ -406,7 +425,6 @@ export async function connectAdmitted(options: {
           ? connect.authenticator
           : [connect.authenticator],
         inboxPrefix,
-        maxReconnectAttempts: 0,
         timeoutMs: options.timeout ?? 30_000,
       },
     };
@@ -428,14 +446,15 @@ export async function connectAdmitted(options: {
     prepare,
     readAdmission,
     open: async (connect) => {
-      const nc = await transport.connect({
-        servers: connect.servers,
-        authenticator: connect.authenticators,
-        inboxPrefix,
-        maxReconnectAttempts: 0,
-        reconnect: false,
-        timeout: connect.timeoutMs,
-      });
+      const nc = settleFlushOnClose(
+        await transport.connect({
+          servers: connect.servers,
+          authenticator: connect.authenticators,
+          inboxPrefix,
+          reconnect: false,
+          timeout: connect.timeoutMs,
+        }),
+      );
       const credential = preparedCredentials.get(connect);
       if (!credential) {
         await nc.close();
@@ -677,12 +696,16 @@ export async function connectAdmitted(options: {
       admission: credential,
       natsSentinel: options.natsSentinel,
     });
-    nc = await transport.connect({
-      servers: options.servers,
-      ...authOptions,
-      maxReconnectAttempts: 0,
-      timeout: options.timeout ?? 30_000,
-    });
+    nc = settleFlushOnClose(
+      await transport.connect({
+        servers: options.servers,
+        ...authOptions,
+        // Like every later generation, the first never reconnects in place: a
+        // lost connection is replaced by a freshly admitted generation.
+        reconnect: false,
+        timeout: options.timeout ?? 30_000,
+      }),
+    );
     credentials.set(nc, credential);
     const admission = await readAdmission(nc);
     const prepared: TransportGenerationPrepared = {

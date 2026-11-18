@@ -110,6 +110,15 @@ gets no answer is therefore unavailability, not refusal: the participant renews
 again after one second and keeps its connection. Only a verified answer that
 retires or reduces the session ends it.
 
+Each physical NATS connection is one admitted generation, and no SDK reconnects
+one in place. When a connection is lost, its generation closes; a healthy
+survivor takes over, or the participant opens a fresh generation admitted with
+current authority, recreates its subscriptions there, and only then routes
+requests to it. A reattached socket would resume subscriptions before authority
+was checked again and flush publishes buffered during the outage, some of them
+after their deadline. A request started during the gap waits for the new
+generation within its deadline and is never sent after it.
+
 ## Requests, replies, and events
 
 RPC, Operation starts, and Live openings use canonical API/action subjects and
@@ -131,6 +140,11 @@ second; this covers a provider that is reconnecting. A caller never sends a
 finite request, first send or resend, once its deadline has passed: a request
 whose transport acquisition, proof creation, or resend wakeup ran late fails as
 a timeout without reaching the broker.
+
+Request, response, and Live event times are accepted within 30 seconds of the
+verifier's clock in both SDKs. A request that waits in a provider's queue
+behind slower work is checked against its original issue time, so the window
+covers that wait as well as skew between hosts.
 
 A provider gives an unverified request no reply. When it cannot verify one only
 because its authorization evidence is briefly unavailable, as while its

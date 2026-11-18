@@ -629,7 +629,10 @@ these changes; no manual transport refresh or upgrade notification exists. Old
 sockets close after their retained work releases them. Reduced or revoked
 authority, physical failure, and hard authorization deadlines can interrupt
 affected work. Raw NATS connections are physical attachments, not
-generation-aware application handles.
+generation-aware application handles. A lost connection is never reconnected
+in place: the SDK opens a fresh connection admitted with current authority,
+recreates subscriptions on it, and then routes requests. A request made during
+the gap waits for it within its deadline and is never sent after the deadline.
 
 Live authority requires a verified initial revocation snapshot and continuing
 coverage; epoch fencing prevents old watchers from changing successor coverage.
@@ -975,7 +978,9 @@ and the service never receives that request. A Live opening follows the same
 rule within the caller's timeout, so a late opening never reserves a provider
 session for a caller that has given up. A no-responders failure after that
 wait means the target service is not currently reachable; it is not a malformed
-offer, a declared error, or a failed Operation.
+offer, a declared error, or a failed Operation. Providers in both SDKs accept
+a request signed up to 30 seconds before they verify it, which includes time
+spent queued behind the handler's earlier requests.
 
 Declare expected RPC and Operation errors in IDL to obtain typed generated error
 handling. Runtime validation and transport failures remain distinct from those
