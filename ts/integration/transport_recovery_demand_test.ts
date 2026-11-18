@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { Result } from "@oatscenter/trellis";
+import { TrellisService } from "@oatscenter/trellis/service";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import {
   apps,
@@ -91,6 +93,76 @@ test(
         } finally {
           runtime.restoreNativeTransport();
           await client.connection.close();
+        }
+      },
+      { interruptibleNativeProxy: true },
+    );
+  },
+);
+
+test(
+  "a service's heartbeats follow the idle backoff through an outage",
+  { timeout: 120_000 },
+  async () => {
+    await withTrellisRuntime(
+      async (runtime) => {
+        const identity = await runtime.registerService({
+          name: "recovery-background-provider",
+          contract: participants.Provider.participant,
+        });
+        const service = await TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: participants.Provider.participant,
+          seed: identity.seed,
+        }).orThrow();
+        await service.handleEcho(({ input }) => Result.ok(input));
+        try {
+          // A heartbeat falls due every 10 s and waits up to 30 s for a
+          // connection, so through a long outage one is nearly always waiting.
+          // Waiting heartbeats must not hold the service to once-a-second
+          // attempts: once the backoff reaches its long steps it stays there.
+          runtime.interruptNativeTransport();
+          const gaps: number[] = [];
+          let seen = runtime.nativeConnectionAttempts();
+          let seenAt = Date.now();
+          const until = Date.now() + 32_000;
+          while (Date.now() < until) {
+            await delay(10);
+            const attempts = runtime.nativeConnectionAttempts();
+            if (attempts === seen) continue;
+            const now = Date.now();
+            // A service attempts its connections together, a few
+            // milliseconds apart; the backoff spaces the attempts.
+            if (now - seenAt >= 100) gaps.push(now - seenAt);
+            seen = attempts;
+            seenAt = now;
+          }
+          const long = gaps.findIndex((gap) => gap >= 3_500);
+          assert(
+            long >= 0 && gaps.slice(long).every((gap) => gap >= 3_500),
+            `service retried faster than its backoff: ${gaps.join(", ")}`,
+          );
+
+          // The service recovers once the path is back and serves again.
+          runtime.restoreNativeTransport();
+          const client = await runtime.connectClient({
+            name: "recovery-background-caller",
+            contract: apps.Caller.request,
+            timeout: 15_000,
+          });
+          try {
+            // Its next attempt can be up to 8 s away.
+            const echoed = await runtime.waitFor(async () => {
+              const result = await client.echo({ value: "after" });
+              return result.isOk() ? result.take() : undefined;
+            });
+            assert.deepEqual(echoed, { value: "after" });
+          } finally {
+            await client.connection.close();
+          }
+        } finally {
+          runtime.restoreNativeTransport();
+          await service.stop();
         }
       },
       { interruptibleNativeProxy: true },

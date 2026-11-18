@@ -111,6 +111,12 @@ export type TransportAcquireOptions = {
   signal?: AbortSignal;
   /** Absolute epoch-millisecond deadline after which acquisition fails. */
   deadlineMs?: number;
+  /**
+   * Periodic or long-lived work, such as heartbeats, that waits on the idle
+   * reconnect backoff instead of pulling the next attempt forward. A wait with
+   * no deadline is background too. @internal
+   */
+  background?: boolean;
 };
 
 /** One held transport generation. The holder releases it when its work ends. */
@@ -2280,9 +2286,13 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     // Selection and policy checks await. Recheck instead of sleeping if their
     // awaited work crossed a notification, even when no waiter existed then.
     if (observedVersion !== this.#changeVersion) return Promise.resolve();
-    // Register before reading the retry window, so this wait sees the
-    // retry its own demand pulled forward.
-    const release = this.demandRecovery();
+    // Only a caller with a deadline pulls the retry forward; background waits
+    // such as heartbeats and watches follow the idle backoff. Register before
+    // reading the retry window, so this wait sees the retry it pulled forward.
+    const release =
+      opts?.deadlineMs === undefined || opts.background
+        ? () => {}
+        : this.demandRecovery();
     return this.#awaitChange(opts).finally(release);
   }
 

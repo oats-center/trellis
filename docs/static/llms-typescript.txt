@@ -106,7 +106,8 @@ When the broker is lost, an idle client retries it after 1 s, 2 s, 4 s, then
 every 8 s. A request waiting for the transport or for verified authority makes
 the client retry 1 s after its last failed attempt instead, however many
 requests wait, so a request sent as the broker returns succeeds within its
-timeout.
+timeout. Background work, such as a service's heartbeats, keeps the idle
+schedule.
 
 ### Node native applications
 

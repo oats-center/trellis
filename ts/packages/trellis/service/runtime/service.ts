@@ -1531,6 +1531,7 @@ export function createConnectedService<
         lease = await serviceTransport.acquireCurrent({
           signal: healthPublishingAbort.signal,
           deadlineMs: Date.now() + acquireTimeoutMs,
+          background: true,
         });
         if (healthPublishingAbort.signal.aborted) return;
         const sample = await health.sample();

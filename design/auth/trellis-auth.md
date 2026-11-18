@@ -318,7 +318,10 @@ schedule. A TypeScript client that is idle backs off between failed attempts:
 an Operation, a Live opening, a publish awaiting its acknowledgement, or a
 request waiting for verified authority to return), it retries 1 s after the
 last failed attempt instead, however many callers are waiting, so a request
-sent as the broker returns does not time out behind the idle schedule. A
+sent as the broker returns does not time out behind the idle schedule.
+Background work keeps the idle schedule: a wait with no deadline, and a
+service's health heartbeat, never pull an attempt forward, so a running service
+does not retry once a second for a whole outage. A
 waiting Rust caller asks for an attempt every 500 ms within its deadline, so it
 has no idle backoff to wait out.
 
