@@ -23,6 +23,11 @@ pub struct Cli {
     /// Render command output as human-readable text or machine-readable JSON.
     pub format: OutputFormat,
 
+    #[arg(long, global = true)]
+    /// Never ask questions: fail, naming the flags to give, when a command
+    /// needs input it was not given. Questions are also off without a terminal.
+    pub no_input: bool,
+
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     /// Increase log verbosity. Repeat for additional detail.
     pub verbose: u8,

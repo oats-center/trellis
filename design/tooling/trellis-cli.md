@@ -77,23 +77,56 @@ application refresh family and clears the selected native credentials.
 ## Authorization Administration
 
 ```text
-trellis clients list|get|put|disable|delete ...
+trellis clients list|get|add|edit|put|disable|delete ...
 trellis apis list|get|review|accept|force-replace ...
 trellis issuers revoke <issuer-key-id> ...
 ```
 
 Client registration and catalog operations call the generated `Auth.OAuthClients`
-and `Auth.Apis` families. `apis review` and `apis accept` take `--source` and an
-optional `--participant`, compile the package's evidence the way `svc create`
-does, and review (and accept, when compatible) each API the participant
-implements. Other JSON request files use generated native-contract DTOs; the CLI
-does not author a second policy or contract schema. Mutations retain
-expected revisions and idempotency keys. Force replacement requires
-`trellis.auth.v1:apis.forceReplace` and explicit breakage/consent acknowledgements.
-Client configuration supports exact registered loopback browser callbacks.
+and `Auth.Apis` families. `clients add [<client>]` registers an app and
+`clients edit <client>` changes one; both take every setting as a flag (`--kind
+browser|native`, `--title`, `--description`, `--[no-]development`, repeated
+`--redirect-uri` and `--allow-without-asking`, `--[no-]sign-up-password`,
+`--[no-]sign-up-providers`, `--source`/`--app`) and ask for the rest. `edit`
+asks each question starting from the current value, and without a terminal
+keeps every setting left out. Redirect URIs are checked as they are typed
+against Auth's rules: HTTPS, or plain HTTP on a loopback host for a development
+or native app; Auth checks again on save. Both save with `OAuthClients.Put` at
+the current revision, then `OAuthClients.SignUp.Update` when sign-up changed and
+`Config.Apps.Declare` for `--source`. `clients put <file>` (`-` for standard
+input) stays the scripting path: it sends one `AuthOAuthClientPutRequest` JSON
+file unchanged. `edit` follows the group's verb-first shape (`roles edit`,
+`users edit`), not the target-first `svc <id>` shape.
+
+`apis review` and `apis accept` take `--source` and an optional
+`--participant`, compile the package's evidence the way `svc create` does, and
+review (and accept, when compatible) each API the participant implements.
+`apis force-replace --source` reviews the same way and replaces each accepted
+API whose definition changed, after showing its review and getting
+`--acknowledge-breakage` and `--acknowledge-consent-impact` (asked for on a
+terminal). `apis force-replace <file>` sends one `AuthApiForceReplaceRequest`
+JSON file instead, for role and mapping edits. JSON request files use
+generated native-contract DTOs; the CLI does not author a second policy or
+contract schema. Mutations retain expected revisions and idempotency keys.
+Force replacement requires `trellis.auth.v1:apis.forceReplace` and explicit
+breakage/consent acknowledgements.
 
 Issuer commands manage the online signer. No `infra`, trust-root, certificate,
 manifest, trust-floor, offline-signing, or compatibility command exists.
+
+### Questions for missing input
+
+Commands that need several values ask for each one their flags leave out:
+`clients add|edit`, `apis force-replace --source`, `roles create`,
+`users create`, `users find`, `sign-in providers add`, and the participant
+choice of every `--source` command when the package has several. A question
+lists the choices when they are a known set, starts from the default or current
+value, and checks the answer as it is typed; a write that asked anything shows
+a summary and asks to go ahead. Questions and summaries go to stderr, so
+`--format json` keeps stdout for the result. A command given every flag asks
+nothing. Without a terminal on stdin and stderr, or with the global
+`--no-input`, nothing is asked: missing required input fails before any write,
+naming every missing flag. The prompt layer is `crates/cli/src/prompt.rs`.
 
 ## Deployment Commands
 
@@ -173,7 +206,8 @@ self sign-up on or off and sets the minimum password length, at once
 `enable` and `disable` turn one on and off, and `list` and `show` print
 each provider's ID, which `users find --provider` takes, and the callback URL to
 register with the provider; `add` and `edit` read the client secret from
-`--client-secret-file` (`-` for standard input), never the command line, and
+`--client-secret-file` (`-` for standard input), never the command line (`add`
+asks for it without echo when it asks for its other values), and
 `edit` keeps every option left out. `--certificate-fingerprint <sha256>` pins
 the issuer of a provider's certificate when nothing on the server vouches for
 it; `edit --no-certificate-fingerprint` removes the pin, even while the

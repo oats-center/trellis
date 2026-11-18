@@ -13,8 +13,23 @@ pub enum ClientsCommand {
     },
     /// Read one registration, including its current revision.
     Get { client_id: String },
-    /// Create or replace a registration using an AuthOAuthClientPutRequest JSON file.
-    /// Use kind=browser, development=true and exact redirectUris for localhost apps.
+    /// Register an app, asking for each setting the flags leave out.
+    /// With every required flag given, or with `--no-input`, nothing is asked.
+    Add {
+        /// The app's client ID, such as `acme.orders-web`; it cannot change later.
+        client_id: Option<String>,
+        #[command(flatten)]
+        settings: ClientSettingsArgs,
+    },
+    /// Change a registration, asking each question with its current value
+    /// filled in; without a terminal, settings you leave out keep their value.
+    Edit {
+        client_id: String,
+        #[command(flatten)]
+        settings: ClientSettingsArgs,
+    },
+    /// Create or replace a registration from an AuthOAuthClientPutRequest JSON
+    /// file, or `-` for standard input, for scripts. `add` asks instead.
     Put {
         input: PathBuf,
         /// Also attach the settings an app declares, compiled from this source
@@ -39,6 +54,66 @@ pub enum ClientsCommand {
     Disable(ClientMutationArgs),
     /// Delete a client at the explicit expected revision.
     Delete(ClientMutationArgs),
+}
+
+/// Whether an app runs in a web page or on a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ClientKind {
+    /// A web app; users return to it at a redirect URI after signing in.
+    Browser,
+    /// A desktop, mobile, or command-line app, which may sign in with a code
+    /// shown on another device instead of a redirect URI.
+    Native,
+}
+
+/// The settings of an app registration, each also asked for when left out.
+#[derive(Debug, Args)]
+#[command(
+    group(clap::ArgGroup::new("development_state").args(["development", "no_development"])),
+    group(clap::ArgGroup::new("sign_up_password_state").args(["sign_up_password", "no_sign_up_password"])),
+    group(clap::ArgGroup::new("sign_up_providers_state").args(["sign_up_providers", "no_sign_up_providers"]))
+)]
+pub struct ClientSettingsArgs {
+    #[arg(long, value_enum)]
+    pub kind: Option<ClientKind>,
+    /// Name users see when the app asks them to sign in.
+    #[arg(long)]
+    pub title: Option<String>,
+    #[arg(long)]
+    pub description: Option<String>,
+    /// A development app may return users to plain `http://localhost`.
+    /// Never mark an app users rely on as one.
+    #[arg(long)]
+    pub development: bool,
+    #[arg(long)]
+    pub no_development: bool,
+    /// Where users return after signing in; repeat for each. HTTPS, or plain
+    /// HTTP on localhost for a development or native app. Replaces the list.
+    #[arg(long = "redirect-uri", value_name = "URI")]
+    pub redirect_uris: Vec<String>,
+    /// A capability the app gets without asking users, such as
+    /// `acme.orders.v1:orders.read`; repeat for each. Replaces the list.
+    #[arg(long = "allow-without-asking", value_name = "CAPABILITY_ID")]
+    pub implied_consent: Vec<String>,
+    /// Let users create a username-and-password account while signing in.
+    /// The installation must also allow it (`trellis sign-in set --local-sign-up`).
+    #[arg(long)]
+    pub sign_up_password: bool,
+    #[arg(long)]
+    pub no_sign_up_password: bool,
+    /// Let a first sign-in with an identity provider create the account.
+    #[arg(long)]
+    pub sign_up_providers: bool,
+    #[arg(long)]
+    pub no_sign_up_providers: bool,
+    /// Also attach the settings an app declares, compiled from this source
+    /// project, so administrators can set them.
+    #[arg(long, value_name = "PATH")]
+    pub source: Option<PathBuf>,
+    /// The app or agent request in `--source` that declares the settings,
+    /// such as `acme-orders.Panel`; needed when the project has several.
+    #[arg(long, requires = "source", value_name = "APP")]
+    pub app: Option<String>,
 }
 
 /// How users may create their own account while signing in to one app.
@@ -98,22 +173,23 @@ pub enum ProvidersCommand {
 pub struct ProviderAddArgs {
     /// Shown on the sign-in button.
     #[arg(long)]
-    pub name: String,
+    pub name: Option<String>,
     /// The provider's issuer URL, such as `https://example.us.auth0.com/`.
     #[arg(long)]
-    pub issuer: String,
+    pub issuer: Option<String>,
     /// The client ID the provider gave this Trellis.
     #[arg(long)]
-    pub client_id: String,
+    pub client_id: Option<String>,
     /// File holding the client secret, or `-` to read it from standard input.
     #[arg(long, value_name = "PATH")]
     pub client_secret_file: Option<PathBuf>,
     /// A scope to request; repeat for each. Defaults to openid, profile and email.
     #[arg(long = "scope", value_name = "SCOPE")]
     pub scopes: Vec<String>,
-    /// JSON pointer to the claim listing a person's groups, for giving roles.
-    #[arg(long, default_value = "/groups")]
-    pub groups_claim: String,
+    /// JSON pointer to the claim listing a user's groups, for giving roles.
+    /// Defaults to `/groups`.
+    #[arg(long)]
+    pub groups_claim: Option<String>,
     /// Trust the provider's certificate issuer with this SHA-256 fingerprint,
     /// for a provider whose certificate nothing on the server vouches for.
     /// Confirm it with the provider's operator first.
@@ -247,9 +323,30 @@ pub enum ApisCommand {
     /// Accept the APIs a source package's participant implements, after a
     /// compatible review. An incompatible change needs `force-replace`.
     Accept(ApisSourceArgs),
-    /// Force an incompatible review using AuthApiForceReplaceRequest JSON.
-    /// Requires apis.forceReplace plus both explicit acknowledgement fields.
-    ForceReplace { input: PathBuf },
+    /// Replace accepted APIs with a source package's incompatible definitions,
+    /// asking for what the flags leave out; or, for scripts, send an
+    /// AuthApiForceReplaceRequest JSON file (`-` for standard input).
+    ForceReplace(ApisForceReplaceArgs),
+}
+
+/// What an incompatible replacement needs.
+#[derive(Debug, Args)]
+pub struct ApisForceReplaceArgs {
+    /// AuthApiForceReplaceRequest JSON file, or `-` for standard input.
+    #[arg(conflicts_with_all = ["source", "participant", "acknowledge_breakage", "acknowledge_consent_impact"])]
+    pub input: Option<PathBuf>,
+    /// Directory containing the package's `trellis.toml`.
+    #[arg(long)]
+    pub source: Option<PathBuf>,
+    /// Participant identity; asked for when the package has several.
+    #[arg(long)]
+    pub participant: Option<String>,
+    /// Accept that callers built against the accepted definition may break.
+    #[arg(long)]
+    pub acknowledge_breakage: bool,
+    /// Accept that what users agreed to may now mean something different.
+    #[arg(long)]
+    pub acknowledge_consent_impact: bool,
 }
 
 /// A participant in a native source package.
@@ -376,12 +473,17 @@ pub struct RoleRefArgs {
 
 #[derive(Debug, Args)]
 /// Create one role.
+#[command(group(
+    clap::ArgGroup::new("new_users_state")
+        .args(["new_users", "no_new_users"])
+        .multiple(false)
+))]
 pub struct RoleCreateArgs {
     #[arg(long)]
-    pub title: String,
+    pub title: Option<String>,
 
-    #[arg(long, default_value = "")]
-    pub description: String,
+    #[arg(long)]
+    pub description: Option<String>,
 
     /// Capability the role gives, such as `trellis.auth.v1:users.manage`.
     /// Repeat for each capability.
@@ -391,6 +493,10 @@ pub struct RoleCreateArgs {
     /// Give this role to every user created from now on.
     #[arg(long)]
     pub new_users: bool,
+
+    /// Don't give this role to new users (the default).
+    #[arg(long)]
+    pub no_new_users: bool,
 }
 
 #[derive(Debug, Args)]
@@ -435,20 +541,21 @@ pub struct UserRefArgs {
 pub struct UserFindArgs {
     /// The sign-in provider's Trellis ID.
     #[arg(long, value_name = "PROVIDER_ID")]
-    pub provider: String,
-    /// The provider's `sub` for the person, matched exactly.
+    pub provider: Option<String>,
+    /// The provider's `sub` for the user, matched exactly.
     #[arg(long, value_name = "SUBJECT")]
-    pub subject: String,
+    pub subject: Option<String>,
 }
 
 #[derive(Debug, Args)]
 /// Create one Trellis user.
 pub struct UserCreateArgs {
+    /// Name shown for the user; defaults to the username.
     #[arg(long)]
     pub name: Option<String>,
 
     #[arg(long)]
-    pub username: String,
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Args)]

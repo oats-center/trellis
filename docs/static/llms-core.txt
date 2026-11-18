@@ -367,9 +367,25 @@ the CLI prints, such as an instance seed, root secret, or setup code, is shown
 once and not kept. `svc|dev <name> remove` asks for the name unless given `-f`,
 and refuses without a terminal or with `--format json` unless given `-f`.
 
-`trellis clients list|get|put|disable|delete` manages public OAuth
-registrations, including exact loopback browser redirects. `put` reads generated
-`AuthOAuthClientPutRequest` JSON, and mutations are revision-fenced. Client flows
+Commands that need several values (`clients add|edit`, `apis force-replace
+--source`, `roles create`, `users create|find`, `sign-in providers add`, and the
+participant choice of a `--source` command when the package has several) ask
+for each required value a flag leaves out, on stderr, then show a summary and
+ask to go ahead. A command given every required flag asks nothing. Without a
+terminal, or with the global `--no-input`, nothing is asked: a missing required
+flag fails before any write, naming every missing flag, so scripts never hang.
+
+`trellis clients list|get|add|edit|put|disable|delete` manages public OAuth
+registrations, including exact loopback browser redirects. `clients add [ID]`
+registers an app by asking for its kind (browser or native), title,
+development flag, redirect URIs, capabilities allowed without asking, sign-up,
+and optional `--source` settings declaration; each answer is also a flag
+(`--kind`, `--title`, `--description`, `--[no-]development`, `--redirect-uri`,
+`--allow-without-asking`, `--[no-]sign-up-password`, `--[no-]sign-up-providers`,
+`--source`, `--app`). `clients edit ID` asks the same questions from the
+current values, or changes only the flags given. `put FILE` (`-` for stdin)
+sends generated `AuthOAuthClientPutRequest` JSON for scripts. Mutations are
+revision-fenced. Client flows
 are fixed on every Put: browser callbacks enable Authorization Code + refresh;
 native without callbacks enables Device Code + refresh; native with callbacks
 enables both + refresh. Adding or removing native callbacks updates the
@@ -386,9 +402,12 @@ against the definition its consumer brought. A caller already running when its
 provider is added renews its authority on Auth's notice and reaches it within
 moments; it does not need to reconnect. `trellis apis review --source <project-root>
 [--participant <package>.<Name>]` shows them first, and `apis accept` accepts
-them without a deployment. An incompatible change needs `trellis apis force-replace` with generated
-`AuthApiForceReplaceRequest` JSON, `trellis.auth.v1:apis.forceReplace`, and
-explicit breakage/consent acknowledgements. Console exposes OAuth clients and the
+them without a deployment. An incompatible change needs `trellis apis force-replace
+--source <project-root> [--participant <package>.<Name>]`, which shows each
+changed API's review and asks for, or takes, `--acknowledge-breakage` and
+`--acknowledge-consent-impact`; it needs `trellis.auth.v1:apis.forceReplace`.
+`apis force-replace FILE` sends generated `AuthApiForceReplaceRequest` JSON
+instead, for role or mapping edits. Console exposes OAuth clients and the
 API catalog.
 
 The Console's Add service form takes only the service's `trellis.toml` and
@@ -1185,8 +1204,8 @@ or the Console's Settings section. For a field the build doesn't declare,
 at rest and never returned to administrators. Tests set values through the
 same RPCs, never through environment variables. App settings are public to
 the app's users, need defaults, and cannot be secret; register the app's
-declaration with its client using `trellis clients put FILE --source PATH
-[--app ID]` and change values with `trellis clients config CLIENT`. Attach
+declaration with its client using `trellis clients add|edit --source PATH
+[--app ID]` (or `clients put FILE --source PATH`) and change values with `trellis clients config CLIENT`. Attach
 each new build's declaration the same way; connected apps follow changed
 defaults live.
 

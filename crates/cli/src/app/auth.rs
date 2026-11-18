@@ -128,46 +128,11 @@ pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> mi
         ClientsCommand::Config { .. } => unreachable!("handled before connecting"),
         ClientsCommand::Put { input, source, app } => {
             let request: auth_types::AuthOAuthClientPutRequest =
-                serde_json::from_slice(&std::fs::read(&input).into_diagnostic()?)
-                    .into_diagnostic()?;
+                serde_json::from_slice(&read_input(&input)?).into_diagnostic()?;
             // Everything local is checked before the first write, so a bad
             // source leaves the stored registration as it was.
-            let declaration = match source {
-                Some(source) => {
-                    let root = source.canonicalize().into_diagnostic()?;
-                    let manifest = trellis_idl::project::read_manifest(&root.join("trellis.toml"))?;
-                    let compiled = crate::package::compile_project(&root, &manifest)?;
-                    let declaring = compiled
-                        .root_package()
-                        .app_requests()
-                        .values()
-                        .filter(|request| match &app {
-                            Some(id) => request.identity().as_str() == id,
-                            None => !request.config().is_empty(),
-                        })
-                        .map(|request| request.identity().as_str().to_owned())
-                        .collect::<Vec<_>>();
-                    let [request_id] = declaring.as_slice() else {
-                        return Err(miette::miette!(
-                            help = "Name the app with --app.",
-                            "{} in {}",
-                            if declaring.is_empty() {
-                                "no app declares settings".to_owned()
-                            } else {
-                                format!("several apps declare settings: {}", declaring.join(", "))
-                            },
-                            source.display()
-                        ));
-                    };
-                    Some(wire(serde_json::json!({
-                        "clientId": request.client_id,
-                        "packageEvidence": super::deploy::package_evidence(&compiled)?,
-                        "requestId": request_id,
-                        "idempotencyKey": ulid::Ulid::generate().to_string(),
-                    }))?)
-                }
-                None => None,
-            };
+            let declaration =
+                settings_declaration(source.as_deref(), app.as_deref(), &request.client_id)?;
             let response = auth.o_auth_clients_put(&request).await.into_diagnostic()?;
             if let Some(declaration) = declaration {
                 if let Err(error) = auth.config_apps_declare(&declaration).await {
@@ -191,6 +156,24 @@ pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> mi
                 ));
                 Ok(())
             })
+        }
+        ClientsCommand::Add {
+            client_id,
+            settings,
+        } => save_client(format, &auth, client_id, settings, None).await,
+        ClientsCommand::Edit {
+            client_id,
+            settings,
+        } => {
+            let current = auth
+                .o_auth_clients_get(&auth_types::AuthOAuthClientGetRequest {
+                    client_id: wire(&client_id)?,
+                    extra: Default::default(),
+                })
+                .await
+                .into_diagnostic()?
+                .client;
+            save_client(format, &auth, Some(client_id), settings, Some(current)).await
         }
         ClientsCommand::SignUp(args) => {
             let client = auth
@@ -302,6 +285,390 @@ fn print_client(client: &Value) {
                 .map(|id| output::field(id, "")),
         )
         .print();
+}
+
+/// A request file's bytes, or standard input's for `-`.
+fn read_input(path: &std::path::Path) -> miette::Result<Vec<u8>> {
+    if path == std::path::Path::new("-") {
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut bytes).into_diagnostic()?;
+        Ok(bytes)
+    } else {
+        std::fs::read(path).into_diagnostic()
+    }
+}
+
+/// The settings declaration for `client_id` compiled from an app's source
+/// project, checked before any write.
+fn settings_declaration(
+    source: Option<&std::path::Path>,
+    app: Option<&str>,
+    client_id: &str,
+) -> miette::Result<Option<auth_types::AuthConfigAppDeclareRequest>> {
+    let Some(source) = source else {
+        return Ok(None);
+    };
+    let root = source.canonicalize().into_diagnostic()?;
+    let manifest = trellis_idl::project::read_manifest(&root.join("trellis.toml"))?;
+    let compiled = crate::package::compile_project(&root, &manifest)?;
+    let declaring = compiled
+        .root_package()
+        .app_requests()
+        .values()
+        .filter(|request| match app {
+            Some(id) => request.identity().as_str() == id,
+            None => !request.config().is_empty(),
+        })
+        .map(|request| request.identity().as_str().to_owned())
+        .collect::<Vec<_>>();
+    let [request_id] = declaring.as_slice() else {
+        return Err(miette::miette!(
+            help = "Name the app with --app.",
+            "{} in {}",
+            if declaring.is_empty() {
+                "no app declares settings".to_owned()
+            } else {
+                format!("several apps declare settings: {}", declaring.join(", "))
+            },
+            source.display()
+        ));
+    };
+    Ok(Some(wire(serde_json::json!({
+        "clientId": client_id,
+        "packageEvidence": super::deploy::package_evidence(&compiled)?,
+        "requestId": request_id,
+        "idempotencyKey": ulid::Ulid::generate().to_string(),
+    }))?))
+}
+
+/// Whether Auth accepts `uri` as a redirect URI for this kind of app. Auth
+/// checks again, including the origins Trellis itself serves.
+fn check_redirect(uri: &str, kind: ClientKind, development: bool) -> Result<(), String> {
+    let parsed = url::Url::parse(uri).map_err(|_| {
+        format!("{uri} is not a full URL, such as https://app.example.com/callback")
+    })?;
+    if parsed.host_str().is_none() {
+        return Err(format!("{uri} has no host"));
+    }
+    if parsed.fragment().is_some() {
+        return Err(format!("{uri} must not have a #fragment"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!("{uri} must not hold a user name or password"));
+    }
+    let loopback = match parsed.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" if loopback && (development || kind == ClientKind::Native) => Ok(()),
+        "http" if loopback => Err(format!(
+            "{uri}: plain http on localhost is only for development apps; \
+            mark the app as one, or use https"
+        )),
+        _ => Err(format!(
+            "{uri} must use https; plain http works only on localhost, \
+            for a development or native app"
+        )),
+    }
+}
+
+/// Ask for, confirm, and save an app registration: a new one, or `current`
+/// with its values as the starting answers.
+async fn save_client(
+    format: OutputFormat,
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+    client_id: Option<String>,
+    settings: ClientSettingsArgs,
+    current: Option<auth_types::AuthOAuthClient>,
+) -> miette::Result<()> {
+    // An edit asks every question when no setting is given as a flag; an
+    // edit given some keeps the rest, as `roles edit` does.
+    let asking = match &current {
+        Some(_) => {
+            settings.kind.is_none()
+                && settings.title.is_none()
+                && settings.description.is_none()
+                && crate::prompt::pair(settings.development, settings.no_development).is_none()
+                && settings.redirect_uris.is_empty()
+                && settings.implied_consent.is_empty()
+                && crate::prompt::pair(settings.sign_up_password, settings.no_sign_up_password)
+                    .is_none()
+                && crate::prompt::pair(settings.sign_up_providers, settings.no_sign_up_providers)
+                    .is_none()
+                && settings.source.is_none()
+        }
+        None => {
+            client_id.is_none()
+                || settings.kind.is_none()
+                || settings.title.is_none()
+                || (settings.redirect_uris.is_empty() && settings.kind != Some(ClientKind::Native))
+        }
+    };
+    let mut form = crate::prompt::Form::new(asking);
+    let client_id = form.required(
+        "App ID (its OAuth client ID, such as acme.orders-web)",
+        "<CLIENT_ID>",
+        client_id,
+        None,
+        |id| {
+            if id.chars().count() > 2048 {
+                Err("Use at most 2048 characters.".to_owned())
+            } else {
+                Ok(())
+            }
+        },
+    )?;
+    let kinds = [
+        (
+            ClientKind::Browser,
+            "browser: a web app; users come back to it at a redirect URI".to_owned(),
+        ),
+        (
+            ClientKind::Native,
+            "native: a desktop, mobile, or command-line app; it can also sign in \
+            with a code shown on another device"
+                .to_owned(),
+        ),
+    ];
+    // A registration's kind cannot change, so an edit does not ask for it.
+    let kind = match (&current, settings.kind) {
+        (Some(client), None) => match client.kind {
+            auth_types::AuthPublicClientKind::Native => ClientKind::Native,
+            _ => ClientKind::Browser,
+        },
+        (_, given) => form.choose("Kind of app", "--kind", given, &kinds, None)?,
+    };
+    let title = form.required(
+        "Title users see when the app asks them to sign in",
+        "--title",
+        settings.title,
+        current.as_ref().map(|client| client.title.clone()),
+        |title| {
+            if title.chars().count() > 256 {
+                Err("Use at most 256 characters.".to_owned())
+            } else {
+                Ok(())
+            }
+        },
+    )?;
+    let description = form.optional(
+        "Description (optional)",
+        settings.description,
+        current
+            .as_ref()
+            .map(|client| client.description.clone())
+            .unwrap_or_default(),
+        |_| Ok(()),
+    )?;
+    form.explain(
+        "A development app may send users back to plain http://localhost, \
+        127.0.0.1, or [::1]. Apps users rely on use https.",
+    );
+    let development = form.yes_no(
+        "Is this a development app?",
+        crate::prompt::pair(settings.development, settings.no_development),
+        current.as_ref().is_some_and(|client| client.development),
+    )?;
+    form.explain(&format!(
+        "Redirect URIs are where users return after signing in, matched exactly. \
+        Use https, or http://localhost:<port>/... for a {} app. Separate several with spaces.{}",
+        if kind == ClientKind::Native {
+            "native"
+        } else {
+            "development"
+        },
+        if kind == ClientKind::Native {
+            " Leave it empty for an app that signs in only with a code."
+        } else {
+            ""
+        }
+    ));
+    let redirect_uris = form.list(
+        "Redirect URIs",
+        "--redirect-uri",
+        settings.redirect_uris,
+        current
+            .as_ref()
+            .map(|client| client.redirect_uris.clone())
+            .unwrap_or_default(),
+        kind == ClientKind::Browser,
+        |uri| check_redirect(uri, kind, development),
+    )?;
+    form.explain(
+        "Capabilities the app gets without asking users, such as \
+        acme.orders.v1:orders.read. Leave it empty to ask users for everything.",
+    );
+    let implied_consent = form.list(
+        "Allowed without asking (optional)",
+        "--allow-without-asking",
+        settings.implied_consent,
+        current
+            .as_ref()
+            .map(|client| {
+                client
+                    .implied_consent
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        false,
+        |_| Ok(()),
+    )?;
+    form.explain("Sign-up lets users without an account create one while signing in to this app.");
+    let current_sign_up = current.as_ref().map_or((false, false), |client| {
+        (client.sign_up.password, client.sign_up.providers)
+    });
+    let sign_up_password = form.yes_no(
+        "Let users create a username-and-password account? \
+        (The installation must allow it too: trellis sign-in set --local-sign-up)",
+        crate::prompt::pair(settings.sign_up_password, settings.no_sign_up_password),
+        current_sign_up.0,
+    )?;
+    let sign_up_providers = form.yes_no(
+        "Let a first sign-in with an OIDC identity provider create the account?",
+        crate::prompt::pair(settings.sign_up_providers, settings.no_sign_up_providers),
+        current_sign_up.1,
+    )?;
+    let asked_settings = settings.source.is_none() && form.is_interactive();
+    form.explain(
+        "If the app declares settings in a Trellis source project, give the \
+        project's directory so administrators can set them. Leave it empty if not.",
+    );
+    let source = form.optional(
+        "Source project with the app's settings (optional)",
+        settings.source.map(|path| path.display().to_string()),
+        String::new(),
+        |path| {
+            if std::path::Path::new(path).join("trellis.toml").is_file() {
+                Ok(())
+            } else {
+                Err(format!("{path} holds no trellis.toml"))
+            }
+        },
+    )?;
+    let source = (!source.is_empty()).then(|| std::path::PathBuf::from(source));
+    let app = match (&source, settings.app) {
+        (Some(_), None) if asked_settings => {
+            let app = form.optional(
+                "The app in that project that declares the settings \
+                (empty when only one does)",
+                None,
+                String::new(),
+                |_| Ok(()),
+            )?;
+            (!app.is_empty()).then_some(app)
+        }
+        (_, app) => app,
+    };
+    form.finish()?;
+    for uri in &redirect_uris {
+        check_redirect(uri, kind, development).map_err(|message| miette::miette!("{message}"))?;
+    }
+    let declaration = settings_declaration(source.as_deref(), app.as_deref(), &client_id)?;
+    let yes_no = |value: bool| if value { "yes" } else { "no" }.to_owned();
+    form.confirm(
+        &format!(
+            "{} app {client_id}",
+            if current.is_some() {
+                "Save"
+            } else {
+                "Register"
+            }
+        ),
+        &[
+            (
+                "Kind",
+                match kind {
+                    ClientKind::Browser => "browser",
+                    ClientKind::Native => "native",
+                }
+                .to_owned(),
+            ),
+            ("Title", title.clone()),
+            ("Description", description.clone()),
+            ("Development", yes_no(development)),
+            ("Redirect URIs", redirect_uris.join(" ")),
+            ("Allowed without asking", implied_consent.join(" ")),
+            ("Password sign-up", yes_no(sign_up_password)),
+            ("Provider sign-up", yes_no(sign_up_providers)),
+            (
+                "Settings from",
+                source
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default(),
+            ),
+        ],
+    )?;
+    let mut client = auth
+        .o_auth_clients_put(&auth_types::AuthOAuthClientPutRequest {
+            client_id: wire(&client_id)?,
+            kind: match kind {
+                ClientKind::Browser => auth_types::AuthPublicClientKind::Browser,
+                ClientKind::Native => auth_types::AuthPublicClientKind::Native,
+            },
+            title: wire(&title)?,
+            description: wire(&description)?,
+            redirect_uris,
+            development,
+            implied_consent: wire(&implied_consent)?,
+            expected_revision: current
+                .as_ref()
+                .map_or(0, |client| client.revision.0 .0)
+                .into(),
+            idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .client;
+    let edit = format!("trellis clients edit {client_id}");
+    if (client.sign_up.password, client.sign_up.providers) != (sign_up_password, sign_up_providers)
+    {
+        client = auth
+            .o_auth_clients_sign_up_update(&auth_types::AuthOAuthClientSignUpUpdateRequest {
+                client_id: client.client_id.clone(),
+                sign_up: auth_types::AuthOAuthClientSignUp {
+                    password: sign_up_password,
+                    providers: sign_up_providers,
+                    extra: Default::default(),
+                },
+                expected_revision: client.revision,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .map_err(|error| {
+                miette::miette!(
+                    help = format!("Set sign-up with `trellis clients sign-up {client_id}`."),
+                    "Saved app {client_id}, but could not change its sign-up: {error}"
+                )
+            })?
+            .client;
+    }
+    if let Some(declaration) = declaration {
+        if let Err(error) = auth.config_apps_declare(&declaration).await {
+            return Err(miette::miette!(
+                help = format!("Attach them with `{edit} --source <PATH>`."),
+                "Saved app {client_id}, but could not attach its settings: {error}"
+            ));
+        }
+    }
+    output::emit(format, &json!({ "client": client }), |response| {
+        let client = &response["client"];
+        output::success(format!(
+            "Saved app {} (revision {})",
+            output::strong(output::field(client, "clientId")),
+            output::field(client, "revision")
+        ));
+        print_client(client);
+        Ok(())
+    })
 }
 
 pub(super) async fn apis(format: OutputFormat, command: ApisCommand) -> miette::Result<()> {
@@ -524,10 +891,12 @@ pub(super) async fn apis(format: OutputFormat, command: ApisCommand) -> miette::
                 Ok(())
             })
         }
-        ApisCommand::ForceReplace { input } => {
+        ApisCommand::ForceReplace(args) => {
+            let Some(input) = args.input else {
+                return force_replace_from_source(format, &auth, args).await;
+            };
             let request: auth_types::AuthApiForceReplaceRequest =
-                serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
-                    .into_diagnostic()?;
+                serde_json::from_slice(&read_input(&input)?).into_diagnostic()?;
             let response = auth.apis_force_replace(&request).await.into_diagnostic()?;
             output::emit(format, &response, |response| {
                 output::success(format!(
@@ -540,6 +909,126 @@ pub(super) async fn apis(format: OutputFormat, command: ApisCommand) -> miette::
             })
         }
     }
+}
+
+/// Replace each accepted API a source package's participant changes, after
+/// showing its review and getting both acknowledgements.
+async fn force_replace_from_source(
+    format: OutputFormat,
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+    args: ApisForceReplaceArgs,
+) -> miette::Result<()> {
+    const BREAKAGE: &str = "Replace it anyway? Callers built against the accepted \
+        definition may break.";
+    const CONSENT: &str = "Accept that what users agreed to may now mean something different?";
+    let mut form = crate::prompt::Form::new(
+        args.source.is_none() || !args.acknowledge_breakage || !args.acknowledge_consent_impact,
+    );
+    let source = form.required(
+        "Source project directory (holds trellis.toml)",
+        "--source",
+        args.source.map(|path| path.display().to_string()),
+        None,
+        |path| {
+            if std::path::Path::new(path).join("trellis.toml").is_file() {
+                Ok(())
+            } else {
+                Err(format!("{path} holds no trellis.toml"))
+            }
+        },
+    )?;
+    // Without a terminal, both acknowledgements must be flags; name every
+    // missing one before doing anything.
+    let mut acknowledged = (args.acknowledge_breakage, args.acknowledge_consent_impact);
+    if !form.is_interactive() {
+        form.acknowledge(BREAKAGE, "--acknowledge-breakage", acknowledged.0)?;
+        form.acknowledge(CONSENT, "--acknowledge-consent-impact", acknowledged.1)?;
+    }
+    form.finish()?;
+    let participant = crate::app::deploy::compile_participant_input(
+        std::path::Path::new(&source),
+        args.participant.as_deref(),
+        None,
+    )?;
+    let mut reviews = Vec::new();
+    for api_id in &participant.implemented_apis {
+        let review = auth
+            .apis_review(&auth_types::AuthApiReviewRequest {
+                api_id: wire(api_id)?,
+                package_evidence: participant.package_evidence.clone(),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?
+            .review;
+        let (Some(generation), Some(revision)) =
+            (review.current_generation, review.current_accepted_revision)
+        else {
+            output::note(format!(
+                "{api_id} is not accepted yet; accept it with `trellis apis accept`."
+            ));
+            continue;
+        };
+        let current = auth
+            .apis_get(&auth_types::AuthApiGetRequest {
+                api_id: wire(api_id)?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?;
+        if current.api.canonical_digest == review.canonical_digest {
+            output::unchanged(format!("{api_id} is already accepted"));
+            continue;
+        }
+        reviews.push((review, generation, revision));
+    }
+    miette::ensure!(
+        !reviews.is_empty(),
+        "{} changes no accepted API; nothing to replace",
+        participant.participant_id
+    );
+    if form.is_interactive() {
+        if !output::is_json(format) {
+            for (review, _, _) in &reviews {
+                print_review(&serde_json::to_value(review).into_diagnostic()?);
+            }
+        }
+        acknowledged.0 = form.acknowledge(BREAKAGE, "--acknowledge-breakage", acknowledged.0)?;
+        miette::ensure!(acknowledged.0, "cancelled; nothing changed");
+        acknowledged.1 =
+            form.acknowledge(CONSENT, "--acknowledge-consent-impact", acknowledged.1)?;
+        miette::ensure!(acknowledged.1, "cancelled; nothing changed");
+    }
+    let mut replacements = Vec::new();
+    for (review, generation, revision) in reviews {
+        replacements.push(
+            auth.apis_force_replace(&auth_types::AuthApiForceReplaceRequest {
+                review_id: review.review_id,
+                canonical_digest: review.canonical_digest,
+                expected_generation: generation,
+                expected_accepted_revision: revision,
+                acknowledge_breakage: acknowledged.0,
+                acknowledge_consent_impact: acknowledged.1,
+                role_edits: Vec::new(),
+                mapping_edits: Vec::new(),
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        );
+    }
+    output::emit(format, &json!({ "replacements": replacements }), |value| {
+        for response in output::list(value, "replacements") {
+            output::success(format!(
+                "Replaced {} (revision {})",
+                output::strong(output::field(response, "api.apiId")),
+                output::field(response, "api.acceptedRevision")
+            ));
+            print_enforcement(&response["enforcement"]);
+        }
+        Ok(())
+    })
 }
 
 /// What accepting a reviewed API would change.
@@ -772,23 +1261,89 @@ async fn providers_command(
         }
         ProvidersCommand::Show { provider_id } => get(&provider_id).await?,
         ProvidersCommand::Add(args) => {
-            let scopes = if args.scopes.is_empty() {
-                vec!["openid".into(), "profile".into(), "email".into()]
-            } else {
-                args.scopes
+            let mut form = crate::prompt::Form::new(
+                args.name.is_none() || args.issuer.is_none() || args.client_id.is_none(),
+            );
+            let name = form.required(
+                "Name on the sign-in button",
+                "--name",
+                args.name,
+                None,
+                |_| Ok(()),
+            )?;
+            let issuer = form.required(
+                "Issuer URL, such as https://example.us.auth0.com/",
+                "--issuer",
+                args.issuer,
+                None,
+                |issuer| match url::Url::parse(issuer) {
+                    Ok(url) if url.scheme() == "https" => Ok(()),
+                    _ => Err("Give the provider's https:// issuer URL.".to_owned()),
+                },
+            )?;
+            let client_id = form.required(
+                "Client ID the provider gave this Trellis",
+                "--client-id",
+                args.client_id,
+                None,
+                |_| Ok(()),
+            )?;
+            let client_secret = match args.client_secret_file {
+                Some(path) => read_client_secret(Some(&path))?,
+                None => form.secret("Client secret the provider gave (empty for none)", None)?,
             };
+            let scopes = form.list(
+                "Scopes to request",
+                "--scope",
+                args.scopes,
+                vec!["openid".into(), "profile".into(), "email".into()],
+                true,
+                |_| Ok(()),
+            )?;
+            form.explain("Roles can follow the groups a provider lists for each user.");
+            let groups_claim = form.optional(
+                "JSON pointer to the groups claim",
+                args.groups_claim,
+                "/groups".into(),
+                |_| Ok(()),
+            )?;
+            form.explain(
+                "Pin the provider's certificate issuer only when nothing on the \
+                server vouches for its certificate. Confirm the fingerprint with \
+                the provider's operator first.",
+            );
+            let certificate_fingerprint = form.optional(
+                "Certificate issuer's SHA-256 fingerprint (optional)",
+                args.certificate_fingerprint,
+                String::new(),
+                |_| Ok(()),
+            )?;
+            form.finish()?;
+            form.confirm(
+                &format!("Add identity provider {name}"),
+                &[
+                    ("Issuer", issuer.clone()),
+                    ("Client ID", client_id.clone()),
+                    (
+                        "Client secret",
+                        if client_secret.is_some() { "set" } else { "" }.to_owned(),
+                    ),
+                    ("Scopes", scopes.join(" ")),
+                    ("Groups claim", groups_claim.clone()),
+                    ("Pinned issuer", certificate_fingerprint.clone()),
+                ],
+            )?;
             auth.oidc_providers_put(&auth_types::AuthOIDCProviderPutRequest {
                 provider_id: None,
-                issuer: args.issuer.trim().to_owned(),
-                client_id: args.client_id.trim().to_owned(),
-                title: wire(args.name.trim())?,
+                issuer: issuer.trim().to_owned(),
+                client_id: client_id.trim().to_owned(),
+                title: wire(name.trim())?,
                 scopes,
-                role_claim: args.groups_claim.trim().to_owned(),
+                role_claim: groups_claim.trim().to_owned(),
                 claim_freshness_seconds: wire(3600)?,
-                client_secret: read_client_secret(args.client_secret_file.as_deref())?,
-                certificate_fingerprint: args
-                    .certificate_fingerprint
-                    .map(|fingerprint| Nullable::Value(fingerprint.trim().to_owned())),
+                client_secret,
+                certificate_fingerprint: (!certificate_fingerprint.trim().is_empty())
+                    .then(|| Nullable::Value(certificate_fingerprint.trim().to_owned())),
                 expected_revision: 0u64.into(),
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
@@ -1235,14 +1790,66 @@ async fn users_show_command(format: OutputFormat, args: &UserRefArgs) -> miette:
 }
 
 async fn users_find_command(format: OutputFormat, args: &UserFindArgs) -> miette::Result<()> {
+    let mut form = crate::prompt::Form::new(args.provider.is_none() || args.subject.is_none());
     let (_selection, connected) = connect_authenticated_cli_client().await?;
-    let found = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
-        .trellis_auth_v1()
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let provider = if args.provider.is_none() && form.is_interactive() {
+        let page = serde_json::to_value(
+            auth.oidc_providers_list(&auth_types::AuthPageRequest {
+                search: None,
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor: None,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        )
+        .into_diagnostic()?;
+        let choices = output::list(&page, "items")
+            .iter()
+            .map(|provider| {
+                (
+                    output::field(provider, "providerId"),
+                    format!(
+                        "{} ({})",
+                        output::field(provider, "title"),
+                        output::field(provider, "issuer")
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        miette::ensure!(
+            !choices.is_empty(),
+            help = "Add one with `trellis sign-in providers add`.",
+            "no identity providers are set up"
+        );
+        form.choose("Identity provider", "--provider", None, &choices, None)?
+    } else {
+        form.required(
+            "Identity provider ID",
+            "--provider",
+            args.provider.clone(),
+            None,
+            |_| Ok(()),
+        )?
+    };
+    let subject = form.required(
+        "The provider's subject (sub) for the user",
+        "--subject",
+        args.subject.clone(),
+        None,
+        |_| Ok(()),
+    )?;
+    form.finish()?;
+    let found = auth
         .users_find(&auth_types::AuthUserFindRequest {
             user_id: None,
             identity: Some(auth_types::AuthUserFindIdentity {
-                provider_id: wire(&args.provider)?,
-                subject: args.subject.clone(),
+                provider_id: wire(&provider)?,
+                subject,
                 extra: Default::default(),
             }),
             extra: Default::default(),
@@ -1268,10 +1875,32 @@ async fn users_find_command(format: OutputFormat, args: &UserFindArgs) -> miette
 }
 
 async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> miette::Result<()> {
-    let username = args.username.trim().to_owned();
+    let mut form = crate::prompt::Form::new(args.username.is_none());
+    let username = form
+        .required(
+            "Username",
+            "--username",
+            args.username.clone(),
+            None,
+            |_| Ok(()),
+        )?
+        .trim()
+        .to_owned();
+    let name = form.optional(
+        "Name shown for the user (empty to use the username)",
+        args.name.clone(),
+        String::new(),
+        |_| Ok(()),
+    )?;
+    form.finish()?;
     if username.is_empty() {
         return Err(miette::miette!("--username must not be empty"));
     }
+    let name = trimmed_optional(&Some(name)).unwrap_or_else(|| username.clone());
+    form.confirm(
+        &format!("Create user {username}"),
+        &[("Name", name.clone())],
+    )?;
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
@@ -1280,7 +1909,7 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
             given_name: None,
             family_name: None,
             email: None,
-            display_name: wire(trimmed_optional(&args.name).unwrap_or_else(|| username.clone()))?,
+            display_name: wire(name)?,
             username: wire(username)?,
             password: None,
             idempotency_key: wire(cli_idempotency_key())?,
@@ -1565,6 +2194,46 @@ fn print_saved_role(
 }
 
 async fn roles_create_command(format: OutputFormat, args: &RoleCreateArgs) -> miette::Result<()> {
+    let mut form = crate::prompt::Form::new(args.title.is_none());
+    let title = form.required(
+        "Role title",
+        "--title",
+        args.title.clone(),
+        None,
+        |_| Ok(()),
+    )?;
+    let description = form.optional(
+        "Description (optional)",
+        args.description.clone(),
+        String::new(),
+        |_| Ok(()),
+    )?;
+    form.explain(
+        "Capabilities the role gives, such as trellis.auth.v1:users.read. \
+        Separate several with spaces; `trellis apis get <API>` lists an API's.",
+    );
+    let capabilities = form.list(
+        "Capabilities (optional)",
+        "--capability",
+        args.capabilities.clone(),
+        Vec::new(),
+        false,
+        |_| Ok(()),
+    )?;
+    let new_users = form.yes_no(
+        "Give this role to every user created from now on?",
+        crate::prompt::pair(args.new_users, args.no_new_users),
+        false,
+    )?;
+    form.finish()?;
+    form.confirm(
+        &format!("Create role {title}"),
+        &[
+            ("Description", description.clone()),
+            ("Capabilities", capabilities.join(" ")),
+            ("New users", if new_users { "yes" } else { "no" }.to_owned()),
+        ],
+    )?;
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let role = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1()
@@ -1572,10 +2241,10 @@ async fn roles_create_command(format: OutputFormat, args: &RoleCreateArgs) -> mi
             role_id: None,
             expected_revision: 0u64.into(),
             idempotency_key: wire(cli_idempotency_key())?,
-            title: wire(args.title.trim())?,
-            description: wire(&args.description)?,
-            capability_ids: wire(&args.capabilities)?,
-            assign_to_new_users: args.new_users,
+            title: wire(title.trim())?,
+            description: wire(&description)?,
+            capability_ids: wire(&capabilities)?,
+            assign_to_new_users: new_users,
             extra: Default::default(),
         })
         .await

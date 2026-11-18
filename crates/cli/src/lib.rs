@@ -8,3 +8,4 @@ pub mod oci;
 pub mod output;
 pub mod package;
 pub mod project;
+pub mod prompt;

@@ -394,6 +394,21 @@ pub fn compile_participant_input(
                 )
             })?,
         None if candidates.len() == 1 => candidates[0],
+        None if crate::prompt::interactive() && !candidates.is_empty() => {
+            let choices = candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| (index, candidate.identity().as_str().to_owned()))
+                .collect::<Vec<_>>();
+            let index = crate::prompt::Form::new(true).choose(
+                "Which participant?",
+                "--participant",
+                None,
+                &choices,
+                None,
+            )?;
+            candidates[index]
+        }
         None => {
             return Err(miette::miette!(
                 "select one participant with --participant; candidates: {}",

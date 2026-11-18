@@ -936,6 +936,27 @@ impl TrellisTestRuntime {
         client_id: &str,
         user_code: &str,
     ) -> Result<(), TrellisTestError> {
+        self.approve_device(client_id, user_code, false).await
+    }
+
+    /// Like [`Self::approve_device_login`], but also approves the optional
+    /// administrative capabilities the request offers, as an administrator
+    /// who ticks every box would. Use it to sign in a tool, such as the
+    /// Trellis CLI, whose administration commands are optional.
+    pub async fn approve_device_login_with_administration(
+        &mut self,
+        client_id: &str,
+        user_code: &str,
+    ) -> Result<(), TrellisTestError> {
+        self.approve_device(client_id, user_code, true).await
+    }
+
+    async fn approve_device(
+        &mut self,
+        client_id: &str,
+        user_code: &str,
+        optional_administration: bool,
+    ) -> Result<(), TrellisTestError> {
         self.ensure_running()?;
         let result = tokio::time::timeout(
             self.timeouts.request,
@@ -946,6 +967,7 @@ impl TrellisTestRuntime {
                 user_code,
                 &self.username,
                 &self.password,
+                optional_administration,
             ),
         )
         .await;
