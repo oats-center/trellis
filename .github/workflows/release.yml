@@ -67,31 +67,72 @@ jobs:
         run: bash scripts/check.sh lint
 
   # A pull request that touches only prose skips the build and test graph; the
-  # acceptance gate still reports. A main push of a commit a `release/v*` branch
-  # already holds skips it too, because that branch's run verifies the same
-  # commit before publishing. Other pushes and manual runs always verify fully.
+  # docs job builds the site whenever the docs or design docs change, and the
+  # acceptance gate still reports. A main push of a commit a `release/v*` run
+  # already verified skips both: this job waits for that run's acceptance gate
+  # and skips only when it succeeded. Otherwise, and for every other push or
+  # manual run, verification runs in full.
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Long enough to wait out the release run's verification.
+    timeout-minutes: 150
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
       code: ${{ steps.release.outputs.branch == '' && (github.event_name != 'pull_request' || steps.filter.outputs.code == 'true') }}
+      docs: ${{ steps.release.outputs.branch == '' && (github.event_name != 'pull_request' || steps.filter.outputs.docs == 'true') }}
       release: ${{ steps.release.outputs.branch }}
     steps:
-      - name: Find a release branch verifying this commit
+      - name: Find a release run that verified this commit
         id: release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
+          GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
-          branch="$(git ls-remote "https://github.com/$REPOSITORY" 'refs/heads/release/v*' |
-            awk -v sha="$SHA" '$1 == sha { sub("refs/heads/", "", $2); print $2; exit }')"
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # The release branch is pushed first, so its run may still be
+          # starting or verifying; wait for its acceptance gate.
+          deadline=$((SECONDS + 140 * 60))
+          while :; do
+            runs="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/release.yml/runs" \
+              -f head_sha="$SHA" -f event=push -f per_page=100 \
+              --jq '[.workflow_runs[] | select(.head_branch | startswith("release/v")) | {id, branch: .head_branch, status}]')"
+            pending=false
+            for run in $(jq -r '.[] | @base64' <<<"$runs"); do
+              id="$(base64 -d <<<"$run" | jq -r .id)"
+              gate="$(gh api "repos/$REPOSITORY/actions/runs/$id/jobs?per_page=100" \
+                --jq '[.jobs[] | select(.name == "Acceptance gate")][0].conclusion // ""')"
+              if [ "$gate" = success ]; then
+                echo "branch=$(base64 -d <<<"$run" | jq -r .branch)" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if [ -z "$gate" ] && [ "$(base64 -d <<<"$run" | jq -r .status)" != completed ]; then
+                pending=true
+              fi
+            done
+            # A release branch at this commit whose run has not appeared yet.
+            if [ "$(jq length <<<"$runs")" = 0 ] && git ls-remote "https://github.com/$REPOSITORY" 'refs/heads/release/v*' |
+              awk -v sha="$SHA" '$1 == sha { found = 1 } END { exit !found }'; then
+              pending=true
+            fi
+            if [ "$pending" != true ]; then
+              echo "No release run verified $SHA; verifying here"
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "The release run did not finish verifying $SHA in time; verifying here"
+              break
+            fi
+            sleep 60
+          done
+          echo "branch=" >> "$GITHUB_OUTPUT"
 
+      # Markdown and the other prose skip the code graph; site code does not.
       - name: Classify changed paths
         id: filter
         if: github.event_name == 'pull_request'
@@ -102,15 +143,43 @@ jobs:
             code:
               - '**'
               - '!design/**'
-              - '!docs/src/**'
+              - '!docs/src/**/*.md'
               - '!docs/static/**'
               - '!*.md'
+            docs:
+              - '{docs/**,design/**,package.json,package-lock.json}'
+
+  # The site the Pages workflow deploys from main, built the same way.
+  docs:
+    name: Docs site
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install the site's dependencies
+        run: npm ci --workspace @trellis/docs --include-workspace-root --ignore-scripts --no-audit --no-fund
+
+      - name: Check and build the site
+        run: |
+          set -euo pipefail
+          npm run check --workspace @trellis/docs
+          npm run build --workspace @trellis/docs
 
   install:
     name: Generate artifacts, protocol WASM and browser apps
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -223,7 +292,7 @@ jobs:
   clippy:
     name: Rust lint
     needs: [install]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -278,7 +347,7 @@ jobs:
   build-fixtures:
     name: Build integration fixture binaries
     needs: [install]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -395,7 +464,7 @@ jobs:
   build:
     name: Build runtime binaries
     needs: [install]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -523,7 +592,7 @@ jobs:
   rust:
     name: Rust tests
     needs: [install, build, build-fixtures]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     env:
       NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
@@ -629,7 +698,7 @@ jobs:
   typescript-checks:
     name: TypeScript checks
     needs: [install, build]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -664,7 +733,7 @@ jobs:
   demos:
     name: Demo consumers
     needs: [install, build]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -705,21 +774,19 @@ jobs:
       - name: Check demos and the TypeScript publication
         run: bash scripts/check.sh demos
 
+      # The tarballs the dry-run verified and their recorded integrity;
+      # publication uploads exactly these.
       - name: Upload npm packages
         uses: actions/upload-artifact@v7
         with:
           name: npm-packages
-          path: |
-            ts/packages/result/npm
-            ts/packages/trellis-testkit/npm
-            ts/packages/trellis/npm
-            ts/packages/trellis-svelte/npm
+          path: dist/npm
           retention-days: 3
 
   typescript-tests:
     name: TypeScript tests
     needs: [install, build, build-fixtures]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-ts"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-ts"]') }}
     timeout-minutes: 45
     # One runner runs every test file, as many at once as it has cores.
     steps:
@@ -760,7 +827,7 @@ jobs:
   testkit-tests:
     name: Rust testkit tests
     needs: [install, build, build-fixtures]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -798,7 +865,7 @@ jobs:
   examples:
     name: Documented examples
     needs: [install, build]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -833,7 +900,7 @@ jobs:
   browser:
     name: Browser tests
     needs: [install, build]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-browser"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-browser"]') }}
     timeout-minutes: 45
     # One runner runs every browser test file, several at once.
     steps:
@@ -895,7 +962,7 @@ jobs:
   rust-testkit-package:
     name: Rust testkit bundle
     needs: [install, build]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -958,7 +1025,7 @@ jobs:
   rust-testkit-consumer:
     name: Rust testkit artifact-only consumer
     needs: [rust-testkit-package]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 45
     steps:
       # A self-hosted runner reuses its workspace; this job has no checkout to clean it.
@@ -1074,19 +1141,40 @@ jobs:
         shell: bash
         run: bash scripts/check.sh images --smoke-only
 
+      # The image index digest publication pushes and checks the registry for.
+      - name: Record the verified image digest
+        run: tar -xOf /tmp/${{ matrix.image }}.tar index.json | jq -jr '.manifests[0].digest' > /tmp/${{ matrix.image }}.digest
+
       - name: Upload verified image archive
         uses: actions/upload-artifact@v7
         with:
           name: verified-image-${{ matrix.image }}
-          path: /tmp/${{ matrix.image }}.tar
+          path: |
+            /tmp/${{ matrix.image }}.tar
+            /tmp/${{ matrix.image }}.digest
           compression-level: 0
           retention-days: 3
 
+      - name: Upload verified image digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: verified-image-digest-${{ matrix.image }}
+          path: /tmp/${{ matrix.image }}.digest
+          retention-days: 3
+
+  # The packed npm packages in an empty consumer on the oldest and newest
+  # Node majors their engines accept; the rest of the pipeline runs on 26.
   typescript-testkit-package:
-    name: TypeScript testkit package
+    name: npm packages on Node ${{ matrix.node }}
     needs: [install, demos, build]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24, 26]
+    env:
+      NODE_VERSION: ${{ matrix.node }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -1111,9 +1199,9 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: npm-packages
-          path: ts/packages
+          path: dist/npm
 
-      - name: Test the packed testkit in a fresh project
+      - name: Test the packed packages in a fresh project
         run: bash scripts/check.sh typescript-testkit
 
   acceptance:
@@ -1121,6 +1209,7 @@ jobs:
     needs:
       - changes
       - lint
+      - docs
       - clippy
       - rust
       - typescript-checks
@@ -1141,16 +1230,19 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
           RELEASE_BRANCH: ${{ needs.changes.outputs.release }}
         shell: bash
         run: |
           set -euo pipefail
-          # A prose-only pull request, or a main push its release branch
-          # verifies, skips verification; nothing may fail.
-          failed="$(jq -c --arg code "$CODE_CHANGED" '
-            (if $code == "true" or .changes.result != "success"
-              then ["success"] else ["success", "skipped"] end) as $allowed
-            | with_entries(select(.value.result as $result | $allowed | index($result) | not))
+          # A job may be skipped only when the change detection said it was
+          # not needed; nothing may fail.
+          failed="$(jq -c --arg code "$CODE_CHANGED" --arg docs "$DOCS_CHANGED" '
+            with_entries(
+              (if .key == "changes" or .key == "lint" then "true"
+                elif .key == "docs" then $docs else $code end) as $required
+              | select(.value.result != "success"
+                and ($required == "true" or .value.result != "skipped")))
             | map_values(.result)' <<<"$NEEDS")"
           if [[ "$failed" != "{}" ]]; then
             echo "verification did not all succeed: $failed" >&2
@@ -1167,8 +1259,14 @@ jobs:
   # Publication runs only for a `release/vX.Y.Z[-rc.N]` push, after every
   # verification job, from this run's artifacts; it never rebuilds the product
   # or verifies again, so a version that passed the gate publishes in full.
-  # A failed publish step is retried with "Re-run failed jobs": each step skips
-  # what is already published and never overwrites published bytes.
+  # Each component uploads the exact bytes verification recorded, and a
+  # version stays invisible until every component is available: the GitHub
+  # release is a draft, and its tag, the image `rc` and `latest` tags and the
+  # docs site follow only after the crates, images and npm packages publish.
+  # A failed publish step is resumed with "Re-run failed jobs": each step
+  # compares what a registry already holds with the verified artifact, skips
+  # it when identical and fails when it differs; it never overwrites a
+  # published version.
   release-metadata:
     name: Release metadata
     if: startsWith(github.ref, 'refs/heads/release/v')
@@ -1194,6 +1292,7 @@ jobs:
             echo "::error::Invalid release branch '$GITHUB_REF_NAME'; expected release/vX.Y.Z or release/vX.Y.Z-rc.N"
             exit 1
           fi
+          # The tag appears only when the finished release is published.
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
             echo "::error::Release tag $tag already exists; choose a new version."
             exit 1
@@ -1261,7 +1360,9 @@ jobs:
 
       # The canonical APIs live in one native package (`crates/builtin-contracts`,
       # package `trellis`); the other crates and TypeScript packages are
-      # generated consumers and carry no publishable `trellis.toml`.
+      # generated consumers and carry no publishable `trellis.toml`. `trellis
+      # publish` skips a version GHCR already holds with the same content and
+      # refuses one with different content.
       - name: Publish APIs
         shell: bash
         run: |
@@ -1271,40 +1372,9 @@ jobs:
           cd crates/builtin-contracts
           "$RUNNER_TEMP/bin/trellis" publish
 
-  create-release-tag:
-    name: Create release tag
-    needs: [release-metadata, publish-apis]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Tag the verified commit
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
-        run: |
-          set -euo pipefail
-          branch="$(git ls-remote --heads origin "refs/heads/$GITHUB_REF_NAME" | cut -f1)"
-          if [ "$branch" != "$GITHUB_SHA" ]; then
-            echo "::error::$GITHUB_REF_NAME moved to ${branch:-nothing}; this run verified $GITHUB_SHA."
-            exit 1
-          fi
-          existing="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" | cut -f1)"
-          if [ -z "$existing" ]; then
-            git tag "$RELEASE_TAG" "$GITHUB_SHA"
-            git push origin "refs/tags/$RELEASE_TAG"
-          elif [ "$existing" != "$GITHUB_SHA" ]; then
-            echo "::error::$RELEASE_TAG points to $existing, not $GITHUB_SHA."
-            exit 1
-          fi
-
-  github-release:
-    name: Publish GitHub release
-    needs: [release-metadata, create-release-tag]
+  draft-release:
+    name: Draft GitHub release
+    needs: [acceptance, release-metadata]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -1323,6 +1393,7 @@ jobs:
           name: release-notes
           path: dist
 
+      # A draft names its target commit; publishing it later creates the tag.
       - name: Upload missing assets and verify existing bytes
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1330,13 +1401,23 @@ jobs:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
         run: |
           set -euo pipefail
+          branch="$(git ls-remote "https://github.com/$GH_REPO" "refs/heads/$GITHUB_REF_NAME" | cut -f1)"
+          if [ "$branch" != "$GITHUB_SHA" ]; then
+            echo "::error::$GITHUB_REF_NAME moved to ${branch:-nothing}; this run verified $GITHUB_SHA."
+            exit 1
+          fi
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             flags=()
             if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" \
+            gh release create "$RELEASE_TAG" --draft --target "$GITHUB_SHA" --title "$RELEASE_TAG" \
               --notes-file dist/release-notes.md "${flags[@]}"
           fi
-          release="$(gh release view "$RELEASE_TAG" --json assets)"
+          release="$(gh release view "$RELEASE_TAG" --json assets,isDraft,targetCommitish)"
+          target="$(jq -r .targetCommitish <<<"$release")"
+          if [ "$(jq -r .isDraft <<<"$release")" = true ] && [ "$target" != "$GITHUB_SHA" ]; then
+            echo "::error::The $RELEASE_TAG draft targets $target, not $GITHUB_SHA; delete the draft to release this commit."
+            exit 1
+          fi
           existing="$(mktemp -d "$RUNNER_TEMP/existing-release.XXXXXX")"
           missing=()
           for asset in dist/trellis-*.tar.gz dist/checksum-*.sha256; do
@@ -1352,11 +1433,10 @@ jobs:
           if [ "${#missing[@]}" -gt 0 ]; then
             gh release upload "$RELEASE_TAG" "${missing[@]}"
           fi
-          gh release edit "$RELEASE_TAG" --draft=false
 
   publish-crates:
     name: Publish Rust crates
-    needs: [release-metadata, github-release]
+    needs: [release-metadata, publish-apis, draft-release]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -1371,13 +1451,26 @@ jobs:
         with:
           name: check-generated
 
+      - name: Download the verified public crates
+        uses: actions/download-artifact@v8
+        with:
+          name: rust-testkit-packages
+          path: ${{ runner.temp }}/crates
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      # A resumed run first proves that what crates.io already holds is what
+      # this run verified.
+      - name: Compare published versions with the verified crates
+        run: cargo xtask release check-published --packages "$RUNNER_TEMP/crates"
 
       - name: Authenticate with crates.io
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
+      # `cargo publish` packages the checkout again, so each package is first
+      # required to carry exactly the verified archive's files.
       - name: Publish crates
         shell: bash
         env:
@@ -1396,76 +1489,40 @@ jobs:
             return 1
           }
 
-          # Each dependency reaches the index before its consumer publishes.
-          for crate in trellis-protocol trellis-models trellis-rs trellis-testkit; do
-            version="$(jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version' <<<"$crate_versions")"
+          crates=(trellis-protocol trellis-models trellis-rs trellis-testkit)
+          declare -A version missing
+          for crate in "${crates[@]}"; do
+            version[$crate]="$(jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version' <<<"$crate_versions")"
             # crates.io refuses API requests without a User-Agent (403), which
-            # would read as unpublished and republish a retained version.
+            # would read as unpublished.
             if curl --silent --fail --user-agent "trellis-release (https://github.com/oats-center/trellis)" \
-              "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
-              echo "Skipping $crate@$version (already published)"
-            else
-              # The acceptance gate already verified these packages; upload
-              # without building them again.
+              "https://crates.io/api/v1/crates/$crate/${version[$crate]}" >/dev/null; then
+              echo "Skipping $crate@${version[$crate]} (already published and matching)"
+              continue
+            fi
+            missing[$crate]=1
+            # Every package must match before the first upload.
+            archive="target/package/$crate-${version[$crate]}.crate"
+            rm -f -- "$archive"
+            cargo package --no-verify --allow-dirty --locked --config .cargo/publication.toml -p "$crate"
+            cargo xtask release compare-crate "$RUNNER_TEMP/crates/$crate-${version[$crate]}.crate" "$archive"
+          done
+
+          # Each dependency reaches the index before its consumer publishes.
+          for crate in "${crates[@]}"; do
+            if [ -n "${missing[$crate]:-}" ]; then
+              # The acceptance gate already built and tested these sources.
               cargo publish --no-verify --allow-dirty --locked --config .cargo/publication.toml -p "$crate"
             fi
-            wait_for_index "$crate" "$version"
+            wait_for_index "$crate" "${version[$crate]}"
           done
 
-  publish-npm:
-    name: Publish npm packages
-    needs: [release-metadata, github-release]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
-      LATEST: ${{ needs.release-metadata.outputs.latest }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      # The packages the demos job verified, with 'ts/packages' as the
-      # artifact root.
-      - name: Download the verified npm packages
-        uses: actions/download-artifact@v8
-        with:
-          name: npm-packages
-          path: ts/packages
-
-      - name: Publish packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm_tag=latest
-          if [[ "$LATEST" != true ]]; then npm_tag=rc; fi
-          publish() {
-            local name version
-            name="$(node -p "require('./$1/package.json').name")"
-            version="$(node -p "require('./$1/package.json').version")"
-            if npm view "$name@$version" version >/dev/null 2>&1; then
-              echo "Skipping $name@$version (already published)"
-              return 0
-            fi
-            npm publish --access public --tag "$npm_tag" "./$1"
-          }
-          packages=(ts/packages/result/npm ts/packages/trellis/npm ts/packages/trellis-svelte/npm ts/packages/trellis-testkit/npm)
-          # npm compares the repository with GitHub provenance case-sensitively.
-          for pkg in "${packages[@]}"; do
-            npm pkg set "repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git" --prefix "$pkg"
-          done
-          for pkg in "${packages[@]}"; do publish "$pkg"; done
+      - name: Require the published crates to match the verified ones
+        run: cargo xtask release check-published --packages "$RUNNER_TEMP/crates"
 
   publish-images:
     name: Publish ${{ matrix.image }} image
-    needs: [release-metadata, github-release]
+    needs: [release-metadata, publish-apis, draft-release]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -1473,7 +1530,6 @@ jobs:
       packages: write
     env:
       RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
-      LATEST: ${{ needs.release-metadata.outputs.latest }}
     strategy:
       fail-fast: false
       matrix:
@@ -1485,7 +1541,9 @@ jobs:
           name: verified-image-${{ matrix.image }}
           path: ${{ runner.temp }}/image
 
-      - name: Promote the verified image
+      # Only the version's own tags here; `rc` and `latest` move once every
+      # component is published.
+      - name: Push the verified image by digest
         shell: bash
         env:
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
@@ -1493,22 +1551,169 @@ jobs:
           IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
+          archive="$RUNNER_TEMP/image/$IMAGE.tar"
+          digest="$(cat "$RUNNER_TEMP/image/$IMAGE.digest")"
+          if [ "$(tar -xOf "$archive" index.json | jq -r '.manifests[0].digest')" != "$digest" ]; then
+            echo "::error::$IMAGE.tar is not the verified image $digest"
+            exit 1
+          fi
           owner="$(tr '[:upper:]' '[:lower:]' <<<"$GITHUB_REPOSITORY_OWNER")"
-          tags=("$RELEASE_TAG" "sha-${GITHUB_SHA:0:7}")
-          if [[ "$RELEASE_TAG" == *-* ]]; then tags+=(rc); fi
-          if [[ "$LATEST" == true ]]; then tags+=(latest); fi
+          ref="$REGISTRY/$owner/$IMAGE"
           command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install --yes skopeo; }
           auth="$RUNNER_TEMP/skopeo-auth.json"
           printf '%s' "$REGISTRY_PASSWORD" |
             skopeo login --authfile "$auth" --username "$REGISTRY_USER" --password-stdin "$REGISTRY"
-          for tag in "${tags[@]}"; do
-            skopeo copy --all --dest-authfile "$auth" \
-              "oci-archive:$RUNNER_TEMP/image/$IMAGE.tar" "docker://$REGISTRY/$owner/$IMAGE:$tag"
+          # The digest a tag points at, or nothing when the tag does not exist.
+          tagged() {
+            local manifest
+            if manifest="$(skopeo inspect --authfile "$auth" --raw "docker://$ref:$1" 2>"$RUNNER_TEMP/inspect.err")"; then
+              printf 'sha256:%s' "$(printf '%s' "$manifest" | sha256sum | cut -d ' ' -f1)"
+            elif grep -qi 'manifest unknown' "$RUNNER_TEMP/inspect.err"; then
+              return 0
+            else
+              cat "$RUNNER_TEMP/inspect.err" >&2
+              return 1
+            fi
+          }
+          source="oci-archive:$archive"
+          for tag in "$RELEASE_TAG" "sha-${GITHUB_SHA:0:7}"; do
+            existing="$(tagged "$tag")"
+            if [ -z "$existing" ]; then
+              skopeo copy --all --preserve-digests --dest-authfile "$auth" "$source" "docker://$ref:$tag"
+              existing="$(tagged "$tag")"
+            fi
+            if [ "$existing" != "$digest" ]; then
+              echo "::error::$ref:$tag is $existing, not the verified $digest"
+              exit 1
+            fi
+            echo "$ref:$tag is the verified $digest"
           done
+
+  # npm trusted publishing authorizes `npm publish` only, so a package's
+  # dist-tag is set as it publishes; the packages publish after every other
+  # registry upload succeeded.
+  publish-npm:
+    name: Publish npm packages
+    needs: [release-metadata, publish-crates, publish-images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      LATEST: ${{ needs.release-metadata.outputs.latest }}
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download the verified npm packages
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-packages
+          path: ${{ runner.temp }}/npm
+
+      # Each tarball is the one the demos job packed and dry-ran. Before
+      # anything uploads, every tarball's sha512 must equal the integrity
+      # recorded then, and a version npm already holds must carry it too.
+      - name: Publish the verified tarballs
+        shell: bash
+        working-directory: ${{ runner.temp }}/npm
+        run: |
+          set -euo pipefail
+          npm_tag=latest
+          if [[ "$LATEST" != true ]]; then npm_tag=rc; fi
+          missing=()
+          for entry in $(jq -r '.[] | @base64' packages.json); do
+            field() { base64 -d <<<"$entry" | jq -r ".$1"; }
+            name="$(field name)" version="$(field version)" file="$(field filename)" integrity="$(field integrity)"
+            actual="sha512-$(openssl dgst -sha512 -binary "$file" | base64 -w0)"
+            if [ "$actual" != "$integrity" ]; then
+              echo "::error::$file is $actual, not the verified $integrity"
+              exit 1
+            fi
+            published="$(npm view "$name@$version" dist.integrity 2>/dev/null || true)"
+            if [ -z "$published" ]; then
+              missing+=("$file")
+            elif [ "$published" = "$integrity" ]; then
+              echo "Skipping $name@$version (already published with the verified integrity)"
+            else
+              echo "::error::$name@$version is already published as $published, not the verified $integrity"
+              exit 1
+            fi
+          done
+          # In dependency order, as packages.json lists them.
+          for file in "${missing[@]}"; do
+            npm publish --access public --tag "$npm_tag" "./$file"
+          done
+
+  # Every component is available: move the image channels, then publish the
+  # GitHub release, which creates its tag on the verified commit.
+  publish-release:
+    name: Publish GitHub release
+    needs: [release-metadata, publish-npm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    env:
+      RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+      LATEST: ${{ needs.release-metadata.outputs.latest }}
+    steps:
+      - name: Download the verified image digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: verified-image-digest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - name: Tag the image channels
+        shell: bash
+        env:
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          tags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then tags+=(rc); fi
+          if [[ "$LATEST" == true ]]; then tags+=(latest); fi
+          [ "${#tags[@]}" -gt 0 ] || exit 0
+          owner="$(tr '[:upper:]' '[:lower:]' <<<"$GITHUB_REPOSITORY_OWNER")"
+          command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install --yes skopeo; }
+          auth="$RUNNER_TEMP/skopeo-auth.json"
+          printf '%s' "$REGISTRY_PASSWORD" |
+            skopeo login --authfile "$auth" --username "$REGISTRY_USER" --password-stdin "$REGISTRY"
+          for image in trellis-server console; do
+            digest="$(cat "$RUNNER_TEMP/digests/$image.digest")"
+            for tag in "${tags[@]}"; do
+              skopeo copy --all --preserve-digests --src-authfile "$auth" --dest-authfile "$auth" \
+                "docker://$REGISTRY/$owner/$image@$digest" "docker://$REGISTRY/$owner/$image:$tag"
+            done
+          done
+
+      - name: Publish the release and its tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ]; then
+            flags=()
+            # GitHub never marks a prerelease as latest.
+            if [[ "$RELEASE_TAG" != *-* ]]; then flags+=(--latest); fi
+            gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
+          fi
+          tagged="$(git ls-remote "https://github.com/$GH_REPO" "refs/tags/$RELEASE_TAG" | cut -f1)"
+          if [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::$RELEASE_TAG points to ${tagged:-nothing}, not $GITHUB_SHA."
+            exit 1
+          fi
 
   publish-docs:
     name: Publish the docs site
-    needs: [release-metadata, publish-crates, publish-npm, publish-images]
+    needs: [release-metadata, publish-release]
     # The site follows `latest`: stable releases, and prereleases until the
     # first stable release exists.
     if: needs.release-metadata.outputs.latest == 'true'
