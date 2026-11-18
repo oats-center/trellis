@@ -14,8 +14,8 @@
     "test:live": "node --test tests/*.live.test.ts"
   },
   "dependencies": {
-    "@nats-io/nats-core": "^3.4.0",
-    "@nats-io/transport-node": "^3.4.0",
+    "@nats-io/nats-core": "^3.5.0",
+    "@nats-io/transport-node": "^3.5.0",
     "@oatscenter/result": "0.100.0-rc.48",
     "@oatscenter/trellis": "0.100.0-rc.48",
     "smol-toml": "^1.9.1",
