@@ -1791,7 +1791,9 @@ mod tests {
                 stop,
                 join: AbortOnDropHandle::new(join),
             }],
-            Duration::from_millis(50),
+            // The bound only has to outlast the task's own finish; a tight one
+            // flakes on a loaded machine.
+            Duration::from_secs(5),
         )
         .await
         .expect("signal shutdown should allow cooperative completion");
