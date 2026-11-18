@@ -585,7 +585,7 @@ and the `rc` and `latest` channels move last.
 - `publish-crates` publishes the crates as described above
 - `publish-images` pushes each verified image archive, digest preserved, under the version's own tags (`$RELEASE_TAG` and `sha-<commit>`) and requires the registry to report the recorded digest
 - `publish-npm` publishes the verified tarballs once the crates and images are published
-- `publish-release` runs `cargo xtask release promote-channels`, which refuses if the release branch moved and points the `rc` and `latest` image tags at the verified digests, then publishes the draft release, which creates the tag on the verified commit and, for a stable release that `latest` now holds, marks it latest
+- `publish-release` points the `rc` and `latest` image tags at the verified digests (unless a newer release is already published, so retrying an older release never moves them back), then publishes the draft release, which creates the tag on the verified commit and, for a stable release, marks it latest
 - `publish-docs` deploys the docs site when the release is `latest`
 
 npm trusted publishing authorizes `npm publish` but not `npm dist-tag`, so an
@@ -609,7 +609,6 @@ artifact:
 - Canonical APIs: `trellis publish` skips a version GHCR holds with the same package and distribution digests and refuses one with different content.
 - Crates: `check-published` compares every crate version crates.io holds with the verified archive and fails on any difference; matching versions are skipped.
 - Images: a version tag that already exists must point at the recorded digest.
-- Image channels: `rc` and `latest` only move forward. A channel that already holds an image of a release with higher semver precedence stays where it is, so retrying an older release after a newer one published leaves the channels on the newer release (and does not mark the older GitHub release latest). The `publish-release` job runs in one `release-promotion` concurrency group across all release branches, so two promotions never interleave. GitHub keeps only one waiting job per group: when a third release reaches promotion while one runs and another waits, the waiting one is cancelled and needs "Re-run failed jobs".
 - npm: each tarball's sha512 must equal the integrity recorded at verification, and a version the registry holds must report that integrity; matching versions are skipped. Nothing uploads unless every package passes.
 
 A mismatch means the registry holds bytes this run did not verify, usually from

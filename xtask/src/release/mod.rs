@@ -6,7 +6,6 @@ use clap::Subcommand;
 use miette::{miette, Result};
 
 mod changelog;
-mod channels;
 mod components;
 mod github;
 mod package;
@@ -86,34 +85,6 @@ pub(crate) enum ReleaseCommand {
         version: Option<String>,
         #[arg(long)]
         since: Option<String>,
-    },
-    /// Move the `rc` and `latest` image tags to a published release's
-    /// verified digests, never to an older release than they hold.
-    #[command(name = "promote-channels")]
-    PromoteChannels {
-        /// The release tag, such as v0.100.0-rc.1.
-        #[arg(long)]
-        tag: String,
-        /// The release branch, which must still name `commit`.
-        #[arg(long)]
-        branch: String,
-        /// The commit the run verified.
-        #[arg(long)]
-        commit: String,
-        /// The image repository prefix, such as ghcr.io/oats-center.
-        #[arg(long)]
-        repository: String,
-        /// Directory holding each image's `<image>.digest`.
-        #[arg(long)]
-        digests: PathBuf,
-        #[arg(long = "image", required = true)]
-        images: Vec<String>,
-        /// Whether the release also moves `latest`.
-        #[arg(long, action = clap::ArgAction::Set)]
-        latest: bool,
-        /// The skopeo registry credentials.
-        #[arg(long)]
-        authfile: PathBuf,
     },
     #[command(name = "pretag-check")]
     PretagCheck {
@@ -254,28 +225,6 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
             println!("Before publishing, require a successful Check run for the release base.");
             Ok(())
         }
-        ReleaseCommand::PromoteChannels {
-            tag,
-            branch,
-            commit,
-            repository,
-            digests,
-            images,
-            latest,
-            authfile,
-        } => channels::promote_channels(
-            repo_root,
-            &channels::Promotion {
-                tag: &tag,
-                branch: &branch,
-                commit: &commit,
-                repository: &repository,
-                digests: &digests,
-                images: &images,
-                latest,
-                authfile: &authfile,
-            },
-        ),
         ReleaseCommand::PretagCheck { tag, git_ref } => run_pretag_check(repo_root, &tag, &git_ref),
     }
 }
