@@ -97,20 +97,34 @@ pub fn collect_ts_package_sources(
         .map(|(index, id)| (id.as_str().to_owned(), format!("p{index}")))
         .collect::<BTreeMap<_, _>>();
     let api_modules = api_modules(graph);
-    let mut sources = vec![GeneratedTsSource {
-        path: "package.json".into(),
-        contents: serde_json::to_string_pretty(&serde_json::json!({
-            "name": name,
-            "version": root.version().to_string(),
-            "private": true,
-            "trellisGenerated": true,
-            "description": "Generated Trellis APIs and participants.",
-            "type": "module",
-            "sideEffects": false,
-            "exports": {".": {"types": "./index.d.ts", "import": "./index.js"}},
-            "dependencies": {"@oatscenter/trellis": format!("^{}", env!("CARGO_PKG_VERSION"))}
-        }))?,
-    }];
+    // Each subpath mirrors its root namespace member, so `apis.Orders` is also
+    // `<package>/apis/Orders`.
+    let mut exports = vec![
+        (".".to_owned(), "index".to_owned()),
+        ("./types".to_owned(), "types/index".to_owned()),
+    ];
+    let mut sources = Vec::new();
+    // Participants and app requests that declare settings submit the build's
+    // evidence. They share this one private module, so an API alone never
+    // carries `.trellis` source.
+    if !root.participants().is_empty()
+        || root
+            .app_requests()
+            .values()
+            .any(|request| !request.config().is_empty())
+    {
+        sources.push(GeneratedTsSource {
+            path: "_internal/evidence.ts".into(),
+            contents: format!(
+                "/** This build's package evidence, submitted to Auth to install it. */\n\
+                export const packageEvidence: {{ readonly rootPackage: string; readonly \
+                rootDigest: string; readonly packages: readonly {{ readonly name: string; \
+                readonly version: string; readonly digest: string; readonly source: string; \
+                }}[]; }} = {};\n",
+                package_evidence(graph)?
+            ),
+        });
+    }
 
     for (package_id, package) in graph.packages() {
         sources.push(GeneratedTsSource {
@@ -129,9 +143,10 @@ pub fn collect_ts_package_sources(
     for package in graph.packages().values() {
         for api in package.apis().values() {
             let (export, module) = &api_modules[api.identity().as_str()];
+            exports.push((format!("./apis/{export}"), format!("apis/{module}/mod")));
             writeln!(
                 api_index,
-                "export * as {} from \"./{}/mod.ts\";",
+                "export * as {} from \"./{}/mod.js\";",
                 export, module
             )
             .unwrap();
@@ -151,9 +166,13 @@ pub fn collect_ts_package_sources(
 
     let mut participant_index = String::new();
     for participant in root.participants().values() {
+        exports.push((
+            format!("./participants/{}", participant.name()),
+            format!("participants/{}/mod", participant.name()),
+        ));
         writeln!(
             participant_index,
-            "export * as {} from \"./{}/mod.ts\";",
+            "export * as {} from \"./{}/mod.js\";",
             participant.name(),
             participant.name()
         )
@@ -185,7 +204,8 @@ pub fn collect_ts_package_sources(
                 "application request {name}"
             )));
         }
-        writeln!(app_index, "export * as {name} from \"./{name}/mod.ts\";").unwrap();
+        exports.push((format!("./apps/{name}"), format!("apps/{name}/mod")));
+        writeln!(app_index, "export * as {name} from \"./{name}/mod.js\";").unwrap();
         sources.push(GeneratedTsSource {
             path: PathBuf::from("apps").join(&name).join("mod.ts"),
             contents: render_app_request(graph, request, &package_modules)?,
@@ -200,11 +220,41 @@ pub fn collect_ts_package_sources(
     });
     sources.push(GeneratedTsSource {
         path: "index.ts".into(),
-        contents: "export * as apis from \"./apis/index.ts\";\nexport * as participants \
-            from \"./participants/index.ts\";\nexport * as apps from \
-            \"./apps/index.ts\";\nexport * as types from \"./types/index.ts\";\n"
+        contents: "export * as apis from \"./apis/index.js\";\nexport * as participants \
+            from \"./participants/index.js\";\nexport * as apps from \
+            \"./apps/index.js\";\nexport * as types from \"./types/index.js\";\n"
             .into(),
     });
+    // Written by hand so each export lists `types` before `import`, the order
+    // TypeScript expects conditions in.
+    let exports = exports
+        .iter()
+        .map(|(subpath, stem)| {
+            format!(
+                "    {}: {{\n      \"types\": {},\n      \"import\": {}\n    }}",
+                js_string(subpath),
+                js_string(&format!("./{stem}.d.ts")),
+                js_string(&format!("./{stem}.js"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    sources.insert(
+        0,
+        GeneratedTsSource {
+            path: "package.json".into(),
+            contents: format!(
+                "{{\n  \"name\": {},\n  \"version\": {},\n  \"private\": true,\n  \
+                \"trellisGenerated\": true,\n  \"description\": \"Generated Trellis APIs and \
+                participants.\",\n  \"type\": \"module\",\n  \"sideEffects\": false,\n  \
+                \"exports\": {{\n{exports}\n  }},\n  \"dependencies\": {{\n    \
+                \"@oatscenter/trellis\": {}\n  }}\n}}\n",
+                js_string(name),
+                js_string(&root.version().to_string()),
+                js_string(&format!("^{}", env!("CARGO_PKG_VERSION")))
+            ),
+        },
+    );
     Ok(sources)
 }
 
@@ -446,7 +496,7 @@ fn render_types(package: &SemanticPackage, modules: &BTreeMap<String, String>) -
         .collect::<BTreeSet<_>>()
     {
         lines.push(format!(
-            "import * as {} from \"./{}.ts\";",
+            "import * as {} from \"./{}.js\";",
             module_alias(&modules[dependency]),
             modules[dependency]
         ));
@@ -460,7 +510,7 @@ fn render_types(package: &SemanticPackage, modules: &BTreeMap<String, String>) -
         ));
         lines.push(format!(
             "export const {name}Codec: {{ decode(value: unknown): {name}; \
-            encode(value: {name}): unknown }} = codecs.recursive<{name}>(() => \
+            encode(value: {name}): unknown }} = /* @__PURE__ */ codecs.recursive<{name}>(() => \
             codecs.named({}, {}));",
             js_string(&format!("{}.{name}", package.identity())),
             render_codec_definition(definition, package.identity().as_str(), own_module, modules)
@@ -481,7 +531,7 @@ fn render_type_exports(
     let mut output = String::new();
     for reference in types {
         let path = format!(
-            "{internal_prefix}{}.ts",
+            "{internal_prefix}{}.js",
             modules[reference.package.as_str()]
         );
         writeln!(
@@ -766,7 +816,7 @@ fn render_api(
     }
     for module in modules.values() {
         lines.push(format!(
-            "import * as {} from \"../../types/_internal/{module}.ts\";",
+            "import * as {} from \"../../types/_internal/{module}.js\";",
             module_alias(module)
         ));
     }
@@ -938,8 +988,7 @@ fn render_api(
         ));
     }
     lines.push("  };".into());
-    lines.push("  readonly packageEvidence: unknown;".into());
-    lines.push("} = apiDescriptor({".into());
+    lines.push("} = /* @__PURE__ */ apiDescriptor({".into());
     lines.push(format!(
         "  identity: {},",
         js_string(api.identity().as_str())
@@ -953,7 +1002,6 @@ fn render_api(
         ));
     }
     lines.push("  },".into());
-    lines.push(format!("  packageEvidence: {},", package_evidence(graph)?));
     lines.push("});".into());
     lines.push("export const API: typeof __api = __api;".into());
     lines.push(format!(
@@ -1226,20 +1274,21 @@ fn render_app_request(
     ];
     if !request.config().is_empty() {
         lines.push("import { codecs } from \"@oatscenter/trellis/generated\";".to_owned());
+        lines.push("import { packageEvidence } from \"../../_internal/evidence.js\";".to_owned());
     }
     let api_modules = api_modules(graph);
     let mut aliases = BTreeMap::new();
     for (index, id) in uses.keys().enumerate() {
         let alias = format!("Api{index}");
         lines.push(format!(
-            "import * as {alias} from \"../../apis/{}/mod.ts\";",
+            "import * as {alias} from \"../../apis/{}/mod.js\";",
             api_modules[id.as_str()].1
         ));
         aliases.insert(id, alias);
     }
     for module in modules.values() {
         lines.push(format!(
-            "import * as {} from \"../../types/_internal/{module}.ts\";",
+            "import * as {} from \"../../types/_internal/{module}.js\";",
             module_alias(module)
         ));
     }
@@ -1440,10 +1489,7 @@ fn render_app_request(
     } else {
         // An administrator attaches this evidence to the app's client so Auth
         // can check its settings.
-        lines.push(format!(
-            "}}, packageEvidence: {} }};",
-            package_evidence(graph)?
-        ));
+        lines.push("}, packageEvidence };".into());
     }
     lines.push("export type Request = typeof request;\nexport default request;\n".into());
     Ok(lines.join("\n"))
@@ -1535,7 +1581,8 @@ fn render_participant(
         RuntimeApiFromGenerated } from \"@oatscenter/trellis/generated\";"
             .to_owned(),
     );
-    lines.push("import * as types from \"./types.ts\";".to_owned());
+    lines.push("import { packageEvidence } from \"../../_internal/evidence.js\";".to_owned());
+    lines.push("import * as types from \"./types.js\";".to_owned());
     lines.push("export { types };".to_owned());
     let referenced = participant
         .implements()
@@ -1548,7 +1595,7 @@ fn render_participant(
         let api = find_api(graph, id)?;
         let alias = format!("Api{index}");
         lines.push(format!(
-            "import * as {alias} from \"{api_prefix}apis/{}/mod.ts\";",
+            "import * as {alias} from \"{api_prefix}apis/{}/mod.js\";",
             api_modules[api.identity().as_str()].1
         ));
         aliases.insert(id.as_str(), alias);
@@ -1577,7 +1624,7 @@ fn render_participant(
     for package_id in participant_resource_packages(participant) {
         let module = &modules[package_id];
         lines.push(format!(
-            "import * as {} from \"{types_prefix}types/_internal/{module}.ts\";",
+            "import * as {} from \"{types_prefix}types/_internal/{module}.js\";",
             module_alias(module)
         ));
     }
@@ -1588,10 +1635,10 @@ fn render_participant(
             .ok_or_else(|| CodegenTsError::MissingReference(companion.request.to_string()))?;
         let child_module = app_module_name(package, child);
         lines.push(format!(
-            "import * as Companion from \"{api_prefix}apps/{child_module}/mod.ts\";"
+            "import * as Companion from \"{api_prefix}apps/{child_module}/mod.js\";"
         ));
         lines.push(format!(
-            "export * as {} from \"{api_prefix}apps/{child_module}/mod.ts\";",
+            "export * as {} from \"{api_prefix}apps/{child_module}/mod.js\";",
             child.name()
         ));
     }
@@ -1731,7 +1778,7 @@ fn render_participant(
         ));
     }
     lines.push("  readonly packageEvidence: unknown;".into());
-    lines.push("} = participantDescriptor({".into());
+    lines.push("} = /* @__PURE__ */ participantDescriptor({".into());
     lines.push(format!(
         "  kind: {},",
         js_string(participant_kind(participant.kind()))
@@ -1857,7 +1904,7 @@ fn render_participant(
             availability(companion.optional)
         ));
     }
-    lines.push(format!("  packageEvidence: {},", package_evidence(graph)?));
+    lines.push("  packageEvidence,".into());
     lines.push("});".into());
     lines.push("export const participant: {".into());
     lines.push("  readonly kind: typeof __participant.kind;".into());
@@ -2612,36 +2659,11 @@ fn validate_typescript(path: &Path, contents: &str) -> Result<(), CodegenTsError
 fn emit_typescript(source: &GeneratedTsSource) -> Result<[GeneratedTsSource; 2], CodegenTsError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, &source.contents, SourceType::ts()).parse();
+    // Generated sources already name their relative imports by the emitted
+    // `.js` files, so one parse serves both declaration and JS emission.
     let mut program = parsed.program;
     let mut errors = parsed.diagnostics;
     if errors.is_empty() {
-        let mut executable_source = source.contents.clone();
-        for literal in program
-            .body
-            .iter()
-            .rev()
-            .filter_map(|statement| {
-                statement
-                    .as_module_declaration()
-                    .and_then(|module| module.source())
-            })
-            .filter(|literal| literal.value.starts_with("./") || literal.value.starts_with("../"))
-        {
-            if let Some(stem) = literal
-                .value
-                .as_str()
-                .and_then(|value| value.strip_suffix(".ts"))
-            {
-                executable_source.replace_range(
-                    literal.span.start as usize..literal.span.end as usize,
-                    &js_string(&format!("{stem}.js")),
-                );
-            }
-        }
-        let executable_source = allocator.alloc_str(&executable_source);
-        let executable = Parser::new(&allocator, executable_source, SourceType::ts()).parse();
-        errors.extend(executable.diagnostics);
-        program = executable.program;
         let declarations =
             IsolatedDeclarations::new(&allocator, IsolatedDeclarationsOptions::default())
                 .build(&program);
@@ -2795,10 +2817,19 @@ mod tests {
         generate_ts_package(&graph, &root, "@example/generated").unwrap();
         fs::write(root.join("consumer.ts"), r#"
 import { apps } from "./index.js";
+import { API as Orders, Failed } from "@example/generated/apis/orders";
+import { participant as worker } from "@example/generated/participants/Worker";
+import { request as viewer } from "@example/generated/apps/Viewer";
+import type { Node } from "@example/generated/types";
 import { codecs } from "@oatscenter/trellis/generated";
 import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
 import type { ConnectedTrellisClient } from "@oatscenter/trellis";
 
+// Package subpaths resolve, with declarations, to the modules the root exports.
+const ordersIdentity: "example.orders@v1" = Orders.identity;
+if (!worker.implements.some((api) => api === Orders) || viewer !== apps.Viewer.request) {
+  throw new Error("A package subpath loaded a second copy of a generated module");
+}
 const requested: AppRequestDescriptor = apps.Viewer.request;
 const codec = apps.Sensor_Console.request.states.values.codec;
 const decoded = codec.decode(JSON.parse(JSON.stringify(codec.encode({
@@ -2811,7 +2842,9 @@ const decoded = codec.decode(JSON.parse(JSON.stringify(codec.encode({
 if (decoded.count !== 18446744073709551615n || decoded.data[2] !== 255 || decoded.when !== "2030-01-01T00:00:00Z" || decoded.status !== "roles.manage") {
   throw new Error("Generated app-local State codec corrupted the value");
 }
-export { requested, decoded };
+const node: Node = decoded;
+const failure = new Failed(node);
+export { requested, decoded, ordersIdentity, failure };
 export async function useState(client: ConnectedTrellisClient<typeof apps.Sensor_Console.request>) {
   const state = client.state.values;
   const registration = (await state.register("0")).orThrow();
