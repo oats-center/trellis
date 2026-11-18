@@ -60,9 +60,8 @@ deny = [
 ]
 skip = [
   # The RustCrypto 0.10 generation. Trellis is on the next one, which fixes
-  # RUSTSEC-2026-0387 in crypto-bigint; nkeys (ed25519-dalek 2, which Trellis
-  # shares with it), oauth2, nats-jwt-rs, oauth-as and openidconnect's RSA keys
-  # are still on this one.
+  # RUSTSEC-2026-0387 in crypto-bigint; nkeys (ed25519-dalek 2), oauth2,
+  # nats-jwt-rs, oauth-as and openidconnect's RSA keys are still on this one.
   { crate = "sha2:<0.11", reason = "ed25519-dalek 2, nats-jwt-rs, oauth2, oauth-as, openidconnect" },
   { crate = "digest:<0.11", reason = "RustCrypto 0.10 generation" },
   { crate = "block-buffer:<0.12", reason = "RustCrypto 0.10 generation" },
@@ -70,7 +69,7 @@ skip = [
   { crate = "const-oid:<0.10", reason = "RustCrypto 0.10 generation" },
   { crate = "cpufeatures:<0.3", reason = "RustCrypto 0.10 generation" },
   { crate = "hmac:<0.13", reason = "openidconnect" },
-  { crate = "ed25519-dalek:<3", reason = "nkeys; openidconnect 4.1 is on 3" },
+  { crate = "ed25519-dalek:<3", reason = "nkeys; Trellis and openidconnect are on 3" },
   { crate = "ed25519:<3", reason = "ed25519-dalek 2" },
   { crate = "curve25519-dalek:<5", reason = "ed25519-dalek 2, crypto_box through nkeys" },
   { crate = "signature:<3", reason = "ed25519-dalek 2, rsa 0.9" },
