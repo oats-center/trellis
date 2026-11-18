@@ -1,6 +1,6 @@
 ---
 title: "Keep Trellis running"
-description: "Upgrade the server, keep certificates current, know what a failure costs, back up and restore, reset the administrator password, use the nats CLI, run a second Trellis on one machine, and start over."
+description: "Upgrade the server, keep certificates current, know what a failure costs, back up and restore, reset the administrator password, use the nats CLI, run jobs, health or events on their own server, run a second Trellis on one machine, and start over."
 ---
 
 ## Upgrade
@@ -195,6 +195,38 @@ over whichever parts the first one stops running, given the state those parts
 need (see [What a failure costs](#what-a-failure-costs)). `/readyz` reports a server
 unready while Auth runs elsewhere, since Auth's pages and sign-in are what its
 listener serves.
+
+## Run jobs, health or events on their own server
+
+By default one server runs every part. To run a part on its own, name it after
+the options:
+
+```sh
+trellis-server --config /srv/trellis platform
+trellis-server --config /srv/trellis-jobs jobs
+```
+
+The parts are `platform` (Auth, sign-in and the Console), `jobs`, `health` and
+`events`. Start the platform first. Its first start creates the installation's
+keys and NATS accounts.
+
+A server for one part needs the platform's `public_origin`, and its `[nats]
+servers` and `ca_certificate` when it has one, in its `config.toml`. From the
+platform's `secrets.toml` it needs the installation's `instance_id`, the
+`trellis` NATS user and that part's key under `[live_providers]`. It keeps its
+own database. Leave the platform's
+`secrets.toml` whole: the platform checks each part's key against its own copy.
+
+When a part starts, it asks Auth to set up the part's built-in service, then
+connects it. Auth does this only for a request signed with that part's key, so
+nothing else on the NATS account can set one up. Until Auth answers, the part
+holds its lease and waits, and its `/readyz` reports it unready. A part whose
+key doesn't match the platform's stops with an error that names the key.
+
+Run every part at the platform's version. Auth sets a part up from its own
+build, so upgrade the platform first and the other parts after it. A second
+server for the same part waits for the lease, as described above, and takes
+over when the first one stops.
 
 ## Reset the administrator password
 

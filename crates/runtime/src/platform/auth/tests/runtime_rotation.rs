@@ -227,107 +227,12 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         ]))
         .await
         .unwrap();
-    let http = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .no_proxy()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap();
-    let cookies = |response: &reqwest::Response| {
-        response
-            .headers()
-            .get_all(reqwest::header::SET_COOKIE)
-            .iter()
-            .map(|header| {
-                header
-                    .to_str()
-                    .unwrap()
-                    .split(';')
-                    .next()
-                    .unwrap()
-                    .to_owned()
-            })
-            .collect::<Vec<_>>()
-    };
-    let response = http
-        .post(format!("{oauth_origin}/portal/session"))
-        .header("Origin", &oauth_origin)
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
-    let cookie = cookies(&response);
-    let csrf = cookie
-        .iter()
-        .find_map(|cookie| cookie.strip_prefix("__Host-trellis-portal-csrf="))
-        .unwrap()
-        .to_owned();
-    let response = http
-        .post(format!("{oauth_origin}/portal/login"))
-        .header("Origin", &oauth_origin)
-        .header("Cookie", cookie.join("; "))
-        .form(&[
-            ("csrf", csrf.as_str()),
-            ("username", "admin"),
-            ("password", "a strong bootstrap password"),
-            ("request_id", &ulid::Ulid::generate().to_string()),
-        ])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
-    let cookie = cookies(&response).join("; ");
-    let approve_device = |user_code: String| {
-        let http = &http;
-        let oauth_origin = &oauth_origin;
-        let csrf = &csrf;
-        let cookie = &cookie;
-        async move {
-            let response = http
-                .post(format!("{oauth_origin}/portal/device"))
-                .header("Origin", oauth_origin.as_str())
-                .header("Cookie", cookie.as_str())
-                .form(&[("csrf", csrf.as_str()), ("user_code", user_code.as_str())])
-                .send()
-                .await
-                .unwrap();
-            assert!(response.status().is_redirection());
-            let location = url::Url::parse(oauth_origin)
-                .unwrap()
-                .join(response.headers()["location"].to_str().unwrap())
-                .unwrap();
-            let transaction = location
-                .query_pairs()
-                .find(|(key, _)| key == "transaction")
-                .unwrap()
-                .1
-                .into_owned();
-            let response = http
-                .get(format!("{oauth_origin}/portal/authorization/{transaction}"))
-                .header("Cookie", cookie.as_str())
-                .send()
-                .await
-                .unwrap();
-            assert!(response.status().is_success());
-            let view: serde_json::Value = response.json().await.unwrap();
-            let response = http
-                .post(format!("{oauth_origin}/portal/approve"))
-                .header("Origin", oauth_origin.as_str())
-                .header("Cookie", cookie.as_str())
-                .form(&[
-                    ("csrf", csrf.as_str()),
-                    ("transaction", transaction.as_str()),
-                    ("presentation", view["presentationId"].as_str().unwrap()),
-                    ("decision", "approve"),
-                    ("approved", "trellis.auth.v1:account.read"),
-                ])
-                .send()
-                .await
-                .unwrap();
-            assert!(response.status().is_redirection());
-        }
-    };
-    approve_device(device.user_code().to_owned()).await;
+    admin_approves_device(
+        &oauth_origin,
+        device.user_code(),
+        "trellis.auth.v1:account.read",
+    )
+    .await;
     let mut session = device.complete().await.unwrap();
     let identity = session.admission.credential.clone();
     let warm_native = NativeOAuthClient::open(
@@ -340,7 +245,12 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     let warm_device = warm_native.start_device(&serde_json::json!([
         {"type":"trellis_capabilities","required":["trellis.auth.v1:account.read"],"optional":[]}
     ])).await.unwrap();
-    approve_device(warm_device.user_code().to_owned()).await;
+    admin_approves_device(
+        &oauth_origin,
+        warm_device.user_code(),
+        "trellis.auth.v1:account.read",
+    )
+    .await;
     let warm = trellis_rs::client::TrellisClient::connect_user(UserConnectOptions::new(
         discovered.nats_servers.clone(),
         30_000,
@@ -1246,8 +1156,8 @@ async fn broker_inventory(client: &async_nats::Client) -> BTreeMap<String, serde
 /// platform nor a role started apart from it creates or changes a stream, a
 /// bucket, a lease or a consumer. On its own installation's broker, a role
 /// apart from the platform that starts before the platform has bound the
-/// broker waits without writing, and takes its lease once the platform binds
-/// it.
+/// broker waits without writing, and once the platform binds it, takes its
+/// lease and becomes ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_runtime_refuses_another_installations_broker_without_touching_it() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1369,10 +1279,16 @@ async fn a_runtime_refuses_another_installations_broker_without_touching_it() {
     );
     let (platform_stop, mut platform) =
         start_runtime(&ours, crate::RuntimeMode::Platform, &our_origin, &[]).await;
-    // It then carries on: it takes its work's lease.
+    // It then carries on: it takes its work's lease, and has the platform
+    // prepare its provider, so it serves.
     let leases = async_nats::jetstream::new(our_client.clone());
     let bucket = ours.resolve_leases().unwrap().bucket;
-    tokio::time::timeout(Duration::from_secs(30), async {
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             tokio::select! {
                 result = &mut role_runtime => panic!("the role exited: {result:?}"),
@@ -1381,13 +1297,19 @@ async fn a_runtime_refuses_another_installations_broker_without_touching_it() {
             let Ok(leases) = leases.get_key_value(&bucket).await else {
                 continue;
             };
-            if leases.get("jobs.owner").await.unwrap().is_some() {
+            if leases.get("jobs.owner").await.unwrap().is_some()
+                && http
+                    .get(format!("http://127.0.0.1:{}/readyz", ports[8]))
+                    .send()
+                    .await
+                    .is_ok_and(|response| response.status().is_success())
+            {
                 break;
             }
         }
     })
     .await
-    .expect("the role took its lease once the platform bound the broker");
+    .expect("the role took its lease and became ready once the platform bound the broker");
 
     role_stop.stop();
     platform_stop.stop();
@@ -1405,6 +1327,332 @@ async fn a_runtime_refuses_another_installations_broker_without_touching_it() {
     .await
     .unwrap();
     drop(reserved);
+}
+
+/// In a split deployment, each role started apart from the platform has the
+/// platform's Auth prepare its built-in provider: the Jobs, Health and Events
+/// roles become ready, and a Jobs RPC is answered by the Jobs role. A second
+/// Jobs runtime stands by and takes over, preparing again, once the first
+/// stops. A request not signed with the role's seed prepares nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn split_roles_have_auth_prepare_their_providers_and_serve() {
+    use base64::Engine as _;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let reserved: Vec<_> = (0..8)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    let origin = format!("http://127.0.0.1:{}", ports[0]);
+    let (mut config, mut broker) =
+        installation(root, &ports[..4], &origin, "loopback_development", None).await;
+    let leases = config
+        .leases
+        .as_mut()
+        .expect("an installation configures leases");
+    leases.ttl_ms = Some(3_000);
+    leases.renew_ms = Some(1_000);
+    let (platform_stop, mut platform) =
+        start_runtime(&config, crate::RuntimeMode::Platform, &origin, &[]).await;
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .unwrap();
+    let ready = |port: u16| {
+        let http = http.clone();
+        async move {
+            http.get(format!("http://127.0.0.1:{port}/readyz"))
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success())
+        }
+    };
+    let role = |mode, port, database: &str| {
+        let mut role = config.clone();
+        role.http.as_mut().unwrap().port = Some(port);
+        let storage = match mode {
+            crate::RuntimeMode::Jobs => &mut role.jobs,
+            crate::RuntimeMode::Health => &mut role.health,
+            _ => &mut role.events,
+        };
+        storage
+            .as_mut()
+            .and_then(|subsystem| subsystem.storage.as_mut())
+            .expect("an installation configures each role's storage")
+            .path = Some(root.join("roles").join(database));
+        let stop = crate::shutdown::StopHandle::new();
+        let runtime = AbortOnDropHandle::new(tokio::spawn(crate::run_with_stop(
+            crate::RuntimeOptions {
+                mode,
+                config: role,
+                reset_admin: false,
+                nats_override: None,
+            },
+            Some(stop.clone()),
+        )));
+        (stop, runtime)
+    };
+    std::fs::create_dir_all(root.join("roles")).unwrap();
+
+    // A caller holding the Trellis NATS user but not the Jobs role's seed is
+    // refused, and the Jobs provider stays unprovisioned: it cannot connect.
+    let nats = config.resolve_nats_runtime().unwrap();
+    let operational = crate::supervisor::nats_connect_options(&nats, &nats.trellis_creds)
+        .unwrap()
+        .connect(nats.server_urls())
+        .await
+        .unwrap();
+    let forged = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7; 32]);
+    let refused = crate::platform::request_builtin_preparation(
+        &operational,
+        &config,
+        crate::platform::LiveProviderRole::Jobs,
+        &forged,
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(crate::RuntimeError::Platform(reason)) if reason.contains("refused")),
+        "Auth prepared a provider for a caller without its seed: {refused:?}"
+    );
+    let jobs_seed =
+        crate::platform::load_live_provider_seed(&config, crate::platform::LiveProviderRole::Jobs)
+            .unwrap();
+    let trust = discover_native_oauth(&origin, &[]).await.unwrap().trust;
+    let unprovisioned = crate::platform::connect_builtin_live_provider(
+        crate::platform::LiveProviderRole::Jobs,
+        &jobs_seed,
+        crate::platform::BuiltinLiveProviderConnectOptions {
+            nats_servers: nats.server_urls(),
+            trust,
+            timeout_ms: 5_000,
+        },
+    )
+    .await;
+    assert!(
+        unprovisioned.is_err(),
+        "a refused request provisioned the Jobs provider"
+    );
+    drop(unprovisioned);
+
+    // Each role apart from the platform becomes ready.
+    let (jobs_stop, mut jobs) = role(crate::RuntimeMode::Jobs, ports[4], "jobs-a.sqlite");
+    let (health_stop, mut health) = role(crate::RuntimeMode::Health, ports[6], "health.sqlite");
+    let (events_stop, mut events) = role(crate::RuntimeMode::Events, ports[7], "events.sqlite");
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            tokio::select! {
+                result = &mut platform => panic!("the platform exited: {result:?}"),
+                result = &mut jobs => panic!("the Jobs role exited: {result:?}"),
+                result = &mut health => panic!("the Health role exited: {result:?}"),
+                result = &mut events => panic!("the Events role exited: {result:?}"),
+                () = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+            if ready(ports[4]).await && ready(ports[6]).await && ready(ports[7]).await {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the Jobs, Health and Events roles became ready");
+
+    // A second Jobs runtime stands by while the first serves.
+    let (standby_stop, mut standby) = role(crate::RuntimeMode::Jobs, ports[5], "jobs-b.sqlite");
+    for _ in 0..12 {
+        tokio::select! {
+            result = &mut standby => panic!("the standby Jobs runtime exited: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+        assert!(!ready(ports[5]).await, "two Jobs runtimes ran at once");
+    }
+    assert!(ready(ports[4]).await, "the standby stopped the Jobs role");
+
+    // The Jobs role answers Jobs RPCs; the platform runs no Jobs of its own.
+    let discovered = discover_native_oauth(&origin, &[]).await.unwrap();
+    let native = NativeOAuthClient::open(
+        root.join("custody"),
+        NativeCredentialScope {
+            issuer: discovered.issuer.clone(),
+            instance_id: discovered.trust.instance_id.clone(),
+            account: discovered.trust.account.clone(),
+            client_id: "trellis.cli".into(),
+            credential_handle: ulid::Ulid::generate(),
+        },
+        discovered.trust.clone(),
+    )
+    .await
+    .unwrap();
+    let device = native
+        .start_device(&serde_json::json!([
+        {"type":"trellis_capabilities","required":["trellis.jobs.v1:jobs.query"],"optional":[]}
+        ]))
+        .await
+        .unwrap();
+    admin_approves_device(&origin, device.user_code(), "trellis.jobs.v1:jobs.query").await;
+    let jobs_api = trellis_runtime_apis::apis::trellis_jobs_v1::Client::from_generated(
+        trellis_rs::generated::Client::connect_user(UserConnectOptions::new(
+            discovered.nats_servers.clone(),
+            30_000,
+            device.complete().await.unwrap(),
+        ))
+        .await
+        .unwrap(),
+    );
+    let jobs_query = |stage: &'static str| {
+        let jobs_api = &jobs_api;
+        async move {
+            let request = serde_json::from_value(serde_json::json!({})).unwrap();
+            tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    match jobs_api.query(&request).await {
+                        Ok(listed) => break listed,
+                        Err(error) => tracing::info!(%error, stage, "Jobs.Query not answered yet"),
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("no Jobs role answered Jobs.Query {stage}"))
+        }
+    };
+    jobs_query("from the first Jobs role").await;
+
+    // Once the first stops, the standby takes the lease, has its provider
+    // prepared again, and serves.
+    jobs_stop.stop();
+    tokio::time::timeout(Duration::from_secs(30), &mut jobs)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            tokio::select! {
+                result = &mut standby => panic!("the standby Jobs runtime exited: {result:?}"),
+                () = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+            if ready(ports[5]).await {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the standby Jobs runtime took over");
+    jobs_query("from the standby Jobs role").await;
+    drop(jobs_api);
+
+    for stop in [&standby_stop, &health_stop, &events_stop, &platform_stop] {
+        stop.stop();
+    }
+    for runtime in [&mut standby, &mut health, &mut events, &mut platform] {
+        tokio::time::timeout(Duration::from_secs(30), runtime)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+    tokio::task::spawn_blocking(move || broker.stop().unwrap())
+        .await
+        .unwrap();
+    drop(reserved);
+}
+
+/// Signs in to the Portal at `origin` as the installation's administrator
+/// and approves the device login `user_code` for `capability`.
+async fn admin_approves_device(origin: &str, user_code: &str, capability: &str) {
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let cookies = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .map(|header| {
+                header
+                    .to_str()
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let response = http
+        .post(format!("{origin}/portal/session"))
+        .header("Origin", origin)
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let cookie = cookies(&response);
+    let csrf = cookie
+        .iter()
+        .find_map(|cookie| cookie.strip_prefix("__Host-trellis-portal-csrf="))
+        .unwrap()
+        .to_owned();
+    let response = http
+        .post(format!("{origin}/portal/login"))
+        .header("Origin", origin)
+        .header("Cookie", cookie.join("; "))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "a strong bootstrap password"),
+            ("request_id", &ulid::Ulid::generate().to_string()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let cookie = cookies(&response).join("; ");
+    let response = http
+        .post(format!("{origin}/portal/device"))
+        .header("Origin", origin)
+        .header("Cookie", cookie.as_str())
+        .form(&[("csrf", csrf.as_str()), ("user_code", user_code)])
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_redirection());
+    let location = url::Url::parse(origin)
+        .unwrap()
+        .join(response.headers()["location"].to_str().unwrap())
+        .unwrap();
+    let transaction = location
+        .query_pairs()
+        .find(|(key, _)| key == "transaction")
+        .unwrap()
+        .1
+        .into_owned();
+    let response = http
+        .get(format!("{origin}/portal/authorization/{transaction}"))
+        .header("Cookie", cookie.as_str())
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let view: serde_json::Value = response.json().await.unwrap();
+    let response = http
+        .post(format!("{origin}/portal/approve"))
+        .header("Origin", origin)
+        .header("Cookie", cookie.as_str())
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("transaction", transaction.as_str()),
+            ("presentation", view["presentationId"].as_str().unwrap()),
+            ("decision", "approve"),
+            ("approved", capability),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_redirection());
 }
 
 /// A NATS connection that fails in transit is tried again: a broker that does

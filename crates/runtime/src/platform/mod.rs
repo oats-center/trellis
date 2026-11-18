@@ -12,7 +12,8 @@ mod live_provider;
 mod state;
 
 pub(crate) use builtin_live_provider::{
-    connect_builtin_live_provider, prepare_builtin_live_provider, BuiltinLiveProviderConnectOptions,
+    connect_builtin_live_provider, prepare_builtin_live_provider, request_builtin_preparation,
+    BuiltinLiveProviderConnectOptions,
 };
 pub(crate) use live_provider::{
     await_live_owner, load_live_provider_seed, LiveProviderRole, LiveProviderSlots,
@@ -188,6 +189,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let callout = AuthCallout::start(auth_nats, system.clone(), store.clone(), keys)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    // Roles running apart from the platform ask it to prepare their providers.
+    let preparation = builtin_live_provider::BuiltinPreparation::start(
+        context.trellis_nats.clone(),
+        store.clone(),
+        context.config.clone(),
+    )
+    .await?;
     *context
         .authorization_store
         .lock()
@@ -207,6 +215,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         let mut tasks = tokio::task::JoinSet::new();
         let callout_stop = task_stop.clone();
         tasks.spawn(async move { callout.run(callout_stop).await });
+        let preparation_stop = task_stop.clone();
+        tasks.spawn(async move { preparation.run(preparation_stop).await });
         let own_stop = task_stop.clone();
         tasks.spawn(async move {
             own_context
