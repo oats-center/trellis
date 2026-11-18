@@ -1072,7 +1072,10 @@
     <MetricsLedger ariaLabel="Event health summary" items={ledgerItems} onSelect={handleLedgerSelect} />
 
     {#if diagnostics?.gapDetected}
-      <Notice variant="warning">Some older event history is missing. History is complete from {diagnostics.completeSince ? formatDate(diagnostics.completeSince) : "an unknown time"}.</Notice>
+      <Notice variant="warning">Some older events expired before they were recorded. History is complete from {diagnostics.completeSince ? formatDate(diagnostics.completeSince) : "the next recorded event"}.</Notice>
+    {/if}
+    {#if diagnostics?.catchingUp}
+      <Notice variant="info" role="status">Event history is catching up. Some recent events aren't shown yet.</Notice>
     {:else if diagnosticsError}
       <Notice variant="info" role="status">It isn't known whether event history is complete: {diagnosticsError}</Notice>
     {/if}

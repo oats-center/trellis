@@ -161,6 +161,17 @@ Events subsystem rules:
   days when not overridden
 - Events projector and retention loops are singleton runtime loops coordinated
   with NATS KV leases
+- the projector tracks the highest stream sequence it has received separately
+  from contiguous progress (every sequence up to it is projected or settled).
+  An event it could not verify yet is negatively acknowledged and stays
+  pending; projecting later events past it is not a gap, and its redelivery
+  fills its place. `Events.Diagnostics` reports `catchingUp` while such an
+  event waits or the broker holds undelivered events
+- history is marked incomplete (`gapDetected`, with `completeSince`) only on
+  broker evidence: an unprojected sequence the stream no longer holds because
+  it expired, was purged, or was deleted. A sequence the stream still holds is
+  pending, and one holding a subject outside `events.v1.>` is skipped. The
+  marker is durable and never cleared by later projection
 
 Stats example:
 

@@ -110,6 +110,7 @@ mod tests {
         let diagnostics: rpc::DiagnosticsOutput = generated_output(
             json!({
                 "asOf": "2026-09-10T00:00:00Z",
+                "catchingUp": false,
                 "completeSince": null,
                 "gapDetected": false,
                 "lastStreamSequence": 42,
