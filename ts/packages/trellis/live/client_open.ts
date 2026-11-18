@@ -835,6 +835,15 @@ async function runPump<T>(
     // it went out leaves no gap ahead of the close.
     let pendingCredit:
       { seq?: string; received: string; consumed: string } | undefined;
+    // The provider re-sends an unanswered challenge unchanged, so one can
+    // arrive again after this pump answered it. Every control sequence must
+    // reach the provider in order, and it consumes a sequence only for a
+    // control it accepts, so a copy is answered with the same logical pulse,
+    // never a new one: a second pulse for the challenge would be refused
+    // without consuming its sequence and leave every later control a gap.
+    let answered:
+      | { control: Record<string, string>; challengeId: string; acked: boolean }
+      | undefined;
     while (true) {
       core.commitDrainIfComplete();
       if (core.committedEnd()) return;
@@ -1093,17 +1102,27 @@ async function runPump<T>(
           );
           return;
         }
+        if (answered?.challengeId !== frame.challengeId) {
+          answered = {
+            challengeId: frame.challengeId,
+            acked: false,
+            control: {
+              action: "pulse",
+              controlSeq: nextSeq(session).toString(),
+              challengeId: frame.challengeId,
+              receivedSeq: core.receivedSeq().toString(),
+              consumedSeq: core.consumedSeq().toString(),
+            },
+          };
+        } else if (answered.acked) {
+          continue;
+        }
+        const pulse = answered;
         const response = await controlAttempt(
           host,
           core,
           offer,
-          {
-            action: "pulse",
-            controlSeq: nextSeq(session).toString(),
-            challengeId: frame.challengeId,
-            receivedSeq: core.receivedSeq().toString(),
-            consumedSeq: core.consumedSeq().toString(),
-          },
+          pulse.control,
           undefined,
           providerGuard,
         );
@@ -1112,6 +1131,7 @@ async function runPump<T>(
           response.kind === "ack" &&
           response.body.state === "active"
         ) {
+          pulse.acked = true;
           if (core.phase === "activating") {
             deadlines.commitActive(clock.nowMs(), false);
             core.setPhase("active");

@@ -8,8 +8,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use trellis_protocol::{
-    derive_live_data_subject, CatalogActionIdentity, LiveErrorCode, LiveFrame, LiveOffer,
-    LiveOfferKind, LiveSessionKind, OPEN_RESERVATION_MS,
+    derive_live_data_subject, CatalogActionIdentity, LiveControl, LiveErrorCode, LiveFrame,
+    LiveOffer, LiveOfferKind, LiveSessionKind, OPEN_RESERVATION_MS,
 };
 
 use crate::client::{AuthorizationOwner, TransportLease, TrellisClientError};
@@ -795,6 +795,15 @@ impl<T> ConsumerPump<T> {
             // reuse its identical body and sequence, and newer consumption is
             // coalesced into the next logical control.
             let mut pending_credit: Option<(u64, u64, u64)> = None;
+            // The provider re-sends an unanswered challenge unchanged, so one
+            // can arrive again after this pump answered it. Every control
+            // sequence must reach the provider in order, and it consumes a
+            // sequence only for a control it accepts, so a copy is answered
+            // with the same logical pulse, never a new one: a second pulse for
+            // the challenge would be refused without consuming its sequence
+            // and leave every later control a gap. The flag records whether
+            // the provider acknowledged this pulse.
+            let mut answered: Option<(LiveControl, bool)> = None;
             loop {
                 if self.core.committed_end().is_some() {
                     return;
@@ -1032,14 +1041,27 @@ impl<T> ConsumerPump<T> {
                                     ));
                                     return;
                                 }
-                                let control_seq = self.control.next_control_seq();
-                                let pulse = pulse_control(
-                                    &session_id,
-                                    control_seq,
-                                    &challenge.challenge_id,
-                                    self.core.received_seq(),
-                                    self.core.consumed_seq(),
-                                );
+                                let pulse = match &answered {
+                                    Some((LiveControl::Pulse(pulse), true))
+                                        if pulse.challenge_id == challenge.challenge_id =>
+                                    {
+                                        continue;
+                                    }
+                                    Some((pulse @ LiveControl::Pulse(previous), false))
+                                        if previous.challenge_id == challenge.challenge_id =>
+                                    {
+                                        pulse.clone()
+                                    }
+                                    _ => pulse_control(
+                                        &session_id,
+                                        self.control.next_control_seq(),
+                                        &challenge.challenge_id,
+                                        self.core.received_seq(),
+                                        self.core.consumed_seq(),
+                                    ),
+                                };
+                                let control_seq = pulse.control_seq().get();
+                                answered = Some((pulse.clone(), false));
                                 let ack = tokio::select! {
                                     _ = self.cancellation.cancelled() => {
                                         self.core.discard_queue();
@@ -1056,6 +1078,7 @@ impl<T> ConsumerPump<T> {
                                 // activation or renews the fresh-round-trip clock.
                                 if let Ok(ack) = ack {
                                     if ack.state == trellis_protocol::LiveSessionState::Active {
+                                        answered = Some((pulse, true));
                                         let now = tokio::time::Instant::now();
                                         if matches!(self.core.phase(), ConsumerPhase::Activating) {
                                             deadlines.commit_active(now, false);

@@ -3,7 +3,9 @@
 //! Drives one busy Feed (1,025 ordered frames, then a sentinel 1,026) and one
 //! quiet Feed (idle across heartbeat cycles, then one released frame) on a
 //! single caller connection, and prints a bounded JSON summary the case
-//! harness asserts against.
+//! harness asserts against. With the `stall` argument it instead holds one
+//! active Feed until the harness has stopped and resumed this process, then
+//! counts the frames of a 300-frame release.
 
 use futures_util::StreamExt;
 use runtime_trellis::apis::runtime_trellis_liveprobe_v1::{lives, rpc};
@@ -49,6 +51,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let api = client.runtime_trellis_liveprobe_v1();
     let run_id = format!("v3-{}", std::process::id());
+    if std::env::args().nth(1).as_deref() == Some("stall") {
+        // One active Feed whose caller the harness stops past a heartbeat and
+        // its re-sends, then 300 frames that need consumption credit well
+        // beyond the provider's 64-frame window.
+        let mut stream = api
+            .watch(&lives::WatchInput {
+                run_id: run_id.clone(),
+                stream_id: "stall".to_owned(),
+                extra: Default::default(),
+            })
+            .await?;
+        let frames = tokio::spawn(async move {
+            let mut frames = 0_i64;
+            while let Some(item) = stream.next().await {
+                item?;
+                frames += 1;
+            }
+            Ok::<i64, trellis_rs::client::TrellisClientError>(frames)
+        });
+        let inspect = rpc::InspectInput {
+            run_id: run_id.clone(),
+            stream_id: "stall".to_owned(),
+            extra: Default::default(),
+        };
+        while api.inspect(&inspect).await?.active.0 != 1 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        println!("LIVE_PROBE_CALLER_STALL");
+        std::io::stdout().flush()?;
+        tokio::task::spawn_blocking(|| std::io::stdin().read_line(&mut String::new())).await??;
+        api.release(&rpc::ReleaseInput {
+            run_id: run_id.clone(),
+            stream_id: "stall".to_owned(),
+            through_index: Int64(300),
+            finish: true,
+            fail: false,
+            payload_bytes: None,
+            padding_bytes: None,
+            extra: Default::default(),
+        })
+        .await?;
+        let frames = tokio::time::timeout(Duration::from_secs(20), frames)
+            .await
+            .map_err(|_| "the stalled Feed stopped delivering")???;
+        println!("LIVE_PROBE_CALLER_RESULT {{\"stallFrames\":{frames}}}");
+        std::io::stdout().flush()?;
+        return Ok(());
+    }
     let mut busy = api
         .watch(&lives::WatchInput {
             run_id: run_id.clone(),
