@@ -22,3 +22,6 @@ trellis-protocol.workspace = true
 trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0-rc.49" }
 
 [dev-dependencies]
+async-nats.workspace = true
+tempfile.workspace = true
+trellis-local-nats = { path = "../local-nats" }

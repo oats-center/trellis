@@ -110,9 +110,11 @@ pub struct DeadLetterTransition {
     pub request_digest: Option<String>,
     /// Transition cause.
     pub cause: DeadLetterCause,
-    /// Immutable original evidence, present only at revision one.
+    /// Immutable original evidence, present at revision one and on each
+    /// accepted replay request.
     pub original: Option<OriginalEvent>,
-    /// Stream sequence of the revision-one journal record.
+    /// Stream sequence of the latest journal record that holds the original
+    /// evidence, or zero on that record itself.
     pub original_record_sequence: u64,
     /// Delivery count observed for this generation.
     pub deliveries: u64,
@@ -132,7 +134,7 @@ pub struct ReplayEnvelope {
     pub generation: u64,
     /// Exact Consumer resource identity.
     pub resource_id: String,
-    /// Revision-one journal stream sequence.
+    /// Journal stream sequence of the record holding the original evidence.
     pub original_record_sequence: u64,
     /// Original domain subject used only for matching and proof verification.
     pub original_subject: String,

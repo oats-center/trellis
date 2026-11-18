@@ -18,10 +18,8 @@ use crate::{StorageBackend, SubsystemName};
 const JOBS_API_ID: &str = "trellis.jobs@v1";
 mod resolver;
 
-/// How often settled jobs past retention are removed.
+/// How often unclaimed jobs past retention expire and settled ones are removed.
 const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-/// Jobs removed per SQLite transaction.
-const RETENTION_BATCH: u64 = 1_000;
 
 fn runtime_error(error: ServerError) -> RuntimeError {
     RuntimeError::Nats(error.to_string())
@@ -113,6 +111,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         jobs_stream: resources.jobs_stream.clone(),
     });
     let query = JobsQuery::with_store(jobs_runtime.clone(), store.clone(), Arc::clone(&resolver));
+    let retention_query = query.clone();
     let mut router = trellis_jobs_runtime::build_router_with_query(query);
     trellis_jobs_runtime::register_jobs_watch_live(
         &mut router,
@@ -120,7 +119,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         resources.jobs_stream.clone(),
     );
     let sampler_store = store.clone();
-    let retention_store = store.clone();
     let history = crate::resources::days(context.config.jobs_history_retention_days());
     let loops = RuntimeLoops::start(jobs_runtime, &resources, store, Arc::clone(&resolver)).await?;
     let sampler_nats = context.trellis_nats.clone();
@@ -159,33 +157,22 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             let mut ticks = tokio::time::interval(RETENTION_INTERVAL);
             loop {
                 ticks.tick().await;
-                let cutoff = time::OffsetDateTime::now_utc() - history;
-                let mut removed = 0;
-                loop {
-                    let store = retention_store.clone();
-                    match tokio::task::spawn_blocking(move || {
-                        store.prune_settled_jobs(cutoff, RETENTION_BATCH)
-                    })
-                    .await
-                    {
-                        Ok(Ok(count)) => {
-                            removed += count;
-                            if count < RETENTION_BATCH {
-                                break;
-                            }
+                match retention_query.apply_retention(history).await {
+                    Ok(pass) => {
+                        if pass.expired > 0 {
+                            tracing::warn!(
+                                jobs = pass.expired,
+                                "expired jobs no worker claimed within their retention"
+                            );
                         }
-                        Ok(Err(error)) => {
-                            tracing::warn!(%error, "retrying Jobs retention");
-                            break;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "retrying Jobs retention task");
-                            break;
+                        if pass.removed > 0 {
+                            tracing::info!(
+                                jobs = pass.removed,
+                                "removed settled jobs past their retention"
+                            );
                         }
                     }
-                }
-                if removed > 0 {
-                    tracing::info!(jobs = removed, "removed settled jobs past their retention");
+                    Err(error) => tracing::warn!(%error, "retrying Jobs retention"),
                 }
             }
         };

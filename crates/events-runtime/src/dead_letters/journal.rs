@@ -64,7 +64,7 @@ impl DeadLetterJournal {
             Ok(message) => {
                 let mut transition: DeadLetterTransition =
                     serde_json::from_slice(&message.payload)?;
-                if transition.revision == 1 && transition.original_record_sequence == 0 {
+                if transition.original.is_some() && transition.original_record_sequence == 0 {
                     transition.original_record_sequence = message.sequence;
                 }
                 Ok(Some((transition, message.sequence)))
@@ -193,10 +193,10 @@ impl DeadLetterJournal {
                 current.state
             )));
         }
-        if self.original(&current).await?.is_none() {
+        let Some(original) = self.original(&current).await? else {
             return Err(JournalError::UnreplayableOriginal);
-        }
-        let next = successor(
+        };
+        let mut next = successor(
             &current,
             sequence,
             DeadLetterState::ReplayPending,
@@ -208,6 +208,12 @@ impl DeadLetterJournal {
             None,
             None,
         );
+        // The accepted request carries its own copy of the original. Retention
+        // may have selected a dismissed entry and purges its records through
+        // the sequence it saw; this record survives that purge, so the replay
+        // it accepts never loses its payload. Later transitions reference it.
+        next.original = Some(original);
+        next.original_record_sequence = 0;
         self.append(&next, sequence).await
     }
 
@@ -479,6 +485,11 @@ impl DeadLetterJournal {
                     Some((_, sequence)) if sequence != expected_subject_sequence => {
                         record_dead_letter_transition(action, "error");
                         Err(JournalError::Conflict(error.to_string()))
+                    }
+                    // Retention removed the entry after it was read.
+                    None if expected_subject_sequence != 0 => {
+                        record_dead_letter_transition(action, "error");
+                        Err(JournalError::NotFound(transition.id.clone()))
                     }
                     _ => {
                         record_dead_letter_transition(action, "error");

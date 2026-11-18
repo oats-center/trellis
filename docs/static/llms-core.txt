@@ -458,7 +458,8 @@ Runtime data has explicit retention. `[events] history_retention_days`
 `[events] dead_letter_retention_days` (default 90, at least 7) keeps resolved
 and dismissed dead letters, while open ones stay until settled;
 `[jobs] history_retention_days` (default 30) bounds the job lifecycle streams
-and settled jobs, while failed and dead jobs stay for retry and replay. A
+and settled jobs, while failed and dead jobs stay for retry and replay; a job
+no worker claims within it expires with an error saying so. A
 changed limit is applied to the existing streams at the next start.
 `Health.Storage`, the Console Health page, and the `trellis.storage.bytes`,
 `trellis.storage.records` and `trellis.storage.oldest.age` gauges report each

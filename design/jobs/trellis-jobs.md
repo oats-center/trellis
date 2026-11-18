@@ -56,8 +56,11 @@ fixed first-page upper watermark, with at most 128 entries per page; concurrent
 later publications are excluded from that reconstruction. This is an authorized
 read of the authoritative stream, not a projection or another history store.
 The `JOBS` and `JOBS_WORK` streams keep `[jobs] history_retention_days`
-(default 30), and the projection removes settled jobs after the same age while
-keeping failed, dead, and unsettled jobs; see
+(default 30) plus one day, and the projection removes settled jobs after the
+retention while keeping failed, dead, and unsettled jobs. The retention is
+also how long a job waits for a worker: the Jobs retention pass records
+Expired for a job still Pending since it was created or replayed more than the
+retention ago, before its work and lifecycle leave the streams; see
 [data-retention.md](../core/data-retention.md).
 Users cannot use this service-private resource route. Shared broker endpoints
 `$JS.API.DIRECT.GET.JOBS` and `$JS.API.STREAM.MSG.GET.JOBS` remain denied to

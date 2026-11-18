@@ -48,8 +48,8 @@ estimates of their stored bytes.
 | ----------------------------------------- | -------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Event stream (`eventStream`)              | `trellis`                  | 7 days                                                                    | fixed                                                       | Consumer delivery and `replay all`, the Events projector, the Health stream source, dead-letter creation (the original is copied when exhausted)     |
 | Health reports (`healthStream`)           | `TRELLIS_HEALTH`           | 24 hours or 1 GiB                                                         | `[health] transport_retention_hours`, `transport_max_bytes` | The Health projector                                                                                                                                 |
-| Job history (`jobHistory`)                | `JOBS`                     | 30 days                                                                   | `[jobs] history_retention_days`                             | Worker lifecycle folding, `Jobs.History`, the Jobs projector; the 2-minute publish deduplication window                                              |
-| Job queue (`jobWork`)                     | `JOBS_WORK` (work queue)   | removed when acknowledged; at most 30 days                                | `[jobs] history_retention_days`                             | Workers                                                                                                                                              |
+| Job history (`jobHistory`)                | `JOBS`                     | 30 days plus one                                                          | `[jobs] history_retention_days`                             | Worker lifecycle folding, `Jobs.History`, the Jobs projector; the 2-minute publish deduplication window                                              |
+| Job queue (`jobWork`)                     | `JOBS_WORK` (work queue)   | removed when acknowledged; unclaimed jobs expire after 30 days            | `[jobs] history_retention_days`                             | Workers                                                                                                                                              |
 | Job delivery notices (`jobAdvisories`)    | `JOBS_ADVISORIES`          | 7 days                                                                    | fixed (the event stream's retention)                        | Consumer dead-letter creation                                                                                                                        |
 | Failed delivery log (`deadLetterJournal`) | `trellis_consumer_dlq`     | no age or size limit; resolved and dismissed entries purged after 90 days | `[events] dead_letter_retention_days`                       | Dead-letter projection rebuilds, replay (the revision-one record holds the only copy of the original), command idempotency, exhaustion deduplication |
 | Delivery retries (`replayStream`)         | `trellis_consumer_replays` | 90 days, one envelope per generation                                      | `[events] dead_letter_retention_days`                       | Targeted replay delivery and once-per-generation dispatch                                                                                            |
@@ -100,9 +100,13 @@ indefinitely: the journal's revision-one record is the only copy of the
 original event, and the source stream drops it after 7 days. Only resolved and
 dismissed entries are removed. The journal records are purged first, through
 the journal sequence the projection observed; a transition appended after it
-survives, so a concurrent replay request is never erased. A replay whose
-original was removed this way settles as unreplayable instead of stopping the
-dispatcher. The retention cannot be shorter than the event stream's 7 days: the
+survives, so a concurrent replay request is never erased. Each accepted replay
+request carries its own copy of the original, and later transitions reference
+that record, so a replay of a dismissed entry accepted while a sweep purges the
+records before it still delivers its payload, and a projection rebuilt from
+the purged journal starts the entry at that request. A request that reads the
+entry before the purge but appends after it is refused as not found. The
+retention cannot be shorter than the event stream's 7 days: the
 journal is what turns a second exhaustion of the same original into a
 duplicate, and the original stays deliverable for that long. A replay envelope
 keeps the same retention; one nobody consumed in that time leaves its entry in
@@ -112,8 +116,21 @@ replaying.
 the Jobs projection, so those rows stay regardless of age, as does every
 unsettled job. The lifecycle stream's age bounds `Jobs.History` and how far a
 projection rebuild reaches. Workers fold a job's lifecycle from that stream, so
-the default is far above the default retry schedule; work older than the
-lifecycle it needs is dropped from the work queue with it.
+the default is far above the default retry schedule.
+
+A job may be submitted without a deadline, and its workers may stay away.
+Keeping its queued work longer than the retention would not help: the worker
+that finally claims it folds a lifecycle that has aged out of `JOBS` with it,
+and keeping that stream longer for one job keeps it for all. So the retention
+is also how long a job waits for a worker. The hourly Jobs retention pass
+publishes Expired, with an error saying no worker claimed it, for every job
+still Pending since it was created or replayed more than the retention ago.
+Both streams keep one day past the retention so that record lands while the
+work and its lifecycle are still there: a worker that claims it then folds
+Expired and runs nothing. If the Jobs subsystem was down longer than that day,
+the next pass still records Expired after the broker dropped the work, so the
+projection never shows a job Pending that no worker can receive. A job a
+worker has started is settled by its execution owner, not by retention.
 
 **Advisories.** A max-deliveries advisory only names an original event; once
 that event is gone from the 7-day event stream, the advisory cannot produce

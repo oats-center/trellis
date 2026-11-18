@@ -104,8 +104,9 @@ pub async fn start_replay_dispatcher(
                     .await
                     .map_err(|error| ServerError::Internal(error.to_string()))?
                 else {
-                    // A replay requested while retention removed the entry's
-                    // original record can never be dispatched.
+                    // Every accepted request carries its original, so only a
+                    // journal record missing it lands here; it can never be
+                    // dispatched.
                     tracing::warn!(dead_letter = %latest.id, "replay has no original evidence left");
                     journal
                         .report_replay_outcome(
