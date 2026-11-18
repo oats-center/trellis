@@ -183,7 +183,7 @@ type Limits = Readonly<{
 function checkLimits(value: unknown, limits: Limits): void {
   const count =
     typeof value === "string"
-      ? [...value].length
+      ? codePointCount(value, limits)
       : Array.isArray(value)
         ? value.length
         : undefined;
@@ -203,6 +203,30 @@ function checkLimits(value: unknown, limits: Limits): void {
     if (limits.max !== undefined && value > limits.max)
       fail(`a value of at most ${limits.max}`);
   }
+}
+
+/**
+ * Count a string's code points as string iteration does: a surrogate pair is
+ * one, a lone surrogate is one. A string has between half its UTF-16 length
+ * and its UTF-16 length in code points, so when that whole range satisfies
+ * the limits the exact count cannot change the outcome and is skipped.
+ */
+function codePointCount(value: string, limits: Limits): number {
+  const units = value.length;
+  if (
+    (limits.maxCount === undefined || units <= limits.maxCount) &&
+    (limits.minCount === undefined || Math.ceil(units / 2) >= limits.minCount)
+  )
+    return units;
+  let count = 0;
+  for (let index = 0; index < units; index++, count++) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff && index + 1 < units) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) index++;
+    }
+  }
+  return count;
 }
 
 /** A value the IDL `json` type carries unchecked. */
@@ -278,56 +302,50 @@ export const codecs = Object.freeze({
   model<const F extends Readonly<Record<string, ModelField>>>(
     fields: F,
   ): Codec<ModelValue<F>> {
-    const known = new Set(Object.keys(fields));
-    const preserveUnknown = (
-      source: Record<string, unknown>,
-      target: Record<string, unknown>,
-    ): void => {
-      for (const [name, value] of Object.entries(source)) {
+    // Resolve the field table once, not on every value.
+    const names = Object.keys(fields);
+    const known = new Set(names);
+    const optional = names.map((name) => "optional" in fields[name]);
+    const decoders = names.map((name) => fields[name].decode);
+    const encoders = names.map((name) => fields[name].encode);
+    const isEnumerable = Object.prototype.propertyIsEnumerable;
+    const transform = (
+      value: unknown,
+      convert: readonly ((value: never) => unknown)[],
+    ): Record<string, unknown> => {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        return fail("object");
+      }
+      const source = value as Record<string, unknown>;
+      const target: Record<string, unknown> = {};
+      let ownKnown = 0;
+      for (let index = 0; index < names.length; index++) {
+        const name = names[index];
+        if (isEnumerable.call(source, name)) ownKnown++;
+        const fieldValue = source[name];
+        if (fieldValue === undefined && optional[index]) continue;
+        target[name] = convert[index](fieldValue as never);
+      }
+      // Carry fields this contract version does not know through unchanged.
+      // When every own key is a known field there is nothing to copy.
+      const keys = Object.keys(source);
+      if (keys.length === ownKnown) return target;
+      for (const name of keys) {
         if (known.has(name)) continue;
+        // Define rather than assign: assigning `__proto__` would invoke the
+        // inherited setter instead of keeping it as an ordinary key.
         Object.defineProperty(target, name, {
-          value,
+          value: source[name],
           enumerable: true,
           writable: true,
           configurable: true,
         });
       }
+      return target;
     };
     return codec(
-      (value) => {
-        if (
-          value === null ||
-          typeof value !== "object" ||
-          Array.isArray(value)
-        ) {
-          return fail("object");
-        }
-        const source = value as Record<string, unknown>;
-        const decoded: Record<string, unknown> = {};
-        for (const [name, field] of Object.entries(fields)) {
-          if (source[name] === undefined && "optional" in field) continue;
-          decoded[name] = field.decode(source[name]);
-        }
-        preserveUnknown(source, decoded);
-        return decoded as ModelValue<F>;
-      },
-      (value) => {
-        if (
-          value === null ||
-          typeof value !== "object" ||
-          Array.isArray(value)
-        ) {
-          return fail("object");
-        }
-        const encoded: Record<string, unknown> = {};
-        for (const [name, field] of Object.entries(fields)) {
-          const fieldValue = (value as Record<string, unknown>)[name];
-          if (fieldValue === undefined && "optional" in field) continue;
-          encoded[name] = field.encode(fieldValue);
-        }
-        preserveUnknown(value as Record<string, unknown>, encoded);
-        return encoded;
-      },
+      (value) => transform(value, decoders) as ModelValue<F>,
+      (value) => transform(value, encoders),
     );
   },
   named<T, Named extends T>(_name: string, value: Codec<T>): Codec<Named> {
