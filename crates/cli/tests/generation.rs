@@ -279,7 +279,16 @@ fn main() {
     cargo(root.path(), &["run", "--quiet", "--offline"]);
     let tree = cargo(
         root.path(),
-        &["tree", "--offline", "--prefix", "none", "--format", "{p}"],
+        &[
+            "tree",
+            "--offline",
+            "--color",
+            "never",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ],
     );
     let copies = tree
         .lines()
