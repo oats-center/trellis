@@ -83,7 +83,18 @@ export async function authenticateIssuerChain(
           BigInt(sequence) <= BigInt(owner.trustSnapshot.rotationSequence)
         )
           continue;
-        await owner.acceptIssuerRotation(signedBytes(rotation));
+        try {
+          await owner.acceptIssuerRotation(signedBytes(rotation));
+        } catch (cause) {
+          // The connected session may install the same link while this one
+          // waits its turn; the final trust check below still decides.
+          if (
+            typeof sequence !== "string" ||
+            !/^[0-9]{1,20}$/.test(sequence) ||
+            BigInt(sequence) > BigInt(owner.trustSnapshot.rotationSequence)
+          )
+            throw cause;
+        }
       }
     }
     const verified = owner.trustForCredential(anchor);
