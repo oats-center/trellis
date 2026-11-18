@@ -10,8 +10,53 @@ and this project adheres to
 
 ## [0.100.0-rc.48] - 2026-11-18
 
+### Added
+
+- `trellis-server backup <dir>` captures a consistent recovery point of a
+  running installation (config, secrets and keys, an online copy of each
+  database, a snapshot of every stream, and a checksummed manifest), and
+  `trellis-server restore <dir>` puts it back; the streams load on the next
+  platform start. The upkeep guide says what each failure costs and how to back
+  up and restore.
+- Retention for every data class: recorded events are kept 90 days
+  (`[events] history_retention_days`), settled failed deliveries 90 days
+  (`dead_letter_retention_days`), finished jobs 30 days
+  (`[jobs] history_retention_days`); failed, dead and open records stay. A
+  changed stream limit applies at the next start. The Console's Health page has
+  a Storage panel (size, records, oldest, kept), also exported as
+  `trellis.storage.*` metrics.
+- Split deployments become ready: a separate jobs, health or events server asks
+  the platform's Auth, with a request signed by its role's provider seed, to
+  prepare its built-in service.
+- Generated TypeScript SDKs export subpaths (`<pkg>/apis/<Api>`,
+  `/participants/<Name>`, `/apps/<Name>`, `/types`), and package evidence is
+  emitted once, only for participants and settings apps; an API-only import
+  carries no contract source (one API: about 221 KB to 3 KB minified).
+- Authored IDL docs, input limits, errors and capabilities appear in generated
+  Rustdoc and TypeScript JSDoc.
+- `trellis generate -v` explains which model crate each package reuses.
+
 ### Changed
 
+- A runtime confirms the broker belongs to its installation before it creates
+  or changes any stream, bucket or lease; split roles compare the broker's
+  installation ID with their own and write nothing.
+- Rust codegen reuses the `trellis-models` version the project itself resolves
+  when its digest matches, so a project on an older release shares types with
+  its own runtime; the generated check compares name and digest, not version.
+- Releases stay an untagged draft until crates, images and npm packages are
+  published from their verified bytes; a rerun skips identical components and
+  fails on different ones. Main CI skips verification only after the same
+  commit's release run passed, and docs site code gets a full build.
+- The Console's Events list shows as soon as its query returns; its failed
+  delivery and delivery panels load one page at a time (server-ordered by
+  attention), and partial counts say so.
+- TypeScript clients match Rust on reconnects and clock skew: a lost
+  connection opens a fresh admitted generation instead of reconnecting in place,
+  and providers accept proofs up to 30 s old. While a request waits, a lost
+  broker is retried within a second (at most once per second).
+- Faster shared TypeScript codecs (wide models about 2.7x, bounded strings about
+  2.2x) and no deep JSON copy per Rust request.
 - async-nats 0.53, with its TLS and cluster discovery security fixes. Trellis
   keeps choosing TLS per server: a CA file is a trust anchor, not a demand for
   TLS, so a plaintext loopback broker still works. A broker certificate that
@@ -39,6 +84,15 @@ and this project adheres to
 
 ### Fixed
 
+- The Events page no longer reports history missing while an event awaits
+  redelivery; only events the broker discarded count as missing.
+- A finite RPC or Live opening is never sent after its deadline, in either
+  client.
+- A TypeScript service retries a renewal Auth didn't answer instead of closing;
+  providers wait for authorization data that is catching up instead of
+  dropping requests; a repeated Live challenge gets the same answer, so a
+  stalled consumer's flow control keeps going.
+- `--public-key` accepts keys that start with "-".
 - A runtime whose jobs, health or events work fails while its built-in
   provider waits for Auth stops that work and gives up its lease, instead of
   renewing the lease with nothing running so no other instance could take over.
