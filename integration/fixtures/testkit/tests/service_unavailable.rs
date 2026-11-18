@@ -150,3 +150,137 @@ async fn stopped_provider_is_unavailable_and_same_operation_can_be_observed_afte
     let _ = task.await;
     runtime.shutdown().await.unwrap();
 }
+
+/// A wait for an absent provider sends the request again only within the
+/// call's deadline. A caller whose runtime is busy past the deadline returns a
+/// timeout without sending the pending resend, so a provider that arrived in
+/// the meantime never executes a call its caller already reported as timed
+/// out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resend_that_wakes_after_the_deadline_is_not_sent() {
+    use std::sync::{mpsc, Mutex};
+    use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client as EchoClient;
+    use trellis_test_fixture::participants::trellis_test_fixture_consumer::Participant as ConsumerParticipant;
+
+    const DEADLINE: Duration = Duration::from_secs(3);
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let consumer_identity = runtime
+        .register_service::<ConsumerParticipant>("deadline consumer")
+        .await
+        .unwrap();
+    let provider_identity = runtime
+        .register_service::<ProviderParticipant>("deadline provider")
+        .await
+        .unwrap();
+    let caller_identity = runtime
+        .register_client::<CallerRequest>("deadline probe")
+        .await
+        .unwrap();
+    let probe = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .unwrap(),
+    );
+
+    // The consumer runs on its own single-threaded runtime so that blocking
+    // that thread delays its resend wakeup past the deadline, as a busy
+    // caller does, while the provider keeps running here.
+    let (start_provider, provider_wanted) = mpsc::channel::<()>();
+    let (provider_serving, serving) = mpsc::channel::<()>();
+    let consumer = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let service = ConsumerParticipant::connect(
+                    consumer_identity
+                        .connect_options()
+                        .with_timeout_ms(u64::try_from(DEADLINE.as_millis()).unwrap()),
+                )
+                .await
+                .unwrap();
+                let api = EchoClient::from_generated(service.generated_client());
+                let run = tokio::spawn(async move { service.run().await });
+                let late = value("late");
+                let started = std::time::Instant::now();
+                let (late, ()) = tokio::join!(api.echo(&late), async {
+                    // With no provider the request is resent after 100, 200,
+                    // 400, and 800 ms, then waits 1000 ms for its last resend
+                    // at about 2.5 s. Block in the middle of that wait.
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    start_provider.send(()).unwrap();
+                    serving.recv().unwrap();
+                    let past = started + DEADLINE + Duration::from_millis(200);
+                    let now = std::time::Instant::now();
+                    std::thread::sleep(past.saturating_duration_since(now));
+                });
+                let late = late.expect_err("the late call must not complete");
+                // A later call on the same connection reaches the provider, so
+                // anything the late call had sent was delivered before it.
+                let after = api.echo(&value("after")).await.unwrap();
+                run.abort();
+                let _ = run.await;
+                (late, after.value)
+            })
+    });
+
+    tokio::task::spawn_blocking(move || provider_wanted.recv().unwrap())
+        .await
+        .unwrap();
+    let received = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut service = ProviderParticipant::connect(provider_identity.connect_options())
+        .await
+        .unwrap();
+    {
+        let received = Arc::clone(&received);
+        let mut provider = Provider::new(&mut service);
+        let mut api = provider.trellis_test_fixture_echo_v1();
+        api.register_echo(move |_context, input| {
+            let received = Arc::clone(&received);
+            async move {
+                received.lock().unwrap().push(input.value.clone());
+                Ok(input)
+            }
+        });
+        api.register_silent(|_context, input, operation| async move {
+            operation.complete(input).await?;
+            Ok(())
+        });
+    }
+    let task = tokio::spawn(async move { service.run().await });
+    let probe_api = probe.trellis_test_fixture_echo_v1();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while probe_api.echo(&value("probe")).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the provider begins serving");
+    provider_serving.send(()).unwrap();
+
+    let (late, after) = tokio::task::spawn_blocking(move || consumer.join().unwrap())
+        .await
+        .unwrap();
+    assert!(matches!(late, CallError::Timeout), "late call: {late:?}");
+    assert_eq!(after, "after");
+    let received = received.lock().unwrap().clone();
+    assert_eq!(
+        received
+            .iter()
+            .filter(|value| value.as_str() != "probe")
+            .collect::<Vec<_>>(),
+        ["after"],
+        "the provider received a request sent after its deadline"
+    );
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.unwrap();
+}
+
+fn value(value: &str) -> Value {
+    Value {
+        value: value.to_owned(),
+        extra: Default::default(),
+    }
+}

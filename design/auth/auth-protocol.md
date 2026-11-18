@@ -122,7 +122,10 @@ Never automatically retransmit potentially executed application requests. A
 broker no-responders reply proves no provider received the request, so callers
 resend the same signed request, with its request ID and proof unchanged, for up
 to five seconds within its deadline, with pauses doubling from 100 ms to one
-second; this covers a provider that is reconnecting.
+second; this covers a provider that is reconnecting. A caller never sends a
+finite request, first send or resend, once its deadline has passed: a request
+whose transport acquisition, proof creation, or resend wakeup ran late fails as
+a timeout without reaching the broker.
 
 Events retain signed authority by digest. Historical verification uses original
 JetStream publication time/sequence and the signed revocation cutoff, not replay
