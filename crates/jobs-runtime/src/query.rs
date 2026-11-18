@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use trellis_rs::jobs::events::{cancelled_by_admin, dismissed, retried_by_admin, EventMeta};
+use trellis_rs::jobs::events::{
+    cancelled_by_admin, dismissed, expired, retried_by_admin, EventMeta,
+};
 use trellis_rs::jobs::types::{
     Job, JobAdminAction, JobErrorDetail, JobEvent, JobState, JobTrigger, JobTriggerKind,
 };
@@ -80,6 +82,22 @@ pub enum JobsQueryError {
     },
 }
 
+/// Jobs read or removed per retention batch.
+const RETENTION_BATCH: u64 = 1_000;
+
+/// The error an unclaimed job expires with when its queued work reaches the
+/// job history retention.
+const UNCLAIMED_EXPIRY_ERROR: &str = "no worker claimed the job within the job history retention";
+
+/// What one Jobs retention pass changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JobsRetentionPass {
+    /// Pending jobs recorded as expired because no worker claimed them.
+    pub expired: u64,
+    /// Settled jobs removed with their history.
+    pub removed: u64,
+}
+
 #[derive(Clone)]
 pub struct JobsQuery {
     jobs_runtime: JobsRuntime,
@@ -98,6 +116,93 @@ impl JobsQuery {
             jobs_runtime,
             store,
             resource_resolver,
+        }
+    }
+
+    /// Apply the Jobs history retention `history`.
+    ///
+    /// A job still pending since it was created or replayed more than
+    /// `history` ago is recorded as expired: its queued work and the lifecycle
+    /// a worker folds leave the Jobs streams at that age, so without this
+    /// record the projection would show it pending forever. The streams keep
+    /// a margin past `history`, so the expiry normally lands while the work is
+    /// still queued and a late worker reads it and runs nothing. Then settled
+    /// jobs unchanged for `history` are removed, in bounded batches.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first projection or publication failure; work already
+    /// done stays, and the next pass repeats the rest.
+    pub async fn apply_retention(
+        &self,
+        history: Duration,
+    ) -> Result<JobsRetentionPass, JobsQueryError> {
+        let cutoff = OffsetDateTime::now_utc() - history;
+        let cutoff_nanos = i64::try_from(cutoff.unix_timestamp_nanos()).map_err(|_| {
+            JobsQueryError::Validation {
+                field: "history",
+                details: "outside the representable range".to_owned(),
+            }
+        })?;
+        let mut pass = JobsRetentionPass::default();
+        // Pending jobs last dispatched before the cutoff, newest first; the
+        // cursor walks past each page, so a projection that has not yet folded
+        // an expiry never yields that job twice.
+        let mut after = Some((cutoff_nanos, String::new(), String::new(), String::new()));
+        while let Some(position) = after.take() {
+            let page = self
+                .with_projection(move |store| {
+                    Ok(store.list_jobs(&ListJobsFilter {
+                        service: None,
+                        job_type: None,
+                        states: Some(vec![JobState::Pending]),
+                        since: None,
+                        after: Some(position),
+                        limit: RETENTION_BATCH,
+                    })?)
+                })
+                .await?;
+            for job in &page.jobs {
+                let now = now_timestamp_string();
+                let event = expired(
+                    EventMeta {
+                        service: &job.service,
+                        job_type: &job.job_type,
+                        job_id: &job.id,
+                        context: &job.context,
+                        timestamp: &now,
+                    },
+                    job.tries,
+                    JobState::Pending,
+                    UNCLAIMED_EXPIRY_ERROR,
+                );
+                let subject = self.transition_event_subject(job, &event).await;
+                let payload =
+                    serde_json::to_vec(&event).map_err(|error| JobsQueryError::EncodeEvent {
+                        key: projection_key(job),
+                        details: error.to_string(),
+                    })?;
+                self.jobs_runtime
+                    .publish_event_payload(subject.clone(), job_event_headers(&event), payload)
+                    .await
+                    .map_err(|error| JobsQueryError::PublishEvent {
+                        subject,
+                        details: error,
+                    })?;
+                pass.expired += 1;
+            }
+            after = page.next_after;
+        }
+        loop {
+            let removed = self
+                .with_projection(
+                    move |store| Ok(store.prune_settled_jobs(cutoff, RETENTION_BATCH)?),
+                )
+                .await?;
+            pass.removed += removed;
+            if removed < RETENTION_BATCH {
+                return Ok(pass);
+            }
         }
     }
 

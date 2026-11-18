@@ -104,8 +104,10 @@ pub async fn start_replay_dispatcher(
                     .await
                     .map_err(|error| ServerError::Internal(error.to_string()))?
                 else {
-                    // A replay requested while retention removed the entry's
-                    // original record can never be dispatched.
+                    // A replay accepted while a retention sweep purged the
+                    // dismissed entry's earlier records, the original among
+                    // them, can never be dispatched; it settles back to dead
+                    // with a reason an operator can act on.
                     tracing::warn!(dead_letter = %latest.id, "replay has no original evidence left");
                     journal
                         .report_replay_outcome(
@@ -113,7 +115,7 @@ pub async fn start_replay_dispatcher(
                             latest.generation,
                             super::DeliveryOutcome::Unreplayable,
                             0,
-                            Some("original evidence was removed by retention".to_owned()),
+                            Some(super::ORIGINAL_REMOVED_ERROR.to_owned()),
                         )
                         .await
                         .map_err(|error| ServerError::Internal(error.to_string()))?;

@@ -24,6 +24,11 @@ pub const REPLAY_STREAM: &str = "trellis_consumer_replays";
 /// Subject wildcard retained by the targeted replay stream.
 pub const REPLAY_SUBJECTS: &str = "_trellis.consumer.replay.>";
 
+/// The error a replay settles with when dead-letter retention removed its
+/// original event while the replay was being accepted.
+pub const ORIGINAL_REMOVED_ERROR: &str = "cannot replay: dead-letter retention removed the \
+    original event while this replay was being accepted; dismiss the entry";
+
 /// Current dead-letter lifecycle state.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

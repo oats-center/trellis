@@ -9,7 +9,9 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use time::OffsetDateTime;
 
 use crate::config::EVENT_STREAM_RETENTION_DAYS;
-use crate::resources::{EVENT_STREAM, JOBS_ADVISORIES_STREAM, JOBS_STREAM, JOBS_WORK_STREAM};
+use crate::resources::{
+    days, EVENT_STREAM, JOBS_ADVISORIES_STREAM, JOBS_STREAM, JOBS_STREAM_GRACE, JOBS_WORK_STREAM,
+};
 use crate::{RuntimeConfig, StorageBackend};
 use trellis_events_runtime::{DLQ_STREAM, REPLAY_STREAM};
 
@@ -59,11 +61,18 @@ pub(crate) async fn collect(
             "healthStream",
             format!("{health_hours} hours"),
         ),
-        (JOBS_STREAM, "jobHistory", format!("{jobs_days} days")),
+        (
+            JOBS_STREAM,
+            "jobHistory",
+            format!(
+                "{} days",
+                (days(jobs_days) + JOBS_STREAM_GRACE).as_secs() / 86_400
+            ),
+        ),
         (
             JOBS_WORK_STREAM,
             "jobWork",
-            format!("until done, at most {jobs_days} days"),
+            format!("until done; unclaimed expire after {jobs_days} days"),
         ),
         (
             JOBS_ADVISORIES_STREAM,

@@ -522,6 +522,155 @@ async fn retention_purges_settled_dead_letters_and_keeps_open_ones() {
     rebuilt_projector.stop().await;
 }
 
+/// A retention sweep that selected a dismissed entry before a replay of it was
+/// accepted purges through the sequence it saw, the original among it. The
+/// replay must settle as dead with a reason the operator can act on, and a
+/// projection rebuilt from the purged journal must start and hold the same
+/// entry as the live one.
+#[tokio::test]
+async fn a_replay_accepted_during_a_retention_sweep_settles_as_unreplayable() {
+    let (_server, _directory, client) = start_nats().await;
+    let context = jetstream::new(client.clone());
+    for (name, subjects, per_subject) in [
+        (DLQ_STREAM, DLQ_SUBJECTS, -1),
+        (REPLAY_STREAM, REPLAY_SUBJECTS, 1),
+    ] {
+        context
+            .create_stream(stream::Config {
+                name: name.to_owned(),
+                subjects: vec![subjects.to_owned()],
+                storage: stream::StorageType::Memory,
+                retention: stream::RetentionPolicy::Limits,
+                discard: stream::DiscardPolicy::New,
+                max_messages_per_subject: per_subject,
+                allow_direct: true,
+                ..Default::default()
+            })
+            .await
+            .expect("create dead-letter stream");
+    }
+    let journal = DeadLetterJournal::open(client.clone())
+        .await
+        .expect("open journal");
+    let (created, _) = journal
+        .create_dead(
+            "consumer".to_owned(),
+            OriginalEvent {
+                stream: "trellis".to_owned(),
+                sequence: 7,
+                published_at: "2026-01-01T00:00:00Z".to_owned(),
+                event_id: None,
+                subject: "events.v1.orders.Created".to_owned(),
+                payload_bytes: b"payload".to_vec(),
+                headers: BTreeMap::new(),
+                api_id: None,
+                event_name: None,
+                context_digest: None,
+                verification_status: "malformed".to_owned(),
+            },
+            5,
+            None,
+        )
+        .await
+        .expect("create dead letter");
+    journal
+        .dismiss(&created.id, 1, "dismiss".to_owned(), "digest".to_owned())
+        .await
+        .expect("dismiss");
+    let store = EventsStore::open_in_memory().expect("open projection");
+    let projector = start_dead_letter_projector(client.clone(), store.clone())
+        .await
+        .expect("project journal");
+    assert_eq!(
+        store.inspect_dead_letter(&created.id).unwrap().unwrap()["deadLetter"]["state"],
+        "dismissed"
+    );
+
+    // The projection has not yet seen the replay when the sweep runs, so the
+    // sweep selects the entry as dismissed and purges through that record.
+    projector.stop().await;
+    journal
+        .request_replay(&created.id, 2, "replay".to_owned(), "digest".to_owned())
+        .await
+        .expect("accept replay");
+    let pass = trellis_events_runtime::apply_retention(
+        &store,
+        &journal,
+        Duration::from_secs(24 * 60 * 60),
+        Duration::ZERO,
+    )
+    .await
+    .expect("apply retention");
+    assert_eq!(pass.dead_letters, 0, "the replayed entry is kept");
+
+    let projector = start_dead_letter_projector(client.clone(), store.clone())
+        .await
+        .expect("resume projection");
+    let dispatcher = start_replay_dispatcher(client.clone(), journal.clone())
+        .await
+        .expect("start replay dispatcher");
+    let settled = wait_for_state(&journal, &created.id, DeadLetterState::Dead).await;
+    assert_eq!(settled.generation, 1);
+    assert_eq!(
+        settled.last_error.as_deref(),
+        Some(trellis_events_runtime::dead_letters::ORIGINAL_REMOVED_ERROR)
+    );
+    assert_eq!(
+        context
+            .get_stream(REPLAY_STREAM)
+            .await
+            .expect("open replay stream")
+            .info()
+            .await
+            .expect("replay stream info")
+            .state
+            .messages,
+        0,
+        "nothing was dispatched"
+    );
+    let mut live = None;
+    for _ in 0..100 {
+        live = store
+            .inspect_dead_letter(&created.id)
+            .unwrap()
+            .filter(|detail| detail["deadLetter"]["revision"] == settled.revision);
+        if live.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let live = live.expect("the live projection reaches the settled revision");
+    assert_eq!(live["deadLetter"]["state"], "dead");
+    assert_eq!(
+        live["deadLetter"]["lastError"],
+        trellis_events_runtime::dead_letters::ORIGINAL_REMOVED_ERROR
+    );
+    assert!(matches!(
+        journal
+            .request_replay(
+                &created.id,
+                settled.revision,
+                "again".to_owned(),
+                "digest".to_owned()
+            )
+            .await,
+        Err(trellis_events_runtime::dead_letters::JournalError::UnreplayableOriginal)
+    ));
+    dispatcher.stop().await;
+    projector.stop().await;
+
+    let rebuilt = EventsStore::open_in_memory().expect("open rebuilt projection");
+    let rebuilt_projector = start_dead_letter_projector(client, rebuilt.clone())
+        .await
+        .expect("rebuild projection from the purged journal");
+    assert_eq!(
+        rebuilt.inspect_dead_letter(&created.id).unwrap(),
+        Some(live),
+        "a rebuild holds the entry the live projection does"
+    );
+    rebuilt_projector.stop().await;
+}
+
 async fn wait_for_state(
     journal: &DeadLetterJournal,
     id: &str,

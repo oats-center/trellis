@@ -2,7 +2,8 @@
 //!
 //! This crate implements the admin-side loops and RPC hosting for the standard
 //! `trellis.jobs@v1` Trellis API: SQLite-backed queries and stream projection.
-//! Execution owners alone settle deadline and retry-exhaustion reconciliation.
+//! Execution owners alone settle deadline and retry-exhaustion reconciliation;
+//! the retention pass expires only jobs no worker claimed within retention.
 //! Service-local job execution lives in
 //! `trellis_rs::jobs` in the public `trellis` facade.
 
@@ -17,7 +18,9 @@ pub mod worker_presence;
 
 pub use bindings::{JobKeySnapshot, JobResourceBinding, JobResourceResolver};
 pub use projector::{projector_consumer_name, start_jobs_projector, JobsProjectorHandle};
-pub use query::{jobs_admin_resources, JobsAdminResources, JobsQuery, JobsQueryError};
+pub use query::{
+    jobs_admin_resources, JobsAdminResources, JobsQuery, JobsQueryError, JobsRetentionPass,
+};
 pub use router::build_router_with_query;
 pub use storage::{ListJobsFilter, SqliteJobsStore, SqliteJobsStoreError};
 pub use watch::register_jobs_watch_live;

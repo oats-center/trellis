@@ -16,6 +16,13 @@ pub(crate) const JOBS_STREAM: &str = "JOBS";
 pub(crate) const JOBS_WORK_STREAM: &str = "JOBS_WORK";
 pub(crate) const JOBS_ADVISORIES_STREAM: &str = "JOBS_ADVISORIES";
 
+/// How long the Jobs streams keep a job past `[jobs] history_retention_days`.
+///
+/// The hourly Jobs retention pass expires a job no worker claimed within the
+/// retention; the margin lets that record land while the job's work and its
+/// lifecycle are still in the streams, even across a day of Jobs downtime.
+pub(crate) const JOBS_STREAM_GRACE: Duration = days(1);
+
 pub(crate) const fn days(days: u32) -> Duration {
     Duration::from_secs(days as u64 * 24 * 60 * 60)
 }
@@ -177,11 +184,12 @@ fn event_stream_config() -> stream::Config {
 }
 
 /// The `JOBS` lifecycle and `JOBS_WORK` streams keep `[jobs]
-/// history_retention_days`. Settled jobs live on in the Jobs projection, and
-/// replay of a dead job reads its payload from there, so the age bounds only
-/// stream-read history and work nobody consumed within the window.
+/// history_retention_days` plus [`JOBS_STREAM_GRACE`]. Settled jobs live on in
+/// the Jobs projection, and replay of a dead job reads its payload from there,
+/// so the age bounds only stream-read history and work nobody consumed; the
+/// Jobs retention pass expires such a job before the grace runs out.
 fn jobs_stream_configs(config: &RuntimeConfig) -> [stream::Config; 2] {
-    let max_age = days(config.jobs_history_retention_days());
+    let max_age = days(config.jobs_history_retention_days()) + JOBS_STREAM_GRACE;
     [
         stream::Config {
             name: JOBS_STREAM.to_owned(),
@@ -409,14 +417,14 @@ mod tests {
             .unwrap();
 
         let jobs = info(&jetstream, JOBS_STREAM).await;
-        assert_eq!(jobs.config.max_age, days(3));
+        assert_eq!(jobs.config.max_age, days(3) + JOBS_STREAM_GRACE);
         assert_eq!(
             jobs.state.messages, 1,
             "no job is older than the new policy"
         );
         assert_eq!(
             info(&jetstream, JOBS_WORK_STREAM).await.config.max_age,
-            days(3)
+            days(3) + JOBS_STREAM_GRACE
         );
         assert_eq!(
             info(&jetstream, JOBS_ADVISORIES_STREAM)
@@ -508,7 +516,7 @@ mod tests {
         let jobs_stream = class(&classes, "jobHistory");
         assert_eq!(jobs_stream.records, Some(1));
         assert!(jobs_stream.bytes > 0 && jobs_stream.oldest.is_some());
-        assert_eq!(jobs_stream.retention, "3 days");
+        assert_eq!(jobs_stream.retention, "4 days");
         assert!(
             !classes.iter().any(|class| class.name == "authDatabase"),
             "a database not on this host is not reported as empty"

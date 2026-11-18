@@ -27,7 +27,8 @@ pub struct RetentionPass {
 /// Each event batch is one transaction. Each dead letter's journal records are
 /// purged before its projection rows are dropped, so an interrupted pass
 /// leaves the entry for the next one, and an entry a replay request reopened
-/// meanwhile is kept.
+/// meanwhile is kept without the original and earlier records the purge
+/// removed, as a projection rebuilt from the journal would hold it.
 ///
 /// # Errors
 ///
@@ -59,16 +60,23 @@ pub async fn apply_retention(
         .await?;
         let mut removed = 0;
         for (id, journal_sequence) in &settled {
-            if !journal
-                .purge_through(id, *journal_sequence)
-                .await
-                .map_err(|error| ServerError::Internal(error.to_string()))?
-            {
-                continue;
-            }
             let row_store = store.clone();
             let id = id.clone();
             let journal_sequence = *journal_sequence;
+            if !journal
+                .purge_through(&id, journal_sequence)
+                .await
+                .map_err(|error| ServerError::Internal(error.to_string()))?
+            {
+                // A replay accepted since the selection survives the purge
+                // without its original; the dispatcher settles it back to
+                // dead as unreplayable. The row drops what the purge removed.
+                blocking(move || {
+                    row_store.forget_purged_dead_letter_records(&id, journal_sequence)
+                })
+                .await?;
+                continue;
+            }
             if blocking(move || row_store.remove_settled_dead_letter(&id, journal_sequence)).await?
             {
                 removed += 1;

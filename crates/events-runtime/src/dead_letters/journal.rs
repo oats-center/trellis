@@ -480,6 +480,11 @@ impl DeadLetterJournal {
                         record_dead_letter_transition(action, "error");
                         Err(JournalError::Conflict(error.to_string()))
                     }
+                    // Retention removed the entry after it was read.
+                    None if expected_subject_sequence != 0 => {
+                        record_dead_letter_transition(action, "error");
+                        Err(JournalError::NotFound(transition.id.clone()))
+                    }
                     _ => {
                         record_dead_letter_transition(action, "error");
                         Err(JournalError::Nats(error.to_string()))

@@ -49,7 +49,7 @@ history_retention_days = 90      # the event history the Console searches
 dead_letter_retention_days = 90  # failed deliveries after they're resolved or dismissed
 
 [jobs]
-history_retention_days = 30      # finished jobs; failed and dead jobs stay
+history_retention_days = 30      # finished jobs, and how long a job waits for a worker
 
 [health]
 history_retention_days = 30
@@ -61,6 +61,12 @@ A change takes effect at the next start, and a shorter time removes what it no
 longer covers. Failed deliveries nobody has dealt with are kept however old
 they are, because a retry needs the original event. `dead_letter_retention_days`
 can't be less than 7, the time the event stream itself keeps events.
+
+Failed and dead jobs are kept however old they are, because a retry or replay
+needs their payload. A job that no worker picks up within the jobs
+`history_retention_days` is marked expired, with an error saying no worker
+claimed it, instead of waiting forever. If its service is going to stay
+offline longer than that, raise the setting before then.
 
 ## What a failure costs
 

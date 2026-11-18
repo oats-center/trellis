@@ -6237,15 +6237,18 @@ dependencies = [
 name = "trellis-jobs-runtime"
 version = "0.100.0-rc.49"
 dependencies = [
+ "async-nats",
  "futures-util",
  "refinery",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "time",
  "tokio",
  "tracing",
+ "trellis-local-nats",
  "trellis-protocol",
  "trellis-rs",
  "trellis-runtime-apis",
