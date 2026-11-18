@@ -1857,7 +1857,10 @@ connection boundary and only the declared caller/provider surfaces. Its
 constants carry source-package/participant evidence; applications do not supply
 digests to service bootstrap. Matching built-in models come from
 `trellis-models` rather than being copied into each generated package;
-package-name equality alone never substitutes one schema for another. A
+package-name equality alone never substitutes one schema for another; the
+`trellis` dependency's locked version must equal the CLI's bundled
+`trellis-models` package version, not only its digest. Run `trellis generate -v`
+to see, per package, whether models were reused or inlined and why. A
 support-ABI mismatch fails compilation and is not resolved through compatibility
 wrappers.
 
