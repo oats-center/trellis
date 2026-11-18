@@ -25,6 +25,8 @@ pub mod shutdown;
 /// Installation TLS certificate inspection.
 pub mod tls;
 
+#[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
+pub mod backup;
 mod blocking;
 mod clock;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]

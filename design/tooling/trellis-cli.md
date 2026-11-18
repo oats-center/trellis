@@ -206,6 +206,8 @@ trellis-server tls issue --out <dir> --host <name>...
 trellis-server tls status [--config <path> | --user | --system]
 trellis-server nats new --out <dir> [--servers <n>] [--hosts <name,...>] [--listen <ip>] ...
 trellis-server nats <system|trellis|auth> [--config <path> | --user | --system] [--print] [<nats args>...]
+trellis-server backup <dir> [--config <path> | --user | --system]
+trellis-server restore <dir> [--config <path> | --user | --system] [--force]
 trellis-server upgrade [--check] [--prerelease]
 ```
 
@@ -284,6 +286,48 @@ with the installation's address and CA and that user's creds, written to the
 private runtime folder only while it runs; `--print` writes the creds to
 standard output instead. A start validates the whole config before it fetches
 or starts NATS.
+
+### Recovery
+
+The default installation is one Trellis server and one NATS server with one
+copy of each stream. Its state is the SQLite databases in the data folder and
+JetStream on the broker. A Trellis or NATS process restart loses nothing; a
+power loss can lose JetStream writes within its `sync_interval` (two minutes
+by default); losing the disk or corrupting a database or the JetStream store
+needs a restore. Leases choose which process runs a role and move no data. A
+standby takes a role over only with the same broker and, for Auth, the same
+platform database, `.issuer-keys` folder and `secrets.toml`, shared or
+restored; it never recovers a dead server's local disk. Replicated storage is
+not part of the default deployment.
+
+`backup` writes a new or empty owner-only folder from a running or stopped
+installation whose NATS is reachable: `config.toml`, `secrets.toml`,
+`nats.conf`, every file the config names (inside the installation folder by
+relative path, outside it by absolute path), a copy of each subsystem database
+made with SQLite's online backup in one step, the issuer-key folder, the data
+folder's `tls/`, and a JetStream snapshot (`$JS.API.STREAM.SNAPSHOT`, with
+consumers) of every stream in the Trellis account except the lease bucket.
+`manifest.json` comes last, with the format, versions, instance ID, JetStream
+identity, times, and each file's SHA-256 and mode; a folder without it is not a
+backup. Databases are copied before streams, so every stream entry a database
+refers to is in the snapshot. A snapshot can hold a projector consumer
+position later than its projection's copy, so loading the streams deletes the
+durable `jobs-projector-*`, `health-projector-*` and `events-projector-*`
+consumers; each projection then replays its stream, and projecting an event
+again is a no-op by stream sequence. The broker's own server config is not
+part of a backup.
+
+`restore` verifies every checksum before writing. It refuses a target folder
+whose `secrets.toml` names another instance ID, and an outside file that
+exists with other contents, unless `--force`. It writes the files, removes any
+SQLite journal beside a database it replaces, replaces the issuer-key folder,
+and stages the stream snapshots with the manifest in the data folder's
+`restore/`. The next start of a role including the platform loads each staged
+stream (`$JS.API.STREAM.RESTORE`) after pushing the NATS accounts and before
+the runtime starts, refusing a broker that already has one; a loaded stream's
+snapshot is removed, so an interrupted load resumes. The JetStream identity
+marker is one of the restored streams, so the platform's binding check passes
+only when the database and streams came from the same installation.
 
 ## Utility Commands
 

@@ -640,7 +640,7 @@ impl TrellisTestRuntime {
     /// # Errors
     /// Returns shutdown, startup, readiness, or administrator reconnect failures.
     pub async fn restart(&mut self) -> Result<(), TrellisTestError> {
-        self.restart_runtime(false).await
+        self.restart_runtime(false, None).await
     }
 
     /// Stop the server and its NATS broker, then start both on their existing
@@ -652,10 +652,53 @@ impl TrellisTestRuntime {
     /// # Errors
     /// Returns shutdown, startup, readiness, or administrator reconnect failures.
     pub async fn restart_with_broker(&mut self) -> Result<(), TrellisTestError> {
-        self.restart_runtime(true).await
+        self.restart_runtime(true, None).await
     }
 
-    async fn restart_runtime(&mut self, with_broker: bool) -> Result<(), TrellisTestError> {
+    /// Saves a recovery point of the running installation into the new or
+    /// empty folder `destination`, with `trellis-server backup`.
+    ///
+    /// # Errors
+    /// Returns a backup failure when the command fails; its log is in the
+    /// work directory's `logs/backup.log`.
+    pub async fn backup(&self, destination: &Path) -> Result<(), TrellisTestError> {
+        self.ensure_running()?;
+        crate::process::run(
+            Command::new(&self.distribution.server)
+                .arg("backup")
+                .arg(destination)
+                .arg("--config")
+                .arg(&self.config),
+            &self.workdir.join("logs/backup.log"),
+            None,
+            TrellisTestStage::Backup,
+        )
+        .await
+    }
+
+    /// Recovers the installation from `backup` as after losing its disk:
+    /// stops the server and its NATS broker, deletes the installation (its
+    /// config, keys, certificates and databases) and the broker's JetStream
+    /// store, restores `backup` with `trellis-server restore`, then starts a
+    /// broker on an empty store and the server, which loads the streams.
+    /// Only the broker's own `nats-server` config survives, as it would on a
+    /// NATS host that is configured apart from its data.
+    ///
+    /// Existing callers must reconnect. Users, services and their data are
+    /// whatever the backup holds.
+    ///
+    /// # Errors
+    /// Returns shutdown, restore, startup, readiness, or administrator
+    /// reconnect failures.
+    pub async fn restore(&mut self, backup: &Path) -> Result<(), TrellisTestError> {
+        self.restart_runtime(true, Some(backup)).await
+    }
+
+    async fn restart_runtime(
+        &mut self,
+        with_broker: bool,
+        restore: Option<&Path>,
+    ) -> Result<(), TrellisTestError> {
         if self.stopped {
             return Err(TrellisTestError::new(
                 TrellisTestErrorKind::RuntimeStopped,
@@ -671,6 +714,35 @@ impl TrellisTestRuntime {
         if with_broker {
             if let Some(nats) = self.infrastructure.nats.as_mut() {
                 nats.stop(self.timeouts.shutdown).await?;
+            }
+            if let Some(backup) = restore {
+                let config_dir = self.config.parent().expect("config file in a directory");
+                for folder in [
+                    config_dir.join("var"),
+                    config_dir.join("nats/data"),
+                    self.workdir.join("certificates"),
+                ] {
+                    std::fs::remove_dir_all(folder)?;
+                }
+                for file in [
+                    self.config.clone(),
+                    config_dir.join("secrets.toml"),
+                    config_dir.join("nats/system.creds"),
+                    config_dir.join("nats/trellis-operator.nk"),
+                ] {
+                    std::fs::remove_file(file)?;
+                }
+                crate::process::run(
+                    Command::new(&self.distribution.server)
+                        .arg("restore")
+                        .arg(backup)
+                        .arg("--config")
+                        .arg(&self.config),
+                    &self.workdir.join("logs/restore.log"),
+                    None,
+                    TrellisTestStage::Restore,
+                )
+                .await?;
             }
             start_broker(
                 &mut self.infrastructure,

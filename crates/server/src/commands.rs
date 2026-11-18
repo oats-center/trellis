@@ -1,7 +1,8 @@
 //! Commands that run on the host beside the server without starting it:
 //! printing a config template, making a NATS operator and cluster, creating a
-//! development installation, issuing test certificates, and running the `nats`
-//! CLI as one of the installation's NATS users.
+//! development installation, issuing test certificates, running the `nats`
+//! CLI as one of the installation's NATS users, and backing an installation up
+//! and restoring it.
 
 use std::path::{Path, PathBuf};
 
@@ -450,6 +451,96 @@ fn nats_run(role: NatsRole, args: NatsRunArgs) -> miette::Result<()> {
     if !status.success() {
         std::process::exit(status.code().unwrap_or(1));
     }
+    Ok(())
+}
+
+#[derive(Debug, clap::Args)]
+/// Save a recovery point of an installation.
+pub(crate) struct BackupArgs {
+    #[command(flatten)]
+    pub(crate) profile: crate::InstallationArgs,
+    /// New or empty folder that receives the backup.
+    pub(crate) destination: PathBuf,
+    /// Print the result as text or JSON.
+    #[arg(long, value_enum, default_value_t)]
+    pub(crate) format: OutputFormat,
+}
+
+#[derive(Debug, clap::Args)]
+/// Put a backup into an installation folder.
+pub(crate) struct RestoreArgs {
+    #[command(flatten)]
+    pub(crate) profile: crate::InstallationArgs,
+    /// Folder a `trellis-server backup` wrote.
+    pub(crate) source: PathBuf,
+    /// Replace an installation with another ID, and files outside the
+    /// installation folder that exist with other contents.
+    #[arg(long)]
+    pub(crate) force: bool,
+    /// Print the result as text or JSON.
+    #[arg(long, value_enum, default_value_t)]
+    pub(crate) format: OutputFormat,
+}
+
+/// Backs up an installation, running or stopped, while its NATS runs.
+pub(crate) async fn backup(args: BackupArgs) -> miette::Result<()> {
+    let paths = args.profile.paths(|name| std::env::var_os(name))?;
+    let (config, roots) = trellis_runtime::RuntimeConfig::load_from_path_with_defaults(
+        &paths.config,
+        paths.defaults(),
+    )
+    .into_diagnostic()?;
+    let destination = std::path::absolute(&args.destination).into_diagnostic()?;
+    let manifest =
+        trellis_runtime::backup::backup(&config, &paths.config, &roots.data, &destination)
+            .await
+            .into_diagnostic()?;
+    let streams = manifest.streams().count();
+    if args.format == OutputFormat::Json {
+        print_json(&json!({
+            "backup": destination.display().to_string(),
+            "instanceId": manifest.instance_id,
+            "createdAt": manifest.created_at,
+            "files": manifest.entries.len(),
+            "streams": streams,
+        }));
+        return Ok(());
+    }
+    println!(
+        "backed up installation {} into {}: {} files, {streams} of them NATS streams",
+        manifest.instance_id.as_deref().unwrap_or("without an ID"),
+        destination.display(),
+        manifest.entries.len()
+    );
+    Ok(())
+}
+
+/// Restores a backup into a stopped or fresh installation folder.
+pub(crate) fn restore(args: RestoreArgs) -> miette::Result<()> {
+    let paths = args.profile.paths(|name| std::env::var_os(name))?;
+    let manifest =
+        trellis_runtime::backup::restore(&args.source, &paths.config, paths.defaults(), args.force)
+            .into_diagnostic()?;
+    let streams = manifest.streams().count();
+    if args.format == OutputFormat::Json {
+        print_json(&json!({
+            "config": paths.config.display().to_string(),
+            "instanceId": manifest.instance_id,
+            "createdAt": manifest.created_at,
+            "stagedStreams": streams,
+        }));
+        return Ok(());
+    }
+    println!(
+        "restored installation {} as it was at {} into {}",
+        manifest.instance_id.as_deref().unwrap_or("without an ID"),
+        manifest.created_at,
+        paths.config.display()
+    );
+    println!(
+        "Start it against NATS with an empty JetStream store; the first start loads its \
+        {streams} streams."
+    );
     Ok(())
 }
 

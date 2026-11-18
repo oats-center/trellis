@@ -105,6 +105,10 @@ pub enum TrellisTestStage {
     ServiceProvisioning,
     /// Application/agent caller login.
     ClientLogin,
+    /// Saving a recovery point with `trellis-server backup`.
+    Backup,
+    /// Destroying the installation and restoring it from a backup.
+    Restore,
     /// Runtime shutdown and cleanup.
     Shutdown,
 }
@@ -124,6 +128,8 @@ impl TrellisTestStage {
             Self::DeploymentCreateApply => "deployment_create_apply",
             Self::ServiceProvisioning => "service_provisioning",
             Self::ClientLogin => "client_login",
+            Self::Backup => "backup",
+            Self::Restore => "restore",
             Self::Shutdown => "shutdown",
         }
     }

@@ -237,6 +237,16 @@ installation uses). `trellis-server nats <system|trellis|auth> <args>` runs the
 `nats` CLI as that user; `--print` prints its creds instead.
 `trellis-server admin [--config <dir>]` seeds the administrator without
 starting the server or NATS.
+`trellis-server backup <dir>` saves a recovery point of a running or stopped
+installation while its NATS is reachable: its config, `secrets.toml` and the
+files the config names, an online SQLite copy of each database,
+`platform.issuer-keys/`, generated TLS, a snapshot of every JetStream stream in
+Trellis's account except the lease bucket, and a checksummed `manifest.json`.
+`trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
+it into a stopped or fresh installation, refusing one with another ID unless
+`--force`; the next platform start loads the streams into an empty JetStream
+store. Leases only pick which server runs a role: a standby needs the same NATS
+and, for Auth, the same database, issuer keys and `secrets.toml`.
 
 `trellis-server --dev` runs a development installation in
 `<user data>/trellis/dev` (or `--config <dir>`), creating it the first time:
@@ -2190,7 +2200,10 @@ explicit binaries with no fallback downloads. `trust_roots()` and
 `https_client_builder()` trust the runtime's generated CA. `restart()` restarts
 only the server, retaining its broker and durable installation;
 `restart_with_broker()` also restarts NATS, for testing services left running
-across a broker outage; shutdown/cancellation reaps owned children before sandbox cleanup.
+across a broker outage; `backup(&dir)` runs `trellis-server backup` on the
+running installation and `restore(&dir)` deletes the installation and the
+broker's store, restores the backup and starts both again, for recovery drills;
+shutdown/cancellation reaps owned children before sandbox cleanup.
 
 Live user tests use `TrellisTestRuntime::create_user`, explicit
 `grant_user_capabilities(&user, Request::REQUIRED_CAPABILITIES)`, one

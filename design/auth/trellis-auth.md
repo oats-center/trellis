@@ -946,7 +946,8 @@ precommit failure leaves the old issuer active, with at most an unused key file.
 After commit, startup selects the database-current key and fails closed if its
 custody is missing or invalid; it never falls back to the bootstrap key or
 creates replacement custody. Backups must include the database, configured
-bootstrap seed, successor-key directory, and the independent OAuth storage key.
+bootstrap seed, successor-key directory, and the independent OAuth storage key;
+`trellis-server backup` takes all four.
 Rotation does not change that OAuth encryption key, revoke existing logical
 sessions, or invalidate historical evidence signed by a merely retired issuer.
 Accepted API catalogs outlive the key that signed them, so the same transaction
@@ -1240,7 +1241,9 @@ losing it, stops its work and stands by, trying again each renewal interval,
 and starts the work again once the lease is free. The process's other roles and its listener keep
 running. A lease that another owner holds is waited out rather than treated as
 fatal, so a second process for the same role is a standby, and ownership never
-ends a process.
+ends a process. A lease moves no data: a standby can run Auth only with the
+same broker, platform database, `.issuer-keys` folder and `secrets.toml`,
+shared or restored from a backup (see `tooling/trellis-cli.md#recovery`).
 
 In such a process the platform role starts first; the others start once it
 runs or stands by. The listener belongs to the process and accepts connections

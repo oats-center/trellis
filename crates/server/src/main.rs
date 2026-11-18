@@ -79,6 +79,13 @@ enum OperationArgs {
     /// NATS: make an operator and cluster, or run the `nats` CLI as one of
     /// the installation's users.
     Nats(commands::NatsArgs),
+    /// Save a recovery point of the installation, running or stopped: its
+    /// files and keys, a consistent copy of each database, and a snapshot of
+    /// each NATS stream.
+    Backup(commands::BackupArgs),
+    /// Put a backup into a fresh or stopped installation folder. Its next
+    /// start loads the NATS streams into an empty JetStream store.
+    Restore(commands::RestoreArgs),
     /// Replace this binary with the newest trellis-server release for this
     /// platform.
     Upgrade(UpgradeArgs),
@@ -324,6 +331,8 @@ impl StartupPolicy {
                 OperationArgs::Tls(_)
                 | OperationArgs::Nats(_)
                 | OperationArgs::Config(_)
+                | OperationArgs::Backup(_)
+                | OperationArgs::Restore(_)
                 | OperationArgs::Upgrade(_),
             ) => {
                 return Err(miette!(
@@ -834,6 +843,15 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
     if policy.operation == Operation::Run {
         config.validate_for_mode(policy.mode).into_diagnostic()?;
     }
+    // A restored installation's streams load before anything uses JetStream.
+    if policy.operation == Operation::Run
+        && matches!(policy.mode, RuntimeMode::All | RuntimeMode::Platform)
+        && trellis_runtime::backup::apply_staged_restore(&config, &paths.data)
+            .await
+            .into_diagnostic()?
+    {
+        info!("loaded the restored NATS streams");
+    }
     if let Some(bootstrap) = policy.bootstrap_admin.as_ref() {
         let password =
             resolve_bootstrap_password(bootstrap.password.as_deref(), bootstrap.password_stdin)?;
@@ -950,7 +968,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
 #[tokio::main]
 async fn main() -> miette::Result<()> {
     let args = Args::parse();
-    // Generating a bundle and renewing certificates need no server policy.
+    // These commands need no server policy.
     match args.operation {
         Some(OperationArgs::Config(commands::ConfigSubcommand::Example)) => {
             print!("{}", commands::CONFIG_EXAMPLE);
@@ -958,6 +976,8 @@ async fn main() -> miette::Result<()> {
         }
         Some(OperationArgs::Tls(command)) => return commands::tls(command),
         Some(OperationArgs::Nats(nats)) => return commands::nats(nats),
+        Some(OperationArgs::Backup(backup)) => return commands::backup(backup).await,
+        Some(OperationArgs::Restore(restore)) => return commands::restore(restore),
         Some(OperationArgs::Upgrade(upgrade_args)) => return upgrade(&upgrade_args),
         _ => {}
     }

@@ -231,6 +231,16 @@ installation uses). `trellis-server nats <system|trellis|auth> <args>` runs the
 `nats` CLI as that user; `--print` prints its creds instead.
 `trellis-server admin [--config <dir>]` seeds the administrator without
 starting the server or NATS.
+`trellis-server backup <dir>` saves a recovery point of a running or stopped
+installation while its NATS is reachable: its config, `secrets.toml` and the
+files the config names, an online SQLite copy of each database,
+`platform.issuer-keys/`, generated TLS, a snapshot of every JetStream stream in
+Trellis's account except the lease bucket, and a checksummed `manifest.json`.
+`trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
+it into a stopped or fresh installation, refusing one with another ID unless
+`--force`; the next platform start loads the streams into an empty JetStream
+store. Leases only pick which server runs a role: a standby needs the same NATS
+and, for Auth, the same database, issuer keys and `secrets.toml`.
 
 `trellis-server --dev` runs a development installation in
 `<user data>/trellis/dev` (or `--config <dir>`), creating it the first time:
