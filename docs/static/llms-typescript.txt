@@ -28,7 +28,16 @@ declare a direct `trellis` source package dependency containing
 
 Import `apis` and `participants` from that one ordinary local package, for
 example `import { participants } from "orders-trellis"` and the generated
-participant export. There are no per-API or participant packages. Output is
+participant export. There are no per-API or participant packages. To import
+one entry without the root, use its subpath, named as in the root namespace:
+`orders-trellis/apis/<Api>` (exports `API`, `API_DIGEST`, action types and
+declared errors), `orders-trellis/participants/<Participant>` (exports
+`participant`), `orders-trellis/apps/<App>` (exports `request`), and
+`orders-trellis/types`. For example
+`import { API } from "orders-trellis/apis/orders"`. A browser app that imports
+only APIs or app requests this way bundles no participant descriptors or
+`.trellis` source; package evidence is attached only to participants and to app
+requests that declare settings. Output is
 executable ESM JavaScript plus declarations and `package.json`, at the source
 package version, depending on the published runtime matching the CLI. No
 consumer transpiler or runtime-path setting is required. Configure ordinary npm

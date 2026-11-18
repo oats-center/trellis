@@ -103,7 +103,18 @@ never rewrite stored bytes. Store remains raw object bytes.
 
 Each selected language receives one ordinary generated package with APIs,
 participants, types, codecs, and descriptors. Generated packages need neither
-the compiler nor CLI at runtime. Clients connect through their generated
+the compiler nor CLI at runtime.
+
+A generated TypeScript package keeps its root export (`apis`, `participants`,
+`apps`, and `types` namespaces) and also exports one subpath per entry, named
+the same way as the root namespace member: `<package>/apis/<Api>`,
+`<package>/participants/<Participant>`, `<package>/apps/<App>`, and
+`<package>/types`. Each has matching declarations. API descriptors carry no
+package evidence. The build's evidence (the canonical source of its
+dependency closure) lives once, in a private module that is not exported,
+and only the descriptors that submit it import it: participants (a service's
+self-submitted update and a device's activation) and app requests that declare
+settings. Importing an API alone therefore pulls in no `.trellis` source. Clients connect through their generated
 participant facade; assignments, routes, exact grants, resources, and signed
 contexts are resolved by Trellis rather than supplied as bootstrap assertions.
 

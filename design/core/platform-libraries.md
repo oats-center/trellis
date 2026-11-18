@@ -201,7 +201,10 @@ Rules:
 Each selected language produces one ordinary local package containing owned
 APIs, exact locked dependencies, and participants. TypeScript exposes `apis` and
 `participants` from its executable ESM entrypoint, with declarations alongside
-the JavaScript. Rust exposes the same namespaces in one path-dependency crate.
+the JavaScript, and exports each API, participant, and app request at its own
+subpath of the same package (see
+[trellis-api-participants.md](../contracts/trellis-api-participants.md)). Rust
+exposes the same namespaces in one path-dependency crate.
 
 Author API and participant declarations in native IDL, including selected `use`
 actions. Do not build participant metadata with TypeScript arrays. There are no
