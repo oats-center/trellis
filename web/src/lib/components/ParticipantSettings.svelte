@@ -10,22 +10,33 @@
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
-  import { asSchema, definitionsOf, resolve } from "$lib/console/schema.ts";
+  import {
+    freeSettings,
+    isTextSetting,
+    parseSetting,
+    settingTypes,
+    type FreeSetting,
+  } from "$lib/console/settings.ts";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
+  import FreeSettingRows from "$lib/components/FreeSettingRows.svelte";
   import Notice from "$lib/components/Notice.svelte";
-  import Icon from "$lib/components/Icon.svelte";
+  import SettingInput from "$lib/components/SettingInput.svelte";
 
   type View = apis.auth.ConfigGetOutput;
   type Field = View["fields"][number];
+  type Unused = View["unused"][number];
   type Revision = apis.auth.ConfigRevisionsListOutput["items"][number];
 
-  // Settings a service or device declares, for the deployment or one of its
-  // instances' overrides.
-  // A service or device deployment, or an app's registered client.
+  // Settings for a service or device deployment or one of its instances'
+  // overrides, for a service added without its IDL, or for an app's
+  // registered client. Settings can be added by name for fields no known
+  // build declares; each build uses the ones it declares.
   type Props = {
     deploymentId?: string;
     clientId?: string;
+    /** A service added without its IDL, before it is approved. */
+    claimId?: string;
     /** The instance whose overrides are shown; empty for every instance. */
     instanceId?: string;
     /** Names to show for instances, by instance ID, instead of their titles. */
@@ -36,6 +47,7 @@
   let {
     deploymentId,
     clientId,
+    claimId,
     instanceId = $bindable(""),
     instanceNames,
     available = $bindable(false),
@@ -55,6 +67,8 @@
   // What the administrator typed for the loaded target, by field name.
   // Untouched fields are absent; switching targets discards them.
   let drafts = $state<Record<string, string>>({});
+  // Settings added by name, saved with the drafts.
+  let added = $state<FreeSetting[]>([]);
   // Secrets typed here that the administrator chose to see; a saved secret is
   // never sent back, so only a draft can be shown. A choice lasts only as long
   // as its draft: the next value typed for that field starts masked.
@@ -65,31 +79,39 @@
   let confirmationModal: ConfirmationModal | undefined = $state();
 
   const target = $derived(
-    clientId
-      ? { clientId }
-      : { deploymentId, ...(instanceId ? { instanceId } : {}) },
+    claimId
+      ? { claimId }
+      : clientId
+        ? { clientId }
+        : { deploymentId, ...(instanceId ? { instanceId } : {}) },
   );
-  const key = $derived(`${clientId ?? deploymentId}:${instanceId}`);
+  const key = $derived(`${claimId ?? clientId ?? deploymentId}:${instanceId}`);
   // The shown settings belong to what the selector names.
   const ready = $derived(view !== null && loadedKey === key);
   const loadedInstanceId = $derived(view?.target.instanceId);
   const editable = $derived(canPerform(authority.authority, "configSet"));
-  const changed = $derived(Object.keys(drafts).length > 0);
-  // Instances still running restart-only values from an earlier save.
-  const behind = $derived.by(() => {
-    const current = view;
-    if (!current?.fields.some((field) => field.restart)) return [];
-    return current.instances.filter((instance) =>
-      loadedInstanceId
-        ? instance.connectedRevision !== current.deploymentRevision ||
-          instance.connectedInstanceRevision !== current.revision
-        : instance.connectedRevision !== current.revision,
-    );
-  });
+  const changed = $derived(
+    Object.keys(drafts).length > 0 || added.some((row) => row.name.trim()),
+  );
+  // Apps show settings only once they declare some or have some saved; a
+  // service or device can always take settings by name.
+  const shown = $derived(
+    view !== null &&
+      (view.fields.length > 0 ||
+        view.unused.length > 0 ||
+        instanceId !== "" ||
+        (editable && !clientId)),
+  );
+  // Instances whose own build would read different restart-only values if
+  // it connected now.
+  const behind = $derived(
+    (view?.instances ?? []).filter((instance) => instance.restartPending),
+  );
 
   $effect(() => {
     scope.setKey(key);
     drafts = {};
+    added = [];
     revealed = {};
     void load();
   });
@@ -110,7 +132,7 @@
       loadedKey = loading;
       if (!input.target.instanceId) {
         instances = loaded.instances;
-        available = loaded.fields.length > 0;
+        available = loaded.fields.length > 0 || loaded.unused.length > 0;
       }
       revisions = history.items;
       error = null;
@@ -121,33 +143,10 @@
     }
   }
 
-  // The JSON types a field's value may take.
-  function types(field: Field): unknown[] {
-    const root = asSchema(field.schema) ?? {};
-    const defs = definitionsOf(root);
-    const schema = resolve(root, defs);
-    const options = Array.isArray(schema.anyOf)
-      ? schema.anyOf.flatMap((option) => {
-          const node = asSchema(option);
-          return node ? [resolve(node, defs)] : [];
-        })
-      : [schema];
-    return options.flatMap((option) =>
-      Array.isArray(option.type) ? option.type : [option.type],
-    );
-  }
-
-  // Text settings, nullable ones included, are typed as text; anything else
-  // as JSON.
-  function isText(field: Field): boolean {
-    const kinds = types(field).filter((kind) => kind !== "null");
-    return kinds.length === 1 && kinds[0] === "string";
-  }
-
-  function shown(field: Field): string {
+  function shownValue(field: Field): string {
     if (field.value === undefined) return "";
-    if (field.value === null && isText(field)) return "";
-    return typeof field.value === "string" && isText(field)
+    if (field.value === null && isTextSetting(field)) return "";
+    return typeof field.value === "string" && isTextSetting(field)
       ? field.value
       : JSON.stringify(field.value);
   }
@@ -172,18 +171,17 @@
     }
   }
 
-  function parse(field: Field, text: string): JsonValue {
-    if (isText(field)) return text;
-    try {
-      return JSON.parse(text) as JsonValue;
-    } catch {
-      throw new Error(`${field.title} must be JSON, such as 9090 or true.`);
-    }
+  function unusedValue(item: Unused): string {
+    if (item.secret) return "Secret, set";
+    return typeof item.value === "string"
+      ? item.value
+      : JSON.stringify(item.value);
   }
 
   // Runs a change captured for `intentKey`. Its outcome is shown only while
   // the selector still names that target. On success the drafts of `settled`
-  // fields go, or every draft when it is omitted; the rest stay pending.
+  // fields go, or every draft and added row when it is omitted; the rest stay
+  // pending.
   async function mutate(
     intentKey: string,
     run: () => Promise<View>,
@@ -212,6 +210,7 @@
             ),
           )
         : {};
+      if (!settled) added = [];
       notice = done;
       await load();
     } catch (cause) {
@@ -243,15 +242,18 @@
   async function save(): Promise<void> {
     if (!ready || !view) return;
     const current = view;
-    const values: Record<string, JsonValue> = {};
-    const secrets: Record<string, JsonValue> = {};
+    let values: Record<string, JsonValue>;
+    let secrets: Record<string, JsonValue>;
     try {
+      ({ values, secrets } = freeSettings(added));
       for (const [name, text] of Object.entries(drafts)) {
         const field = current.fields.find((item) => item.name === name);
         if (!field) continue;
+        if (name in values || name in secrets)
+          throw new Error(`${field.title} is also added by name below.`);
         if (field.secret) {
-          if (text !== "") secrets[name] = parse(field, text);
-        } else values[name] = parse(field, text);
+          if (text !== "") secrets[name] = parseSetting(field, text);
+        } else values[name] = parseSetting(field, text);
       }
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
@@ -286,13 +288,14 @@
   // applies; null stores null here, overriding them. Only this field's draft
   // is dropped; other unsaved edits stay pending.
   async function store(
-    field: Field,
+    field: { name: string; secret: boolean; restart?: boolean },
     change: "unset" | "null",
     done: string,
   ): Promise<void> {
     if (!ready || !view) return;
     const current = view;
-    if (!(await confirmRestart([field]))) return;
+    const declared = current.fields.find((item) => item.name === field.name);
+    if (declared && !(await confirmRestart([declared]))) return;
     const revision = current.revision;
     const nulled = { [field.name]: null };
     await mutate(
@@ -369,7 +372,7 @@
   onMount(() => () => scope.dispose());
 </script>
 
-{#if view && (view.fields.length > 0 || instanceId)}
+{#if view && shown}
   <section
     id="settings"
     class="trellis-section space-y-4 p-5"
@@ -402,6 +405,10 @@
         {behind.length === 1 ? "it" : "them"} to apply settings marked “Applies after
         restart”.</Notice
       >{/if}
+    {#if !view.declared}<p class="text-sm text-base-content/65">
+        Trellis doesn't have its IDL yet. Add settings by name; the service
+        checks them when it connects.
+      </p>{/if}
     <form
       class="trellis-form"
       onsubmit={(event) => {
@@ -410,76 +417,30 @@
       }}
     >
       {#each view.fields as field (field.name)}
-        <div class="trellis-field">
-          <span class="flex flex-wrap items-center gap-2">
-            <label class="trellis-field-label" for={`setting-${field.name}`}
-              >{field.title}</label
-            >
-            {#if field.required}<span
-                class={[
-                  "badge badge-sm",
-                  field.source === "unset" ? "badge-warning" : "badge-ghost",
-                ]}>Required</span
-              >{/if}
-            {#if field.secret}<span
-                class="inline-flex items-center gap-1 text-xs text-base-content/60"
-                ><Icon name="lock" size={12} />Secret</span
-              >{/if}
-            {#if field.restart}<span class="badge badge-neutral badge-sm"
-                >Applies after restart</span
-              >{/if}
-            <span class="text-xs text-base-content/60"
+        <SettingInput
+          {field}
+          id={`setting-${field.name}`}
+          value={drafts[field.name] ?? (field.secret ? "" : shownValue(field))}
+          placeholder={placeholder(field)}
+          disabled={!editable || busy || !ready}
+          missing={field.source === "unset"}
+          revealed={revealed[field.name] ?? false}
+          oninput={(text) => {
+            drafts = { ...drafts, [field.name]: text };
+            // Emptying the field ends the draft that was shown.
+            if (!text && revealed[field.name]) {
+              revealed = { ...revealed, [field.name]: false };
+            }
+          }}
+          onreveal={() => {
+            revealed = { ...revealed, [field.name]: !revealed[field.name] };
+          }}
+        >
+          {#snippet status()}<span class="text-xs text-base-content/60"
               >{sourceLabel(field)}</span
-            >
-          </span>
-          <span class="flex gap-2">
-            <label
-              class={[
-                "input w-full",
-                !isText(field) && "font-mono",
-                (!editable || busy || !ready) && "input-disabled",
-              ]}
-              ><input
-                id={`setting-${field.name}`}
-                class="grow"
-                type={field.secret &&
-                !(revealed[field.name] && drafts[field.name])
-                  ? "password"
-                  : "text"}
-                autocomplete="off"
-                disabled={!editable || busy || !ready}
-                placeholder={placeholder(field)}
-                value={drafts[field.name] ?? (field.secret ? "" : shown(field))}
-                oninput={(event) => {
-                  const text = event.currentTarget.value;
-                  drafts = { ...drafts, [field.name]: text };
-                  // Emptying the field ends the draft that was shown.
-                  if (!text && revealed[field.name]) {
-                    revealed = { ...revealed, [field.name]: false };
-                  }
-                }}
-              />{#if field.secret}<button
-                  type="button"
-                  class="btn btn-ghost btn-xs btn-square -mr-2"
-                  aria-label={`${revealed[field.name] ? "Hide" : "Show"} ${field.title}`}
-                  aria-pressed={revealed[field.name] ?? false}
-                  disabled={!drafts[field.name]}
-                  title={drafts[field.name]
-                    ? undefined
-                    : "A saved secret is never shown; type a new one to see it."}
-                  onclick={() => {
-                    revealed = {
-                      ...revealed,
-                      [field.name]: !revealed[field.name],
-                    };
-                  }}
-                  ><Icon
-                    name={revealed[field.name] ? "eyeOff" : "eye"}
-                    size={16}
-                  /></button
-                >{/if}</label
-            >
-            {#if editable && types(field).includes("null") && (field.secret ? field.isSet : field.value !== null)}<button
+            >{/snippet}
+          {#snippet actions()}
+            {#if editable && settingTypes(field).includes("null") && (field.secret ? field.isSet : field.value !== null)}<button
                 type="button"
                 class="btn btn-ghost btn-sm whitespace-nowrap"
                 disabled={busy || !ready}
@@ -504,14 +465,65 @@
                       : `${field.title} reset.`,
                   )}>{loadedInstanceId ? "Use service-wide" : "Reset"}</button
               >{/if}
-          </span>
-          <span class="trellis-field-help">{field.description}</span>
-          {#if field.invalid}<span class="text-xs text-warning"
-              >The saved value no longer fits this build and is ignored.</span
-            >{/if}
-        </div>
+          {/snippet}
+          {#snippet note()}
+            {#if field.invalid}<details class="text-xs text-warning">
+                <summary class="cursor-pointer"
+                  >{field.source === "unset"
+                    ? "The saved value doesn't fit this build, so it waits for a new one."
+                    : "The saved value doesn't fit this build, so it uses the one before it."}</summary
+                >
+                <p class="mt-1 text-base-content/70">{field.invalid}</p>
+              </details>{/if}
+          {/snippet}
+        </SettingInput>
       {/each}
-      {#if editable}<div class="trellis-action-row">
+      {#if view.unused.length > 0}
+        <div
+          class="trellis-field"
+          role="group"
+          aria-label="Settings this build doesn't use"
+        >
+          <span class="trellis-field-label"
+            >{view.declared
+              ? "Not used by this build"
+              : "Saved for when it connects"}</span
+          >
+          <ul class="divide-y divide-base-300 text-sm">
+            {#each view.unused as item (item.name)}
+              <li class="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+                <span class="font-mono">{item.name}</span>
+                <span class="min-w-0 flex-1 truncate text-base-content/70"
+                  >{unusedValue(item)}</span
+                >
+                {#if item.source === "deployment" && loadedInstanceId}<span
+                    class="text-xs text-base-content/60"
+                    >Same as every instance</span
+                  >{/if}
+                {#if editable && (!loadedInstanceId || item.source === "instance")}<button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    disabled={busy || !ready}
+                    aria-label={`Remove ${item.name}`}
+                    onclick={() =>
+                      void store(item, "unset", `${item.name} removed.`)}
+                    >Remove</button
+                  >{/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+      {#if editable}
+        <div class="trellis-field">
+          <span class="trellis-field-label">Add by name</span>
+          <FreeSettingRows
+            bind:rows={added}
+            allowSecrets={!clientId}
+            disabled={busy || !ready}
+          />
+        </div>
+        <div class="trellis-action-row">
           <button
             class="btn btn-primary"
             type="submit"

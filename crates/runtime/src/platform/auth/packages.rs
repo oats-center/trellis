@@ -440,15 +440,28 @@ pub(super) fn resolve(
         .root_package()
         .participants()
         .values()
-        .map(|participant| AuthResolvedParticipant {
-            participant_id: participant.identity().as_str().to_owned(),
-            kind: match participant.kind() {
-                ParticipantKind::Service => AuthDeploymentKind::Service,
-                ParticipantKind::Device => AuthDeploymentKind::Device,
-            },
-            extra: Default::default(),
+        .map(|participant| {
+            Ok(AuthResolvedParticipant {
+                participant_id: participant.identity().as_str().to_owned(),
+                kind: match participant.kind() {
+                    ParticipantKind::Service => AuthDeploymentKind::Service,
+                    ParticipantKind::Device => AuthDeploymentKind::Device,
+                },
+                // So settings can be entered with the right types before the
+                // deployment exists.
+                config: participant
+                    .config()
+                    .iter()
+                    .map(|(name, field)| {
+                        Ok(serde_json::from_value(serde_json::Value::Object(
+                            super::config::declaration(&graph, name, field)?,
+                        ))?)
+                    })
+                    .collect::<Result<_, AuthError>>()?,
+                extra: Default::default(),
+            })
         })
-        .collect();
+        .collect::<Result<_, AuthError>>()?;
     Ok(AuthPackageResolveResponse {
         package_evidence: Some(serde_json::from_value(serde_json::to_value(evidence)?)?),
         participants,

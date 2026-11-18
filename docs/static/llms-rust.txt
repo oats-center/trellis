@@ -320,8 +320,9 @@ and devices through the generated client's `config()`; both return
 `trellis_rs::service::ConfigHandle<Config>`. `current()` decodes the values in
 effect, `revision()` names the deployment and instance revisions, and
 `changed().await` waits for the next live change. Restart-only fields keep their
-connect-time value. `connect` returns only once every required field has a
-value. In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
+connect-time value, and values for fields the build doesn't declare, or that
+don't fit its types, never reach `changed()`. `connect` returns only once every
+required field has a value that fits. In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
 stores values through `Auth.Config.Set`.
 
 ### Transfers

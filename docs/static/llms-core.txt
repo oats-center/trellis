@@ -1156,16 +1156,26 @@ A field without `default` is required, except one whose type allows null
 (directly or through an alias), which reads null until set; a default must be
 a value Auth would accept for the field's type; `secret` marks a write-only value and is allowed only in
 services, and an optional secret is declared `type string | null; secret;`; `restart` marks a value read only at connect. Auth
-checks every write against the installed build's types. At connect the SDK
-reads the values before handlers start; while a required value is missing the
-participant prints a Console link and QR code and waits. Live fields follow
+stores a value for any lowerCamelCase field name, declared or not, so values
+can be set before a service's IDL is known (on the claim of a service added
+without its IDL, which approval carries to the new deployment) and for fields
+only the next build declares while the current build runs. Each build checks
+the values when it reads them: it ignores fields it doesn't declare (shown as
+not used by this build), and a stored value that doesn't fit its type, or a
+secret stored as a plain setting or the other way round, is reported invalid
+while that build keeps the value stored before it, or the default. Only a
+plain value for a field the installed build declares secret is refused. At
+connect the SDK reads the values before handlers start; while a required value
+is missing or doesn't fit, the participant prints which, a Console link, and a
+QR code, and waits until it is fixed. Live fields follow
 changes without a restart, a `restart` field keeps its connect-time value, and
 per-instance overrides take precedence over the deployment's values.
 Administrators use `trellis svc <ID> config` (`set FIELD=VALUE` or
 `set --null FIELD`,
 `set-secret FIELD --from-file PATH` or `--null`, `unset`, `history`, `rollback`,
 `delete-revision`, `--instance`), `trellis dev <ID> config` for device types,
-or the Console's Settings section; the RPCs are `Auth.Config.*` under
+or the Console's Settings section. For a field the build doesn't declare,
+`set` takes JSON when the value parses as JSON and text otherwise. The RPCs are `Auth.Config.*` under
 `config.read`, `config.manage`, and `config.manageSecrets`. Secrets are sealed
 at rest and never returned to administrators. Tests set values through the
 same RPCs, never through environment variables. App settings are public to

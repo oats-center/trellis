@@ -29,6 +29,7 @@ use super::{
 pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
     provider: &mut Provider<'_, P>,
     store: Arc<SqliteAuthorizationStore>,
+    oauth: Arc<super::OAuthEngine>,
     operational: async_nats::Client,
 ) {
     let submit_store = Arc::clone(&store);
@@ -189,6 +190,7 @@ pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
     });
     provider.register_service_updates_decide(move |context, input| {
         let store = Arc::clone(&store);
+        let oauth = Arc::clone(&oauth);
         let operational = operational.clone();
         async move {
             let identity = mutation(
@@ -200,9 +202,11 @@ pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
             .map_err(rpc_error)?;
             let now = crate::clock::unix_now();
             let saved = Arc::clone(&store);
-            let response = blocking(move || decide(&saved, &identity, &input, now))
-                .await
-                .map_err(rpc_error)?;
+            let engine = Arc::clone(&oauth);
+            let response =
+                blocking(move || decide(&saved, engine.server.store(), &identity, &input, now))
+                    .await
+                    .map_err(rpc_error)?;
             materialize(&store, &operational, &response.update, now).await?;
             Ok(response)
         }
@@ -1050,6 +1054,7 @@ fn selected_capabilities(
 
 fn decide(
     store: &SqliteAuthorizationStore,
+    storage: &super::oauth::storage::OAuthStorage,
     identity: &Mutation,
     input: &AuthServiceUpdateDecideRequest,
     now: i64,
@@ -1108,6 +1113,7 @@ fn decide(
                 approve_claim(
                     connection,
                     store,
+                    storage,
                     identity,
                     input,
                     &deployment,
@@ -1396,6 +1402,7 @@ fn submit_to_claim(
 fn approve_claim(
     connection: &Connection,
     store: &SqliteAuthorizationStore,
+    storage: &super::oauth::storage::OAuthStorage,
     identity: &Mutation,
     input: &AuthServiceUpdateDecideRequest,
     claim: &str,
@@ -1462,6 +1469,9 @@ fn approve_claim(
         WHERE claim_id=?1",
         params![claim, deployment],
     )?;
+    // Settings set while it waited are the deployment's, so the service
+    // starts with them when it connects as the new instance.
+    super::config::adopt_claim(connection, storage, claim, &deployment)?;
     connection.execute(
         "UPDATE auth_service_updates SET deployment_id=?2,instance_id=?3,state='applied',\
         decided_at=?4,decided_by=?5,revision=revision+1 WHERE update_id=?1",
@@ -1592,6 +1602,11 @@ pub(super) fn remove_claim(
                 "UPDATE auth_service_updates SET state='rejected',decided_at=?2,decided_by=?3,\
             revision=revision+1 WHERE deployment_id=?1 AND state='pending'",
                 params![claim, now, identity.actor],
+            )?;
+            // Nothing will ever read the settings stored for it, secrets included.
+            connection.execute(
+                "DELETE FROM auth_config_revisions WHERE claim_id=?1",
+                [&claim],
             )?;
             SqliteAuthorizationStore::policy_changed(
                 connection,

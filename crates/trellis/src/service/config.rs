@@ -171,11 +171,20 @@ pub(crate) async fn load(
                 revision: revision_of(&response),
             });
         }
-        if shown != missing {
+        // A saved value that doesn't fit this build counts as missing; say why.
+        let reasons = response["missing"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|name| response["invalid"][name.as_str()?].as_str())
+            .map(|reason| format!("\n  {reason}"))
+            .collect::<String>();
+        if shown != format!("{missing}{reasons}") {
             let url = response["configUrl"].as_str().map(str::to_owned);
             tracing::warn!(
                 participant,
                 missing,
+                invalid = reasons.trim(),
                 config_url = url,
                 "Waiting for an administrator to set required settings"
             );
@@ -189,14 +198,16 @@ pub(crate) async fn load(
                         })
                         .unwrap_or_default();
                     eprintln!(
-                        "\n{participant} needs these settings before it starts: {missing}\nSet them at {url}\nor scan:\n{qr}"
+                        "\n{participant} needs these settings before it starts: {missing}{reasons}\nSet them at {url}\nor scan:\n{qr}"
                     );
                 }
                 None => {
-                    eprintln!("\n{participant} needs these settings before it starts: {missing}")
+                    eprintln!(
+                        "\n{participant} needs these settings before it starts: {missing}{reasons}"
+                    )
                 }
             }
-            shown = missing;
+            shown = format!("{missing}{reasons}");
         }
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(Duration::from_secs(15));

@@ -367,20 +367,27 @@ export async function loadConfig<
         );
       }
       const missing = loaded.missing.join(", ");
-      if (shown !== missing) {
-        shown = missing;
+      // A saved value that doesn't fit this build counts as missing; say why.
+      const reasons = loaded.missing.flatMap((name) => {
+        const reason = loaded.invalid[name];
+        return reason === undefined ? [] : [reason];
+      });
+      const reported = `${missing}${reasons.map((reason) => `\n  ${reason}`).join("")}`;
+      if (shown !== reported) {
+        shown = reported;
         args.log.warn(
           {
             participant: args.participantId,
             missing: loaded.missing,
+            invalid: reasons,
             configUrl: loaded.configUrl,
           },
           "Waiting for an administrator to set required settings",
         );
         console.error(
           loaded.configUrl === undefined
-            ? `\n${args.participantId} needs these settings before it starts: ${missing}`
-            : `\n${args.participantId} needs these settings before it starts: ${missing}\nSet them at ${loaded.configUrl}\nor scan:\n${renderUnicodeCompact(loaded.configUrl)}`,
+            ? `\n${args.participantId} needs these settings before it starts: ${reported}`
+            : `\n${args.participantId} needs these settings before it starts: ${reported}\nSet them at ${loaded.configUrl}\nor scan:\n${renderUnicodeCompact(loaded.configUrl)}`,
         );
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
