@@ -10,7 +10,32 @@ you've run `trellis login`.
 ## Register a development client
 
 An administrator with `clients.manage` can register a browser app running on
-`localhost` without installing an app participant for it. Save the request as
+`localhost` without installing an app participant for it:
+
+```sh
+trellis clients add
+```
+
+The command asks for each setting in turn: the app's client ID, whether it's a
+browser or native app, its title, whether it's a development app, its redirect
+URIs, the capabilities it gets without asking, and whether users can sign up
+through it. It checks each redirect URI as you type it, shows a summary, and
+saves once you confirm. Every answer is also a flag, so a script can register
+the same app without a terminal:
+
+```sh
+trellis clients add my-local-app --kind browser --title "My local app" \
+  --description "Local browser development" --development \
+  --redirect-uri http://localhost:5173/login
+```
+
+Without a terminal, or with `--no-input`, a missing required flag fails at once
+and names every flag still needed; nothing is registered. To change a client
+later, `trellis clients edit my-local-app` asks the same questions starting from
+its current values, and `clients edit my-local-app --title "New title"` changes
+only what you pass.
+
+A script can also send the generated request as JSON. Save it as
 `client.json`:
 
 ```json
@@ -28,7 +53,7 @@ An administrator with `clients.manage` can register a browser app running on
 ```
 
 That's an `AuthOAuthClientPutRequest`. Use a new idempotency key for each
-distinct change. Then:
+distinct change. Then (`-` reads the request from standard input):
 
 ```sh
 trellis clients put client.json
@@ -37,8 +62,8 @@ trellis clients list
 ```
 
 Redirect ports and origins have to match exactly. Trellis never calls back to
-`localhost` itself; only the browser does. To update a client, send the
-revision `get` returned. `disable` and `delete` take `--expected-revision`, so
+`localhost` itself; only the browser does. To update a client with `put`, send
+the revision `get` returned. `disable` and `delete` take `--expected-revision`, so
 a stale revision fails instead of overwriting another administrator's change.
 The commands print the generated JSON, including the cursor for
 `list --cursor`.
@@ -72,9 +97,22 @@ left out when the package has only one.
 compatible API that isn't already accepted at that definition. It needs
 `apis.accept`, and it only succeeds against the revision it reviewed.
 
-An incompatible replacement goes through
-`trellis apis force-replace replacement.json` with an
-`AuthApiForceReplaceRequest`. That needs `apis.forceReplace`, and the request
-has to set both `acknowledgeBreakage` and `acknowledgeConsentImpact`, plus any
-role or mapping edits the review asked for. `trellis apis list` and
-`trellis apis get <api-id>` show what's currently accepted.
+An incompatible replacement needs `apis.forceReplace`:
+
+```sh
+trellis apis force-replace --source <project-root> --participant <package>.<Name>
+```
+
+It reviews each accepted API the participant changes, shows the review, and
+asks you to accept that callers may break and that what users agreed to may now
+mean something different. Leave out `--source` or `--participant` and it asks
+for them too. A script passes `--acknowledge-breakage` and
+`--acknowledge-consent-impact` instead; without a terminal, leaving either out
+fails before anything is replaced.
+
+When the review asks for role or mapping edits, send an
+`AuthApiForceReplaceRequest` file instead:
+`trellis apis force-replace replacement.json`. The request sets both
+`acknowledgeBreakage` and `acknowledgeConsentImpact` along with the edits.
+`trellis apis list` and `trellis apis get <api-id>` show what's currently
+accepted.

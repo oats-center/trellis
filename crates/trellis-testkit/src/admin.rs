@@ -82,6 +82,7 @@ pub(crate) async fn login_client(
         device.user_code(),
         username,
         password,
+        false,
     )
     .await?;
     let session = device
@@ -98,6 +99,7 @@ pub(crate) async fn approve_device(
     user_code: &str,
     username: &str,
     password: &str,
+    optional_administration: bool,
 ) -> Result<(), TrellisTestError> {
     let stage = TrellisTestStage::ClientLogin;
     let http = crate::runtime::https_client_builder(trust_roots)
@@ -224,8 +226,12 @@ pub(crate) async fn approve_device(
         if item["available"] != true && item["required"] == true {
             return Err(failure(stage, "required authority unavailable"));
         }
-        // Administration is approved only when the request requires it.
-        if item["available"] == true && (item["administrative"] != true || item["required"] == true)
+        // Administration is approved only when the request requires it,
+        // unless the caller asked for optional administration too.
+        if item["available"] == true
+            && (item["administrative"] != true
+                || item["required"] == true
+                || optional_administration)
         {
             administrative |= item["administrative"] == true;
             form.push((

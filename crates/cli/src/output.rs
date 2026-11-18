@@ -541,10 +541,10 @@ pub fn not_kept(what: &str, advice: &str) {
 
 /// Ask a person to type `identifier` before an irreversible change.
 ///
-/// Without a terminal on stdin there is nobody to ask, so this refuses and
-/// names `flag`, the option that skips the question.
+/// Without a terminal on stdin, or with `--no-input`, there is nobody to ask,
+/// so this refuses and names `flag`, the option that skips the question.
 pub fn confirm_typed(identifier: &str, what: &str, flag: &str) -> miette::Result<()> {
-    if !std::io::stdin().is_terminal() {
+    if !std::io::stdin().is_terminal() || crate::prompt::no_input() {
         return Err(miette::miette!(
             help = format!("Pass {flag} to {what} without being asked."),
             "refusing to {what} {identifier} without confirmation"

@@ -16,6 +16,7 @@ anstream.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 comfy-table.workspace = true
+dialoguer = { version = "0.12.0", default-features = false, features = ["password"] }
 owo-colors.workspace = true
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 serde.workspace = true
@@ -59,6 +60,9 @@ trellis-builtin-contracts = { path = "../builtin-contracts" }
 trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.49" }
 
 [dev-dependencies]
+rexpect = "0.7.1"
+trellis-testkit = { path = "../trellis-testkit" }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
 
 [[bin]]
 name = "trellis"
