@@ -286,3 +286,50 @@ infrastructure state for diagnosis. Preserved workdirs contain credentials and
 must not be published. Setup always registers contract/resource evidence and
 consent policy before timing; backend and OS caches are warm. Workload logs and
 telemetry can affect results, so keep telemetry settings matched across runs.
+
+## Generated input-schema setup
+
+Generated Rust SDKs embed each RPC's input JSON Schema as a string literal, and
+`Router::register_rpc` parses and compiles that schema once when the handler is
+registered. Requests reuse the compiled validator. This was measured on
+2026-11-18 (revision `fc15ec7f`) to decide whether to cache validators by
+schema or share identical literals during generation. Neither change was made.
+
+The measured SDK is the `performance-trellis` crate that `cargo xtask install`
+generates here. It includes the built-in Trellis APIs, so it holds 151 RPC
+descriptors, 111 of them from `trellis.auth`. That is more RPCs than one
+realistic service registers. A throwaway release-build program registered all
+151 on a fresh `Router` with no-op handlers, and separately compiled the same
+151 literals with the router's `jsonschema` options (Draft 2019-09). The host
+was a 32-core Xeon Gold 6426Y under unrelated load (load average about 37), so
+best-of-20 is the figure to use. Medians under that load were roughly 2.5x
+higher.
+
+| Measurement (151 RPCs)                             | Result             |
+| -------------------------------------------------- | ------------------ |
+| First registration in a fresh process (best of 20) | 16.0 ms            |
+| Schema parse and compile alone, fresh process      | 12.7 ms            |
+| Registration, warm (median of 30)                  | 7.3 ms             |
+| Schema compile, warm (median of 30)                | 6.6 ms (parse 0.4) |
+| Compile of the 118 distinct schemas only, warm     | 5.5 ms             |
+| Largest schema (2,420 B), compile                  | 113 µs             |
+
+Compilation is most of registration, but registering every RPC costs 13 to
+16 ms even at this size. A service with a few dozen RPCs spends about 3 ms.
+A cache keyed by schema would skip the 33 repeated compiles, which saves about
+1 ms in this SDK. That is below the 50 ms threshold that would justify caching.
+
+Validating one request against an already compiled schema took 54 ns for the
+benchmark's `Value` input and 118 ns for `Auth.Apis.List`'s page request with a
+cursor and search term. Parsing the same payload from bytes took 100 ns and
+310 ns. Validation is cheaper than decoding the request.
+
+The 151 input-schema literals total 106 KB of the 1.26 MB generated source.
+There are 118 distinct literals (90 KB), so 16 KB are exact repeats. The most
+repeated is the shared auth page-request schema, which appears 11 times. The
+compiler already merges identical string constants. A release binary that
+registers all 151 RPCs contains each distinct schema exactly once: 90 KB of a
+9.5 MB stripped binary (about 1%), with zero bytes of repeats. The rlib also
+contains 90 KB. Sharing a static per resolved input type during generation
+would make the generated source 16 KB smaller and leave the binary the same
+size.
