@@ -428,6 +428,10 @@ pub enum RuntimeError {
     /// Runtime NATS connection failed.
     #[error("runtime NATS connection failed: {0}")]
     Nats(String),
+    /// The broker's JetStream belongs to another installation or platform
+    /// database, or this runtime cannot tell. Nothing was written to it.
+    #[error("refusing this NATS broker: {0}")]
+    BrokerIdentity(String),
     /// An existing runtime-owned stream cannot be changed without changing its identity or
     /// reducing its retained data.
     #[error("incompatible runtime stream {name}: {reason}")]
@@ -833,6 +837,18 @@ pub async fn run_with_stop(
         stop.as_ref().is_some_and(StopHandle::is_stopped)
     })
     .await?;
+    // Nothing is created or changed on the broker, leases and streams
+    // included, until it is known to be this installation's.
+    let stores = RuntimeStores::from_config(&config, options.mode)?;
+    stores.migrate_all()?;
+    if !crate::platform::confirm_broker(&config, &stores, &trellis_nats, || {
+        stop.as_ref().is_some_and(StopHandle::is_stopped)
+    })
+    .await?
+    {
+        tracing::info!("runtime stop requested before startup finished");
+        return Ok(());
+    }
     let owner_id = format!(
         "{}-{}",
         config.instance_name.as_deref().unwrap_or("trellis-runtime"),
@@ -864,7 +880,7 @@ pub async fn run_with_stop(
             process_stop.stop();
         }))
     };
-    // Streams and local stores belong to the process, whichever groups it owns.
+    // Streams belong to the process, whichever groups it owns.
     ExpectedRuntimeResources::for_mode(
         options.mode,
         &config,
@@ -872,8 +888,6 @@ pub async fn run_with_stop(
     )
     .converge_streams(trellis_nats.clone())
     .await?;
-    let stores = RuntimeStores::from_config(&config, options.mode)?;
-    stores.migrate_all()?;
     let listener = crate::bind_http_listener(&config).await?;
     let origin = url::Url::parse(&config.public_origin()).map_err(|error| {
         RuntimeError::Config(crate::ConfigError::InvalidPublicOrigin {

@@ -47,14 +47,36 @@ or local state.
 
 The platform database and its JetStream store form one durable environment. The
 database records resource evidence, while JetStream holds physical consumers,
-keys, objects, and other data that the evidence cannot reconstruct. Trellis
-binds the database to a persistent, non-expiring JetStream identity and verifies
-the pairing before starting the platform. A missing or different identity after
-binding is a startup error, not a reason to recreate resources or treat existing
-evidence as ready. Restoring the matching JetStream store restores the pairing;
-starting a new environment requires fresh platform and JetStream state followed
-by deployment provisioning. This check detects a store swap, not every isolated
-missing resource within the correct store.
+keys, objects, and other data that the evidence cannot reconstruct. The broker
+keeps a persistent, non-expiring identity record, the `TRELLIS_PLATFORM_IDENTITY`
+bucket, holding the installation's instance ID (`installation`) and the
+JetStream identity of the platform database bound to it (`store`).
+
+Every runtime confirms the broker before it writes anything there. It connects,
+reads the record, and only then opens its lease bucket, converges its streams
+or starts a subsystem:
+
+- A role that runs the platform compares both keys with its instance ID and
+  its database's marker. A different installation, a different database, or a
+  missing record after the database was bound refuses startup. On a broker with
+  no record, or one missing a key, it writes what is missing and marks its
+  database bound.
+- A role started apart from the platform has no platform database. It reads the
+  record without writing and compares `installation` with its own instance ID
+  from `secrets.toml`. A different installation refuses startup. While the
+  broker has no record, the role waits, writing nothing, until a platform of its
+  installation binds the broker.
+
+A refusal is a startup error, not a reason to recreate resources or treat
+existing evidence as ready. Restoring the matching JetStream store restores the
+pairing; starting a new environment requires fresh platform and JetStream state
+followed by deployment provisioning. The check detects a broker or store swap,
+not every isolated missing resource within the correct store. A role apart from
+the platform tells installations apart, not two copies of one installation's
+secrets; only the platform's database records which JetStream it was bound to.
+The NATS account update a platform start sends through the system user happens
+before the check, since the runtime needs its accounts to connect at all; only
+a broker whose operator issued the configured signing key accepts it.
 
 ### Platform Boundary
 

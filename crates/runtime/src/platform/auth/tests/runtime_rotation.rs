@@ -10,6 +10,7 @@ use trellis_rs::client::{TrellisClientError, UserConnectOptions};
 
 async fn start_runtime(
     config: &crate::RuntimeConfig,
+    mode: crate::RuntimeMode,
     origin: &str,
     roots: &[PathBuf],
 ) -> (
@@ -19,7 +20,7 @@ async fn start_runtime(
     let stop = crate::shutdown::StopHandle::new();
     let mut runtime = AbortOnDropHandle::new(tokio::spawn(crate::run_with_stop(
         crate::RuntimeOptions {
-            mode: crate::RuntimeMode::All,
+            mode,
             config: config.clone(),
             reset_admin: false,
             nats_override: None,
@@ -203,7 +204,8 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     let oauth_origin = format!("http://127.0.0.1:{}", ports[0]);
     let (config, mut broker) =
         installation(root, &ports, &oauth_origin, "loopback_development", None).await;
-    let (mut stop, mut runtime) = start_runtime(&config, &oauth_origin, &[]).await;
+    let (mut stop, mut runtime) =
+        start_runtime(&config, crate::RuntimeMode::All, &oauth_origin, &[]).await;
     let discovered = discover_native_oauth(&oauth_origin, &[])
         .await
         .unwrap_or_else(|error| panic!("native discovery at {oauth_origin} failed: {error:?}"));
@@ -486,7 +488,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         })
         .await
         .unwrap();
-        (stop, runtime) = start_runtime(&config, &oauth_origin, &[]).await;
+        (stop, runtime) = start_runtime(&config, crate::RuntimeMode::All, &oauth_origin, &[]).await;
         warm.refresh_authorization_context().await.unwrap();
         let warm_renewed = tokio::time::timeout(Duration::from_secs(30), async {
             let mut readiness = tokio::time::interval(Duration::from_millis(100));
@@ -544,7 +546,13 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
         .expect("generated TLS names its CA");
     let origin = format!("https://localhost:{}", ports[0]);
     let issuer = origin.clone();
-    let (stop, mut runtime) = start_runtime(&config, &origin, std::slice::from_ref(&ca)).await;
+    let (stop, mut runtime) = start_runtime(
+        &config,
+        crate::RuntimeMode::All,
+        &origin,
+        std::slice::from_ref(&ca),
+    )
+    .await;
 
     // No CA file is installed: the client accepts the development
     // certificate by its issuer's fingerprint, as a browser user would.
@@ -827,7 +835,7 @@ async fn a_runtime_that_loses_a_lease_stands_by_for_that_work_alone() {
         .expect("an installation configures leases");
     leases.ttl_ms = Some(3_000);
     leases.renew_ms = Some(1_000);
-    let (stop, mut runtime) = start_runtime(&config, &origin, &[]).await;
+    let (stop, mut runtime) = start_runtime(&config, crate::RuntimeMode::All, &origin, &[]).await;
     let http = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(2))
@@ -996,7 +1004,7 @@ async fn a_role_whose_provider_auth_cannot_admit_stands_by_until_it_can() {
         .expect("an installation configures leases");
     leases.ttl_ms = Some(3_000);
     leases.renew_ms = Some(1_000);
-    let (stop, mut runtime) = start_runtime(&config, &origin, &[]).await;
+    let (stop, mut runtime) = start_runtime(&config, crate::RuntimeMode::All, &origin, &[]).await;
     let http = reqwest::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(2))
@@ -1198,6 +1206,207 @@ async fn a_stop_requested_during_startup_ends_the_runtime() {
     drop(reserved);
 }
 
+/// Every stream the Trellis user reaches on a broker: its configuration, its
+/// last sequence, which any write to it advances, and its durable consumers'
+/// configurations.
+async fn broker_inventory(client: &async_nats::Client) -> BTreeMap<String, serde_json::Value> {
+    use futures_util::TryStreamExt as _;
+    let jetstream = async_nats::jetstream::new(client.clone());
+    let names: Vec<String> = jetstream.stream_names().try_collect().await.unwrap();
+    let mut inventory = BTreeMap::new();
+    for name in names {
+        let mut stream = jetstream.get_stream(&name).await.unwrap();
+        let info = stream.info().await.unwrap().clone();
+        let consumers: BTreeMap<String, serde_json::Value> = stream
+            .consumers()
+            .try_filter(|consumer| std::future::ready(consumer.config.durable_name.is_some()))
+            .map_ok(|consumer| {
+                (
+                    consumer.name.clone(),
+                    serde_json::to_value(&consumer.config).unwrap(),
+                )
+            })
+            .try_collect()
+            .await
+            .unwrap();
+        inventory.insert(
+            name,
+            serde_json::json!({
+                "config": info.config,
+                "lastSequence": info.state.last_sequence,
+                "consumers": consumers,
+            }),
+        );
+    }
+    inventory
+}
+
+/// A runtime pointed at another installation's broker, holding that broker's
+/// Trellis NATS user, refuses it before writing anything there: neither the
+/// platform nor a role started apart from it creates or changes a stream, a
+/// bucket, a lease or a consumer. On its own installation's broker, a role
+/// apart from the platform that starts before the platform has bound the
+/// broker waits without writing, and takes its lease once the platform binds
+/// it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_runtime_refuses_another_installations_broker_without_touching_it() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let reserved: Vec<_> = (0..9)
+        .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+        .collect();
+    let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+    let run = |mode, config: &crate::RuntimeConfig| {
+        let stop = crate::shutdown::StopHandle::new();
+        let runtime = AbortOnDropHandle::new(tokio::spawn(crate::run_with_stop(
+            crate::RuntimeOptions {
+                mode,
+                config: config.clone(),
+                reset_admin: false,
+                nats_override: None,
+            },
+            Some(stop.clone()),
+        )));
+        (stop, runtime)
+    };
+    let connect = |config: &crate::RuntimeConfig| {
+        let nats = config.resolve_nats_runtime().unwrap();
+        async move {
+            crate::supervisor::nats_connect_options(&nats, &nats.trellis_creds)
+                .unwrap()
+                .connect(nats.server_urls())
+                .await
+                .unwrap()
+        }
+    };
+
+    // Their installation has started once, so its broker is bound to it.
+    let their_origin = format!("http://127.0.0.1:{}", ports[0]);
+    let (theirs, mut their_broker) = installation(
+        &root.join("theirs"),
+        &ports[..4],
+        &their_origin,
+        "loopback_development",
+        None,
+    )
+    .await;
+    let (stop, mut runtime) =
+        start_runtime(&theirs, crate::RuntimeMode::All, &their_origin, &[]).await;
+    stop.stop();
+    tokio::time::timeout(Duration::from_secs(30), &mut runtime)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let their_client = connect(&theirs).await;
+    let before = broker_inventory(&their_client).await;
+
+    // Ours names their broker and its Trellis user by mistake.
+    let our_origin = format!("http://127.0.0.1:{}", ports[4]);
+    let (ours, mut our_broker) = installation(
+        &root.join("ours"),
+        &ports[4..8],
+        &our_origin,
+        "loopback_development",
+        None,
+    )
+    .await;
+    let mut misdirected = ours.clone();
+    misdirected.nats.as_mut().unwrap().servers = theirs.nats.as_ref().unwrap().servers.clone();
+    misdirected
+        .secrets
+        .nats
+        .users
+        .trellis
+        .clone_from(&theirs.secrets.nats.users.trellis);
+    let mut results = Vec::new();
+    for mode in [crate::RuntimeMode::All, crate::RuntimeMode::Jobs] {
+        let (stop, mut runtime) = run(mode, &misdirected);
+        let result = match tokio::time::timeout(Duration::from_secs(15), &mut runtime).await {
+            Ok(result) => Some(result.unwrap()),
+            Err(_) => {
+                stop.stop();
+                let _ = tokio::time::timeout(Duration::from_secs(30), &mut runtime).await;
+                None
+            }
+        };
+        results.push((mode, result));
+    }
+    assert_eq!(
+        broker_inventory(&their_client).await,
+        before,
+        "a runtime of another installation changed this broker"
+    );
+    let their_instance = theirs.auth.as_ref().unwrap().instance_id.clone().unwrap();
+    for (mode, result) in results {
+        assert!(
+            matches!(
+                &result,
+                Some(Err(crate::RuntimeError::BrokerIdentity(reason)))
+                    if reason.contains(&their_instance)
+            ),
+            "{mode} did not refuse another installation's broker: {result:?}"
+        );
+    }
+
+    // On our own broker, a role started before the platform waits for the
+    // platform to bind it, writing nothing meanwhile.
+    let our_client = connect(&ours).await;
+    let mut role = ours.clone();
+    role.http.as_mut().unwrap().port = Some(ports[8]);
+    let (role_stop, mut role_runtime) = run(crate::RuntimeMode::Jobs, &role);
+    for _ in 0..8 {
+        tokio::select! {
+            result = &mut role_runtime => panic!("the role exited while waiting: {result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+    }
+    assert_eq!(
+        broker_inventory(&our_client).await,
+        BTreeMap::new(),
+        "a role wrote to a broker its platform had not bound"
+    );
+    let (platform_stop, mut platform) =
+        start_runtime(&ours, crate::RuntimeMode::Platform, &our_origin, &[]).await;
+    // It then carries on: it takes its work's lease.
+    let leases = async_nats::jetstream::new(our_client.clone());
+    let bucket = ours.resolve_leases().unwrap().bucket;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            tokio::select! {
+                result = &mut role_runtime => panic!("the role exited: {result:?}"),
+                () = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+            let Ok(leases) = leases.get_key_value(&bucket).await else {
+                continue;
+            };
+            if leases.get("jobs.owner").await.unwrap().is_some() {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the role took its lease once the platform bound the broker");
+
+    role_stop.stop();
+    platform_stop.stop();
+    for runtime in [&mut role_runtime, &mut platform] {
+        tokio::time::timeout(Duration::from_secs(30), runtime)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+    tokio::task::spawn_blocking(move || {
+        their_broker.stop().unwrap();
+        our_broker.stop().unwrap();
+    })
+    .await
+    .unwrap();
+    drop(reserved);
+}
+
 /// A NATS connection that fails in transit is tried again: a broker that does
 /// not answer for longer than one connection attempt's timeout, as one may on
 /// a loaded host, still lets Auth connect once it answers.
@@ -1293,7 +1502,7 @@ async fn a_broker_certificate_that_does_not_verify_is_refused_at_once() {
         Some(certificates),
     )
     .await;
-    let (stop, mut runtime) = start_runtime(&config, &origin, &[]).await;
+    let (stop, mut runtime) = start_runtime(&config, crate::RuntimeMode::All, &origin, &[]).await;
     let nats = config.resolve_nats_runtime().unwrap();
     let at = |servers: &str, ca: &std::path::Path, name: Option<&str>| {
         crate::config::ResolvedRuntimeNatsConfig {

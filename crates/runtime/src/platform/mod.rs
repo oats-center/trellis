@@ -50,7 +50,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         auth::blocking(move || SqliteAuthorizationStore::open(&platform_store, &config, &account))
             .await?,
     );
-    verify_jetstream_identity(&store, &context.trellis_nats).await?;
     let custody = auth::oauth_storage_key(&context.config)?;
     let console_origin = context
         .config
@@ -537,99 +536,200 @@ fn initialize_admin_credentials_in(
     }
 }
 
-// Resource evidence must never be reused after restoring a mismatched NATS store.
-async fn verify_jetstream_identity(
-    auth_store: &Arc<SqliteAuthorizationStore>,
+/// Bucket recording which installation, and which of its platform databases,
+/// a JetStream belongs to.
+const IDENTITY_BUCKET: &str = "TRELLIS_PLATFORM_IDENTITY";
+/// The installation's instance ID.
+const INSTALLATION_KEY: &str = "installation";
+/// The platform database's JetStream identity.
+const STORE_KEY: &str = "store";
+
+/// Confirms that `client`'s JetStream belongs to this installation before the
+/// runtime creates or changes anything there: no lease, stream or bucket is
+/// touched on a broker that fails this.
+///
+/// The broker records the installation's instance ID and the JetStream
+/// identity of the platform database bound to it. A role running the platform
+/// compares both, and on a broker nothing has claimed binds them to itself. A
+/// role apart from the platform has no platform database, so it reads the
+/// record without writing and compares the instance ID; it waits while the
+/// broker has none, until a platform of its installation binds it. Returns
+/// false when `stopping` ends that wait.
+///
+/// Resource evidence in the platform database must never be reused against
+/// another JetStream, nor this installation's work run on another's broker.
+pub(crate) async fn confirm_broker(
+    config: &RuntimeConfig,
+    stores: &crate::storage::RuntimeStores,
     client: &async_nats::Client,
-) -> Result<(), RuntimeError> {
+    stopping: impl Fn() -> bool,
+) -> Result<bool, RuntimeError> {
     use async_nats::jetstream::{context::GetStreamErrorKind, kv, ErrorCode};
-    const BUCKET: &str = "TRELLIS_PLATFORM_IDENTITY";
-    const KEY: &str = "store";
-    let reader = auth_store.clone();
-    let (identity, bound) = auth::blocking(move || reader.jetstream_identity()).await?;
-    let jetstream = async_nats::jetstream::new(client.clone());
-    let marker = match jetstream.get_stream(format!("KV_{BUCKET}")).await {
-        Ok(_) => Some(
-            jetstream
-                .get_key_value(BUCKET)
-                .await
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?,
-        ),
-        Err(error)
-            if matches!(
-                error.kind(),
-                GetStreamErrorKind::JetStream(error)
-                    if error.error_code()==ErrorCode::STREAM_NOT_FOUND
-            ) =>
-        {
-            None
-        }
-        Err(error) => return Err(RuntimeError::Platform(error.to_string())),
+    let refuse = RuntimeError::BrokerIdentity;
+    let failed = |error: &dyn std::fmt::Display| {
+        RuntimeError::BrokerIdentity(format!("cannot read its identity record: {error}"))
     };
-    if bound && marker.is_none() {
-        return Err(RuntimeError::Platform(
-            "JetStream identity is missing; restore the matching store".into(),
-        ));
+    let installation = config
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.instance_id.clone())
+        .ok_or_else(|| {
+            refuse("auth.instance_id is needed to confirm the broker is this installation's".into())
+        })?;
+    let jetstream = async_nats::jetstream::new(client.clone());
+    // Opening an existing bucket and reading its keys only reads.
+    let read = || async {
+        let marker = match jetstream.get_stream(format!("KV_{IDENTITY_BUCKET}")).await {
+            Ok(_) => jetstream
+                .get_key_value(IDENTITY_BUCKET)
+                .await
+                .map_err(|error| failed(&error))?,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    GetStreamErrorKind::JetStream(error)
+                        if error.error_code() == ErrorCode::STREAM_NOT_FOUND
+                ) =>
+            {
+                return Ok((None, None, None))
+            }
+            Err(error) => return Err(failed(&error)),
+        };
+        let status = marker.status().await.map_err(|error| failed(&error))?;
+        if status.info.config.storage != async_nats::jetstream::stream::StorageType::File
+            || !status.max_age().is_zero()
+        {
+            return Err(refuse(
+                "its identity record needs persistent, nonexpiring storage".into(),
+            ));
+        }
+        let mut recorded = [None, None];
+        for (key, value) in [INSTALLATION_KEY, STORE_KEY].into_iter().zip(&mut recorded) {
+            *value = marker
+                .get(key)
+                .await
+                .map_err(|error| failed(&error))?
+                .map(|value| String::from_utf8_lossy(&value).into_owned());
+        }
+        let [bound_installation, store] = recorded;
+        Ok::<_, RuntimeError>((Some(marker), bound_installation, store))
+    };
+    let other_installation = |bound: &str| {
+        refuse(format!(
+            "its JetStream belongs to installation {bound}, not this installation \
+            {installation}; check [nats] servers and the Trellis NATS user"
+        ))
+    };
+
+    let Ok(platform) = stores.platform().cloned() else {
+        let mut waiting = false;
+        loop {
+            match read().await?.1 {
+                Some(bound) if bound == installation => return Ok(true),
+                Some(bound) => return Err(other_installation(&bound)),
+                None if stopping() => return Ok(false),
+                None => {}
+            }
+            if !waiting {
+                tracing::warn!(
+                    %installation,
+                    "the NATS broker is not bound to an installation yet; waiting for this \
+                    installation's platform to bind it before using it"
+                );
+                waiting = true;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    };
+    let marked = platform.clone();
+    let (identity, bound) = crate::blocking::spawn(move || {
+        marked
+            .open()?
+            .query_row(
+                "SELECT jetstream_id,jetstream_bound FROM trellis_platform_store_marker WHERE id=1",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+            )
+            .map_err(|error| {
+                RuntimeError::Platform(format!("read the platform store marker: {error}"))
+            })
+    })
+    .await
+    .map_err(|error| RuntimeError::Platform(error.to_string()))??;
+    let (marker, bound_installation, store) = read().await?;
+    match (&bound_installation, &store) {
+        (Some(other), _) if *other != installation => return Err(other_installation(other)),
+        (_, Some(store)) if *store != identity => {
+            return Err(refuse(
+                "its JetStream is bound to a different platform database; restore the \
+                matching database or JetStream store"
+                    .into(),
+            ))
+        }
+        (_, None) if bound => {
+            return Err(refuse(
+                "the platform database was bound to a JetStream this broker has no record of; \
+                restore the matching JetStream store"
+                    .into(),
+            ))
+        }
+        _ => {}
     }
+    // The broker is this installation's, or nothing has claimed it yet.
     let marker = match marker {
         Some(marker) => marker,
         None => jetstream
             .create_key_value(kv::Config {
-                bucket: BUCKET.into(),
+                bucket: IDENTITY_BUCKET.into(),
                 storage: async_nats::jetstream::stream::StorageType::File,
                 ..Default::default()
             })
             .await
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+            .map_err(|error| failed(&error))?,
     };
-    let status = marker
-        .status()
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    if status.info.config.storage != async_nats::jetstream::stream::StorageType::File
-        || !status.max_age().is_zero()
-    {
-        return Err(RuntimeError::Platform(
-            "JetStream identity requires persistent nonexpiring storage".into(),
-        ));
-    }
-    let current = marker
-        .get(KEY)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    match current {
-        Some(current) if current.as_ref() != identity.as_bytes() => {
-            return Err(RuntimeError::Platform(
-                "JetStream belongs to a different platform database".into(),
-            ))
+    for (key, value, recorded) in [
+        (INSTALLATION_KEY, &installation, &bound_installation),
+        (STORE_KEY, &identity, &store),
+    ] {
+        if recorded.is_some() {
+            continue;
         }
-        None if bound => {
-            return Err(RuntimeError::Platform(
-                "JetStream identity record is missing; restore the matching store".into(),
-            ))
+        match marker.create(key, value.clone().into()).await {
+            Ok(_) => {}
+            // Another runtime bound it first; the check below compares.
+            Err(error) if error.kind() == kv::CreateErrorKind::AlreadyExists => {}
+            Err(error) => return Err(failed(&error)),
         }
-        None => {
-            marker
-                .create(KEY, identity.clone().into())
-                .await
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        if marker
+            .get(key)
+            .await
+            .map_err(|error| failed(&error))?
+            .as_deref()
+            != Some(value.as_bytes())
+        {
+            return Err(refuse(
+                "another runtime bound it to a different identity at the same time".into(),
+            ));
         }
-        _ => {}
-    }
-    if marker
-        .get(KEY)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?
-        .as_deref()
-        != Some(identity.as_bytes())
-    {
-        return Err(RuntimeError::Platform(
-            "JetStream identity changed while binding the database".into(),
-        ));
     }
     if !bound {
-        let writer = auth_store.clone();
-        auth::blocking(move || writer.mark_jetstream_bound(&identity)).await?;
+        crate::blocking::spawn(move || {
+            match platform.open()?.execute(
+                "UPDATE trellis_platform_store_marker SET jetstream_bound=1 \
+                WHERE id=1 AND jetstream_id=?1",
+                [&identity],
+            ) {
+                Ok(1) => Ok(()),
+                Ok(_) => Err(RuntimeError::Platform(
+                    "the platform store marker changed while binding the broker".into(),
+                )),
+                Err(error) => Err(RuntimeError::Platform(format!(
+                    "record the broker binding in the platform database: {error}"
+                ))),
+            }
+        })
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))??;
     }
-    Ok(())
+    Ok(true)
 }
