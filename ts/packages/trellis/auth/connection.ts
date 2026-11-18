@@ -132,17 +132,35 @@ export async function connectProvisioned(
  *
  * nats.js fails a pending flush only when it redials in place. A generation
  * never does, so without this a flush awaiting a lost connection's `PONG`
- * would wait forever instead of failing with the loss.
+ * would wait forever instead of failing with the loss. One close watcher
+ * serves every flush, and each flush leaves the pending set when it settles,
+ * so a long-lived connection retains nothing per completed flush.
  */
 function settleFlushOnClose(nc: NatsConnection): NatsConnection {
   const flush = nc.flush.bind(nc);
-  nc.flush = () =>
-    Promise.race([
-      flush(),
-      nc.closed().then((error) => {
-        throw error ?? new ClosedConnectionError();
-      }),
-    ]);
+  const pending = new Set<(error: Error) => void>();
+  let closedWith: Error | undefined;
+  void nc.closed().then((error) => {
+    closedWith = error ?? new ClosedConnectionError();
+    for (const reject of pending) reject(closedWith);
+    pending.clear();
+  });
+  nc.flush = () => {
+    if (closedWith) return Promise.reject(closedWith);
+    return new Promise<void>((resolve, reject) => {
+      pending.add(reject);
+      flush().then(
+        () => {
+          pending.delete(reject);
+          resolve();
+        },
+        (error: unknown) => {
+          pending.delete(reject);
+          reject(error);
+        },
+      );
+    });
+  };
   return nc;
 }
 

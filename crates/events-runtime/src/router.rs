@@ -99,6 +99,7 @@ pub fn build_router_with_query(query: EventsQuery) -> Router {
                     &[
                         "ackPending",
                         "ackWaitMs",
+                        "deadLetters",
                         "maxDeliver",
                         "pending",
                         "redelivered",
@@ -123,6 +124,7 @@ pub fn build_router_with_query(query: EventsQuery) -> Router {
                     &[
                         "ackPending",
                         "ackWaitMs",
+                        "deadLetters",
                         "maxDeliver",
                         "pending",
                         "redelivered",

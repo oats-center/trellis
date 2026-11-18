@@ -1536,3 +1536,128 @@ test("Z11 Events renders before its delivery panels, which load one page at a ti
     }
   }, browserRuntimeOptions());
 });
+
+test("Z12 a service's failed deliveries stay counted while the page focuses another service", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const connectEventService = async (label: string, fails: boolean) => {
+      const displayName = fixtureName(label);
+      const key = await runtime.registerService({
+        name: displayName,
+        contract: participants.EventService.participant,
+        deployment: displayName,
+        acknowledgeSharedApis: true,
+      });
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.EventService.participant,
+        name: displayName,
+        seed: key.seed,
+      }).orThrow();
+      const values: string[] = [];
+      await service
+        .onAlpha(
+          async ({ event }) => {
+            if (fails && event.value === "fail") {
+              throw new Error("fixture handler failure");
+            }
+            values.push(event.value);
+          },
+          {},
+          { mode: "durable", group: "events" },
+        )
+        .orThrow();
+      await service
+        .onBeta(() => {}, {}, { mode: "durable", group: "events" })
+        .orThrow();
+      await service.handleDeliveryStats(() =>
+        Result.ok({ active: 0n, attempts: [], maxActive: 0n, successes: [] }),
+      );
+      void service.wait().catch(() => {});
+      return { displayName, deploymentId: key.deploymentId, service, values };
+    };
+    const failing = await connectEventService("z12-failing", true);
+    const healthy = await connectEventService("z12-healthy", false);
+    try {
+      const alpha = await runtime.connectClient({
+        name: fixtureName("z12-alpha"),
+        contract: apps.Alpha.request,
+      });
+      const failingConsumer = await runtime.waitFor(
+        async () => {
+          const items = (await runtime.events.consumersQuery({})).items;
+          const failingItem = items.find(
+            (item) => item.deploymentId === failing.deploymentId,
+          );
+          const healthyItem = items.find(
+            (item) => item.deploymentId === healthy.deploymentId,
+          );
+          return failingItem && healthyItem ? failingItem : false;
+        },
+        { timeoutMs: 60_000 },
+      );
+      // Each consumer only receives events published after it is attached.
+      await runtime.waitFor(
+        async () => {
+          await alpha.publishAlpha({ site: "z12", value: "ready" }).orThrow();
+          await sleep(200);
+          return (
+            failing.values.includes("ready") && healthy.values.includes("ready")
+          );
+        },
+        { timeoutMs: 60_000 },
+      );
+      await alpha.publishAlpha({ site: "z12", value: "fail" }).orThrow();
+      const deadLetter = await runtime.waitFor(
+        async () =>
+          (
+            await runtime.events.deadLettersQuery({
+              resourceId: failingConsumer.resourceId,
+              state: ["dead"],
+            })
+          ).items[0] ?? false,
+        { timeoutMs: 60_000 },
+      );
+
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        const errors = await captureBrowserErrors(page);
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.consoleUrl}/console/admin/events`, {
+          waitUntil: "domcontentloaded",
+        });
+        await waitForConsoleShell(page);
+        const main = page.locator("main");
+        const services = main.locator(".consumer-health");
+        const failingRow = services
+          .locator(".service-row")
+          .filter({ hasText: failing.displayName });
+        const healthyRow = services
+          .locator(".service-row")
+          .filter({ hasText: healthy.displayName });
+        await healthyRow.waitFor({ state: "visible", timeout: 30_000 });
+        await failingRow.waitFor({ state: "visible", timeout: 30_000 });
+
+        // Focus the healthy service: the failed-delivery list narrows to it,
+        // so the failing service's dead letter is no longer loaded.
+        await healthyRow.click();
+        await main
+          .locator(`[data-dead-letter="${deadLetter.deadLetterId}"]`)
+          .waitFor({ state: "detached", timeout: 15_000 });
+        await main
+          .locator("#failed-deliveries")
+          .getByText("Loading…")
+          .waitFor({ state: "detached", timeout: 15_000 });
+        const summary = (await failingRow.innerText()).trim();
+        assert.match(summary, /1 failed/);
+        assert.doesNotMatch(summary, /Nothing waiting/);
+        await assertNoBrowserErrors(errors);
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await failing.service.stop();
+      await healthy.service.stop();
+    }
+  }, browserRuntimeOptions());
+});

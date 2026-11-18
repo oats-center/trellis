@@ -136,6 +136,7 @@ pub(super) async fn run(format: OutputFormat, command: EventsCommand) -> miette:
                         .field("Managed by", output::field(consumer, "managedBy"))
                         .field("Pending", output::field(consumer, "pending"))
                         .field("Awaiting ack", output::field(consumer, "ackPending"))
+                        .field("Failed", output::field(consumer, "deadLetters"))
                         .field("Redelivered", output::field(consumer, "redelivered"))
                         .field("Waiting pulls", output::field(consumer, "waitingPulls"))
                         .field("Max deliveries", output::field(consumer, "maxDeliver"))
@@ -262,11 +263,12 @@ const EVENTS: [output::Column<'static>; 6] = [
 ];
 const NO_EVENTS: &str = "No events match.";
 
-const CONSUMERS: [output::Column<'static>; 6] = [
+const CONSUMERS: [output::Column<'static>; 7] = [
     output::col("Consumer", "consumerName"),
     output::state_col("Status", "status"),
     output::col("Pending", "pending"),
     output::col("Awaiting ack", "ackPending"),
+    output::col("Failed", "deadLetters"),
     output::col("Stream", "stream"),
     output::muted("Resource", "resourceId"),
 ];

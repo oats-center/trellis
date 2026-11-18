@@ -179,7 +179,7 @@ impl EventsQuery {
 
     /// Run `Events.Consumers.Query`.
     pub async fn query_consumers(&self, input: &Value) -> Result<Value, EventsQueryError> {
-        query_consumers(&self.runtime, self.resolver.as_ref(), input)
+        let mut page = query_consumers(&self.runtime, self.resolver.as_ref(), input)
             .await
             .map_err(|error| {
                 if error.starts_with("invalid pagination") {
@@ -194,12 +194,19 @@ impl EventsQuery {
                 } else {
                     EventsQueryError::Consumer(error)
                 }
-            })
+            })?;
+        let dead = self.store.dead_letters_by_resource()?;
+        if let Some(items) = page.get_mut("items").and_then(Value::as_array_mut) {
+            for row in items {
+                count_dead_letters(row, &dead);
+            }
+        }
+        Ok(page)
     }
 
     /// Run `Events.Consumers.Inspect`.
     pub async fn inspect_consumer(&self, input: &Value) -> Result<Value, EventsQueryError> {
-        inspect_consumer(&self.runtime, self.resolver.as_ref(), input)
+        let mut output = inspect_consumer(&self.runtime, self.resolver.as_ref(), input)
             .await
             .map_err(|error| {
                 if error.contains("consumer not found") || error.contains("404") {
@@ -213,8 +220,23 @@ impl EventsQuery {
                 } else {
                     EventsQueryError::Consumer(error)
                 }
-            })
+            })?;
+        if let Some(row) = output.get_mut("consumer") {
+            count_dead_letters(row, &self.store.dead_letters_by_resource()?);
+        }
+        Ok(output)
     }
+}
+
+/// Sets a consumer row's count of failed deliveries awaiting a decision.
+fn count_dead_letters(row: &mut Value, dead: &std::collections::HashMap<String, u64>) {
+    let count = row
+        .get("resourceId")
+        .and_then(Value::as_str)
+        .and_then(|resource| dead.get(resource))
+        .copied()
+        .unwrap_or(0);
+    row["deadLetters"] = json!(count);
 }
 
 fn parse_event_filter(input: &Value) -> Result<(EventsFilter, String), EventsQueryError> {
