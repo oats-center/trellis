@@ -119,3 +119,81 @@ test("the json codec keeps __proto__ as an ordinary key", () => {
   );
   assert.equal(Object.getPrototypeOf(decoded), Object.prototype);
 });
+
+test("model codecs keep unknown fields and absent versus null", () => {
+  const nested = generated.codecs.model({ label: generated.codecs.string });
+  const model = generated.codecs.model({
+    id: generated.codecs.string,
+    note: generated.codecs.optional(
+      generated.codecs.nullable(generated.codecs.string),
+    ),
+    nested,
+  });
+  // As many keys as known fields, but one is unknown in place of the absent
+  // optional field: the unknown field must still be carried through.
+  const wire = JSON.parse(
+    '{"id":"a","nested":{"label":"x","later":[1]},"__proto__":{"admin":true}}',
+  );
+  const decoded = model.decode(wire);
+  assert.equal("note" in decoded, false);
+  assert.equal(Object.getPrototypeOf(decoded), Object.prototype);
+  assert.equal(
+    JSON.stringify(model.encode(decoded)),
+    '{"id":"a","nested":{"label":"x","later":[1]},"__proto__":{"admin":true}}',
+  );
+
+  const explicitNull = model.decode({
+    id: "a",
+    note: null,
+    nested: wire.nested,
+  });
+  assert.equal(explicitNull.note, null);
+  assert.equal(
+    JSON.stringify(model.encode(explicitNull)),
+    '{"id":"a","note":null,"nested":{"label":"x","later":[1]}}',
+  );
+  assert.equal(
+    JSON.stringify(
+      model.encode({ id: "a", note: undefined, nested: { label: "x" } }),
+    ),
+    '{"id":"a","nested":{"label":"x"}}',
+  );
+
+  assert.throws(() => model.decode({ note: "n", nested: { label: "x" } }), {
+    message: "Expected string",
+  });
+  assert.throws(() => model.decode({ id: "a", nested: [] }), {
+    message: "Expected object",
+  });
+});
+
+test("bounded strings count code points, not UTF-16 units", () => {
+  const atMostThree = generated.codecs.bounded(generated.codecs.string, {
+    maxCount: 3,
+  });
+  for (const value of ["\u{1F600}\u{1F600}\u{1F600}", "a\u{1F600}b", "\uD800𐀀"])
+    assert.equal(atMostThree.decode(value), value);
+  for (const value of [
+    "\u{1F600}\u{1F600}\u{1F600}a",
+    "\uDC00\uD800\uD800\uD800",
+  ]) {
+    assert.throws(() => atMostThree.decode(value), {
+      message: "Expected at most 3 characters",
+    });
+    assert.throws(() => atMostThree.encode(value), {
+      message: "Expected at most 3 characters",
+    });
+  }
+
+  const atLeastFour = generated.codecs.bounded(generated.codecs.string, {
+    minCount: 4,
+  });
+  assert.equal(
+    atLeastFour.decode("\u{1F600}".repeat(4)),
+    "\u{1F600}".repeat(4),
+  );
+  assert.equal(atLeastFour.decode("abcd"), "abcd");
+  assert.throws(() => atLeastFour.decode("\u{1F600}".repeat(3)), {
+    message: "Expected at least 4 characters",
+  });
+});
