@@ -34,9 +34,10 @@ import { LiveStreamError } from "./live/types.ts";
 
 import {} from "./auth/protocol_wasm.ts";
 
-import type {
-  PendingSessionRequest,
-  VerifiedAuthority,
+import {
+  AuthorityUnavailableError,
+  type PendingSessionRequest,
+  type VerifiedAuthority,
 } from "./auth/authority.ts";
 import { operationRecordRepresentation } from "./service/runtime/operation_record.ts";
 import {
@@ -3934,35 +3935,50 @@ export class Trellis<
       }
       // Acquire and publish once. A potentially executed request is never replayed.
       const deadlineMs = Date.now() + args.timeout;
-      const acquired = await this.#acquireRequestTransport({
-        method: args.method,
-        subject: args.subject,
-        deadlineMs,
-        signal: args.signal,
-        callerCapabilities: args.callerCapabilities,
-      });
-      const acquiredTransport = acquired.take();
-      if (isErr(acquiredTransport)) {
-        recordAttempt(
-          acquiredTransport.error.code === "trellis.request.cancelled"
-            ? "cancelled"
-            : acquiredTransport.error.code === "trellis.request.timeout"
-              ? "timeout"
-              : "unavailable",
-        );
-        return err(acquiredTransport.error);
-      }
-      const { nc, release } = acquiredTransport;
-      try {
+      let lease: TransportLease;
+      let reply: string;
+      let authHeaders: Awaited<ReturnType<Trellis["createRequestProof"]>>;
+      for (;;) {
+        const acquired = await this.#acquireRequestTransport({
+          method: args.method,
+          subject: args.subject,
+          deadlineMs,
+          signal: args.signal,
+          callerCapabilities: args.callerCapabilities,
+        });
+        const acquiredTransport = acquired.take();
+        if (isErr(acquiredTransport)) {
+          recordAttempt(
+            acquiredTransport.error.code === "trellis.request.cancelled"
+              ? "cancelled"
+              : acquiredTransport.error.code === "trellis.request.timeout"
+                ? "timeout"
+                : "unavailable",
+          );
+          return err(acquiredTransport.error);
+        }
+        lease = acquiredTransport;
         // Create the exact reply inbox before signing so the proof binds the
         // reply subject the response arrives on.
-        const reply = createInbox(this.#inboxPrefix);
-        const authHeaders = await this.createRequestProof(
-          args.subject,
-          args.payload,
-          reply,
-          args.permission,
-        );
+        reply = createInbox(this.#inboxPrefix);
+        try {
+          authHeaders = await this.createRequestProof(
+            args.subject,
+            args.payload,
+            reply,
+            args.permission,
+          );
+          break;
+        } catch (cause) {
+          lease.release();
+          // The connection was lost while signing, before anything was sent:
+          // wait for the next admitted generation within the deadline.
+          if (cause instanceof AuthorityUnavailableError) continue;
+          throw cause;
+        }
+      }
+      const { nc, release } = lease;
+      try {
         const headers = natsHeaders();
         headers.set("authorization-context", authHeaders.contextDigest);
         headers.set("session-key", this.#auth.sessionKey);
@@ -4114,7 +4130,7 @@ export class Trellis<
           // Publish denials arrive on this generation's own status stream, not
           // the reply inbox. Watch the leased connection, never a mutable
           // logical default.
-          const stopWatching = acquiredTransport.watchStatus((event) => {
+          const stopWatching = lease.watchStatus((event) => {
             const error = (event as { error?: unknown } | null)?.error;
             if (
               error instanceof Error &&
