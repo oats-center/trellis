@@ -98,10 +98,24 @@ block, participant-local schema, or API State.
 
 A `///` comment directly above a model, field, enum, type alias, or action is
 its description. Descriptions are presentation: they appear in the presentation
-canonical IDL, in Auth's `Apis.Get` action schemas, and in the Console's API
-pages, and never in the semantic digest, validators, or compatibility. Plain
-`//` comments are dropped. APIs, capabilities, and groups keep their `title`
-and `description` statements.
+canonical IDL, in Auth's `Apis.Get` action schemas, in the Console's API
+pages, and in generated code, and never in the semantic digest, validators, or
+compatibility. Plain `//` comments are dropped. APIs, capabilities, and groups
+keep their `title` and `description` statements.
+
+Generated Rust and TypeScript carry this text as Rustdoc and JSDoc, so editors
+show it. Model types and fields, enums, aliases, API modules or the `API`
+descriptor, action descriptors, Rust client methods and provider registrations,
+TypeScript action descriptor properties, settings fields, and optional
+capability availability flags each get the authored text, followed by what the
+IDL states about the item: whether a field is optional or nullable, its
+declared length, range, or item-count limits, an RPC's pagination, an action's
+declared errors, and the capabilities that allow each direction with their
+title and description. Generators treat the text as plain text: Rust escapes
+Markdown so rustdoc shows it literally (bare URLs become autolinks), and
+TypeScript escapes `*/` and `@`. TypeScript's flat client and handler methods
+(`client.ordersCreate`) are mapped from descriptor names inside the SDK, so
+they do not carry the docs; the `API.actions` property does.
 
 ```trellis
 /// An order a customer placed.

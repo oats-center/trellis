@@ -13,6 +13,7 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 use oxc_transformer::{TransformOptions, Transformer};
 use trellis_idl::{
+    action_documentation, api_documentation, field_documentation, type_documentation,
     ActionDefinition, ActionId, ActionKind, AppKind, AppRequestDefinition, CanonicalMode,
     InteractionDirection, PackageGraph, ParticipantDefinition, ParticipantKind, Primitive,
     ResourceDefinition, SemanticPackage, TypeDefinition, TypeExpression, TypeRef,
@@ -131,7 +132,7 @@ pub fn collect_ts_package_sources(
             path: PathBuf::from("types/_internal")
                 .join(&package_modules[package_id.as_str()])
                 .with_extension("ts"),
-            contents: render_types(package, &package_modules),
+            contents: render_types(graph, package, &package_modules),
         });
     }
     sources.push(GeneratedTsSource {
@@ -484,7 +485,11 @@ fn validate_export_name(kind: &str, name: &str) -> Result<(), CodegenTsError> {
     Ok(())
 }
 
-fn render_types(package: &SemanticPackage, modules: &BTreeMap<String, String>) -> String {
+fn render_types(
+    graph: &PackageGraph,
+    package: &SemanticPackage,
+    modules: &BTreeMap<String, String>,
+) -> String {
     let own_module = &modules[package.identity().as_str()];
     let mut lines = vec!["import { codecs } from \"@oatscenter/trellis/generated\";".to_owned()];
     for dependency in package
@@ -505,8 +510,12 @@ fn render_types(package: &SemanticPackage, modules: &BTreeMap<String, String>) -
     for (id, definition) in package.types() {
         let name = id.as_str();
         lines.push(format!(
-            "export type {name} = {};",
-            render_type_definition(name, definition, package.identity().as_str(), modules)
+            "{}export type {name} = {};",
+            js_doc(
+                &type_documentation(graph, package.identity(), name, definition),
+                ""
+            ),
+            render_type_definition(graph, package, name, definition, modules)
         ));
         lines.push(format!(
             "export const {name}Codec: {{ decode(value: unknown): {name}; \
@@ -581,25 +590,31 @@ fn expression_refs<'a>(value: &'a TypeExpression, refs: &mut Vec<&'a TypeRef>) {
 }
 
 fn render_type_definition(
-    _name: &str,
+    graph: &PackageGraph,
+    semantic: &SemanticPackage,
+    model: &str,
     definition: &TypeDefinition,
-    package: &str,
     modules: &BTreeMap<String, String>,
 ) -> String {
+    let package = semantic.identity().as_str();
     match definition {
         TypeDefinition::Model(fields) => {
-            let mut output = String::from("{ ");
+            let mut output = String::from("{\n");
             for (name, field) in fields {
-                write!(
+                writeln!(
                     output,
-                    "readonly {}{}: {}; ",
+                    "{}  readonly {}{}: {};",
+                    js_doc(
+                        &field_documentation(graph, semantic.identity(), model, name, field),
+                        "  "
+                    ),
                     property_name(name),
                     if field.optional { "?" } else { "" },
                     render_type_expression(&field.ty, package, modules)
                 )
                 .unwrap();
             }
-            output.push_str("readonly [key: string]: unknown }");
+            output.push_str("  readonly [key: string]: unknown;\n}");
             output
         }
         TypeDefinition::Enum(values) => format!(
@@ -982,7 +997,8 @@ fn render_api(
     lines.push("  readonly actions: {".into());
     for (id, action) in api.actions() {
         lines.push(format!(
-            "    readonly {}: {};",
+            "{}    readonly {}: {};",
+            js_doc(&action_documentation(graph, api, id, action), "    "),
             js_string(&descriptor_name(id)),
             render_action_type(api, action, id, package, modules)
         ));
@@ -1003,7 +1019,10 @@ fn render_api(
     }
     lines.push("  },".into());
     lines.push("});".into());
-    lines.push("export const API: typeof __api = __api;".into());
+    lines.push(format!(
+        "{}export const API: typeof __api = __api;",
+        js_doc(&api_documentation(api), "")
+    ));
     lines.push(format!(
         "export const API_DIGEST = {} as const;",
         js_string(&trellis_idl::api_digest(graph, api.identity()).map_err(idl_error)?)
@@ -1664,7 +1683,11 @@ fn render_participant(
     lines.push("type __ConfigValues = {".into());
     for (name, field) in participant.config() {
         lines.push(format!(
-            "  readonly {}: {};",
+            "{}  readonly {}: {};",
+            js_doc(
+                &[field.docs.title.clone(), field.docs.description.clone()],
+                "  "
+            ),
             property_name(name),
             render_type_expression(&field.ty, "", modules)
         ));
@@ -1736,8 +1759,12 @@ fn render_participant(
     lines.push("  readonly config: {".into());
     for (name, field) in participant.config() {
         lines.push(format!(
-            "    readonly {}: {{ readonly codec: {{ decode(value: unknown): {}; }}; \
+            "{}    readonly {}: {{ readonly codec: {{ decode(value: unknown): {}; }}; \
             readonly required: {}; readonly secret: {}; readonly restart: {}; }};",
+            js_doc(
+                &[field.docs.title.clone(), field.docs.description.clone()],
+                "    "
+            ),
             property_name(name),
             render_type_expression(&field.ty, "", modules),
             field.default.is_none(),
@@ -1933,13 +1960,14 @@ fn render_participant(
             &trellis_idl::participant_digest(graph, participant.identity()).map_err(idl_error)?
         )
     ));
-    render_participant_types(participant, modules, &mut lines);
+    render_participant_types(graph, participant, modules, &mut lines);
     lines.push("export default participant;".into());
     lines.push(String::new());
     Ok(lines.join("\n"))
 }
 
 fn render_participant_types(
+    graph: &PackageGraph,
     participant: &ParticipantDefinition,
     modules: &BTreeMap<String, String>,
     lines: &mut Vec<String>,
@@ -2001,10 +2029,32 @@ fn render_participant_types(
     }
     lines.push("  }>;".into());
     lines.push("  capabilities: Readonly<{".into());
-    for selection in participant.uses().values() {
+    for (api, selection) in participant.uses() {
+        let definition = find_api(graph, api).ok();
         for capability in &selection.optional_capabilities {
+            let docs = definition
+                .and_then(|definition| {
+                    definition
+                        .capabilities()
+                        .get(capability)
+                        .map(|value| (&value.title, &value.description))
+                        .or_else(|| {
+                            definition
+                                .groups()
+                                .get(capability)
+                                .map(|value| (&value.title, &value.description))
+                        })
+                })
+                .map(|(title, description)| {
+                    vec![format!(
+                        "Whether optional capability {capability} ({title}) is available: \
+                        {description}"
+                    )]
+                })
+                .unwrap_or_default();
             lines.push(format!(
-                "    readonly {}: boolean;",
+                "{}    readonly {}: boolean;",
+                js_doc(&docs, "    "),
                 js_string(capability.as_str())
             ));
         }
@@ -2606,6 +2656,35 @@ fn is_safe_js_ident(value: &str) -> bool {
         )
 }
 
+/// A JSDoc block for plain-text paragraphs at `indent`, ending in a newline
+/// and the indent of the documented member. `*/` cannot close the comment and
+/// `@` cannot start a tag.
+fn js_doc(paragraphs: &[String], indent: &str) -> String {
+    let paragraphs = paragraphs
+        .iter()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>();
+    if paragraphs.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("/**\n");
+    for (index, paragraph) in paragraphs.into_iter().enumerate() {
+        if index > 0 {
+            writeln!(out, "{indent} *").unwrap();
+        }
+        for line in paragraph.lines() {
+            let line = line.trim_end().replace('@', "\\@").replace("*/", "*\\/");
+            if line.is_empty() {
+                writeln!(out, "{indent} *").unwrap();
+            } else {
+                writeln!(out, "{indent} * {line}").unwrap();
+            }
+        }
+    }
+    writeln!(out, "{indent} */").unwrap();
+    out
+}
+
 fn js_string(value: &str) -> String {
     serde_json::to_string(value).expect("JavaScript string")
 }
@@ -2978,6 +3057,139 @@ export { progress, update, fallbackProgress, fallbackUpdate, wrongProgress, wron
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Editors read generated docs through the TypeScript language service, so
+    /// the docs must survive declaration emission and attach to the members a
+    /// consumer's code reaches.
+    #[test]
+    fn editors_show_authored_docs_and_constraints() {
+        let graph = graph(
+            r#"
+            type OrderName = string(min_length=1, max_length=64);
+            type Tags = list<OrderName>(max_items=5);
+            /// An order a customer placed.
+            model Order {
+              /// What the customer calls it; a */ cannot end this, nor can @param.
+              name: OrderName;
+              tags?: Tags;
+              id: string;
+            }
+            model Empty {}
+            api orders@v1 {
+              title "Orders";
+              description "Order lookup.";
+              error Missing;
+              /// Look up one order.
+              rpc Get { input Empty; output Order; errors [Missing]; }
+              capabilities {
+                capability orders.read {
+                  title "Read orders";
+                  description "See every order.";
+                  grants "Orders are visible.";
+                  allows { rpc Get; }
+                }
+              }
+            }
+            service Shop { implements orders; }
+            "#,
+        );
+        let root = unique_temp_dir("docs");
+        generate_ts_package(&graph, &root, "@example/generated").unwrap();
+        let consumer = "import { API } from \"./apis/orders/mod.js\";\n\
+            import type { Order } from \"./types/index.js\";\n\
+            declare const order: Order;\n\
+            export const values = [order.name, order.tags, order.id, \
+            API.actions[\"rpc:Get\"]];\n";
+        fs::write(root.join("consumer.ts"), consumer).unwrap();
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert!(std::process::Command::new("node")
+            .args([
+                "-e",
+                "require('node:fs').symlinkSync(process.argv[1], process.argv[2], 'junction')"
+            ])
+            .arg(repo.join("node_modules"))
+            .arg(root.join("node_modules"))
+            .status()
+            .unwrap()
+            .success());
+        // Ask the language service for hover text at each member, as an editor does.
+        let script = r#"
+const [typescript, root, ...positions] = process.argv.slice(1);
+const ts = require(typescript);
+const file = require("node:path").join(root, "consumer.ts");
+const options = { strict: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext,
+  moduleResolution: ts.ModuleResolutionKind.NodeNext };
+const service = ts.createLanguageService({
+  getScriptFileNames: () => [file],
+  getScriptVersion: () => "1",
+  getScriptSnapshot: (name) => ts.sys.fileExists(name)
+    ? ts.ScriptSnapshot.fromString(ts.sys.readFile(name)) : undefined,
+  getCurrentDirectory: () => root,
+  getCompilationSettings: () => options,
+  getDefaultLibFileName: ts.getDefaultLibFilePath,
+  fileExists: ts.sys.fileExists,
+  readFile: ts.sys.readFile,
+  readDirectory: ts.sys.readDirectory,
+  directoryExists: ts.sys.directoryExists,
+  getDirectories: ts.sys.getDirectories,
+}, ts.createDocumentRegistry());
+const errors = service.getSemanticDiagnostics(file).map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
+const docs = positions.map((position) => {
+  const info = service.getQuickInfoAtPosition(file, Number(position));
+  return { text: ts.displayPartsToString(info?.documentation ?? []), tags: (info?.tags ?? []).map((tag) => tag.name) };
+});
+console.log(JSON.stringify({ errors, docs }));
+"#;
+        let position =
+            |needle: &str| (consumer.find(needle).unwrap() + needle.len() - 1).to_string();
+        let output = std::process::Command::new("node")
+            .args(["-e", script])
+            .arg(repo.join("node_modules/typescript"))
+            .arg(&root)
+            .args([
+                position("order.name"),
+                position("order.tags"),
+                position("order.id"),
+                position("\"rpc:Get"),
+                position(": Order"),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["errors"], serde_json::json!([]), "{result}");
+        let text = |index: usize| result["docs"][index]["text"].as_str().unwrap().to_owned();
+        let name = text(0);
+        assert!(
+            name.contains("What the customer calls it; a *\\/ cannot end this, nor can \\@param.")
+                && name.contains("Length: 1 to 64 characters (Unicode code points)."),
+            "{result}"
+        );
+        assert_eq!(result["docs"][0]["tags"], serde_json::json!([]), "{result}");
+        let tags = text(1);
+        assert!(
+            tags.contains("Optional: may be absent.")
+                && tags.contains("Items: at most 5 items.")
+                && tags.contains("Each item: length: 1 to 64 characters"),
+            "{result}"
+        );
+        // A field with no authored description or constraint has no docs.
+        assert_eq!(text(2), "", "{result}");
+        let get = text(3);
+        assert!(
+            get.contains("Look up one order.")
+                && get.contains("Errors: Missing.")
+                && get.contains("Call is allowed by capability example.orders.v1:orders.read")
+                && get.contains("(Read orders): See every order."),
+            "{result}"
+        );
+        assert_eq!(text(4), "An order a customer placed.", "{result}");
         fs::remove_dir_all(root).unwrap();
     }
 
