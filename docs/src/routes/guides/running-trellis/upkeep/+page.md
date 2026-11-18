@@ -160,12 +160,14 @@ The streams wait in the data folder's `restore/` until the next start. Give
 that start a NATS whose JetStream store is empty: a new NATS host, or the old
 one with its data folder removed. The first start of the platform role (or
 `all`) loads every stream before anything else runs, and refuses a NATS that
-already has one of them. A start that stops partway finishes on the next one,
-including when it stopped just after NATS took a stream: the start records
-which stream it is loading, so the next one recognizes that stream by its
-last sequence and time and carries on.
-Start the platform role before any split role, which would otherwise create
+already has one of them. Start the platform role before any split role, which would otherwise create
 its streams empty.
+
+If the restore is interrupted, whether `restore` itself or the start that
+loads the streams, run it again: the same `trellis-server restore` command,
+then start the server. No `--force` is needed for the installation's own
+backup. That start first deletes the streams the interrupted one loaded,
+provided NATS holds nothing else, then loads them all again.
 
 After loading, the Jobs, Health and Events projections replay their streams
 from the start, so they catch up on whatever reached the streams after their

@@ -251,8 +251,9 @@ and its platform database.
 it into a stopped or fresh installation, refusing one with another ID (its
 `[auth] instance_id`, else `secrets.toml`'s) or an unreadable `config.toml`
 unless `--force`; the next platform start loads the streams into an empty
-JetStream store, resuming a load that stopped partway. Leases only pick which server runs a role: a standby needs the same NATS
-and, for Auth, the same database, issuer keys and `secrets.toml`.
+JetStream store. An interrupted restore is run again (restore, then start),
+which replaces the streams the interrupted one loaded. Leases only pick which
+server runs a role: a standby needs the same NATS and, for Auth, the same database, issuer keys and `secrets.toml`.
 
 `trellis-server --dev` runs a development installation in
 `<user data>/trellis/dev` (or `--config <dir>`), creating it the first time:

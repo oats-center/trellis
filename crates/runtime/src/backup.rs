@@ -40,8 +40,9 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 const FORMAT: u32 = 1;
 /// The data-folder entry where a restore leaves stream snapshots for the next start.
 const STAGED: &str = "restore";
-/// The file in [`STAGED`] naming the stream a start is loading.
-const LOADING: &str = "loading";
+/// The file in [`STAGED`] naming the streams an earlier, unfinished restore
+/// of the folder may have loaded, which the next start deletes first.
+const UNFINISHED: &str = "unfinished.json";
 /// Bytes per snapshot or restore message, well below NATS's default payload limit.
 const CHUNK: usize = 128 * 1024;
 /// How long one JetStream API exchange may take.
@@ -975,12 +976,33 @@ pub fn restore(
         }
     }
 
-    // The streams wait in the data folder for the next start.
+    // The streams wait in the data folder for the next start. Streams still
+    // staged there are of a restore whose start didn't finish, and may be in
+    // NATS already; the next start deletes them before loading these.
     let staged = paths.data.join(STAGED);
+    let mut unfinished = BTreeSet::new();
+    if let Ok(contents) = fs::read(staged.join(MANIFEST_FILE)) {
+        if let Ok(earlier) = serde_json::from_slice::<Manifest>(&contents) {
+            unfinished.extend(earlier.streams().map(str::to_owned));
+        }
+        if let Ok(contents) = fs::read(staged.join(UNFINISHED)) {
+            if let Ok(names) = serde_json::from_slice::<Vec<String>>(&contents) {
+                unfinished.extend(names);
+            }
+        }
+    }
     if staged.exists() {
         fs::remove_dir_all(&staged).map_err(file_error("remove", &staged))?;
     }
     private_directory(&staged)?;
+    if !unfinished.is_empty() {
+        let path = staged.join(UNFINISHED);
+        trellis_bootstrap::write_private_file(
+            &path,
+            serde_json::to_vec(&unfinished).unwrap_or_default(),
+        )
+        .map_err(|error| file_error("write", &path)(std::io::Error::other(error.to_string())))?;
+    }
     for entry in &manifest.entries {
         if matches!(entry.kind, EntryKind::Stream { .. }) {
             place(
@@ -1004,12 +1026,11 @@ pub fn restore(
 /// after Trellis's NATS accounts are in place and before anything else uses
 /// JetStream.
 ///
-/// A stream loaded by an earlier start that stopped partway is skipped, so
-/// starting again finishes the restore. That includes the stream the earlier
-/// start was loading when it stopped, if NATS took it: before loading a
-/// stream, a start records its name in the staged folder, and a later start
-/// accepts a stream of that name only while it ends at the snapshot's last
-/// sequence and time.
+/// A stream loaded by an earlier start that stopped partway, and whose
+/// snapshot it removed, is skipped. Any other interrupted restore is run
+/// again: restoring once more stages every stream with the names of those the
+/// unfinished one staged, and the start deletes those from NATS before
+/// loading, provided NATS holds no other stream.
 ///
 /// # Errors
 ///
@@ -1032,6 +1053,36 @@ pub async fn apply_staged_restore(
         .map_err(|error| BackupError::Damaged(format!("{}: {error}", path.display())))?;
     let client = connect(config).await?;
     let jetstream = async_nats::jetstream::new(client.clone());
+    let path = staged.join(UNFINISHED);
+    match fs::read(&path) {
+        Ok(contents) => {
+            let unfinished: BTreeSet<String> = serde_json::from_slice(&contents)
+                .map_err(|error| BackupError::Damaged(format!("{}: {error}", path.display())))?;
+            let mut present = Vec::new();
+            let mut listing = jetstream.stream_names();
+            while let Some(name) = listing.next().await {
+                present
+                    .push(name.map_err(|error| nats_error("listing streams")(error.to_string()))?);
+            }
+            if let Some(other) = present.iter().find(|name| !unfinished.contains(*name)) {
+                return Err(BackupError::Refused(format!(
+                    "NATS has stream {other}, which no unfinished restore of this installation \
+                    loaded. A restore loads its streams into a NATS whose JetStream holds none \
+                    of them: start Trellis against a fresh JetStream store"
+                )));
+            }
+            for name in &present {
+                jetstream
+                    .delete_stream(name)
+                    .await
+                    .map_err(|error| nats_error(format!("stream {name}"))(error.to_string()))?;
+                tracing::info!(stream = %name, "deleted a stream an unfinished restore loaded");
+            }
+            fs::remove_file(&path).map_err(file_error("remove", &path))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(file_error("read", &path)(error)),
+    }
     for entry in &manifest.entries {
         let EntryKind::Stream {
             name,
@@ -1043,7 +1094,7 @@ pub async fn apply_staged_restore(
         };
         let file = staged.join(&entry.path);
         let present = match jetstream.get_stream(name).await {
-            Ok(stream) => Some(stream.cached_info().state.clone()),
+            Ok(_) => true,
             Err(error)
                 if matches!(
                     error.kind(),
@@ -1051,57 +1102,30 @@ pub async fn apply_staged_restore(
                         if error.error_code() == ErrorCode::STREAM_NOT_FOUND
                 ) =>
             {
-                None
+                false
             }
             Err(error) => return Err(nats_error(format!("stream {name}"))(error.to_string())),
         };
         if !file.exists() {
-            if present.is_some() {
+            if present {
                 continue;
             }
             return Err(BackupError::Damaged(format!(
                 "the staged snapshot of stream {name} is gone and NATS doesn't have the stream"
             )));
         }
-        let loading = staged.join(LOADING);
-        if let Some(ends) = present {
-            // An earlier start that stopped after NATS took the stream, and
-            // before it removed the snapshot, finished loading it: NATS
-            // didn't have the stream when that start began loading it, and
-            // it ends where the snapshot does.
-            let began = fs::read_to_string(&loading).is_ok_and(|began| began == *name);
-            let snapshot: Option<async_nats::jetstream::stream::State> =
-                serde_json::from_value(state.clone()).ok();
-            if !(began
-                && snapshot.is_some_and(|snapshot| {
-                    snapshot.last_sequence == ends.last_sequence
-                        && snapshot.last_timestamp == ends.last_timestamp
-                }))
-            {
-                return Err(BackupError::Refused(format!(
-                    "NATS already has stream {name}. A restore loads its streams into a NATS \
-                    whose JetStream holds none of them: start Trellis against a fresh \
-                    JetStream store"
-                )));
-            }
-            fs::remove_file(&file).map_err(file_error("remove", &file))?;
-            tracing::info!(stream = %name, "an earlier start restored stream");
-            continue;
+        if present {
+            return Err(BackupError::Refused(format!(
+                "NATS already has stream {name}. A restore loads its streams into a NATS whose \
+                JetStream holds none of them: start Trellis against a fresh JetStream store, \
+                or, if an earlier start of this restore stopped partway, restore again"
+            )));
         }
         let (sha256, _) = digest(&file)?;
         if sha256 != entry.sha256 {
             return Err(BackupError::Damaged(format!(
                 "the staged snapshot of stream {name} does not match its checksum"
             )));
-        }
-        // Recorded before NATS can have the stream, so a start after one
-        // that stopped once NATS took it knows the stream is this restore's.
-        {
-            let mut record = fs::File::create(&loading).map_err(file_error("write", &loading))?;
-            record
-                .write_all(name.as_bytes())
-                .and_then(|()| record.sync_all())
-                .map_err(file_error("write", &loading))?;
         }
         restore_stream(&client, name, config, state, &file).await?;
         fs::remove_file(&file).map_err(file_error("remove", &file))?;
@@ -1381,12 +1405,12 @@ mod tests {
     }
 
     /// The first start after a restore can stop after NATS took a stream and
-    /// before it removed that stream's snapshot, or lose NATS's answer. The
-    /// next start takes the stream as the one it was loading, finishes the
-    /// restore, and the installation serves; another stream under that name
-    /// is still refused.
+    /// before it removed that stream's snapshot, or lose NATS's answer, and
+    /// the next start then refuses the stream. Restoring again and starting
+    /// finishes the restore: every stream is the backup's, and the
+    /// installation serves. A stream no restore loaded still stops it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_restore_interrupted_after_nats_took_a_stream_finishes_on_the_next_start() {
+    async fn an_interrupted_restore_finishes_when_restored_again() {
         use crate::platform::auth::tests::runtime_rotation::{
             installation, start_broker, start_runtime,
         };
@@ -1417,6 +1441,21 @@ mod tests {
         // and prepared as a start prepares it before loading the streams.
         let fresh = root.join("fresh");
         let config_file = fresh.join("config/config.toml");
+        let prepared = || async {
+            let (mut restored, paths) =
+                RuntimeConfig::load_from_path_with_defaults(&config_file, defaults(&fresh))
+                    .unwrap();
+            crate::installation::prepare(
+                &mut restored,
+                &fresh.join("config"),
+                &paths.data,
+                crate::RuntimeMode::All,
+                true,
+            )
+            .await
+            .unwrap();
+            (restored, paths.data)
+        };
         restore(&saved, &config_file, defaults(&fresh), false).unwrap();
         let _broker = start_broker(
             &fresh,
@@ -1424,22 +1463,12 @@ mod tests {
             [ports[1], ports[2], ports[3]],
         )
         .await;
-        let (mut restored, paths) =
-            RuntimeConfig::load_from_path_with_defaults(&config_file, defaults(&fresh)).unwrap();
-        crate::installation::prepare(
-            &mut restored,
-            &fresh.join("config"),
-            &paths.data,
-            crate::RuntimeMode::All,
-            true,
-        )
-        .await
-        .unwrap();
+        let (restored, data) = prepared().await;
 
         // What the start that stopped left: the streams before one holding
-        // messages loaded and their snapshots removed, then that one's name
-        // recorded and the stream loaded, its snapshot still staged.
-        let staged = paths.data.join(STAGED);
+        // messages loaded and their snapshots removed, then that one loaded
+        // with its snapshot still staged.
+        let staged = data.join(STAGED);
         let streams: Vec<_> = manifest
             .entries
             .iter()
@@ -1457,55 +1486,57 @@ mod tests {
             .position(|(_, _, state, _)| state["last_seq"].as_u64() > Some(0))
             .expect("a stream with messages");
         let client = connect(&restored).await.unwrap();
-        for (name, config, state, file) in &streams[..interrupted] {
+        for (index, (name, config, state, file)) in streams[..=interrupted].iter().enumerate() {
             restore_stream(&client, name, config, state, file)
                 .await
                 .unwrap();
-            fs::remove_file(file).unwrap();
+            if index < interrupted {
+                fs::remove_file(file).unwrap();
+            }
         }
-        let (name, stream_config, state, file) = &streams[interrupted];
-        let jetstream = async_nats::jetstream::new(client.clone());
+        let refused = apply_staged_restore(&restored, &data).await;
+        assert!(
+            matches!(refused, Err(BackupError::Refused(_))),
+            "{refused:?}"
+        );
 
-        // Another stream by that name, there when loading began, is not
-        // the one the restore loaded.
+        // Restored again, over the same installation, without --force.
+        restore(&saved, &config_file, defaults(&fresh), false).unwrap();
+        let (restored, data) = prepared().await;
+
+        // A stream no restore loaded is not deleted for it.
+        let jetstream = async_nats::jetstream::new(client.clone());
         jetstream
             .create_stream(async_nats::jetstream::stream::Config {
-                name: (*name).clone(),
+                name: "UNRELATED".into(),
                 subjects: vec!["unrelated.>".into()],
                 ..Default::default()
             })
             .await
             .unwrap();
-        jetstream
-            .publish("unrelated.message", "not restored".into())
-            .await
-            .unwrap()
-            .await
-            .unwrap();
-        fs::write(staged.join(LOADING), name.as_bytes()).unwrap();
-        let refused = apply_staged_restore(&restored, &paths.data).await;
+        let refused = apply_staged_restore(&restored, &data).await;
         assert!(
-            matches!(refused, Err(BackupError::Refused(_))),
+            matches!(&refused, Err(BackupError::Refused(reason)) if reason.contains("UNRELATED")),
             "{refused:?}"
         );
-        jetstream.delete_stream(name.as_str()).await.unwrap();
-
-        fs::write(staged.join(LOADING), name.as_bytes()).unwrap();
-        restore_stream(&client, name, stream_config, state, file)
-            .await
-            .unwrap();
-        assert!(file.exists());
+        jetstream.delete_stream("UNRELATED").await.unwrap();
         let _ = client.drain().await;
 
-        assert!(apply_staged_restore(&restored, &paths.data).await.unwrap());
+        assert!(apply_staged_restore(&restored, &data).await.unwrap());
         assert!(!staged.exists());
         let client = connect(&restored).await.unwrap();
         let jetstream = async_nats::jetstream::new(client.clone());
         for (name, _, state, _) in &streams {
             let mut stream = jetstream.get_stream(name.as_str()).await.unwrap();
+            let info = stream.info().await.unwrap();
             assert_eq!(
-                Some(stream.info().await.unwrap().state.last_sequence),
+                Some(info.state.last_sequence),
                 state["last_seq"].as_u64(),
+                "stream {name}"
+            );
+            assert_eq!(
+                Some(info.state.messages),
+                state["messages"].as_u64(),
                 "stream {name}"
             );
         }

@@ -334,14 +334,15 @@ issuer-key folder, and stages the stream snapshots with the manifest in the
 data folder's `restore/`. The next start of a role including the platform
 loads each staged stream (`$JS.API.STREAM.RESTORE`) after pushing the NATS
 accounts and before the runtime starts, refusing a broker that already has
-one. Before loading a stream it records the stream's name in `restore/loading`
-(synced), and once NATS has it, removes its snapshot, so an interrupted load
-resumes. A start that finds a stream present with its snapshot still staged
-takes it as loaded only when `restore/loading` names it and its last sequence
-and timestamp are the snapshot's; that covers a start stopped, or an answer
-lost, after NATS took the stream. The JetStream identity marker is one of the
-restored streams, so the platform's binding check passes only when the
-database and streams came from the same installation.
+one; it removes each snapshot once NATS has the stream. An interrupted restore
+is run again: `restore` over a folder that still has a staged restore keeps
+the names of that restore's streams in `restore/unfinished.json`, and the next
+start, when NATS holds no stream outside that list, deletes those streams
+before loading the snapshots. That covers a start stopped, or an answer lost,
+after NATS took a stream but before its snapshot was removed. The JetStream
+identity marker is one of the restored streams, so the platform's binding
+check passes only when the database and streams came from the same
+installation.
 
 ## Utility Commands
 
