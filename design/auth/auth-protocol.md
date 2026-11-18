@@ -127,6 +127,13 @@ finite request, first send or resend, once its deadline has passed: a request
 whose transport acquisition, proof creation, or resend wakeup ran late fails as
 a timeout without reaching the broker.
 
+A provider gives an unverified request no reply. When it cannot verify one only
+because its authorization evidence is briefly unavailable, as while its
+revocation mirror catches up on a replacement transport generation that already
+serves the route, the Rust provider waits up to five seconds for that evidence
+and verifies again instead of dropping the request, which would leave the
+caller waiting out its whole deadline.
+
 Events retain signed authority by digest. Historical verification uses original
 JetStream publication time/sequence and the signed revocation cutoff, not replay
 time. Preserve immutable issued authority and authenticated trust history.

@@ -157,23 +157,27 @@ async function request(
   const reply = inbox(host.inboxPrefix);
   const proof = await host.createRequestProof(subject, payload, reply);
   const clock = host.clock ?? productionLiveClock;
-  const remaining = deadlineMs - clock.nowMs();
-  if (remaining <= 0) {
-    throw new LiveStreamError(
-      "setup_timeout",
-      "live opening reservation elapsed",
-    );
-  }
   const sub = host.nats.subscribe(reply);
   const replies = sub[Symbol.asyncIterator]();
   // The opening is sent again only when the broker reports that no provider
   // received it, as for requests.
-  const waitUntil =
-    clock.nowMs() + Math.min(SERVICE_AVAILABILITY_WAIT_MS, remaining);
+  const waitUntil = Math.min(
+    clock.nowMs() + SERVICE_AVAILABILITY_WAIT_MS,
+    deadlineMs,
+  );
   let pause = 100;
   try {
     let received: Msg | undefined;
     for (;;) {
+      // Proof creation or a late resend timer can run past the deadline. An
+      // opening sent then would reserve a provider session for a caller that
+      // has already been told it timed out, so it is not sent.
+      if (clock.nowMs() >= deadlineMs) {
+        throw new LiveStreamError(
+          "setup_timeout",
+          "live opening reservation elapsed",
+        );
+      }
       host.nats.publish(subject, payload, {
         headers: proofHeaders(proof, host.sessionKey),
         reply,
@@ -279,7 +283,8 @@ async function openLiveSession<T>(
   const clock = host.clock ?? productionLiveClock;
   // The local opening/reservation budget starts before the opening exchange
   // and does not restart when the first next() runs.
-  const deadline = clock.nowMs() + C.openReservationMs;
+  const startedMs = clock.nowMs();
+  const deadline = startedMs + C.openReservationMs;
   const permit = host.live.admitConsumer();
   let localGuard: LiveAuthorityGuard | undefined;
   let providerGuard: LiveAuthorityGuard | undefined;
@@ -294,7 +299,14 @@ async function openLiveSession<T>(
       },
     );
     localGuard = retainedLocal;
-    const response = await request(host, requestSubject, body, deadline);
+    // The opening exchange is a request, so the caller's timeout bounds it as
+    // it bounds any other request; activation keeps the full reservation.
+    const response = await request(
+      host,
+      requestSubject,
+      body,
+      Math.min(deadline, startedMs + host.timeoutMs),
+    );
     const verified = await verifyOffer(
       host,
       expectedBaseSubject,

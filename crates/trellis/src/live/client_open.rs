@@ -152,6 +152,13 @@ pub(crate) async fn open_client_session(
     let wait_until = tokio::time::Instant::now() + crate::client::SERVICE_AVAILABILITY_WAIT;
     let mut pause = std::time::Duration::from_millis(100);
     let response = loop {
+        // Signing, subscribing, or a late resend wakeup can run past the
+        // deadline, and the timeouts poll the send before their timer. An
+        // opening sent then would reserve a provider session for a caller
+        // that has already been told it timed out, so it is not sent.
+        if tokio::time::Instant::now() >= deadline {
+            return Err(TrellisClientError::Timeout);
+        }
         tokio::time::timeout_at(
             step_timeout(),
             lease.nats().publish_with_reply_and_headers(
