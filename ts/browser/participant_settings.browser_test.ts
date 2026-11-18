@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { chromium } from "playwright";
+import nacl from "tweetnacl";
+import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { codecs } from "../packages/trellis/generated.ts";
 import { API as authApi } from "../packages/trellis/internal_sdk/generated/apis/auth/mod.js";
 import { TrellisService } from "../packages/trellis/service/mod.ts";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import {
   BROWSER_ADMIN,
   browserRuntimeOptions,
   completeConsoleEntry,
   launchProfile,
+  loginCliAsAdministrator,
   startedServices,
 } from "./browser_test_support.ts";
 import { wireNatsGate } from "./console_test_support.ts";
@@ -281,5 +287,153 @@ test("an administrator overrides the only instance's settings, null included, wi
     }, browserRuntimeOptions());
   } finally {
     for (const service of services) await service.stop();
+  }
+});
+
+test("a service added without its IDL starts with the settings entered when it was added", async () => {
+  const services = startedServices();
+  try {
+    await withTrellisRuntime(async (runtime) => {
+      await runtime.ensureAdmin();
+      const seed = randomBytes(32);
+      const publicKey = Buffer.from(
+        nacl.sign.keyPair.fromSeed(seed).publicKey,
+      ).toString("base64url");
+      let claimId: string;
+      const admin = await launchProfile(runtime);
+      try {
+        const page = await admin.newPage();
+        await page.goto(`${runtime.trellisUrl}/console/admin/services/new`, {
+          waitUntil: "domcontentloaded",
+        });
+        await completeConsoleEntry(page, BROWSER_ADMIN);
+        await page.getByLabel("Name", { exact: true }).fill("orders-claimed");
+        await page.getByText("I already have a key", { exact: true }).click();
+        await page.getByLabel("Public key", { exact: true }).fill(publicKey);
+        // Without an IDL, each setting is a name and a value, typed by hand.
+        const add = page.getByRole("button", {
+          name: "Add a setting",
+          exact: true,
+        });
+        await add.click();
+        await page
+          .getByLabel("Name of setting 1", { exact: true })
+          .fill("endpoint");
+        await page
+          .getByLabel("Value of setting 1", { exact: true })
+          .fill("https://one.example");
+        await add.click();
+        await page
+          .getByLabel("Name of setting 2", { exact: true })
+          .fill("apiKey");
+        await page.getByLabel("Setting 2 is a secret", { exact: true }).check();
+        const secret = page.getByLabel("Value of setting 2", { exact: true });
+        assert.equal(await secret.getAttribute("type"), "password");
+        await secret.fill("k1");
+        await page
+          .getByRole("button", { name: "Add service", exact: true })
+          .click();
+        await page.getByText("orders-claimed was added.").waitFor();
+        claimId = (await page.getByTestId("created-id").textContent()) ?? "";
+        assert.notEqual(claimId, "");
+      } finally {
+        await admin.close();
+      }
+
+      // The CLI sets more by the service's name before its IDL is known:
+      // without a declaration, a value is JSON when it parses and text
+      // otherwise.
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      try {
+        const { run } = await loginCliAsAdministrator(
+          runtime,
+          await browser.newPage(),
+        );
+        const set = await run(
+          "svc",
+          "orders-claimed",
+          "config",
+          "set",
+          "region=east",
+          "legacyMode=true",
+        );
+        assert.equal(set.declared, false);
+        assert.deepEqual(
+          set.unused
+            .filter((item: { secret: boolean }) => !item.secret)
+            .map((item: { name: string; value: unknown }) => [
+              item.name,
+              item.value,
+            ])
+            .sort(),
+          [
+            ["endpoint", "https://one.example"],
+            ["legacyMode", true],
+            ["region", "east"],
+          ],
+        );
+      } finally {
+        await browser.close();
+      }
+
+      // The service connects with its IDL and is approved.
+      const connecting = services.add(
+        TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant,
+          seed: seed.toString("base64url"),
+          signal: services.signal,
+        }).orThrow(),
+      );
+      const pending = await runtime.waitFor(async () => {
+        const { items } = await runtime.callAdminRpc(
+          "authServiceUpdatesList",
+          {},
+        );
+        return items.find(
+          (update) =>
+            update.deploymentId === claimId && update.state === "pending",
+        );
+      });
+      const { update } = await runtime.callAdminRpc(
+        "authServiceUpdatesDecide",
+        {
+          updateId: pending.updateId,
+          decision: "approved",
+          expectedRevision: pending.revision,
+          idempotencyKey: ulid(),
+        },
+      );
+      const service = await connecting;
+      assert.equal(service.config.current.endpoint, "https://one.example");
+      assert.equal(service.config.current.apiKey, "k1");
+      assert.equal(service.config.current.region, "east");
+
+      // Its page keeps the setting its build doesn't use, marked as such.
+      const viewer = await launchProfile(runtime);
+      try {
+        const page = await viewer.newPage();
+        await page.goto(
+          `${runtime.trellisUrl}/console/admin/services/${update.deploymentId}#settings`,
+          { waitUntil: "domcontentloaded" },
+        );
+        await completeConsoleEntry(page, BROWSER_ADMIN);
+        const settings = page.getByRole("region", { name: "Settings" });
+        const unused = settings.getByLabel("Settings this build doesn't use");
+        await unused.getByText("Not used by this build").waitFor();
+        await unused.getByText("legacyMode", { exact: true }).waitFor();
+        assert.equal(
+          await settings.getByLabel("Region", { exact: true }).inputValue(),
+          "east",
+        );
+      } finally {
+        await viewer.close();
+      }
+    }, browserRuntimeOptions());
+  } finally {
+    await services.stop();
   }
 });

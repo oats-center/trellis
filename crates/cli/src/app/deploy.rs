@@ -1117,6 +1117,11 @@ async fn resolve_update_owner(id: &str) -> miette::Result<String> {
     if let Ok(deployment) = resolve_deployment_id(DeploymentKind::Service, id).await {
         return Ok(deployment);
     }
+    resolve_waiting_claim(id).await
+}
+
+/// The waiting service claim `id` names by ID or title.
+pub(super) async fn resolve_waiting_claim(id: &str) -> miette::Result<String> {
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let claims = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1()

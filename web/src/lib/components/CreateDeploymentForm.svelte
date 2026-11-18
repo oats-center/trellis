@@ -13,9 +13,17 @@
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { resolve } from "$lib/console_paths";
+  import {
+    freeSettings,
+    parseSetting,
+    type FreeSetting,
+  } from "$lib/console/settings.ts";
+  import type { JsonValue } from "@oatscenter/trellis/generated";
   import CopyButton from "$lib/components/CopyButton.svelte";
+  import FreeSettingRows from "$lib/components/FreeSettingRows.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
+  import SettingInput from "$lib/components/SettingInput.svelte";
 
   let { kind }: { kind: "service" | "device" } = $props();
   const trellis = getTrellis();
@@ -70,6 +78,11 @@
   // sent, and closing the dialog drops the last reference to it.
   let seed = $state<string | null>(null);
   let seedDialog: HTMLDialogElement | undefined = $state();
+  // Settings saved with the new service: typed by its IDL when it has one,
+  // otherwise named by hand.
+  let drafts = $state<Record<string, string>>({});
+  let revealed = $state<Record<string, boolean>>({});
+  let freeRows = $state<FreeSetting[]>([]);
 
   const participants = $derived(
     (resolution?.participants ?? [])
@@ -84,6 +97,11 @@
         : "",
   );
   const evidence = $derived(resolution?.packageEvidence);
+  const declaredSettings = $derived(
+    resolution?.participants.find(
+      (participant) => participant.participantId === participantId,
+    )?.config ?? [],
+  );
   const idlProblem = $derived.by((): string | null => {
     if (!root) return null;
     if (root.files.length === 0) return "Choose its .trellis files too.";
@@ -181,6 +199,8 @@
     if (disposed || pick !== rootPicks) return;
     root = chosen;
     epoch++;
+    drafts = {};
+    revealed = {};
     extras = {};
     wanted = [];
     extraErrors = {};
@@ -370,10 +390,44 @@
         : !canPerform(authority.authority, "serviceClaimsCreate")
     )
       return;
+    let settings: {
+      values: Record<string, JsonValue>;
+      secrets: Record<string, JsonValue>;
+    };
+    try {
+      settings = withIdl ? declaredValues() : freeSettings(freeRows);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      return;
+    }
     busy = true;
     error = null;
     const name = title.trim();
     let generated: string | null = null;
+    // Settings go in right after the service exists, before any instance of
+    // it can connect and read them.
+    const saveSettings = async (
+      target: apis.auth.ConfigSetInput["target"],
+    ): Promise<void> => {
+      if (
+        Object.keys(settings.values).length === 0 &&
+        Object.keys(settings.secrets).length === 0
+      )
+        return;
+      try {
+        await trellis
+          .configSet({
+            target,
+            values: settings.values,
+            secrets: settings.secrets,
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+      } catch (cause) {
+        if (disposed) return;
+        error = `${name} was added, but its settings weren't: ${projectConsoleError(cause).message} Set them on its page.`;
+      }
+    };
     let identityPublicKey: string | null = null;
     if (kind === "service") {
       if (keyMode === "create") {
@@ -393,6 +447,8 @@
             idempotencyKey: ulid(),
           })
           .orThrow();
+        if (disposed) return;
+        await saveSettings({ claimId: response.claim.claimId });
         if (disposed) return;
         added = {
           title: name,
@@ -416,6 +472,8 @@
           .orThrow();
         if (disposed) return;
         const deploymentId = response.deployment.deploymentId;
+        await saveSettings({ deploymentId });
+        if (disposed) return;
         added = {
           title: response.deployment.title,
           id: deploymentId,
@@ -462,6 +520,21 @@
     } finally {
       if (!disposed) busy = false;
     }
+  }
+
+  /** What was typed for the IDL's settings; untouched ones are left out. */
+  function declaredValues(): {
+    values: Record<string, JsonValue>;
+    secrets: Record<string, JsonValue>;
+  } {
+    const values: Record<string, JsonValue> = {};
+    const secrets: Record<string, JsonValue> = {};
+    for (const field of declaredSettings) {
+      const text = drafts[field.name];
+      if (text === undefined || text === "") continue;
+      (field.secret ? secrets : values)[field.name] = parseSetting(field, text);
+    }
+    return { values, secrets };
   }
 
   function closeSeed(): void {
@@ -763,6 +836,45 @@
             >
           </div>
         {/if}
+      {/if}
+      {#if withIdl && declaredSettings.length > 0}
+        <fieldset class="trellis-field" disabled={busy || uncertain}>
+          <legend class="trellis-field-label mb-1.5">Settings</legend>
+          <div class="space-y-3">
+            {#each declaredSettings as field (field.name)}
+              <SettingInput
+                {field}
+                id={`new-setting-${field.name}`}
+                value={drafts[field.name] ?? ""}
+                placeholder={field.default === undefined
+                  ? ""
+                  : `Default: ${typeof field.default === "string" ? field.default : JSON.stringify(field.default)}`}
+                disabled={busy || uncertain}
+                missing={field.required && !drafts[field.name]}
+                revealed={revealed[field.name] ?? false}
+                oninput={(text) => {
+                  drafts = { ...drafts, [field.name]: text };
+                  if (!text && revealed[field.name])
+                    revealed = { ...revealed, [field.name]: false };
+                }}
+                onreveal={() => {
+                  revealed = {
+                    ...revealed,
+                    [field.name]: !revealed[field.name],
+                  };
+                }}
+              />
+            {/each}
+          </div>
+        </fieldset>
+      {:else if !withIdl}
+        <div class="trellis-field">
+          <span class="trellis-field-label">Settings (optional)</span>
+          <FreeSettingRows bind:rows={freeRows} disabled={busy || uncertain} />
+          <span class="trellis-field-help"
+            >The service checks them against its IDL when it connects.</span
+          >
+        </div>
       {/if}
       {#if sharing}
         <div class="alert alert-warning block space-y-2" role="alert">

@@ -256,6 +256,19 @@ service EchoProvider {
   job work { title "Work"; description "The service's first job queue."; payload Value; result Value; }
 }
 service GrantKeeper { use auth { capability users.read; } }
+enum ConfiguredLevel { "info"; "debug"; }
+type ConfiguredRegions = list<string> | null;
+// A later build of the configured service: it needs a worker count, and it
+// takes several regions where the earlier build took one.
+service ConfiguredService {
+  config endpoint { title "Endpoint"; description "Where the service sends work."; type string; }
+  config apiKey { title "API key"; description "Key the endpoint accepts."; type string; secret; }
+  config signingKey { title "Signing key"; description "Signs callbacks when set."; type string | null; secret; }
+  config level { title "Log level"; description "Lowest level the service writes."; type ConfiguredLevel; default "info"; }
+  config region { title "Regions"; description "Where work is placed, when it matters."; type ConfiguredRegions; }
+  config port { title "Port"; description "Port the service listens on."; type int32; default 8080; restart; }
+  config workers { title "Workers"; description "How many jobs run at once."; type int32; }
+}
 // A later build of the fixture app, with a new default limit.
 agent ConfiguredAgent {
   config greeting { title "Greeting"; description "What the app says first."; type string; default "hello"; }

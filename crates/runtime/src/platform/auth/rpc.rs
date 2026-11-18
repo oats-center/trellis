@@ -35,6 +35,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
     super::service_updates::register_service_update_rpc(
         provider,
         store.clone(),
+        oauth.clone(),
         operational.clone(),
     );
     super::rpc_deployments::register_deployment_rpc(provider, store.clone(), operational, oauth);

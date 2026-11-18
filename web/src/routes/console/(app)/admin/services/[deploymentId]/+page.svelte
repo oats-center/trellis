@@ -589,6 +589,9 @@
         focus={page.url.searchParams.get("update") ?? undefined}
         onapplied={() => void load(deploymentId)}
       />{/if}
+    {#if canPerform(authority.authority, "configGet")}<ParticipantSettings
+        claimId={claim.claimId}
+      />{/if}
   {/if}
   {#if deployment && canPerform(authority.authority, "serviceUpdatesList")}<ServiceUpdates
       deploymentId={deployment.deploymentId}

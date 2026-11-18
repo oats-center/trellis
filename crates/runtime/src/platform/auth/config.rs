@@ -3,8 +3,11 @@
 //! See `design/core/config-patterns.md`. A service or device declares typed
 //! fields in IDL. Administrators store values per deployment, with optional
 //! overrides per instance; every write is a complete new revision of that
-//! target. Secret values are sealed with the installation's storage key and
-//! only the participant itself reads them back.
+//! target. Values are stored for any field name, declared or not: each build
+//! reads the fields it declares, checked against its own types, and ignores
+//! the rest, so values for a later build can be set while an earlier one runs.
+//! Secret values are sealed with the installation's storage key and only the
+//! participant itself reads them back.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -179,12 +182,17 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                         app_fields(&graph, &input.request_id)?;
                         // Connected users of the app reread only when told, so a
                         // declaration that changes what they read is announced.
-                        let stored = current(connection, &target.key())?;
-                        let empty = Map::new();
-                        let settings = stored.as_ref().map_or(&empty, |stored| &stored.values);
                         let read = |connection: &Connection| -> Result<Vec<_>, AuthError> {
                             let declared = Declared::of_target(connection, &target)?;
-                            Ok(effective(&declared, &[(settings, &empty, "client")])?
+                            let layer = layer(
+                                connection,
+                                storage,
+                                &declared,
+                                &target.key(),
+                                None,
+                                "client",
+                            )?;
+                            Ok(effective(&declared, &[layer])
                                 .into_iter()
                                 .map(|(name, value)| (name, value.value))
                                 .collect())
@@ -206,7 +214,8 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                             ],
                         )?;
                         if Some(read(connection)?) != before {
-                            let revision = stored.as_ref().map(|stored| stored.revision);
+                            let revision =
+                                current(connection, &target.key())?.map(|stored| stored.revision);
                             announce(connection, &target, revision, now)?;
                         }
                         response(connection, storage, &target)
@@ -232,18 +241,24 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                 _ => return Err(rpc_error(AuthError::Denied)),
             };
             blocking(move || {
-                engine.server.store().authority.transaction(|connection| {
+                let storage = engine.server.store();
+                storage.authority.transaction(|connection| {
                     let declared = Declared::client(connection, &client)?;
-                    let key = format!("client:{client}");
-                    let stored = current(connection, &key)?;
-                    let empty = Map::new();
-                    let settings = stored.as_ref().map_or(&empty, |stored| &stored.values);
-                    let values = effective(&declared, &[(settings, &empty, "client")])?
+                    let layer = layer(
+                        connection,
+                        storage,
+                        &declared,
+                        &format!("client:{client}"),
+                        None,
+                        "client",
+                    )?;
+                    let revision = layer.revision;
+                    let values = effective(&declared, &[layer])
                         .into_iter()
                         .filter_map(|(name, value)| value.value.map(|value| (name, value)))
                         .collect::<Map<_, _>>();
                     Ok(serde_json::from_value(json!({
-                        "revision": stored.as_ref().map(|stored| stored.revision),
+                        "revision": revision,
                         "values": values,
                     }))?)
                 })
@@ -291,10 +306,41 @@ enum Target {
     Client {
         client: String,
     },
+    /// A service added without its IDL, until its service connects and an
+    /// administrator approves it.
+    Claim {
+        claim: String,
+    },
 }
 
 impl Target {
     fn resolve(connection: &Connection, target: &AuthConfigTarget) -> Result<Self, AuthError> {
+        if let Some(claim) = &target.claim_id {
+            if target.deployment_id.is_some()
+                || target.instance_id.is_some()
+                || target.client_id.is_some()
+            {
+                return Err(AuthError::Invalid(
+                    "name a service claim alone, without a deployment or client".into(),
+                ));
+            }
+            let claim = claim.to_string();
+            let found: Option<(String, Option<String>)> = connection
+                .query_row(
+                    "SELECT state,deployment_id FROM auth_service_claims WHERE claim_id=?1",
+                    [&claim],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            // An approved claim is its deployment now, settings included.
+            return match found {
+                Some((state, _)) if state == "waiting" => Ok(Self::Claim { claim }),
+                Some((state, Some(deployment))) if state == "claimed" => {
+                    Ok(Self::Deployment { deployment })
+                }
+                _ => Err(AuthError::NotFound),
+            };
+        }
         if let Some(client) = &target.client_id {
             if target.deployment_id.is_some() || target.instance_id.is_some() {
                 return Err(AuthError::Invalid(
@@ -350,6 +396,7 @@ impl Target {
             Self::Deployment { deployment } => format!("deployment:{deployment}"),
             Self::Instance { instance, .. } => format!("instance:{instance}"),
             Self::Client { client } => format!("client:{client}"),
+            Self::Claim { claim } => format!("claim:{claim}"),
         }
     }
 
@@ -359,28 +406,35 @@ impl Target {
             Self::Deployment { deployment } | Self::Instance { deployment, .. } => {
                 format!("deployment:{deployment}")
             }
-            Self::Client { .. } => self.key(),
+            Self::Client { .. } | Self::Claim { .. } => self.key(),
         }
     }
 
     fn deployment(&self) -> Option<&str> {
         match self {
             Self::Deployment { deployment } | Self::Instance { deployment, .. } => Some(deployment),
-            Self::Client { .. } => None,
+            Self::Client { .. } | Self::Claim { .. } => None,
         }
     }
 
     fn instance(&self) -> Option<&str> {
         match self {
             Self::Instance { instance, .. } => Some(instance),
-            Self::Deployment { .. } | Self::Client { .. } => None,
+            _ => None,
         }
     }
 
     fn client(&self) -> Option<&str> {
         match self {
             Self::Client { client } => Some(client),
-            Self::Deployment { .. } | Self::Instance { .. } => None,
+            _ => None,
+        }
+    }
+
+    fn claim(&self) -> Option<&str> {
+        match self {
+            Self::Claim { claim } => Some(claim),
+            _ => None,
         }
     }
 
@@ -389,25 +443,28 @@ impl Target {
             "deploymentId": self.deployment(),
             "instanceId": self.instance(),
             "clientId": self.client(),
+            "claimId": self.claim(),
         }))?)
     }
 }
 
-/// The fields one participant revision declares, with the graph their types live in.
+/// The fields one build declares, with the graph their types live in.
 struct Declared {
     graph: Option<Arc<PackageGraph>>,
     fields: BTreeMap<String, ConfigFieldDefinition>,
 }
 
 impl Declared {
-    fn of(connection: &Connection, participant: &str, revision: u64) -> Result<Self, AuthError> {
-        let evidence: String = connection.query_row(
-            "SELECT projection_json FROM auth_installed_participants \
-            WHERE participant_id=?1 AND revision=?2",
-            params![participant, revision],
-            |row| row.get(0),
-        )?;
-        let graph = compile_evidence(decode(&evidence)?)
+    fn none() -> Self {
+        Self {
+            graph: None,
+            fields: BTreeMap::new(),
+        }
+    }
+
+    /// The fields `participant` declares in a package evidence document.
+    fn compile(evidence: &str, participant: &str) -> Result<Self, AuthError> {
+        let graph = compile_evidence(decode(evidence)?)
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
         let fields = graph
             .packages()
@@ -421,6 +478,16 @@ impl Declared {
             graph: Some(graph),
             fields,
         })
+    }
+
+    fn of(connection: &Connection, participant: &str, revision: u64) -> Result<Self, AuthError> {
+        let evidence: String = connection.query_row(
+            "SELECT projection_json FROM auth_installed_participants \
+            WHERE participant_id=?1 AND revision=?2",
+            params![participant, revision],
+            |row| row.get(0),
+        )?;
+        Self::compile(&evidence, participant)
     }
 
     /// The fields of the build a deployment currently has installed. A
@@ -437,10 +504,24 @@ impl Declared {
             .optional()?;
         match installed {
             Some((participant, revision)) => Self::of(connection, &participant, revision),
-            None => Ok(Self {
-                graph: None,
-                fields: BTreeMap::new(),
-            }),
+            None => Ok(Self::none()),
+        }
+    }
+
+    /// The fields of the build a claim's service submitted, once it connected.
+    fn submitted(connection: &Connection, claim: &str) -> Result<Self, AuthError> {
+        let pending: Option<(String, String)> = connection
+            .query_row(
+                "SELECT participant_id,evidence_json FROM auth_service_updates \
+                WHERE deployment_id=?1 AND state='pending' \
+                ORDER BY requested_at DESC,update_id DESC LIMIT 1",
+                [claim],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        match pending {
+            Some((participant, evidence)) => Self::compile(&evidence, &participant),
+            None => Ok(Self::none()),
         }
     }
 
@@ -455,10 +536,7 @@ impl Declared {
             )
             .optional()?;
         let Some((request, evidence)) = declared else {
-            return Ok(Self {
-                graph: None,
-                fields: BTreeMap::new(),
-            });
+            return Ok(Self::none());
         };
         let graph = compile_evidence(decode(&evidence)?)
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
@@ -475,41 +553,57 @@ impl Declared {
                 Self::installed(connection, deployment)
             }
             Target::Client { client } => Self::client(connection, client),
+            Target::Claim { claim } => Self::submitted(connection, claim),
         }
     }
 
-    fn field(&self, name: &str) -> Result<&ConfigFieldDefinition, AuthError> {
-        self.fields
-            .get(name)
-            .ok_or_else(|| AuthError::Invalid(format!("this build has no setting named {name}")))
-    }
-
-    /// The JSON Schema every value of `name` must satisfy.
-    fn schema(&self, name: &str) -> Result<Value, AuthError> {
-        let field = self.field(name)?;
-        let graph = self.graph.as_deref().ok_or(AuthError::Unavailable)?;
-        trellis_idl::expression_json_schema(graph, &field.ty)
-            .map_err(|error| AuthError::Invalid(error.to_string()))
-    }
-
-    /// Why `value` cannot be stored for `name`, if it cannot.
+    /// Why `value`, stored for the declared field `name`, doesn't fit its type.
+    /// A secret's value never appears in the reason.
     fn problem(&self, name: &str, value: &Value) -> Result<Option<String>, AuthError> {
-        let schema = self.schema(name)?;
+        let field = &self.fields[name];
+        let graph = self.graph.as_deref().ok_or(AuthError::Unavailable)?;
+        let schema = schema(graph, field)?;
         let validator = jsonschema::validator_for(&schema)
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
-        let problem = validator
-            .iter_errors(value)
-            .next()
-            .map(|error| format!("{name}: {error}"));
+        let problem = validator.iter_errors(value).next().map(|error| {
+            if field.secret {
+                format!("{name}: the stored secret doesn't fit the declared type")
+            } else {
+                format!("{name}: {error}")
+            }
+        });
         Ok(problem)
     }
+}
 
-    fn check(&self, name: &str, value: &Value) -> Result<(), AuthError> {
-        match self.problem(name, value)? {
-            Some(problem) => Err(AuthError::Invalid(problem)),
-            None => Ok(()),
-        }
+fn schema(graph: &PackageGraph, field: &ConfigFieldDefinition) -> Result<Value, AuthError> {
+    trellis_idl::expression_json_schema(graph, &field.ty)
+        .map_err(|error| AuthError::Invalid(error.to_string()))
+}
+
+/// A declared field as `AuthConfigDeclaration` describes it.
+pub(super) fn declaration(
+    graph: &PackageGraph,
+    name: &str,
+    field: &ConfigFieldDefinition,
+) -> Result<Map<String, Value>, AuthError> {
+    let mut entry = json!({
+        "name": name,
+        "title": field.docs.title,
+        "description": field.docs.description,
+        "schema": schema(graph, field)?,
+        "required": field.default.is_none(),
+        "secret": field.secret,
+        "restart": field.restart,
+    });
+    // Absent and JSON null differ for `json` fields, so absent keys stay absent.
+    if let Some(default) = &field.default {
+        entry["default"] = default.clone();
     }
+    let Value::Object(entry) = entry else {
+        unreachable!("a JSON object literal");
+    };
+    Ok(entry)
 }
 
 /// The settings one app request in `graph` declares.
@@ -592,8 +686,117 @@ fn seal_secrets(
         .map_err(|_| AuthError::Unavailable)
 }
 
-/// One source of stored values: settings, secrets, and where they come from.
-type Layer<'a> = (&'a Map<String, Value>, &'a Map<String, Value>, &'static str);
+/// What one target's stored revisions give a build.
+struct Layer {
+    source: &'static str,
+    /// The revision read, absent when nothing is stored.
+    revision: Option<u32>,
+    /// For each declared field, the value this build uses from here, and why
+    /// the newest value stored here doesn't fit it.
+    fields: BTreeMap<String, (Option<Value>, Option<String>)>,
+    /// The revision's settings and secrets, for what the build doesn't declare.
+    values: Map<String, Value>,
+    secrets: Map<String, Value>,
+}
+
+/// Read `key` as of revision `upto` (the current one when absent) for the
+/// build that declares `declared`. A stored value that doesn't fit the build,
+/// by type or by being a secret where the build wants a setting or the other
+/// way round, is skipped for the value the field had before it, so a value
+/// set for a later build never disturbs the one running. A field stored
+/// nowhere before that has no value here.
+fn layer(
+    connection: &Connection,
+    storage: &OAuthStorage,
+    declared: &Declared,
+    key: &str,
+    upto: Option<u32>,
+    source: &'static str,
+) -> Result<Layer, AuthError> {
+    let mut statement = connection.prepare(
+        "SELECT revision,values_json,sealed_secrets FROM auth_config_revisions \
+        WHERE target_key=?1 AND (?2 IS NULL OR revision<=?2) ORDER BY revision DESC",
+    )?;
+    let rows = statement.query_map(params![key, upto], |row| {
+        Ok((
+            row.get::<_, u32>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<Vec<u8>>>(2)?,
+        ))
+    })?;
+    let mut result = Layer {
+        source,
+        revision: None,
+        fields: BTreeMap::new(),
+        values: Map::new(),
+        secrets: Map::new(),
+    };
+    let mut problems = BTreeMap::new();
+    let mut open: Vec<&String> = declared.fields.keys().collect();
+    for row in rows {
+        if open.is_empty() && result.revision.is_some() {
+            break;
+        }
+        let (revision, values, sealed) = row?;
+        let values: Map<String, Value> = decode(&values)?;
+        let secrets = open_secrets(storage, key, sealed.as_deref())?;
+        let newest = result.revision.is_none();
+        let mut unresolved = Vec::new();
+        for name in open {
+            let field = &declared.fields[name];
+            let (wanted, other) = if field.secret {
+                (&secrets, &values)
+            } else {
+                (&values, &secrets)
+            };
+            let problem = match wanted.get(name.as_str()) {
+                Some(value) => match declared.problem(name, value)? {
+                    None => {
+                        let problem = problems.remove(name);
+                        result
+                            .fields
+                            .insert(name.clone(), (Some(value.clone()), problem));
+                        continue;
+                    }
+                    Some(problem) => problem,
+                },
+                None if other.contains_key(name.as_str()) => {
+                    if field.secret {
+                        format!(
+                            "{name} is stored as a plain setting, but this build declares it \
+                            secret; set it as a secret"
+                        )
+                    } else {
+                        format!(
+                            "{name} is stored as a secret, but this build declares a plain \
+                            setting; set it as a value"
+                        )
+                    }
+                }
+                None => {
+                    let problem = problems.remove(name);
+                    result.fields.insert(name.clone(), (None, problem));
+                    continue;
+                }
+            };
+            if newest {
+                problems.insert(name.clone(), problem);
+            }
+            unresolved.push(name);
+        }
+        open = unresolved;
+        if newest {
+            result.revision = Some(revision);
+            result.values = values;
+            result.secrets = secrets;
+        }
+    }
+    for name in open {
+        let problem = problems.remove(name);
+        result.fields.insert(name.clone(), (None, problem));
+    }
+    Ok(result)
+}
 
 /// A field's value after instance overrides, deployment values, and defaults.
 struct Effective {
@@ -602,159 +805,245 @@ struct Effective {
     invalid: Option<String>,
 }
 
-/// Each layer is (settings, secrets, source), most specific first. A stored
-/// value that no longer matches the build's type is skipped and reported.
-fn effective(
-    declared: &Declared,
-    layers: &[Layer<'_>],
-) -> Result<BTreeMap<String, Effective>, AuthError> {
-    let mut result = BTreeMap::new();
-    for (name, field) in &declared.fields {
-        let mut found = None;
-        let mut invalid = None;
-        for (settings, secrets, source) in layers {
-            let stored = if field.secret { secrets } else { settings };
-            let Some(value) = stored.get(name) else {
-                continue;
-            };
-            match declared.problem(name, value)? {
-                None => {
-                    found = Some((value.clone(), *source));
+/// Layers are most specific first.
+fn effective(declared: &Declared, layers: &[Layer]) -> BTreeMap<String, Effective> {
+    declared
+        .fields
+        .iter()
+        .map(|(name, field)| {
+            let mut found = None;
+            let mut invalid = None;
+            for layer in layers {
+                let (value, problem) = &layer.fields[name];
+                invalid = invalid.or_else(|| problem.clone());
+                if let Some(value) = value {
+                    found = Some((value.clone(), layer.source));
                     break;
                 }
-                Some(problem) => invalid = invalid.or(Some(problem)),
+            }
+            let (value, source) = match (found, &field.default) {
+                (Some((value, source)), _) => (Some(value), source),
+                (None, Some(default)) => (Some(default.clone()), "default"),
+                (None, None) => (None, "unset"),
+            };
+            (
+                name.clone(),
+                Effective {
+                    value,
+                    source,
+                    invalid,
+                },
+            )
+        })
+        .collect()
+}
+
+/// The target's own layer and, for an instance, its deployment's beneath it,
+/// each as of `upto` (current when absent). A layer an instance had nothing
+/// stored in when it connected is left out.
+fn layers(
+    connection: &Connection,
+    storage: &OAuthStorage,
+    declared: &Declared,
+    target: &Target,
+    upto: Option<(Option<u32>, Option<u32>)>,
+) -> Result<Vec<Layer>, AuthError> {
+    let base = match target {
+        Target::Client { .. } => "client",
+        _ => "deployment",
+    };
+    let mut layers = Vec::new();
+    match upto {
+        None => {
+            if target.instance().is_some() {
+                layers.push(layer(
+                    connection,
+                    storage,
+                    declared,
+                    &target.key(),
+                    None,
+                    "instance",
+                )?);
+            }
+            layers.push(layer(
+                connection,
+                storage,
+                declared,
+                &target.base_key(),
+                None,
+                base,
+            )?);
+        }
+        Some((instance, deployment)) => {
+            if let (Some(revision), Some(_)) = (instance, target.instance()) {
+                layers.push(layer(
+                    connection,
+                    storage,
+                    declared,
+                    &target.key(),
+                    Some(revision),
+                    "instance",
+                )?);
+            }
+            if let Some(revision) = deployment {
+                layers.push(layer(
+                    connection,
+                    storage,
+                    declared,
+                    &target.base_key(),
+                    Some(revision),
+                    base,
+                )?);
             }
         }
-        let (value, source) = match (found, &field.default) {
-            (Some((value, source)), _) => (Some(value), source),
-            (None, Some(default)) => (Some(default.clone()), "default"),
-            (None, None) => (None, "unset"),
-        };
-        result.insert(
-            name.clone(),
-            Effective {
-                value,
-                source,
-                invalid,
-            },
-        );
     }
-    Ok(result)
+    Ok(layers)
 }
 
 /// The administrator's view of a target: fields with settings shown and
-/// secrets reduced to whether they are set, plus each instance's connect state.
+/// secrets reduced to whether they are set, stored values the build doesn't
+/// use, plus each instance's connect state.
 fn response(
     connection: &Connection,
     storage: &OAuthStorage,
     target: &Target,
 ) -> Result<AuthConfigResponse, AuthError> {
     let declared = Declared::of_target(connection, target)?;
-    let deployment_key = target.base_key();
-    let deployment = current(connection, &deployment_key)?;
-    let instance = match target.instance() {
-        Some(_) => current(connection, &target.key())?,
-        None => None,
-    };
-    let empty = Map::new();
-    let deployment_secrets = open_secrets(
-        storage,
-        &deployment_key,
-        deployment
-            .as_ref()
-            .and_then(|stored| stored.sealed.as_deref()),
-    )?;
-    let instance_secrets = open_secrets(
-        storage,
-        &target.key(),
-        instance
-            .as_ref()
-            .and_then(|stored| stored.sealed.as_deref()),
-    )?;
-    let mut layers = Vec::new();
-    if let Some(stored) = &instance {
-        layers.push((&stored.values, &instance_secrets, "instance"));
-    }
-    layers.push((
-        deployment.as_ref().map_or(&empty, |stored| &stored.values),
-        &deployment_secrets,
-        "deployment",
-    ));
-    let effective = effective(&declared, &layers)?;
+    let layers = layers(connection, storage, &declared, target, None)?;
+    let resolved = effective(&declared, &layers);
     let mut fields = Vec::new();
     let mut missing = Vec::new();
-    for (name, field) in &declared.fields {
-        let value = &effective[name];
-        if field.default.is_none() && value.value.is_none() {
-            missing.push(name.clone());
+    if let Some(graph) = declared.graph.as_deref() {
+        for (name, field) in &declared.fields {
+            let value = &resolved[name];
+            if value.value.is_none() {
+                missing.push(name.clone());
+            }
+            let mut entry = declaration(graph, name, field)?;
+            entry.insert(
+                "isSet".into(),
+                json!(matches!(value.source, "instance" | "deployment" | "client")),
+            );
+            entry.insert("source".into(), json!(value.source));
+            if let (false, Some(current)) = (field.secret, &value.value) {
+                entry.insert("value".into(), current.clone());
+            }
+            if let Some(invalid) = &value.invalid {
+                entry.insert("invalid".into(), json!(invalid));
+            }
+            fields.push(Value::Object(entry));
         }
-        let mut entry = json!({
-            "name": name,
-            "title": field.docs.title,
-            "description": field.docs.description,
-            "schema": declared.schema(name)?,
-            "required": field.default.is_none(),
-            "secret": field.secret,
-            "restart": field.restart,
-            "isSet": matches!(value.source, "instance" | "deployment" | "client"),
-            "source": value.source,
-        });
-        // Absent and JSON null differ for `json` fields, so absent keys stay absent.
-        if let Some(default) = &field.default {
-            entry["default"] = default.clone();
+    }
+    let mut unused = Vec::new();
+    let mut seen = BTreeSet::new();
+    for layer in &layers {
+        for (name, value) in &layer.values {
+            if !declared.fields.contains_key(name) && seen.insert(name.clone()) {
+                unused.push(json!({
+                    "name": name,
+                    "secret": false,
+                    "value": value,
+                    "source": layer.source,
+                }));
+            }
         }
-        if let (false, Some(current)) = (field.secret, &value.value) {
-            entry["value"] = current.clone();
+        for name in layer.secrets.keys() {
+            if !declared.fields.contains_key(name) && seen.insert(name.clone()) {
+                unused.push(json!({ "name": name, "secret": true, "source": layer.source }));
+            }
         }
-        if let Some(invalid) = &value.invalid {
-            entry["invalid"] = json!(invalid);
-        }
-        fields.push(entry);
     }
     let mut statement = connection.prepare(
-        "SELECT i.instance_id,i.title,c.deployment_revision,c.instance_revision,c.connected_at \
-        FROM auth_instances i LEFT JOIN auth_config_connections c USING(instance_id) \
+        "SELECT i.instance_id,i.title,c.deployment_revision,c.instance_revision,c.connected_at,\
+        d.participant_id,i.installed_revision \
+        FROM auth_instances i JOIN auth_deployments d ON d.deployment_id=i.deployment_id \
+        LEFT JOIN auth_config_connections c ON c.instance_id=i.instance_id \
         WHERE i.deployment_id=?1 AND i.state='active' AND (?2 IS NULL OR i.instance_id=?2) \
         ORDER BY i.instance_id",
     )?;
-    let instances = statement
+    type Row = (
+        String,
+        String,
+        Option<u32>,
+        Option<u32>,
+        Option<i64>,
+        String,
+        u64,
+    );
+    let rows = statement
         .query_map(params![target.deployment(), target.instance()], |row| {
             Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<u32>>(2)?,
-                row.get::<_, Option<u32>>(3)?,
-                row.get::<_, Option<i64>>(4)?,
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
             ))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .map(
-            |(instance, title, revision, instance_revision, connected)| {
-                Ok(json!({
-                    "instanceId": instance,
-                    "title": title,
-                    "connectedRevision": revision,
-                    "connectedInstanceRevision": instance_revision,
-                    "connectedAt": connected.map(timestamp).transpose()?,
-                }))
-            },
-        )
-        .collect::<Result<Vec<_>, AuthError>>()?;
-    let revision = match target {
-        Target::Deployment { .. } | Target::Client { .. } => {
-            deployment.as_ref().map(|stored| stored.revision)
-        }
-        Target::Instance { .. } => instance.as_ref().map(|stored| stored.revision),
+        .collect::<rusqlite::Result<Vec<Row>>>()?;
+    let mut builds: BTreeMap<u64, Declared> = BTreeMap::new();
+    let mut instances = Vec::new();
+    for (instance, title, revision, instance_revision, connected, participant, build) in rows {
+        // Only what the instance's own build reads after a restart counts:
+        // values for fields it doesn't declare, or that don't fit it, leave
+        // it as it is.
+        let restart_pending = match connected {
+            None => false,
+            Some(_) => {
+                let declared = match builds.entry(build) {
+                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(Declared::of(connection, &participant, build)?)
+                    }
+                };
+                let declared = &*declared;
+                let own = Target::Instance {
+                    deployment: target.deployment().unwrap_or_default().to_owned(),
+                    instance: instance.clone(),
+                };
+                let now = effective(
+                    declared,
+                    &self::layers(connection, storage, declared, &own, None)?,
+                );
+                let then = effective(
+                    declared,
+                    &self::layers(
+                        connection,
+                        storage,
+                        declared,
+                        &own,
+                        Some((instance_revision, revision)),
+                    )?,
+                );
+                declared
+                    .fields
+                    .iter()
+                    .any(|(name, field)| field.restart && now[name].value != then[name].value)
+            }
+        };
+        instances.push(json!({
+            "instanceId": instance,
+            "title": title,
+            "connectedRevision": revision,
+            "connectedInstanceRevision": instance_revision,
+            "connectedAt": connected.map(timestamp).transpose()?,
+            "restartPending": restart_pending,
+        }));
+    }
+    let deployment_revision = match target {
+        Target::Instance { .. } => layers.get(1).and_then(|layer| layer.revision),
+        _ => None,
     };
     Ok(serde_json::from_value(json!({
         "target": target.wire()?,
-        "revision": revision,
-        "deploymentRevision": target
-            .instance()
-            .and(deployment.as_ref().map(|stored| stored.revision)),
+        "revision": layers[0].revision,
+        "deploymentRevision": deployment_revision,
+        "declared": declared.graph.is_some(),
         "fields": fields,
         "missing": missing,
+        "unused": unused,
         "instances": instances,
     }))?)
 }
@@ -776,22 +1065,28 @@ fn write_revision(
     let key = target.key();
     connection.execute(
         "INSERT INTO auth_config_revisions(target_key,revision,deployment_id,instance_id,\
-        client_id,values_json,sealed_secrets,changed_json,changed_secrets_json,created_by,\
-        created_at) VALUES(?1,?2,?3,?4,?11,?5,?6,?7,?8,?9,?10)",
+        client_id,claim_id,values_json,sealed_secrets,changed_json,changed_secrets_json,\
+        created_by,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
         params![
             key,
             revision,
             target.deployment(),
             target.instance(),
+            target.client(),
+            target.claim(),
             json(values)?,
             seal_secrets(storage, &key, secrets)?,
             json(changed)?,
             json(changed_secrets)?,
             actor,
             now,
-            target.client()
         ],
     )?;
+    // Nothing runs as a claim yet: its service reads the settings when it
+    // connects as the deployment's instance.
+    if target.claim().is_some() {
+        return Ok(());
+    }
     announce(connection, target, Some(revision), now)
 }
 
@@ -835,6 +1130,9 @@ fn changed_keys(before: &Map<String, Value>, after: &Map<String, Value>) -> BTre
         .collect()
 }
 
+/// Store values for any field name, declared or not. Whether a value fits is
+/// each build's own question, answered when it reads them, so a value meant
+/// for a later build can be set while an earlier one runs.
 fn set_values(
     storage: &OAuthStorage,
     identity: &Mutation,
@@ -862,39 +1160,42 @@ fn set_values(
         .mutate(&safe, "rpc.config.set", &audit, now, |connection| {
             let target = Target::resolve(connection, &input.target)?;
             let declared = Declared::of_target(connection, &target)?;
-            let mut touches_settings = !values.is_empty();
-            let mut touches_secrets = !secrets.is_empty();
-            for name in &unset {
-                if declared.field(name)?.secret {
-                    touches_secrets = true;
-                } else {
-                    touches_settings = true;
+            for name in values.keys().chain(secrets.keys()) {
+                // The IDL's rule for field names, so a build can declare it.
+                let mut characters = name.chars();
+                if !characters.next().is_some_and(|c| c.is_ascii_lowercase())
+                    || !characters.all(|c| c.is_ascii_alphanumeric())
+                {
+                    return Err(AuthError::Invalid(format!(
+                        "{name} isn't a setting name; names are lowerCamelCase, such as databaseUrl"
+                    )));
+                }
+                if values.contains_key(name) && secrets.contains_key(name) {
+                    return Err(AuthError::Invalid(format!(
+                        "{name} is given both as a setting and as a secret"
+                    )));
+                }
+                // A value typed for a known secret would be stored where
+                // every administrator reads it.
+                if values.contains_key(name)
+                    && declared.fields.get(name).is_some_and(|field| field.secret)
+                {
+                    return Err(AuthError::Invalid(format!(
+                        "{name} is a secret; set it as a secret"
+                    )));
                 }
             }
-            if !touches_settings && !touches_secrets {
+            // Every user of an app reads its settings, so nothing is secret.
+            if target.client().is_some() && !secrets.is_empty() {
+                return Err(AuthError::Invalid(
+                    "an app's settings are public, so it has no secrets".into(),
+                ));
+            }
+            if values.is_empty() && secrets.is_empty() && unset.is_empty() {
                 return Err(AuthError::Invalid("there is nothing to change".into()));
-            }
-            if touches_settings {
-                SqliteAuthorizationStore::require_administration(
-                    connection,
-                    &identity.actor,
-                    Administration::ManageConfig,
-                )?;
-            }
-            if touches_secrets {
-                SqliteAuthorizationStore::require_administration(
-                    connection,
-                    &identity.actor,
-                    Administration::ManageConfigSecrets,
-                )?;
             }
             let key = target.key();
             let previous = current(connection, &key)?;
-            if previous.as_ref().map(|stored| stored.revision)
-                != input.expected_revision.as_ref().map(|revision| revision.0)
-            {
-                return Err(AuthError::Conflict);
-            }
             let before_values = previous
                 .as_ref()
                 .map(|stored| stored.values.clone())
@@ -906,24 +1207,28 @@ fn set_values(
                     .as_ref()
                     .and_then(|stored| stored.sealed.as_deref()),
             )?;
+            let mut touches_settings = !values.is_empty();
+            let mut touches_secrets = !secrets.is_empty();
+            for name in &unset {
+                let secret = match declared.fields.get(name.as_str()) {
+                    Some(field) => field.secret,
+                    None => before_secrets.contains_key(name.as_str()),
+                };
+                if secret {
+                    touches_secrets = true;
+                } else {
+                    touches_settings = true;
+                }
+            }
+            // A field is stored either as a setting or as a secret.
             let mut after_values = before_values.clone();
             let mut after_secrets = before_secrets.clone();
             for (name, value) in &values {
-                if declared.field(name)?.secret {
-                    return Err(AuthError::Invalid(format!(
-                        "{name} is a secret; set it as a secret"
-                    )));
-                }
-                declared.check(name, value)?;
+                after_secrets.remove(name);
                 after_values.insert(name.clone(), value.clone());
             }
             for (name, value) in &secrets {
-                if !declared.field(name)?.secret {
-                    return Err(AuthError::Invalid(format!(
-                        "{name} is not a secret; set it as a value"
-                    )));
-                }
-                declared.check(name, value)?;
+                after_values.remove(name);
                 after_secrets.insert(name.clone(), value.clone());
             }
             for name in &unset {
@@ -932,6 +1237,25 @@ fn set_values(
             }
             let changed = changed_keys(&before_values, &after_values);
             let changed_secrets = changed_keys(&before_secrets, &after_secrets);
+            if touches_settings || !changed.is_empty() {
+                SqliteAuthorizationStore::require_administration(
+                    connection,
+                    &identity.actor,
+                    Administration::ManageConfig,
+                )?;
+            }
+            if touches_secrets || !changed_secrets.is_empty() {
+                SqliteAuthorizationStore::require_administration(
+                    connection,
+                    &identity.actor,
+                    Administration::ManageConfigSecrets,
+                )?;
+            }
+            if previous.as_ref().map(|stored| stored.revision)
+                != input.expected_revision.as_ref().map(|revision| revision.0)
+            {
+                return Err(AuthError::Conflict);
+            }
             if !changed.is_empty() || !changed_secrets.is_empty() {
                 let revision = previous.as_ref().map_or(1, |stored| stored.revision + 1);
                 write_revision(
@@ -1073,9 +1397,44 @@ fn revisions(
     })
 }
 
+/// Approving a claim makes its settings the new deployment's, every revision
+/// included. Secrets are sealed to their target, so each revision's secrets
+/// are sealed again for the deployment.
+pub(super) fn adopt_claim(
+    connection: &Connection,
+    storage: &OAuthStorage,
+    claim: &str,
+    deployment: &str,
+) -> Result<(), AuthError> {
+    let from = format!("claim:{claim}");
+    let to = format!("deployment:{deployment}");
+    let rows = connection
+        .prepare("SELECT revision,sealed_secrets FROM auth_config_revisions WHERE target_key=?1")?
+        .query_map([&from], |row| {
+            Ok((row.get::<_, u32>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (revision, sealed) in rows {
+        let secrets = open_secrets(storage, &from, sealed.as_deref())?;
+        connection.execute(
+            "UPDATE auth_config_revisions SET target_key=?3,deployment_id=?4,claim_id=NULL,\
+            sealed_secrets=?5 WHERE target_key=?1 AND revision=?2",
+            params![
+                from,
+                revision,
+                to,
+                deployment,
+                seal_secrets(storage, &to, &secrets)?
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 /// A service or device reads its own effective configuration, secrets
-/// included. At connect, the revisions it loaded are recorded so restart-only
-/// settings show which instances still run older values.
+/// included, as the build it runs declares it. At connect, the revisions it
+/// loaded are recorded so restart-only settings show which instances still
+/// run older values.
 fn own_config(
     storage: &OAuthStorage,
     principal: &str,
@@ -1102,39 +1461,20 @@ fn own_config(
                 .ok_or(AuthError::Denied)?;
         // The fields of the build this instance runs, which may trail its deployment.
         let declared = Declared::of(connection, &participant, revision)?;
-        let deployment_key = format!("deployment:{deployment}");
-        let instance_key = format!("instance:{instance}");
-        let deployment_stored = current(connection, &deployment_key)?;
-        let instance_stored = current(connection, &instance_key)?;
-        let empty = Map::new();
-        let deployment_secrets = open_secrets(
-            storage,
-            &deployment_key,
-            deployment_stored.as_ref().and_then(|stored| stored.sealed.as_deref()),
-        )?;
-        let instance_secrets = open_secrets(
-            storage,
-            &instance_key,
-            instance_stored.as_ref().and_then(|stored| stored.sealed.as_deref()),
-        )?;
-        let effective = effective(
-            &declared,
-            &[
-                (
-                    instance_stored.as_ref().map_or(&empty, |stored| &stored.values),
-                    &instance_secrets,
-                    "instance",
-                ),
-                (
-                    deployment_stored.as_ref().map_or(&empty, |stored| &stored.values),
-                    &deployment_secrets,
-                    "deployment",
-                ),
-            ],
-        )?;
+        let target = Target::Instance {
+            deployment: deployment.clone(),
+            instance: instance.clone(),
+        };
+        let layers = layers(connection, storage, &declared, &target, None)?;
+        let instance_revision = layers[0].revision;
+        let deployment_revision = layers[1].revision;
         let mut values = Map::new();
         let mut missing = Vec::new();
-        for (name, value) in effective {
+        let mut invalid = Map::new();
+        for (name, value) in effective(&declared, &layers) {
+            if let Some(problem) = value.invalid {
+                invalid.insert(name.clone(), json!(problem));
+            }
             match value.value {
                 Some(value) => {
                     values.insert(name, value);
@@ -1142,8 +1482,6 @@ fn own_config(
                 None => missing.push(name),
             }
         }
-        let deployment_revision = deployment_stored.as_ref().map(|stored| stored.revision);
-        let instance_revision = instance_stored.as_ref().map(|stored| stored.revision);
         if at_connect {
             connection.execute(
                 "INSERT INTO auth_config_connections(instance_id,deployment_revision,\
@@ -1159,6 +1497,7 @@ fn own_config(
             "instanceRevision": instance_revision,
             "values": values,
             "missing": missing,
+            "invalid": invalid,
             "configUrl": storage.authority.settings.console_origin.as_ref().map(|origin| {
                 format!("{origin}/console/admin/{section}/{deployment}#settings")
             }),

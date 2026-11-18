@@ -1100,15 +1100,19 @@ CREATE UNIQUE INDEX auth_device_companions_active_grant ON auth_device_companion
 -- Configuration a participant declares and Trellis keeps. Each write stores
 -- the complete values of one target as a new revision: a deployment, one of
 -- its instances (overrides on top of the deployment), or a registered app
--- client. Secrets are sealed with the installation's storage key and never
--- stored in values_json. The highest revision is current and cannot be
--- deleted; older ones are kept until an administrator deletes them.
+-- client, or a service claim waiting for its service (approving the claim
+-- moves its revisions to the deployment it creates). Values are stored for any
+-- field name, declared or not. Secrets are sealed with the installation's
+-- storage key and never stored in values_json. The highest revision is
+-- current and cannot be deleted; older ones are kept until an administrator
+-- deletes them.
 CREATE TABLE auth_config_revisions (
     target_key TEXT NOT NULL CHECK (length(target_key) > 0),
     revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 4294967295),
     deployment_id TEXT REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
     instance_id TEXT REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
     client_id TEXT REFERENCES auth_oauth_clients(client_id) ON DELETE CASCADE,
+    claim_id TEXT REFERENCES auth_service_claims(claim_id) ON DELETE CASCADE,
     values_json TEXT NOT NULL CHECK (json_valid(values_json)),
     sealed_secrets BLOB,
     changed_json TEXT NOT NULL CHECK (json_valid(changed_json)),
@@ -1118,11 +1122,13 @@ CREATE TABLE auth_config_revisions (
     PRIMARY KEY (target_key, revision),
     CHECK (
         (deployment_id IS NOT NULL AND instance_id IS NULL AND client_id IS NULL
-            AND target_key = 'deployment:' || deployment_id)
+            AND claim_id IS NULL AND target_key = 'deployment:' || deployment_id)
         OR (deployment_id IS NOT NULL AND instance_id IS NOT NULL AND client_id IS NULL
-            AND target_key = 'instance:' || instance_id)
+            AND claim_id IS NULL AND target_key = 'instance:' || instance_id)
         OR (deployment_id IS NULL AND instance_id IS NULL AND client_id IS NOT NULL
-            AND target_key = 'client:' || client_id)
+            AND claim_id IS NULL AND target_key = 'client:' || client_id)
+        OR (deployment_id IS NULL AND instance_id IS NULL AND client_id IS NULL
+            AND claim_id IS NOT NULL AND target_key = 'claim:' || claim_id)
     )
 );
 -- What each instance loaded when it last connected, so administrators see

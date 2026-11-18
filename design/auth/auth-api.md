@@ -175,7 +175,9 @@ reconcile RPC family.
 ### Settings
 
 `Config.*` keeps the settings services, devices, and apps declare with
-`config` in IDL, per deployment, per instance, and per app client. `Config.Get` and `Config.Revisions.List`
+`config` in IDL, per deployment, per instance, per app client, and per waiting
+service claim, for any field name whether or not a build declares it.
+`Config.Get` and `Config.Revisions.List`
 need `trellis.auth.v1:config.read`, `config.manage`, or `config.manageSecrets`;
 `Config.Set`, `Config.Rollback`, and `Config.Revisions.Delete` need
 `config.manage` for settings and `config.manageSecrets` for secrets. Every

@@ -77,6 +77,23 @@ asks for, and
 service then connects as an instance of the new deployment, so skip the
 provisioning step below.
 
+You don't have to wait for its IDL to give it settings. Set them on the claim
+by name, and they move to the deployment when you approve it:
+
+```sh
+trellis svc partner-orders config set endpoint=https://orders.example workers=4
+trellis svc partner-orders config set-secret apiKey --from-file api-key.txt
+```
+
+Without a declaration, a value is stored as JSON when it parses as JSON and as
+text otherwise, so `workers=4` is a number; write `'workers="4"'` to keep it
+text. The Console's **Add service** takes the same settings as rows of a name
+and a value. Once the service connects, `trellis svc partner-orders config`
+shows the settings its IDL declares, any it still needs, any whose value
+doesn't fit the declared type, and any it doesn't use. A required setting that
+is missing or doesn't fit holds the service, which prints a link to its
+settings and continues as soon as you fix them.
+
 ## 3. Provision an instance
 
 ```sh

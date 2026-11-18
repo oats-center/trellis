@@ -818,7 +818,12 @@ model AuthMissingPackage {
   /// Versions held or supplied that do not match, newest first.
   availableVersions: list<AuthShortName>;
 }
-model AuthResolvedParticipant { participantId: string; kind: AuthDeploymentKind; }
+model AuthResolvedParticipant {
+  participantId: string;
+  kind: AuthDeploymentKind;
+  /// The settings it declares.
+  config: list<AuthConfigDeclaration>;
+}
 model AuthPackageResolveResponse {
   /// The complete evidence for `Deployments.Create`, once every dependency resolved.
   packageEvidence?: AuthPackageEvidence;
@@ -1094,11 +1099,14 @@ model AuthSecurityEvent {
 // Configuration a participant declares and Trellis keeps.
 type AuthConfigRevisionNumber = uint32(min=1);
 type AuthConfigFieldName = string(min_length=1, max_length=128);
-/// Whose configuration: a deployment, one of its instances, or an app's client.
+/// Whose configuration: a deployment, one of its instances, an app's client,
+/// or a service claim waiting for its service. A claim's settings become its
+/// deployment's when the claim is approved.
 model AuthConfigTarget {
   deploymentId?: ulid;
   instanceId?: ulid;
   clientId?: AuthClientId;
+  claimId?: ulid;
 }
 /// Where a field's effective value comes from.
 enum AuthConfigSource { deployment; instance; default; unset; }
@@ -1119,8 +1127,30 @@ model AuthConfigField {
   /// A value is stored for this field here or on the deployment.
   isSet: bool;
   source: AuthConfigSource;
-  /// The stored value no longer matches the declared type, so it is ignored.
+  /// Why the value stored here doesn't fit this build: the wrong type, or a
+  /// secret stored as a plain setting or the other way round. This build
+  /// ignores it and keeps the value stored before it, or the default.
   invalid?: string;
+}
+/// A field a build declares, before anything is stored for it.
+model AuthConfigDeclaration {
+  name: AuthConfigFieldName;
+  title: string;
+  description: string;
+  /// JSON Schema of the field's type.
+  schema: json;
+  required: bool;
+  secret: bool;
+  restart: bool;
+  default?: json;
+}
+/// A stored value the build doesn't declare. It is kept for a build that does.
+model AuthConfigUnusedValue {
+  name: AuthConfigFieldName;
+  secret: bool;
+  /// The stored value of a setting. Never present for a secret.
+  value?: json;
+  source: AuthConfigSource;
 }
 /// Which configuration an instance loaded when it last connected.
 model AuthConfigInstanceStatus {
@@ -1129,6 +1159,9 @@ model AuthConfigInstanceStatus {
   connectedRevision?: AuthConfigRevisionNumber;
   connectedInstanceRevision?: AuthConfigRevisionNumber;
   connectedAt?: timestamp;
+  /// A setting that applies after a restart has a different value for this
+  /// instance's build than the one it loaded when it connected.
+  restartPending: bool;
 }
 model AuthConfigResponse {
   target: AuthConfigTarget;
@@ -1136,15 +1169,24 @@ model AuthConfigResponse {
   revision?: AuthConfigRevisionNumber;
   /// For an instance target, the deployment revision under its overrides.
   deploymentRevision?: AuthConfigRevisionNumber;
+  /// Whether a build's declaration is known: the installed build's, an app's
+  /// attached declaration, or, for a claim, the build its service submitted.
+  declared: bool;
   fields: list<AuthConfigField>;
-  /// Required fields without a value; instances wait until they are set.
+  /// Required fields without a usable value; instances wait until they are set.
   missing: list<AuthConfigFieldName>;
+  /// Stored values the build doesn't declare, here and on the deployment.
+  unused: list<AuthConfigUnusedValue>;
   instances: list<AuthConfigInstanceStatus>;
 }
 model AuthConfigGetRequest { target: AuthConfigTarget; }
 model AuthConfigSetRequest {
   target: AuthConfigTarget;
+  /// Settings by field name. Any lowerCamelCase name is stored, whether or
+  /// not a build declares it; a build ignores what it doesn't declare and
+  /// what doesn't fit its type.
   values?: map<json>;
+  /// Secrets by field name, stored sealed under the same rule.
   secrets?: map<json>;
   /// Fields whose stored value is removed, so the default or deployment value applies.
   unset?: list<AuthConfigFieldName>;
@@ -1187,7 +1229,11 @@ model AuthOwnConfigResponse {
   instanceRevision?: AuthConfigRevisionNumber;
   /// Effective values, secrets included, with defaults applied.
   values: map<json>;
+  /// Required fields without a usable value; the participant waits for them.
   missing: list<AuthConfigFieldName>;
+  /// Fields whose stored value doesn't fit this build, with why. The build
+  /// uses the value stored before it, or the default.
+  invalid: map<string>;
   /// Console page where an administrator sets the missing values.
   configUrl?: string;
 }

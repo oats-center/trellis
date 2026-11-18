@@ -105,11 +105,6 @@ test("a service waits for its settings, keeps secrets from administrators, and f
     });
     assert.deepEqual(service.config.revision, { deployment: 1 });
 
-    // A value outside the declared type is refused when it is saved.
-    await assert.rejects(
-      set(deployment, { values: { level: 5 }, expectedRevision: 1 }),
-      /level/,
-    );
     // A write based on an old revision is refused.
     await assert.rejects(
       set(deployment, { values: { level: "debug" } }),
@@ -245,11 +240,19 @@ test("a service waits for its settings, keeps secrets from administrators, and f
       (field) => field.name === "signingKey",
     );
     assert.equal(nulled?.source, "instance");
-    // A secret that may not be null refuses it.
-    await assert.rejects(
-      set(instance, { secrets: { apiKey: null }, expectedRevision: 2 }),
+    // Null for a secret that may not be null is kept but doesn't fit, so the
+    // instance goes on with the deployment's key, also when it reconnects.
+    const misfit = await set(instance, {
+      secrets: { apiKey: null },
+      expectedRevision: 2,
+    });
+    assert.match(
+      misfit.fields.find((field) => field.name === "apiKey")?.invalid ?? "",
       /apiKey/,
     );
+    await service.stop();
+    service = await connect();
+    assert.equal(service.config.current.apiKey, "k1");
     await service.stop();
   });
 });
@@ -403,25 +406,32 @@ test("an app reads its own settings, which an administrator changes live", async
     try {
       assert.deepEqual(client.config.current, { greeting: "hello", limit: 10 });
       const target = { clientId: request.id };
-      await assert.rejects(
-        runtime.callAdminRpc("authConfigSet", {
-          target,
-          values: { limit: "many" },
-          idempotencyKey: ulid(),
-        }),
-        /limit/,
-      );
-      const changed = new Promise<string>((resolve) => {
-        client.config.onChange(({ current }) => resolve(current.greeting));
+      // A value that doesn't fit the declared type is kept and reported, and
+      // the app goes on reading what it had.
+      const misfit = await runtime.callAdminRpc("authConfigSet", {
+        target,
+        values: { limit: "many" },
+        idempotencyKey: ulid(),
+      });
+      const limit = misfit.fields.find((field) => field.name === "limit");
+      assert.match(limit?.invalid ?? "", /limit/);
+      assert.equal(limit?.value, 10);
+      const changed = new Promise<{ changed: readonly string[] }>((resolve) => {
+        client.config.onChange(({ changed }) => resolve({ changed }));
       });
       const saved = await runtime.callAdminRpc("authConfigSet", {
         target,
         values: { greeting: "welcome back" },
+        expectedRevision: 1,
         idempotencyKey: ulid(),
       });
-      assert.equal(saved.revision, 1);
-      assert.equal(await changed, "welcome back");
-      assert.deepEqual(client.config.revision, { app: 1 });
+      assert.equal(saved.revision, 2);
+      // The first change the app hears of is the greeting: the misfit limit
+      // never reached it.
+      assert.deepEqual(await changed, { changed: ["greeting"] });
+      assert.equal(client.config.current.greeting, "welcome back");
+      assert.equal(client.config.current.limit, 10);
+      assert.deepEqual(client.config.revision, { app: 2 });
       // A later build's declaration changes a default no one overrode; the
       // connected app follows it and keeps the stored greeting.
       const redeclared = new Promise<number>((resolve) => {

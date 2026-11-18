@@ -5,7 +5,7 @@ use futures_util::TryStreamExt as _;
 use miette::IntoDiagnostic;
 use serde_json::{json, Value};
 
-use super::deploy::{resolve_deployment_id, DeploymentKind};
+use super::deploy::{resolve_deployment_id, resolve_waiting_claim, DeploymentKind};
 use crate::app::{connect_authenticated_cli_client, wire};
 use crate::cli::{ConfigArgs, ConfigCommand, OutputFormat};
 use crate::output;
@@ -23,14 +23,34 @@ pub(super) async fn run(
     args: ConfigArgs,
 ) -> miette::Result<()> {
     let (mut target, prefix, id) = match scope {
-        Scope::Deployment(kind, id) => (
-            json!({ "deploymentId": resolve_deployment_id(kind, id).await? }),
-            match kind {
-                DeploymentKind::Service => "svc",
-                DeploymentKind::Device => "dev",
-            },
-            id,
-        ),
+        Scope::Deployment(kind, id) => {
+            let target = match resolve_deployment_id(kind, id).await {
+                Ok(deployment) => json!({ "deploymentId": deployment }),
+                // A service added without its IDL takes settings before its
+                // service connects; approving it carries them over.
+                Err(error) => match kind {
+                    DeploymentKind::Service => match resolve_waiting_claim(id).await {
+                        Ok(claim) => {
+                            miette::ensure!(
+                                args.instance.is_none(),
+                                "{id} has no instances until its service connects and is approved; leave out --instance"
+                            );
+                            json!({ "claimId": claim })
+                        }
+                        Err(_) => return Err(error),
+                    },
+                    DeploymentKind::Device => return Err(error),
+                },
+            };
+            (
+                target,
+                match kind {
+                    DeploymentKind::Service => "svc",
+                    DeploymentKind::Device => "dev",
+                },
+                id,
+            )
+        }
         Scope::Client(client) => {
             miette::ensure!(
                 args.instance.is_none(),
@@ -91,8 +111,6 @@ pub(super) async fn run(
         ConfigCommand::Set { values, null } => {
             let mut parsed = serde_json::Map::new();
             for name in null {
-                // Only to name an unknown setting here; Auth checks that null fits.
-                parse_value(&current, &name, "null")?;
                 parsed.insert(name, Value::Null);
             }
             for pair in values {
@@ -227,27 +245,18 @@ fn to_value(value: impl serde::Serialize) -> miette::Result<Value> {
     serde_json::to_value(value).into_diagnostic()
 }
 
-/// A text setting takes the text as written; any other is parsed as JSON, so
-/// `port=9090` is a number and `name=9090` stays text.
+/// A text setting takes the text as written; any other declared one is parsed
+/// as JSON, so `port=9090` is a number and `name=9090` stays text. A field the
+/// build doesn't declare is JSON when the text parses as JSON and text
+/// otherwise: `workers=4` is a number, `region=east` is text, and `'"4"'` is
+/// the text 4.
 fn parse_value(current: &Value, name: &str, text: &str) -> miette::Result<Value> {
-    let field = output::list(current, "fields")
+    let Some(field) = output::list(current, "fields")
         .iter()
         .find(|field| field["name"].as_str() == Some(name))
-        .ok_or_else(|| {
-            let known = output::list(current, "fields")
-                .iter()
-                .filter_map(|field| field["name"].as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            miette::miette!(
-                help = if known.is_empty() {
-                    "This build declares no settings.".to_owned()
-                } else {
-                    format!("Its settings are {known}.")
-                },
-                "there is no setting named {name}"
-            )
-        })?;
+    else {
+        return Ok(serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_owned())));
+    };
     if wants_text(&field["schema"], &field["schema"]) {
         return Ok(Value::String(text.to_owned()));
     }
@@ -306,7 +315,9 @@ fn show(
                 notes.push("applies after restart".to_owned());
             }
             if let Some(invalid) = field["invalid"].as_str() {
-                notes.push(format!("stored value ignored: {invalid}"));
+                notes.push(format!(
+                    "saved value doesn't fit this build, which uses the one before it: {invalid}"
+                ));
             }
             let value = if field["secret"] == json!(true) {
                 if field["isSet"] == json!(true) {
@@ -325,6 +336,28 @@ fn show(
             })
         })
         .collect::<Vec<_>>();
+    // Values kept for a build that declares them, such as the next one.
+    let unused_note = if current["declared"] == json!(true) {
+        "not used by this build"
+    } else {
+        "no build installed yet"
+    };
+    let unused = output::list(current, "unused")
+        .iter()
+        .map(|field| {
+            json!({
+                "name": field["name"],
+                "value": if field["secret"] == json!(true) {
+                    "(secret, set)".to_owned()
+                } else {
+                    field.get("value").map(display).unwrap_or_default()
+                },
+                "source": field["source"],
+                "notes": unused_note,
+            })
+        })
+        .collect::<Vec<_>>();
+    let rows = rows.into_iter().chain(unused).collect::<Vec<_>>();
     output::table(
         &rows,
         &[
@@ -333,7 +366,11 @@ fn show(
             output::muted("FROM", "source"),
             output::col("", "notes"),
         ],
-        &format!("{label} declares no settings."),
+        &if current["declared"] == json!(true) {
+            format!("{label} has no settings.")
+        } else {
+            format!("{label} has no settings yet; set any with `trellis {prefix} {id} config set NAME=VALUE`.")
+        },
     )?;
     let missing = output::list(current, "missing")
         .iter()
@@ -349,17 +386,11 @@ fn show(
             missing[0]
         ));
     }
-    let revision = current["revision"].as_u64();
     for instance in output::list(current, "instances") {
-        let connected = instance["connectedRevision"].as_u64();
-        if revision.is_some() && connected != revision {
+        if instance["restartPending"] == json!(true) {
             output::note(format!(
-                "{} connected with {}; settings that apply after restart wait for it to reconnect.",
+                "{} runs settings from when it connected; restart it to apply settings that apply after restart.",
                 output::field(instance, "title"),
-                connected.map_or_else(
-                    || "no saved settings".to_owned(),
-                    |n| format!("revision {n}")
-                )
             ));
         }
     }
