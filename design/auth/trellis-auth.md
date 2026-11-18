@@ -1192,9 +1192,12 @@ fails on missing or corrupt custody; it does not generate replacement
 identities or persist private seeds in Auth SQL. A role started apart from the
 platform holds only its own seed and the Trellis NATS user.
 
-The Auth-owning host provisions its selected generated built-in provider
-descriptors through ordinary API acceptance and deployment approval, using
-independently keyed initialization mutations per installation and participant.
+The Auth-owning host provisions each built-in provider descriptor its build
+generates through ordinary API acceptance and deployment approval, using
+independently keyed initialization mutations per installation and participant:
+its own platform provider when it starts, and a Jobs, Health or Events provider
+when that role starts, whether in the same process or apart from it (see split
+roles below).
 Replay retains the actual ULID deployment and instance; disabled, expired,
 retired, or mismatched identities are rejected rather than re-enabled.
 Declaration-derived resources are materialized before native admission; an
@@ -1226,6 +1229,27 @@ contract-owned Auth service boundary, not a shared filesystem. An Auth-owning
 process can check admission against its own provisioning result without making
 that database a dependency of split roles.
 
+A role apart from the platform has Auth prepare its provider before connecting
+it. It sends `{"role": "jobs" | "health" | "events", "signature"}` on
+`trellis.auth.builtin.prepare` in the Trellis account, over its Trellis NATS
+user's connection; admitted sessions' ACLs never include that subject. The
+signature is Ed25519, by the role's `[live_providers]` seed, over SHA-256 of
+the domain `trellis.builtin-provider.prepare.v1`, the installation ID and the
+role name, each a 4-byte big-endian length and its UTF-8 bytes. The running
+platform verifies it against the public key of its own copy of that role's
+seed in `secrets.toml`, so only a holder of that role's seed in that
+installation can prepare that role. It then prepares the role exactly as for a
+role in its own process: from its own seed and build, with the same idempotent
+initialization. The caller chooses nothing about what is installed, so a split
+role runs under the revision of the platform's build: upgrade the platform
+first, then its roles. The platform answers one request at a time, with the
+provisioned deployment, a refusal, or the preparation failure; the role checks
+its installed authority against that deployment once it connects. No answer,
+as while no platform runs, counts as Auth being unavailable. A refusal or a
+failed preparation ends the role's process. The request carries no time, so
+clocks on split hosts need not agree; replaying one can only repeat an
+idempotent preparation.
+
 Each role's singleton work (Auth, Jobs, Health, Events) runs only while its
 process holds that role's NATS KV owner lease. A process running several roles
 supervises each one separately, as if it were its own split role. A renewal
@@ -1252,14 +1276,14 @@ runs here, and answers `503` for them otherwise. `/readyz` is
 ready once every role has first started or stood by, while some role runs and,
 when the process includes the platform, the platform runs. A role other than
 the platform restarting on its own leaves readiness unchanged. When the
-platform runs elsewhere, a non-platform role prepares its built-in provider by
-trusting the configured Auth origin, as a split role does. When Auth cannot
-admit that provider, because Auth stands by, is moving to another server, or
-cannot be reached, the role keeps its lease but stands by, is not counted as
-running, and tries again, waiting 250 ms at first and doubling to 15 s, until
-the provider connects, the lease is lost, or the process stops. A provider that
-can never connect as configured, such as one whose installed authority does not
-match its generated role or whose broker certificate does not verify, still
+platform runs elsewhere, a non-platform role trusts the configured Auth origin
+and has that Auth prepare its built-in provider, as a split role does. When
+Auth cannot prepare or admit that provider, because Auth stands by, is moving
+to another server, or cannot be reached, the role keeps its lease but stands
+by, is not counted as running, and tries again, waiting 250 ms at first and
+doubling to 15 s, until the provider connects, the lease is lost, or the
+process stops. A provider that can never connect as configured, such as one
+whose installed authority does not match its generated role or whose broker certificate does not verify, still
 ends the process. The platform's own provider
 connects to the Auth it runs, which serves until the platform stops, so it does
 not wait this way.

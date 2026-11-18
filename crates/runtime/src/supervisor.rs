@@ -1307,9 +1307,9 @@ const PROVIDER_RETRY_MAX: Duration = Duration::from_secs(15);
 ///
 /// Providers authenticate through native Callout and signed own-context, without
 /// HTTP bootstrap. In a process that also runs the platform, a provider is
-/// prepared through the platform's store once the platform has started here;
-/// while another server owns the platform, it trusts the configured Auth origin,
-/// as a split role does.
+/// prepared through the platform's store once the platform has started here.
+/// While another server owns the platform, as for a split role, the provider
+/// trusts the configured Auth origin and asks that Auth to prepare it.
 async fn bootstrap_live_provider(
     context: &RuntimeContext,
     role: crate::platform::LiveProviderRole,
@@ -1362,18 +1362,25 @@ async fn bootstrap_live_provider(
     trust.root_certificates = root_certificates;
     trust.nats_server_name = nats.tls_server_name.clone();
     let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
-    let deployment = if let Some(store) = store {
-        Some(
+    let deployment = match store {
+        Some(store) => {
             crate::platform::prepare_builtin_live_provider(
                 role,
                 store,
                 &context.trellis_nats,
                 &identity_seed,
             )
-            .await?,
-        )
-    } else {
-        None
+            .await?
+        }
+        None => {
+            crate::platform::request_builtin_preparation(
+                &context.trellis_nats,
+                &context.config,
+                role,
+                &identity_seed,
+            )
+            .await?
+        }
     };
     let client = crate::platform::connect_builtin_live_provider(
         role,
@@ -1385,25 +1392,23 @@ async fn bootstrap_live_provider(
         },
     )
     .await?;
-    if let Some(deployment) = deployment {
-        let authority = client
-            .authorization_context()
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?
-            .ok_or_else(|| {
-                RuntimeError::Platform("built-in provider has no installed authority".into())
-            })?;
-        if authority.context.unsigned.principal_id != deployment.principal_id
-            || authority.context.unsigned.binding
-                != (trellis_protocol::SessionBinding::Service {
-                    participant_id: deployment.participant_id,
-                    deployment_id: deployment.deployment_id,
-                    instance_id: deployment.instance_id,
-                })
-        {
-            return Err(RuntimeError::Platform(
-                "installed built-in authority does not match provisioning".into(),
-            ));
-        }
+    let authority = client
+        .authorization_context()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+        .ok_or_else(|| {
+            RuntimeError::Platform("built-in provider has no installed authority".into())
+        })?;
+    if authority.context.unsigned.principal_id != deployment.principal_id
+        || authority.context.unsigned.binding
+            != (trellis_protocol::SessionBinding::Service {
+                participant_id: deployment.participant_id,
+                deployment_id: deployment.deployment_id,
+                instance_id: deployment.instance_id,
+            })
+    {
+        return Err(RuntimeError::Platform(
+            "installed built-in authority does not match provisioning".into(),
+        ));
     }
     context.live_providers.install(
         role,
