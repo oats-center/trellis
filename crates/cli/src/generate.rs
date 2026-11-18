@@ -249,6 +249,9 @@ pub(crate) fn generate_compiled(
                     include_str!(concat!(env!("OUT_DIR"), "/rust-model-bindings.json")),
                 )
                 .into_diagnostic()?;
+                for line in trellis_codegen_rust::describe_model_bindings(compiled, &bindings) {
+                    tracing::info!("rust models: {line}");
+                }
                 trellis_codegen_rust::generate_rust_package(compiled, &fresh, name, &bindings)
                     .into_diagnostic()?;
             }

@@ -42,6 +42,10 @@ generated. Generated constants verify the actual provider's package metadata at
 compilation. The CLI offers the independently
 versioned `trellis-models` bundle through this generic binding mechanism;
 neither package names alone nor matching API majors select shared models.
+The semantic digest excludes a package's own version, so a dependency whose
+content matches the bundle but whose version differs is still generated inline.
+`trellis generate -v` (and `trellis install -v`) logs, for each package, whether
+its models are reused or inlined and which identity, version, or digest differed.
 Generated packages declare their model dependency directly, while retaining the
 normal compatible SDK dependency range. SDK implementation updates do not require
 regeneration when execution ABI and selected models remain compatible. The SDK

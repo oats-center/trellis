@@ -1927,7 +1927,7 @@ impl TrellisClient {
             "cancelled",
         );
         let result = self
-            .request_certified_json(api_id, action, None, subject.to_owned(), body.clone())
+            .request_certified_json(api_id, action, None, subject.to_owned(), body)
             .await;
         observation.finish(match &result {
             Ok(_) => "ok",
@@ -2454,7 +2454,7 @@ impl TrellisClient {
         action: trellis_protocol::CatalogActionIdentity,
         expected_deployment_id: Option<String>,
         subject: String,
-        body: Value,
+        body: &Value,
     ) -> Result<Value, TrellisClientError> {
         let deadline = self.transport_deadline();
         timeout(deadline.saturating_duration_since(Instant::now()), async {
@@ -2489,7 +2489,8 @@ impl TrellisClient {
                 request_id: new_request_id(),
                 issued_at: now_iat_seconds() as i64,
             };
-            let payload = serde_json::to_vec(&body)?;
+            // These exact bytes are both signed and sent.
+            let payload = serde_json::to_vec(body)?;
             let (proof, digest) = self.auth.create_request_proof(&request, &payload)?;
             let mut headers = HeaderMap::new();
             headers.insert(
@@ -2651,7 +2652,7 @@ impl OperationTransport for TrellisClient {
         subject: String,
         body: Value,
     ) -> Result<Value, TrellisClientError> {
-        self.request_certified_json(api_id, action, expected_deployment_id, subject, body)
+        self.request_certified_json(api_id, action, expected_deployment_id, subject, &body)
             .await
     }
 

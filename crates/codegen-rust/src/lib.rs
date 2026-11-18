@@ -109,6 +109,62 @@ impl RustModelBinding {
     }
 }
 
+/// Explain, one line per package in `graph`, whether generation reuses a
+/// published model crate for that package or emits its models inline.
+///
+/// A binding is reused only when package identity, version, and semantic digest
+/// all match exactly; otherwise the line names the values that differ.
+pub fn describe_model_bindings(graph: &PackageGraph, bindings: &[RustModelBinding]) -> Vec<String> {
+    graph
+        .packages()
+        .values()
+        .map(|package| {
+            let identity = package.identity().as_str();
+            let digest = graph.digest(package.identity()).unwrap_or("unknown");
+            let subject = format!("{identity}@{} (digest {digest})", package.version());
+            if let Some(binding) = bindings
+                .iter()
+                .find(|binding| binding.matches(graph, package))
+            {
+                return format!(
+                    "{subject}: reusing models from {} {} ({})",
+                    binding.dependency, binding.dependency_version, binding.module
+                );
+            }
+            let candidates = bindings
+                .iter()
+                .filter(|binding| binding.package == identity)
+                .map(|binding| {
+                    let mut differences = Vec::new();
+                    if binding.version != *package.version() {
+                        differences.push("version");
+                    }
+                    if binding.digest != digest {
+                        differences.push("digest");
+                    }
+                    format!(
+                        "{} {} provides {}@{} (digest {}), {} differs",
+                        binding.dependency,
+                        binding.dependency_version,
+                        binding.package,
+                        binding.version,
+                        binding.digest,
+                        differences.join(" and ")
+                    )
+                })
+                .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                format!("{subject}: emitting models inline; no published model crate provides {identity}")
+            } else {
+                format!(
+                    "{subject}: emitting models inline; {}",
+                    candidates.join("; ")
+                )
+            }
+        })
+        .collect()
+}
+
 /// Render transport-independent models without any SDK dependency.
 ///
 /// # Errors

@@ -30,6 +30,7 @@ trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.48" }
 trellis-codegen-ts = { path = "../codegen-ts", version = "0.100.0-rc.48" }
 trellis-idl = { path = "../idl", version = "0.100.0-rc.48" }
 trellis-protocol = { path = "../protocol", version = "0.100.0-rc.48" }
+tracing = { workspace = true }
 tracing-subscriber = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 miette.workspace = true
