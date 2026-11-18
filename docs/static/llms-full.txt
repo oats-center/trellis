@@ -1208,7 +1208,12 @@ Administrators use `trellis svc <ID> config` (`set FIELD=VALUE` or
 or the Console's Settings section. For a field the build doesn't declare,
 `set` takes JSON when the value parses as JSON and text otherwise. The RPCs are `Auth.Config.*` under
 `config.read`, `config.manage`, and `config.manageSecrets`. Secrets are sealed
-at rest and never returned to administrators. Tests set values through the
+with AES-256-GCM under `secrets.toml`'s storage key (a backup includes that
+file) and never returned to administrators; `set-secret` reads standard input
+without `--from-file`. Every revision is kept until an administrator deletes it
+with `delete-revision`, which is how a replaced secret stops existing.
+`Config.Get` reports `restartPending` for instances whose `restart` fields
+would now read differently; Trellis never restarts anything. Tests set values through the
 same RPCs, never through environment variables. App settings are public to
 the app's users, need defaults, and cannot be secret; register the app's
 declaration with its client using `trellis clients add|edit --source PATH
@@ -2220,7 +2225,8 @@ effect, `revision()` names the deployment and instance revisions, and
 `changed().await` waits for the next live change. Restart-only fields keep their
 connect-time value, and values for fields the build doesn't declare, or that
 don't fit its types, never reach `changed()`. `connect` returns only once every
-required field has a value that fits. In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
+required field has a value that fits. Rust native apps have no settings handle.
+In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
 stores values through `Auth.Config.Set`.
 
 #### Transfers

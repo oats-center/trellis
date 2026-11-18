@@ -114,7 +114,9 @@ The server can keep running. NATS has to be reachable, so back up a `--dev`
 installation while it runs: its NATS runs only while Trellis does. Name the
 installation with `--config`, `--user` or `--system` as for every command. The
 folder must be new or empty, and only its owner can read it, since it holds
-every key the installation has.
+every key the installation has. That includes the storage key that seals
+service secrets, so anyone who can read a backup can read them too (see
+[How Auth stores them](/guides/settings-and-secrets#how-auth-stores-them)).
 
 A backup holds:
 

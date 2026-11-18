@@ -73,6 +73,9 @@ try {
 Environment variables and their names are this example's configuration
 interface, not a Trellis requirement. Pass the same typed options from a file,
 secret manager, CLI parser, or application configuration system if preferred.
+The service's own settings, such as a database URL or password, can instead be
+declared in its IDL and kept by Trellis; see
+[Settings and secrets](/guides/settings-and-secrets).
 
 `connect()` proves the provisioned identity in NATS CONNECT, verifies the signed
 session authority Auth issues for its deployment, and resolves Trellis

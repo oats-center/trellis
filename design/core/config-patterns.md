@@ -149,13 +149,14 @@ Secrets never go into `values_json`. They are sealed as one blob per revision
 with AES-256-GCM under the installation's storage key from `secrets.toml`, the
 same key that seals OAuth records and OIDC client secrets. The associated data
 names the target, not the revision, so a rollback carries sealed values
-forward unchanged. A copied database file or backup does not expose them.
+forward unchanged. A copied database file does not expose them. A
+`trellis-server backup` includes `secrets.toml`, so a complete backup does.
 Audit records of a write list secret names, never values.
 
-Encrypting to each instance's own key, so Auth stores values it cannot read, is
-a possible later step: an instance's Ed25519 identity key converts to an X25519
-encryption key. It is not done because every write would have to encrypt for
-each instance, a new instance could not read existing secrets until someone
+Encrypting to each instance's own key, so Auth stores values it cannot read,
+was considered and declined: an instance's Ed25519 identity key converts to an
+X25519 encryption key, but every write would have to encrypt for each
+instance, a new instance could not read existing secrets until someone
 encrypted them again for it, and Auth already decides what every participant
 may reach, which limits the gain.
 
@@ -323,8 +324,8 @@ settings by name and value (text or JSON, optionally secret), the instance
 selector (offered whenever the deployment has an instance), the restart
 notice, and earlier versions to restore or delete. Adding a service takes
 settings too: typed fields from the IDL when one is chosen, otherwise rows by
-name, saved right after the service is created. A field whose type allows null offers "Set to
-null" beside Clear, as `--null` does in the CLI. Edits stay with the target
+name, saved right after the service is created. A field whose type allows null offers Clear,
+which stores null as `--null` does in the CLI, beside Reset, which unsets it. Edits stay with the target
 they were typed for: changing the selector discards them, and the form waits
 until the selected target's settings have loaded. The link a waiting
 participant prints opens that section.

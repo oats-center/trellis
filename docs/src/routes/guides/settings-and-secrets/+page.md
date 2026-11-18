@@ -1,0 +1,498 @@
+---
+title: "Settings and secrets"
+description: "Declare typed settings and secrets in IDL, read them in a service, and set them from the Console or the trellis CLI."
+---
+
+# Settings and secrets
+
+A service's database URL, log level, and database password don't belong in
+environment variables. The service declares them as `config` members in its
+IDL, an administrator sets the values in the Console or with `trellis svc <ID>
+config`, and Auth keeps them. The service reads them when it connects and hears
+when they change. The only value a deployment keeps on disk is the instance's
+identity seed.
+
+There is no environment fallback. Local development and tests set settings
+through the same `Auth.Config.*` RPCs that production uses.
+
+Services, devices, and apps can declare settings. Only services can declare
+secrets.
+
+## Declare settings
+
+Each `config` member declares one field:
+
+```trellis
+enum LogLevel { "info"; "debug"; }
+type Port = int32(min=1, max=65535);
+type Region = string(min_length=1, max_length=32);
+
+service OrdersService {
+  config databaseUrl {
+    title "Database URL";
+    description "Postgres connection string without the password.";
+    type string;
+    restart;
+  }
+  config databasePassword {
+    title "Database password";
+    description "Password for the orders database role.";
+    type string;
+    secret;
+    restart;
+  }
+  config webhookKey {
+    title "Webhook signing key";
+    description "Signs outgoing webhooks. Webhooks go unsigned without it.";
+    type string | null;
+    secret;
+  }
+  config logLevel {
+    title "Log level";
+    description "Lowest level written to the service log.";
+    type LogLevel;
+    default "info";
+  }
+  config port {
+    title "Port";
+    description "Port the health endpoint listens on.";
+    type Port;
+    default 8080;
+    restart;
+  }
+  config region {
+    title "Region";
+    description "Where new orders are placed, when it matters.";
+    type Region | null;
+  }
+}
+```
+
+`trellis check` compiles it. The rules:
+
+- The name is lowerCamelCase. `title` and `description` are required and show
+  in the Console.
+- `type` is any IDL type expression: a scalar, an enum, a model, `list<T>`,
+  `map<T>`, or `T | null`. Constraints (`min`, `max`, `min_length`,
+  `max_length`, `min_items`, `max_items`) go on a package-level type alias, as
+  `Port` and `Region` show. Enums are open, so `logLevel` also accepts strings
+  other than `"info"` and `"debug"`.
+- `default` is a JSON scalar: a quoted string, a number, `true`, `false`, or
+  `null`. The compiler checks it against the field's JSON Schema, the same
+  schema Auth checks values against, so a default that doesn't fit the type
+  fails `trellis check`.
+- A field without a default is required. The exception is a field whose type
+  allows null, directly or through an alias such as
+  `type OptionalKey = string | null;`. It reads null until someone sets it, so
+  nothing waits for it. `region` above is optional.
+- `restart` marks a field the service reads only when it connects. A change
+  reaches the service when it next connects, not before.
+- `secret` marks a write-only field. A secret can't have a default other than
+  `null`, since the default would sit in the source, so an optional secret is
+  written `type string | null; secret;`. Only a service may declare `secret`.
+  A device runs where its user can read anything it holds, and an app's
+  settings are readable by every user of the app.
+
+A field's type, default, `secret`, and `restart` are part of the participant
+digest. Its title and description are not. Changing a field's shape makes a new
+build, which goes through
+[service updates](/guides/install-service-from-image#5-upgrade) like any other
+change. It asks for no new access, so Auth installs it without an
+administrator.
+
+### App settings
+
+An `app` or `agent` request can declare `config` fields too:
+
+```trellis
+app OrdersPanel {
+  config pageSize {
+    title "Page size";
+    description "Orders shown per page.";
+    type int32;
+    default 25;
+  }
+}
+```
+
+Every user of the app can read its settings, so app fields can't be secret and
+each one needs a default. The compiler adds
+`trellis.auth.v1:config.readApp` to the request's required capabilities. Every
+user holds it through the `account` group. The package must depend directly on
+the `trellis` package.
+
+Auth knows an app only as an OAuth client, so an administrator attaches the
+app's declaration to its client when registering it:
+
+```sh
+trellis clients add --source ./orders-panel --app acme-orders.OrdersPanel
+trellis clients edit acme.orders-panel --source ./orders-panel
+trellis clients put client.json --source ./orders-panel
+```
+
+`--app` is needed only when the project declares several apps. Attach each new
+build's declaration the same way. When the new declaration changes what the app
+reads, such as a new default for a field nobody set, connected apps read their
+settings again. A client with no declaration has no settings. Change an app's
+values with `trellis clients config CLIENT`, which takes the same subcommands
+as `trellis svc <ID> config` below, or in the Console's app editor.
+
+## Read settings in a service
+
+The generated participant types the values. In TypeScript, a service gets
+`service.config` and a device gets `device.config`:
+
+```ts
+const service = await TrellisService.connect({
+  participant: participants.OrdersService.participant,
+  name: "orders-service",
+  trellisUrl,
+  seed,
+}).orThrow();
+
+const pool = openPool(service.config.current.databaseUrl, {
+  password: service.config.current.databasePassword,
+});
+logger.level = service.config.current.logLevel;
+
+const stopWatching = service.config.onChange(({ current, changed }) => {
+  if (changed.includes("logLevel")) logger.level = current.logLevel;
+});
+```
+
+`openPool` and `logger` stand for the service's own code. `current` holds the
+values in effect, secrets included. `revision` names the
+deployment and instance revisions behind them. `onChange(listener)` runs after
+an administrator changes a field that applies live and returns a function that
+removes the listener. A browser or native app gets `client.config` with the
+same shape and `revision.app`.
+
+In Rust, the generated `Provider` returns a
+`trellis_rs::service::ConfigHandle<Config>`, where `Config` is a generated
+struct with one field per setting. A device's generated client has the same
+`config()` method.
+
+```rust
+let mut config = Provider::new(&mut service).config();
+let settings = config.current()?;
+let pool = open_pool(&settings.database_url, &settings.database_password);
+set_log_level(settings.log_level);
+tokio::spawn(async move {
+    while let Ok(changed) = config.changed().await {
+        set_log_level(changed.log_level);
+    }
+});
+```
+
+Field names are snake_case (`log_level`). `current()` decodes the values in
+effect. `revision()` returns the revisions
+behind them. `changed().await` waits for the next live change and returns the
+new values. The Rust SDK has no settings handle for apps.
+
+### At connect
+
+When a participant that declares settings connects, the SDK reads its values
+before any handler starts. `TrellisService.connect`, `TrellisDevice.connect`,
+and the Rust `connect` return only once every required field has a value that
+fits the build.
+
+A required field with no value, or whose stored value doesn't fit the build's
+type, holds the service. It prints to standard error which fields it needs and
+why each saved value doesn't fit, then a link to the deployment's Settings
+section in the Console and the same link as a terminal QR code:
+
+```text
+orders-service needs these settings before it starts: databaseUrl, databasePassword
+Set them at https://trellis.example/console/admin/services/<deployment>#settings
+or scan:
+<QR code>
+```
+
+The link appears when Trellis serves the Console. The SDK reads again after
+1 second, doubling the wait up to 15 seconds, and prints again only when the
+list changes. Once an administrator saves values that fit, the service
+continues without a restart. It never starts handlers with a partial
+configuration.
+
+### Live changes
+
+A change made through the Console or CLI publishes `Config.Changed`. The event
+carries the target and revision, never values. The SDK reads its settings again
+over its own authenticated session, and again whenever its subscription is
+reestablished, so a change made while it was disconnected is not missed.
+
+What reaches `onChange` and `changed()`:
+
+- A field marked `restart` keeps the value loaded at connect until the
+  participant connects again.
+- A field whose stored value was removed keeps its last value until the
+  participant connects again. At that connect it waits for a value if the field
+  is required.
+- Values for fields the build doesn't declare, and values that don't fit its
+  types, never arrive.
+
+A running instance reads through the declaration of the build it runs. A newer
+build installed for the deployment doesn't change what an older instance reads.
+
+### In tests
+
+Tests store values through the same `Config.Set` an administrator uses. In the
+TypeScript testkit, pass them when creating the instance:
+`runtime.services.createInstance({ ..., config: { values, secrets } })`. In the
+Rust testkit, call `TrellisTestRuntime::set_config(&identity, values,
+secrets)` with two JSON objects before the service connects.
+
+## Set values
+
+Values belong to the deployment. An instance (a service replica or one device)
+can override individual fields, and everything it doesn't override comes from
+the deployment, then from the declared defaults. A device type's per-device
+values, such as `site`, go in instance overrides.
+
+Every write stores the target's complete values as a new revision with its
+author and time. The highest revision is current. A write names the revision it
+was based on and is refused if another write landed first, so read and try
+again.
+
+### In the Console
+
+The service's page has a **Settings** section, and so does each device type's
+page and the editor of each app that has settings. The link a waiting service
+prints opens it.
+
+- Each declared field shows its title, its value or default, where the value
+  comes from, and badges for **Required**, **Secret**, and **Applies after
+  restart**.
+- **For** picks **Every instance** (the deployment's values) or one instance's
+  overrides. It appears once the deployment has an instance.
+- **Clear** stores null, for a field whose type allows it. **Reset** removes
+  the stored value so the default applies. On an instance it reads **Use
+  service-wide** and removes the override.
+- **Not used by this build** lists stored values the build doesn't declare,
+  each with **Remove**.
+- **Add by name** takes rows of a name, a format (**Text** or **JSON**), a
+  value, and a **Secret** box, for fields no installed build declares yet.
+- **Save settings** writes one new revision. When it changes a `restart` field
+  it first asks you to confirm, since you restart the service yourself.
+- **Earlier versions** lists older revisions, each with **Restore** and
+  **Delete**.
+
+**Add service** takes settings too. With an IDL chosen, it shows the IDL's
+fields. Without one, it takes the same name-and-value rows. They are saved right
+after the service is created. If that save fails, the service still exists and
+the form says to set them on its page.
+
+### With the CLI
+
+`trellis svc <ID> config` works on a service deployment, `trellis dev <ID>
+config` on a device type, and `trellis clients config CLIENT` on an app. The
+service ID can be a deployment's ID or title, or a waiting claim's.
+
+| Command                           | What it does                                                                                                |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `config` or `config show`         | Each setting with its value, where it comes from, and notes (required, applies after restart, doesn't fit). |
+| `config set FIELD=VALUE ...`      | Set one or more settings in one revision.                                                                   |
+| `config set --null FIELD`         | Store null for a setting whose type allows it. Repeat for several.                                          |
+| `config set-secret FIELD`         | Set a secret from standard input, or from a file with `--from-file PATH`.                                   |
+| `config set-secret FIELD --null`  | Store null for a secret whose type allows it.                                                               |
+| `config unset FIELD ...`          | Remove stored values, so the default applies, or the deployment's value for an instance.                    |
+| `config history`                  | Revisions, newest first, with what each changed, when, and by whom. Secrets are listed by name.             |
+| `config rollback REVISION`        | Write an earlier revision's values as a new revision.                                                       |
+| `config delete-revision REVISION` | Delete an earlier revision. The current one can't be deleted.                                               |
+
+`--instance INSTANCE`, by instance ID or title, works with every subcommand and
+selects that instance's overrides. A waiting claim has no instances yet, and
+an app never does. `--format json` prints what Auth returned.
+
+How `set` reads a value:
+
+- A declared text field (a string, a string enum, or either one or null) takes
+  the text as written: `region=east`.
+- Any other declared field takes JSON: `port=9090`, `debug=true`,
+  `hosts='["a","b"]'`.
+- A field the build doesn't declare takes JSON when the value parses as JSON
+  and text otherwise. `workers=4` stores the number 4, `zone=east` stores
+  text, and `'zone="4"'` stores the text `4`.
+- A text field takes `null` as the text "null", so store null with
+  `set --null FIELD`.
+
+After a write the CLI prints the saved revision and shows the settings again,
+with what Auth reports about them. The CLI doesn't check types itself. Fields
+that are still missing are listed as ones the instances wait for, with the
+command to set the first.
+
+```sh
+trellis svc orders config set databaseUrl=postgres://db.internal/orders logLevel=debug
+trellis svc orders config set-secret databasePassword --from-file ./db-password
+trellis svc orders config --instance orders-2 set logLevel=info
+trellis svc orders config --instance orders-2 unset logLevel
+trellis svc orders config history
+```
+
+## Values ahead of a build
+
+Auth stores a value for any lowerCamelCase field name, whether or not a build
+declares it and whether or not any build is installed. Each build then reads
+what is stored through its own declaration.
+
+### A service added without its IDL
+
+A service created without `--source` is a claim until its service connects and
+an administrator approves it (see
+[Install a service from an image](/guides/install-service-from-image#without-the-releases-project)).
+Set its settings on the claim, by name:
+
+```sh
+trellis svc partner-orders config set endpoint=https://orders.example workers=4
+trellis svc partner-orders config set-secret apiKey --from-file api-key.txt
+```
+
+Once the service connects and submits its IDL, `config` shows the declared
+fields, what is missing, and what doesn't fit, before anyone approves it.
+Approving moves every revision to the new deployment and seals each revision's
+secrets again for the deployment, so the service starts with them. Removing a
+waiting claim deletes its settings.
+
+### An upgrade without downtime
+
+While build 1 runs, set the values build 2 needs: fields only build 2 declares,
+or a value in the type build 2 gives a field. Build 1 is unaffected, and when
+build 2 is installed its instances find their settings in place and start at
+once.
+
+### Unused and invalid values
+
+- A stored field the build doesn't declare is ignored. `config` lists it as
+  "not used by this build", or "no build installed yet" before Trellis has the
+  IDL. Remove it with `unset` once no build needs it.
+- A stored value that doesn't fit the build's type is skipped. The build uses
+  the most recent earlier value that fits, walking back through the target's
+  revisions until the field wasn't stored, and then the default. `config`
+  shows why the value doesn't fit. A required field with no fitting value is
+  missing, and the service waits for it.
+- A secret stored as a plain setting, or a plain setting stored as a secret,
+  is a mismatch of the same kind.
+
+So a value set in build 2's type leaves build 1 on its previous value with no
+change event, while build 2 uses the new one.
+
+Auth refuses a write in two cases: a plain value for a field the installed
+build declares secret, and any secret for an app.
+
+A service update that adds a required field with no default installs as usual.
+Its instances then wait for the value like any other missing setting. The
+approval screen doesn't collect values, so set them ahead of the update or
+after it.
+
+## Secrets
+
+A secret is a field declared `secret`, or a value written with `set-secret` or
+the **Secret** box for a field no build declares yet.
+
+### Who can set and see them
+
+Three administrative capabilities cover settings. All three are in the default
+`administration` group.
+
+| Capability                             | Allows                                                                                 |
+| -------------------------------------- | -------------------------------------------------------------------------------------- |
+| `trellis.auth.v1:config.read`          | See settings and their history. Secrets show only whether they are set.                |
+| `trellis.auth.v1:config.manage`        | Change, roll back, and delete settings, and attach app declarations. No secrets.       |
+| `trellis.auth.v1:config.manageSecrets` | Set and replace secrets, roll back, and delete revisions. Secrets are never read back. |
+
+A write that touches a secret needs `config.manageSecrets`, and one that
+touches a plain setting needs `config.manage`, so a role can tune settings
+without being able to replace credentials. A rollback needs whichever its
+changes touch. Deleting a revision needs either one.
+
+No administrator capability reads a secret. Only the deployment's own instances
+receive secret values, through `Config.Own.Get` under
+`trellis.auth.v1:config.readOwn`, which every service and device instance holds
+for itself. In the service, secrets are plain values in `config.current`.
+
+### Never shown back
+
+A secret's field in the Console is empty, with a placeholder saying whether it
+is set, and an unused secret reads "Secret, set". The CLI shows `(secret, set)` or
+`(secret, not set)`. `Config.Get` returns only `isSet` for a secret, and the
+reason given for a mismatch never contains its value. Revision history and
+audit records name the secrets a write changed, never their values. The
+Console's show button reveals only what you are typing before you save it.
+
+### Setting a secret
+
+`set-secret` reads the value from a file, or from standard input when
+`--from-file` is left out or is `-`, so it never appears in shell history or the
+process list:
+
+```sh
+trellis svc orders config set-secret databasePassword --from-file ./db-password
+trellis svc orders config set-secret databasePassword < ./db-password
+```
+
+It drops trailing newlines and refuses an empty value. A text secret is stored
+as written. Any other declared secret is parsed as JSON, and an undeclared one
+follows the same JSON-or-text rule as `set`. On a terminal with no
+`--from-file`, `set-secret` reads until end of input (Ctrl-D) without a prompt.
+
+### How Auth stores them
+
+Plain settings are stored as JSON in Auth's platform database. Secrets are kept
+apart: each revision's secrets are sealed as one blob with AES-256-GCM under the
+installation's storage key, `oauth_storage_key` in `secrets.toml`. It is the
+same key that seals OAuth records and OIDC client secrets. The database holds
+only the ciphertext, so a copied database file on its own exposes no secret.
+Anyone with both the database and `secrets.toml`, such as someone with access
+to the server, can decrypt them.
+
+`trellis-server backup` copies `secrets.toml` into the backup along with the
+databases (see [Back up](/guides/running-trellis/upkeep#back-up)). A complete
+backup folder therefore exposes every service secret, and it needs the same
+protection as the server. Keep `secrets.toml` readable only by the account that
+runs Trellis. If you copy the database somewhere else, leave `secrets.toml` out
+of that copy.
+
+### Old secrets live in old revisions
+
+Every revision is kept until an administrator deletes it, and a revision keeps
+the secrets that were current when it was written. Replacing a password
+therefore leaves the old one in the earlier revisions, where a rollback can
+bring it back. To make a replaced secret stop existing, delete each earlier
+revision that holds it with `config delete-revision REVISION`, or **Delete**
+under **Earlier versions**. `config history` marks the revisions that changed a
+secret with `(secret)`. The current revision can't be deleted.
+
+### Plain values under a secret name
+
+Auth refuses a plain value for a field the installed build declares secret,
+since it would be stored where every administrator can read it. A plain value
+saved before Trellis had the IDL, under a name the IDL then declares secret, is
+never read as the secret: the build reports it as a mismatch and the field
+counts as missing. Set it again with `set-secret`, and the plain copy goes in
+the same write, since a field is stored either as a setting or as a secret.
+
+### Nullable secrets
+
+An optional secret (`type string | null; secret;`) reads null until it is set,
+so nothing waits for it. Two commands clear one, with different results:
+
+- `set-secret FIELD --null` stores an explicit null. On an instance, it makes
+  that instance go without a secret its deployment has.
+- `unset FIELD` removes the stored value. On an instance, the deployment's value
+  applies again. On the deployment, the field reads null.
+
+In the Console, **Clear** stores null and **Reset** or **Use service-wide**
+unsets.
+
+## Restarts
+
+A `restart` field changes only when the participant connects again. Auth
+records, for each instance, the revisions it loaded at connect. `Config.Get`
+reports `restartPending` for an instance whose own build would now read a
+different value for one of its `restart` fields. Values for fields that build
+doesn't declare, or that don't fit it, don't count, so setting values for the
+next build doesn't ask anyone to restart the current one.
+
+`trellis svc <ID> config` prints a note for each such instance, and the Console
+shows a notice naming them. Trellis never restarts anything. Restart the
+instance with whatever runs it, such as podman or systemd.

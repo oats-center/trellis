@@ -60,6 +60,8 @@ test, requires the `orders.create` capability, which allows `Create`. Declare
 it. See the [service walkthrough](/guides/write-a-service) for handlers and a
 working
 [Orders example](https://github.com/OATS-Center/trellis/tree/main/docs/examples/orders).
+A participant's settings and secrets are `config` members; see
+[Settings and secrets](/guides/settings-and-secrets).
 
 ## Operations with progress and live updates
 

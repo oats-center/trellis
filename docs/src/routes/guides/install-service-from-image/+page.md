@@ -78,21 +78,9 @@ service then connects as an instance of the new deployment, so skip the
 provisioning step below.
 
 You don't have to wait for its IDL to give it settings. Set them on the claim
-by name, and they move to the deployment when you approve it:
-
-```sh
-trellis svc partner-orders config set endpoint=https://orders.example workers=4
-trellis svc partner-orders config set-secret apiKey --from-file api-key.txt
-```
-
-Without a declaration, a value is stored as JSON when it parses as JSON and as
-text otherwise, so `workers=4` is a number; write `'workers="4"'` to keep it
-text. The Console's **Add service** takes the same settings as rows of a name
-and a value. Once the service connects, `trellis svc partner-orders config`
-shows the settings its IDL declares, any it still needs, any whose value
-doesn't fit the declared type, and any it doesn't use. A required setting that
-is missing or doesn't fit holds the service, which prints a link to its
-settings and continues as soon as you fix them.
+by name, with `trellis svc partner-orders config set` or in **Add service**,
+and approving the claim moves them to the deployment. See
+[Settings and secrets](/guides/settings-and-secrets#a-service-added-without-its-idl).
 
 ## 3. Provision an instance
 
@@ -139,6 +127,12 @@ evidence, and inbox, and returns signed session authority with exact transport
 permissions. Do not mount NATS administrator credentials, semantic digests,
 deployment IDs, instance IDs, resource bindings, or authority files.
 
+The service's own settings and secrets, such as a database URL and password,
+come from Trellis rather than `-e` flags. Set them with `trellis svc
+"$DEPLOYMENT_ID" config` or in the service's Settings section in the Console;
+see [Settings and secrets](/guides/settings-and-secrets). A service that is
+missing a required setting waits and prints a link to set it.
+
 ## 5. Upgrade
 
 Roll out the new image. When it connects, the service sees that its build
@@ -150,6 +144,10 @@ differs from the one its instance runs and submits its own IDL:
   it as a QR code; open it, or run `trellis svc "$DEPLOYMENT_ID" updates` and
   `trellis svc "$DEPLOYMENT_ID" approve`. The service connects as soon as the
   update is approved.
+
+Settings a new build needs can be set while the old build runs, so its
+instances start at once; see
+[An upgrade without downtime](/guides/settings-and-secrets#an-upgrade-without-downtime).
 
 The service's page in the Console keeps the update history: when each build
 asked, what it changed, whether it was installed, rejected, or replaced, and
@@ -187,8 +185,9 @@ plans.
 2. Create the deployment.
 3. Apply the release's Trellis project and inspect the result.
 4. Provision an instance and store its seed securely.
-5. Start the container with only endpoint and identity configuration.
-6. Confirm expected RPCs, events, jobs, and resource handles.
+5. Set the service's settings and secrets.
+6. Start the container with only endpoint and identity configuration.
+7. Confirm expected RPCs, events, jobs, and resource handles.
 
 All required resource evidence must exist before context issuance. Unavailable
 optional evidence removes only its affected optional grants. The service never

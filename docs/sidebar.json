@@ -196,6 +196,10 @@
     "collapsible": false,
     "items": [
       {
+        "title": "Settings and secrets",
+        "to": "/guides/settings-and-secrets"
+      },
+      {
         "title": "Jobs",
         "collapsible": true,
         "items": [
