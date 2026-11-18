@@ -28,7 +28,7 @@
     "@tailwindcss/vite": "4.2.4",
     "@types/node": "^24.0.0",
     "daisyui": "5.5.19",
-    "svelte": "5.56.4",
+    "svelte": "5.57.3",
     "svelte-check": "4.4.6",
     "tailwindcss": "4.2.4",
     "typescript": "6.0.3",

@@ -98,7 +98,7 @@
     "set-cookie-parser": "^3.1.0",
     "sigma": "^3.0.2",
     "sirv": "^3.0.2",
-    "svelte": "5.56.4",
+    "svelte": "5.57.3",
     "svelte-check": "4.4.6",
     "svelteplot": "0.14.2",
     "tailwindcss": "4.2.4",
