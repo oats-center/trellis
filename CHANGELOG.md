@@ -10,8 +10,37 @@ and this project adheres to
 
 ## [0.100.0-rc.49] - 2026-11-18
 
+### Added
+
+- Settings can be set at any time: before a service's IDL exists, on a service
+  waiting for approval (claims), and for fields only the next build declares,
+  so an upgrade starts with its values in place while the current build keeps
+  running. Each build reads only the fields it declares; others show as "not
+  used by this build", and a value that doesn't fit a build's type is reported
+  while that build keeps its last fitting value. A required setting that is
+  missing or doesn't fit holds the service, which prints why with the settings
+  link. Approving a claim carries its settings to the new deployment. The
+  Console's Add service form takes settings (typed from the IDL, or free-form),
+  and the CLI's `config` commands work on claims.
+- The CLI asks for missing input on a terminal: `trellis clients add` and
+  `clients edit` walk through a registration, `apis force-replace --source`
+  reviews and asks for acknowledgements, and `sign-in providers add`,
+  `roles create`, `users create` and `users find` prompt for what they need.
+  Every answer is also a flag; with `--no-input` or without a terminal, missing
+  input fails at once naming the flags. `clients put FILE` is unchanged and
+  also reads standard input (`-`).
+- `Events.Consumers.Query` and `Inspect` report each service's failed
+  deliveries (`deadLetters`), shown in the Console's Events sidebar and as a
+  Failed column in the CLI.
+
 ### Changed
 
+- An interrupted restore is finished by running `trellis-server restore`
+  again, then starting; no `--force` is needed for the installation's own
+  backup.
+- A job no worker claims within the job history retention becomes Expired
+  instead of staying Pending after its work ages out; the Jobs streams keep one
+  day beyond the retention.
 - Hovering a generated TypeScript client or handler method (`client.get`,
   `service.handleGet`, `publishX`, `onX`) shows its IDL docs, errors and
   allowing capabilities, the same text as its action descriptor. Signatures
@@ -20,6 +49,29 @@ and this project adheres to
   reconnect backoff (1, 2, 4, then 8 s). Only work with a deadline (requests,
   operations, Live openings, publishes) still retries within a second, so a
   running service no longer retries once a second for a whole outage.
+- Retrying an older release never moves the `rc` or `latest` image tags back:
+  they move only when no newer release is published.
+
+### Fixed
+
+- `backup` refuses a broker that belongs to another installation, and
+  `restore` without `--force` checks the target's installation ID the way
+  startup does, including an ID set in `config.toml`.
+- The testkit's restore checks its backup before stopping or deleting
+  anything.
+- A dead-letter replay accepted while retention removes its original settles
+  as unreplayable with that reason, and the projection rebuilds after such a
+  purge.
+- TypeScript flushes no longer accumulate close handlers on long-lived
+  connections.
+- The Console's Events sidebar no longer says "Nothing waiting" for a service
+  whose failed deliveries weren't loaded.
+- A request whose connection is lost while it signs waits for the next
+  connection instead of failing, and a native trust check whose issuer
+  rotation the connected session installed first no longer reports trust
+  unavailable.
+- The administering-jobs guide's examples use the real generated methods and
+  shapes.
 
 ## [0.100.0-rc.48] - 2026-11-18
 
