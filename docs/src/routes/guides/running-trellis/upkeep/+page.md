@@ -125,6 +125,12 @@ The databases are copied first and the streams after them, so the streams hold
 everything the databases refer to. A folder without `manifest.json` is a
 backup that didn't finish.
 
+Before it copies the streams, `backup` checks that the NATS it reached belongs
+to this installation and this platform database, the same check a start
+makes. If `[nats] servers` or the Trellis NATS user points at another
+installation's broker, or at a broker no Trellis has started against yet, the
+backup fails without writing `manifest.json`.
+
 The NATS server's own config file, such as a `nats-1.conf` that
 `trellis-server nats new` wrote, is not in the backup. It holds the operator
 and no data. Keep it with the NATS host's other config.
@@ -144,16 +150,24 @@ trellis-server restore /backups/trellis-2026-11-18 --config /srv/trellis
 `restore` checks every file against the manifest before it writes anything.
 It refuses a folder that holds an installation with another ID, and a file the
 config names outside the folder (a certificate, say) that exists with other
-contents. `--force` replaces both. Files outside the installation folder go
-back to the paths they had.
+contents. The folder's ID is the one its server would start with:
+`[auth] instance_id` in `config.toml` if set, otherwise the one in
+`secrets.toml`. A `config.toml` that won't load is refused as well, since
+its ID can't be checked. `--force` replaces all of these. Files outside the
+installation folder go back to the paths they had.
 
 The streams wait in the data folder's `restore/` until the next start. Give
 that start a NATS whose JetStream store is empty: a new NATS host, or the old
 one with its data folder removed. The first start of the platform role (or
 `all`) loads every stream before anything else runs, and refuses a NATS that
-already has one of them. A start that stops partway finishes on the next one.
-Start the platform role before any split role, which would otherwise create
+already has one of them. Start the platform role before any split role, which would otherwise create
 its streams empty.
+
+If the restore is interrupted, whether `restore` itself or the start that
+loads the streams, run it again: the same `trellis-server restore` command,
+then start the server. No `--force` is needed for the installation's own
+backup. That start first deletes the streams the interrupted one loaded,
+provided NATS holds nothing else, then loads them all again.
 
 After loading, the Jobs, Health and Events projections replay their streams
 from the start, so they catch up on whatever reached the streams after their

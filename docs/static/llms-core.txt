@@ -238,12 +238,16 @@ starting the server or NATS.
 installation while its NATS is reachable: its config, `secrets.toml` and the
 files the config names, an online SQLite copy of each database,
 `platform.issuer-keys/`, generated TLS, a snapshot of every JetStream stream in
-Trellis's account except the lease bucket, and a checksummed `manifest.json`.
+Trellis's account except the lease bucket, and a checksummed `manifest.json`;
+it fails, without a manifest, when the broker isn't bound to this installation
+and its platform database.
 `trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
-it into a stopped or fresh installation, refusing one with another ID unless
-`--force`; the next platform start loads the streams into an empty JetStream
-store. Leases only pick which server runs a role: a standby needs the same NATS
-and, for Auth, the same database, issuer keys and `secrets.toml`.
+it into a stopped or fresh installation, refusing one with another ID (its
+`[auth] instance_id`, else `secrets.toml`'s) or an unreadable `config.toml`
+unless `--force`; the next platform start loads the streams into an empty
+JetStream store. An interrupted restore is run again (restore, then start),
+which replaces the streams the interrupted one loaded. Leases only pick which
+server runs a role: a standby needs the same NATS and, for Auth, the same database, issuer keys and `secrets.toml`.
 
 `trellis-server --dev` runs a development installation in
 `<user data>/trellis/dev` (or `--config <dir>`), creating it the first time:

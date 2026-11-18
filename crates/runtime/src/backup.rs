@@ -40,6 +40,9 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 const FORMAT: u32 = 1;
 /// The data-folder entry where a restore leaves stream snapshots for the next start.
 const STAGED: &str = "restore";
+/// The file in [`STAGED`] naming the streams an earlier, unfinished restore
+/// of the folder may have loaded, which the next start deletes first.
+const UNFINISHED: &str = "unfinished.json";
 /// Bytes per snapshot or restore message, well below NATS's default payload limit.
 const CHUNK: usize = 128 * 1024;
 /// How long one JetStream API exchange may take.
@@ -664,15 +667,18 @@ pub async fn backup(
         let relative = PathBuf::from(format!("databases/{subsystem}.sqlite"));
         copy_database(path, &destination.join(&relative))?;
         if *subsystem == "platform" {
-            jetstream_identity = rusqlite::Connection::open(destination.join(&relative))
-                .and_then(|copy| {
-                    copy.query_row(
-                        "SELECT jetstream_id FROM trellis_platform_store_marker WHERE id=1",
-                        [],
-                        |row| row.get(0),
-                    )
-                })
-                .ok();
+            let copy = destination.join(&relative);
+            jetstream_identity = Some(
+                rusqlite::Connection::open(&copy)
+                    .and_then(|copy| {
+                        copy.query_row(
+                            "SELECT jetstream_id FROM trellis_platform_store_marker WHERE id=1",
+                            [],
+                            |row| row.get::<_, String>(0),
+                        )
+                    })
+                    .map_err(|source| BackupError::Sqlite { path: copy, source })?,
+            );
         }
         add(
             EntryKind::Database {
@@ -701,11 +707,58 @@ pub async fn backup(
         )?;
     }
 
-    // The streams last, so they hold everything the databases refer to.
+    // The streams last, so they hold everything the databases refer to. They
+    // must be this installation's, and its platform database's: the pair is
+    // checked as a start checks it, or the backup would put together data
+    // that no start of Trellis accepts.
     let client = connect(config).await?;
     let nats_server = Some(client.server_info().version);
     let leases = format!("KV_{}", config.resolve_leases()?.bucket);
     let jetstream = async_nats::jetstream::new(client.clone());
+    let installation = instance_id(config);
+    let servers = config.resolve_nats_runtime()?.servers;
+    let (_, bound, store) = crate::platform::read_broker_identity(&jetstream)
+        .await
+        .map_err(|error| {
+            BackupError::Refused(format!(
+                "cannot confirm that NATS at {servers} holds this installation's JetStream: \
+                {error}"
+            ))
+        })?;
+    let unconfirmed = |reason: String| {
+        BackupError::Refused(format!(
+            "NATS at {servers} {reason}, so the backup would pair data of different \
+            installations; check [nats] servers and the Trellis NATS user"
+        ))
+    };
+    match (&bound, &installation) {
+        (None, _) => {
+            return Err(unconfirmed(
+                "has no record of the installation it belongs to; a broker gets one on \
+                the platform's first start"
+                    .into(),
+            ))
+        }
+        (Some(bound), None) => {
+            return Err(unconfirmed(format!(
+                "belongs to installation {bound}, and this configuration names no \
+                installation ID"
+            )))
+        }
+        (Some(bound), Some(installation)) if bound != installation => {
+            return Err(unconfirmed(format!(
+                "belongs to installation {bound}, not this installation {installation}"
+            )))
+        }
+        _ => {}
+    }
+    if let Some(identity) = &jetstream_identity {
+        if store.as_ref() != Some(identity) {
+            return Err(unconfirmed(
+                "holds a JetStream bound to a different platform database than this one".into(),
+            ));
+        }
+    }
     let mut names = Vec::new();
     let mut listing = jetstream.stream_names();
     while let Some(name) = listing.next().await {
@@ -800,9 +853,11 @@ pub fn verify(source: &Path) -> Result<Manifest, BackupError> {
 /// restored configuration's `[paths]` says otherwise, and stages its streams
 /// for the next start. The server must be stopped.
 ///
-/// A folder that already holds another installation is refused unless
-/// `force`, and so is a file the configuration names outside the folder that
-/// exists with other contents.
+/// A folder that already holds another installation, by the ID its start
+/// would use (`[auth] instance_id`, else the one in `secrets.toml`), or an
+/// installation whose configuration can't be read, is refused unless `force`,
+/// and so is a file the configuration names outside the folder that exists
+/// with other contents.
 ///
 /// # Errors
 ///
@@ -817,7 +872,25 @@ pub fn restore(
     let manifest = verify(source)?;
     let config_dir = config_file.parent().unwrap_or(Path::new("/"));
     if !force {
-        let present = Secrets::load(&config_dir.join(SECRETS_FILE))?.instance_id;
+        // The installation already there is the one a start of it would be:
+        // its ID is the configured one, or else the one in `secrets.toml`.
+        let unreadable = |error: ConfigError| {
+            BackupError::Refused(format!(
+                "{} holds an installation whose ID can't be read ({error}); restore into a \
+                fresh folder, or pass --force to replace it",
+                config_dir.display()
+            ))
+        };
+        let present = if config_file.exists() {
+            let (present, _) =
+                RuntimeConfig::load_from_path_with_defaults(config_file, defaults.clone())
+                    .map_err(unreadable)?;
+            instance_id(&present)
+        } else {
+            Secrets::load(&config_dir.join(SECRETS_FILE))
+                .map_err(unreadable)?
+                .instance_id
+        };
         if let Some(present) =
             present.filter(|present| Some(present) != manifest.instance_id.as_ref())
         {
@@ -903,12 +976,33 @@ pub fn restore(
         }
     }
 
-    // The streams wait in the data folder for the next start.
+    // The streams wait in the data folder for the next start. Streams still
+    // staged there are of a restore whose start didn't finish, and may be in
+    // NATS already; the next start deletes them before loading these.
     let staged = paths.data.join(STAGED);
+    let mut unfinished = BTreeSet::new();
+    if let Ok(contents) = fs::read(staged.join(MANIFEST_FILE)) {
+        if let Ok(earlier) = serde_json::from_slice::<Manifest>(&contents) {
+            unfinished.extend(earlier.streams().map(str::to_owned));
+        }
+        if let Ok(contents) = fs::read(staged.join(UNFINISHED)) {
+            if let Ok(names) = serde_json::from_slice::<Vec<String>>(&contents) {
+                unfinished.extend(names);
+            }
+        }
+    }
     if staged.exists() {
         fs::remove_dir_all(&staged).map_err(file_error("remove", &staged))?;
     }
     private_directory(&staged)?;
+    if !unfinished.is_empty() {
+        let path = staged.join(UNFINISHED);
+        trellis_bootstrap::write_private_file(
+            &path,
+            serde_json::to_vec(&unfinished).unwrap_or_default(),
+        )
+        .map_err(|error| file_error("write", &path)(std::io::Error::other(error.to_string())))?;
+    }
     for entry in &manifest.entries {
         if matches!(entry.kind, EntryKind::Stream { .. }) {
             place(
@@ -932,8 +1026,11 @@ pub fn restore(
 /// after Trellis's NATS accounts are in place and before anything else uses
 /// JetStream.
 ///
-/// A stream loaded by an earlier start that stopped partway is skipped, so
-/// starting again finishes the restore.
+/// A stream loaded by an earlier start that stopped partway, and whose
+/// snapshot it removed, is skipped. Any other interrupted restore is run
+/// again: restoring once more stages every stream with the names of those the
+/// unfinished one staged, and the start deletes those from NATS before
+/// loading, provided NATS holds no other stream.
 ///
 /// # Errors
 ///
@@ -956,6 +1053,36 @@ pub async fn apply_staged_restore(
         .map_err(|error| BackupError::Damaged(format!("{}: {error}", path.display())))?;
     let client = connect(config).await?;
     let jetstream = async_nats::jetstream::new(client.clone());
+    let path = staged.join(UNFINISHED);
+    match fs::read(&path) {
+        Ok(contents) => {
+            let unfinished: BTreeSet<String> = serde_json::from_slice(&contents)
+                .map_err(|error| BackupError::Damaged(format!("{}: {error}", path.display())))?;
+            let mut present = Vec::new();
+            let mut listing = jetstream.stream_names();
+            while let Some(name) = listing.next().await {
+                present
+                    .push(name.map_err(|error| nats_error("listing streams")(error.to_string()))?);
+            }
+            if let Some(other) = present.iter().find(|name| !unfinished.contains(*name)) {
+                return Err(BackupError::Refused(format!(
+                    "NATS has stream {other}, which no unfinished restore of this installation \
+                    loaded. A restore loads its streams into a NATS whose JetStream holds none \
+                    of them: start Trellis against a fresh JetStream store"
+                )));
+            }
+            for name in &present {
+                jetstream
+                    .delete_stream(name)
+                    .await
+                    .map_err(|error| nats_error(format!("stream {name}"))(error.to_string()))?;
+                tracing::info!(stream = %name, "deleted a stream an unfinished restore loaded");
+            }
+            fs::remove_file(&path).map_err(file_error("remove", &path))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(file_error("read", &path)(error)),
+    }
     for entry in &manifest.entries {
         let EntryKind::Stream {
             name,
@@ -990,7 +1117,8 @@ pub async fn apply_staged_restore(
         if present {
             return Err(BackupError::Refused(format!(
                 "NATS already has stream {name}. A restore loads its streams into a NATS whose \
-                JetStream holds none of them: start Trellis against a fresh JetStream store"
+                JetStream holds none of them: start Trellis against a fresh JetStream store, \
+                or, if an earlier start of this restore stopped partway, restore again"
             )));
         }
         let (sha256, _) = digest(&file)?;
@@ -1140,5 +1268,287 @@ mod tests {
             "{damaged:?}"
         );
         assert!(!installation.path().join("fresh").exists());
+    }
+
+    /// An installation's ID can be in its `config.toml` alone, as
+    /// `[auth] instance_id`, which a start uses before `secrets.toml`'s.
+    #[test]
+    fn a_restore_refuses_a_folder_whose_config_names_another_installation_unless_forced() {
+        let backup = tempfile::tempdir().unwrap();
+        backup_of(backup.path(), "01KBACKUPINSTALLATION0000000");
+        let installation = tempfile::tempdir().unwrap();
+        let config = installation.path().join("config.toml");
+        let present = "[auth]\ninstance_id = \"01KOTHERINSTALLATION00000000\"\n";
+        fs::write(&config, present).unwrap();
+
+        let refused = restore(backup.path(), &config, defaults(installation.path()), false);
+        assert!(
+            matches!(&refused, Err(BackupError::Refused(reason))
+                if reason.contains("01KOTHERINSTALLATION00000000")),
+            "{refused:?}"
+        );
+        assert_eq!(fs::read_to_string(&config).unwrap(), present);
+
+        restore(backup.path(), &config, defaults(installation.path()), true).unwrap();
+        let (restored, _) =
+            RuntimeConfig::load_from_path_with_defaults(&config, defaults(installation.path()))
+                .unwrap();
+        assert_eq!(
+            instance_id(&restored).as_deref(),
+            Some("01KBACKUPINSTALLATION0000000")
+        );
+    }
+
+    /// An installation whose ID can't be read may be another one.
+    #[test]
+    fn a_restore_refuses_a_folder_whose_config_cant_be_read_unless_forced() {
+        let backup = tempfile::tempdir().unwrap();
+        backup_of(backup.path(), "01KBACKUPINSTALLATION0000000");
+        let installation = tempfile::tempdir().unwrap();
+        let config = installation.path().join("config.toml");
+        let present = "[auth\ninstance_id = \"01KOTHERINSTALLATION00000000\"\n";
+        fs::write(&config, present).unwrap();
+
+        let refused = restore(backup.path(), &config, defaults(installation.path()), false);
+        assert!(
+            matches!(refused, Err(BackupError::Refused(_))),
+            "{refused:?}"
+        );
+        assert_eq!(fs::read_to_string(&config).unwrap(), present);
+
+        restore(backup.path(), &config, defaults(installation.path()), true).unwrap();
+        assert_eq!(fs::read_to_string(&config).unwrap(), "");
+    }
+
+    /// Starts `config`'s installation once, so it binds its broker, and
+    /// waits for it to stop.
+    async fn started_once(config: &RuntimeConfig, origin: &str) {
+        let (stop, mut runtime) = crate::platform::auth::tests::runtime_rotation::start_runtime(
+            config,
+            crate::RuntimeMode::All,
+            origin,
+            &[],
+        )
+        .await;
+        stop.stop();
+        tokio::time::timeout(Duration::from_secs(30), &mut runtime)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    /// A backup pairs the platform database with its own installation's
+    /// JetStream, as a start does. Pointed at a broker no installation has
+    /// bound, or at another installation's, it fails before its manifest is
+    /// written, so no restore can take it for a backup.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_backup_refuses_a_broker_that_is_not_its_installations() {
+        use crate::platform::auth::tests::runtime_rotation::installation;
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let reserved: Vec<_> = (0..8)
+            .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+            .collect();
+        let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+        let our_origin = format!("http://127.0.0.1:{}", ports[0]);
+        let (ours, _our_broker) = installation(
+            &root.join("ours"),
+            &ports[..4],
+            &our_origin,
+            "loopback_development",
+            None,
+        )
+        .await;
+        started_once(&ours, &our_origin).await;
+        let their_origin = format!("http://127.0.0.1:{}", ports[4]);
+        let (theirs, _their_broker) = installation(
+            &root.join("theirs"),
+            &ports[4..],
+            &their_origin,
+            "loopback_development",
+            None,
+        )
+        .await;
+
+        // Ours names their broker and its Trellis user by mistake.
+        let mut misdirected = ours.clone();
+        misdirected.nats.as_mut().unwrap().servers = theirs.nats.as_ref().unwrap().servers.clone();
+        misdirected
+            .secrets
+            .nats
+            .users
+            .trellis
+            .clone_from(&theirs.secrets.nats.users.trellis);
+        let config_file = root.join("ours/config/config.toml");
+        let data = root.join("ours/data");
+
+        let unbound = root.join("unbound");
+        let refused = backup(&misdirected, &config_file, &data, &unbound).await;
+        assert!(
+            matches!(refused, Err(BackupError::Refused(_))),
+            "{refused:?}"
+        );
+        assert!(!unbound.join(MANIFEST_FILE).exists());
+
+        started_once(&theirs, &their_origin).await;
+        let crossed = root.join("crossed");
+        let refused = backup(&misdirected, &config_file, &data, &crossed).await;
+        let their_instance = instance_id(&theirs).unwrap();
+        assert!(
+            matches!(&refused, Err(BackupError::Refused(reason))
+                if reason.contains(&their_instance)),
+            "{refused:?}"
+        );
+        assert!(!crossed.join(MANIFEST_FILE).exists());
+    }
+
+    /// The first start after a restore can stop after NATS took a stream and
+    /// before it removed that stream's snapshot, or lose NATS's answer, and
+    /// the next start then refuses the stream. Restoring again and starting
+    /// finishes the restore: every stream is the backup's, and the
+    /// installation serves. A stream no restore loaded still stops it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_interrupted_restore_finishes_when_restored_again() {
+        use crate::platform::auth::tests::runtime_rotation::{
+            installation, start_broker, start_runtime,
+        };
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let reserved: Vec<_> = (0..4)
+            .map(|_| trellis_local_nats::ReservedPort::reserve().unwrap())
+            .collect();
+        let ports: Vec<_> = reserved.iter().map(|reserved| reserved.port()).collect();
+        let origin = format!("http://127.0.0.1:{}", ports[0]);
+        let lost = root.join("lost");
+        let (config, mut broker) =
+            installation(&lost, &ports, &origin, "loopback_development", None).await;
+        started_once(&config, &origin).await;
+        let saved = root.join("backup");
+        let manifest = backup(
+            &config,
+            &lost.join("config/config.toml"),
+            &lost.join("data"),
+            &saved,
+        )
+        .await
+        .unwrap();
+        broker.stop().unwrap();
+
+        // Restored onto a new disk, beside a new NATS with an empty store,
+        // and prepared as a start prepares it before loading the streams.
+        let fresh = root.join("fresh");
+        let config_file = fresh.join("config/config.toml");
+        let prepared = || async {
+            let (mut restored, paths) =
+                RuntimeConfig::load_from_path_with_defaults(&config_file, defaults(&fresh))
+                    .unwrap();
+            crate::installation::prepare(
+                &mut restored,
+                &fresh.join("config"),
+                &paths.data,
+                crate::RuntimeMode::All,
+                true,
+            )
+            .await
+            .unwrap();
+            (restored, paths.data)
+        };
+        restore(&saved, &config_file, defaults(&fresh), false).unwrap();
+        let _broker = start_broker(
+            &fresh,
+            &fresh.join("config"),
+            [ports[1], ports[2], ports[3]],
+        )
+        .await;
+        let (restored, data) = prepared().await;
+
+        // What the start that stopped left: the streams before one holding
+        // messages loaded and their snapshots removed, then that one loaded
+        // with its snapshot still staged.
+        let staged = data.join(STAGED);
+        let streams: Vec<_> = manifest
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Stream {
+                    name,
+                    config,
+                    state,
+                } => Some((name, config, state, staged.join(&entry.path))),
+                _ => None,
+            })
+            .collect();
+        let interrupted = streams
+            .iter()
+            .position(|(_, _, state, _)| state["last_seq"].as_u64() > Some(0))
+            .expect("a stream with messages");
+        let client = connect(&restored).await.unwrap();
+        for (index, (name, config, state, file)) in streams[..=interrupted].iter().enumerate() {
+            restore_stream(&client, name, config, state, file)
+                .await
+                .unwrap();
+            if index < interrupted {
+                fs::remove_file(file).unwrap();
+            }
+        }
+        let refused = apply_staged_restore(&restored, &data).await;
+        assert!(
+            matches!(refused, Err(BackupError::Refused(_))),
+            "{refused:?}"
+        );
+
+        // Restored again, over the same installation, without --force.
+        restore(&saved, &config_file, defaults(&fresh), false).unwrap();
+        let (restored, data) = prepared().await;
+
+        // A stream no restore loaded is not deleted for it.
+        let jetstream = async_nats::jetstream::new(client.clone());
+        jetstream
+            .create_stream(async_nats::jetstream::stream::Config {
+                name: "UNRELATED".into(),
+                subjects: vec!["unrelated.>".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let refused = apply_staged_restore(&restored, &data).await;
+        assert!(
+            matches!(&refused, Err(BackupError::Refused(reason)) if reason.contains("UNRELATED")),
+            "{refused:?}"
+        );
+        jetstream.delete_stream("UNRELATED").await.unwrap();
+        let _ = client.drain().await;
+
+        assert!(apply_staged_restore(&restored, &data).await.unwrap());
+        assert!(!staged.exists());
+        let client = connect(&restored).await.unwrap();
+        let jetstream = async_nats::jetstream::new(client.clone());
+        for (name, _, state, _) in &streams {
+            let mut stream = jetstream.get_stream(name.as_str()).await.unwrap();
+            let info = stream.info().await.unwrap();
+            assert_eq!(
+                Some(info.state.last_sequence),
+                state["last_seq"].as_u64(),
+                "stream {name}"
+            );
+            assert_eq!(
+                Some(info.state.messages),
+                state["messages"].as_u64(),
+                "stream {name}"
+            );
+        }
+        let _ = client.drain().await;
+
+        let (stop, mut runtime) =
+            start_runtime(&restored, crate::RuntimeMode::All, &origin, &[]).await;
+        stop.stop();
+        tokio::time::timeout(Duration::from_secs(30), &mut runtime)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }

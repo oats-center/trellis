@@ -38,7 +38,7 @@ mod packages;
 mod policy;
 mod policy_aggregates;
 mod resources;
-mod runtime_rotation;
+pub(crate) mod runtime_rotation;
 mod sdk_rotation;
 mod service_claims;
 mod state;
