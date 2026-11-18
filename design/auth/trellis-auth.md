@@ -311,6 +311,16 @@ or not chaining to a trusted CA, fails the attempt at once and is not retried.
 A Rust client never dials servers the broker reports: it reconnects by opening
 a new transport generation over the advertised list.
 
+A client whose broker is lost opens a replacement generation on its own
+schedule. A TypeScript client that is idle backs off between failed attempts:
+1 s, 2 s, 4 s, then 8 s. While a caller waits for the transport (a finite RPC,
+an Operation, a Live opening, a publish awaiting its acknowledgement, or a
+request waiting for verified authority to return), it retries 1 s after the
+last failed attempt instead, however many callers are waiting, so a request
+sent as the broker returns does not time out behind the idle schedule. A
+waiting Rust caller asks for an attempt every 500 ms within its deadline, so it
+has no idle backoff to wait out.
+
 ### Installation TLS (`crates/bootstrap/src/tls.rs`, `tls.rs`)
 
 Production installations serve operator-supplied certificates (`mode = "tls"`)

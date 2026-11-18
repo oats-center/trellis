@@ -39,11 +39,9 @@ test("State and authentication survive restart with retained KV history", async 
       .set({ value: "superseded" })
       .orThrow();
     await client.state.saved.set({ value: "durable" }).orThrow();
-    // The same client must recover on its own. It retries the lost broker on a
-    // capped backoff (up to 8s between attempts), so a slow restart can leave
-    // it disconnected well after the server is back, and a request sent then
-    // times out waiting for authority. Wait for the reconnect the client
-    // reports after the outage instead of racing that schedule.
+    // The same client must recover on its own. Wait for the reconnect it
+    // reports after the outage, so the reads below test State after restart
+    // rather than sharing their 3 s request timeout with the reconnect.
     let disconnected = false;
     const reconnected = Promise.withResolvers<void>();
     const unsubscribe = client.connection.subscribe(({ phase }) => {

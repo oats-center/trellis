@@ -152,6 +152,17 @@ export type TrellisTransportProvider = {
     requirement: TransportRequirement,
     opts?: TransportAcquireOptions,
   ): Promise<TransportLease>;
+  /**
+   * Register a caller waiting for a usable transport and return its release.
+   *
+   * While any caller is registered, a lost broker is retried at most 1 s after
+   * the last failed attempt instead of on the idle backoff (1 s, 2 s, 4 s, then
+   * 8 s), so a request sent as the broker returns does not time out waiting
+   * for the next scheduled attempt. Acquisitions that wait register
+   * themselves; a caller waiting on something the transport must restore
+   * first, such as verified authority, registers explicitly.
+   */
+  demandRecovery(): () => void;
   /** Resolves when the logical connection closes. */
   closed(): Promise<void | Error>;
   /** Logical lifecycle event stream (logical disconnect/reconnect/closed). */
@@ -196,6 +207,7 @@ export function fixedTransportProvider(
     currentNats: () => nc,
     acquireCurrent: () => Promise.resolve(lease),
     acquireFor: () => Promise.resolve(lease),
+    demandRecovery: () => () => {},
     closed: () => nc.closed(),
     status: () => nc.status(),
     close: () => nc.close(),
@@ -416,8 +428,15 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   #adoptionRequested = false;
   #initialized = false;
   #lastReason: TransportGenerationReason = "authorization_growth";
-  #failure?: { digest: string; attempts: number; nextRetryAtMs: number };
+  #failure?: {
+    digest: string;
+    attempts: number;
+    failedAtMs: number;
+    nextRetryAtMs: number;
+  };
   #failureTimer?: ReturnType<typeof setTimeout>;
+  /** Callers currently waiting for a usable generation. */
+  #recoveryDemand = 0;
   #closed = false;
   #logicalConnected = false;
   readonly #closeDeferred = Promise.withResolvers<void | Error>();
@@ -740,6 +759,27 @@ export class TransportGenerationManager implements TrellisTransportProvider {
 
   acquireCurrent(opts?: TransportAcquireOptions): Promise<TransportLease> {
     return this.acquireFor({}, opts);
+  }
+
+  /** See {@link TrellisTransportProvider.demandRecovery}. @internal */
+  demandRecovery(): () => void {
+    this.#recoveryDemand += 1;
+    // Pull a pending idle-backoff retry forward to 1 s after the last failed
+    // attempt; every failure restarts that second, which bounds the rate.
+    const failure = this.#failure;
+    if (
+      this.#failureTimer !== undefined &&
+      failure &&
+      failure.nextRetryAtMs > failure.failedAtMs + 1_000
+    ) {
+      this.#scheduleRetry();
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#recoveryDemand -= 1;
+    };
   }
 
   async acquireFor(
@@ -2251,26 +2291,54 @@ export class TransportGenerationManager implements TrellisTransportProvider {
    * Record a bounded, coalesced recovery window for one failed policy.
    *
    * A later authorization promotion clears it immediately; otherwise a single
-   * timer retries, with capped exponential backoff, so waiters never spin and
-   * never wait indefinitely after a failed adoption.
+   * timer retries, so waiters never spin and never wait indefinitely after a
+   * failed adoption. An idle connection backs off exponentially (1 s, 2 s,
+   * 4 s, then 8 s between attempts); while a caller is waiting the next
+   * attempt comes at most 1 s after this failure, so a request sent as the
+   * broker returns is not left to time out behind the idle schedule.
    */
   #recordFailure(digest: string): void {
     const attempts =
       (this.#failure?.digest === digest ? this.#failure.attempts : 0) + 1;
-    const delayMs = Math.min(1_000 * 2 ** Math.min(attempts - 1, 4), 8_000);
+    const now = Date.now();
     // Keep the failure record (so backoff keeps growing) and only push the
     // retry window forward; the open gate skips opens until that time.
     this.#failure = {
       digest,
       attempts,
-      nextRetryAtMs: Date.now() + delayMs,
+      failedAtMs: now,
+      nextRetryAtMs:
+        now + Math.min(1_000 * 2 ** Math.min(attempts - 1, 4), 8_000),
     };
+    this.#scheduleRetry();
+  }
+
+  /**
+   * Arm the single retry timer for the recorded failure.
+   *
+   * With a caller waiting, the retry is pulled forward to 1 s after the
+   * last failed attempt (or now, if that has passed). Every attempt that fails
+   * records a new failure time, so waiting callers trigger at most one attempt
+   * per second however many of them there are.
+   */
+  #scheduleRetry(): void {
+    const failure = this.#failure;
+    if (!failure || this.#closed) return;
+    if (this.#recoveryDemand > 0) {
+      failure.nextRetryAtMs = Math.min(
+        failure.nextRetryAtMs,
+        failure.failedAtMs + 1_000,
+      );
+    }
     if (this.#failureTimer !== undefined) clearTimeout(this.#failureTimer);
-    this.#failureTimer = setTimeout(() => {
-      this.#failureTimer = undefined;
-      if (this.#closed) return;
-      this.#requestAdoption("recovery");
-    }, delayMs);
+    this.#failureTimer = setTimeout(
+      () => {
+        this.#failureTimer = undefined;
+        if (this.#closed) return;
+        this.#requestAdoption("recovery");
+      },
+      Math.max(0, failure.nextRetryAtMs - Date.now()),
+    );
   }
 
   #clearFailure(): void {
@@ -2289,6 +2357,13 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     // Selection and policy checks await. Recheck instead of sleeping if their
     // awaited work crossed a notification, even when no waiter existed then.
     if (observedVersion !== this.#changeVersion) return Promise.resolve();
+    // Register before reading the retry window, so this wait sees the
+    // retry its own demand pulled forward.
+    const release = this.demandRecovery();
+    return this.#awaitChange(opts).finally(release);
+  }
+
+  #awaitChange(opts?: TransportAcquireOptions): Promise<void> {
     const signal = opts?.signal;
     const deadlineMs = opts?.deadlineMs;
     // With no caller deadline, a failed-adoption retry window still bounds the

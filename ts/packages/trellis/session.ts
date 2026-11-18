@@ -3821,6 +3821,9 @@ export class Trellis<
           ...(args.signal ? [args.signal] : []),
           AbortSignal.timeout(Math.max(0, args.deadlineMs - Date.now())),
         ]);
+        // Authority returns only after the transport recovers, so this wait
+        // asks the transport to retry a lost broker promptly.
+        const releaseDemand = this.#transport.demandRecovery();
         await new Promise<void>((resolve, reject) => {
           let unsubscribe = () => {};
           const changed = () => {
@@ -3852,7 +3855,7 @@ export class Trellis<
           // subscribe invokes synchronously; recheck after retaining cleanup.
           if (signal.aborted) aborted();
           else changed();
-        });
+        }).finally(releaseDemand);
       }
     } catch (cause) {
       return err(

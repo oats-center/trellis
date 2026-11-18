@@ -280,6 +280,7 @@ export class TcpProxy {
   readonly #gate: NativeTransportGate | undefined;
   readonly #tls: (() => NativeProxyTls) | undefined;
   #interrupted = false;
+  #attempts = 0;
   #outage = new AbortController();
   #stopping: Promise<void> | undefined;
 
@@ -300,6 +301,7 @@ export class TcpProxy {
       throw new Error("TCP proxy has no address");
     this.url = `${scheme}://${advertisedHost}:${address.port}`;
     listener.on("connection", (client) => {
+      this.#attempts += 1;
       client.on("error", () => client.destroy());
       if (this.#interrupted) {
         client.destroy();
@@ -376,6 +378,11 @@ export class TcpProxy {
       this.#drop(connection);
     }
     this.#connections.clear();
+  }
+
+  /** Connections clients have opened to this proxy, including refused ones. */
+  get attempts(): number {
+    return this.#attempts;
   }
 
   /** Restore the path after {@link interrupt}; new connections forward again. */
@@ -1353,6 +1360,19 @@ export class TrellisTestRuntime implements AsyncDisposable {
       throw new Error("Runtime was not started with interruptibleNativeProxy");
     }
     this.#nativeProxy.restore();
+  }
+
+  /**
+   * Counts the connections clients have opened on the advertised native path,
+   * including those refused while it is interrupted, so a test can time real
+   * reconnect attempts. Only available when the runtime was started with
+   * `interruptibleNativeProxy`.
+   */
+  nativeConnectionAttempts(): number {
+    if (this.#nativeProxy === undefined) {
+      throw new Error("Runtime was not started with interruptibleNativeProxy");
+    }
+    return this.#nativeProxy.attempts;
   }
 
   /** Returns the advertised native proxy endpoint for raw transport clients. */

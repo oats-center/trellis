@@ -1446,6 +1446,12 @@ Requests are never replayed. Signed reply verification waits for
 already-received ordered revocation updates before its live checks; it does not
 retransmit the request or bypass lost coverage.
 
+When the broker is lost, an idle client retries it after 1 s, 2 s, 4 s, then
+every 8 s. A request waiting for the transport or for verified authority makes
+the client retry 1 s after its last failed attempt instead, however many
+requests wait, so a request sent as the broker returns succeeds within its
+timeout.
+
 #### Node native applications
 
 `TrellisService.connect` and the device entry points accept a development
