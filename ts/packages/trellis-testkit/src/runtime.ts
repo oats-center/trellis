@@ -276,6 +276,8 @@ export class TcpProxy {
   readonly #listener: Server;
   readonly #target: { host: string; port: number };
   readonly #connections = new Set<Socket>();
+  /** Sockets of each gate-observed connection, by gate connection id. */
+  readonly #observed = new Map<number, Socket[]>();
   readonly #forwarding = new Set<Promise<void>>();
   readonly #gate: NativeTransportGate | undefined;
   readonly #tls: (() => NativeProxyTls) | undefined;
@@ -385,6 +387,15 @@ export class TcpProxy {
     return this.#attempts;
   }
 
+  /**
+   * Drop one gate-observed connection, as a lost socket does, while the path
+   * stays open for new connections.
+   */
+  drop(connectionId: number): void {
+    for (const socket of this.#observed.get(connectionId) ?? [])
+      this.#drop(socket);
+  }
+
   /** Restore the path after {@link interrupt}; new connections forward again. */
   restore(): void {
     if (!this.#interrupted) return;
@@ -426,6 +437,13 @@ export class TcpProxy {
       const toClient = new SerializedWriter(clientStream);
       const toUpstream = new SerializedWriter(upstreamStream);
       connectionId = this.#gate?.connectionOpened(toClient);
+      if (connectionId !== undefined)
+        this.#observed.set(connectionId, [
+          client,
+          upstream,
+          clientStream,
+          upstreamStream,
+        ]);
       // Only the gate-enabled path needs protocol framing; without a gate the
       // pump forwards raw bytes so binary payloads are never held or reframed.
       const gating =
@@ -439,6 +457,7 @@ export class TcpProxy {
       await Promise.race(pumps);
     } finally {
       if (connectionId !== undefined) {
+        this.#observed.delete(connectionId);
         this.#gate?.connectionClosed(connectionId);
       }
       if (upstream !== undefined) {
@@ -1352,6 +1371,18 @@ export class TrellisTestRuntime implements AsyncDisposable {
       throw new Error("Runtime was not started with interruptibleNativeProxy");
     }
     this.#nativeProxy.interrupt();
+  }
+
+  /**
+   * Drops one proxied native connection, by its {@link nativeTransportGate}
+   * connection id, while the broker stays reachable for new connections. Only
+   * available when the runtime was started with `interruptibleNativeProxy`.
+   */
+  dropNativeConnection(connectionId: number): void {
+    if (this.#nativeProxy === undefined) {
+      throw new Error("Runtime was not started with interruptibleNativeProxy");
+    }
+    this.#nativeProxy.drop(connectionId);
   }
 
   /** Restores the native NATS path interrupted by {@link interruptNativeTransport}. */

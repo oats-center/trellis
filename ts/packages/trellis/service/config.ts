@@ -254,7 +254,6 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       while (!signal.aborted) {
         let lease:
           Awaited<ReturnType<ConfigTransport["acquireFor"]>> | undefined;
-        let unwatch = (): void => {};
         // Registered before acquiring, so a publication made while acquiring
         // is still seen. The first call reports the publication as it stands.
         let initial = true;
@@ -285,17 +284,8 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
             if (current !== undefined && current.nc !== held.nc) close();
           };
           if (published) onPublished();
-          // Changes made while no subscription existed are read now.
-          unwatch = lease.watchStatus((event) => {
-            if (
-              typeof event === "object" &&
-              event !== null &&
-              (event as { type?: unknown }).type === "reconnect"
-            ) {
-              void refresh();
-            }
-          });
           await lease.nc.flush();
+          // Changes made while no subscription existed are read now.
           await refresh();
           for await (const message of subscription) {
             let event: unknown;
@@ -328,7 +318,6 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
           });
         } finally {
           unpublish();
-          unwatch();
           lease?.release();
         }
       }

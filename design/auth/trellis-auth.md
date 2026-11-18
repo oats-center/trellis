@@ -308,8 +308,9 @@ or broker name only says what to trust, so a plaintext loopback `nats://`
 broker still connects beside a private CA for HTTPS. A broker certificate not
 issued for the name dialled (or `RuntimeAuthorizationTrust.nats_server_name`),
 or not chaining to a trusted CA, fails the attempt at once and is not retried.
-A Rust client never dials servers the broker reports: it reconnects by opening
-a new transport generation over the advertised list.
+Neither SDK dials servers the broker reports or reconnects a connection in
+place: after a loss it opens a new transport generation over the advertised
+list.
 
 A client whose broker is lost opens a replacement generation on its own
 schedule. A TypeScript client that is idle backs off between failed attempts:

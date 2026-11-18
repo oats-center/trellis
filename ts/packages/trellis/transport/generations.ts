@@ -80,7 +80,6 @@ export type TransportGenerationConnect = {
   readonly servers: string[];
   readonly authenticators: Authenticator[];
   readonly inboxPrefix: string;
-  readonly maxReconnectAttempts?: number;
   readonly waitOnFirstConnect?: boolean;
   readonly timeoutMs?: number;
 };
@@ -230,20 +229,13 @@ export class TransportGeneration {
   readonly contextDigest: string;
   readonly admittedPolicy: TransportAuthorizationV1;
   readonly admittedPolicyDigest: string;
-  /**
-   * Broker-reported authenticated attachment name of the *current* physical
-   * attachment. The admitted context digest and policy are immutable, but a
-   * verified reconnect of the same context refreshes this marker rather than
-   * leaving a stale identity; a reconnect admitting a different context retires
-   * the generation before this can be rewritten.
-   */
-  physicalConnectionId: string;
+  /** Broker-reported authenticated attachment name of this generation's connection. */
+  readonly physicalConnectionId: string;
   readonly createdAtSeconds: number;
   state: TransportGenerationState;
   /**
-   * Whether the physical connection is currently admitted and usable for new
-   * work. A disconnect clears it; a reconnect must re-verify the exact
-   * admission marker before it is set again.
+   * Whether the physical connection is admitted and usable for new work. Loss
+   * or retirement clears it for good: a generation never reconnects in place.
    */
   ready = true;
   #leases = 0;
@@ -1021,16 +1013,15 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   /**
    * Watch one generation's own status stream.
    *
-   * A disconnect stops the generation being selected for new work while pinned
-   * and in-flight work continues. A native reconnect re-proves the generation's
-   * exact admitted context digest: the same digest keeps the generation (and
-   * refreshes its physical attachment marker), a different digest or a
-   * re-authentication failure retires it and recovers from newest authorization.
+   * A generation never reconnects in place, so any loss of its physical
+   * attachment, or a frozen credential that can no longer authenticate, closes
+   * it. Recovery then promotes a safe survivor or opens a fresh generation
+   * admitted with the newest authorization, which recreates subscriptions
+   * before it routes new work.
    */
   #monitorGeneration(generation: TransportGeneration): void {
     const iterator = generation.nc.status()[Symbol.asyncIterator]();
     void (async () => {
-      let reconnecting = false;
       try {
         while (true) {
           const next = await iterator.next();
@@ -1042,28 +1033,12 @@ export class TransportGenerationManager implements TrellisTransportProvider {
             isAuthError?: () => boolean;
           } | null;
           const type = event?.type;
-          if (type === "disconnect" && reconnecting) {
-            // The broker dropped a reconnect attempt mid-handshake, as NATS
-            // does when an auth callout goes unanswered while Trellis is
-            // starting. nats.js keeps waiting on that attempt until its
-            // connect timeout, so a fresh generation recovers instead.
-            this.#closeGeneration(generation, "recovery");
-            continue;
-          }
-          if (type === "reconnecting") reconnecting = true;
-          if (type === "reconnect") reconnecting = false;
           if (
             type === "disconnect" ||
-            type === "reconnecting" ||
             type === "staleConnection" ||
-            type === "forceReconnect"
+            type === "forceReconnect" ||
+            (type === "error" && event?.isAuthError?.())
           ) {
-            this.#markUnavailable(generation);
-          } else if (type === "reconnect") {
-            await this.#reverifyReconnect(generation);
-          } else if (type === "error" && event?.isAuthError?.()) {
-            // A frozen credential that can no longer re-authenticate recovers
-            // from the newest authorization instead of retrying stale material.
             this.#closeGeneration(generation, "recovery");
           }
         }
@@ -1075,68 +1050,18 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     })();
   }
 
-  /**
-   * Re-prove a reconnected socket against the generation's exact admission.
-   *
-   * The admitted context digest and policy stay immutable. The broker-reported
-   * attachment marker is a property of the current physical attachment, so a
-   * successful re-admission of the same context refreshes it rather than
-   * leaving a stale identity; a different digest retires the generation.
-   */
-  async #reverifyReconnect(generation: TransportGeneration): Promise<void> {
-    if (this.#closed || this.#isGenerationClosed(generation)) return;
-    let admission: OwnAdmission | undefined;
-    try {
-      admission = await this.#readAdmission(generation.nc);
-    } catch {
-      this.#closeGeneration(generation, "recovery");
-      return;
-    }
-    if (this.#closed || this.#isGenerationClosed(generation)) return;
-    if (admission?.contextDigest === generation.contextDigest) {
-      generation.physicalConnectionId = admission.attachmentId;
-      this.#setReady(generation, true);
-    } else {
-      this.#closeGeneration(generation, "recovery");
-    }
-  }
-
   #isGenerationClosed(generation: TransportGeneration): boolean {
     return generation.state === "closed" || generation.disposalStarted;
   }
 
-  /** Mark a generation's physical attachment lost; it is never leased again. */
-  #markUnavailable(generation: TransportGeneration): void {
-    if (generation.state === "closed" || !generation.ready) return;
-    generation.ready = false;
-    if (this.#currentId === generation.id) {
-      // A transient disconnect waits for the native reconnect; only a real
-      // close or a changed admission recovers a new generation.
-      this.#handleCurrentUnavailable(false);
-    }
-    this.#notify();
-  }
-
-  #setReady(generation: TransportGeneration, ready: boolean): void {
-    if (this.#isGenerationClosed(generation) || generation.ready === ready) {
-      return;
-    }
-    generation.ready = ready;
-    if (this.#currentId === generation.id && !this.#logicalConnected) {
-      this.#logicalConnected = true;
-      this.#emitLogical({ type: "reconnect" });
-    }
-    this.#notify();
-  }
-
   /**
-   * React to the current default losing readiness or closing.
+   * React to the current default closing.
    *
    * With a ready survivor the logical connection stays connected and a
    * survivor is promoted; without one it enters ordinary disconnected
    * lifecycle until recovery opens the newest authorization.
    */
-  #handleCurrentUnavailable(recoverFromLoss: boolean): void {
+  #handleCurrentUnavailable(): void {
     if (this.#closed) return;
     const survivor = this.#readyGenerations().some(
       (generation) => generation.ready,
@@ -1150,9 +1075,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       this.#logicalConnected = false;
       this.#emitLogical({ type: "disconnect" });
     }
-    // A disconnect waits for the native reconnect; a generation that is really
-    // gone recovers a fresh one from the newest authorization.
-    if (recoverFromLoss) this.#requestAdoption("recovery");
+    this.#requestAdoption("recovery");
   }
 
   /**
@@ -1394,7 +1317,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       reason,
     });
     if (wasCurrent && reason !== "logical_close") {
-      this.#handleCurrentUnavailable(true);
+      this.#handleCurrentUnavailable();
     }
     this.#notify();
     return retirement;

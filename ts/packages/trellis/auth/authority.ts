@@ -638,7 +638,9 @@ export class SessionAuthorityOwner {
   policy(): SessionAuthorityVerificationPolicy {
     return {
       nowUnixSeconds: this.#now(),
-      allowedClockSkewSeconds: 5,
+      // The Rust SDK accepts the same window, so a request that waited in a
+      // provider's queue or a resend is judged alike by either provider.
+      allowedClockSkewSeconds: 30,
       maximumAuthorityLifetimeSeconds: 300,
       maximumAuthorityBytes: 512 * 1024,
       maximumEntries: 4096,

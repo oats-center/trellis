@@ -34,7 +34,8 @@ type ConnectionState = ConnectionObservation & {
 };
 
 type PongHold = {
-  connectionId: number;
+  /** Unset until the next connection opens, for a handshake hold. */
+  connectionId: number | undefined;
   /** Earlier `PING`s whose `PONG`s still flow before the held one. */
   skip: number;
   /** Whether the client has sent the `PING` whose `PONG` is held. */
@@ -142,6 +143,11 @@ export class NativeTransportGate {
       heldPongs: [],
       unansweredPings: 0,
     });
+    if (
+      this.#pongHold !== undefined &&
+      this.#pongHold.connectionId === undefined
+    )
+      this.#pongHold.connectionId = id;
     return id;
   }
 
@@ -190,18 +196,26 @@ export class NativeTransportGate {
    * `connectionId`, leaving a client flush unacknowledged. `held` resolves once
    * that `PONG` is withheld; `release` forwards it. Interrupting the transport
    * instead fails the flush as a real disconnect does.
+   *
+   * Without `connectionId`, the hold applies to the next connection opened: a
+   * NATS client counts itself connected only once the server answers its
+   * handshake `PING`, so that connection stalls in its handshake until release.
    */
-  holdNextPong(connectionId: number): {
+  holdNextPong(connectionId?: number): {
     held: Promise<void>;
     release(): Promise<void>;
   } {
-    const connection = this.#connections.get(connectionId);
-    if (!connection) throw new Error(`no proxied connection ${connectionId}`);
+    const connection =
+      connectionId === undefined
+        ? undefined
+        : this.#connections.get(connectionId);
+    if (connectionId !== undefined && !connection)
+      throw new Error(`no proxied connection ${connectionId}`);
     if (this.#pongHold !== undefined)
       throw new Error("a PONG hold is already armed");
     const hold: PongHold = {
       connectionId,
-      skip: connection.unansweredPings,
+      skip: connection?.unansweredPings ?? 0,
       pinged: false,
       frame: undefined,
       held: Promise.withResolvers<void>(),
@@ -211,8 +225,12 @@ export class NativeTransportGate {
       held: hold.held.promise,
       release: async () => {
         if (this.#pongHold === hold) this.#pongHold = undefined;
-        if (hold.frame !== undefined && !connection.closed)
-          await connection.writer.write(hold.frame);
+        const held =
+          hold.connectionId === undefined
+            ? undefined
+            : this.#connections.get(hold.connectionId);
+        if (hold.frame !== undefined && held && !held.closed)
+          await held.writer.write(hold.frame);
       },
     };
   }
