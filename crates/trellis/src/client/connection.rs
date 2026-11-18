@@ -2526,6 +2526,13 @@ impl TrellisClient {
             let wait_until = deadline.min(Instant::now() + SERVICE_AVAILABILITY_WAIT);
             let mut pause = Duration::from_millis(100);
             let message = loop {
+                // Authorization or a late resend wakeup can run past the
+                // deadline, and the timeouts poll the send before their timer.
+                // A request sent then could execute work the caller has
+                // already been told timed out, so it is not sent.
+                if Instant::now() >= deadline {
+                    return Err(TrellisClientError::Timeout);
+                }
                 let sent = timeout(
                     deadline.saturating_duration_since(Instant::now()),
                     lease.nats().send_request(

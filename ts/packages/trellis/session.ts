@@ -4007,18 +4007,26 @@ export class Trellis<
           );
           let pause = 100;
           let resend: ReturnType<typeof setTimeout> | undefined;
+          const expire = () => {
+            waitFailure = {
+              cause: new DOMException("Request timed out", "TimeoutError"),
+              kind: "timeout",
+            };
+            response.reject(waitFailure.cause);
+          };
           const send = () => {
             resend = undefined;
+            // Transport acquisition, proof creation, or a late resend timer can
+            // run past the deadline. A request sent then could execute work
+            // the caller has already been told timed out, so it is not sent.
+            if (Date.now() >= deadlineMs) {
+              expire();
+              return;
+            }
             nc.publish(args.subject, args.payload, { headers, reply });
           };
           const timer = setTimeout(
-            () => {
-              waitFailure = {
-                cause: new DOMException("Request timed out", "TimeoutError"),
-                kind: "timeout",
-              };
-              response.reject(waitFailure.cause);
-            },
+            expire,
             Math.max(1, deadlineMs - Date.now()),
           );
           const abort = () => {
