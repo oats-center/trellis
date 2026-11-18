@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -1112,6 +1112,23 @@ impl EventsStore {
             }
         }
         Ok(snapshot)
+    }
+
+    /// Counts each consumer resource's failed deliveries awaiting a decision.
+    pub fn dead_letters_by_resource(&self) -> Result<HashMap<String, u64>, EventsStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT resource_id, COUNT(*) FROM consumer_dead_letters WHERE state='dead' GROUP BY resource_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.map(|row| row.map(|(resource, count)| (resource, count.max(0) as u64)))
+            .collect::<Result<_, _>>()
+            .map_err(Into::into)
     }
 
     pub(crate) fn dead_letter_projection_checkpoint(&self) -> Result<u64, EventsStoreError> {

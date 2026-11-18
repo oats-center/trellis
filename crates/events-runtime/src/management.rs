@@ -74,6 +74,7 @@ pub fn secure_consumer_routes(
                     &[
                         "ackPending",
                         "ackWaitMs",
+                        "deadLetters",
                         "limit",
                         "maxDeliver",
                         "pending",
@@ -108,6 +109,7 @@ pub fn secure_consumer_routes(
                     &[
                         "ackPending",
                         "ackWaitMs",
+                        "deadLetters",
                         "maxDeliver",
                         "pending",
                         "redelivered",

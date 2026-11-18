@@ -89,6 +89,8 @@
     waitingPulls: number;
     redelivered?: number;
     oldestPendingAt?: string;
+    /** Failed deliveries awaiting a decision, counted by the server. */
+    deadLetters: number;
   };
 
   const trellis = getTrellis();
@@ -306,13 +308,6 @@
     !consumerPages.hasMore || (!attentionConsumersOnly && consumers.some((consumer) => !isAttentionConsumer(consumer))),
   );
   const consumersByResource = $derived(new Map(consumers.map((consumer) => [consumer.resourceId, consumer])));
-  const failedByResource = $derived.by(() => {
-    const counts = new Map<string, number>();
-    for (const item of deadLetters) {
-      if (item.state === "dead") counts.set(item.resourceId, (counts.get(item.resourceId) ?? 0) + 1);
-    }
-    return counts;
-  });
   const failedDeliveries = $derived(metricsReady && metrics ? metrics.summary.deadLettersByState.dead : undefined);
   const measureOption = $derived(measures.find((option) => option.value === measure) ?? measures[0]);
   const chartPoints = $derived(
@@ -404,6 +399,7 @@
       waitingPulls: numberValue(row.waitingPulls) ?? 0,
       redelivered: numberValue(row.redelivered),
       oldestPendingAt: stringValue(row.oldestPendingAt),
+      deadLetters: numberValue(row.deadLetters) ?? 0,
     };
   }
 
@@ -447,9 +443,7 @@
   /** One short line saying how a service's deliveries stand. */
   function consumerSummary(consumer: ConsumerRow): string {
     const parts: string[] = [];
-    const failed = failedByResource.get(consumer.resourceId) ?? 0;
-    // Only one page of failed deliveries is loaded; more may follow it.
-    if (failed > 0) parts.push(`${failed}${deadLetterPages.hasMore ? "+" : ""} failed`);
+    if (consumer.deadLetters > 0) parts.push(`${consumer.deadLetters.toLocaleString()} failed`);
     if (consumer.pending > 0) parts.push(`${consumer.pending.toLocaleString()} waiting`);
     if (consumer.oldestPendingAt) parts.push(`oldest ${ageLabel(consumer.oldestPendingAt)}`);
     if (parts.length === 0) return consumer.ackPending > 0 ? `${consumer.ackPending} in progress` : "Nothing waiting";

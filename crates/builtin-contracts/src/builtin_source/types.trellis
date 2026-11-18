@@ -3603,6 +3603,7 @@ model EventConsumerStatusRow {
   ackPending: int64;
   ackWaitMs?: int64;
   consumerName: string;
+  deadLetters: int64;
   contractId?: string;
   deploymentId?: string;
   filterSubjects: list<string>;
