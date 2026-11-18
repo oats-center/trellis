@@ -31,7 +31,10 @@ schemas, constants, and error codes live in the shared protocol crate
 
 1. The consumer sends one bounded opening request to the exact compiled Live base with a
    fresh request-proof reply inbox. An Operation watch opening is carried on the
-   existing Operation control route.
+   existing Operation control route. The caller's timeout bounds the opening
+   exchange like any finite request: a no-responders reply is answered by
+   resending within it, and nothing is sent, first or again, once it has
+   passed, so a late opening never reserves a session.
 2. The provider authenticates the exact Live `Subscribe` (or Operation
    `Observe`) authority, reserves a session, and returns a **signed offer** over
    one finite reply. No producer starts here.

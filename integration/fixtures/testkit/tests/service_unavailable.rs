@@ -278,6 +278,187 @@ async fn a_resend_that_wakes_after_the_deadline_is_not_sent() {
     runtime.shutdown().await.unwrap();
 }
 
+/// A wait for an absent provider resends a Live opening only within the
+/// call's deadline. A caller whose runtime is busy past the deadline returns a
+/// timeout without sending the pending resend, so a provider that arrived in
+/// the meantime never reserves a session for an opening its caller already
+/// reported as timed out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_opening_resend_that_wakes_after_the_deadline_is_not_sent() {
+    use futures_util::StreamExt;
+    use std::sync::mpsc;
+    use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client as EchoClient;
+    use trellis_test_fixture::participants::trellis_test_fixture_consumer::Participant as ConsumerParticipant;
+
+    const DEADLINE: Duration = Duration::from_secs(3);
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let consumer_identity = runtime
+        .register_service::<ConsumerParticipant>("live deadline consumer")
+        .await
+        .unwrap();
+    let provider_identity = runtime
+        .register_service::<ProviderParticipant>("live deadline provider")
+        .await
+        .unwrap();
+    let caller_identity = runtime
+        .register_client::<CallerRequest>("live deadline probe")
+        .await
+        .unwrap();
+    let probe = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .unwrap(),
+    );
+    let probe_api = &probe.trellis_test_fixture_echo_v1();
+    let provider_identity = &provider_identity;
+    let serve = move || async move {
+        let mut service = ProviderParticipant::connect(provider_identity.connect_options())
+            .await
+            .unwrap();
+        {
+            let mut provider = Provider::new(&mut service);
+            let mut api = provider.trellis_test_fixture_echo_v1();
+            api.register_echo(|_context, input| async move { Ok(input) });
+            api.register_silent(|_context, input, operation| async move {
+                operation.complete(input).await?;
+                Ok(())
+            });
+        }
+        let task = tokio::spawn(async move { service.run().await });
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while probe_api.echo(&value("probe")).await.is_err() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the provider begins serving");
+        task
+    };
+    let task = serve().await;
+
+    // The consumer runs on its own single-threaded runtime so that blocking
+    // that thread delays its resend wakeup past the deadline, as a busy
+    // caller does, while the provider and the test keep running here.
+    let (to_test, from_consumer) = mpsc::channel::<()>();
+    let (to_consumer, from_test) = mpsc::channel::<()>();
+    let consumer = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move {
+                let service = ConsumerParticipant::connect(
+                    consumer_identity
+                        .connect_options()
+                        .with_timeout_ms(u64::try_from(DEADLINE.as_millis()).unwrap()),
+                )
+                .await
+                .unwrap();
+                let api = EchoClient::from_generated(service.generated_client());
+                let run = tokio::spawn(async move { service.run().await });
+                let operation = api.silent().start(&value("watched")).await.unwrap();
+                operation.wait().await.unwrap();
+                // The provider stops, leaving the operation with no owner to
+                // answer its observation.
+                to_test.send(()).unwrap();
+                from_test.recv().unwrap();
+                let started = std::time::Instant::now();
+                let (late, ()) = tokio::join!(operation.live(), async {
+                    // With no provider the opening is resent after 100, 200,
+                    // 400, and 800 ms, then waits 1000 ms for its last resend
+                    // at about 2.5 s. Block in the middle of that wait.
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    to_test.send(()).unwrap();
+                    from_test.recv().unwrap();
+                    let past = started + DEADLINE + Duration::from_millis(200);
+                    let now = std::time::Instant::now();
+                    std::thread::sleep(past.saturating_duration_since(now));
+                });
+                let late = match late {
+                    Ok(_) => panic!("the late observation must not open"),
+                    Err(error) => error,
+                };
+                // A later opening and then a read on the same connection reach
+                // the broker after anything the late opening had sent.
+                drop(operation.live().await.unwrap());
+                operation.get().await.unwrap();
+                run.abort();
+                let _ = run.await;
+                late
+            })
+    });
+    let next = |receiver: mpsc::Receiver<()>| async move {
+        tokio::task::spawn_blocking(move || {
+            receiver.recv().unwrap();
+            receiver
+        })
+        .await
+        .unwrap()
+    };
+
+    let from_consumer = next(from_consumer).await;
+    task.abort();
+    let _ = task.await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while probe_api.echo(&value("probe")).await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the stopped provider kept answering");
+    to_consumer.send(()).unwrap();
+
+    let _from_consumer = next(from_consumer).await;
+    let task = serve().await;
+    // A broker subscriber sees each opening the provider receives. It joins
+    // only once the provider serves, so the absent provider still produced
+    // no-responders replies while the consumer was resending.
+    let broker = async_nats::ConnectOptions::with_credentials(
+        &runtime
+            .nats_creds(trellis_testkit::TestNatsUser::Trellis)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    let mut controls = broker.subscribe("operation.v1.>").await.unwrap();
+    broker.flush().await.unwrap();
+    to_consumer.send(()).unwrap();
+
+    let late = tokio::task::spawn_blocking(move || consumer.join().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        matches!(late, TrellisClientError::Timeout),
+        "late: {late:?}"
+    );
+    let openings = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut openings = 0;
+        while let Some(message) = controls.next().await {
+            let body =
+                serde_json::from_slice::<serde_json::Value>(&message.payload).unwrap_or_default();
+            match body.get("action").and_then(serde_json::Value::as_str) {
+                Some("watch") => openings += 1,
+                Some("get") => return openings,
+                _ => {}
+            }
+        }
+        panic!("the broker subscription ended");
+    })
+    .await
+    .expect("the read after the openings reached the broker");
+    assert_eq!(
+        openings, 1,
+        "the provider received an opening sent after its deadline"
+    );
+    task.abort();
+    let _ = task.await;
+    runtime.shutdown().await.unwrap();
+}
+
 fn value(value: &str) -> Value {
     Value {
         value: value.to_owned(),

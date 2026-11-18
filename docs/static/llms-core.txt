@@ -958,7 +958,9 @@ provider received the request, so the SDKs send the same signed request, Live
 opening included, again for up to five seconds within its deadline: a provider
 reconnecting is briefly absent. A finite RPC is never sent, first or again,
 after its deadline: a caller that reaches the send late gets the timeout error
-and the service never receives that request. A no-responders failure after that
+and the service never receives that request. A Live opening follows the same
+rule within the caller's timeout, so a late opening never reserves a provider
+session for a caller that has given up. A no-responders failure after that
 wait means the target service is not currently reachable; it is not a malformed
 offer, a declared error, or a failed Operation.
 

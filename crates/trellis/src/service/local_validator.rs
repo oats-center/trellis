@@ -87,17 +87,46 @@ impl LocalAuthVerifier {
         {
             return Ok(RequestValidation::denied());
         }
-        let verified = if possession_only {
-            self.owner
-                .verify_possession(transport, request, payload, &proof)
-                .await
-        } else {
-            let Some(route) = context.required_permission.as_ref() else {
-                return Ok(RequestValidation::denied());
+        let action = match (possession_only, context.required_permission.as_ref()) {
+            (true, _) => None,
+            (false, Some(route)) => Some(route.catalog_action()),
+            (false, None) => return Ok(RequestValidation::denied()),
+        };
+        // An unverified request gets no reply. Evidence that is only briefly
+        // unavailable, such as the revocation mirror catching up on a
+        // replacement transport generation that already serves this route, is
+        // waited for as a caller waits for a briefly absent provider; dropping
+        // the request instead would leave its caller waiting out its whole
+        // deadline for a provider that is serving.
+        let mut changes = self.owner.subscribe_changes();
+        let wait_until = tokio::time::Instant::now() + crate::client::SERVICE_AVAILABILITY_WAIT;
+        let verified = loop {
+            let verified = match &action {
+                None => {
+                    self.owner
+                        .verify_possession(transport, request, payload, &proof)
+                        .await
+                }
+                Some(action) => {
+                    self.owner
+                        .verify_request(transport, request, payload, &proof, action)
+                        .await
+                }
             };
-            self.owner
-                .verify_request(transport, request, payload, &proof, &route.catalog_action())
-                .await
+            if !matches!(
+                verified,
+                Err(crate::client::TrellisClientError::AuthorizationUnavailable(
+                    _
+                ))
+            ) {
+                break verified;
+            }
+            match tokio::time::timeout_at(wait_until, changes.recv()).await {
+                Ok(Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => {
+                    break verified;
+                }
+            }
         };
         let verified = match verified {
             Ok(verified) => verified,
