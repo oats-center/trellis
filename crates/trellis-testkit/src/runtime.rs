@@ -687,9 +687,13 @@ impl TrellisTestRuntime {
     /// Existing callers must reconnect. Users, services and their data are
     /// whatever the backup holds.
     ///
+    /// A `backup` that is missing, has no manifest, or lies in a folder the
+    /// restore deletes (or holds one) is refused before anything is stopped
+    /// or deleted, leaving the installation running.
+    ///
     /// # Errors
-    /// Returns shutdown, restore, startup, readiness, or administrator
-    /// reconnect failures.
+    /// Returns a refused backup, or shutdown, restore, startup, readiness, or
+    /// administrator reconnect failures.
     pub async fn restore(&mut self, backup: &Path) -> Result<(), TrellisTestError> {
         self.restart_runtime(true, Some(backup)).await
     }
@@ -706,6 +710,55 @@ impl TrellisTestRuntime {
                 "the test runtime has already stopped",
             ));
         }
+        // What a restore deletes, as losing the installation's disk would.
+        let config_dir = self.config.parent().expect("config file in a directory");
+        let folders = [
+            config_dir.join("var"),
+            config_dir.join("nats/data"),
+            self.workdir.join("certificates"),
+        ];
+        let files = [
+            self.config.clone(),
+            config_dir.join("secrets.toml"),
+            config_dir.join("nats/system.creds"),
+            config_dir.join("nats/trellis-operator.nk"),
+        ];
+        // The installation stays as it is, running, unless the backup is
+        // there and survives the deletion.
+        let restore = match restore {
+            None => None,
+            Some(backup) => {
+                let refused = |reason: String| {
+                    TrellisTestError::new(
+                        TrellisTestErrorKind::InvalidConfiguration,
+                        TrellisTestStage::Restore,
+                        reason,
+                    )
+                };
+                let found = std::fs::canonicalize(backup)
+                    .ok()
+                    .filter(|found| found.join("manifest.json").is_file())
+                    .ok_or_else(|| {
+                        refused(format!(
+                            "{} is not a backup: it has no manifest.json",
+                            backup.display()
+                        ))
+                    })?;
+                for deleted in folders.iter().chain(&files) {
+                    let deleted =
+                        std::fs::canonicalize(deleted).unwrap_or_else(|_| deleted.clone());
+                    if found.starts_with(&deleted) || deleted.starts_with(&found) {
+                        return Err(refused(format!(
+                            "the backup {} overlaps {}, which a restore deletes; keep the \
+                            backup outside the installation",
+                            found.display(),
+                            deleted.display()
+                        )));
+                    }
+                }
+                Some(found)
+            }
+        };
         self.infrastructure.starting = true;
         self.admin = None;
         if let Some(server) = self.infrastructure.server.as_mut() {
@@ -716,26 +769,16 @@ impl TrellisTestRuntime {
                 nats.stop(self.timeouts.shutdown).await?;
             }
             if let Some(backup) = restore {
-                let config_dir = self.config.parent().expect("config file in a directory");
-                for folder in [
-                    config_dir.join("var"),
-                    config_dir.join("nats/data"),
-                    self.workdir.join("certificates"),
-                ] {
+                for folder in folders {
                     std::fs::remove_dir_all(folder)?;
                 }
-                for file in [
-                    self.config.clone(),
-                    config_dir.join("secrets.toml"),
-                    config_dir.join("nats/system.creds"),
-                    config_dir.join("nats/trellis-operator.nk"),
-                ] {
+                for file in files {
                     std::fs::remove_file(file)?;
                 }
                 crate::process::run(
                     Command::new(&self.distribution.server)
                         .arg("restore")
-                        .arg(backup)
+                        .arg(&backup)
                         .arg("--config")
                         .arg(&self.config),
                     &self.workdir.join("logs/restore.log"),

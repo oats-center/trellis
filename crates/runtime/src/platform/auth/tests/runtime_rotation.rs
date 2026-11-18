@@ -8,7 +8,7 @@ use trellis_rs::auth::{
 };
 use trellis_rs::client::{TrellisClientError, UserConnectOptions};
 
-async fn start_runtime(
+pub(crate) async fn start_runtime(
     config: &crate::RuntimeConfig,
     mode: crate::RuntimeMode,
     origin: &str,
@@ -51,7 +51,7 @@ async fn start_runtime(
 }
 
 /// Starts the installation's NATS broker the way a managed server would.
-async fn start_broker(
+pub(crate) async fn start_broker(
     root: &std::path::Path,
     config_dir: &std::path::Path,
     [nats, monitor, websocket]: [u16; 3],
@@ -101,7 +101,7 @@ fn server_binary() -> PathBuf {
 /// With `broker_tls`, a folder `trellis-server tls issue` wrote for
 /// `localhost`, the broker serves TLS with its certificate and Trellis reaches
 /// it at `tls://localhost`, trusting its CA; otherwise at plaintext loopback.
-async fn installation(
+pub(crate) async fn installation(
     root: &std::path::Path,
     ports: &[u16],
     origin: &str,

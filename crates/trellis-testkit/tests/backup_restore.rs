@@ -198,3 +198,26 @@ async fn a_backup_taken_while_running_brings_back_users_sessions_jobs_and_files(
     drop(service);
     runtime.shutdown().await.unwrap();
 }
+
+/// A recovery drill whose backup is missing, or lies in a folder the drill
+/// deletes, is refused before anything is stopped or deleted: the backup is
+/// still there, and the installation starts again on its own data.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restore_from_a_backup_it_would_delete_leaves_the_installation_as_it_was() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let inside = runtime.workdir().join("certificates/backup");
+    runtime.backup(&inside).await.unwrap();
+
+    let refused = runtime.restore(&inside).await;
+    assert!(refused.is_err(), "restored from a backup it deletes");
+    assert!(
+        inside.join("manifest.json").is_file(),
+        "the restore deleted its own backup"
+    );
+    let missing = runtime.workdir().join("no-backup-here");
+    let refused = runtime.restore(&missing).await;
+    assert!(refused.is_err(), "restored from a missing backup");
+
+    runtime.restart().await.unwrap();
+    runtime.shutdown().await.unwrap();
+}

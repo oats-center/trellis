@@ -554,6 +554,64 @@ const INSTALLATION_KEY: &str = "installation";
 /// The platform database's JetStream identity.
 const STORE_KEY: &str = "store";
 
+/// Reads the broker's identity record: the bucket when it exists, with the
+/// installation ID and the platform database's JetStream identity it holds.
+/// Opening an existing bucket and reading its keys only reads.
+///
+/// # Errors
+///
+/// Returns [`RuntimeError::BrokerIdentity`] when the record can't be read, or
+/// isn't kept in persistent, nonexpiring storage.
+pub(crate) async fn read_broker_identity(
+    jetstream: &async_nats::jetstream::Context,
+) -> Result<
+    (
+        Option<async_nats::jetstream::kv::Store>,
+        Option<String>,
+        Option<String>,
+    ),
+    RuntimeError,
+> {
+    use async_nats::jetstream::{context::GetStreamErrorKind, ErrorCode};
+    let failed = |error: &dyn std::fmt::Display| {
+        RuntimeError::BrokerIdentity(format!("cannot read its identity record: {error}"))
+    };
+    let marker = match jetstream.get_stream(format!("KV_{IDENTITY_BUCKET}")).await {
+        Ok(_) => jetstream
+            .get_key_value(IDENTITY_BUCKET)
+            .await
+            .map_err(|error| failed(&error))?,
+        Err(error)
+            if matches!(
+                error.kind(),
+                GetStreamErrorKind::JetStream(error)
+                    if error.error_code() == ErrorCode::STREAM_NOT_FOUND
+            ) =>
+        {
+            return Ok((None, None, None))
+        }
+        Err(error) => return Err(failed(&error)),
+    };
+    let status = marker.status().await.map_err(|error| failed(&error))?;
+    if status.info.config.storage != async_nats::jetstream::stream::StorageType::File
+        || !status.max_age().is_zero()
+    {
+        return Err(RuntimeError::BrokerIdentity(
+            "its identity record needs persistent, nonexpiring storage".into(),
+        ));
+    }
+    let mut recorded = [None, None];
+    for (key, value) in [INSTALLATION_KEY, STORE_KEY].into_iter().zip(&mut recorded) {
+        *value = marker
+            .get(key)
+            .await
+            .map_err(|error| failed(&error))?
+            .map(|value| String::from_utf8_lossy(&value).into_owned());
+    }
+    let [installation, store] = recorded;
+    Ok((Some(marker), installation, store))
+}
+
 /// Confirms that `client`'s JetStream belongs to this installation before the
 /// runtime creates or changes anything there: no lease, stream or bucket is
 /// touched on a broker that fails this.
@@ -574,7 +632,7 @@ pub(crate) async fn confirm_broker(
     client: &async_nats::Client,
     stopping: impl Fn() -> bool,
 ) -> Result<bool, RuntimeError> {
-    use async_nats::jetstream::{context::GetStreamErrorKind, kv, ErrorCode};
+    use async_nats::jetstream::kv;
     let refuse = RuntimeError::BrokerIdentity;
     let failed = |error: &dyn std::fmt::Display| {
         RuntimeError::BrokerIdentity(format!("cannot read its identity record: {error}"))
@@ -587,43 +645,7 @@ pub(crate) async fn confirm_broker(
             refuse("auth.instance_id is needed to confirm the broker is this installation's".into())
         })?;
     let jetstream = async_nats::jetstream::new(client.clone());
-    // Opening an existing bucket and reading its keys only reads.
-    let read = || async {
-        let marker = match jetstream.get_stream(format!("KV_{IDENTITY_BUCKET}")).await {
-            Ok(_) => jetstream
-                .get_key_value(IDENTITY_BUCKET)
-                .await
-                .map_err(|error| failed(&error))?,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    GetStreamErrorKind::JetStream(error)
-                        if error.error_code() == ErrorCode::STREAM_NOT_FOUND
-                ) =>
-            {
-                return Ok((None, None, None))
-            }
-            Err(error) => return Err(failed(&error)),
-        };
-        let status = marker.status().await.map_err(|error| failed(&error))?;
-        if status.info.config.storage != async_nats::jetstream::stream::StorageType::File
-            || !status.max_age().is_zero()
-        {
-            return Err(refuse(
-                "its identity record needs persistent, nonexpiring storage".into(),
-            ));
-        }
-        let mut recorded = [None, None];
-        for (key, value) in [INSTALLATION_KEY, STORE_KEY].into_iter().zip(&mut recorded) {
-            *value = marker
-                .get(key)
-                .await
-                .map_err(|error| failed(&error))?
-                .map(|value| String::from_utf8_lossy(&value).into_owned());
-        }
-        let [bound_installation, store] = recorded;
-        Ok::<_, RuntimeError>((Some(marker), bound_installation, store))
-    };
+    let read = || read_broker_identity(&jetstream);
     let other_installation = |bound: &str| {
         refuse(format!(
             "its JetStream belongs to installation {bound}, not this installation \

@@ -318,19 +318,30 @@ position later than its projection's copy, so loading the streams deletes the
 durable `jobs-projector-*`, `health-projector-*` and `events-projector-*`
 consumers; each projection then replays its stream, and projecting an event
 again is a no-op by stream sequence. The broker's own server config is not
-part of a backup.
+part of a backup. Before snapshotting, `backup` checks the broker's identity
+record as a start does: it must name the configuration's instance ID and,
+when the platform database was copied, that database's JetStream identity. A
+broker with no record, or one bound to another installation or database,
+fails the backup before its manifest is written.
 
 `restore` verifies every checksum before writing. It refuses a target folder
-whose `secrets.toml` names another instance ID, and an outside file that
-exists with other contents, unless `--force`. It writes the files, removes any
-SQLite journal beside a database it replaces, replaces the issuer-key folder,
-and stages the stream snapshots with the manifest in the data folder's
-`restore/`. The next start of a role including the platform loads each staged
-stream (`$JS.API.STREAM.RESTORE`) after pushing the NATS accounts and before
-the runtime starts, refusing a broker that already has one; a loaded stream's
-snapshot is removed, so an interrupted load resumes. The JetStream identity
-marker is one of the restored streams, so the platform's binding check passes
-only when the database and streams came from the same installation.
+holding another installation, and an outside file that exists with other
+contents, unless `--force`. The target's ID is the one its start would use:
+`[auth] instance_id` from its `config.toml`, else the one in `secrets.toml`; a
+`config.toml` that can't be loaded is refused too. It writes the files,
+removes any SQLite journal beside a database it replaces, replaces the
+issuer-key folder, and stages the stream snapshots with the manifest in the
+data folder's `restore/`. The next start of a role including the platform
+loads each staged stream (`$JS.API.STREAM.RESTORE`) after pushing the NATS
+accounts and before the runtime starts, refusing a broker that already has
+one. Before loading a stream it records the stream's name in `restore/loading`
+(synced), and once NATS has it, removes its snapshot, so an interrupted load
+resumes. A start that finds a stream present with its snapshot still staged
+takes it as loaded only when `restore/loading` names it and its last sequence
+and timestamp are the snapshot's; that covers a start stopped, or an answer
+lost, after NATS took the stream. The JetStream identity marker is one of the
+restored streams, so the platform's binding check passes only when the
+database and streams came from the same installation.
 
 ## Utility Commands
 
