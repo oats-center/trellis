@@ -35,19 +35,36 @@ adding compatibility definitions. This is a Rust support-ABI change, not a wire
 protocol version change.
 
 Rust generation can bind an exact native package to a compiled model provider.
-The binding matches package identity, authored version, and semantic digest,
-including locked dependency identities. Matching packages re-export the provider's
-nominal models instead of emitting copies; other packages remain independently
-generated. Generated constants verify the actual provider's package metadata at
-compilation. The CLI offers the independently
-versioned `trellis-models` bundle through this generic binding mechanism;
-neither package names alone nor matching API majors select shared models.
-The semantic digest excludes a package's own version, so a dependency whose
-content matches the bundle but whose version differs is still generated inline.
-`trellis generate -v` (and `trellis install -v`) logs, for each package, whether
-its models are reused or inlined and which identity, version, or digest differed.
-Generated packages declare their model dependency directly, while retaining the
-normal compatible SDK dependency range. SDK implementation updates do not require
+The binding matches package identity and semantic digest. The digest covers
+locked dependency identities and excludes the package's own version, so a
+provider that carries the same snapshot under another version provides the same
+models. Matching packages re-export the provider's nominal models instead of
+emitting copies; other packages remain independently generated. Generated
+constants check at compilation that the provider Cargo actually built has the
+same identity and digest. Neither package names alone nor matching API majors
+select shared models.
+
+The CLI offers the independently versioned `trellis-models` bundle through this
+binding mechanism. The provider must be the `trellis-models` the consuming Cargo
+graph builds, because a second copy would make the SDK's models different Rust
+types from the ones `trellis-rs` exposes. The CLI takes that version from the
+nearest `Cargo.lock` above the Rust output (the version `trellis-rs` links there)
+and reads its binding from the crate's own published `generated/__types.rs`. It
+finds that source with `cargo metadata --offline --locked`, which honors path
+overrides, vendoring, and registries, or, when Cargo cannot load the graph yet
+(before the SDK being generated exists, for instance), in Cargo's unpacked
+registry sources. A resolved version equal to the CLI's own uses the binding the
+CLI embeds. With no lock, or no `trellis-models` in it, the generated SDK brings
+in the CLI's version, so the embedded binding applies. A resolved version whose
+source is not on disk cannot be compared, and its models are emitted inline.
+`trellis generate -v` (and `trellis install -v`) logs the lock, the resolved
+version, and where its binding was read, then, for each package, whether its
+models are reused or inlined and which provider's digest differed.
+
+Generated packages declare their model dependency directly at the bound version,
+an ordinary Cargo requirement, so a later release that Cargo selects still
+compiles when its digest is unchanged. They retain the normal compatible SDK
+dependency range. SDK implementation updates do not require
 regeneration when execution ABI and selected models remain compatible. The SDK
 can use a newer model snapshot without making an older generated client adopt it.
 

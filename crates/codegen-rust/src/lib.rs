@@ -63,7 +63,7 @@ impl RustModelBinding {
     /// Bind the exact root package to a Rust module exposing its generated models.
     ///
     /// The target module must export generated `__TRELLIS_MODEL_PACKAGE` metadata.
-    /// Generation reuses models only for matching identity, version, and digest;
+    /// Generation reuses models only for matching identity and semantic digest;
     /// generated constant checks also verify the module actually built by Cargo.
     pub fn from_package_manifest(
         graph: &PackageGraph,
@@ -102,9 +102,113 @@ impl RustModelBinding {
         })
     }
 
+    /// Read the bindings a built model crate provides from its Cargo manifest
+    /// and its generated `generated/__types.rs`, one per package module that
+    /// exports `__TRELLIS_MODEL_PACKAGE` metadata.
+    ///
+    /// Published `trellis-models` archives ship that generated source, so a
+    /// crate Cargo resolved for a project can be bound without the compiler
+    /// that produced it.
+    ///
+    /// # Errors
+    /// Returns an error when the manifest lacks a name or version, or the
+    /// generated source does not parse or declares no package metadata.
+    pub fn from_model_crate(manifest: &str, types: &str) -> Result<Vec<Self>, CodegenRustError> {
+        let manifest: toml::Value = toml::from_str(manifest).map_err(|error| {
+            CodegenRustError::Semantic(format!("invalid model Cargo manifest: {error}"))
+        })?;
+        let package = manifest.get("package");
+        let field = |key| package.and_then(|package| package.get(key)?.as_str());
+        let (Some(name), Some(version)) = (field("name"), field("version")) else {
+            return Err(CodegenRustError::Semantic(
+                "model manifest requires a package name and version".into(),
+            ));
+        };
+        let dependency_version = semver::Version::parse(version).map_err(|error| {
+            CodegenRustError::Semantic(format!("invalid model package version: {error}"))
+        })?;
+        let file = syn::parse_file(types).map_err(|source| CodegenRustError::InvalidRust {
+            path: "generated/__types.rs".into(),
+            source,
+        })?;
+        let mut bindings = Vec::new();
+        for item in file.items {
+            let syn::Item::Mod(syn::ItemMod {
+                ident: module,
+                content: Some((_, items)),
+                ..
+            }) = item
+            else {
+                continue;
+            };
+            for item in items {
+                let syn::Item::Const(constant) = item else {
+                    continue;
+                };
+                if constant.ident != "__TRELLIS_MODEL_PACKAGE" {
+                    continue;
+                }
+                let syn::Expr::Struct(metadata) = *constant.expr else {
+                    continue;
+                };
+                let mut fields = BTreeMap::new();
+                for field in metadata.fields {
+                    if let (
+                        syn::Member::Named(field_name),
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(value),
+                            ..
+                        }),
+                    ) = (field.member, field.expr)
+                    {
+                        fields.insert(field_name.to_string(), value.value());
+                    }
+                }
+                let (Some(package), Some(package_version), Some(digest)) = (
+                    fields.remove("name"),
+                    fields.remove("version"),
+                    fields.remove("digest"),
+                ) else {
+                    return Err(CodegenRustError::Semantic(format!(
+                        "model metadata in module {module} requires name, version, and digest"
+                    )));
+                };
+                bindings.push(Self {
+                    package,
+                    version: semver::Version::parse(&package_version).map_err(|error| {
+                        CodegenRustError::Semantic(format!(
+                            "invalid model metadata version in module {module}: {error}"
+                        ))
+                    })?,
+                    digest,
+                    module: format!("{}::{module}", name.replace('-', "_")),
+                    dependency: name.into(),
+                    dependency_version: dependency_version.clone(),
+                });
+            }
+        }
+        if bindings.is_empty() {
+            return Err(CodegenRustError::Semantic(format!(
+                "model crate {name} {version} declares no generated model package metadata"
+            )));
+        }
+        Ok(bindings)
+    }
+
+    /// Cargo package name of the crate providing these models.
+    pub fn dependency(&self) -> &str {
+        &self.dependency
+    }
+
+    /// Version of the crate providing these models.
+    pub fn dependency_version(&self) -> &semver::Version {
+        &self.dependency_version
+    }
+
+    // The semantic digest excludes the package's own version, so a model crate
+    // that carries the same snapshot under another version provides the same models.
     fn matches(&self, graph: &PackageGraph, package: &trellis_idl::SemanticPackage) -> bool {
         self.package == package.identity().as_str()
-            && self.version == *package.version()
             && graph.digest(package.identity()) == Some(self.digest.as_str())
     }
 }
@@ -112,8 +216,8 @@ impl RustModelBinding {
 /// Explain, one line per package in `graph`, whether generation reuses a
 /// published model crate for that package or emits its models inline.
 ///
-/// A binding is reused only when package identity, version, and semantic digest
-/// all match exactly; otherwise the line names the values that differ.
+/// A binding is reused only when package identity and semantic digest match
+/// exactly; otherwise the line names the candidate whose digest differs.
 pub fn describe_model_bindings(graph: &PackageGraph, bindings: &[RustModelBinding]) -> Vec<String> {
     graph
         .packages()
@@ -127,29 +231,26 @@ pub fn describe_model_bindings(graph: &PackageGraph, bindings: &[RustModelBindin
                 .find(|binding| binding.matches(graph, package))
             {
                 return format!(
-                    "{subject}: reusing models from {} {} ({})",
-                    binding.dependency, binding.dependency_version, binding.module
+                    "{subject}: reusing models from {} {} ({}), which provides {}@{} with \
+                    the same digest",
+                    binding.dependency,
+                    binding.dependency_version,
+                    binding.module,
+                    binding.package,
+                    binding.version
                 );
             }
             let candidates = bindings
                 .iter()
                 .filter(|binding| binding.package == identity)
                 .map(|binding| {
-                    let mut differences = Vec::new();
-                    if binding.version != *package.version() {
-                        differences.push("version");
-                    }
-                    if binding.digest != digest {
-                        differences.push("digest");
-                    }
                     format!(
-                        "{} {} provides {}@{} (digest {}), {} differs",
+                        "{} {} provides {}@{} with digest {}, which differs",
                         binding.dependency,
                         binding.dependency_version,
                         binding.package,
                         binding.version,
                         binding.digest,
-                        differences.join(" and ")
                     )
                 })
                 .collect::<Vec<_>>();
@@ -242,10 +343,10 @@ pub fn generate_rust_package(
         syn::parse_str::<syn::Path>(&binding.module).map_err(|error| {
             CodegenRustError::Semantic(format!("invalid model binding module: {error}"))
         })?;
-        if !bindings.insert((&binding.package, &binding.version, &binding.digest)) {
+        if !bindings.insert((&binding.package, &binding.digest)) {
             return Err(CodegenRustError::Semantic(format!(
-                "multiple model providers for {}@{}",
-                binding.package, binding.version
+                "multiple model providers for {} with digest {}",
+                binding.package, binding.digest
             )));
         }
     }

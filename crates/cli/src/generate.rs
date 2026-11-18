@@ -245,10 +245,11 @@ pub(crate) fn generate_compiled(
         let fresh = staging.path().join("new");
         match *language {
             "rust" => {
-                let bindings: Vec<trellis_codegen_rust::RustModelBinding> = serde_json::from_str(
+                let bundled: Vec<trellis_codegen_rust::RustModelBinding> = serde_json::from_str(
                     include_str!(concat!(env!("OUT_DIR"), "/rust-model-bindings.json")),
                 )
                 .into_diagnostic()?;
+                let bindings = project_model_bindings(destination, bundled)?;
                 for line in trellis_codegen_rust::describe_model_bindings(compiled, &bindings) {
                     tracing::info!("rust models: {line}");
                 }
@@ -374,6 +375,162 @@ pub(crate) fn generate_compiled(
         return Err(error).into_diagnostic();
     }
     Ok(outputs.len())
+}
+
+/// Choose the model crates a generated Rust package may reuse.
+///
+/// Reused models must come from the `trellis-models` the consuming Cargo graph
+/// builds, so the SDK's types are the ones `trellis-rs` exposes. The nearest
+/// `Cargo.lock` above `output` names that version, and its models are read
+/// from the crate source Cargo already holds. Without a lock, or without
+/// `trellis-models` in it, the SDK itself brings in the CLI's version, so the
+/// binding the CLI bundles applies. A resolved version whose source is not on
+/// disk cannot be compared, so its models are emitted inline.
+fn project_model_bindings(
+    output: &Path,
+    bundled: Vec<trellis_codegen_rust::RustModelBinding>,
+) -> Result<Vec<trellis_codegen_rust::RustModelBinding>> {
+    let bundled_version = bundled
+        .iter()
+        .find(|binding| binding.dependency() == "trellis-models")
+        .map(|binding| binding.dependency_version().clone())
+        .ok_or_else(|| miette!("the CLI bundles no trellis-models binding"))?;
+    let Some(lock) = output
+        .ancestors()
+        .skip(1)
+        .map(|directory| directory.join("Cargo.lock"))
+        .find(|lock| lock.is_file())
+    else {
+        tracing::info!(
+            "rust models: no Cargo.lock above {}; using trellis-models {bundled_version}, \
+            which the CLI bundles",
+            output.display()
+        );
+        return Ok(bundled);
+    };
+    let contents: toml::Value = toml::from_str(&fs::read_to_string(&lock).into_diagnostic()?)
+        .map_err(|error| miette!("invalid Cargo lockfile {}: {error}", lock.display()))?;
+    let packages = contents
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let locked = |name: &str| {
+        let mut entries = packages
+            .iter()
+            .filter(|entry| entry.get("name").and_then(toml::Value::as_str) == Some(name))
+            .filter_map(|entry| {
+                let version = entry.get("version")?.as_str()?.parse::<semver::Version>();
+                Some((version.ok()?, entry))
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| right.0.cmp(&left.0));
+        entries
+    };
+    let models = locked("trellis-models");
+    let runtime = locked("trellis-rs");
+    // trellis-rs's entry names the trellis-models it links; Cargo adds the
+    // version only when the lock holds more than one.
+    let linked = runtime.first().and_then(|(runtime_version, entry)| {
+        let dependency = entry
+            .get("dependencies")?
+            .as_array()?
+            .iter()
+            .filter_map(toml::Value::as_str)
+            .find(|dependency| dependency.split(' ').next() == Some("trellis-models"))?;
+        let version = match dependency.split(' ').nth(1) {
+            Some(version) => version.parse().ok()?,
+            None => models.first()?.0.clone(),
+        };
+        Some((version, runtime_version))
+    });
+    let (version, via) = match linked {
+        Some((version, runtime_version)) => (version, format!(" for trellis-rs {runtime_version}")),
+        None => match models.first() {
+            Some((version, _)) => (version.clone(), String::new()),
+            None => {
+                tracing::info!(
+                    "rust models: {} resolves no trellis-models; using trellis-models \
+                    {bundled_version}, which the CLI bundles",
+                    lock.display()
+                );
+                return Ok(bundled);
+            }
+        },
+    };
+    let resolved = format!("{} resolves trellis-models {version}{via}", lock.display());
+    if version == bundled_version {
+        tracing::info!("rust models: {resolved}, the version the CLI bundles");
+        return Ok(bundled);
+    }
+
+    // Cargo's own resolution covers path overrides, vendoring, and registries,
+    // but needs every member's sources, including a generated SDK not yet
+    // written. The registry's unpacked sources answer for crates.io versions.
+    let workspace = lock.with_file_name("Cargo.toml");
+    let from_metadata =
+        std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .args(["metadata", "--format-version", "1", "--offline", "--locked"])
+            .arg("--manifest-path")
+            .arg(&workspace)
+            .output()
+            .ok()
+            .filter(|result| result.status.success())
+            .and_then(|result| serde_json::from_slice::<serde_json::Value>(&result.stdout).ok())
+            .and_then(|metadata| {
+                metadata["packages"].as_array()?.iter().find_map(|package| {
+                    (package["name"] == "trellis-models"
+                        && package["version"] == version.to_string())
+                    .then(|| package["manifest_path"].as_str().map(PathBuf::from))?
+                })
+            })
+            .and_then(|manifest| Some((manifest.parent()?.to_path_buf(), "cargo metadata")));
+    let from_registry = || {
+        let home = std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cargo")))?;
+        fs::read_dir(home.join("registry/src"))
+            .ok()?
+            .filter_map(|index| Some(index.ok()?.path().join(format!("trellis-models-{version}"))))
+            .find(|source| source.join("Cargo.toml").is_file())
+            .map(|source| (source, "Cargo registry sources"))
+    };
+    let Some((source, found_by)) = from_metadata.or_else(from_registry) else {
+        tracing::info!(
+            "rust models: {resolved}, whose source is not available offline (run `cargo \
+            fetch`); its models cannot be compared, so they are emitted inline"
+        );
+        return Ok(Vec::new());
+    };
+    let bindings = fs::read_to_string(source.join("Cargo.toml"))
+        .and_then(|manifest| {
+            Ok((
+                manifest,
+                fs::read_to_string(source.join("generated/__types.rs"))?,
+            ))
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|(manifest, types)| {
+            trellis_codegen_rust::RustModelBinding::from_model_crate(&manifest, &types)
+                .map_err(|error| error.to_string())
+        });
+    match bindings {
+        Ok(bindings) => {
+            tracing::info!(
+                "rust models: {resolved}; read its models from {} ({found_by})",
+                source.display()
+            );
+            Ok(bindings)
+        }
+        Err(error) => {
+            tracing::info!(
+                "rust models: {resolved}; its models in {} cannot be read ({error}), so they \
+                are emitted inline",
+                source.display()
+            );
+            Ok(Vec::new())
+        }
+    }
 }
 
 fn collect_files(root: &Path, directory: &Path, files: &mut BTreeSet<PathBuf>) -> Result<()> {
