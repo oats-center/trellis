@@ -603,7 +603,11 @@ including after transport replacement. If no safe native carrier survives,
 fresh admission may replace a missed retired logical session under the same
 valid provisioned credential and pinned trust; removed permissions are not
 restored, and revoked roots or shutdown cannot recover. Preparation retries
-never retransmit application requests or clear known revocations.
+never retransmit application requests or clear known revocations. Auth sends
+no unsigned refusal, so a renewal it doesn't answer, as when it is overloaded,
+runs again a second later and the connection stays open; only a signed answer
+that retires or reduces the session ends it. Expired authority still can't
+authorize application work while renewal keeps trying.
 
 ### Authority on a live connection
 

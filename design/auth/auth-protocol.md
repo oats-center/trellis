@@ -104,6 +104,11 @@ private maintenance may restore authenticated coverage and request fresh
 authority using retained identity. Expired authority cannot authorize application
 work. Cancelled renewal must settle before its replacement starts, and logical
 shutdown cancels both maintenance and renewal. Signed revocations remain sticky.
+Auth answers an admission request only with signed authority; when it is
+overloaded or the request fails verification it sends nothing. A renewal that
+gets no answer is therefore unavailability, not refusal: the participant renews
+again after one second and keeps its connection. Only a verified answer that
+retires or reduces the session ends it.
 
 ## Requests, replies, and events
 

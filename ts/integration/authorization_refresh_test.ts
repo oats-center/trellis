@@ -229,6 +229,67 @@ test("authorization refresh keeps a live RPC client connected and unsuspended", 
   }, fastRuntimeOptions);
 });
 
+test("a service renews again when Auth never answers its renewal", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const identity = await runtime.registerService({
+        name: `unanswered-renewal-${ulid()}`,
+        contract: participants.Provider.participant,
+      });
+      const admittedAt = Date.now();
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.Provider.participant,
+        name: `unanswered-renewal-${ulid()}`,
+        seed: identity.seed,
+        // Bounds the unanswered renewal well inside the authority lifetime.
+        timeout: 5_000,
+      }).orThrow();
+      const serviceExit = service.wait().catch((error: unknown) => error);
+      await service.handleEcho(({ input }) => Result.ok(input));
+      const gate = runtime.nativeTransportGate();
+      const serving = gate
+        .connections()
+        .filter(
+          (connection) =>
+            !connection.closed &&
+            connection.subs.some((sub) => sub.queue !== undefined),
+        );
+      assert.equal(serving.length, 1);
+      // Auth sends nothing when it is overloaded, so withhold the reply to
+      // the service's scheduled renewal; the retry's own reply flows.
+      const hold = gate.armResponseHold(
+        "trellis.auth.admission.",
+        serving[0].id,
+      );
+      const client = await runtime.connectClient({
+        name: "unanswered-renewal-caller",
+        contract: apps.Caller.request,
+      });
+      try {
+        await hold.held;
+        // Outlast the authority the service was admitted with: answering
+        // now proves a later renewal installed new authority.
+        const expiry = admittedAt + 28_000 + 5_000;
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.max(0, expiry - Date.now())),
+        );
+        assert.deepEqual(
+          (await client.echo({ value: "after renewal" }).orThrow()).value,
+          "after renewal",
+        );
+        assert.equal(service.connection.status.phase, "connected");
+      } finally {
+        await hold.release();
+        await client.connection.close();
+        await service.stop();
+      }
+      assert.deepEqual(await serviceExit, undefined);
+    },
+    { ...fastRuntimeOptions, interruptibleNativeProxy: true },
+  );
+});
+
 test("an active live observation continues across consumer and provider authorization refresh", async () => {
   await withTrellisRuntime(async (runtime) => {
     let starts = 0;
