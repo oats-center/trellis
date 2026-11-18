@@ -100,13 +100,18 @@ indefinitely: the journal's revision-one record is the only copy of the
 original event, and the source stream drops it after 7 days. Only resolved and
 dismissed entries are removed. The journal records are purged first, through
 the journal sequence the projection observed; a transition appended after it
-survives, so a concurrent replay request is never erased. Each accepted replay
-request carries its own copy of the original, and later transitions reference
-that record, so a replay of a dismissed entry accepted while a sweep purges the
-records before it still delivers its payload, and a projection rebuilt from
-the purged journal starts the entry at that request. A request that reads the
-entry before the purge but appends after it is refused as not found. The
-retention cannot be shorter than the event stream's 7 days: the
+survives, so a concurrent replay request is never erased. That request has
+lost its original, though: the sweep removed the revision-one record with the
+rest. Copying the original into every replay request would close that window
+at the cost of storing each payload twice, so the race is settled instead. The
+dispatcher records the replay as dead again, with an error saying retention
+removed the original while the replay was being accepted, and a further replay
+is refused as unreplayable; the operator dismisses it. The sweep drops the
+original and the purged transitions from the projection row, and a projection
+rebuilt from the purged journal starts the entry at the surviving request, so
+both hold the same entry. A request that reads the entry before the purge but
+appends after it is refused as not found. The retention cannot be shorter
+than the event stream's 7 days: the
 journal is what turns a second exhaustion of the same original into a
 duplicate, and the original stays deliverable for that long. A replay envelope
 keeps the same retention; one nobody consumed in that time leaves its entry in

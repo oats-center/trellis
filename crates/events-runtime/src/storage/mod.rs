@@ -8,7 +8,9 @@ use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use crate::dead_letters::{dead_letter_id, DeadLetterCause, DeadLetterState, DeadLetterTransition};
+use crate::dead_letters::{
+    dead_letter_id, DeadLetterCause, DeadLetterState, DeadLetterTransition, OriginalEvent,
+};
 
 /// Canonical SQLite migrations shared with the production runtime's migration runner.
 pub mod sqlite_migrations {
@@ -364,6 +366,39 @@ impl EventsStore {
         }
         transaction.commit()?;
         Ok(removed)
+    }
+
+    /// Drop what a dead letter's journal records through `journal_sequence`
+    /// carried, after retention purged them while a later transition
+    /// survived: the original event and the earlier transitions and commands.
+    ///
+    /// The row then matches what a projection rebuilt from the purged journal
+    /// holds, which starts the entry at the surviving transition.
+    pub fn forget_purged_dead_letter_records(
+        &self,
+        id: &str,
+        journal_sequence: u64,
+    ) -> Result<(), EventsStoreError> {
+        let journal_sequence = sql_sequence(journal_sequence)?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE consumer_dead_letters SET original_stream='', original_sequence=0, \
+            event_id=NULL, subject='', payload_bytes=x'', headers_json='{}', api_id=NULL, \
+            event_name=NULL, context_digest=NULL, verification_status=?2 WHERE id=?1",
+            params![id, REMOVED_ORIGINAL_STATUS],
+        )?;
+        for table in ["consumer_dlq_transitions", "consumer_dlq_commands"] {
+            transaction.execute(
+                &format!("DELETE FROM {table} WHERE dead_letter_id=?1 AND journal_sequence<=?2"),
+                params![id, journal_sequence],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Record that the broker retains event history only from `first_sequence`.
@@ -938,26 +973,12 @@ impl EventsStore {
                     ),
                 });
             }
-            // An accepted replay request carries its own copy of the
-            // original, and the transitions after it reference that record.
-            let evidence_consistent = match &transition.original {
-                Some(original) => {
-                    transition.state == DeadLetterState::ReplayPending
-                        && transition.original_record_sequence == 0
-                        && transition.id
-                            == dead_letter_id(
-                                &transition.resource_id,
-                                &original.stream,
-                                original.sequence,
-                            )
-                }
-                None => transition.original_record_sequence == current_original_sequence,
-            };
             if resource_id != transition.resource_id
                 || transition.revision != current_revision + 1
                 || transition.generation < current_generation
                 || transition.previous_subject_sequence != current_sequence
-                || !evidence_consistent
+                || transition.original_record_sequence != current_original_sequence
+                || transition.original.is_some()
                 || !legal_dead_letter_successor(&current_state, current_generation, transition)
             {
                 return Err(EventsStoreError::ContradictoryDeadLetter {
@@ -977,8 +998,7 @@ impl EventsStore {
                 "UPDATE consumer_dead_letters \
                 SET revision=?2, generation=?3, state=?4, updated_at=?5, \
                 updated_at_ns=?6, deliveries=?7, last_error=?8, \
-                replay_stream_sequence=?9, last_journal_sequence=?10, \
-                original_record_sequence=?11 \
+                replay_stream_sequence=?9, last_journal_sequence=?10 \
                 WHERE id=?1",
                 params![
                     transition.id,
@@ -993,42 +1013,69 @@ impl EventsStore {
                         .replay_stream_sequence
                         .map(sql_sequence)
                         .transpose()?,
-                    journal_sequence,
-                    original_record_sequence
+                    journal_sequence
                 ],
             )?;
         } else {
-            let original = transition.original.as_ref().ok_or_else(|| {
-                EventsStoreError::ContradictoryDeadLetter {
-                    id: transition.id.clone(),
-                    details: "first projected transition has no original evidence".to_owned(),
-                }
-            })?;
-            // Revision one, or an accepted replay request whose earlier
-            // records retention purged while the replay was being accepted.
-            let created = transition.revision == 1
-                && transition.previous_subject_sequence == 0
-                && transition.generation == 0
-                && transition.state == DeadLetterState::Dead
-                && transition.cause == DeadLetterCause::Exhausted
-                && transition.request_id.is_none()
-                && transition.request_digest.is_none();
-            let replay_requested = transition.state == DeadLetterState::ReplayPending
+            // Retention purges a dismissed entry's records through the
+            // dismissal; a replay accepted meanwhile survives as the entry's
+            // first record, without the original it can no longer have.
+            let purged_survivor = transition.revision > 1
+                && transition.original.is_none()
+                && transition.original_record_sequence != 0
+                && transition.state == DeadLetterState::ReplayPending
                 && transition.cause == DeadLetterCause::ReplayRequested
-                && transition.original_record_sequence == 0
                 && transition.request_id.is_some()
                 && transition.request_digest.is_some();
-            if transition.resource_id.is_empty()
-                || !(created || replay_requested)
-                || transition.id
-                    != dead_letter_id(&transition.resource_id, &original.stream, original.sequence)
-            {
-                return Err(EventsStoreError::ContradictoryDeadLetter {
-                    id: transition.id.clone(),
-                    details: "first projected transition has invalid identity or lifecycle fields"
-                        .to_owned(),
-                });
-            }
+            let removed;
+            let original = if purged_survivor {
+                removed = OriginalEvent {
+                    stream: String::new(),
+                    sequence: 0,
+                    published_at: String::new(),
+                    event_id: None,
+                    subject: String::new(),
+                    payload_bytes: Vec::new(),
+                    headers: BTreeMap::new(),
+                    api_id: None,
+                    event_name: None,
+                    context_digest: None,
+                    verification_status: REMOVED_ORIGINAL_STATUS.to_owned(),
+                };
+                &removed
+            } else {
+                if transition.revision != 1 || transition.previous_subject_sequence != 0 {
+                    return Err(EventsStoreError::ContradictoryDeadLetter {
+                        id: transition.id.clone(),
+                        details: "first projected transition is not revision one".to_owned(),
+                    });
+                }
+                let original = transition.original.as_ref().ok_or_else(|| {
+                    EventsStoreError::ContradictoryDeadLetter {
+                        id: transition.id.clone(),
+                        details: "revision one has no original evidence".to_owned(),
+                    }
+                })?;
+                if transition.resource_id.is_empty()
+                    || transition.generation != 0
+                    || transition.state != DeadLetterState::Dead
+                    || transition.cause != DeadLetterCause::Exhausted
+                    || transition.request_id.is_some()
+                    || transition.request_digest.is_some()
+                    || transition.id
+                        != dead_letter_id(
+                            &transition.resource_id,
+                            &original.stream,
+                            original.sequence,
+                        )
+                {
+                    return Err(EventsStoreError::ContradictoryDeadLetter {
+                        id: transition.id.clone(),
+                        details: "revision one has invalid identity or lifecycle fields".to_owned(),
+                    });
+                }
+                original
+            };
             transaction.execute(
         r#"INSERT INTO consumer_dead_letters (
                     id, resource_id, revision, generation, state, created_at, updated_at, updated_at_ns,
@@ -1505,6 +1552,9 @@ fn dead_letter_checkpoint(connection: &Connection) -> Result<u64, EventsStoreErr
         )
         .map_err(EventsStoreError::from)
 }
+
+/// Verification status of a dead letter whose original retention removed.
+const REMOVED_ORIGINAL_STATUS: &str = "unavailable: removed by retention";
 
 fn state_token(state: DeadLetterState) -> &'static str {
     match state {

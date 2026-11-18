@@ -523,10 +523,12 @@ async fn retention_purges_settled_dead_letters_and_keeps_open_ones() {
 }
 
 /// A retention sweep that selected a dismissed entry before a replay of it was
-/// accepted purges through the sequence it saw. The accepted replay must still
-/// deliver the original, and a projection rebuilt afterwards must keep it.
+/// accepted purges through the sequence it saw, the original among it. The
+/// replay must settle as dead with a reason the operator can act on, and a
+/// projection rebuilt from the purged journal must start and hold the same
+/// entry as the live one.
 #[tokio::test]
-async fn a_replay_accepted_during_a_retention_sweep_keeps_its_original() {
+async fn a_replay_accepted_during_a_retention_sweep_settles_as_unreplayable() {
     let (_server, _directory, client) = start_nats().await;
     let context = jetstream::new(client.clone());
     for (name, subjects, per_subject) in [
@@ -607,30 +609,53 @@ async fn a_replay_accepted_during_a_retention_sweep_keeps_its_original() {
     let dispatcher = start_replay_dispatcher(client.clone(), journal.clone())
         .await
         .expect("start replay dispatcher");
-    let replaying = wait_for_state(&journal, &created.id, DeadLetterState::Replaying).await;
-    let replay = context
-        .get_stream(REPLAY_STREAM)
-        .await
-        .expect("open replay stream")
-        .get_raw_message(replaying.replay_stream_sequence.expect("replay sequence"))
-        .await
-        .expect("read replay record");
-    let envelope: ReplayEnvelope = serde_json::from_slice(&replay.payload).expect("decode replay");
-    assert_eq!(envelope.original_payload_bytes, b"payload");
+    let settled = wait_for_state(&journal, &created.id, DeadLetterState::Dead).await;
+    assert_eq!(settled.generation, 1);
+    assert_eq!(
+        settled.last_error.as_deref(),
+        Some(trellis_events_runtime::dead_letters::ORIGINAL_REMOVED_ERROR)
+    );
+    assert_eq!(
+        context
+            .get_stream(REPLAY_STREAM)
+            .await
+            .expect("open replay stream")
+            .info()
+            .await
+            .expect("replay stream info")
+            .state
+            .messages,
+        0,
+        "nothing was dispatched"
+    );
+    let mut live = None;
     for _ in 0..100 {
-        if store
+        live = store
             .inspect_dead_letter(&created.id)
             .unwrap()
-            .is_some_and(|detail| detail["deadLetter"]["state"] == "replaying")
-        {
+            .filter(|detail| detail["deadLetter"]["revision"] == settled.revision);
+        if live.is_some() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    let live = live.expect("the live projection reaches the settled revision");
+    assert_eq!(live["deadLetter"]["state"], "dead");
     assert_eq!(
-        store.inspect_dead_letter(&created.id).unwrap().unwrap()["deadLetter"]["state"],
-        "replaying"
+        live["deadLetter"]["lastError"],
+        trellis_events_runtime::dead_letters::ORIGINAL_REMOVED_ERROR
     );
+    assert!(matches!(
+        journal
+            .request_replay(
+                &created.id,
+                settled.revision,
+                "again".to_owned(),
+                "digest".to_owned()
+            )
+            .await,
+        Err(trellis_events_runtime::dead_letters::JournalError::UnreplayableOriginal)
+    ));
     dispatcher.stop().await;
     projector.stop().await;
 
@@ -639,8 +664,9 @@ async fn a_replay_accepted_during_a_retention_sweep_keeps_its_original() {
         .await
         .expect("rebuild projection from the purged journal");
     assert_eq!(
-        rebuilt.inspect_dead_letter(&created.id).unwrap().unwrap()["deadLetter"]["state"],
-        "replaying"
+        rebuilt.inspect_dead_letter(&created.id).unwrap(),
+        Some(live),
+        "a rebuild holds the entry the live projection does"
     );
     rebuilt_projector.stop().await;
 }

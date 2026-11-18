@@ -24,6 +24,11 @@ pub const REPLAY_STREAM: &str = "trellis_consumer_replays";
 /// Subject wildcard retained by the targeted replay stream.
 pub const REPLAY_SUBJECTS: &str = "_trellis.consumer.replay.>";
 
+/// The error a replay settles with when dead-letter retention removed its
+/// original event while the replay was being accepted.
+pub const ORIGINAL_REMOVED_ERROR: &str = "cannot replay: dead-letter retention removed the \
+    original event while this replay was being accepted; dismiss the entry";
+
 /// Current dead-letter lifecycle state.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,11 +115,9 @@ pub struct DeadLetterTransition {
     pub request_digest: Option<String>,
     /// Transition cause.
     pub cause: DeadLetterCause,
-    /// Immutable original evidence, present at revision one and on each
-    /// accepted replay request.
+    /// Immutable original evidence, present only at revision one.
     pub original: Option<OriginalEvent>,
-    /// Stream sequence of the latest journal record that holds the original
-    /// evidence, or zero on that record itself.
+    /// Stream sequence of the revision-one journal record.
     pub original_record_sequence: u64,
     /// Delivery count observed for this generation.
     pub deliveries: u64,
@@ -134,7 +137,7 @@ pub struct ReplayEnvelope {
     pub generation: u64,
     /// Exact Consumer resource identity.
     pub resource_id: String,
-    /// Journal stream sequence of the record holding the original evidence.
+    /// Revision-one journal stream sequence.
     pub original_record_sequence: u64,
     /// Original domain subject used only for matching and proof verification.
     pub original_subject: String,
