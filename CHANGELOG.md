@@ -28,6 +28,14 @@ and this project adheres to
 - The Console's page draws its loading screen itself, in the device's theme,
   so there is no blank frame before the app starts. The header's version loads
   on its own and fades in when it arrives, instead of holding back the shell.
+- nats.js 3.5.0, with its TLS upgrade and cluster discovery security fixes: a
+  crafted INFO can't steer a client to plaintext, data sent before the TLS
+  upgrade is discarded, and discovered servers are adopted only under TLS and
+  verified against their reporter's TLS name. The TypeScript packages need
+  Node 22 or newer (they already declare 24). The managed and container NATS
+  server is 2.15.3. Trellis moves to ed25519-dalek 3 and jsonschema 0.61, and
+  takes the compatible Rust and npm updates (svelte 5.57, typebox 1.4, zod
+  4.6).
 
 ### Fixed
 
