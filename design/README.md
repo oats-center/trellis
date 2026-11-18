@@ -91,6 +91,7 @@ These headings are intentionally named for fast human and AI lookup.
 | `core/frontend-svelte-patterns.md`  | You are changing Svelte frontend conventions                              | Trellis frontend state patterns                                                               |
 | `core/capability-patterns.md`       | You are changing capability naming or deployment-role guidance            | Capability taxonomy and assignment guidance                                                   |
 | `core/config-patterns.md`           | You are working on settings or secrets Trellis keeps for services/devices | Typed `config` in IDL, sealed write-only secrets, revisions, live delivery, no env fallback   |
+| `core/data-retention.md`            | You are changing what the runtime stores, its limits, or its pruning      | Retention table per data class, defaults, replay and deduplication floors, storage metrics    |
 
 ## Protocol, API, And Runtime Surface Docs
 

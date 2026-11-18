@@ -33,6 +33,35 @@ listener picks up the new certificate within seconds.
 Certificates you supply (`mode = "tls"`) are yours to renew. Replace the files
 in place; Trellis reloads them by itself.
 
+## Disk use
+
+The Console's Health page lists how much disk each kind of Trellis data takes,
+how many records it holds, how old the oldest one is, and how long it's kept.
+The same numbers go to your metrics as `trellis.storage.bytes`,
+`trellis.storage.records` and `trellis.storage.oldest.age`.
+
+Trellis removes old data on its own. These settings in `config.toml` change how
+long it keeps it:
+
+```toml
+[events]
+history_retention_days = 90      # the event history the Console searches
+dead_letter_retention_days = 90  # failed deliveries after they're resolved or dismissed
+
+[jobs]
+history_retention_days = 30      # finished jobs; failed and dead jobs stay
+
+[health]
+history_retention_days = 30
+transport_retention_hours = 24
+transport_max_bytes = 1073741824
+```
+
+A change takes effect at the next start, and a shorter time removes what it no
+longer covers. Failed deliveries nobody has dealt with are kept however old
+they are, because a retry needs the original event. `dead_letter_retention_days`
+can't be less than 7, the time the event stream itself keeps events.
+
 ## Back it up as one piece
 
 Trellis ties its database to the NATS data it was created with. Point a

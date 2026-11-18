@@ -18,6 +18,11 @@ use crate::{StorageBackend, SubsystemName};
 const JOBS_API_ID: &str = "trellis.jobs@v1";
 mod resolver;
 
+/// How often settled jobs past retention are removed.
+const RETENTION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+/// Jobs removed per SQLite transaction.
+const RETENTION_BATCH: u64 = 1_000;
+
 fn runtime_error(error: ServerError) -> RuntimeError {
     RuntimeError::Nats(error.to_string())
 }
@@ -115,6 +120,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         resources.jobs_stream.clone(),
     );
     let sampler_store = store.clone();
+    let retention_store = store.clone();
+    let history = crate::resources::days(context.config.jobs_history_retention_days());
     let loops = RuntimeLoops::start(jobs_runtime, &resources, store, Arc::clone(&resolver)).await?;
     let sampler_nats = context.trellis_nats.clone();
     let context_nats = context.trellis_nats.clone();
@@ -146,10 +153,48 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             run_builtin_authenticated_router(owner, router, validator).await
         };
         tokio::pin!(api_loop);
+        // Retention failures are retried on the next pass; they never stop
+        // projection.
+        let retention_loop = async move {
+            let mut ticks = tokio::time::interval(RETENTION_INTERVAL);
+            loop {
+                ticks.tick().await;
+                let cutoff = time::OffsetDateTime::now_utc() - history;
+                let mut removed = 0;
+                loop {
+                    let store = retention_store.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        store.prune_settled_jobs(cutoff, RETENTION_BATCH)
+                    })
+                    .await
+                    {
+                        Ok(Ok(count)) => {
+                            removed += count;
+                            if count < RETENTION_BATCH {
+                                break;
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "retrying Jobs retention");
+                            break;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "retrying Jobs retention task");
+                            break;
+                        }
+                    }
+                }
+                if removed > 0 {
+                    tracing::info!(jobs = removed, "removed settled jobs past their retention");
+                }
+            }
+        };
+        tokio::pin!(retention_loop);
         let result = {
             tokio::select! {
                 biased;
                 () = task_stop.stopped() => Ok(()),
+                () = &mut retention_loop => Ok(()),
                 result = &mut api_loop => result.map_err(runtime_error),
                 result = loops.wait_for_failure() => result,
             }

@@ -603,6 +603,81 @@
       "aggregation": "sum"
     },
     {
+      "name": "trellis.storage.bytes",
+      "instrument": "ObservableGauge<f64>",
+      "unit": "By",
+      "attributes": {
+        "trellis.data_class": [
+          "eventStream",
+          "healthStream",
+          "jobHistory",
+          "jobWork",
+          "jobAdvisories",
+          "deadLetterJournal",
+          "replayStream",
+          "authDatabase",
+          "healthDatabase",
+          "jobsDatabase",
+          "eventsDatabase",
+          "recordedEvents",
+          "deadLetters"
+        ]
+      },
+      "owner": "Health storage sampler",
+      "observation": "Stream bytes from JetStream state; database file plus write-ahead log; recorded-event and dead-letter row estimates. A class not on this host is absent, not zero.",
+      "aggregation": "max"
+    },
+    {
+      "name": "trellis.storage.records",
+      "instrument": "ObservableGauge<f64>",
+      "unit": "{record}",
+      "attributes": {
+        "trellis.data_class": [
+          "eventStream",
+          "healthStream",
+          "jobHistory",
+          "jobWork",
+          "jobAdvisories",
+          "deadLetterJournal",
+          "replayStream",
+          "authDatabase",
+          "healthDatabase",
+          "jobsDatabase",
+          "eventsDatabase",
+          "recordedEvents",
+          "deadLetters"
+        ]
+      },
+      "owner": "Same sampler",
+      "observation": "Stream messages or projected rows, where countable.",
+      "aggregation": "max"
+    },
+    {
+      "name": "trellis.storage.oldest.age",
+      "instrument": "ObservableGauge<f64>",
+      "unit": "s",
+      "attributes": {
+        "trellis.data_class": [
+          "eventStream",
+          "healthStream",
+          "jobHistory",
+          "jobWork",
+          "jobAdvisories",
+          "deadLetterJournal",
+          "replayStream",
+          "authDatabase",
+          "healthDatabase",
+          "jobsDatabase",
+          "eventsDatabase",
+          "recordedEvents",
+          "deadLetters"
+        ]
+      },
+      "owner": "Same sampler",
+      "observation": "Age of the oldest retained record; absent when the class is empty.",
+      "aggregation": "max"
+    },
+    {
       "name": "trellis.dlq.transitions",
       "instrument": "Counter<u64>",
       "unit": "{transition}",
@@ -952,7 +1027,14 @@
       "instrument": "ObservableGauge<f64>",
       "unit": "s",
       "attributes": {
-        "trellis.source": ["auth", "jobs", "events", "events_dlq", "health"]
+        "trellis.source": [
+          "auth",
+          "jobs",
+          "events",
+          "events_dlq",
+          "health",
+          "storage"
+        ]
       },
       "owner": "Each asynchronous telemetry sampler",
       "observation": "Unix seconds for last successful whole snapshot; initial 0 means unknown, error does not advance."
@@ -962,7 +1044,14 @@
       "instrument": "Counter<u64>",
       "unit": "{error}",
       "attributes": {
-        "trellis.source": ["auth", "jobs", "events", "events_dlq", "health"],
+        "trellis.source": [
+          "auth",
+          "jobs",
+          "events",
+          "events_dlq",
+          "health",
+          "storage"
+        ],
         "trellis.reason": ["timeout", "io", "invalid", "closed"]
       },
       "owner": "Same sampler",

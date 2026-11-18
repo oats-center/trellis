@@ -11,7 +11,12 @@
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import StatusBadge from "$lib/components/StatusBadge.svelte";
-  import { errorMessage, formatDate, humanizeName } from "$lib/format";
+  import {
+    boundedNumber,
+    errorMessage,
+    formatDate,
+    humanizeName,
+  } from "$lib/format";
   import { getTrellis } from "$lib/trellis";
   import { nextCursorPage, previousCursorPage } from "$lib/cursor_history.ts";
   import { TABLE_PAGE_LIMIT } from "$lib/console/paging.ts";
@@ -31,6 +36,7 @@
   let summary = $state.raw<apis.health.SummaryOutput | null>(null);
   let inspection = $state.raw<apis.health.InspectOutput | null>(null);
   let healthMetrics = $state.raw<apis.health.MetricsOutput | null>(null);
+  let storage = $state.raw<apis.health.StorageOutput | null>(null);
   let loading = $state(true);
   let detailLoading = $state(false);
   let error = $state<string | null>(null);
@@ -111,6 +117,31 @@
     return `${Math.floor(hours / 24)}d ago`;
   }
 
+  const STORAGE_LABELS: Record<string, string> = {
+    eventStream: "Event stream",
+    recordedEvents: "Event history",
+    deadLetters: "Failed deliveries",
+    deadLetterJournal: "Failed delivery log",
+    replayStream: "Delivery retries",
+    eventsDatabase: "Events database",
+    jobHistory: "Job history",
+    jobWork: "Job queue",
+    jobAdvisories: "Job delivery notices",
+    jobsDatabase: "Jobs database",
+    healthStream: "Health reports",
+    healthDatabase: "Health database",
+    authDatabase: "Sign-in and access database",
+  };
+
+  function formatBytes(value: bigint): string {
+    const bytes = boundedNumber(value);
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024)
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
   function formatAvailability(value: number | null | undefined): string {
     return value == null ? "Not enough data" : `${(value * 100).toFixed(2)}%`;
   }
@@ -147,7 +178,7 @@
   async function loadParticipants(): Promise<void> {
     const sequence = ++loadSequence;
     // Query is primary; Summary is an independent panel.
-    const [result, summaryResult] = await Promise.allSettled([
+    const [result, summaryResult, storageResult] = await Promise.allSettled([
       trellis
         .healthQuery(
           {
@@ -160,6 +191,7 @@
         )
         .take(),
       trellis.healthSummary({}, { timeout: RPC_TIMEOUT_MS }).take(),
+      trellis.storage({}, { timeout: RPC_TIMEOUT_MS }).take(),
     ]);
     if (sequence !== loadSequence || disposed) return;
     if (result.status === "rejected") throw result.reason;
@@ -179,6 +211,12 @@
       // The summary only dates the page; the list stands without it.
       summary = null;
     }
+    storage =
+      storageResult.status === "fulfilled" &&
+      storageResult.value !== null &&
+      !isErr(storageResult.value)
+        ? storageResult.value
+        : null;
   }
 
   function goPrevious() {
@@ -655,5 +693,58 @@
         {/if}
       </div>
     </div>
+
+    {#if storage && storage.classes.length > 0}
+      <div class="trellis-section min-w-0" data-testid="storage">
+        <div class="flex flex-wrap items-center justify-between gap-3 p-4">
+          <h2 class="text-base font-semibold">Storage</h2>
+          <span class="text-xs text-base-content/50"
+            >Measured {formatRelativeTime(storage.asOf)}</span
+          >
+        </div>
+        <DataTable>
+          <thead>
+            <tr>
+              <th class="trellis-primary">Data</th>
+              <th class="text-right">Size</th>
+              <th class="hidden text-right sm:table-cell">Records</th>
+              <th class="hidden sm:table-cell">Oldest</th>
+              <th class="hidden sm:table-cell">Kept</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each storage.classes as item (item.name)}
+              <tr>
+                <td class="trellis-primary">
+                  <span class="block font-medium"
+                    >{STORAGE_LABELS[item.name] ??
+                      humanizeName(item.name)}</span
+                  >
+                  <span class="block text-xs text-base-content/60 sm:hidden"
+                    >{item.retention}{item.oldestAt
+                      ? ` · oldest ${formatRelativeTime(item.oldestAt)}`
+                      : ""}</span
+                  >
+                </td>
+                <td class="text-right tabular-nums"
+                  >{formatBytes(item.bytes)}</td
+                >
+                <td class="hidden text-right tabular-nums sm:table-cell"
+                  >{item.records === undefined
+                    ? "—"
+                    : boundedNumber(item.records).toLocaleString()}</td
+                >
+                <td class="hidden text-base-content/75 sm:table-cell"
+                  >{item.oldestAt ? formatRelativeTime(item.oldestAt) : "—"}</td
+                >
+                <td class="hidden text-base-content/75 sm:table-cell"
+                  >{item.retention}</td
+                >
+              </tr>
+            {/each}
+          </tbody>
+        </DataTable>
+      </div>
+    {/if}
   {/if}
 </section>

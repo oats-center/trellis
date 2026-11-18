@@ -172,6 +172,7 @@ impl EventsQuery {
             "gapDetected": diagnostics["gapDetected"],
             "lastStreamSequence": last_sequence,
             "retainedFrom": diagnostics["retainedFrom"],
+            "prunedBefore": diagnostics["prunedBefore"],
             "revision": projected_sequence,
         }))
     }

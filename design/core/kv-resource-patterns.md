@@ -60,8 +60,9 @@ approved re-add uses the retained physical allocation and updates
 binding evidence for the new installed participant revision. History/TTL increases
 may expand retention; decreases that could lose data are rejected.
 
-Trellis-owned runtime streams follow the same non-destructive startup rule. The
-runtime creates a missing stream, accepts an exact existing configuration, and
-may apply only safe subject or retention-limit expansions. Startup rejects any
-existing stream whose identity, storage, retention, discard policy, sources, or
-limits are incompatible or would reduce retained data.
+Trellis-owned runtime streams differ: their configured limits are the runtime's
+retention policy. The runtime creates a missing stream and converges an existing
+one to the configured age, count, and size limits in place, in either direction.
+Startup rejects any existing stream whose identity, subjects, retention kind,
+discard policy, or sources differ. See
+[data-retention.md](./data-retention.md).

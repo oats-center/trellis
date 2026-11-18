@@ -58,10 +58,11 @@ or representation migration. Listing uses finite cursor pages by object key.
 
 ## Trellis-owned streams
 
-Runtime startup creates a missing Trellis-owned stream or accepts an exact
-existing configuration. It may reconcile only safe subject or retention-limit
-expansions. Startup fails for incompatible identity, storage, retention, discard,
-source, or limit settings and never applies a retention-reducing change.
+Runtime startup creates a missing Trellis-owned stream and sets an existing one
+to the configured age, count, and size limits, shorter or longer. Those limits
+are the installation's retention policy, so a shorter one removes what it no
+longer keeps. Startup fails for an incompatible name, subjects, retention kind,
+discard policy, or sources and never recreates a stream.
 
 ## Consumers and jobs
 

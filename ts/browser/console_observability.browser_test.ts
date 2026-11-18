@@ -428,6 +428,18 @@ test("B44 Health renders its real participant query", async () => {
             state: "visible",
             timeout: 30_000,
           });
+        // Storage reports this installation's measured streams and databases.
+        const storage = main.getByTestId("storage");
+        const eventStream = storage
+          .getByRole("row")
+          .filter({ hasText: "Event stream" });
+        await eventStream.waitFor({ state: "visible", timeout: 30_000 });
+        assert.match(await eventStream.innerText(), /\d B|KB|MB|GB/);
+        assert.match(await eventStream.innerText(), /7 days/);
+        await storage
+          .getByRole("row")
+          .filter({ hasText: "Event history" })
+          .waitFor({ state: "visible" });
         await assertNoBrowserErrors(errors);
       } finally {
         await context.close();

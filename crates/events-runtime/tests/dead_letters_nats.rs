@@ -413,6 +413,115 @@ async fn retained_replay_survives_process_boundaries() {
     panic!("resolved transition was not projected");
 }
 
+#[tokio::test]
+async fn retention_purges_settled_dead_letters_and_keeps_open_ones() {
+    let (_server, _directory, client) = start_nats().await;
+    let context = jetstream::new(client.clone());
+    context
+        .create_stream(stream::Config {
+            name: DLQ_STREAM.to_owned(),
+            subjects: vec![DLQ_SUBJECTS.to_owned()],
+            storage: stream::StorageType::Memory,
+            retention: stream::RetentionPolicy::Limits,
+            discard: stream::DiscardPolicy::New,
+            allow_direct: true,
+            ..Default::default()
+        })
+        .await
+        .expect("create journal stream");
+    let journal = DeadLetterJournal::open(client.clone())
+        .await
+        .expect("open journal");
+    let original = |sequence: u64| OriginalEvent {
+        stream: "trellis".to_owned(),
+        sequence,
+        published_at: "2026-01-01T00:00:00Z".to_owned(),
+        event_id: None,
+        subject: "events.v1.orders.Created".to_owned(),
+        payload_bytes: b"payload".to_vec(),
+        headers: BTreeMap::new(),
+        api_id: None,
+        event_name: None,
+        context_digest: None,
+        verification_status: "malformed".to_owned(),
+    };
+    let mut ids = Vec::new();
+    for sequence in 1..=3 {
+        let (created, _) = journal
+            .create_dead("consumer".to_owned(), original(sequence), 5, None)
+            .await
+            .expect("create dead letter");
+        ids.push(created.id);
+    }
+    let (resolved, dismissed, open) = (&ids[0], &ids[1], &ids[2]);
+    journal
+        .request_replay(resolved, 1, "replay".to_owned(), "digest".to_owned())
+        .await
+        .expect("request replay");
+    journal
+        .report_replay_outcome(
+            resolved,
+            1,
+            trellis_events_runtime::dead_letters::DeliveryOutcome::Succeeded,
+            1,
+            None,
+        )
+        .await
+        .expect("resolve");
+    journal
+        .dismiss(dismissed, 1, "dismiss".to_owned(), "digest".to_owned())
+        .await
+        .expect("dismiss");
+
+    let store = EventsStore::open_in_memory().expect("open projection");
+    let projector = start_dead_letter_projector(client.clone(), store.clone())
+        .await
+        .expect("project journal");
+    for (id, state) in [
+        (resolved, "resolved"),
+        (dismissed, "dismissed"),
+        (open, "dead"),
+    ] {
+        assert_eq!(
+            store.inspect_dead_letter(id).unwrap().unwrap()["deadLetter"]["state"],
+            state
+        );
+    }
+
+    // Recorded-event history is kept; settled entries are past a zero retention.
+    let pass = trellis_events_runtime::apply_retention(
+        &store,
+        &journal,
+        Duration::from_secs(24 * 60 * 60),
+        Duration::ZERO,
+    )
+    .await
+    .expect("apply retention");
+    assert_eq!(pass.dead_letters, 2);
+    for id in [resolved, dismissed] {
+        assert!(journal.latest(id).await.unwrap().is_none());
+        assert!(store.inspect_dead_letter(id).unwrap().is_none());
+    }
+    assert!(journal.latest(open).await.unwrap().is_some());
+    assert!(store.inspect_dead_letter(open).unwrap().is_some());
+    assert!(matches!(
+        journal
+            .request_replay(dismissed, 2, "late".to_owned(), "digest".to_owned())
+            .await,
+        Err(trellis_events_runtime::dead_letters::JournalError::NotFound(_))
+    ));
+    projector.stop().await;
+
+    // A projection rebuilt from the purged journal catches up past the gaps.
+    let rebuilt = EventsStore::open_in_memory().expect("open rebuilt projection");
+    let rebuilt_projector = start_dead_letter_projector(client, rebuilt.clone())
+        .await
+        .expect("rebuild projection");
+    assert!(rebuilt.inspect_dead_letter(open).unwrap().is_some());
+    assert!(rebuilt.inspect_dead_letter(resolved).unwrap().is_none());
+    rebuilt_projector.stop().await;
+}
+
 async fn wait_for_state(
     journal: &DeadLetterJournal,
     id: &str,

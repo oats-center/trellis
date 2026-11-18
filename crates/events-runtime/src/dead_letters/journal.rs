@@ -331,15 +331,39 @@ impl DeadLetterJournal {
         if let Some(original) = transition.original.clone() {
             return Ok(Some(original));
         }
-        self.stream
+        match self
+            .stream
             .get_raw_message(transition.original_record_sequence)
             .await
-            .map_err(|error| JournalError::Nats(error.to_string()))
-            .and_then(|message| {
-                serde_json::from_slice::<DeadLetterTransition>(&message.payload)
-                    .map_err(JournalError::from)
-                    .map(|first| first.original)
-            })
+        {
+            Ok(message) => {
+                Ok(serde_json::from_slice::<DeadLetterTransition>(&message.payload)?.original)
+            }
+            // Retention removed the entry's records.
+            Err(error) if matches!(error.kind(), stream::RawMessageErrorKind::NoMessageFound) => {
+                Ok(None)
+            }
+            Err(error) => Err(JournalError::Nats(error.to_string())),
+        }
+    }
+
+    /// Remove one entry's records through `through_sequence`, the journal
+    /// sequence of the settled transition the caller observed.
+    ///
+    /// A transition appended after it survives, so a concurrent replay
+    /// request is never erased; returns whether the entry is now gone.
+    pub async fn purge_through(
+        &self,
+        id: &str,
+        through_sequence: u64,
+    ) -> Result<bool, JournalError> {
+        self.stream
+            .purge()
+            .filter(subject(id))
+            .sequence(through_sequence.saturating_add(1))
+            .await
+            .map_err(|error| JournalError::Nats(error.to_string()))?;
+        Ok(self.latest(id).await?.is_none())
     }
 
     async fn required_latest(&self, id: &str) -> Result<(DeadLetterTransition, u64), JournalError> {

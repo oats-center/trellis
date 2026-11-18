@@ -300,7 +300,7 @@
       { label: "Verified", value: total > 0 ? `${((verified / total) * 100).toFixed(1)}%` : "—", detail: `${verified.toLocaleString()} of ${total.toLocaleString()} events` },
       { label: "Busiest moment", value: busiest && busiest.total > 0n ? busiest.total.toLocaleString() : "—", detail: busiest && busiest.total > 0n ? `events from ${bucketLabel(busiest.start).label}` : "No events yet" },
     ];
-    if (diagnostics?.retainedFrom) items.push({ label: "History kept from", value: formatDate(diagnostics.retainedFrom) });
+    if (diagnostics?.retainedFrom) items.push({ label: "History kept from", value: formatDate(diagnostics.retainedFrom), detail: diagnostics.prunedBefore ? "Older events are removed on schedule" : undefined });
     return items;
   });
   const checkRows = $derived.by(() => {

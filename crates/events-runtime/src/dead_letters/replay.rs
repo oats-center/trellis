@@ -84,28 +84,42 @@ pub async fn start_replay_dispatcher(
                     message.ack().await.map_err(nats)?;
                     continue;
                 }
-                let (latest, latest_sequence) = journal
+                let Some((latest, latest_sequence)) = journal
                     .latest(&transition.id)
                     .await
                     .map_err(|error| ServerError::Internal(error.to_string()))?
-                    .ok_or_else(|| {
-                        ServerError::Internal("dead-letter journal entry disappeared".to_owned())
-                    })?;
+                else {
+                    // Retention removed the settled entry this record belonged to.
+                    message.ack().await.map_err(nats)?;
+                    continue;
+                };
                 if latest.state != DeadLetterState::ReplayPending
                     || latest.generation != transition.generation
                 {
                     message.ack().await.map_err(nats)?;
                     continue;
                 }
-                let original = journal
+                let Some(original) = journal
                     .original(&latest)
                     .await
                     .map_err(|error| ServerError::Internal(error.to_string()))?
-                    .ok_or_else(|| {
-                        ServerError::Internal(
-                            "dead-letter original evidence disappeared".to_owned(),
+                else {
+                    // A replay requested while retention removed the entry's
+                    // original record can never be dispatched.
+                    tracing::warn!(dead_letter = %latest.id, "replay has no original evidence left");
+                    journal
+                        .report_replay_outcome(
+                            &latest.id,
+                            latest.generation,
+                            super::DeliveryOutcome::Unreplayable,
+                            0,
+                            Some("original evidence was removed by retention".to_owned()),
                         )
-                    })?;
+                        .await
+                        .map_err(|error| ServerError::Internal(error.to_string()))?;
+                    message.ack().await.map_err(nats)?;
+                    continue;
+                };
                 let envelope = ReplayEnvelope {
                     dead_letter_id: latest.id.clone(),
                     generation: latest.generation,

@@ -55,6 +55,10 @@ accept a deployment or namespace. Pages preserve original stream sequences and a
 fixed first-page upper watermark, with at most 128 entries per page; concurrent
 later publications are excluded from that reconstruction. This is an authorized
 read of the authoritative stream, not a projection or another history store.
+The `JOBS` and `JOBS_WORK` streams keep `[jobs] history_retention_days`
+(default 30), and the projection removes settled jobs after the same age while
+keeping failed, dead, and unsettled jobs; see
+[data-retention.md](../core/data-retention.md).
 Users cannot use this service-private resource route. Shared broker endpoints
 `$JS.API.DIRECT.GET.JOBS` and `$JS.API.STREAM.MSG.GET.JOBS` remain denied to
 ordinary identities because their payload filters are not subject-level ACLs.

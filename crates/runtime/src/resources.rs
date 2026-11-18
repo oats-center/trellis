@@ -10,10 +10,15 @@ use crate::{RuntimeConfig, RuntimeMode, SubsystemName};
 use trellis_events_runtime::{DLQ_STREAM, DLQ_SUBJECTS, REPLAY_STREAM, REPLAY_SUBJECTS};
 
 pub(crate) const EVENT_STREAM: &str = "trellis";
-pub(crate) const EVENT_STREAM_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub(crate) const EVENT_STREAM_RETENTION: Duration =
+    days(crate::config::EVENT_STREAM_RETENTION_DAYS);
 pub(crate) const JOBS_STREAM: &str = "JOBS";
 pub(crate) const JOBS_WORK_STREAM: &str = "JOBS_WORK";
 pub(crate) const JOBS_ADVISORIES_STREAM: &str = "JOBS_ADVISORIES";
+
+pub(crate) const fn days(days: u32) -> Duration {
+    Duration::from_secs(days as u64 * 24 * 60 * 60)
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExpectedRuntimeResources {
@@ -35,10 +40,10 @@ impl ExpectedRuntimeResources {
             streams.push(event_stream_config());
         }
         if subsystems.contains(&SubsystemName::Events) {
-            streams.extend(events_stream_configs());
+            streams.extend(events_stream_configs(config));
         }
         if subsystems.contains(&SubsystemName::Jobs) {
-            streams.extend(jobs_stream_configs());
+            streams.extend(jobs_stream_configs(config));
             if !subsystems.contains(&SubsystemName::Events) {
                 streams.push(advisory_stream_config());
             }
@@ -115,22 +120,33 @@ fn stream_update(
         return Err("per-subject discard policy differs");
     }
 
-    let mut update = actual.clone();
-    let mut changed = false;
-    let limits = match expected.name.as_str() {
-        EVENT_STREAM => &[Limit::Age][..],
-        HEALTH_STREAM => &[Limit::Age, Limit::Bytes][..],
-        JOBS_STREAM | JOBS_WORK_STREAM | JOBS_ADVISORIES_STREAM | REPLAY_STREAM | DLQ_STREAM => &[
-            Limit::Age,
-            Limit::Messages,
-            Limit::MessagesPerSubject,
-            Limit::Bytes,
-        ][..],
-        _ => return Err("stream is not owned by the runtime"),
-    };
-    for limit in limits {
-        changed |= limit.expand(&mut update, expected)?;
+    if !matches!(
+        expected.name.as_str(),
+        EVENT_STREAM
+            | HEALTH_STREAM
+            | JOBS_STREAM
+            | JOBS_WORK_STREAM
+            | JOBS_ADVISORIES_STREAM
+            | REPLAY_STREAM
+            | DLQ_STREAM
+    ) {
+        return Err("stream is not owned by the runtime");
     }
+
+    // The configured limits are the retention policy: an existing stream
+    // takes them in place in either direction, and JetStream removes only what
+    // the new policy no longer keeps.
+    // JetStream reports an unset count or size limit as -1.
+    let unlimited = |limit: i64| if limit == 0 { -1 } else { limit };
+    let mut update = actual.clone();
+    update.max_age = expected.max_age;
+    update.max_messages = unlimited(expected.max_messages);
+    update.max_messages_per_subject = unlimited(expected.max_messages_per_subject);
+    update.max_bytes = unlimited(expected.max_bytes);
+    let mut changed = update.max_age != actual.max_age
+        || update.max_messages != actual.max_messages
+        || update.max_messages_per_subject != actual.max_messages_per_subject
+        || update.max_bytes != actual.max_bytes;
 
     if actual.allow_direct != expected.allow_direct {
         if expected.allow_direct {
@@ -148,51 +164,6 @@ pub(crate) fn stream_is_compatible(actual: &stream::Config, expected: &stream::C
     stream_update(actual, expected).is_ok()
 }
 
-#[derive(Clone, Copy)]
-enum Limit {
-    Age,
-    Messages,
-    MessagesPerSubject,
-    Bytes,
-}
-
-impl Limit {
-    fn expand(
-        self,
-        actual: &mut stream::Config,
-        expected: &stream::Config,
-    ) -> Result<bool, &'static str> {
-        let (current, target) = match self {
-            Self::Age => {
-                if actual.max_age == expected.max_age {
-                    return Ok(false);
-                }
-                if expected.max_age.is_zero()
-                    || (!actual.max_age.is_zero() && expected.max_age > actual.max_age)
-                {
-                    actual.max_age = expected.max_age;
-                    return Ok(true);
-                }
-                return Err("maximum age would reduce retained data");
-            }
-            Self::Messages => (&mut actual.max_messages, expected.max_messages),
-            Self::MessagesPerSubject => (
-                &mut actual.max_messages_per_subject,
-                expected.max_messages_per_subject,
-            ),
-            Self::Bytes => (&mut actual.max_bytes, expected.max_bytes),
-        };
-        if *current == target {
-            Ok(false)
-        } else if target == -1 || (*current >= 0 && target > *current) {
-            *current = target;
-            Ok(true)
-        } else {
-            Err("stream limit would reduce retained data")
-        }
-    }
-}
-
 fn event_stream_config() -> stream::Config {
     stream::Config {
         name: EVENT_STREAM.to_owned(),
@@ -205,7 +176,12 @@ fn event_stream_config() -> stream::Config {
     }
 }
 
-fn jobs_stream_configs() -> [stream::Config; 2] {
+/// The `JOBS` lifecycle and `JOBS_WORK` streams keep `[jobs]
+/// history_retention_days`. Settled jobs live on in the Jobs projection, and
+/// replay of a dead job reads its payload from there, so the age bounds only
+/// stream-read history and work nobody consumed within the window.
+fn jobs_stream_configs(config: &RuntimeConfig) -> [stream::Config; 2] {
+    let max_age = days(config.jobs_history_retention_days());
     [
         stream::Config {
             name: JOBS_STREAM.to_owned(),
@@ -213,6 +189,7 @@ fn jobs_stream_configs() -> [stream::Config; 2] {
             retention: stream::RetentionPolicy::Limits,
             storage: stream::StorageType::File,
             discard: stream::DiscardPolicy::Old,
+            max_age,
             max_messages: -1,
             max_messages_per_subject: -1,
             max_bytes: -1,
@@ -225,6 +202,7 @@ fn jobs_stream_configs() -> [stream::Config; 2] {
             retention: stream::RetentionPolicy::WorkQueue,
             storage: stream::StorageType::File,
             discard: stream::DiscardPolicy::Old,
+            max_age,
             max_messages: -1,
             max_messages_per_subject: -1,
             max_bytes: -1,
@@ -248,7 +226,11 @@ fn jobs_stream_configs() -> [stream::Config; 2] {
     ]
 }
 
-fn events_stream_configs() -> [stream::Config; 3] {
+/// The dead-letter journal keeps every open entry: its revision-one record
+/// holds the only copy of the original evidence replay needs, so it has no age
+/// or size limit. Settled entries are purged by the Events retention loop. A
+/// replay envelope keeps `[events] dead_letter_retention_days`.
+fn events_stream_configs(config: &RuntimeConfig) -> [stream::Config; 3] {
     [
         stream::Config {
             name: DLQ_STREAM.to_owned(),
@@ -268,6 +250,7 @@ fn events_stream_configs() -> [stream::Config; 3] {
             retention: stream::RetentionPolicy::Limits,
             storage: stream::StorageType::File,
             discard: stream::DiscardPolicy::New,
+            max_age: days(config.dead_letter_retention_days()),
             max_messages: -1,
             max_messages_per_subject: 1,
             max_bytes: -1,
@@ -279,6 +262,8 @@ fn events_stream_configs() -> [stream::Config; 3] {
     ]
 }
 
+/// A max-deliveries advisory is useful only while the original event it names
+/// is still in the event stream, so it keeps the event stream's retention.
 fn advisory_stream_config() -> stream::Config {
     stream::Config {
         name: JOBS_ADVISORIES_STREAM.to_owned(),
@@ -286,6 +271,7 @@ fn advisory_stream_config() -> stream::Config {
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         discard: stream::DiscardPolicy::New,
+        max_age: EVENT_STREAM_RETENTION,
         max_messages: -1,
         max_messages_per_subject: -1,
         max_bytes: -1,
@@ -326,43 +312,213 @@ fn health_stream_config(config: &RuntimeConfig) -> stream::Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncBufReadExt as _;
 
-    #[test]
-    fn authoritative_streams_only_expand_limits() {
-        let [expected, _, _] = events_stream_configs();
-        assert!(stream_update(&expected, &expected)
-            .expect("exact policy is compatible")
-            .is_none());
-
-        let mut finite = expected.clone();
-        finite.max_messages = 10;
-        let update = stream_update(&finite, &expected)
-            .expect("expansion is compatible")
-            .expect("expansion requires update");
-        assert_eq!(update.max_messages, -1);
-
-        let mut destructive = expected.clone();
-        destructive.max_messages = -1;
-        let mut finite_expected = expected;
-        finite_expected.max_messages = 10;
-        assert!(stream_update(&destructive, &finite_expected).is_err());
-
-        let mut wrong_subject = finite_expected.clone();
-        wrong_subject.subjects = vec!["other.>".to_owned()];
-        assert!(stream_update(&wrong_subject, &finite_expected).is_err());
+    async fn start_nats(
+        directory: &std::path::Path,
+    ) -> (tokio::process::Child, async_nats::Client) {
+        // Held until the broker's listener is up; see ReservedPort.
+        let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+        let port = reservation.port();
+        let binary =
+            std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into());
+        let mut server = tokio::process::Command::new(binary)
+            .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
+            .arg(directory)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("producer-resolved NATS executable");
+        let mut output = tokio::io::BufReader::new(server.stderr.take().unwrap()).lines();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(line) = output.next_line().await.unwrap() {
+                if line.contains("Server is ready") {
+                    return;
+                }
+            }
+            panic!("NATS exited before readiness");
+        })
+        .await
+        .expect("NATS readiness deadline");
+        let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        (server, nats)
     }
 
-    #[test]
-    fn events_evidence_streams_do_not_evict_authoritative_history() {
-        let [dlq, replay, advisory] = events_stream_configs();
-        for stream in [&dlq, &replay, &advisory] {
-            assert_eq!(stream.max_age, Duration::ZERO);
-            assert_eq!(stream.max_messages, -1);
-            assert_eq!(stream.max_bytes, -1);
-            assert_eq!(stream.discard, stream::DiscardPolicy::New);
+    async fn info(jetstream: &jetstream::Context, name: &str) -> stream::Info {
+        jetstream
+            .get_stream(name)
+            .await
+            .unwrap()
+            .info()
+            .await
+            .unwrap()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn an_existing_install_takes_the_retention_policy_and_reports_its_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_server, nats) = start_nats(directory.path()).await;
+        let jetstream = jetstream::new(nats.clone());
+        let resources = |toml: &str| {
+            ExpectedRuntimeResources::for_mode(
+                RuntimeMode::All,
+                &RuntimeConfig::from_toml_str(toml).unwrap(),
+                stream::StorageType::File,
+            )
+        };
+
+        // An installation from before retention defaults: unbounded lifecycle
+        // and advisory streams that already hold data.
+        let mut legacy = resources("");
+        for stream in &mut legacy.streams {
+            if matches!(stream.name.as_str(), JOBS_STREAM | JOBS_ADVISORIES_STREAM) {
+                stream.max_age = Duration::ZERO;
+            }
         }
-        assert_eq!(dlq.max_messages_per_subject, -1);
-        assert_eq!(replay.max_messages_per_subject, 1);
-        assert!(replay.discard_new_per_subject);
+        legacy.converge_streams(nats.clone()).await.unwrap();
+        jetstream
+            .publish("trellis.jobs.namespace.queue.job.created", "job".into())
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        for _ in 0..20 {
+            jetstream
+                .publish(HEALTH_SUBJECT, vec![b'h'; 200].into())
+                .await
+                .unwrap()
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while info(&jetstream, HEALTH_STREAM).await.state.messages < 20 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("health stream sources every heartbeat");
+
+        let policy = "[jobs]\nhistory_retention_days = 3\n[health]\ntransport_max_bytes = 2048\n";
+        resources(policy)
+            .converge_streams(nats.clone())
+            .await
+            .unwrap();
+
+        let jobs = info(&jetstream, JOBS_STREAM).await;
+        assert_eq!(jobs.config.max_age, days(3));
+        assert_eq!(
+            jobs.state.messages, 1,
+            "no job is older than the new policy"
+        );
+        assert_eq!(
+            info(&jetstream, JOBS_WORK_STREAM).await.config.max_age,
+            days(3)
+        );
+        assert_eq!(
+            info(&jetstream, JOBS_ADVISORIES_STREAM)
+                .await
+                .config
+                .max_age,
+            EVENT_STREAM_RETENTION
+        );
+        assert_eq!(
+            info(&jetstream, REPLAY_STREAM).await.config.max_age,
+            days(crate::config::DEFAULT_DEAD_LETTER_RETENTION_DAYS)
+        );
+        let dlq = info(&jetstream, DLQ_STREAM).await;
+        assert_eq!(
+            (dlq.config.max_age, dlq.config.max_bytes),
+            (Duration::ZERO, -1),
+            "the journal keeps every open dead letter"
+        );
+        // A smaller size policy is applied in place: the oldest heartbeats
+        // go, the newest stay.
+        let health = info(&jetstream, HEALTH_STREAM).await;
+        assert_eq!(health.config.max_bytes, 2048);
+        assert!(health.state.messages > 0 && health.state.messages < 20);
+        assert_eq!(health.state.last_sequence, 20);
+
+        // The storage report reads the same streams and the databases on disk.
+        let data = directory.path().join("data");
+        let config = RuntimeConfig::from_toml_str(&format!(
+            "[events.storage]\nkind = \"sqlite\"\npath = \"{events}\"\n\
+            [jobs]\nhistory_retention_days = 3\n\
+            [jobs.storage]\nkind = \"sqlite\"\npath = \"{jobs}\"\n",
+            events = data.join("events.sqlite").display(),
+            jobs = data.join("jobs.sqlite").display(),
+        ))
+        .unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        let events = trellis_events_runtime::EventsStore::open(data.join("events.sqlite")).unwrap();
+        trellis_jobs_runtime::SqliteJobsStore::open(data.join("jobs.sqlite")).unwrap();
+        let class = |classes: &[crate::health::storage::StorageClass], name: &str| {
+            classes
+                .iter()
+                .find(|class| class.name == name)
+                .cloned()
+                .unwrap_or_else(|| panic!("{name} is reported"))
+        };
+        let empty = crate::health::storage::collect(&config, &nats).await;
+        assert_eq!(class(&empty, "recordedEvents").records, Some(0));
+        assert_eq!(class(&empty, "recordedEvents").oldest, None);
+        for sequence in 1..=2 {
+            events
+                .insert_event(&trellis_events_runtime::ProjectedEvent {
+                    stream_sequence: sequence,
+                    event_id: None,
+                    event_time: "2026-01-01T00:00:00Z".to_owned(),
+                    subject: "events.v1.Test.Created".to_owned(),
+                    owner_contract_id: None,
+                    owner_event_name: None,
+                    resolution: "malformed".to_owned(),
+                    verification_status: "missing-proof".to_owned(),
+                    publisher_kind: None,
+                    publisher_deployment_id: None,
+                    publisher_instance_id: None,
+                    publisher_participant_id: None,
+                    publisher_principal_id: None,
+                    publisher_connection_id: None,
+                    publisher_login_session_id: None,
+                    authorization_context_digest: None,
+                    trace_id: None,
+                    traceparent: None,
+                    payload_bytes: vec![b'p'; 1000],
+                    headers_json: "{}".to_owned(),
+                    payload_json: None,
+                    payload_text: None,
+                    decode_error: None,
+                    projected_at: "2026-01-01T00:00:00Z".to_owned(),
+                })
+                .unwrap();
+        }
+        let classes = crate::health::storage::collect(&config, &nats).await;
+        let recorded = class(&classes, "recordedEvents");
+        assert_eq!(recorded.records, Some(2));
+        assert!(recorded.bytes >= 2000);
+        assert_eq!(
+            recorded.oldest.map(|at| at.unix_timestamp()),
+            Some(1_767_225_600)
+        );
+        assert!(class(&classes, "eventsDatabase").bytes >= recorded.bytes);
+        assert_eq!(class(&classes, "jobsDatabase").records, Some(0));
+        let jobs_stream = class(&classes, "jobHistory");
+        assert_eq!(jobs_stream.records, Some(1));
+        assert!(jobs_stream.bytes > 0 && jobs_stream.oldest.is_some());
+        assert_eq!(jobs_stream.retention, "3 days");
+        assert!(
+            !classes.iter().any(|class| class.name == "authDatabase"),
+            "a database not on this host is not reported as empty"
+        );
+
+        // Converging again with the same policy is a no-op that keeps data.
+        resources(policy).converge_streams(nats).await.unwrap();
+        assert_eq!(
+            info(&jetstream, HEALTH_STREAM).await.state.messages,
+            health.state.messages
+        );
     }
 }

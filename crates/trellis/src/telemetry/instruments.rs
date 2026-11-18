@@ -375,6 +375,12 @@ pub enum ObservableFamily {
     ComponentObservedTime,
     /// Unix seconds of the last successful telemetry snapshot.
     SnapshotObservedTime,
+    /// Disk bytes one runtime data class uses.
+    StorageBytes,
+    /// Messages or rows one runtime data class holds.
+    StorageRecords,
+    /// Age of the oldest record one runtime data class retains.
+    StorageOldestAge,
 }
 
 impl ObservableFamily {
@@ -401,6 +407,9 @@ impl ObservableFamily {
             Self::ComponentReady => "trellis.runtime.component.ready",
             Self::ComponentObservedTime => "trellis.runtime.component.observed.time",
             Self::SnapshotObservedTime => "trellis.snapshot.observed.time",
+            Self::StorageBytes => "trellis.storage.bytes",
+            Self::StorageRecords => "trellis.storage.records",
+            Self::StorageOldestAge => "trellis.storage.oldest.age",
         }
     }
 
@@ -412,7 +421,10 @@ impl ObservableFamily {
             | Self::ConsumerProgressAge
             | Self::ProjectionProgressAge
             | Self::ComponentObservedTime
-            | Self::SnapshotObservedTime => "s",
+            | Self::SnapshotObservedTime
+            | Self::StorageOldestAge => "s",
+            Self::StorageBytes => "By",
+            Self::StorageRecords => "{record}",
             Self::ComponentReady => "1",
             Self::JobsReady | Self::JobsDead | Self::JobsWaitingRetry => "{job}",
             Self::JobsWorkerRegistrations => "{registration}",
@@ -591,6 +603,9 @@ fn family_name_unit(name: &'static str) -> &'static str {
         ObservableFamily::ComponentReady,
         ObservableFamily::ComponentObservedTime,
         ObservableFamily::SnapshotObservedTime,
+        ObservableFamily::StorageBytes,
+        ObservableFamily::StorageRecords,
+        ObservableFamily::StorageOldestAge,
     ] {
         if family.name() == name {
             return family.unit();

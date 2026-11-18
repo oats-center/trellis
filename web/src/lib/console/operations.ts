@@ -249,6 +249,7 @@ export const CONSOLE_OPERATIONS = {
   healthQuery: healthRpc("Query"),
   healthSummary: healthRpc("Summary"),
   healthMetrics: healthRpc("Metrics"),
+  healthStorage: healthRpc("Storage"),
   healthInspect: healthRpc("Inspect"),
   healthWatch: healthFeed("Watch"),
   healthStatusChanged: healthEvent("StatusChanged"),
