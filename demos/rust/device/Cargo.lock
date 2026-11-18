@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol"
-version = "0.100.0-rc.39"
+version = "0.100.0-rc.48"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek 3.0.0",

@@ -24,7 +24,7 @@ sha2 = { workspace = true }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.48" }
-trellis-protocol = { path = "../protocol", version = "0.100.0-rc.39" }
+trellis-protocol = { path = "../protocol", version = "0.100.0-rc.48" }
 trellis-models = { path = "../models", version = "0.100.0-rc.48" }
 flate2 = "1.1.9"
 tar = "0.4.46"

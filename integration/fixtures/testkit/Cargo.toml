@@ -17,7 +17,7 @@ async-nats = "0.53"
 runtime-trellis = { path = "../runtime/crates/runtime-trellis" }
 trellis-runtime-apis = { path = "../../../crates/runtime-apis" }
 trellis-idl = { path = "../../../crates/idl" }
-trellis-protocol = "0.100.0-rc.39"
+trellis-protocol = "0.100.0-rc.48"
 serde = "1"
 ulid = "3"
 serde_json = "1"
