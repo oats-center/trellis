@@ -3596,6 +3596,7 @@ model EventsConsumersInspectResponse {
 model EventsConsumersQueryRequest {
   contractId?: string;
   deploymentId?: string;
+  order?: EventsConsumersQueryRequestOrder;
   page?: CursorQuery;
   resourceId?: string;
   ownerContractId?: string;
@@ -3927,6 +3928,11 @@ enum EventConsumerStatusRowStatus {
   failing;
   missing;
   orphaned;
+}
+
+enum EventsConsumersQueryRequestOrder {
+  resource;
+  attention;
 }
 
 enum EventsConsumersQueryRequestStatus {

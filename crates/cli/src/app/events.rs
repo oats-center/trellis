@@ -95,6 +95,7 @@ pub(super) async fn run(format: OutputFormat, command: EventsCommand) -> miette:
                 let input = EventsConsumersQueryRequest {
                     contract_id: None,
                     deployment_id: None,
+                    order: None,
                     owner_contract_id: None,
                     page: page(&args.page),
                     resource_id: args.resource_id,

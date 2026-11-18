@@ -18,7 +18,6 @@
   import { boundedNumber, errorMessage, formatDate } from "$lib/format";
   import { getConnection, getTrellis } from "$lib/trellis";
   import {
-    consumerSeverityOf,
     consumerStatus,
     type ConsumerStatus,
     DetailOwnership,
@@ -42,9 +41,9 @@
     friendlyDuration,
     sentenceName,
   } from "$lib/console/plain_labels.ts";
+  import { PanelPages } from "$lib/console/panel_pages.svelte.ts";
   import { createServiceNames } from "$lib/console/service_names.svelte.ts";
   import { type apis } from "$lib/trellis-apis";
-  import { subjectMatches } from "./subject";
 
   const names = createServiceNames();
 
@@ -96,6 +95,19 @@
   const connection = getConnection();
   const rpcTimeout = 10_000;
   const pageLimit = 40;
+  /** Rows each side panel loads at a time; "Show more" adds another page. */
+  const panelPageSize = 20;
+  /** Services listening for one event, shown in that event's details. */
+  const eventConsumerLimit = 50;
+  /** Server statuses the "Services behind" view lists. */
+  const attentionStatuses: apis.events.ConsumersQueryInput["status"] = [
+    "behind",
+    "saturated",
+    "inactive",
+    "failing",
+    "missing",
+    "orphaned",
+  ];
   const windows: Array<{ value: WindowValue; label: string; title: string; minutes: number }> = [
     { value: "15m", label: "15m", title: "Last 15 minutes", minutes: 15 },
     { value: "1h", label: "1h", title: "Last hour", minutes: 60 },
@@ -138,10 +150,8 @@
   let feedOnline = $state(false);
   let feedMessage = $state<string | null>(null);
   let rows = $state.raw<EventRow[]>([]);
-  let consumers = $state.raw<ConsumerRow[]>([]);
   let metrics = $state.raw<apis.events.MetricsOutput | null>(null);
   let diagnostics = $state.raw<apis.events.DiagnosticsOutput | null>(null);
-  let deadLetters = $state.raw<DeadLetter[]>([]);
   let openDeadLetter = $state<string | null>(null);
   let deadLetterDetail = $state.raw<DeadLetterDetail | null>(null);
   let deadLetterError = $state<Record<string, string>>({});
@@ -151,6 +161,12 @@
   /** The event row whose details are open beneath it. */
   let openEventKey = $state<string | null>(null);
   let selectedConsumer = $state.raw<ConsumerRow | null>(null);
+  /** The services the open event is delivered to, read when it opens. */
+  let eventDelivery = $state.raw<
+    | { state: "pending" }
+    | { state: "ready"; consumers: ConsumerRow[]; more: boolean }
+    | { state: "unavailable" }
+  >({ state: "pending" });
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
   let focus = $state<Focus>(asEventFocus(page.url.searchParams.get("focus")) ?? "all");
@@ -167,7 +183,6 @@
    * zero or a healthy-empty state for the same data.
    */
   let metricsState = $state<OptionalReadState>("pending");
-  let consumersState = $state<OptionalReadState>("pending");
   /** The window the retained metrics belong to, so a window change cannot show them. */
   let metricsScope = $state<WindowValue | null>(null);
 
@@ -187,6 +202,40 @@
   });
   let selectedEventType = $state.raw<EventTypeRef | null>(null);
   let attentionConsumersOnly = $state(false);
+  /**
+   * Delivery status, problems first. The server filters and orders it, so the
+   * panel reads one page however many services there are.
+   */
+  const consumerPages = new PanelPages<ConsumerRow>({
+    pageSize: panelPageSize,
+    filterKey: () => String(attentionConsumersOnly),
+    read: async (page) => {
+      const result = await trellis.consumersQuery({
+        order: "attention",
+        status: attentionConsumersOnly ? attentionStatuses : undefined,
+        page,
+      }, { timeout: rpcTimeout }).orThrow();
+      return {
+        items: result.items.map(toConsumerRow).filter((row): row is ConsumerRow => row !== null),
+        nextCursor: result.page.nextCursor,
+      };
+    },
+    identity: (consumer) => `${consumer.stream}:${consumer.consumerName}`,
+  });
+  /** Deliveries still awaiting a decision, newest first, for the chosen service if any. */
+  const deadLetterPages = new PanelPages<DeadLetter>({
+    pageSize: panelPageSize,
+    filterKey: () => selectedConsumer?.resourceId ?? "",
+    read: async (page) => {
+      const result = await trellis.deadLettersQuery({
+        resourceId: selectedConsumer?.resourceId,
+        state: ["dead", "replayPending", "replaying"],
+        page,
+      }, { timeout: rpcTimeout }).orThrow();
+      return { items: result.items, nextCursor: result.page.nextCursor };
+    },
+    identity: (deadLetter) => deadLetter.deadLetterId,
+  });
   let searchText = $state("");
   let ownerContractId = $state("");
   let publisherDeploymentId = $state("");
@@ -223,10 +272,8 @@
   const detailOwnership = new DetailOwnership();
   let watchAttempt: WatchAttempt<unknown> | null = null;
   let subscription: LiveSubscription | null = null;
-  let consumerError = $state<string | null>(null);
   let metricsError = $state<string | null>(null);
   let diagnosticsError = $state<string | null>(null);
-  let deadLetterPanelError = $state<string | null>(null);
   let snapshotShowsLoading = true;
   const refreshScheduler = new RefreshScheduler({
     canRefresh: () =>
@@ -247,20 +294,17 @@
   );
   const metricsReady = $derived(visibleMetricsState === "ready" && metrics !== null);
   const eventTypesByCount = $derived.by(() => [...(metrics?.summary.eventTypes ?? [])].sort((a, b) => boundedNumber(b.count - a.count)));
-  const matchingConsumers = $derived.by(() => {
-    const subject = selectedEvent?.event.subject;
-    return subject
-      ? consumers.filter((consumer) => consumer.filterSubjects.some((filter) => subjectMatches(filter, subject)))
-      : [];
-  });
-  const sortedConsumers = $derived.by(() =>
-    [...consumers].sort((a, b) =>
-      consumerSeverityOf(a.status) - consumerSeverityOf(b.status) ||
-      consumerName(a).localeCompare(consumerName(b))
-    )
+  const consumers = $derived(consumerPages.items);
+  const deadLetters = $derived(deadLetterPages.items);
+  const attentionConsumers = $derived(consumers.filter(isAttentionConsumer));
+  const displayedConsumers = $derived(attentionConsumersOnly ? attentionConsumers : consumers);
+  /**
+   * Problems come first, so the count is exact once the loaded page reaches a
+   * service that needs nothing, or the list ends.
+   */
+  const attentionComplete = $derived(
+    !consumerPages.hasMore || (!attentionConsumersOnly && consumers.some((consumer) => !isAttentionConsumer(consumer))),
   );
-  const attentionConsumers = $derived(sortedConsumers.filter(isAttentionConsumer));
-  const displayedConsumers = $derived(attentionConsumersOnly ? attentionConsumers : sortedConsumers);
   const consumersByResource = $derived(new Map(consumers.map((consumer) => [consumer.resourceId, consumer])));
   const failedByResource = $derived.by(() => {
     const counts = new Map<string, number>();
@@ -269,9 +313,6 @@
     }
     return counts;
   });
-  const shownDeadLetters = $derived(
-    selectedConsumer ? deadLetters.filter((item) => item.resourceId === selectedConsumer?.resourceId) : deadLetters,
-  );
   const failedDeliveries = $derived(metricsReady && metrics ? metrics.summary.deadLettersByState.dead : undefined);
   const measureOption = $derived(measures.find((option) => option.value === measure) ?? measures[0]);
   const chartPoints = $derived(
@@ -407,7 +448,8 @@
   function consumerSummary(consumer: ConsumerRow): string {
     const parts: string[] = [];
     const failed = failedByResource.get(consumer.resourceId) ?? 0;
-    if (failed > 0) parts.push(`${failed} failed`);
+    // Only one page of failed deliveries is loaded; more may follow it.
+    if (failed > 0) parts.push(`${failed}${deadLetterPages.hasMore ? "+" : ""} failed`);
     if (consumer.pending > 0) parts.push(`${consumer.pending.toLocaleString()} waiting`);
     if (consumer.oldestPendingAt) parts.push(`oldest ${ageLabel(consumer.oldestPendingAt)}`);
     if (parts.length === 0) return consumer.ackPending > 0 ? `${consumer.ackPending} in progress` : "Nothing waiting";
@@ -431,13 +473,15 @@
 
   const ledgerItems = $derived(projectEventsHealthLedger({
     metricsState: visibleMetricsState,
-    consumersState,
+    consumersState: consumerPages.state,
     total: metricsReady && metrics ? metrics.summary.total : undefined,
     integrityExceptions: metricsReady && metrics ? metrics.summary.integrityExceptions : undefined,
     failedDeliveries,
     windowMinutes: windowOption.minutes,
     attentionConsumers: attentionConsumers.length,
+    attentionComplete,
     shownConsumers: consumers.length,
+    consumersComplete: !consumerPages.hasMore,
     // The overview shows every kind of event, so no card is a chosen filter there.
     focus: view === "log" ? focus : "",
     attentionConsumersOnly,
@@ -447,6 +491,7 @@
   async function handleLedgerSelect(id: string) {
     if (id === "consumers") {
       attentionConsumersOnly = !attentionConsumersOnly;
+      void consumerPages.reload();
       await showView("overview");
       document.querySelector(".consumer-health")?.scrollIntoView({ behavior: "smooth", block: "start" });
     } else if (id === "failed") {
@@ -592,23 +637,6 @@
     return input;
   }
 
-  async function loadConsumers(): Promise<apis.events.ConsumersQueryOutput["items"]> {
-    const items: apis.events.ConsumersQueryOutput["items"] = [];
-    for await (const item of trellis.consumersQuery.items({ page: { limit: 500 } }, { timeout: rpcTimeout })) {
-      items.push(item.orThrow());
-    }
-    return items;
-  }
-
-  /** Every delivery still awaiting a decision, across all services. */
-  async function loadDeadLetters(): Promise<DeadLetter[]> {
-    const items: DeadLetter[] = [];
-    for await (const item of trellis.deadLettersQuery.items({ state: ["dead", "replayPending", "replaying"], page: { limit: 500 } }, { timeout: rpcTimeout })) {
-      items.push(item.orThrow());
-    }
-    return items;
-  }
-
   function unavailableText(loadError: unknown): string | null {
     const message = errorMessage(loadError);
     const normalized = message.toLowerCase();
@@ -649,83 +677,69 @@
     const requestedWindow = capturedQuery.window;
     if (showLoading) loading = true;
     else refreshing = true;
-    // The event query is primary. Delivery health, metrics, diagnostics, and
-    // failed deliveries are independent: a denied or failed optional read must
-    // not blank permitted event rows.
-    const [eventResult, consumerResult, metricsResult, diagnosticsResult, deadLetterResult] =
-      await Promise.allSettled([
-        trellis.eventsQuery(capturedQuery.eventQuery, { timeout: rpcTimeout }).orThrow(),
-        loadConsumers(),
-        trellis.eventsMetrics(capturedQuery.metricsInput, { timeout: rpcTimeout }).orThrow(),
-        trellis.diagnostics({}, { timeout: rpcTimeout }).orThrow(),
-        loadDeadLetters(),
-      ]);
-    if (
-      disposed ||
-      sequence !== loadSequence ||
-      capturedEpoch !== queryEpoch ||
-      capturedQuery.key !== desiredQuery.key
-    ) return;
-    try {
-      if (eventResult.status === "fulfilled") {
+    const current = () =>
+      !disposed &&
+      sequence === loadSequence &&
+      capturedEpoch === queryEpoch &&
+      capturedQuery.key === desiredQuery.key;
+    // The event query is primary and renders as soon as it returns. Delivery
+    // health, metrics, diagnostics, and failed deliveries each render when
+    // they arrive: a slow, denied, or failed optional read never holds back
+    // or blanks permitted event rows.
+    const primary = trellis.eventsQuery(capturedQuery.eventQuery, { timeout: rpcTimeout }).orThrow().then(
+      (result) => {
+        if (!current()) return;
         error = null;
         unavailableMessage = null;
-        rows = eventResult.value.items;
-        nextCursor = eventResult.value.page.nextCursor;
+        rows = result.items;
+        nextCursor = result.page.nextCursor;
         lastUpdated = new Date();
-      } else {
-        const unavailable = unavailableText(eventResult.reason);
+        loading = false;
+      },
+      (cause: unknown) => {
+        if (!current()) return;
+        const unavailable = unavailableText(cause);
         if (unavailable) unavailableMessage = unavailable;
-        else error = errorMessage(eventResult.reason);
+        else error = errorMessage(cause);
         rows = [];
         nextCursor = undefined;
-      }
-      if (consumerResult.status === "fulfilled") {
-        consumers = consumerResult.value
-          .map(toConsumerRow)
-          .filter((row): row is ConsumerRow => row !== null);
-        consumersState = "ready";
-        consumerError = null;
-      } else {
-        consumers = [];
-        consumersState = "unavailable";
-        consumerError = errorMessage(consumerResult.reason);
-      }
-      if (metricsResult.status === "fulfilled") {
-        metrics = metricsResult.value;
+        loading = false;
+      },
+    );
+    const metricsRead = trellis.eventsMetrics(capturedQuery.metricsInput, { timeout: rpcTimeout }).orThrow().then(
+      (result) => {
+        if (!current()) return;
+        metrics = result;
         metricsState = "ready";
         metricsScope = requestedWindow;
         metricsError = null;
-      } else {
+      },
+      (cause: unknown) => {
+        if (!current()) return;
         metrics = null;
         metricsState = "unavailable";
         metricsScope = requestedWindow;
-        metricsError = errorMessage(metricsResult.reason);
-      }
-      if (diagnosticsResult.status === "fulfilled") {
-        diagnostics = diagnosticsResult.value;
+        metricsError = errorMessage(cause);
+      },
+    );
+    const diagnosticsRead = trellis.diagnostics({}, { timeout: rpcTimeout }).orThrow().then(
+      (result) => {
+        if (!current()) return;
+        diagnostics = result;
         diagnosticsError = null;
-      } else {
+      },
+      (cause: unknown) => {
+        if (!current()) return;
         diagnostics = null;
-        diagnosticsError = errorMessage(diagnosticsResult.reason);
-      }
-      if (deadLetterResult.status === "fulfilled") {
-        deadLetters = deadLetterResult.value;
-        deadLetterPanelError = null;
-      } else {
-        deadLetters = [];
-        deadLetterPanelError = errorMessage(deadLetterResult.reason);
-      }
-    } finally {
-      if (
-        sequence === loadSequence &&
-        !disposed &&
-        capturedEpoch === queryEpoch &&
-        capturedQuery.key === desiredQuery.key
-      ) {
-        loading = false;
-        refreshing = false;
-      }
+        diagnosticsError = errorMessage(cause);
+      },
+    );
+    // A refresh stays one request group: the next one starts after all of
+    // these settle.
+    await Promise.allSettled([primary, consumerPages.reload(), metricsRead, diagnosticsRead, deadLetterPages.reload()]);
+    if (current()) {
+      loading = false;
+      refreshing = false;
     }
   }
 
@@ -817,6 +831,21 @@
     detailLoading = true;
     detailError = null;
     selectedEvent = null;
+    eventDelivery = { state: "pending" };
+    void trellis.consumersQuery({ subject: row.subject, page: { limit: eventConsumerLimit } }, { timeout: rpcTimeout }).orThrow().then(
+      (result) => {
+        if (!detailOwnership.owns(token) || disposed) return;
+        eventDelivery = {
+          state: "ready",
+          consumers: result.items.map(toConsumerRow).filter((consumer): consumer is ConsumerRow => consumer !== null),
+          more: result.page.nextCursor !== undefined,
+        };
+      },
+      () => {
+        if (!detailOwnership.owns(token) || disposed) return;
+        eventDelivery = { state: "unavailable" };
+      },
+    );
     try {
       const input: apis.events.InspectInput = row.eventId ? { eventId: row.eventId } : { streamSequence: row.streamSequence };
       const detail = await trellis.eventsInspect(input, { timeout: rpcTimeout }).orThrow();
@@ -838,11 +867,15 @@
     openDeadLetter = null;
     deadLetterDetail = null;
     if (!row || selectedConsumer?.resourceId === row.resourceId) {
-      selectedConsumer = null;
+      if (selectedConsumer) {
+        selectedConsumer = null;
+        void deadLetterPages.reload();
+      }
       return;
     }
     detailOwnership.begin("consumer", row.consumerName);
     selectedConsumer = row;
+    void deadLetterPages.reload();
   }
 
   async function toggleDeadLetter(deadLetter: DeadLetter) {
@@ -868,6 +901,15 @@
     return consumer ? consumerName(consumer) : "A service";
   }
 
+  /** Who the open event goes to, as far as the Console may see. */
+  function deliveredTo(): string {
+    if (eventDelivery.state === "pending") return "Loading…";
+    if (eventDelivery.state === "unavailable") return "Can't be shown";
+    const listed = eventDelivery.consumers.map(consumerName).join(", ");
+    if (!listed) return "No service listens for it";
+    return eventDelivery.more ? `${listed}, and more` : listed;
+  }
+
   async function changeDeadLetter(deadLetter: DeadLetter, action: "replay" | "dismiss") {
     const capturedQueryEpoch = queryEpoch;
     const capturedKey = desiredQuery.key;
@@ -887,7 +929,7 @@
       confirmLabel: action === "replay" ? "Retry" : "Dismiss",
     });
     if (!confirmed || !owned() ||
-      !deadLetters.some((item) => item.deadLetterId === input.deadLetterId && item.revision === input.expectedRevision)) return;
+      !deadLetterPages.items.some((item) => item.deadLetterId === input.deadLetterId && item.revision === input.expectedRevision)) return;
     const mutationToken = ++deadLetterBusyGeneration;
     deadLetterBusy = input.deadLetterId;
     deadLetterError = { ...deadLetterError, [deadLetter.deadLetterId]: "" };
@@ -1004,10 +1046,19 @@
     ++loadSequence;
     detailOwnership.invalidate();
     ++deadLetterSequence;
+    consumerPages.dispose();
+    deadLetterPages.dispose();
     stopWatch();
     refreshScheduler.dispose();
   });
 </script>
+
+{#snippet showMore(pages: PanelPages<ConsumerRow> | PanelPages<DeadLetter>, label: string)}
+  {#if pages.moreError}<p class="mt-2 text-sm text-error">More couldn't be loaded: {pages.moreError}</p>{/if}
+  {#if pages.hasMore}
+    <button type="button" class="btn btn-ghost btn-sm mt-2" disabled={pages.loadingMore} onclick={() => void pages.more()}>{pages.loadingMore ? "Loading…" : label}</button>
+  {/if}
+{/snippet}
 
 {#snippet eventDetail(detail: EventInspect)}
   {@const event = detail.event}
@@ -1019,7 +1070,7 @@
         <div><dt>Published</dt><dd>{formatDate(event.eventTime)}</dd></div>
         <div><dt>From</dt><dd>{publisherLabel(event)}</dd></div>
         <div><dt>Check</dt><dd><StatusBadge label={check.label} status={check.ok ? "healthy" : "degraded"} /></dd></div>
-        <div><dt>Delivered to</dt><dd>{matchingConsumers.map(consumerName).join(", ") || "No service listens for it"}</dd></div>
+        <div><dt>Delivered to</dt><dd>{deliveredTo()}</dd></div>
       </dl>
       <div class="min-w-0">
         {#if detail.data?.kind === "value"}<DataPanel value={detail.data.value} />
@@ -1160,12 +1211,14 @@
       <Panel title="Delivery to services" class="consumer-health min-w-0">
         {#snippet actions()}
           {#if attentionConsumersOnly}
-            <button type="button" class="btn btn-ghost btn-xs" onclick={() => { attentionConsumersOnly = false; }}>Show all</button>
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => { attentionConsumersOnly = false; void consumerPages.reload(); }}>Show all</button>
           {/if}
         {/snippet}
-        {#if consumerError}
-          <Notice variant="warning" role="status">Delivery status can't be shown: {consumerError}</Notice>
-        {:else if displayedConsumers.length === 0}
+        {#if consumerPages.state === "unavailable"}
+          <Notice variant="warning" role="status">Delivery status can't be shown: {consumerPages.error}</Notice>
+        {:else if consumerPages.state === "pending"}
+          <p class="py-6 text-center text-sm text-base-content/60">Loading…</p>
+        {:else if displayedConsumers.length === 0 && !consumerPages.hasMore}
           <EmptyState
             title={attentionConsumersOnly ? "Every service is caught up" : "No services receive events"}
             description={attentionConsumersOnly ? "Nothing is waiting for delivery." : "Services that listen for events appear here."}
@@ -1198,6 +1251,7 @@
             {/each}
           </ul>
         {/if}
+        {#if consumerPages.state === "ready"}{@render showMore(consumerPages, "Show more services")}{/if}
       </Panel>
 
       <div id="failed-deliveries">
@@ -1207,16 +1261,18 @@
               <button type="button" class="trellis-chip" onclick={() => selectConsumer(null)}>For {consumerName(selectedConsumer)} <span aria-hidden="true">×</span><span class="sr-only">Show all services</span></button>
             {/if}
           {/snippet}
-          {#if deadLetterPanelError}
-            <Notice variant="warning" role="status">Failed deliveries can't be shown: {deadLetterPanelError}</Notice>
-          {:else if shownDeadLetters.length === 0}
+          {#if deadLetterPages.state === "unavailable"}
+            <Notice variant="warning" role="status">Failed deliveries can't be shown: {deadLetterPages.error}</Notice>
+          {:else if deadLetterPages.state === "pending"}
+            <p class="py-6 text-center text-sm text-base-content/60">Loading…</p>
+          {:else if deadLetters.length === 0}
             <EmptyState
               title="No failed deliveries"
               description={selectedConsumer ? "Everything sent to this service was delivered." : "When a service keeps failing to handle an event, it waits here for you to retry or dismiss it."}
             />
           {:else}
             <ul class="failure-list">
-              {#each shownDeadLetters as deadLetter (deadLetter.deadLetterId)}
+              {#each deadLetters as deadLetter (deadLetter.deadLetterId)}
                 {@const open = openDeadLetter === deadLetter.deadLetterId}
                 <li data-dead-letter={deadLetter.deadLetterId}>
                   <div class="failure-row">
@@ -1258,6 +1314,7 @@
               {/each}
             </ul>
           {/if}
+          {#if deadLetterPages.state === "ready"}{@render showMore(deadLetterPages, "Show more failed deliveries")}{/if}
         </Panel>
       </div>
       </div>
