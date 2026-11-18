@@ -9,8 +9,10 @@
 #
 # In CI each job receives producer-built executables (CI is set). The local run
 # builds debug executables, generated artifacts, embedded UIs and npm packages
-# once, then runs the jobs in staged mode (TRELLIS_TEST_STAGED=1) so none of
-# them rebuilds what another is using. Each job logs to target/test-logs/.
+# once, copies the executables to target/check-bin, then runs the jobs in
+# staged mode (TRELLIS_TEST_STAGED=1) against those copies, as CI jobs run the
+# producer's: the rust job's Cargo still re-links target/debug, so no job
+# executes from there. Each job logs to target/test-logs/.
 # Test files run concurrently, sized from the host's cores;
 # TRELLIS_TEST_CONCURRENCY and TRELLIS_BROWSER_CONCURRENCY
 # override it. TRELLIS_TEST_SKIP_PREPARE=1 skips contract and UI regeneration.
@@ -133,7 +135,7 @@ job_demos() {
   for demo in service device; do
     (
       cd "demos/rust/$demo"
-      PATH="$root/target/debug:$PATH" trellis generate
+      PATH="$(dirname "${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"):$PATH" trellis generate
       cargo check --locked --config "$root/.cargo/publication.toml"
       # The generated crate builds from a copy outside this repository, with no
       # Trellis CLI or API cache, as a consumer would.
@@ -225,16 +227,22 @@ job_rust_testkit_consumer() {
 }
 
 job_typescript_testkit() {
-  # CI uses exactly the packages the demos job verified and uploaded.
-  [[ -n "${CI:-}" ]] || build_packages
+  # CI installs exactly the tarballs the demos job packed and uploaded.
+  local packages
+  if [[ -n "${CI:-}" ]]; then
+    packages=(dist/npm/oatscenter-trellis-testkit-*.tgz dist/npm/oatscenter-result-*.tgz
+      dist/npm/oatscenter-trellis-[0-9]*.tgz)
+  else
+    build_packages
+    packages=(ts/packages/trellis-testkit/npm ts/packages/result/npm ts/packages/trellis/npm)
+  fi
   # Outside the repository, which concurrent image builds copy as their context.
   local runtime
   mkdir -p "$temp"
   runtime="$(mktemp -d "$temp/testkit-runtime.XXXXXX")"
   native_archive "$runtime"
   TRELLIS_TEST_CLI_BIN="$runtime/trellis" TRELLIS_TEST_SERVER_BIN="$runtime/trellis-server" \
-    node ts/tools/verify_testkit_package.ts ts/packages/trellis-testkit/npm \
-    ts/packages/result/npm ts/packages/trellis/npm
+    node ts/tools/verify_testkit_package.ts "${packages[@]}"
 }
 
 # Builds the runtime and Console images and smoke-tests the runtime image
@@ -305,8 +313,20 @@ echo "building executables and test binaries"
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-sdk-tests.sh
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-browser-tests.sh
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-testkit-tests.sh
-  [[ "$all" != "--all" ]] || pack_native
 } > "$logs/build.log" 2>&1 || { echo "build failed; see $logs/build.log" >&2; exit 1; }
+# The jobs run copies, as CI jobs run the producer's executables: the rust job
+# still builds into target/debug and re-links what it finds stale there.
+staged="$root/target/check-bin"
+rm -rf "$staged"
+mkdir -p "$staged/examples"
+cp target/debug/trellis target/debug/trellis-server target/debug/trellis-testkit-live "$staged/"
+cp target/debug/examples/health_watch "$staged/examples/"
+cp -R target/debug/fixtures target/debug/testkit-tests "$staged/"
+export TRELLIS_TEST_CLI_BIN="$staged/trellis" TRELLIS_TEST_SERVER_BIN="$staged/trellis-server"
+export TRELLIS_TEST_EVENTS_BIN="$staged/fixtures/events" TRELLIS_TEST_FIXTURE_BIN_DIR="$staged/fixtures"
+export TRELLIS_TESTKIT_LIVE_BIN="$staged/trellis-testkit-live" TRELLIS_TESTKIT_TESTS_DIR="$staged/testkit-tests"
+export TRELLIS_TEST_HEALTH_WATCH_BIN="$staged/examples/health_watch"
+[[ "$all" != "--all" ]] || pack_native "$staged"
 echo "built in $(( SECONDS - started ))s; running ${jobs[*]} concurrently"
 
 declare -A pid
