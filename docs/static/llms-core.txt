@@ -631,7 +631,8 @@ affected work. Raw NATS connections are physical attachments, not
 generation-aware application handles. A lost connection is never reconnected
 in place: the SDK opens a fresh connection admitted with current authority,
 recreates subscriptions on it, and then routes requests. A request made during
-the gap waits for it within its deadline and is never sent after the deadline.
+the gap, or one whose connection is lost while it is being signed, waits for
+it within its deadline and is never sent after the deadline.
 
 Live authority requires a verified initial revocation snapshot and continuing
 coverage; epoch fencing prevents old watchers from changing successor coverage.

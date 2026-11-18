@@ -60,7 +60,10 @@ transport_max_bytes = 1073741824
 A change takes effect at the next start, and a shorter time removes what it no
 longer covers. Failed deliveries nobody has dealt with are kept however old
 they are, because a retry needs the original event. `dead_letter_retention_days`
-can't be less than 7, the time the event stream itself keeps events.
+can't be less than 7, the time the event stream itself keeps events. If you
+replay a resolved or dismissed failed delivery just as retention removes it, the replay
+fails again with an error saying retention removed the original while the
+replay was being accepted. It can't be replayed after that; dismiss it.
 
 Failed and dead jobs are kept however old they are, because a retry or replay
 needs their payload. A job that no worker picks up within the jobs

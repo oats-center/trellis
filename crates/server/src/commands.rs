@@ -473,8 +473,9 @@ pub(crate) struct RestoreArgs {
     pub(crate) profile: crate::InstallationArgs,
     /// Folder a `trellis-server backup` wrote.
     pub(crate) source: PathBuf,
-    /// Replace an installation with another ID, and files outside the
-    /// installation folder that exist with other contents.
+    /// Replace an installation with another ID or a `config.toml` that
+    /// can't be loaded, and files outside the installation folder that exist
+    /// with other contents.
     #[arg(long)]
     pub(crate) force: bool,
     /// Print the result as text or JSON.

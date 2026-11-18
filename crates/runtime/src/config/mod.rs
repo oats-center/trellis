@@ -1500,7 +1500,8 @@ pub struct SubsystemConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage: Option<StorageConfig>,
     /// Days of SQL history kept: health intervals and metric buckets, recorded
-    /// events, or settled job history (also the Jobs streams' maximum age).
+    /// events, or settled job history. For `[jobs]` it is also how long a job
+    /// waits for a worker, and the Jobs streams keep one day more.
     /// Read by `[health]`, `[events]` and `[jobs]`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_retention_days: Option<u32>,

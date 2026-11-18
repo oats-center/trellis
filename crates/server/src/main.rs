@@ -84,7 +84,8 @@ enum OperationArgs {
     /// each NATS stream.
     Backup(commands::BackupArgs),
     /// Put a backup into a fresh or stopped installation folder. Its next
-    /// start loads the NATS streams into an empty JetStream store.
+    /// start loads the NATS streams into an empty JetStream store. To finish
+    /// an interrupted restore, run it again, then start.
     Restore(commands::RestoreArgs),
     /// Replace this binary with the newest trellis-server release for this
     /// platform.

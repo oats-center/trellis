@@ -43,7 +43,8 @@ pub struct EventInspectArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConsumersCommand {
-    /// List consumers, optionally for one consumer resource.
+    /// List consumers, optionally for one consumer resource. Failed counts
+    /// the failed deliveries of the consumer's service awaiting a decision.
     Query(ConsumerQueryArgs),
     /// Inspect one consumer resource.
     Inspect(ResourceIdArgs),

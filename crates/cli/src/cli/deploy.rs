@@ -78,7 +78,9 @@ pub enum SvcResourceAction {
     Approve(SvcUpdateArgs),
     /// Reject the service's pending update.
     Reject(SvcUpdateArgs),
-    /// Show or change the settings Trellis keeps for the service.
+    /// Show or change the settings Trellis keeps for the service. A service
+    /// added without its IDL takes settings while it waits for approval, and
+    /// approving it carries them over.
     Config(ConfigArgs),
 }
 

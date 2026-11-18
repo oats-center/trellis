@@ -116,8 +116,9 @@ survivor takes over, or the participant opens a fresh generation admitted with
 current authority, recreates its subscriptions there, and only then routes
 requests to it. A reattached socket would resume subscriptions before authority
 was checked again and flush publishes buffered during the outage, some of them
-after their deadline. A request started during the gap waits for the new
-generation within its deadline and is never sent after it.
+after their deadline. A request started during the gap, or one whose
+connection is lost while it is being signed, waits for the new generation
+within its deadline and is never sent after it.
 
 ## Requests, replies, and events
 

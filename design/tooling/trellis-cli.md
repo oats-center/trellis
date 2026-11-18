@@ -150,7 +150,13 @@ trellis events dead-letters query|inspect|replay|dismiss ...
 Resource commands use `Auth.Resources.*`. `destroy` accepts only a detached
 resource and requires exact confirmation; no lifecycle command destroys data
 implicitly. Event commands read the Events journal and administer durable
-consumers and dead letters through the Events API.
+consumers and dead letters through the Events API. `events consumers query`
+and `inspect` show, beside each consumer's pending and awaiting-ack counts, a
+Failed count: the failed deliveries of that consumer resource still awaiting a
+decision, which `Events.Consumers.Query` and `Events.Consumers.Inspect` report
+as `deadLetters` from the Events projection. The Console's Events page reads
+the same count for each service, so it is right even when the failed
+deliveries are not on the page it has loaded.
 
 ## Users And Portals
 

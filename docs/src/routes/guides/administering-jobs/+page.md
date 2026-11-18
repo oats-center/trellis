@@ -21,7 +21,8 @@ runtime is Trellis infrastructure that implements its admin behavior:
   `Jobs.ListDLQ`, `Jobs.ListServices`
 - **Workbench live** — `Jobs.Watch` invalidation frames for live query and
   inspection views
-- **Janitor** — background cleanup of expired jobs and stale projection entries
+- **Retention** — an hourly pass that expires jobs no worker claimed and
+  removes old settled jobs from the projection
 
 The Jobs admin runtime is stateless and horizontally scalable. It does not
 participate in job correctness — it is a derived observability layer. The
@@ -200,16 +201,21 @@ Use the `trellis` CLI or an observability tool subscribed to the heartbeat subje
 trellis jobs workers --service orders-service
 ```
 
-## Janitor behavior
+## Retention
 
-The janitor is a background loop in the Jobs admin runtime that cleans up:
+Once an hour the Jobs admin runtime applies `[jobs] history_retention_days`
+(default 30) from the server's `config.toml`:
 
-- **Expired jobs** — jobs that exceeded their `defaultDeadlineMs` and have not
-  completed; moved to `expired`
-- **Stale SQL projection entries** — projection records whose underlying stream
-  messages have been cleaned up
+- **Unclaimed jobs**: a job still `pending` more than the retention after it
+  was created or replayed moves to `expired`, with an error saying no worker
+  claimed it. The `JOBS` and `JOBS_WORK` streams keep one day past the
+  retention, so the expiry lands while the job's work is still queued, and a
+  worker that claims it afterwards runs nothing.
+- **Settled jobs**: finished jobs older than the retention leave the
+  projection. Failed and dead jobs stay however old they are, because a retry
+  or replay needs their payload.
 
-The janitor interval is operator-configurable via the Jobs admin runtime
-configuration. There is no fixed default — tune it based on your job volume and
-retention requirements. A shorter interval keeps the projection tighter; a longer
-interval reduces janitor overhead on high-volume deployments.
+A job a worker has started is settled by that worker, not by retention. If a
+service will be offline longer than the retention, raise the setting before
+its jobs expire. See
+[Upkeep](/guides/running-trellis/upkeep) for the other retention settings.
