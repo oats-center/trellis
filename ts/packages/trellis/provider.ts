@@ -9,6 +9,7 @@ import {
   type CallerRuntime,
   type CallerSelectedAction,
   createCallerRuntime,
+  type DocumentedMethods,
   selectedActionAvailabilityError,
 } from "./caller.ts";
 import type { TrellisConnection } from "./connection.ts";
@@ -135,8 +136,10 @@ type ProviderOwnedPublish<TContract extends GeneratedParticipant> = {
 export type ProviderHandlerClient<
   TContract extends GeneratedParticipant,
   TService,
-> = CallerHandlerActionSurface<TContract> &
-  ProviderOwnedPublish<TContract> &
+> = DocumentedMethods<
+  CallerHandlerActionSurface<TContract> & ProviderOwnedPublish<TContract>,
+  TContract
+> &
   ProviderResources<TContract, TService> &
   ProviderHandlerCommon<TContract, TService>;
 
@@ -207,8 +210,11 @@ export type ProviderRuntime<
 > = ProviderBase<TService> &
   ProviderConfig<TContract, TService> &
   ProviderHandlerClient<TContract, TService> &
-  ProviderOwnedRegistrations<TContract> &
-  ProviderSelectedEventSubscriptions<TContract, TService>;
+  DocumentedMethods<
+    ProviderOwnedRegistrations<TContract> &
+      ProviderSelectedEventSubscriptions<TContract, TService>,
+    TContract
+  >;
 
 type ProviderQueue = {
   create(payload: unknown): unknown;

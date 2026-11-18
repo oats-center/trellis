@@ -1345,6 +1345,7 @@ fn render_app_request(
     }
     let mut name_types = Vec::new();
     let mut name_values = Vec::new();
+    let mut names = BTreeMap::new();
     for (id, selection) in &uses {
         let api = find_api(graph, id)?;
         let mut action_types = Vec::new();
@@ -1391,6 +1392,10 @@ fn render_app_request(
             };
             name_types.push(format!("readonly [{key}]: {};", js_string(&name)));
             name_values.push(format!("[{key}]: {}", js_string(&name)));
+            names.insert(
+                format!("{}:{}", id.as_str(), descriptor_name(&selected.action)),
+                name,
+            );
             let direction = js_string(direction(selected.direction));
             action_types.push(format!(
                 "{{ readonly descriptorName: {descriptor}; readonly direction: \
@@ -1420,6 +1425,7 @@ fn render_app_request(
             action_values.join(", ")
         ));
     }
+    lines.push(render_method_docs(graph, &BTreeSet::new(), &uses, &names)?);
     lines.push(
         "/** Developer selections and local State codecs; never principal \
         installation evidence. */"
@@ -1430,6 +1436,7 @@ fn render_app_request(
         readonly kind: {}; readonly requiredCapabilities: readonly \
         [{required}]; readonly optionalCapabilities: readonly [{optional}]; \
         readonly uses: readonly [{}]; readonly actionNames: {{ {} }}; readonly \
+        __runtimeTypes?: {{ readonly methods: __Methods }}; readonly \
         states: {{",
         js_string(request.identity().as_str()),
         js_string(kind),
@@ -1512,6 +1519,107 @@ fn render_app_request(
     }
     lines.push("export type Request = typeof request;\nexport default request;\n".into());
     Ok(lines.join("\n"))
+}
+
+/// A type whose members carry each action's documentation under the flat
+/// method names the SDK facades expose (`ordersGet`, `handleOrdersGet`,
+/// `publishChanged`, `onChanged`). The facades build those names with key
+/// remapping, which drops JSDoc, so they intersect this type back in. Members
+/// are `unknown`, which leaves the facade's own signatures unchanged; actions
+/// without documentation get no member.
+fn render_method_docs(
+    graph: &PackageGraph,
+    implements: &BTreeSet<trellis_idl::ApiId>,
+    uses: &BTreeMap<trellis_idl::ApiId, trellis_idl::InteractionSelection>,
+    names: &BTreeMap<String, String>,
+) -> Result<String, CodegenTsError> {
+    // Each documented action's PascalCase surface name and its paragraphs.
+    let documented = |api: &trellis_idl::ApiDefinition,
+                      id: &ActionId|
+     -> Result<Option<(String, Vec<String>)>, CodegenTsError> {
+        let action = api
+            .actions()
+            .get(id)
+            .ok_or_else(|| CodegenTsError::MissingReference(descriptor_name(id)))?;
+        let docs = action_documentation(graph, api, id, action);
+        let name = &names[&format!("{}:{}", api.identity().as_str(), descriptor_name(id))];
+        Ok((!docs.is_empty()).then(|| (surface_pascal(name), docs)))
+    };
+    let mut methods = BTreeMap::new();
+    for id in implements {
+        let api = find_api(graph, id)?;
+        for action in api.actions().keys() {
+            if let Some((name, docs)) = documented(api, action)? {
+                if action.kind == ActionKind::Event {
+                    methods.insert(format!("publish{name}"), docs.clone());
+                    methods.insert(format!("on{name}"), docs);
+                } else {
+                    methods.insert(format!("handle{name}"), docs);
+                }
+            }
+        }
+    }
+    for (id, selection) in uses {
+        let api = find_api(graph, id)?;
+        for selected in &selection.actions {
+            if let Some((name, docs)) = documented(api, &selected.action)? {
+                let method = match (&selected.action.kind, &selected.direction) {
+                    (ActionKind::Event, InteractionDirection::Publish) => format!("publish{name}"),
+                    (ActionKind::Event, _) => format!("on{name}"),
+                    // Surface names are ASCII, so the first byte is a character.
+                    _ => {
+                        name.get(..1).unwrap_or_default().to_ascii_lowercase()
+                            + name.get(1..).unwrap_or_default()
+                    }
+                };
+                methods.entry(method).or_insert(docs);
+            }
+        }
+    }
+    let mut lines = vec!["type __Methods = {".to_owned()];
+    for (method, docs) in methods {
+        lines.push(format!(
+            "{}  readonly {}: unknown;",
+            js_doc(&docs, "  "),
+            property_name(&method)
+        ));
+    }
+    lines.push("};".into());
+    Ok(lines.join("\n"))
+}
+
+/// The acronym-aware PascalCase identifier the SDK derives from a generated
+/// action name (`participant_runtime/surface_names.ts`): `orders.Get` becomes
+/// `OrdersGet`, `getHTTPStatus` becomes `GetHttpStatus`.
+fn surface_pascal(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut snake = String::new();
+    let mut previous_was_separator = false;
+    for (index, &character) in chars.iter().enumerate() {
+        if character.is_ascii_alphanumeric() {
+            let previous = index.checked_sub(1).map(|index| chars[index]);
+            let next = chars.get(index + 1);
+            if character.is_ascii_uppercase()
+                && !snake.is_empty()
+                && !previous_was_separator
+                && (previous
+                    .is_some_and(|value| value.is_ascii_lowercase() || value.is_ascii_digit())
+                    || next.is_some_and(|value| value.is_ascii_lowercase()))
+            {
+                snake.push('_');
+            }
+            snake.push(character.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if !snake.is_empty() && !previous_was_separator {
+            snake.push('_');
+            previous_was_separator = true;
+        }
+    }
+    snake
+        .split('_')
+        .filter(|word| !word.is_empty())
+        .map(|word| word[..1].to_ascii_uppercase() + &word[1..])
+        .collect()
 }
 
 fn render_participant_tree(
@@ -1662,6 +1770,12 @@ fn render_participant(
         ));
     }
     lines.push(String::new());
+    lines.push(render_method_docs(
+        graph,
+        participant.implements(),
+        &uses,
+        &action_names.iter().cloned().collect(),
+    )?);
     lines.push("type __ActionNames = {".into());
     for (key, name) in &action_names {
         lines.push(format!(
@@ -1796,6 +1910,7 @@ fn render_participant(
     lines.push("    readonly jobs: ParticipantJobsFromResources<__Resources>;".into());
     lines.push("    readonly kv: ParticipantKvFromResources<__Resources>;".into());
     lines.push("    readonly config: __ConfigValues;".into());
+    lines.push("    readonly methods: __Methods;".into());
     lines.push("  };".into());
     if let Some(companion) = participant.companion() {
         lines.push(format!(
@@ -3083,25 +3198,55 @@ export { progress, update, fallbackProgress, fallbackUpdate, wrongProgress, wron
               error Missing;
               /// Look up one order.
               rpc Get { input Empty; output Order; errors [Missing]; }
+              /// Rebuild the order index.
+              operation Reindex { input Empty; output Empty; }
+              /// An order changed.
+              event Changed { payload Order; }
+              rpc Hidden { input Empty; output Empty; }
               capabilities {
                 capability orders.read {
                   title "Read orders";
                   description "See every order.";
                   grants "Orders are visible.";
-                  allows { rpc Get; }
+                  allows { rpc Get; subscribe event Changed; }
+                }
+                capability orders.admin {
+                  title "Administer orders";
+                  description "Rebuild order indexes.";
+                  grants "Order indexes can be rebuilt.";
+                  allows { operation Reindex; }
                 }
               }
             }
             service Shop { implements orders; }
+            app Viewer { use orders { required capability orders.read; capability orders.admin; } }
             "#,
         );
         let root = unique_temp_dir("docs");
         generate_ts_package(&graph, &root, "@example/generated").unwrap();
+        // The flat facade methods are what callers and providers write; their
+        // hover must carry the same docs as the action descriptor, and calling
+        // them proves the docs left the signatures callable as before.
         let consumer = "import { API } from \"./apis/orders/mod.js\";\n\
             import type { Order } from \"./types/index.js\";\n\
+            import { apps, participants } from \"./index.js\";\n\
+            import { ok } from \"@oatscenter/result\";\n\
+            import type { ConnectedTrellisClient } from \"@oatscenter/trellis\";\n\
+            import type { ConnectedTrellisService } from \"@oatscenter/trellis/service\";\n\
             declare const order: Order;\n\
+            declare const client: ConnectedTrellisClient<typeof apps.Viewer.request>;\n\
+            declare const service: ConnectedTrellisService<typeof participants.Shop.participant>;\n\
             export const values = [order.name, order.tags, order.id, \
-            API.actions[\"rpc:Get\"]];\n";
+            API.actions[\"rpc:Get\"]];\n\
+            export async function use() {\n\
+            const name: string = (await client.get({})).orThrow().name;\n\
+            client.reindex({});\n\
+            client.onChanged(() => {});\n\
+            await service.handleGet(async () => ok(order));\n\
+            service.publishChanged(order);\n\
+            await service.handleHidden(async () => ok({}));\n\
+            return name;\n\
+            }\n";
         fs::write(root.join("consumer.ts"), consumer).unwrap();
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         assert!(std::process::Command::new("node")
@@ -3154,6 +3299,12 @@ console.log(JSON.stringify({ errors, docs }));
                 position("order.id"),
                 position("\"rpc:Get"),
                 position(": Order"),
+                position("client.get"),
+                position("service.handleGet"),
+                position("client.reindex"),
+                position("client.onChanged"),
+                position("service.publishChanged"),
+                position("service.handleHidden"),
             ])
             .output()
             .unwrap();
@@ -3190,6 +3341,28 @@ console.log(JSON.stringify({ errors, docs }));
             "{result}"
         );
         assert_eq!(text(4), "An order a customer placed.", "{result}");
+        // The caller's `client.get` and the provider's `service.handleGet`
+        // show the descriptor's text, as do operation and event methods.
+        assert_eq!(text(5), get, "{result}");
+        assert_eq!(text(6), get, "{result}");
+        assert!(
+            text(7).contains("Rebuild the order index.")
+                && text(7).contains(
+                    "Invoke is allowed by capability example.orders.v1:orders.admin \
+                    (Administer orders): Rebuild order indexes."
+                ),
+            "{result}"
+        );
+        let changed = text(8);
+        assert!(
+            changed.contains("An order changed.")
+                && changed
+                    .contains("Subscribe is allowed by capability example.orders.v1:orders.read"),
+            "{result}"
+        );
+        assert_eq!(text(9), changed, "{result}");
+        // An action with no description, errors or capability has no docs.
+        assert_eq!(text(10), "", "{result}");
         fs::remove_dir_all(root).unwrap();
     }
 

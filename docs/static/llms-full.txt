@@ -1524,7 +1524,10 @@ const order = await client.ordersCreate({ customerId: "customer-1" }).orThrow();
 ```
 
 Generated flat names depend on action names and alias collisions; inspect the
-generated participant when choosing names. There is no `client.rpc.orders.create`
+generated participant when choosing names. Editor hover on a flat method
+(`client.ordersCreate`, `service.handleOrdersCreate`, `publish…`, `on…`) shows
+the action's `///` description, declared errors, and allowing capabilities.
+There is no `client.rpc.orders.create`
 or `service.handle.rpc.orders.create` tree. Dependency selections belong in IDL
 `use` blocks, not SDK `use(spec)` calls.
 

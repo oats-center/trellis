@@ -113,9 +113,14 @@ declared length, range, or item-count limits, an RPC's pagination, an action's
 declared errors, and the capabilities that allow each direction with their
 title and description. Generators treat the text as plain text: Rust escapes
 Markdown so rustdoc shows it literally (bare URLs become autolinks), and
-TypeScript escapes `*/` and `@`. TypeScript's flat client and handler methods
-(`client.ordersCreate`) are mapped from descriptor names inside the SDK, so
-they do not carry the docs; the `API.actions` property does.
+TypeScript escapes `*/` and `@`. TypeScript's flat client and provider methods
+(`client.ordersCreate`, `service.handleOrdersCreate`, `publish…`, `on…`) get
+the same text as the action descriptor. The SDK builds those names with key
+remapping, which drops JSDoc, so each generated participant and app request
+also carries a type-only member map keyed by the final method names
+(`__runtimeTypes.methods`), and the facade types intersect it back in. Its
+members are `unknown`, so the intersection leaves every method's signature
+unchanged. Actions with no documentation get no member.
 
 ```trellis
 /// An order a customer placed.

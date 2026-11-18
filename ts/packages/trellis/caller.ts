@@ -230,11 +230,34 @@ export type CallerParticipant = GeneratedCaller;
 export type CallerSelectedAction<TContract extends GeneratedCaller> =
   SelectedAction<TContract>;
 
+type MethodDocs<TContract> = TContract extends {
+  readonly __runtimeTypes?: { readonly methods: infer TDocs };
+}
+  ? TDocs
+  : Record<never, never>;
+
+/**
+ * `TSurface` with the generated documentation of each of its methods.
+ *
+ * Facade method names come from key remapping, which drops JSDoc. Generated
+ * descriptors carry the docs under the final names with `unknown` members, so
+ * intersecting them leaves every signature as it is and gives editor hover the
+ * authored text.
+ */
+export type DocumentedMethods<TSurface, TContract> = TSurface &
+  Pick<
+    MethodDocs<TContract>,
+    Extract<keyof TSurface, keyof MethodDocs<TContract>>
+  >;
+
 /**
  * Selected caller action methods, including selected event subscriptions.
  */
 export type CallerSelectedActionSurface<TContract extends GeneratedCaller> =
-  UnionToIntersection<ActionRecord<CallerSelectedAction<TContract>>>;
+  DocumentedMethods<
+    UnionToIntersection<ActionRecord<CallerSelectedAction<TContract>>>,
+    TContract
+  >;
 
 /**
  * Selected caller invocation and publish methods, excluding event
