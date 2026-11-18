@@ -4,6 +4,7 @@ mod ast;
 mod canonical;
 mod compatibility;
 mod compile;
+mod documentation;
 mod lexer;
 mod parser;
 pub mod project;
@@ -20,6 +21,9 @@ pub use compatibility::{
     SelectedCompatibilityCache,
 };
 pub use compile::SuppliedDependencies;
+pub use documentation::{
+    action_documentation, api_documentation, field_documentation, type_documentation,
+};
 pub use projection::{described_json_schema, expression_json_schema, json_schema};
 pub use semantic::*;
 

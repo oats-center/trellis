@@ -7,10 +7,11 @@ use std::{
 };
 
 use trellis_idl::{
-    api_digest, canonical_package, participant_digest, ActionDefinition, ActionKind, ApiDefinition,
-    ApiId, AppKind, AppRequestDefinition, CanonicalMode, InteractionDirection,
-    InteractionSelection, ModelField, PackageGraph, PackageId, ParticipantDefinition,
-    ParticipantKind, Primitive, ResourceDefinition, TypeDefinition, TypeExpression, TypeRef,
+    action_documentation, api_digest, api_documentation, canonical_package, field_documentation,
+    participant_digest, type_documentation, ActionDefinition, ActionKind, ApiDefinition, ApiId,
+    AppKind, AppRequestDefinition, CanonicalMode, InteractionDirection, InteractionSelection,
+    ModelField, PackageGraph, PackageId, ParticipantDefinition, ParticipantKind, Primitive,
+    ResourceDefinition, TypeDefinition, TypeExpression, TypeRef,
 };
 
 /// A failure while generating a Rust package.
@@ -685,6 +686,7 @@ fn render_type_definition(
     recursive: &BTreeSet<(TypeRef, TypeRef)>,
 ) -> String {
     let name = type_name(id);
+    let docs = rust_docs(&type_documentation(graph, package, id, definition));
     match definition {
         TypeDefinition::Model(fields) => {
             let source = TypeRef {
@@ -699,10 +701,13 @@ fn render_type_definition(
                     .clone(),
             };
             let mut out = format!(
-                "#[derive(Clone, Debug, PartialEq, serde::Serialize, \
+                "{docs}#[derive(Clone, Debug, PartialEq, serde::Serialize, \
                 serde::Deserialize)]\npub struct {name} {{\n"
             );
             for (field, value) in fields {
+                out.push_str(&rust_docs(&field_documentation(
+                    graph, package, id, field, value,
+                )));
                 let rust_field = rust_ident(&key_to_snake(field));
                 if rust_field.trim_start_matches("r#") != field {
                     out.push_str(&format!("#[serde(rename = {field:?})]\n"));
@@ -755,7 +760,8 @@ fn render_type_definition(
             out
         }
         TypeDefinition::Enum(values) => {
-            let mut out = format!("#[derive(Clone, Debug, PartialEq, Eq)]\npub enum {name} {{\n");
+            let mut out =
+                format!("{docs}#[derive(Clone, Debug, PartialEq, Eq)]\npub enum {name} {{\n");
             for value in values {
                 out.push_str(&format!("{},\n", variant_name(value)));
             }
@@ -812,7 +818,7 @@ fn render_type_definition(
                 }
             };
             let mut out = format!(
-                "#[derive({derives}, serde::Serialize, serde::Deserialize)]\n\
+                "{docs}#[derive({derives}, serde::Serialize, serde::Deserialize)]\n\
                 #[serde(transparent)]\npub struct {name}(pub {inner});\nimpl \
                 std::ops::Deref for {name} {{ type Target = {inner}; fn deref(&self) \
                 -> &Self::Target {{ &self.0 }} }}\nimpl From<{inner}> for {name} {{ fn \
@@ -833,7 +839,7 @@ fn render_type_definition(
         }
         TypeDefinition::Alias(expression) => {
             format!(
-                "pub type {name} = {};\n",
+                "{docs}pub type {name} = {};\n",
                 render_expr(expression, None, recursive)
             )
         }
@@ -923,8 +929,8 @@ fn render_config(participant: &ParticipantDefinition) -> String {
     let mut fields = Vec::new();
     for (name, field) in participant.config() {
         out.push_str(&format!(
-            "/// {}\n#[serde(rename = {name:?})]\npub {}: {},\n",
-            field.docs.title,
+            "{}#[serde(rename = {name:?})]\npub {}: {},\n",
+            rust_docs(&[field.docs.title.clone(), field.docs.description.clone()]),
             rust_ident(&key_to_snake(name)),
             render_expr(&field.ty, None, &BTreeSet::new())
         ));
@@ -978,11 +984,12 @@ fn render_type_exports(graph: &PackageGraph, types: &BTreeSet<TypeRef>, public: 
 fn render_api(graph: &PackageGraph, api: &ApiDefinition) -> Result<String, CodegenRustError> {
     let digest = api_digest(graph, api.identity()).map_err(semantic)?;
     let mut out = format!(
-        "//! Generated API `{}`.\n\npub const API_ID: &str = {:?};\npub const \
+        "//! Generated API `{}`.\n{}\npub const API_ID: &str = {:?};\npub const \
         API_DIGEST: &str = {digest:?};\n\npub struct Api;\nimpl \
         trellis_rs::generated::ApiDescriptor for Api {{ const ID: \
         &'static str = API_ID; }}\n",
         api.identity(),
+        rust_inner_docs(&api_documentation(api)),
         api.identity().as_str()
     );
     out.push_str("\npub mod errors {\n");
@@ -1058,7 +1065,7 @@ fn render_api(graph: &PackageGraph, api: &ApiDefinition) -> Result<String, Codeg
 
 fn render_api_facades(graph: &PackageGraph, api: &ApiDefinition) -> String {
     let mut out = render_api_client(graph, api, None);
-    render_api_provider(api, &mut out);
+    render_api_provider(graph, api, &mut out);
     out
 }
 
@@ -1090,6 +1097,7 @@ fn render_api_client(
         }
         let name = type_name(&id.name);
         let method = rust_ident(&key_to_snake(&id.name));
+        let docs = rust_docs(&action_documentation(graph, api, id, action));
         match action {
             ActionDefinition::Rpc {
                 errors,
@@ -1103,7 +1111,7 @@ fn render_api_client(
                     format!("rpc::{name}Error")
                 };
                 out.push_str(&format!(
-                    "pub async fn {method}(&self, input: &rpc::{name}Input) -> \
+                    "{docs}pub async fn {method}(&self, input: &rpc::{name}Input) -> \
                     Result<rpc::{name}Output, trellis_rs::client::CallError<{error}>> {{ \
                     self.inner.call::<rpc::{name}>(input).await }}\n"
                 ));
@@ -1111,7 +1119,8 @@ fn render_api_client(
                     let item = cursor_page_item(graph, output)
                         .expect("cursor pagination output validated by the IDL compiler");
                     out.push_str(&format!(
-                        "pub fn {method}_pages(&self, input: rpc::{name}Input) -> \
+                        "/// Every page of `{method}`, read lazily from the input's \
+                        cursor.\n///\n{docs}pub fn {method}_pages(&self, input: rpc::{name}Input) -> \
                         futures_util::stream::BoxStream<'static, Result<rpc::{name}Output, \
                         crate::PaginationError<{error}>>> {{\nlet client = self.clone();\nlet \
                         initial = input.page.as_ref().and_then(|page| page.cursor.clone());\n\
@@ -1122,7 +1131,8 @@ fn render_api_client(
                         {{\nlet limit = input.page.as_ref().and_then(|page| page.limit);\n\
                         input.page = Some(crate::__types::CursorQuery {{ cursor: \
                         Some(cursor.clone()), limit }});\n}}\nOk((page, input, next))\n}}\n\
-                        }})\n}}\npub fn {method}_items(&self, input: rpc::{name}Input) -> \
+                        }})\n}}\n/// Every item of every page of `{method}`, read \
+                        lazily.\n///\n{docs}pub fn {method}_items(&self, input: rpc::{name}Input) -> \
                         futures_util::stream::BoxStream<'static, Result<{item}, \
                         crate::PaginationError<{error}>>> {{\n\
                         trellis_rs::generated::cursor_items(self.{method}_pages(input), |page| \
@@ -1138,7 +1148,7 @@ fn render_api_client(
                     })
                 }) {
                     out.push_str(&format!(
-                        "pub async fn publish_{method}(&self, event: &events::{name}Event) -> \
+                        "{docs}pub async fn publish_{method}(&self, event: &events::{name}Event) -> \
                         Result<(), trellis_rs::client::TrellisClientError> {{ \
                         self.inner.publish::<events::{name}>(event).await }}\n"
                     ));
@@ -1150,7 +1160,7 @@ fn render_api_client(
                     })
                 }) {
                     out.push_str(&format!(
-                        "pub async fn subscribe_{method}(&self, options: \
+                        "{docs}pub async fn subscribe_{method}(&self, options: \
                         trellis_rs::client::EventSubscribeOptions) -> \
                         Result<futures_util::stream::BoxStream<'static, \
                         Result<events::{name}Event, trellis_rs::client::TrellisClientError>>, \
@@ -1161,14 +1171,14 @@ fn render_api_client(
             }
             ActionDefinition::Live { .. } => {
                 out.push_str(&format!(
-                    "pub async fn {method}(&self, input: &lives::{name}Input) -> \
+                    "{docs}pub async fn {method}(&self, input: &lives::{name}Input) -> \
                     Result<trellis_rs::LiveSubscription<lives::{name}Event>, \
                     trellis_rs::client::TrellisClientError> {{ \
                     self.inner.live::<lives::{name}>(input).await }}\n"
                 ));
             }
             ActionDefinition::Operation { .. } => out.push_str(&format!(
-                "pub fn {method}(&self) -> trellis_rs::generated::Operation<'_, \
+                "{docs}pub fn {method}(&self) -> trellis_rs::generated::Operation<'_, \
                 operations::{name}> {{ self.inner.operation::<operations::{name}>() \
                 }}\n"
             )),
@@ -1178,7 +1188,7 @@ fn render_api_client(
     out
 }
 
-fn render_api_provider(api: &ApiDefinition, out: &mut String) {
+fn render_api_provider(graph: &PackageGraph, api: &ApiDefinition, out: &mut String) {
     if api.actions().values().any(|action| {
         matches!(
             action,
@@ -1198,9 +1208,10 @@ fn render_api_provider(api: &ApiDefinition, out: &mut String) {
         for (id, action) in api.actions() {
             let name = type_name(&id.name);
             let method = rust_ident(&key_to_snake(&id.name));
+            let docs = rust_docs(&action_documentation(graph, api, id, action));
             match action {
         ActionDefinition::Rpc { .. } => out.push_str(&format!(
-            "pub fn register_{method}<F, Fut>(&mut self, handler: F) where F: \
+            "{docs}pub fn register_{method}<F, Fut>(&mut self, handler: F) where F: \
             Fn(trellis_rs::service::ServiceHandlerContext, rpc::{name}Input) -> \
             Fut + Send + Sync + 'static, Fut: std::future::Future<Output = \
             trellis_rs::service::HandlerResult<rpc::{name}Output>> + Send + \
@@ -1208,7 +1219,7 @@ fn render_api_provider(api: &ApiDefinition, out: &mut String) {
             }}\n"
         )),
         ActionDefinition::Live { .. } => out.push_str(&format!(
-            "pub fn register_{method}<F, S>(&mut self, handler: F) where F: \
+            "{docs}pub fn register_{method}<F, S>(&mut self, handler: F) where F: \
             Fn(trellis_rs::service::ServiceLiveHandlerContext, lives::{name}Input) \
             -> S + Send + Sync + 'static, S: futures_util::Stream<Item = \
             Result<lives::{name}Event, trellis_rs::service::ServerError>> + Send + \
@@ -1216,7 +1227,7 @@ fn render_api_provider(api: &ApiDefinition, out: &mut String) {
             }}\n"
         )),
         ActionDefinition::Operation { .. } => out.push_str(&format!(
-            "pub fn register_{method}<F, Fut>(&mut self, handler: F) -> \
+            "{docs}pub fn register_{method}<F, Fut>(&mut self, handler: F) -> \
             trellis_rs::service::OperationRegistration<trellis_rs::generated::OperationAdapter<operations::{name}>> \
             where F: \
             Fn(trellis_rs::service::RequestContext, operations::{name}Input, \
@@ -1252,6 +1263,15 @@ fn render_action(
     };
     let version = format!("v{}", api.major());
     let capabilities = |direction| action_capabilities(api, action_kind(action), name, direction);
+    let docs = rust_docs(&action_documentation(
+        graph,
+        api,
+        &trellis_idl::ActionId {
+            kind: action_kind(action),
+            name: name.to_owned(),
+        },
+        action,
+    ));
     match action {
         ActionDefinition::Rpc {
             input,
@@ -1278,7 +1298,7 @@ fn render_action(
                 format!("pub type {rust_name}Output = {};\n", type_path(output))
             };
             let mut out = format!(
-                "pub type {rust_name}Input = {};\n{output_decl}pub struct \
+                "pub type {rust_name}Input = {};\n{output_decl}{docs}pub struct \
                 {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static str = \
                 super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; pub \
                 const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str = \
@@ -1325,7 +1345,7 @@ fn render_action(
             let template = &subjects.template;
             let wildcard = &subjects.wildcard;
             Ok(format!(
-                "pub type {rust_name}Event = {};\npub struct {rust_name};\nimpl \
+                "pub type {rust_name}Event = {};\n{docs}pub struct {rust_name};\nimpl \
                 {rust_name} {{ pub const API_ID: &'static str = super::API_ID; pub \
                 const DESCRIPTOR_NAME: &'static str = {:?}; pub const KEY: &'static \
                 str = {key:?}; pub const SUBJECT: &'static str = {template:?}; pub \
@@ -1350,7 +1370,7 @@ fn render_action(
             ))
         }
         ActionDefinition::Live { input, event } => Ok(format!(
-            "pub type {rust_name}Input = {};\npub type {rust_name}Event = {};\npub \
+            "pub type {rust_name}Input = {};\npub type {rust_name}Event = {};\n{docs}pub \
             struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static \
             str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; \
             pub const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str \
@@ -1418,7 +1438,7 @@ fn render_action(
                 ));
             }
             out.push_str(&format!(
-                "pub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: \
+                "{docs}pub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: \
                 &'static str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str \
                 = {:?}; pub const KEY: &'static str = {key:?}; pub const SUBJECT: \
                 &'static str = {:?}; pub const CALLER_CAPABILITIES: &'static [&'static \
@@ -2660,9 +2680,26 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
                         capability.as_str()
                     )
                 };
+                let (title, description) = definition
+                    .capabilities()
+                    .get(capability)
+                    .map(|value| (&value.title, &value.description))
+                    .or_else(|| {
+                        definition
+                            .groups()
+                            .get(capability)
+                            .map(|value| (&value.title, &value.description))
+                    })
+                    .expect("selected capability is declared");
                 fields.insert(
                     capability.as_str().to_owned(),
-                    (format!("capability {}", capability.as_str()), expression),
+                    (
+                        format!(
+                            "capability {} ({title}): {description}",
+                            capability.as_str()
+                        ),
+                        expression,
+                    ),
                 );
             }
         }
@@ -2685,7 +2722,8 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
     );
     for (field, (docs, _)) in &fields {
         out.push_str(&format!(
-            "/// Availability of {docs}.\npub {}: bool,\n",
+            "{}pub {}: bool,\n",
+            rust_docs(&[format!("Availability of {docs}")]),
             rust_ident(&key_to_snake(field))
         ));
     }
@@ -3006,6 +3044,74 @@ fn action_capabilities<'a>(
                 .then_some(id.as_str())
         })
         .collect()
+}
+
+/// Rustdoc attributes for plain-text paragraphs. The text is escaped so rustdoc
+/// shows it literally: authored text never becomes Markdown markup, a link, an
+/// HTML tag, or a doctest.
+fn rust_docs(paragraphs: &[String]) -> String {
+    let mut out = String::new();
+    for (index, paragraph) in paragraphs
+        .iter()
+        .filter(|text| !text.is_empty())
+        .enumerate()
+    {
+        if index > 0 {
+            out.push_str("#[doc = \"\"]\n");
+        }
+        for line in paragraph.lines() {
+            let line = line.trim();
+            let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+            let mut escaped = String::from(" ");
+            let mut url_end = 0;
+            for (position, character) in line.char_indices() {
+                if position < url_end {
+                    continue;
+                }
+                // A bare URL becomes an autolink, which rustdoc accepts.
+                let rest = &line[position..];
+                let word_start = line[..position]
+                    .chars()
+                    .next_back()
+                    .is_none_or(char::is_whitespace);
+                let url = &rest[..rest.find(char::is_whitespace).unwrap_or(rest.len())];
+                if word_start
+                    && (url.starts_with("https://") || url.starts_with("http://"))
+                    && !url.contains(['<', '>'])
+                    && !url.contains(char::is_control)
+                {
+                    escaped.push_str(&format!("<{url}>"));
+                    url_end = position + url.len();
+                    continue;
+                }
+                if character.is_control() {
+                    escaped.push(' ');
+                    continue;
+                }
+                let block_marker = position == 0 && matches!(character, '-' | '+' | '=' | '#')
+                    || digits > 0 && position == digits && matches!(character, '.' | ')');
+                if block_marker
+                    || matches!(
+                        character,
+                        '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '&' | '|' | '~'
+                    )
+                {
+                    escaped.push('\\');
+                }
+                escaped.push(character);
+            }
+            out.push_str(&format!("#[doc = {escaped:?}]\n"));
+        }
+    }
+    out
+}
+
+/// Inner (module-level) Rustdoc attributes, continuing a module's first line.
+fn rust_inner_docs(paragraphs: &[String]) -> String {
+    if paragraphs.iter().all(String::is_empty) {
+        return String::new();
+    }
+    format!("#![doc = \"\"]\n{}", rust_docs(paragraphs)).replace("#[doc", "#![doc")
 }
 
 fn semantic(error: impl std::fmt::Display) -> CodegenRustError {
@@ -4049,5 +4155,109 @@ fn generated_descriptors_validate_each_channel() {
             .status()
             .unwrap()
             .success());
+    }
+
+    /// Rustdoc is what editors and docs.rs show, so the authored docs must
+    /// reach the HTML it renders for the generated items, literally and
+    /// without rustdoc warnings.
+    #[test]
+    fn rustdoc_shows_authored_docs_and_constraints() {
+        let graph = graph(
+            "type Name = string(min_length=1, max_length=64); type Page = \
+            CursorPage<Values>; model ListRequest { page?: CursorQuery; }\n\
+            /// A stored value.\nmodel Values {\n/// The display name.\nname: \
+            Name; plain: string; }\napi main@v1 { title \"Main\"; description \
+            \"Main API.\"; error Missing;\n/// Look up *one* value by `name` \
+            [here] <b>bold</b> & 1. see https://example.com/a_b\nrpc Get { \
+            input Values; output Values; errors [Missing]; }\nrpc List { input \
+            ListRequest; output Page; pagination cursor; }\ncapabilities { \
+            capability items.read { title \"Read\"; description \"Read \
+            values.\"; grants \"Reveals values.\"; allows { rpc Get; rpc List; \
+            } } } }",
+        );
+        let output = tempfile::tempdir().unwrap();
+        generate_rust_package(&graph, output.path(), "docs-fixture-sdk", &[]).unwrap();
+        let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../trellis")
+            .canonicalize()
+            .unwrap();
+        let cargo = fs::read_to_string(output.path().join("Cargo.toml"))
+            .unwrap()
+            .replace(
+                &format!("trellis-rs = \"{}\"", env!("CARGO_PKG_VERSION")),
+                &format!("trellis-rs = {{ path = {runtime:?} }}"),
+            );
+        fs::write(
+            output.path().join("Cargo.toml"),
+            format!(
+                "{cargo}\n[workspace]\n[patch.crates-io]\ntrellis-protocol = {{ path = \
+                {:?} }}\n",
+                runtime.join("../protocol"),
+            ),
+        )
+        .unwrap();
+        let target = runtime.join("../../target/codegen-consumers");
+        let result = Command::new("cargo")
+            .args(["doc", "--quiet", "--no-deps"])
+            .env("CARGO_TARGET_DIR", &target)
+            .env("RUSTDOCFLAGS", "-D warnings")
+            .current_dir(output.path())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        // The rendered text of the docblock that follows an item's anchor.
+        let docblock = |page: &str, anchor: &str| {
+            let html = fs::read_to_string(target.join("doc/docs_fixture_sdk").join(page)).unwrap();
+            let item = &html[html.find(&format!("id=\"{anchor}\"")).expect(anchor)..];
+            let next = item[1..]
+                .find(" id=\"")
+                .map_or(item.len(), |index| index + 1);
+            let block = item[..next].find("<div class=\"docblock")?;
+            let block = &item[block..];
+            let block = &block[..block.find("</div>").unwrap()];
+            let mut text = String::new();
+            let mut in_tag = false;
+            for character in block.chars() {
+                match character {
+                    '<' => in_tag = true,
+                    '>' => in_tag = false,
+                    _ if !in_tag => text.push(character),
+                    _ => {}
+                }
+            }
+            Some(
+                text.replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&#39;", "'")
+                    .replace("&amp;", "&"),
+            )
+        };
+        let client = "apis/fixture_main_v1/struct.Client.html";
+        let get = docblock(client, "method.get").expect("get docs");
+        assert!(
+            get.contains(
+                "Look up *one* value by `name` [here] <b>bold</b> & 1. see \
+                https://example.com/a_b"
+            ) && get.contains("Errors: Missing.")
+                && get.contains(
+                    "Call is allowed by capability fixture.main.v1:items.read (Read): Read values."
+                ),
+            "{get}"
+        );
+        let list = docblock(client, "method.list").expect("list docs");
+        assert!(list.contains("Paginated:"), "{list}");
+        let values = "types/struct.Values.html";
+        let name = docblock(values, "structfield.name").expect("name docs");
+        assert!(
+            name.contains("The display name.")
+                && name.contains("Length: 1 to 64 characters (Unicode code points)."),
+            "{name}"
+        );
+        assert_eq!(docblock(values, "structfield.plain"), None);
     }
 }
