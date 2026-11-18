@@ -3656,6 +3656,7 @@ model EventsDiagnosticsRequest {
 
 model EventsDiagnosticsResponse {
   asOf: string;
+  catchingUp: bool;
   completeSince?: string;
   gapDetected: bool;
   lastStreamSequence: uint64;

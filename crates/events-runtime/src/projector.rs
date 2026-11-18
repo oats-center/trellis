@@ -150,19 +150,18 @@ pub async fn start_events_projector(
                 collect_message(message, &mut batch)?;
             }
             if batch.is_empty() {
+                reconcile_unprojected(&runtime, &store).await?;
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
-            store.record_stream_bounds(
-                batch[0]
-                    .info()
-                    .map_err(|error| {
-                        ServerError::Internal(format!(
-                            "Events projector message metadata failed: {error}"
-                        ))
-                    })?
-                    .stream_sequence,
-            )?;
+            if let Some(observed) = batch
+                .iter()
+                .filter_map(|message| message.info().ok())
+                .map(|info| info.stream_sequence)
+                .max()
+            {
+                store.record_observed(observed)?;
+            }
 
             batch.sort_by_key(|message| {
                 message
@@ -181,10 +180,51 @@ pub async fn start_events_projector(
                     persist_message(store.clone(), message, event).await;
                 }
             }
+            reconcile_unprojected(&runtime, &store).await?;
         }
     });
 
     Ok(EventsProjectorHandle { task: Some(task) })
+}
+
+/// Settle each sequence the projector has passed without storing it.
+///
+/// A sequence the broker still holds is awaiting redelivery, which will fill
+/// it. History is missing only when the broker no longer holds the message:
+/// it expired, was purged, or was deleted before it could be projected.
+async fn reconcile_unprojected(
+    runtime: &EventsRuntime,
+    store: &EventsStore,
+) -> Result<(), ServerError> {
+    while let Some(sequence) = store.next_unprojected_sequence()? {
+        match runtime.stream_message_subject(sequence).await {
+            Ok(Some(subject)) if nats_subject_matches(EVENT_SUBJECT_WILDCARD, &subject) => {
+                return Ok(());
+            }
+            Ok(Some(_)) => store.skip_sequence(sequence)?,
+            Ok(None) => {
+                let first_retained = match runtime.stream_bounds().await {
+                    Ok((first_sequence, _)) => first_sequence,
+                    Err(error) => {
+                        tracing::warn!(%error, "retrying Events retention check");
+                        return Ok(());
+                    }
+                };
+                let missing_through = sequence.max(first_retained.saturating_sub(1));
+                tracing::warn!(
+                    stream_sequence = sequence,
+                    missing_through,
+                    "Events history is incomplete: the broker discarded unprojected events"
+                );
+                store.record_missing_history(missing_through)?;
+            }
+            Err(error) => {
+                tracing::warn!(%error, stream_sequence = sequence, "retrying Events retention check");
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn collect_message(

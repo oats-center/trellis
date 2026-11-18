@@ -154,8 +154,20 @@ impl EventsQuery {
         let projected_sequence = diagnostics["eventProjectionSequence"]
             .as_u64()
             .unwrap_or_default();
+        // Behind, not lost: an event is waiting for redelivery, or the broker
+        // still has events it has not delivered to the projector.
+        let undelivered = self
+            .runtime
+            .consumer(&crate::projector::projector_consumer_name(
+                &self.store.projection_id()?,
+            ))
+            .await
+            .map_err(EventsQueryError::Consumer)?
+            .num_pending;
+        let catching_up = diagnostics["awaitingRedelivery"] == true || undelivered > 0;
         Ok(json!({
             "asOf": crate::storage::now_timestamp_string(),
+            "catchingUp": catching_up,
             "completeSince": diagnostics["completeSince"],
             "gapDetected": diagnostics["gapDetected"],
             "lastStreamSequence": last_sequence,

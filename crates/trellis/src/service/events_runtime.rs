@@ -31,6 +31,24 @@ impl EventsRuntime {
         Ok((info.state.first_sequence, info.state.last_sequence))
     }
 
+    /// Return the subject of the message at `sequence`, or `None` when the
+    /// stream no longer holds it because it expired, was purged, or was deleted.
+    pub async fn stream_message_subject(&self, sequence: u64) -> Result<Option<String>, String> {
+        let stream = jetstream::new(self.nats.clone())
+            .get_stream(EVENT_STREAM)
+            .await
+            .map_err(|error| error.to_string())?;
+        match stream.get_raw_message(sequence).await {
+            Ok(message) => Ok(Some(message.subject.to_string())),
+            Err(error)
+                if error.kind() == jetstream::stream::RawMessageErrorKind::NoMessageFound =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// Create the Events transport from an authenticated Trellis session.
     #[doc(hidden)]
     pub(crate) fn from_client(client: Arc<TrellisClient>) -> Self {

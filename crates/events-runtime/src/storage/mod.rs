@@ -189,12 +189,9 @@ impl EventsStore {
             VALUES ('projection_id', ?1)",
             params![projection_id],
         )?;
-        connection.execute(
-            "INSERT OR IGNORE INTO events_projection_metadata (key, value) \
-            VALUES ('last_projected_sequence', '0')",
-            [],
-        )?;
         for (key, value) in [
+            ("observed_sequence", "0"),
+            ("projected_through_sequence", "0"),
             ("retention_gap_sequence", "0"),
             ("complete_since_sequence", "0"),
             ("complete_since", ""),
@@ -235,7 +232,10 @@ impl EventsStore {
         )?)
     }
 
-    /// Persist evidence that the stream advanced beyond this projection's checkpoint.
+    /// Record that the broker retains event history only from `first_sequence`.
+    ///
+    /// Sequences below it that this projection never stored are permanently
+    /// missing: the broker discarded them before they could be projected.
     pub fn record_stream_bounds(&self, first_sequence: u64) -> Result<(), EventsStoreError> {
         if first_sequence == 0 {
             return Ok(());
@@ -245,64 +245,79 @@ impl EventsStore {
             .lock()
             .map_err(|_| EventsStoreError::Poisoned)?;
         let transaction = connection.transaction()?;
-        let metadata_sequence = |key: &str| -> Result<u64, EventsStoreError> {
-            Ok(transaction
-                .query_row(
-                    "SELECT value FROM events_projection_metadata WHERE key=?1",
-                    [key],
-                    |row| row.get::<_, String>(0),
-                )?
-                .parse()
-                .unwrap_or_default())
-        };
-        let projected = metadata_sequence("last_projected_sequence")?;
-        let previous_gap = metadata_sequence("retention_gap_sequence")?;
-        if projected.saturating_add(1) < first_sequence && first_sequence > previous_gap {
-            for (key, value) in [
-                ("retention_gap_sequence", first_sequence.to_string()),
-                ("complete_since_sequence", "0".to_owned()),
-                ("complete_since", String::new()),
-            ] {
-                transaction.execute(
-                    "UPDATE events_projection_metadata SET value=?2 WHERE key=?1",
-                    params![key, value],
-                )?;
-            }
+        let projected_through = metadata_sequence(&transaction, "projected_through_sequence")?;
+        if projected_through.saturating_add(1) < first_sequence {
+            record_missing_through(&transaction, first_sequence - 1)?;
         }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Record that the projector received the event at `stream_sequence`,
+    /// whether or not it could project it yet.
+    pub fn record_observed(&self, stream_sequence: u64) -> Result<(), EventsStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        raise_observed(&connection, stream_sequence)
+    }
+
+    /// Return the lowest sequence at or below the highest observed one that
+    /// is neither projected nor known to be missing.
+    pub fn next_unprojected_sequence(&self) -> Result<Option<u64>, EventsStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let projected_through = metadata_sequence(&connection, "projected_through_sequence")?;
+        let observed = metadata_sequence(&connection, "observed_sequence")?;
+        Ok((projected_through < observed).then_some(projected_through + 1))
+    }
+
+    /// Account for a stream sequence that holds no Events message.
+    pub fn skip_sequence(&self, stream_sequence: u64) -> Result<(), EventsStoreError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let transaction = connection.transaction()?;
+        if metadata_sequence(&transaction, "projected_through_sequence")?.saturating_add(1)
+            == stream_sequence
+        {
+            set_metadata(
+                &transaction,
+                "projected_through_sequence",
+                &stream_sequence.to_string(),
+            )?;
+            advance_projected_through(&transaction)?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Record broker evidence that every sequence through `sequence` this
+    /// projection has not stored is gone for good.
+    pub fn record_missing_history(&self, sequence: u64) -> Result<(), EventsStoreError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| EventsStoreError::Poisoned)?;
+        let transaction = connection.transaction()?;
+        record_missing_through(&transaction, sequence)?;
         transaction.commit()?;
         Ok(())
     }
 
     /// Persist one projected event and advance projection metadata.
     pub fn insert_event(&self, event: &ProjectedEvent) -> Result<(), EventsStoreError> {
-        let stream_sequence_i64 = i64::try_from(event.stream_sequence)
-            .map_err(|_| EventsStoreError::SequenceOutOfRange(event.stream_sequence))?;
+        sql_sequence(event.stream_sequence)?;
         let event_time_ns = timestamp_nanos(&event.event_time)?;
         let mut connection = self
             .connection
             .lock()
             .map_err(|_| EventsStoreError::Poisoned)?;
         let transaction = connection.transaction()?;
-        let projected = transaction
-            .query_row(
-                "SELECT value FROM events_projection_metadata WHERE key='last_projected_sequence'",
-                [],
-                |row| row.get::<_, String>(0),
-            )?
-            .parse::<u64>()
-            .unwrap_or_default();
-        if projected.saturating_add(1) < event.stream_sequence {
-            for (key, value) in [
-                ("retention_gap_sequence", event.stream_sequence.to_string()),
-                ("complete_since_sequence", "0".to_owned()),
-                ("complete_since", String::new()),
-            ] {
-                transaction.execute(
-                    "UPDATE events_projection_metadata SET value=?2 WHERE key=?1",
-                    params![key, value],
-                )?;
-            }
-        }
         transaction.execute(
             r#"
             INSERT OR REPLACE INTO events (
@@ -347,33 +362,14 @@ impl EventsStore {
                 event.projected_at,
             ],
         )?;
-        transaction.execute(
-            r#"
-            UPDATE events_projection_metadata
-            SET value = CASE
-                WHEN CAST(value AS INTEGER) < ?1 THEN ?2
-                ELSE value
-            END
-            WHERE key = 'last_projected_sequence'
-            "#,
-            params![stream_sequence_i64, event.stream_sequence.to_string()],
-        )?;
-        let gap_sequence: u64 = transaction
-            .query_row(
-                "SELECT value FROM events_projection_metadata WHERE key='retention_gap_sequence'",
-                [],
-                |row| row.get::<_, String>(0),
-            )?
-            .parse()
-            .unwrap_or_default();
-        let complete_sequence: u64 = transaction
-            .query_row(
-                "SELECT value FROM events_projection_metadata WHERE key='complete_since_sequence'",
-                [],
-                |row| row.get::<_, String>(0),
-            )?
-            .parse()
-            .unwrap_or_default();
+        raise_observed(&transaction, event.stream_sequence)?;
+        if metadata_sequence(&transaction, "projected_through_sequence")?.saturating_add(1)
+            == event.stream_sequence
+        {
+            advance_projected_through(&transaction)?;
+        }
+        let gap_sequence = metadata_sequence(&transaction, "retention_gap_sequence")?;
+        let complete_sequence = metadata_sequence(&transaction, "complete_since_sequence")?;
         if event.stream_sequence >= gap_sequence
             && gap_sequence > 0
             && (complete_sequence == 0 || event.stream_sequence < complete_sequence)
@@ -399,21 +395,7 @@ impl EventsStore {
             .lock()
             .map_err(|_| EventsStoreError::Poisoned)?;
         let transaction = connection.transaction()?;
-        transaction.execute(
-            "UPDATE events_projection_metadata
-             SET value = CASE WHEN CAST(value AS INTEGER) < ?1 THEN ?2 \
-                ELSE value END
-             WHERE key = 'retention_gap_sequence'",
-            params![sequence, sequence.to_string()],
-        )?;
-        transaction.execute(
-            "UPDATE events_projection_metadata SET value='0' WHERE key='complete_since_sequence'",
-            [],
-        )?;
-        transaction.execute(
-            "UPDATE events_projection_metadata SET value='' WHERE key='complete_since'",
-            [],
-        )?;
+        mark_gap(&transaction, sequence.saturating_add(1))?;
         transaction.commit()?;
         Ok(())
     }
@@ -1064,24 +1046,18 @@ impl EventsStore {
             .connection
             .lock()
             .map_err(|_| EventsStoreError::Poisoned)?;
-        let event_sequence: String = connection.query_row(
-            "SELECT value FROM events_projection_metadata WHERE key='last_projected_sequence'",
-            [],
-            |row| row.get(0),
-        )?;
+        let event_sequence: Option<u64> =
+            connection.query_row("SELECT MAX(stream_sequence) FROM events", [], |row| {
+                row.get(0)
+            })?;
         let dead_letter_sequence: u64 = connection.query_row(
             "SELECT stream_sequence FROM consumer_dlq_projection_checkpoint WHERE id=1",
             [],
             |row| row.get(0),
         )?;
-        let retention_gap_sequence: u64 = connection
-            .query_row(
-                "SELECT value FROM events_projection_metadata WHERE key='retention_gap_sequence'",
-                [],
-                |row| row.get::<_, String>(0),
-            )?
-            .parse()
-            .unwrap_or_default();
+        let retention_gap_sequence = metadata_sequence(&connection, "retention_gap_sequence")?;
+        let projected_through = metadata_sequence(&connection, "projected_through_sequence")?;
+        let observed = metadata_sequence(&connection, "observed_sequence")?;
         let complete_since: String = connection.query_row(
             "SELECT value FROM events_projection_metadata WHERE key='complete_since'",
             [],
@@ -1095,7 +1071,9 @@ impl EventsStore {
             )
             .optional()?;
         Ok(json!({
-            "eventProjectionSequence": event_sequence.parse::<u64>().unwrap_or_default(),
+            "eventProjectionSequence": event_sequence.unwrap_or_default(),
+            "projectedThroughSequence": projected_through,
+            "awaitingRedelivery": projected_through < observed,
             "deadLetterProjectionSequence": dead_letter_sequence,
             "gapDetected": retention_gap_sequence > 0,
             "completeSince": (!complete_since.is_empty()).then_some(complete_since),
@@ -1248,6 +1226,96 @@ impl EventsStore {
             "verificationStatus": normalize_verification_status(&verification_status),
         })))
     }
+}
+
+fn metadata_sequence(connection: &Connection, key: &str) -> Result<u64, EventsStoreError> {
+    Ok(connection
+        .query_row(
+            "SELECT value FROM events_projection_metadata WHERE key=?1",
+            [key],
+            |row| row.get::<_, String>(0),
+        )?
+        .parse()
+        .unwrap_or_default())
+}
+
+fn set_metadata(connection: &Connection, key: &str, value: &str) -> Result<(), EventsStoreError> {
+    connection.execute(
+        "UPDATE events_projection_metadata SET value=?2 WHERE key=?1",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+fn raise_observed(connection: &Connection, stream_sequence: u64) -> Result<(), EventsStoreError> {
+    if metadata_sequence(connection, "observed_sequence")? < stream_sequence {
+        set_metadata(
+            connection,
+            "observed_sequence",
+            &stream_sequence.to_string(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Move contiguous projection progress over the projected rows that follow it.
+fn advance_projected_through(connection: &Connection) -> Result<(), EventsStoreError> {
+    let mut through = metadata_sequence(connection, "projected_through_sequence")?;
+    let mut statement = connection.prepare(
+        "SELECT stream_sequence FROM events WHERE stream_sequence > ?1 ORDER BY stream_sequence",
+    )?;
+    let mut rows = statement.query([sql_sequence(through)?])?;
+    while let Some(row) = rows.next()? {
+        let sequence = row.get::<_, u64>(0)?;
+        if sequence != through + 1 {
+            break;
+        }
+        through = sequence;
+    }
+    set_metadata(
+        connection,
+        "projected_through_sequence",
+        &through.to_string(),
+    )
+}
+
+/// Account for every unstored sequence through `sequence` as permanently missing.
+fn record_missing_through(connection: &Connection, sequence: u64) -> Result<(), EventsStoreError> {
+    if metadata_sequence(connection, "projected_through_sequence")? >= sequence {
+        return Ok(());
+    }
+    mark_gap(connection, sequence.saturating_add(1))?;
+    set_metadata(
+        connection,
+        "projected_through_sequence",
+        &sequence.to_string(),
+    )?;
+    raise_observed(connection, sequence)?;
+    advance_projected_through(connection)
+}
+
+/// Record that history is complete only from `complete_from` onward.
+fn mark_gap(connection: &Connection, complete_from: u64) -> Result<(), EventsStoreError> {
+    if metadata_sequence(connection, "retention_gap_sequence")? >= complete_from {
+        return Ok(());
+    }
+    let first_complete: Option<(u64, String)> = connection
+        .query_row(
+            "SELECT stream_sequence, event_time FROM events WHERE stream_sequence >= ?1 \
+            ORDER BY stream_sequence LIMIT 1",
+            [sql_sequence(complete_from)?],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (complete_sequence, complete_since) = first_complete.unwrap_or_default();
+    for (key, value) in [
+        ("retention_gap_sequence", complete_from.to_string()),
+        ("complete_since_sequence", complete_sequence.to_string()),
+        ("complete_since", complete_since),
+    ] {
+        set_metadata(connection, key, &value)?;
+    }
+    Ok(())
 }
 
 fn sql_sequence(value: u64) -> Result<i64, EventsStoreError> {
@@ -1633,29 +1701,6 @@ mod tests {
             decode_error: None,
             projected_at: "2026-01-01T00:00:00Z".to_string(),
         }
-    }
-
-    #[test]
-    fn insert_event_keeps_projection_watermark_monotonic() {
-        let store = EventsStore::open_in_memory().expect("open store");
-
-        store
-            .insert_event(&event(20))
-            .expect("insert high sequence");
-        store
-            .insert_event(&event(10))
-            .expect("insert lower sequence");
-
-        let connection = store.connection.lock().expect("lock store");
-        let value: String = connection
-            .query_row(
-                "SELECT value FROM events_projection_metadata \
-                WHERE key = 'last_projected_sequence'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("read watermark");
-        assert_eq!(value, "20");
     }
 
     #[test]
