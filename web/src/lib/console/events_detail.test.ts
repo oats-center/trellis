@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  consumerSeverityOf,
   consumerStatus,
   DetailOwnership,
   followUpIfMounted,
   projectEventsHealthLedger,
   runDeadLetterMutation,
-  UNKNOWN_CONSUMER_SEVERITY,
 } from "./events_detail.ts";
 
 test("V09 a detail read from an older list key cannot publish", () => {
@@ -67,36 +65,11 @@ test("a same-key refresh may retain the current selection", () => {
   assert.deepEqual(ownership.owns(token), true);
 });
 
-test("V11 an unknown consumer status stays visible and sorts neutrally", () => {
+test("V11 an unknown consumer status stays visible", () => {
   // A valid record with an unrecognized status is retained, never converted
   // to a known value or dropped.
-  const unknown = consumerStatus("paused");
-  assert.deepEqual(unknown, "unknown:paused");
-  assert.deepEqual(consumerSeverityOf(unknown), UNKNOWN_CONSUMER_SEVERITY);
-
-  // A known status keeps its normal ordering and identity.
+  assert.deepEqual(consumerStatus("paused"), "unknown:paused");
   assert.deepEqual(consumerStatus("current"), "current");
-  assert.deepEqual(consumerSeverityOf("current"), 6);
-
-  // Unknown data sorts after every known status rather than masquerading as
-  // healthy or failing.
-  for (const known of [
-    "missing",
-    "saturated",
-    "inactive",
-    "failing",
-    "behind",
-    "processing",
-    "current",
-    "orphaned",
-    "unmanaged",
-  ] as const) {
-    assert(
-      consumerSeverityOf(known) < UNKNOWN_CONSUMER_SEVERITY,
-      `${known} must sort before an unknown status`,
-    );
-  }
-
   // Empty and non-string-ish values remain distinguishable from known states.
   assert.deepEqual(consumerStatus(null), "unknown:null");
   assert.deepEqual(consumerStatus(""), "unknown:");
@@ -106,7 +79,9 @@ test("Z05 a ready empty optional read may render zero; pending and unavailable m
   const base = {
     windowMinutes: 60,
     attentionConsumers: 0,
+    attentionComplete: true,
     shownConsumers: 0,
+    consumersComplete: true,
     focus: "exceptions",
     attentionConsumersOnly: false,
     failedActive: false,
@@ -164,7 +139,9 @@ test("Z06 a denied optional read leaves the primary numeric path untouched", () 
     consumersState: "ready",
     windowMinutes: 15,
     attentionConsumers: 2,
+    attentionComplete: true,
     shownConsumers: 4,
+    consumersComplete: true,
     focus: "all",
     attentionConsumersOnly: false,
     failedActive: false,
@@ -179,6 +156,24 @@ test("Z06 a denied optional read leaves the primary numeric path untouched", () 
     mixed.find((item) => item.id === "consumers")?.disabled,
     false,
   );
+});
+
+test("a partial page of services is never presented as the total", () => {
+  const [, , consumers] = projectEventsHealthLedger({
+    metricsState: "ready",
+    consumersState: "ready",
+    windowMinutes: 60,
+    attentionConsumers: 20,
+    attentionComplete: false,
+    shownConsumers: 20,
+    consumersComplete: false,
+    focus: "",
+    attentionConsumersOnly: true,
+    failedActive: false,
+  });
+  assert.deepEqual(consumers.id, "consumers");
+  assert.deepEqual(consumers.value, "20+");
+  assert.deepEqual(consumers.detail, "of 20+ receiving events");
 });
 
 test("Z09 a successful mutation does not follow up after dispose", async () => {

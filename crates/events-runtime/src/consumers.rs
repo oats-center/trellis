@@ -15,46 +15,9 @@ pub(crate) async fn query_consumers(
     resolver: &dyn ConsumerBindingResolver,
     input: &Value,
 ) -> Result<Value, String> {
-    let page = input.get("page").unwrap_or(&Value::Null);
-    let limit = page.get("limit").and_then(Value::as_u64).unwrap_or(100);
-    if limit == 0 || limit > 500 {
-        return Err("invalid pagination limit".to_owned());
-    }
-    let limit = limit as usize;
-    let mut statuses = input
-        .get("status")
-        .and_then(Value::as_array)
-        .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-        .unwrap_or_default();
-    statuses.sort_unstable();
-    statuses.dedup();
-    let subject = input.get("subject").and_then(Value::as_str);
-    let deployment_id = input.get("deploymentId").and_then(Value::as_str);
-    let resource_id = input.get("resourceId").and_then(Value::as_str);
-    let contract_id = input
-        .get("contractId")
-        .or_else(|| input.get("ownerContractId"))
-        .and_then(Value::as_str);
-    let query_digest = pagination_query_digest(
-        "events.Consumers.Query",
-        &json!({
-            "status": statuses,
-            "subject": subject,
-            "deploymentId": deployment_id,
-            "resourceId": resource_id,
-            "contractId": contract_id,
-            "order": ["resourceId", "stream", "consumerName"]
-        }),
-    )
-    .map_err(|_| "invalid pagination cursor".to_owned())?;
-    let cursor = page
-        .get("cursor")
-        .and_then(Value::as_str)
-        .map(|cursor| {
-            decode_pagination_cursor::<(String, String, String)>(cursor, &query_digest)
-                .map_err(|_| "invalid pagination cursor".to_owned())
-        })
-        .transpose()?;
+    // Validate the request before reading JetStream, so a bad cursor or limit
+    // costs nothing.
+    let query = ConsumerPageQuery::parse(input)?;
     let mut live = runtime
         .consumers()
         .await?
@@ -89,57 +52,173 @@ pub(crate) async fn query_consumers(
         }
     }
     rows.extend(live.into_iter().map(unmatched_consumer_row));
-    let mut rows = rows
-        .into_iter()
-        .filter(|row| {
-            (statuses.is_empty()
-                || row
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .is_some_and(|status| statuses.contains(&status)))
-                && deployment_id.is_none_or(|deployment_id| {
-                    row.get("deploymentId").and_then(Value::as_str) == Some(deployment_id)
-                })
-                && resource_id.is_none_or(|resource_id| {
-                    row.get("resourceId").and_then(Value::as_str) == Some(resource_id)
-                })
-                && contract_id.is_none_or(|contract_id| {
-                    row.get("contractId").and_then(Value::as_str) == Some(contract_id)
-                })
-                && subject.is_none_or(|subject| {
-                    row.get("filterSubjects")
-                        .and_then(Value::as_array)
-                        .is_some_and(|filters| {
-                            filters
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .any(|filter| nats_subjects_intersect(filter, subject))
-                        })
-                })
+    query.page(rows)
+}
+
+/// Sort key of one consumer row: attention rank, inverted backlog, then identity.
+type ConsumerKey = (u8, u64, String, String, String);
+
+/// A validated `Consumers.Query` request: filters, order, and keyset position.
+struct ConsumerPageQuery<'a> {
+    limit: usize,
+    statuses: Vec<&'a str>,
+    subject: Option<&'a str>,
+    deployment_id: Option<&'a str>,
+    resource_id: Option<&'a str>,
+    contract_id: Option<&'a str>,
+    attention: bool,
+    query_digest: String,
+    cursor: Option<ConsumerKey>,
+}
+
+impl<'a> ConsumerPageQuery<'a> {
+    fn parse(input: &'a Value) -> Result<Self, String> {
+        let page = input.get("page").unwrap_or(&Value::Null);
+        let limit = page.get("limit").and_then(Value::as_u64).unwrap_or(100);
+        if limit == 0 || limit > 500 {
+            return Err("invalid pagination limit".to_owned());
+        }
+        let mut statuses = input
+            .get("status")
+            .and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+            .unwrap_or_default();
+        statuses.sort_unstable();
+        statuses.dedup();
+        let subject = input.get("subject").and_then(Value::as_str);
+        let deployment_id = input.get("deploymentId").and_then(Value::as_str);
+        let resource_id = input.get("resourceId").and_then(Value::as_str);
+        let contract_id = input
+            .get("contractId")
+            .or_else(|| input.get("ownerContractId"))
+            .and_then(Value::as_str);
+        let attention = input.get("order").and_then(Value::as_str) == Some("attention");
+        let query_digest = pagination_query_digest(
+            "events.Consumers.Query",
+            &json!({
+                "status": statuses,
+                "subject": subject,
+                "deploymentId": deployment_id,
+                "resourceId": resource_id,
+                "contractId": contract_id,
+                "order": if attention {
+                    json!(["attention", "pending:desc", "resourceId", "stream", "consumerName"])
+                } else {
+                    json!(["resourceId", "stream", "consumerName"])
+                }
+            }),
+        )
+        .map_err(|_| "invalid pagination cursor".to_owned())?;
+        let cursor = page
+            .get("cursor")
+            .and_then(Value::as_str)
+            .map(|cursor| {
+                decode_pagination_cursor::<ConsumerKey>(cursor, &query_digest)
+                    .map_err(|_| "invalid pagination cursor".to_owned())
+            })
+            .transpose()?;
+        Ok(Self {
+            limit: limit as usize,
+            statuses,
+            subject,
+            deployment_id,
+            resource_id,
+            contract_id,
+            attention,
+            query_digest,
+            cursor,
         })
-        .collect::<Vec<_>>();
-    rows.sort_by_key(consumer_cursor_key);
-    let mut consumers = rows
-        .into_iter()
-        .filter(|row| {
-            cursor
-                .as_ref()
-                .is_none_or(|cursor| consumer_cursor_key(row) > *cursor)
-        })
-        .take(limit + 1)
-        .collect::<Vec<_>>();
-    let next_cursor = if consumers.len() > limit {
-        consumers.pop();
-        consumers
-            .last()
-            .map(consumer_cursor_key)
-            .map(|after| encode_pagination_cursor(&query_digest, &after))
-            .transpose()
-            .map_err(|_| "invalid pagination cursor".to_owned())?
-    } else {
-        None
-    };
-    Ok(json!({ "items": consumers, "page": { "nextCursor": next_cursor } }))
+    }
+
+    fn matches(&self, row: &Value) -> bool {
+        (self.statuses.is_empty()
+            || row
+                .get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| self.statuses.contains(&status)))
+            && self.deployment_id.is_none_or(|deployment_id| {
+                row.get("deploymentId").and_then(Value::as_str) == Some(deployment_id)
+            })
+            && self.resource_id.is_none_or(|resource_id| {
+                row.get("resourceId").and_then(Value::as_str) == Some(resource_id)
+            })
+            && self.contract_id.is_none_or(|contract_id| {
+                row.get("contractId").and_then(Value::as_str) == Some(contract_id)
+            })
+            && self.subject.is_none_or(|subject| {
+                row.get("filterSubjects")
+                    .and_then(Value::as_array)
+                    .is_some_and(|filters| {
+                        filters
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .any(|filter| nats_subjects_intersect(filter, subject))
+                    })
+            })
+    }
+
+    /// The row's position in this query's order. Under attention order, rows
+    /// that need an operator come first, most severe and then largest backlog
+    /// first; consumers set up outside Trellis come last.
+    fn key(&self, row: &Value) -> ConsumerKey {
+        let text = |field: &str| {
+            row.get(field)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let (rank, backlog) = if self.attention {
+            let rank = if row.get("managedBy").and_then(Value::as_str) == Some("external") {
+                8
+            } else {
+                match row.get("status").and_then(Value::as_str) {
+                    Some("missing") => 0,
+                    Some("saturated") => 1,
+                    Some("inactive") => 2,
+                    Some("failing") => 3,
+                    Some("behind") => 4,
+                    Some("orphaned") => 5,
+                    Some("processing") => 6,
+                    Some("current") => 7,
+                    _ => 8,
+                }
+            };
+            let pending = row.get("pending").and_then(Value::as_u64).unwrap_or(0);
+            (rank, u64::MAX - pending)
+        } else {
+            (0, 0)
+        };
+        (
+            rank,
+            backlog,
+            text("resourceId"),
+            text("stream"),
+            text("consumerName"),
+        )
+    }
+
+    /// Filters, orders, and cuts one page from every known consumer row.
+    fn page(&self, rows: Vec<Value>) -> Result<Value, String> {
+        let mut rows = rows
+            .into_iter()
+            .filter(|row| self.matches(row))
+            .map(|row| (self.key(&row), row))
+            .filter(|(key, _)| self.cursor.as_ref().is_none_or(|cursor| key > cursor))
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| left.0.cmp(&right.0));
+        rows.truncate(self.limit + 1);
+        let next_cursor = if rows.len() > self.limit {
+            rows.pop();
+            rows.last()
+                .map(|(key, _)| encode_pagination_cursor(&self.query_digest, key))
+                .transpose()
+                .map_err(|_| "invalid pagination cursor".to_owned())?
+        } else {
+            None
+        };
+        let items = rows.into_iter().map(|(_, row)| row).collect::<Vec<_>>();
+        Ok(json!({ "items": items, "page": { "nextCursor": next_cursor } }))
+    }
 }
 
 fn nats_subjects_intersect(left: &str, right: &str) -> bool {
@@ -229,23 +308,6 @@ fn consumer_status(info: &async_nats::jetstream::consumer::Info) -> &'static str
     } else {
         "processing"
     }
-}
-
-fn consumer_cursor_key(row: &Value) -> (String, String, String) {
-    (
-        row.get("resourceId")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        row.get("stream")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        row.get("consumerName")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-    )
 }
 
 fn consumer_row(
@@ -349,5 +411,118 @@ mod tests {
             "events.v1.orders.>",
             "events.v1.orders"
         ));
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    use serde_json::{json, Value};
+
+    use super::ConsumerPageQuery;
+
+    fn row(name: &str, status: &str, managed_by: &str, pending: u64) -> Value {
+        json!({
+            "resourceId": format!("resource-{name}"),
+            "stream": "trellis",
+            "consumerName": name,
+            "filterSubjects": ["events.v1.orders.>"],
+            "status": status,
+            "managedBy": managed_by,
+            "pending": pending,
+        })
+    }
+
+    fn names(page: &Value) -> Vec<String> {
+        page["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|item| item["consumerName"].as_str().expect("name").to_owned())
+            .collect()
+    }
+
+    fn rows() -> Vec<Value> {
+        let mut rows = vec![
+            row("a-current", "current", "authority", 0),
+            row("b-small-backlog", "behind", "authority", 3),
+            row("c-external-behind", "behind", "external", 900),
+            row("d-missing", "missing", "authority", 0),
+            row("e-large-backlog", "behind", "authority", 400),
+            row("f-processing", "processing", "platform", 0),
+            row("g-failing", "failing", "authority", 1),
+        ];
+        rows.extend(
+            (0..30).map(|index| row(&format!("z-current-{index:02}"), "current", "authority", 0)),
+        );
+        rows
+    }
+
+    /// Walking the attention order page by page yields every consumer once,
+    /// problems before healthy ones, the largest backlog first within a
+    /// status, and consumers set up outside Trellis last.
+    #[test]
+    fn attention_order_pages_problems_first_without_gaps() {
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let input = json!({ "order": "attention", "page": { "limit": 4, "cursor": cursor } });
+            let page = ConsumerPageQuery::parse(&input)
+                .expect("query")
+                .page(rows())
+                .expect("page");
+            let names = names(&page);
+            assert!(names.len() <= 4, "a page is bounded by its limit");
+            seen.extend(names);
+            match page["page"]["nextCursor"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), rows().len(), "every consumer appears once");
+        let unique = seen.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), seen.len(), "no consumer repeats across pages");
+        assert_eq!(
+            &seen[..5],
+            [
+                "d-missing",
+                "g-failing",
+                "e-large-backlog",
+                "b-small-backlog",
+                "f-processing",
+            ]
+        );
+        assert_eq!(seen.last().map(String::as_str), Some("c-external-behind"));
+    }
+
+    /// The panel's "needs attention" view filters on the server, and a cursor
+    /// from one order cannot continue another.
+    #[test]
+    fn status_filter_and_order_bind_the_cursor() {
+        let filtered = |cursor: Option<&str>| {
+            json!({
+                "order": "attention",
+                "status": ["behind", "failing", "missing"],
+                "page": { "limit": 2, "cursor": cursor },
+            })
+        };
+        let input = filtered(None);
+        let first = ConsumerPageQuery::parse(&input)
+            .expect("query")
+            .page(rows())
+            .expect("first page");
+        assert_eq!(names(&first), ["d-missing", "g-failing"]);
+        let cursor = first["page"]["nextCursor"]
+            .as_str()
+            .expect("cursor")
+            .to_owned();
+        let input = filtered(Some(&cursor));
+        let second = ConsumerPageQuery::parse(&input)
+            .expect("query")
+            .page(rows())
+            .expect("second page");
+        assert_eq!(names(&second), ["e-large-backlog", "b-small-backlog"]);
+
+        let input = json!({ "page": { "limit": 2, "cursor": cursor } });
+        assert!(ConsumerPageQuery::parse(&input).is_err());
     }
 }

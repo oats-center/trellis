@@ -109,31 +109,24 @@ export type KnownConsumerStatus =
 
 /**
  * A known status, or `unknown:<raw>` when the server reported a status this
- * build does not understand. Unknown values stay visible and sort neutrally
- * rather than collapsing to a known state or a false healthy value.
+ * build does not understand. Unknown values stay visible rather than
+ * collapsing to a known state or a false healthy value.
  */
 export type ConsumerStatus = KnownConsumerStatus | `unknown:${string}`;
 
-const CONSUMER_SEVERITY: Record<KnownConsumerStatus, number> = {
-  missing: 0,
-  saturated: 1,
-  inactive: 2,
-  failing: 3,
-  behind: 4,
-  processing: 5,
-  current: 6,
-  orphaned: 7,
-  unmanaged: 8,
-};
-
-/** Neutral ordering for a status the console does not recognize. */
-export const UNKNOWN_CONSUMER_SEVERITY = 9;
-
-/** The ordering weight for a consumer status, known or unknown. */
-export function consumerSeverityOf(status: ConsumerStatus): number {
-  if (status.startsWith("unknown:")) return UNKNOWN_CONSUMER_SEVERITY;
-  return CONSUMER_SEVERITY[status as KnownConsumerStatus];
-}
+const KNOWN_CONSUMER_STATUSES: ReadonlySet<string> = new Set<
+  KnownConsumerStatus
+>([
+  "current",
+  "processing",
+  "behind",
+  "saturated",
+  "inactive",
+  "failing",
+  "missing",
+  "orphaned",
+  "unmanaged",
+]);
 
 /**
  * Normalizes a raw server status. Unrecognized values are retained as
@@ -142,7 +135,7 @@ export function consumerSeverityOf(status: ConsumerStatus): number {
  */
 export function consumerStatus(value: unknown): ConsumerStatus {
   const text = String(value);
-  return Object.hasOwn(CONSUMER_SEVERITY, text)
+  return KNOWN_CONSUMER_STATUSES.has(text)
     ? text as ConsumerStatus
     : `unknown:${text}`;
 }
@@ -193,7 +186,11 @@ export type EventsHealthLedgerInput = {
   readonly failedDeliveries?: bigint;
   readonly windowMinutes: number;
   readonly attentionConsumers: number;
+  /** False when more services may need attention than were counted. */
+  readonly attentionComplete: boolean;
   readonly shownConsumers: number;
+  /** False when the server has services beyond the loaded page. */
+  readonly consumersComplete: boolean;
   readonly focus: string;
   readonly attentionConsumersOnly: boolean;
   readonly failedActive: boolean;
@@ -259,11 +256,13 @@ export function projectEventsHealthLedger(
       label: "Services behind",
       value:
         consumers === "ready"
-          ? input.attentionConsumers
+          ? input.attentionComplete
+            ? input.attentionConsumers
+            : `${input.attentionConsumers}+`
           : optionalNumericLabel(consumers, undefined),
       detail:
         consumers === "ready"
-          ? `of ${input.shownConsumers} receiving events`
+          ? `of ${input.shownConsumers}${input.consumersComplete ? "" : "+"} receiving events`
           : unavailableDetail(consumers, "Loading services"),
       tone: input.attentionConsumers > 0 ? "warning" : "success",
       active: input.attentionConsumersOnly,

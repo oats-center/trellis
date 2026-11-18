@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
 import { ulid } from "ulid";
 
 import {
@@ -1329,6 +1330,196 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
         await context.close();
       }
     } finally {
+      await service.stop();
+    }
+  }, browserRuntimeOptions());
+});
+
+test("Z11 Events renders before its delivery panels, which load one page at a time", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const displayName = fixtureName("z11-events");
+    const key = await runtime.registerService({
+      name: displayName,
+      contract: participants.EventService.participant,
+      deployment: displayName,
+      acknowledgeSharedApis: true,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.EventService.participant,
+      name: displayName,
+      seed: key.seed,
+    }).orThrow();
+    const successes: string[] = [];
+    await service
+      .onAlpha(
+        async ({ event }) => {
+          if (event.value.startsWith("fail")) {
+            throw new Error("fixture handler failure");
+          }
+          successes.push(event.value);
+        },
+        {},
+        { mode: "durable", group: "events" },
+      )
+      .orThrow();
+    await service
+      .onBeta(() => {}, {}, { mode: "durable", group: "events" })
+      .orThrow();
+    await service.handleDeliveryStats(() =>
+      Result.ok({
+        active: 0n,
+        attempts: [],
+        maxActive: 0n,
+        successes: [...successes],
+      }),
+    );
+    void service.wait().catch(() => {});
+    const broker = await runtime.connectNats();
+    try {
+      const alpha = await runtime.connectClient({
+        name: fixtureName("z11-alpha"),
+        contract: apps.Alpha.request,
+      });
+      await runtime.waitFor(
+        async () => (await alpha.deliveryStats({}, { timeout: 1_000 })).isOk(),
+        { timeoutMs: 60_000 },
+      );
+      const consumer = await runtime.waitFor(
+        async () =>
+          (await runtime.events.consumersQuery({})).items.find(
+            (item) => item.deploymentId === key.deploymentId,
+          ) ?? false,
+        { timeoutMs: 60_000 },
+      );
+      await alpha.publishAlpha({ site: "z11", value: "ready" }).orThrow();
+      await runtime.waitFor(
+        async () => {
+          const stats = await alpha.deliveryStats({}, { timeout: 1_000 });
+          return stats.isOk() && stats.orThrow().successes.includes("ready");
+        },
+        { timeoutMs: 30_000 },
+      );
+
+      // More failed deliveries and more consumers than one panel page holds.
+      const failures = 25;
+      for (let index = 0; index < failures; index++) {
+        await alpha
+          .publishAlpha({ site: "z11", value: `fail-${index}` })
+          .orThrow();
+      }
+      const manager = await jetstreamManager(broker);
+      for (let index = 0; index < 25; index++) {
+        await manager.consumers.add("trellis", {
+          durable_name: `z11-outside-${index}`,
+          ack_policy: AckPolicy.Explicit,
+          filter_subject: "events.v1.>",
+        });
+      }
+      await runtime.waitFor(
+        async () => {
+          const rows = (
+            await runtime.events.deadLettersQuery({
+              resourceId: consumer.resourceId,
+              state: ["dead"],
+              page: { limit: 100 },
+            })
+          ).items;
+          return rows.length >= failures ? true : undefined;
+        },
+        { timeoutMs: 120_000 },
+      );
+
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        const errors = await captureBrowserErrors(page);
+        const wired = await wireNatsGate(page);
+        try {
+          await openConsoleAsRuntimeAdmin(page, runtime);
+          await assertNoBrowserErrors(errors);
+          // Hold both panel replies after the real server produced them.
+          const heldConsumers = wired.gate.armNextReply(EVENTS_CONSUMERS_QUERY);
+          const heldDeadLetters = wired.gate.armNextReply(
+            EVENTS_DEAD_LETTERS_QUERY,
+          );
+          await page.goto(
+            `${runtime.consoleUrl}/console/admin/events?view=log`,
+            {
+              waitUntil: "domcontentloaded",
+            },
+          );
+          await waitForConsoleShell(page);
+          await heldConsumers;
+          await heldDeadLetters;
+          const main = page.locator("main");
+          await main
+            .locator("tbody tr[data-event-type]")
+            .first()
+            .waitFor({ state: "visible", timeout: 30_000 });
+          const ledger = main.locator('[aria-label="Event health summary"]');
+          assert.deepEqual(
+            (
+              await ledger
+                .locator("button")
+                .filter({ hasText: "Services behind" })
+                .locator("strong")
+                .innerText()
+            ).trim(),
+            "…",
+            "the consumer reply is still held while the event list shows",
+          );
+
+          await main.getByRole("tab", { name: "Overview" }).click();
+          const failed = main.locator("#failed-deliveries");
+          const services = main.locator(".consumer-health");
+          await failed.getByText("Loading…").waitFor({ state: "visible" });
+          await services.getByText("Loading…").waitFor({ state: "visible" });
+
+          wired.releaseToPage();
+          const failedRows = failed.locator("[data-dead-letter]");
+          const serviceRows = services.locator(".service-list > li");
+          await failedRows
+            .first()
+            .waitFor({ state: "visible", timeout: 15_000 });
+          await serviceRows
+            .first()
+            .waitFor({ state: "visible", timeout: 15_000 });
+          assert.deepEqual(await failedRows.count(), 20);
+          assert.deepEqual(await serviceRows.count(), 20);
+
+          await failed
+            .getByRole("button", { name: "Show more failed deliveries" })
+            .click();
+          await runtime.waitFor(
+            async () =>
+              (await failedRows.count()) >= failures ? true : undefined,
+            { timeoutMs: 15_000 },
+          );
+          const ids = await failedRows.evaluateAll((items) =>
+            items.map((item) => item.getAttribute("data-dead-letter")),
+          );
+          assert.deepEqual(new Set(ids).size, ids.length);
+          await failed
+            .getByRole("button", { name: "Show more failed deliveries" })
+            .waitFor({ state: "detached", timeout: 15_000 });
+
+          await services
+            .getByRole("button", { name: "Show more services" })
+            .click();
+          await runtime.waitFor(
+            async () => ((await serviceRows.count()) > 20 ? true : undefined),
+            { timeoutMs: 15_000 },
+          );
+          await assertNoBrowserErrors(errors);
+        } finally {
+          wired.gate.dispose();
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await broker.close();
       await service.stop();
     }
   }, browserRuntimeOptions());

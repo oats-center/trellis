@@ -19,6 +19,7 @@ import {
   EventsConsumersInspectRequest,
   EventsConsumersInspectResponse,
   EventsConsumersQueryRequest,
+  EventsConsumersQueryRequestOrder,
   EventsConsumersQueryRequestStatus,
   EventsConsumersQueryResponse,
   EventsInspectRequest,

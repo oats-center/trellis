@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS consumer_dead_letters (
 
 CREATE INDEX IF NOT EXISTS idx_consumer_dead_letters_resource_state
     ON consumer_dead_letters (resource_id, state, updated_at_ns DESC, id);
+-- The Console's failed-delivery panel lists open dead letters across every
+-- consumer, newest first, one page at a time.
+CREATE INDEX IF NOT EXISTS idx_consumer_dead_letters_state
+    ON consumer_dead_letters (state, updated_at_ns DESC, id);
 CREATE INDEX IF NOT EXISTS idx_consumer_dead_letters_original
     ON consumer_dead_letters (original_stream, original_sequence);
 
