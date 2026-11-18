@@ -274,7 +274,9 @@ relays WebSocket upgrades to its plaintext loopback listener. A start of a
 
 The runtime reads keys only from `secrets.toml`, refusing it when it is a link
 or anyone else could read it. A role started apart from the platform needs only
-the Trellis NATS user, the instance ID and its own provider seed there.
+the Trellis NATS user, the instance ID and its own provider seed there. The
+instance ID is how it confirms the broker is its installation's before writing
+to it (see Runtime Storage Identity in `design/core/trellis-patterns.md`).
 Everything the server writes goes to the kind's data folders, which `[paths]`
 overrides; the NATS download goes to the user or system cache for every kind,
 so installations share it. `trellis-server nats <user>` runs the `nats` CLI

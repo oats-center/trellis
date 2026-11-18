@@ -388,31 +388,6 @@ pub(crate) fn oauth_storage_key(
 }
 
 impl SqliteAuthorizationStore {
-    pub(crate) fn jetstream_identity(&self) -> Result<(String, bool), AuthError> {
-        self.transaction(|connection| {
-            Ok(connection.query_row(
-                "SELECT jetstream_id,jetstream_bound FROM trellis_platform_store_marker WHERE id=1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-    }
-
-    pub(crate) fn mark_jetstream_bound(&self, identity: &str) -> Result<(), AuthError> {
-        self.transaction(|connection| {
-            if connection.execute(
-                "UPDATE trellis_platform_store_marker \
-                SET jetstream_bound=1 \
-                WHERE id=1 AND jetstream_id=?1",
-                [identity],
-            )? != 1
-            {
-                return Err(AuthError::Conflict);
-            }
-            Ok(())
-        })
-    }
-
     /// Open the normally migrated platform database using provisioned custody.
     /// Startup never creates signing or OAuth-storage keys.
     pub(crate) fn open(

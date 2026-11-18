@@ -427,10 +427,13 @@ changing the binding.
 
 ### Local state
 
-Keep the platform database and NATS JetStream data together. Trellis refuses to
-start with a missing or different JetStream identity after binding: restore the
-matching store, or use fresh platform and JetStream state and provision
-deployments again. Recreating consumers and buckets alone does not recover job
+Keep the platform database and NATS JetStream data together. Before it writes
+anything to a broker, every Trellis role checks the broker's identity record:
+a broker of another installation, or one bound to a different platform
+database, refuses startup and is left untouched. Restore the matching store, or
+use fresh platform and JetStream state and provision deployments again. A role
+started apart from the platform waits until its platform has bound a new
+broker. Recreating consumers and buckets alone does not recover job
 keys or stored objects. Rust and Node replicas use one deployment-scoped
 Operation storage codec; this pre-release cutover does not migrate earlier
 records, so retain existing installations unchanged and use fresh
