@@ -33,6 +33,8 @@ pub(super) fn bump_versions(repo_root: &Path, from: &str, to: &str) -> Result<Ve
         let updated = if is_json_manifest(&path) {
             let updated = rewrite_json_manifest_version(&original, from, to, &path)?;
             rewrite_js_internal_npm_dependency_versions(&updated, Some(from), to, &path)?
+        } else if is_npm_lockfile(&path) {
+            rewrite_npm_lockfile_versions(&original, Some(from), to, &path)?
         } else if path
             .file_name()
             .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
@@ -65,6 +67,8 @@ pub(super) fn prepare_release(repo_root: &Path, release: &ReleaseVersion) -> Res
                 &path,
             )?;
             rewrite_js_internal_npm_dependency_versions(&updated, None, &release.version, &path)?
+        } else if is_npm_lockfile(&path) {
+            rewrite_npm_lockfile_versions(&original, None, &release.version, &path)?
         } else if path
             .file_name()
             .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
@@ -104,6 +108,10 @@ pub(super) fn collect_versions(repo_root: &Path) -> Result<Vec<VersionEntry>> {
                 }
             }
             collect_js_internal_npm_versions(repo_root, &path, &contents, &mut versions);
+            continue;
+        }
+        if is_npm_lockfile(&path) {
+            collect_npm_lockfile_versions(repo_root, &path, &contents, &mut versions)?;
             continue;
         }
 
@@ -150,6 +158,9 @@ fn release_manifest_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
         "demos/ts/package.json",
         "demos/app/package.json",
         "docs/examples/orders/package.json",
+        // The workspace lock records each workspace package's version and
+        // internal dependency specs; they move with the manifests.
+        "package-lock.json",
     ] {
         let path = repo_root.join(relative_path);
         if path.exists() {
@@ -224,6 +235,111 @@ fn collect_manifest_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
 
 fn is_json_manifest(path: &Path) -> bool {
     path.file_name().is_some_and(|name| name == "package.json")
+}
+
+fn is_npm_lockfile(path: &Path) -> bool {
+    path.file_name()
+        .is_some_and(|name| name == "package-lock.json")
+}
+
+/// The internal workspace package versions and internal dependency specs an
+/// npm lockfile records.
+fn collect_npm_lockfile_versions(
+    repo_root: &Path,
+    path: &Path,
+    contents: &str,
+    versions: &mut Vec<VersionEntry>,
+) -> Result<()> {
+    let lock: serde_json::Value = serde_json::from_str(contents)
+        .into_diagnostic()
+        .wrap_err_with(|| format!("failed to parse {}", path.display()))?;
+    let label = display_repo_path(repo_root, path);
+    let Some(packages) = lock.get("packages").and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    for (key, entry) in packages {
+        let name = entry
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .filter(|name| is_internal_npm_package(name));
+        let version = entry.get("version").and_then(serde_json::Value::as_str);
+        if let (Some(name), Some(version)) = (name, version) {
+            if !is_non_release_sentinel_version(version) {
+                versions.push(VersionEntry::new(
+                    format!("{label} {name} version"),
+                    version.to_string(),
+                ));
+            }
+        }
+        for section in ["dependencies", "devDependencies", "peerDependencies"] {
+            let Some(dependencies) = entry.get(section).and_then(serde_json::Value::as_object)
+            else {
+                continue;
+            };
+            for (dependency, spec) in dependencies {
+                if !is_internal_npm_package(dependency) {
+                    continue;
+                }
+                if let Some(version) = spec.as_str().and_then(npm_dependency_spec_version) {
+                    versions.push(VersionEntry::new(
+                        format!("{label} {key:?} dependency {dependency}"),
+                        version,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Move an npm lockfile's internal workspace package versions and internal
+/// dependency specs to `to`, under the same rules as a manifest's. npm writes
+/// each entry's `version` on the line after its `name`.
+fn rewrite_npm_lockfile_versions(
+    contents: &str,
+    from: Option<&str>,
+    to: &str,
+    path: &Path,
+) -> Result<String> {
+    let mut lines = Vec::new();
+    let mut internal_entry: Option<String> = None;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        let entry = internal_entry.take();
+        internal_entry = trimmed
+            .strip_prefix("\"name\": \"")
+            .and_then(|rest| rest.strip_suffix("\","))
+            .filter(|name| is_internal_npm_package(name))
+            .map(str::to_owned);
+        let version = trimmed
+            .strip_prefix("\"version\": \"")
+            .and_then(|rest| rest.split_once('"'))
+            .map(|(version, _)| version);
+        let (Some(name), Some(version)) = (entry, version) else {
+            lines.push(line.to_string());
+            continue;
+        };
+        if version != to && !is_non_release_sentinel_version(version) {
+            match from {
+                Some(from) if version != from => {
+                    return Err(miette!(
+                        "{} {name} uses version {version}, expected {from} or {to}",
+                        path.display()
+                    ));
+                }
+                None => require_version_base(version, &version_base(to)?, path, &name)?,
+                _ => {}
+            }
+            lines.push(line.replacen(&format!("\"{version}\""), &format!("\"{to}\""), 1));
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    let mut updated = lines.join("\n");
+    if contents.ends_with('\n') {
+        updated.push('\n');
+    }
+    rewrite_js_internal_npm_dependency_versions(&updated, from, to, path)
 }
 
 fn json_manifest_version(contents: &str) -> Option<String> {

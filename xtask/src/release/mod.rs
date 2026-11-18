@@ -762,6 +762,75 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn prepare_moves_the_workspace_lock_with_the_manifests() {
+        let root = temp_repo_root();
+        let lock = "{\n  \"name\": \"trellis-workspace\",\n  \"lockfileVersion\": 3,\n  \
+            \"packages\": {\n    \"node_modules/@oatscenter/result\": {\n      \
+            \"resolved\": \"ts/packages/result\",\n      \"link\": true\n    },\n    \
+            \"node_modules/semver-like\": {\n      \"version\": \"0.100.0-rc.3\",\n      \
+            \"license\": \"MIT\"\n    },\n    \"docs\": {\n      \"name\": \"@trellis/docs\",\n      \
+            \"version\": \"0.100.0-rc.3\"\n    },\n    \"ts/packages/result\": {\n      \
+            \"name\": \"@oatscenter/result\",\n      \"version\": \"0.100.0-rc.3\"\n    },\n    \
+            \"ts/packages/trellis\": {\n      \"name\": \"@oatscenter/trellis\",\n      \
+            \"version\": \"0.100.0-rc.3\",\n      \"dependencies\": {\n        \
+            \"@oatscenter/result\": \"0.100.0-rc.3\",\n        \"zod\": \"^4.0.0\"\n      \
+            }\n    }\n  }\n}\n";
+        for (path, contents) in [
+            (
+                "Cargo.toml",
+                "[workspace.package]\nversion = \"0.100.0-rc.4\"\n",
+            ),
+            (
+                "ts/packages/result/package.json",
+                "{\n  \"name\": \"@oatscenter/result\",\n  \"version\": \"0.100.0-rc.4\"\n}\n",
+            ),
+            (
+                "ts/packages/trellis/package.json",
+                "{\n  \"name\": \"@oatscenter/trellis\",\n  \"version\": \"0.100.0-rc.4\",\n  \"dependencies\": {\n    \"@oatscenter/result\": \"0.100.0-rc.4\"\n  }\n}\n",
+            ),
+            ("package-lock.json", lock),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        // A lock left at the previous prerelease is inconsistent.
+        let stale = super::versioning::check_versions(&root)
+            .unwrap_err()
+            .to_string();
+        assert!(stale.contains("package-lock.json"), "{stale}");
+        prepare_release(
+            &root,
+            &ReleaseVersion {
+                version: "0.100.0-rc.5".to_string(),
+                base_version: "0.100.0".to_string(),
+            },
+        )
+        .expect("prepare release");
+        assert_eq!(
+            super::versioning::check_versions(&root).unwrap(),
+            "0.100.0-rc.5"
+        );
+        let lock: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join("package-lock.json")).unwrap())
+                .unwrap();
+        let packages = &lock["packages"];
+        assert_eq!(packages["ts/packages/result"]["version"], "0.100.0-rc.5");
+        assert_eq!(packages["ts/packages/trellis"]["version"], "0.100.0-rc.5");
+        assert_eq!(
+            packages["ts/packages/trellis"]["dependencies"]["@oatscenter/result"],
+            "0.100.0-rc.5"
+        );
+        // Registry packages and other workspaces keep their own versions.
+        assert_eq!(
+            packages["node_modules/semver-like"]["version"],
+            "0.100.0-rc.3"
+        );
+        assert_eq!(packages["docs"]["version"], "0.100.0-rc.3");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn temp_repo_root() -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(

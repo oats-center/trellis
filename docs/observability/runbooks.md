@@ -6,7 +6,7 @@ These runbooks are operational guidance for the reference alerts. They do not au
 
 **Signal:** an expected platform/Jobs/Events/Health component is absent, stale, or not reporting the existing healthy owner/task state for two minutes.
 
-Check the expected-component inventory against the actual selected runtime modes. Then check Prometheus scrape health, Collector self-metrics and the component's last observation time. An HTTP `/readyz` response only confirms that the current endpoint serves version metadata; it does not prove usable authorization or queues. Check process/supervisor logs, singleton ownership, NATS health and local storage before restarting one failed owner. Do not create two active owners or bypass the singleton lease. Confirm that a recovered component advances observation time and has current ownership.
+Check the expected-component inventory against the actual selected runtime modes. Then check Prometheus scrape health, Collector self-metrics and the component's last observation time. An HTTP `/readyz` `503` means the server has not finished starting, is stopping, or is waiting while another server runs Auth; a `200` does not prove usable authorization or queues. Check process/supervisor logs, singleton ownership, NATS health and local storage before restarting one failed owner. Do not create two active owners or bypass the singleton lease. Confirm that a recovered component advances observation time and has current ownership.
 
 ## Snapshot stale
 

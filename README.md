@@ -18,20 +18,20 @@ the TypeScript-based Trellis lineage.
 Cargo.toml      Rust workspace: public libraries, CLI, server, and tooling
 crates/         Rust platform crates and public facades
 xtask/          Rust repository build, generation, and release tooling
-integration/     Shared TypeScript/Rust test vectors and cross-language fixtures
+integration/    Shared TypeScript/Rust test vectors and cross-language fixtures
 demos/          Shared demo app plus TypeScript and Rust service/device examples
-docs/           Trellis documentation site (SvelteKit static site, published to GitHub Pages)
-ts/             TypeScript client libraries, adapters, and browser integration tests
-web/            Official embedded Console and login portal
+docs/           Trellis documentation site (Sveltepress, published to GitHub Pages)
+ts/             TypeScript client libraries, adapters, and integration tests
+web/            Embedded Console, served under /console
+portal/         Embedded sign-in and consent portal
+scripts/        Test and release runners shared by `npm test` and the Pipeline
 generated/      Derived manifests and SDKs when generated locally (usually absent from a clean checkout)
 deploy/         Deployment assets: NATS templates and observability
 design/         Trellis design docs
 ```
 
 See `/guides/authoring-contracts` for the native IDL workflow and
-`/guides/write-a-service/contract-artifacts` for regeneration details. See
-`/guides/releasing-trellis` for repository testing, versioning, and release
-checklists.
+`/guides/write-a-service/contract-artifacts` for regeneration details.
 
 ## Key concepts
 
@@ -51,55 +51,65 @@ checklists.
 
 ## Getting started
 
-See the [Trellis docs](docs/) to get started.
+[Install Trellis](/guides/install-trellis) covers the `trellis` and
+`trellis-server` binaries. To try it, [run a development
+Trellis](/guides/running-trellis/development): `trellis-server --dev` creates
+an installation on first start and runs NATS for you. For a real
+deployment, run it [from the binaries](/guides/running-trellis/binaries) or
+[with Podman](/guides/running-trellis/podman), with your own `nats-server`
+(the guides use 2.15).
 
-Trellis service deployments need persistent writable storage at
-`/var/lib/trellis` by default. The control-plane SQLite database defaults to
-`/var/lib/trellis/trellis.sqlite` and can be moved with `storage.dbPath` in the
-Trellis service config.
+A `--system` installation keeps its config in `/etc/trellis` and its data in
+`/var/lib/trellis`, where the platform, jobs, health and events subsystems
+each get their own SQLite database. A `[paths]` section in `config.toml` moves
+those folders; [Where the files go](/guides/running-trellis/binaries) lists
+them, and its Other settings section covers a NATS cluster.
+[Keep Trellis running](/guides/running-trellis/upkeep) covers upgrades,
+backups, stream copies and `[leases] replicas`.
 
-Trellis requires `nats-server` 2.10.0 or newer. Jobs rely on JetStream source
-subject transforms and the filtered consumer create API permission model. When
-`nats.jetstream.replicas` is omitted from the Trellis service config, the
-runtime probes NATS JetStream topology and uses `3` only when at least three
-current JetStream metadata peers are visible; otherwise it falls back to `1`.
-Set the value explicitly to pin a deployment to a known replica count.
+`/healthz` answers with the server's version as soon as it is up. `/readyz`
+returns `503` until startup has finished and `200` after, and goes back to
+`503` while the server stops or while another server runs Auth.
 
-Current TypeScript runtime entrypoints:
+TypeScript runtime entrypoints, from `@oatscenter/trellis`:
 
 - `TrellisClient.connect(...)` for browser and client runtimes
 - `TrellisService.connect(...)` for services
 - `TrellisDevice.connect(...)` for activated devices
 
-Install locked API dependencies and regenerate project-local artifacts with:
+## Working in this repository
 
-- `cargo xtask install`
-- `npm ci` (Node 24 or 26, tested on 26, and npm 11)
-- `npm run install:contracts`
-- `cargo xtask build`
-- `cargo xtask release check-versions`
-- `cargo xtask release prepare --tag v0.100.0-rc.1`
-
-Each contract project owns `trellis.toml`, commits `trellis.lock`, and consumes
-its private generated SDK through the configured TypeScript or Rust output.
-Generated implementations are ignored build artifacts, not committed source.
-`cargo xtask install` prepares the built-in bindings the Rust SDK, testkit, and
-runtime include before repository compilation and rebuilds the TypeScript SDK's protocol WASM, which needs the
-`wasm32-unknown-unknown` Rust target. Pass `--skip-protocol-wasm` only where the
-WASM is built separately, as CI does. Published SDK archives include those generated sources; downstream
-Cargo builds need neither the Trellis CLI nor compiler/generator build dependencies.
-`cargo xtask build` installs the fixed repository project DAG before building
-the Rust workspace. Live client-library integration coverage is language-owned.
-Run these peer suites when you need that coverage:
+You need Node 24 to 26 (CI uses 26) with npm 11 or newer, and a Rust
+toolchain with the `wasm32-unknown-unknown` target. Prepare a checkout with:
 
 ```sh
-npm run test:integration
-cargo test --manifest-path Cargo.toml -p trellis-rs --test integration -- --nocapture
+npm ci
+cargo xtask install
+npm run browser:embedded
 ```
 
-Both suites use ordinary Rust and Deno discovery. Build the server and CLI once
-and pass their paths as documented in
-[integration/README.md](integration/README.md).
+`cargo xtask install` generates the built-in contract bindings and each
+repository project's SDK, and rebuilds the TypeScript SDK's protocol WASM.
+Each contract project owns `trellis.toml`, commits `trellis.lock`, and
+consumes its generated SDK through the configured TypeScript or Rust output.
+Generated implementations are ignored build artifacts, not committed source.
+`cargo xtask build [cargo args]` runs the install, builds the embedded Console
+and Portal, and then runs `cargo build`.
+
+[In-repo development](/guides/in-repo-development) covers running the server
+from source. `npm test` runs the Pipeline's check jobs on this host through
+`scripts/check.sh`; `npm test -- --all` adds the packaging and image jobs.
+The live integration suites run through their own runners, which build or
+download what they need:
+
+```sh
+scripts/run-rust-tests.sh
+npm run test:integration
+```
+
+[integration/README.md](integration/README.md) describes both, and
+[Releasing Trellis](/guides/releasing-trellis) covers testing policy,
+versioning and release checklists.
 
 ## Design documents
 

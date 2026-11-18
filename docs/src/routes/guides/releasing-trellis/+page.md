@@ -48,7 +48,9 @@ npm test
 The pipeline and `npm test` share one script, `scripts/check.sh`: every pipeline
 job runs `scripts/check.sh <job>`, and `npm test` runs every job on this host. It
 builds once (contract artifacts, the embedded Console and Portal, npm packages,
-and every executable the jobs launch), then runs formatting, Rust lint
+and every executable the jobs launch), copies the executables to
+`target/check-bin` so no job runs a binary that the Rust tests' own Cargo build
+may re-link in `target/debug`, then runs formatting, Rust lint
 (`clippy`), Rust tests (`rust`: every workspace test, live ones included),
 TypeScript checks (`typescript-checks`), TypeScript tests (`typescript-tests`:
 the packages' own suites and the integration files), Rust testkit tests
@@ -166,11 +168,11 @@ Verify the benchmark with Performance's ordinary command:
 `cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target`.
 Performance consumes that frozen lock; it does not repair it during execution.
 
-The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so the pipeline verifies exactly what ships. `Pipeline` is the one workflow. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds the CLI and server archives and assembles and smokes the images; packages the Rust and npm packages; runs the artifact-only package consumer; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that graph. On a `release/v*` push the publish jobs follow the acceptance gate in the same run: they publish that run's verified artifacts (crates, npm, canonical APIs, images) without rebuilding the product, and create an unsigned lightweight release tag on the verified commit. If verification fails, nothing is published, no tag is created, and the same version can be retried. The workflow file keeps the name `release.yml` because crates.io and npm trusted publishing name it.
+The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so the pipeline verifies exactly what ships. `Pipeline` is the one workflow. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds the CLI and server archives and assembles and smokes the images; packages the Rust and npm packages; runs the artifact-only package consumer; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that graph. On a `release/v*` push the publish jobs follow the acceptance gate in the same run: they publish that run's verified artifacts (crates, npm, canonical APIs, images) without rebuilding the product, and publishing the GitHub release last creates an unsigned lightweight release tag on the verified commit. If verification fails, nothing is published, no tag is created, and the same version can be retried. The workflow file keeps the name `release.yml` because crates.io and npm trusted publishing name it.
 
-The compile-heavy jobs (`install`, which also builds the protocol WASM and the embedded Console and Portal, `clippy`, `build-fixtures`, `build`) run on the self-hosted runners labelled `trellis-build` (keep that label on one host's runners so its caches stay warm; move the label to move the role, and note these jobs wait if no labelled runner is online) and keep `target/` between runs (every other untracked file is removed after checkout), so Cargo rebuilds only what changed; on GitHub-hosted runners they restore `target/` from the Actions cache instead. The Rust tests job and the crate packaging also compile, so they run on these runners too. With only a few `trellis-build` runners, each one's `target/` for each job stays warm; `build` compiles inside its container with its own persistent cache. The TypeScript tests run on runners labelled `trellis-ts` and the browser tests on runners labelled `trellis-browser`; give each label to a different host's runners so the two largest suites never share one machine's cores (they wait if no labelled runner is online). Every other test job runs on any self-hosted runner, starting from a clean checkout and using the binaries the build jobs produced; the hosts provide Chromium's system libraries and `certutil`. Pull requests from forks run every job on GitHub-hosted runners, so fork code never runs on the self-hosted machines. Image builds and publication run on GitHub-hosted runners, which download faster. Each runner keeps its own `target/` unless its environment sets `TRELLIS_CI_TARGET_ROOT` (for example in the runner's `.env` file) to a directory every runner on that host can write. Runners in separate containers need that directory mounted into each container at the same path; then each compile job links `target/` to `$TRELLIS_CI_TARGET_ROOT/<job>`, so a host warms once for all its runners, and Cargo's lock serializes two runners building the same job at once. These directories grow over time; delete them to reclaim disk.
+The compile-heavy jobs (`install`, which also builds the protocol WASM and the embedded Console and Portal, `clippy`, `build-fixtures`, `build`) run on the self-hosted runners labelled `trellis-build` (keep that label on one host's runners so its caches stay warm; move the label to move the role, and note these jobs wait if no labelled runner is online) and keep `target/` between runs (every other untracked file is removed after checkout), so Cargo rebuilds only what changed; on GitHub-hosted runners they restore `target/` from the Actions cache instead. The Rust tests job and the crate packaging also compile, so they run on these runners too. With only a few `trellis-build` runners, each one's `target/` for each job stays warm; `build` compiles inside its container with its own persistent cache. The TypeScript tests run on runners labelled `trellis-ts` and the browser tests on runners labelled `trellis-browser`; give each label to a different host's runners so the two largest suites never share one machine's cores (they wait if no labelled runner is online). Every other test job runs on any self-hosted runner, starting from a clean checkout and using the binaries the build jobs produced; the hosts provide Chromium's system libraries and `certutil`. Pull requests whose head branch lives outside this repository (forks) run every job on GitHub-hosted runners, so their code never runs on the self-hosted machines. That is the trust boundary for the persistent caches: the self-hosted `target/` directories, `TRELLIS_CI_TARGET_ROOT`, the Docker build cache `build` uses for the release executables, the Playwright browsers and the installed Cargo tools are written only by code from people with write access (pushes, manual runs, and pull requests from this repository's own branches), and release runs read them. A fork's GitHub-hosted jobs use the Actions cache, whose entries GitHub scopes to the pull request, so `main` and release runs never restore them. Keep anything that runs code no writer has reviewed (a bot opening pull requests from a branch of this repository, for example) on GitHub-hosted runners too. Image builds and publication run on GitHub-hosted runners, which download faster. Each runner keeps its own `target/` unless its environment sets `TRELLIS_CI_TARGET_ROOT` (for example in the runner's `.env` file) to a directory every runner on that host can write. Runners in separate containers need that directory mounted into each container at the same path; then each compile job links `target/` to `$TRELLIS_CI_TARGET_ROOT/<job>`, so a host warms once for all its runners, and Cargo's lock serializes two runners building the same job at once. These directories grow over time; delete them to reclaim disk.
 
-The `Deploy Site to GitHub Pages` workflow deploys on every push to `main`. The site root shows the newest stable release and `/current/` shows `main`; until the first stable release exists, the root shows the newest prerelease. After a release publishes, `publish-docs` starts that workflow so the root moves to the new release; it does so for stable releases, and for prereleases only while no stable release exists. The workflow installs each worktree's locked APIs from source before building the released and current guide and Console sites.
+The `Deploy Site to GitHub Pages` workflow deploys on every push to `main`. The Pipeline's `docs` job checks and builds the same site (`npm run check` and `npm run build` in the `@trellis/docs` workspace) on every push and on each pull request that touches `docs/`, `design/` or the root npm manifests. A pull request that changes only Markdown, design docs or `docs/static/` skips the build and test graph; site code under `docs/src` (Svelte, TypeScript, configuration) runs the whole graph. The site root shows the newest stable release and `/current/` shows `main`; until the first stable release exists, the root shows the newest prerelease. After a release publishes, `publish-docs` starts that workflow so the root moves to the new release; it does so for stable releases, and for prereleases only while no stable release exists. The workflow installs each worktree's locked APIs from source before building the released and current guide and Console sites.
 
 The npm publish set is:
 
@@ -179,11 +181,18 @@ The npm publish set is:
 - `@oatscenter/trellis-testkit`
 - `@oatscenter/trellis-svelte`
 
-The pipeline builds and smoke-tests the npm packages and runs npm publication
-dry-runs before the acceptance gate; publication uses those verified packages
-without rebuilding them. `typescript-testkit-package` installs the packed testkit
-with its SDK dependencies into a fresh Node project and runs it against the
-pipeline's CLI and server. The testkits carry no binary pins: by default they
+The pipeline builds and smoke-tests the npm packages before the acceptance
+gate. `scripts/release-ts-dry-run.sh` (in the `demos` job) packs each package
+into `dist/npm`, records every tarball's sha512 integrity in
+`dist/npm/packages.json`, and runs npm's publication dry-run on those exact
+tarballs. The package metadata, including the `repository.url` that npm's
+provenance check compares, is final when the package is built. Publication
+uploads the same tarballs after checking their integrity, without packing or
+editing them. The `typescript-testkit-package` job installs the packed testkit,
+SDK and result tarballs into an empty Node project on Node 24 and on Node 26
+(the oldest and newest majors the packages' engines accept; the rest of the
+pipeline runs on 26), loads every entrypoint of each installed package, and
+runs the testkit against the pipeline's CLI and server. The testkits carry no binary pins: by default they
 download the latest Trellis release.
 
 Publication never verifies again: a version that passed the acceptance gate
@@ -218,9 +227,14 @@ omitted from its published manifest. The shared
 archive, compares every accepted file's contents and permissions (including
 frozen models/bindings and the lockfile), and runs Cargo's publication dry-run
 with build verification enabled. The pipeline exercises this no-upload sequence
-from an empty target directory before accepting the bundle. Publication then
-uploads each crate with `cargo publish --no-verify`: the acceptance gate already
-verified the same commit's packages, so publishing compiles nothing.
+from an empty target directory before accepting the bundle. Publication packages
+each unpublished crate from the checkout again and requires every one to carry
+exactly the files of its verified archive (`cargo xtask release compare-crate`)
+before the first upload. It then uploads each with `cargo publish --no-verify`,
+which packages the same checkout the same way; the acceptance gate already
+verified the same commit's packages, so publishing compiles nothing. `cargo
+xtask release check-published` runs before and after the uploads, so every
+crate version crates.io holds afterwards matches the verified archive.
 
 `release prepare` also rewrites the external testkit fixture manifests under
 `integration/fixtures/testkit` so its generated application package carries the
@@ -404,7 +418,7 @@ cargo xtask install --update
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
-`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests while preserving file layout. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so the pipeline builds and verifies the exact release versions.
+`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests, and the workspace packages' versions and internal dependency specs in the root `package-lock.json`, while preserving file layout. `release prepare` moves the same files, and `release check-versions` reports a lockfile entry that disagrees. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so the pipeline builds and verifies the exact release versions.
 
 Do not run `release bump` just to add a prerelease suffix like `-rc.1`. Prerelease suffixes are handled from the tag by `release prepare` in the publish workflow.
 
@@ -546,8 +560,11 @@ git push origin HEAD:refs/heads/release/$RELEASE_TAG
 For example, `RELEASE_TAG=v0.100.0-rc.1` pushes `release/v0.100.0-rc.1`.
 
 Push the release branch before you push the same commit to `main`. The `main`
-run then finds the release branch at that commit and skips its own build and
-tests, so the commit is verified once, by the run that publishes it:
+run's `changes` job then finds the release run for that commit and waits for
+its acceptance gate (up to 140 minutes). When the gate succeeded, the `main`
+run skips its own build and tests, so the commit is verified once, by the run
+that publishes it. When the gate failed or was cancelled, when no release run
+exists, or when the wait runs out, the `main` run verifies the commit itself:
 
 ```sh
 git push origin HEAD:refs/heads/release/$RELEASE_TAG
@@ -556,22 +573,47 @@ git push origin HEAD:main
 
 The pipeline's `release-metadata` job fails early if the final release tag already exists. If verification fails, fix the release commit and push the release branch again; the version is not consumed because no tag has been created.
 
-After the acceptance gate passes, the same run publishes in gated stages:
+After the acceptance gate passes, the same run publishes in gated stages. A
+version stays invisible until every component is available: the GitHub release
+is a draft until the end, the release tag appears only when it is published,
+and the `rc` and `latest` channels move last.
 
-- `release-metadata` derives the tag from the `release/v*` branch, rejects an existing tag, validates release metadata, and writes the release notes; it runs alongside verification
-- the `build` job compiles the Linux x86-64 runtime executables once in a `rust:bookworm` container (matching the runtime image base); the same executables run every live, browser and demo job and become the `trellis` and `trellis-server` release archives, one per binary with its own checksum. `build-arm64` runs the same container build on a native arm64 runner for the arm64 archives, which no job tests; macOS archives are not built. `verify-images` assembles the linux/amd64 and linux/arm64 OCI archives from the prebuilt executables without compiling Trellis and smokes the amd64 image natively. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
+- `release-metadata` derives the tag from the `release/v*` branch, rejects an existing tag, validates release metadata, writes the release notes, and runs `check-published`; it runs alongside verification
+- the `build` job compiles the Linux x86-64 runtime executables once in a `rust:bookworm` container (matching the runtime image base); the same executables run every live, browser and demo job and become the `trellis` and `trellis-server` release archives, one per binary with its own checksum. `build-arm64` runs the same container build on a native arm64 runner for the arm64 archives, which no job tests; macOS archives are not built. `verify-images` assembles the linux/amd64 and linux/arm64 OCI archives from the prebuilt executables without compiling Trellis, records each archive's image index digest, and smokes the amd64 image natively. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
 - `publish-apis` publishes the canonical APIs to GHCR
-- `create-release-tag` tags the verified commit, refusing if the release branch moved
-- `github-release` uploads the CLI and server archives and their checksums, then publishes the release
-- `publish-crates`, `publish-npm`, and `publish-images` publish after the GitHub release exists
+- `draft-release` refuses if the release branch moved, then creates a draft GitHub release targeting the verified commit and uploads the CLI and server archives and their checksums
+- `publish-crates` publishes the crates as described above
+- `publish-images` pushes each verified image archive, digest preserved, under the version's own tags (`$RELEASE_TAG` and `sha-<commit>`) and requires the registry to report the recorded digest
+- `publish-npm` publishes the verified tarballs once the crates and images are published
+- `publish-release` points the `rc` and `latest` image tags at the verified digests, then publishes the draft release, which creates the tag on the verified commit and, for a stable release, marks it latest
+- `publish-docs` deploys the docs site when the release is `latest`
 
-`latest` follows the newest prerelease until the first stable release exists:
-until then npm packages publish under the `latest` dist-tag and images receive
-`latest` as well as `rc`. After a stable release, prereleases publish under the
-npm `rc` dist-tag and the `rc` image tag, and `latest` moves only with stable
-releases.
+npm trusted publishing authorizes `npm publish` but not `npm dist-tag`, so an
+npm package receives its dist-tag as it publishes; that is why npm publishes
+after the crates and images. `latest` follows the newest prerelease until the
+first stable release exists: until then npm packages publish under the `latest`
+dist-tag and images receive `latest` as well as `rc`. After a stable release,
+prereleases publish under the npm `rc` dist-tag and the `rc` image tag, and
+`latest` moves only with stable releases.
 
-Publication is idempotent: each step skips versions already published and never overwrites published bytes; an existing GitHub asset must match the verified artifact byte-for-byte. A registry publish is still not atomic across registries, so if a publish step fails, fix the cause and use "Re-run failed jobs" on the same run. Images are promoted from the verified archive, never rebuilt. For npm provenance, publication normalizes only `package.json`'s `repository.url` to the canonical GitHub repository identity.
+### Resuming a partly published release
+
+A registry publish is not atomic across registries. If a publish job fails, fix
+the cause and use "Re-run failed jobs" on the same run. Don't push a new commit
+to the release branch to retry publication: the new run would verify and try
+to publish different bytes under the same version. Before it uploads anything,
+every publish step compares what is already published with this run's verified
+artifact:
+
+- GitHub release: an existing asset must match the verified file byte for byte; missing assets are uploaded. A draft that targets another commit stops the run; delete that draft to release this commit.
+- Canonical APIs: `trellis publish` skips a version GHCR holds with the same package and distribution digests and refuses one with different content.
+- Crates: `check-published` compares every crate version crates.io holds with the verified archive and fails on any difference; matching versions are skipped.
+- Images: a version tag that already exists must point at the recorded digest.
+- npm: each tarball's sha512 must equal the integrity recorded at verification, and a version the registry holds must report that integrity; matching versions are skipped. Nothing uploads unless every package passes.
+
+A mismatch means the registry holds bytes this run did not verify, usually from
+an earlier run of a different commit. Registries never replace a version, so
+release a new version instead.
 
 ## 8. Verify the published release
 
@@ -581,7 +623,7 @@ Then verify the downstream publishes you care about:
 
 - npm packages have the expected version and dist-tag
 - crates.io shows the expected crate versions
-- GHCR images have the expected tags such as `$RELEASE_TAG`, `latest`, or `rc`
+- GHCR images have the expected tags such as `$RELEASE_TAG`, `latest`, or `rc`, all at the digest `verify-images` recorded
 - the CLI and server archive checksums are present and match the published artifacts
 
 ## 9. Prepare for the next cycle

@@ -1,15 +1,72 @@
 # Monitoring reference assets
 
-These assets implement the production observability design; they are not a production deployment command.
+These files are reference configuration for monitoring a Trellis deployment.
+Copy and adapt them; nothing here deploys itself.
+[docs/observability](../../docs/observability/README.md) holds the metric
+catalog and the runbooks the alerts link to.
 
-Use Collector Contrib **0.160.0**. `collector.yaml` is a combined **case-owned validation** configuration. Production native and public browser ingestion use **`collector.native.yaml` and `collector.browser.yaml` in separate processes** so untrusted browser load cannot consume the native Collector's memory budget. Both default to loopback. Set `TRELLIS_CLUSTER`, `TRELLIS_ENVIRONMENT` and `TRELLIS_TRACE_BACKEND`, and create a protected trace spool directory. Remote access requires private discovery and TLS/authenticated ingress, not public cleartext listeners.
+## Collectors
 
-The reference Prometheus config targets colocated listeners and auxiliary exporters. Replace `example` in **both** target labels and `expected-components.yml`, choose only components the deployment actually requires, and point private probe/exporter addresses at the deployed hosts. Keep `telemetry_pipeline=native|browser` and the selected metric-name translation. The browser's document-lifetime instance identity prevents incorrect merging of independent cumulative metric streams; aggregate it away in queries rather than deleting it before ingestion. It is not a login/user identity.
+`collector.native.yaml` receives native OTLP over HTTP on `127.0.0.1:4318` and
+exposes Prometheus metrics on `127.0.0.1:9464`. `collector.browser.yaml`
+receives browser OTLP on `127.0.0.1:4319` and exposes it on `127.0.0.1:9465`.
+Run them as separate processes so browser traffic, which is untrusted, cannot
+use up the native Collector's memory. `collector.yaml` combines both pipelines
+in one process for validation.
 
-Install the standard Node exporter, NATS Prometheus exporter (aggregate mode only), and Blackbox exporter as operator-managed monitoring utilities. `/readyz` in this Trellis source returns version metadata; its probe is HTTP reachability, not proof of authenticated readiness. Component metrics and normal request/delivery signals provide deeper coverage.
+Each Collector reads `TRELLIS_CLUSTER`, `TRELLIS_ENVIRONMENT` and
+`TRELLIS_TRACE_BACKEND` from its environment and spools traces under
+`/var/lib/otelcol/`. Every listener binds to loopback. To reach one from
+another machine, put TLS and authentication in front of it instead of opening
+a cleartext listener. `browser-proxy.nginx.conf` is a same-origin relay for
+browser telemetry to place in the Console's HTTPS virtual host.
 
-Validate with actual binaries: `otelcol-contrib validate`, `promtool check config`, `promtool check rules`, `promtool test rules`, and `amtool check-config`. Supply case-only environment/secret values during validation. Do not send live alerts as part of implementation. The webhook template's secret file is an operator activation input.
+Both Collectors' Prometheus exporters use
+`translation_strategy: UnderscoreEscapingWithoutSuffixes`, so names carry no
+unit or type suffix (`trellis_auth_flow_duration_bucket`); the recording and
+alert rules expect those names. Browser metrics keep `service.instance.id`, a random ID per page load, so separate
+pages' cumulative counters don't merge. Aggregate it away in queries rather
+than dropping it before ingestion. It does not identify a user.
 
-RPC 99.9% error-budget and queue/latency thresholds are explicit starting operational policy. They are not machine-speed tests, a release benchmark, or an asserted production SLA. Review warning-only observations and notification routing before turning on paging. No dashboard should show absent/stale data as green zero.
+## Prometheus
 
-Copy these files into `deploy/observability/` and the runbooks into `docs/observability/runbooks.md`. Raw captured OTLP samples belong to case-owned ignored output, with only sanitized evidence summarized for review.
+`prometheus.yml` scrapes the two Collector exporters, the Collectors' own
+metrics (`8888`, `8889`), the Node exporter (`9100`) and the NATS Prometheus
+exporter (`7777`), and probes two endpoints through the Blackbox exporter
+(`9115`, module `http_2xx` from `blackbox.yml`):
+
+- `http://127.0.0.1:3000/readyz` on Trellis. It returns `503` until startup
+  has finished and `200` after, and `503` again while the server stops or
+  while another server runs Auth. A failed probe means this server isn't
+  serving, not only that it is unreachable. A `200` does not show that
+  authorization, jobs or delivery work; component metrics and request signals
+  cover those.
+- `http://127.0.0.1:8222/healthz` on the NATS monitoring port.
+
+Install the Node, NATS and Blackbox exporters yourself. Replace `example` in
+the `trellis_cluster` labels of both `prometheus.yml` and
+`expected-components.yml`, keep only the components the deployment runs, and
+point the targets at the real hosts. Keep the `telemetry_pipeline` labels.
+
+`recording-rules.yml`, `expected-components.yml` and `alert-rules.yml` are the
+rule files, `rule-tests.yml` tests them, `alertmanager.example.yml` routes
+alerts to a webhook whose URL it reads from
+`/run/secrets/trellis-alert-webhook-url`, and `trellis-dashboard.json` is a
+Grafana dashboard.
+
+## Validate
+
+Check the files with the real tools before using them, with your own
+environment values and secrets:
+
+```sh
+otelcol-contrib validate --config collector.native.yaml
+promtool check config prometheus.yml
+promtool check rules recording-rules.yml expected-components.yml alert-rules.yml
+promtool test rules rule-tests.yml
+amtool check-config alertmanager.example.yml
+```
+
+The RPC 99.9% error budget and the queue and latency thresholds in the alert
+rules are starting policy, not a measured SLA. Review them and the
+notification routing before turning on paging.
