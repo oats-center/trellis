@@ -1,25 +1,19 @@
 import { TrellisService } from "@oatscenter/trellis/service";
-import { createAuth } from "@oatscenter/trellis";
 import { Result } from "@oatscenter/result";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, stringify } from "smol-toml";
-import { ulid } from "ulid";
 import {
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { reserveLocalPort } from "../packages/trellis-testkit/src/ports.ts";
-import { API as authApi } from "../packages/trellis-testkit/trellis/apis/auth/mod.js";
 import { spawnTracked, type ProcessExit } from "./_support/process.ts";
-import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
+import { withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary used for the platform and each split role. */
 function serverBinary(): string {
@@ -38,37 +32,6 @@ async function startSplitRole(
 }> {
   const configDir = join(runtime.workdir, "config", "trellis");
   const platformConfig = await readFile(join(configDir, "config.toml"), "utf8");
-  const [fixture, ...args] = rustFixtureArgv("trellis-runtime-acceptance", [
-    "builtin-evidence",
-    role,
-  ]);
-  const { stdout } = await promisify(execFile)(fixture, args);
-  const definition: unknown = JSON.parse(stdout);
-  assert(
-    definition &&
-      typeof definition === "object" &&
-      "participantId" in definition &&
-      "packageEvidence" in definition,
-  );
-  const input = authApi.actions["rpc:Deployments.Create"].input.decode({
-    kind: "service",
-    title: `split-${role}`,
-    participantId: definition.participantId,
-    packageEvidence: definition.packageEvidence,
-    idempotencyKey: ulid(),
-  });
-  const deployment = await runtime.callAdminRpc("authDeploymentsCreate", input);
-  const seed = randomBytes(32).toString("base64url");
-  const identity = await createAuth({ sessionKeySeed: seed });
-  await runtime.callAdminRpc(
-    "authServiceInstancesProvision",
-    authApi.actions["rpc:ServiceInstances.Provision"].input.decode({
-      deploymentId: deployment.deployment.deploymentId,
-      identityPublicKey: identity.sessionKey,
-      title: `split-${role}`,
-      idempotencyKey: ulid(),
-    }),
-  );
   const root = join(runtime.workdir, "split", role);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const reservation = await reserveLocalPort();
@@ -101,11 +64,22 @@ async function startSplitRole(
         "trellis" in users,
       "secrets.toml names the Trellis NATS user",
     );
+    // The role's provider seed is the installation's: Auth prepares the
+    // role's built-in service only for a request signed with it.
+    const providers = secrets.live_providers;
+    const providerSeed =
+      providers && typeof providers === "object" && !Array.isArray(providers)
+        ? (providers as Record<string, unknown>)[role]
+        : undefined;
+    assert(
+      typeof providerSeed === "string",
+      `secrets.toml holds the ${role} provider seed`,
+    );
     await writeFile(
       join(root, "secrets.toml"),
       stringify({
         instance_id: secrets.instance_id,
-        live_providers: { [role]: seed },
+        live_providers: { [role]: providerSeed },
         nats: { users: { trellis: users.trellis } },
       }),
       { mode: 0o600 },
