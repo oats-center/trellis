@@ -179,10 +179,10 @@ Events subsystem rules:
   the retention policy is not missing: `prunedBefore` reports it, and once the
   removed prefix covers every missing sequence `gapDetected` is false
 
-Stats example:
+Stats example, for an RPC named `Graph.Stats`:
 
 ```ts
-await service.handle.rpc.graph.stats(async () => {
+await service.handleGraphStats(async () => {
   return Result.ok({
     users: { count: await db.countUsers() },
     partners: { count: await db.countPartners() },

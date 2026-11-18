@@ -17,8 +17,8 @@ runtime is Trellis infrastructure that implements its admin behavior:
 - **SQL projection** — a disposable query view of current job state derived from
   the `JOBS` JetStream source of truth
 - **Global RPCs** — `Jobs.Query`, `Jobs.Summary`, `Jobs.Inspect`, `Jobs.GetKey`,
-  `Jobs.Cancel`, `Jobs.Retry`, `Jobs.ReplayDLQ`, `Jobs.DismissDLQ`,
-  `Jobs.ListDLQ`, `Jobs.ListServices`
+  `Jobs.History`, `Jobs.Metrics`, `Jobs.Cancel`, `Jobs.Retry`,
+  `Jobs.ReplayDLQ`, `Jobs.DismissDLQ`, `Jobs.ListDLQ`, `Jobs.ListServices`
 - **Workbench live** — `Jobs.Watch` invalidation frames for live query and
   inspection views
 - **Retention** — an hourly pass that expires jobs no worker claimed and
@@ -30,21 +30,30 @@ JetStream stream remains the source of truth.
 
 ## Querying jobs
 
-Use `Jobs.Query` to query jobs. The client is available from a Trellis CLI tool
-or any service/app that declares the `trellis.jobs@v1` contract in its `uses`.
+Use `Jobs.Query` to query jobs. Any service or app can call the Jobs API once
+its IDL selects the capabilities it needs in a `use jobs { ... }` block, for
+example `capability jobs.query;`. The examples call the generated TypeScript
+client's flat methods. A method's name is the action's name in camelCase
+(`client.cancel` for `Jobs.Cancel`), prefixed with the API's alias only when
+another selected API has an action of the same name: a caller that also uses
+`trellis.health@v1` gets `client.jobsQuery`, `client.jobsInspect`, and
+`client.jobsSummary`. Check the generated participant for the names yours
+gets. Each method returns a `Result`; the examples unwrap it with `orThrow()`.
 
 **List all pending fulfillment jobs for the orders service:**
 
 ```ts
-const pending = await client.rpc.jobs.query({
-  service: "orders-service",
-  type: "reserve-inventory",
-  state: ["pending"],
-  sort: { field: "updatedAt", direction: "desc" },
-  limit: 50,
-});
+const pending = await client
+  .jobsQuery({
+    service: "orders-service",
+    type: "reserve-inventory",
+    state: ["pending"],
+    sort: { field: "updatedAt", direction: "desc" },
+    page: { limit: 50 },
+  })
+  .orThrow();
 
-for (const job of pending.entries) {
+for (const job of pending.items) {
   console.log(job.id, job.state);
 }
 ```
@@ -61,9 +70,7 @@ filtered result set, independent of the current `Jobs.Query` page or cursor.
 **Inspect a specific job:**
 
 ```ts
-const inspection = await client.rpc.jobs.inspect({
-  id: "job_abc123",
-});
+const inspection = await client.jobsInspect({ id: "job_abc123" }).orThrow();
 
 console.log(inspection.job.context.requestId, inspection.timeline.length);
 ```
@@ -90,13 +97,19 @@ projection. Use `Jobs.GetKey` to inspect why work is waiting or rejected for a
 logical key:
 
 ```ts
-const key = await client.rpc.jobs.getKey({
-  service: "zendesk-sync",
-  type: "sync-tickets",
-  key: "zendesk:foo:tickets",
-});
+const key = await client
+  .getKey({
+    service: "zendesk-sync",
+    type: "sync-tickets",
+    key: "zendesk:foo:tickets",
+  })
+  .orThrow();
 
-console.log(key.active, key.queued, key.heartbeatAgeMs);
+console.log(
+  key.active[0]?.heartbeatAgeMs,
+  key.queuedDepth,
+  key.latestPolicyReason,
+);
 ```
 
 Key status includes the active job identity, queued depth, heartbeat age, lease
@@ -109,10 +122,9 @@ reported explicitly; it is not inferred from worker-presence heartbeats.
 `Jobs.Cancel` is valid for jobs in `pending`, `active`, or `retry` states.
 
 ```ts
-await client.rpc.jobs.cancel({
-  id: "job_abc123",
-  reason: "replacement run queued",
-});
+await client
+  .cancel({ id: "job_abc123", reason: "replacement run queued" })
+  .orThrow();
 ```
 
 **Important:** Cancellation is cooperative and eventual for `active` jobs. The
@@ -136,10 +148,9 @@ A job enters the `failed` state when its handler reports a non-retryable failure
 Use `Jobs.Retry` to re-enqueue it:
 
 ```ts
-await client.rpc.jobs.retry({
-  id: "job_abc123",
-  reason: "fixed provider credentials",
-});
+await client
+  .retry({ id: "job_abc123", reason: "fixed provider credentials" })
+  .orThrow();
 ```
 
 This transitions the job back to `pending` for re-processing.
@@ -157,10 +168,9 @@ dismissed.
 **Replay** (when the underlying issue is fixed):
 
 ```ts
-await client.rpc.jobs.replayDLQ({
-  id: "job_abc123",
-  reason: "provider recovered",
-});
+await client
+  .replayDlq({ id: "job_abc123", reason: "provider recovered" })
+  .orThrow();
 ```
 
 This re-enqueues the job at `pending`.
@@ -168,10 +178,9 @@ This re-enqueues the job at `pending`.
 **Dismiss** (when the work is no longer needed):
 
 ```ts
-await client.rpc.jobs.dismissDLQ({
-  id: "job_abc123",
-  reason: "order was manually closed",
-});
+await client
+  .dismissDlq({ id: "job_abc123", reason: "order was manually closed" })
+  .orThrow();
 ```
 
 This transitions the job to `dismissed`, a terminal state. Dismissed jobs are not
@@ -195,10 +204,23 @@ The heartbeat data includes the service name, job type, instance identifier, and
 a timestamp. Absence of recent heartbeats for a job type means either the service
 is not running or the worker is not registered for that job type.
 
-Use the `trellis` CLI or an observability tool subscribed to the heartbeat subjects to monitor worker presence:
+`Jobs.ListServices` lists each service that runs jobs, whether it is healthy,
+and the workers it has heard from recently. The Console's Jobs page shows the
+same list.
 
-```sh
-trellis jobs workers --service orders-service
+```ts
+const services = await client.listServices({}).orThrow();
+
+for (const service of services.items) {
+  for (const worker of service.workers) {
+    console.log(
+      service.name,
+      worker.jobType,
+      worker.instanceId,
+      worker.timestamp,
+    );
+  }
+}
 ```
 
 ## Retention
