@@ -1333,6 +1333,15 @@ jobs:
           name: release-notes
           path: dist/release-notes.md
 
+      # The xtask built above promotes the image channels at the end, so that
+      # job does not compile it again.
+      - name: Upload the release xtask
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-xtask
+          path: target/debug/xtask
+          retention-days: 3
+
   publish-apis:
     name: Publish canonical APIs
     needs: [acceptance, release-metadata]
@@ -1655,6 +1664,12 @@ jobs:
     needs: [release-metadata, publish-npm]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # One promotion at a time across every release branch, so a retried
+    # older release and a newer one never move the channels together. The
+    # channels themselves only move forward (see promote-channels).
+    concurrency:
+      group: release-promotion
+      cancel-in-progress: false
     permissions:
       contents: write
       packages: write
@@ -1662,6 +1677,16 @@ jobs:
       RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
       LATEST: ${{ needs.release-metadata.outputs.latest }}
     steps:
+      # The release xtask resolves the repository from its build path.
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download the release xtask
+        uses: actions/download-artifact@v8
+        with:
+          name: release-xtask
+          path: ${{ runner.temp }}/xtask
+
       - name: Download the verified image digests
         uses: actions/download-artifact@v8
         with:
@@ -1669,29 +1694,25 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/digests
 
-      - name: Tag the image channels
+      # The release branch must still name the verified commit, and a channel
+      # that holds a newer release than this one stays where it is.
+      - name: Move the image channels forward
         shell: bash
         env:
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_USER: ${{ github.actor }}
         run: |
           set -euo pipefail
-          tags=()
-          if [[ "$RELEASE_TAG" == *-* ]]; then tags+=(rc); fi
-          if [[ "$LATEST" == true ]]; then tags+=(latest); fi
-          [ "${#tags[@]}" -gt 0 ] || exit 0
           owner="$(tr '[:upper:]' '[:lower:]' <<<"$GITHUB_REPOSITORY_OWNER")"
           command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install --yes skopeo; }
           auth="$RUNNER_TEMP/skopeo-auth.json"
           printf '%s' "$REGISTRY_PASSWORD" |
             skopeo login --authfile "$auth" --username "$REGISTRY_USER" --password-stdin "$REGISTRY"
-          for image in trellis-server console; do
-            digest="$(cat "$RUNNER_TEMP/digests/$image.digest")"
-            for tag in "${tags[@]}"; do
-              skopeo copy --all --preserve-digests --src-authfile "$auth" --dest-authfile "$auth" \
-                "docker://$REGISTRY/$owner/$image@$digest" "docker://$REGISTRY/$owner/$image:$tag"
-            done
-          done
+          chmod +x "$RUNNER_TEMP/xtask/xtask"
+          "$RUNNER_TEMP/xtask/xtask" release promote-channels \
+            --tag "$RELEASE_TAG" --branch "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" \
+            --repository "$REGISTRY/$owner" --digests "$RUNNER_TEMP/digests" \
+            --image trellis-server --image console --latest "$LATEST" --authfile "$auth"
 
       - name: Publish the release and its tag
         env:
@@ -1701,8 +1722,9 @@ jobs:
           set -euo pipefail
           if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ]; then
             flags=()
-            # GitHub never marks a prerelease as latest.
-            if [[ "$RELEASE_TAG" != *-* ]]; then flags+=(--latest); fi
+            # GitHub never marks a prerelease as latest. A stable release is
+            # latest only when the `latest` images hold it, not a newer one.
+            if [[ "$RELEASE_TAG" != *-* ]]; then flags+=("--latest=$TRELLIS_LATEST_CHANNEL"); fi
             gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
           fi
           tagged="$(git ls-remote "https://github.com/$GH_REPO" "refs/tags/$RELEASE_TAG" | cut -f1)"
