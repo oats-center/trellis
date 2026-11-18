@@ -101,7 +101,7 @@ NetworkName=trellis
 ```toml
 [Container]
 ContainerName=trellis-nats
-Image=docker.io/library/nats:2.14.4-alpine
+Image=docker.io/library/nats:2.15.3-alpine
 Network=trellis.network
 Volume=%h/trellis-nats:/etc/nats:Z
 Exec=-c /etc/nats/nats-1.conf
@@ -272,7 +272,7 @@ balancer reaches. `trellis-nats.container`:
 ```toml
 [Container]
 ContainerName=trellis-nats
-Image=docker.io/library/nats:2.14.4-alpine
+Image=docker.io/library/nats:2.15.3-alpine
 Network=trellis.network
 PublishPort=8080:8080
 Volume=%h/trellis-nats:/etc/nats:Z

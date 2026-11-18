@@ -14,7 +14,7 @@ You need root, a DNS name pointing at the machine, and these on the machine:
 - `trellis-server` and `trellis`, from [Install Trellis](/guides/install-trellis).
   The installer puts them in `~/.local/bin`; copy `trellis-server` to
   `/usr/local/bin` so the service can run it.
-- `nats-server` 2.14, from your package manager or the
+- `nats-server` 2.15, from your package manager or the
   [NATS install docs](https://docs.nats.io/running-a-nats-service/introduction/installation),
   also in `/usr/local/bin`.
 
@@ -324,7 +324,7 @@ behind a load balancer that terminates TLS, that's expected.
 `nats new --servers 3` writes three servers instead of one, on 4222 to 4224
 (WebSockets on 8080 to 8082, routes on 6222 to 6224). Run each as its own
 service and list all three in `[nats] servers`, comma-separated. JetStream
-keeps copies on different servers, so a cluster needs three; NATS 2.14 won't
+keeps copies on different servers, so a cluster needs three; NATS 2.15 won't
 run a cluster of one. `--hosts` names each server's machine, and
 `--listen 0.0.0.0` lets the others reach it. Give servers on other machines a
 certificate with `--tls-certificate` and `--tls-private-key`: Trellis connects

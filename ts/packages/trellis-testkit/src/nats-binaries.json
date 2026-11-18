@@ -1,11 +1,11 @@
 {
   "nats-server": {
-    "version": "2.14.4",
+    "version": "2.15.3",
     "sha256": {
-      "linux-amd64": "20f9d6a199560f243610908bcccea2e27e9f47213242d1c609ca46d1d73e91ea",
-      "linux-arm64": "2143f4317ac8e1dd42793c912fa09b405c7036ba181b2a3002b74501d13562b0",
-      "darwin-amd64": "7c9a3b120de53474b8dbf93e82c8530725238833e40d4085e0625f78c942439a",
-      "darwin-arm64": "dd626a605d1239ff7c08917738c14352a9f42b17021f242ff94ee69a504406ad"
+      "linux-amd64": "32e18c1e78d7ef4f86e483070eef3abb2647c3d4d67e29668077c7ad81da0797",
+      "linux-arm64": "4a2088b3ec7103bf79d6484f55e80ab5d10204811d9ae6f7a33e8544d98dd45d",
+      "darwin-amd64": "d274cfb9d6e26ffbb04007bfe744d46a8b4f4e5d218741f8ee89aa687c658bc1",
+      "darwin-arm64": "a7e25e32247024449e32dcb7129ff416dca3a2cd569fe3c205603ecf8fe5f810"
     }
   },
   "nsc": {

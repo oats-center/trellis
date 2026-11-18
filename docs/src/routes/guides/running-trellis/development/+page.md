@@ -26,7 +26,7 @@ anything other people depend on, you run NATS yourself:
 If `nats-server` isn't on your `PATH`, Trellis asks before downloading it:
 
 ```text
-nats-server is not on your PATH. Download NATS 2.14.4 (checksum-verified) into /home/you/.cache/trellis/nats? [Y/n]
+nats-server is not on your PATH. Download NATS 2.15.3 (checksum-verified) into /home/you/.cache/trellis/nats? [Y/n]
 ```
 
 `--nats-download` says yes up front, for a script or a fresh VM. Without a
