@@ -197,6 +197,14 @@ api who@v1 {
         .status()
         .unwrap()
         .success());
+    // trellis-protocol keeps its own version, which a release need not bump.
+    let protocol_version = toml::from_str::<toml::Table>(
+        &fs::read_to_string(repository.join("crates/protocol/Cargo.toml")).unwrap(),
+    )
+    .unwrap()["package"]["version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let models = root.path().join("trellis-models-later");
     fs::create_dir_all(models.join("src")).unwrap();
     fs::create_dir_all(models.join("generated")).unwrap();
@@ -209,7 +217,7 @@ api who@v1 {
         models.join("Cargo.toml"),
         format!(
             "[package]\nname = \"trellis-models\"\nversion = \"{later}\"\nedition = \
-            \"2021\"\n[dependencies]\ntrellis-protocol = \"{cli_version}\"\nserde = {{ \
+            \"2021\"\n[dependencies]\ntrellis-protocol = \"{protocol_version}\"\nserde = {{ \
             version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
         ),
     )

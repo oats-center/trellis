@@ -62,7 +62,16 @@ test("an administrator approves a waiting service update from its review link", 
         await review
           .getByRole("button", { name: "Approve update", exact: true })
           .click();
-        await page.getByText(/^Approved\./).waitFor();
+        // The decision's outcome, or whatever the page shows instead.
+        await page
+          .getByText(/^Approved\./)
+          .waitFor()
+          .catch(async (cause: unknown) => {
+            const shown = await page.locator("main").innerText();
+            throw new Error(`no approval notice; the page shows: ${shown}`, {
+              cause,
+            });
+          });
         await review.getByText("Installed").waitFor();
       } finally {
         await admin.close();
