@@ -1655,6 +1655,11 @@ jobs:
     needs: [release-metadata, publish-npm]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # One release promotes at a time, so the newer-release check below and the
+    # tag moves it guards can't interleave with another release's.
+    concurrency:
+      group: release-promotion
+      cancel-in-progress: false
     permissions:
       contents: write
       packages: write
