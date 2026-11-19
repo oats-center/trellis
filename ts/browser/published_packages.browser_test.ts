@@ -29,7 +29,9 @@ import {
 import {
   openConsoleAsRuntimeAdmin,
   waitForConsoleShell,
+  wireNatsGate,
 } from "./console_test_support.ts";
+import { API as authApi } from "../packages/trellis/internal_sdk/generated/apis/auth/mod.js";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const run = promisify(execFile);
@@ -371,6 +373,7 @@ test("the Console adds a service from a published package and installs its next 
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
+        const wired = await wireNatsGate(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
 
         await page.goto(
@@ -403,6 +406,24 @@ test("the Console adds a service from a published package and installs its next 
         const review = page.getByRole("region", { name: "Published package" });
         await review.getByText("runtime-trellis 0.100.0").waitFor();
         await review.getByText(/Built with trellis /).waitFor();
+        // Looking it up again, as after republishing that version, drops the
+        // release found before until Auth answers again.
+        const pull = authApi.actions["rpc:Packages.Pull"].subject;
+        const repeated = wired.gate.armNextReply(pull);
+        await page
+          .getByRole("button", { name: "Look up package", exact: true })
+          .click();
+        await repeated;
+        assert.equal(await review.count(), 0);
+        assert.equal(
+          await page
+            .getByRole("button", { name: "Add service", exact: true })
+            .isDisabled(),
+          true,
+          "Add service stayed enabled while the release was looked up again",
+        );
+        wired.releaseToPage();
+        await review.getByText("runtime-trellis 0.100.0").waitFor();
         await page.getByLabel("Which service").selectOption(PROVIDER.identity);
         await page
           .getByRole("button", { name: "Add service", exact: true })
@@ -437,7 +458,10 @@ test("the Console adds a service from a published package and installs its next 
         await (await running).stop();
         assert.deepEqual(await updates(runtime, deploymentId), []);
 
-        // The service page installs the next release ahead of its rollout.
+        // The service page installs the next release ahead of its rollout,
+        // while a refresh that read the service before it is still running.
+        const get = authApi.actions["rpc:Deployments.Get"].subject;
+        await wired.gate.armNextReply(get);
         await page
           .getByRole("button", {
             name: "From a published package",
@@ -462,6 +486,17 @@ test("the Console adds a service from a published package and installs its next 
           .getByRole("button", { name: "Install build", exact: true })
           .click();
         await page.getByText("Installed runtime-trellis 0.100.1.").waitFor();
+        // That refresh finishes before the next one starts; the page still
+        // shows the build just installed, not the one it read.
+        const next = wired.gate.armNextReply(get);
+        wired.releaseToPage();
+        await next;
+        assert.equal(
+          await page.locator("dd", { hasText: EXTENDED.digest }).count(),
+          1,
+          "a refresh that started before the install replaced its build",
+        );
+        wired.releaseToPage();
         const { deployment } = await runtime.callAdminRpc(
           "authDeploymentsGet",
           {
@@ -514,11 +549,16 @@ test("Auth signs in to a private registry with the sealed secret an administrato
           "create",
           "--package",
           "runtime-trellis@0.100.0",
+          "--registry",
+          "private",
           "--participant",
           KEEPER.identity,
         );
 
-      // Anonymous pulls are turned away.
+      // Anonymous pulls are turned away. Another name for the same place,
+      // added first and without credentials, must not stand in for the
+      // registry chosen when its dependencies are pulled.
+      await cli.run("registries", "set", "mirror", "--prefix", prefix);
       await cli.run("registries", "set", "private", "--prefix", prefix);
       await assert.rejects(create("anonymous"), /couldn't pull/);
 
@@ -540,7 +580,12 @@ test("Auth signs in to a private registry with the sealed secret an administrato
 
       // The secret is never returned, and never stored as written.
       const listed = await cli.run("registries", "list");
-      assert.equal(listed.registries[0].username, USERNAME);
+      assert.equal(
+        listed.registries.find(
+          (item: { name: string }) => item.name === "private",
+        ).username,
+        USERNAME,
+      );
       assert.doesNotMatch(JSON.stringify(listed), new RegExp(PASSWORD));
       const stores = (
         await readdir(runtime.workdir, { recursive: true })

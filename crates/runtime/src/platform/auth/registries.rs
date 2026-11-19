@@ -496,11 +496,36 @@ async fn pull(
                 root.config.name, locked.name
             )));
         };
-        let auth = registries
-            .iter()
-            .find(|registry| registry.prefix == prefix.trim_end_matches('/'))
-            .map_or(RegistryAuth::Anonymous, |registry| registry.auth.clone());
-        let repository = format!("{}/{}", prefix.trim_end_matches('/'), locked.name);
+        // A dependency under the chosen registry's prefix is pulled the way the
+        // root was. Elsewhere, the one registry added at that prefix signs in;
+        // several would leave the credentials to chance.
+        let prefix = prefix.trim_end_matches('/');
+        let auth = if prefix == registry.prefix {
+            registry.auth.clone()
+        } else {
+            let matching = registries
+                .iter()
+                .filter(|other| other.prefix == prefix)
+                .collect::<Vec<_>>();
+            match matching.as_slice() {
+                [] => RegistryAuth::Anonymous,
+                [only] => only.auth.clone(),
+                several => {
+                    return Err(invalid(format!(
+                        "{} depends on {} from {prefix}, which registries {} all name; \
+                        keep one of them",
+                        root.config.name,
+                        locked.name,
+                        several
+                            .iter()
+                            .map(|other| other.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )))
+                }
+            }
+        };
+        let repository = format!("{prefix}/{}", locked.name);
         let release = pull_release(&reference(&repository, oci_digest)?, &auth).await?;
         if release.config.name != locked.name
             || release.config.version != locked.version.to_string()

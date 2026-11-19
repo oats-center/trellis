@@ -173,9 +173,11 @@ resolution, and compiles the release from only those packages, so nothing Auth
 holds stands in for one and no version is chosen again. The compiled digests
 must equal the frozen ones. The response carries the pinned release, its
 evidence, its participants with their settings, and its dependencies, for
-`Create` or `Apply`, which still recompile. A dependency's registry is matched
-to a configured registry by prefix for credentials and is otherwise pulled
-anonymously; only loopback registries are reached over plain HTTP.
+`Create` or `Apply`, which still recompile. A dependency under the chosen
+registry's prefix is pulled with that registry's credentials. One under another
+prefix uses the credentials of the one configured registry with that prefix, is
+pulled anonymously when none has it, and is refused when several do. Only
+loopback registries are reached over plain HTTP.
 
 `PackageRegistries.List/Put/Remove` keep the named registries in the Auth
 store, each a name, an OCI prefix, and optional credentials (a user name and a
