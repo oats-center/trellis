@@ -1,6 +1,8 @@
 //! `trellis svc|dev <ID> config`: settings Trellis keeps for a deployment and
 //! its instances.
 
+use std::io::IsTerminal as _;
+
 use futures_util::TryStreamExt as _;
 use miette::IntoDiagnostic;
 use serde_json::{json, Value};
@@ -8,7 +10,7 @@ use serde_json::{json, Value};
 use super::deploy::{resolve_deployment_id, resolve_waiting_claim, DeploymentKind};
 use crate::app::{connect_authenticated_cli_client, wire};
 use crate::cli::{ConfigArgs, ConfigCommand, OutputFormat};
-use crate::output;
+use crate::{output, prompt};
 
 /// Whose settings a command names.
 pub(super) enum Scope<'a> {
@@ -136,10 +138,20 @@ pub(super) async fn run(
             let value = if null {
                 Value::Null
             } else {
-                let text = if from_file == std::path::Path::new("-") {
-                    std::io::read_to_string(std::io::stdin()).into_diagnostic()?
-                } else {
-                    std::fs::read_to_string(&from_file).into_diagnostic()?
+                let text = match from_file {
+                    Some(path) if path != std::path::Path::new("-") => {
+                        std::fs::read_to_string(&path).into_diagnostic()?
+                    }
+                    // A terminal never waits silently for end of input: it
+                    // asks, or without questions fails naming the flag.
+                    None if std::io::stdin().is_terminal() => {
+                        let mut form = prompt::Form::new(true);
+                        let typed = form
+                            .required_secret(&format!("Value for {field}"), "--from-file PATH")?;
+                        form.finish()?;
+                        typed
+                    }
+                    _ => std::io::read_to_string(std::io::stdin()).into_diagnostic()?,
                 };
                 let text = text.trim_end_matches(['\r', '\n']);
                 miette::ensure!(!text.is_empty(), "the secret for {field} is empty");
@@ -314,12 +326,17 @@ fn show(
             if field["restart"] == json!(true) {
                 notes.push("applies after restart".to_owned());
             }
-            if let Some(invalid) = field["invalid"].as_str() {
+            let plain = field["storedAsPlain"] == json!(true);
+            if plain {
+                notes.push("set it as a secret".to_owned());
+            } else if let Some(invalid) = field["invalid"].as_str() {
                 notes.push(format!(
                     "saved value doesn't fit this build, which uses the one before it: {invalid}"
                 ));
             }
-            let value = if field["secret"] == json!(true) {
+            let value = if plain {
+                "(stored as plain text)".to_owned()
+            } else if field["secret"] == json!(true) {
                 if field["isSet"] == json!(true) {
                     "(secret, set)".to_owned()
                 } else {
@@ -372,6 +389,24 @@ fn show(
             format!("{label} has no settings yet; set any with `trellis {prefix} {id} config set NAME=VALUE`.")
         },
     )?;
+    let secret = |name: &str| {
+        output::list(current, "fields")
+            .iter()
+            .any(|field| field["name"].as_str() == Some(name) && field["secret"] == json!(true))
+    };
+    let plain = output::list(current, "fields")
+        .iter()
+        .filter(|field| field["storedAsPlain"] == json!(true))
+        .filter_map(|field| field["name"].as_str())
+        .collect::<Vec<_>>();
+    if !plain.is_empty() {
+        output::warning(format!(
+            "Stored as plain text, but this build declares them secret, so they are never shown or used: {}. \
+            Set each as a secret; the old plain value stays in earlier revisions until you delete them with \
+            `trellis {prefix} {id} config delete-revision REVISION`.",
+            plain.join(", ")
+        ));
+    }
     let missing = output::list(current, "missing")
         .iter()
         .filter_map(Value::as_str)
@@ -381,10 +416,13 @@ fn show(
             "Its instances wait until these are set: {}",
             missing.join(", ")
         ));
-        output::next(&format!(
-            "trellis {prefix} {id} config set {}=…",
-            missing[0]
-        ));
+    }
+    if let Some(first) = plain.first().or(missing.first()) {
+        output::next(&if secret(first) {
+            format!("trellis {prefix} {id} config set-secret {first}")
+        } else {
+            format!("trellis {prefix} {id} config set {first}=…")
+        });
     }
     for instance in output::list(current, "instances") {
         if instance["restartPending"] == json!(true) {

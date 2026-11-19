@@ -231,6 +231,7 @@ pub(super) fn mutation(
 /// Return fixed contract classifications, never internal failure text. Only a
 /// validation failure says what was wrong with the caller's own input.
 pub(super) fn rpc_error(error: AuthError) -> ServerError {
+    let needed;
     let (error_type, code, message) = match &error {
         AuthError::NotFound => (errors::AuthError::TYPE, "not_found", "Not found"),
         AuthError::Conflict => (
@@ -239,6 +240,10 @@ pub(super) fn rpc_error(error: AuthError) -> ServerError {
             "Revision conflict",
         ),
         AuthError::Denied => (errors::AuthError::TYPE, "access_denied", "Not authorized"),
+        AuthError::DeniedNeeding(detail) => {
+            needed = format!("Not authorized: {detail}");
+            (errors::AuthError::TYPE, "access_denied", needed.as_str())
+        }
         AuthError::RequiredMissing => (
             errors::AuthError::TYPE,
             "required_authority_unavailable",

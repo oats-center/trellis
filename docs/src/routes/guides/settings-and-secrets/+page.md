@@ -293,12 +293,12 @@ service ID can be a deployment's ID or title, or a waiting claim's.
 | `config` or `config show`         | Each setting with its value, where it comes from, and notes (required, applies after restart, doesn't fit). |
 | `config set FIELD=VALUE ...`      | Set one or more settings in one revision.                                                                   |
 | `config set --null FIELD`         | Store null for a setting whose type allows it. Repeat for several.                                          |
-| `config set-secret FIELD`         | Set a secret from standard input, or from a file with `--from-file PATH`.                                   |
+| `config set-secret FIELD`         | Set a secret: asked for on a terminal, or read from standard input or a file with `--from-file PATH`.       |
 | `config set-secret FIELD --null`  | Store null for a secret whose type allows it.                                                               |
 | `config unset FIELD ...`          | Remove stored values, so the default applies, or the deployment's value for an instance.                    |
 | `config history`                  | Revisions, newest first, with what each changed, when, and by whom. Secrets are listed by name.             |
 | `config rollback REVISION`        | Write an earlier revision's values as a new revision.                                                       |
-| `config delete-revision REVISION` | Delete an earlier revision. The current one can't be deleted.                                               |
+| `config delete-revision REVISION` | Delete an earlier revision. Not the current one, nor one a build still takes a value from.                  |
 
 `--instance INSTANCE`, by instance ID or title, works with every subcommand and
 selects that instance's overrides. A waiting claim has no instances yet, and
@@ -370,8 +370,14 @@ once.
   revisions until the field wasn't stored, and then the default. `config`
   shows why the value doesn't fit. A required field with no fitting value is
   missing, and the service waits for it.
+- While a build takes a value from an earlier revision this way, that revision
+  can't be deleted: deleting it would change what the build uses without a new
+  revision or a change event. This covers the deployment's installed build and
+  the build each running instance runs. The refusal names the field and the
+  build. Set a value that fits, and the revision can go.
 - A secret stored as a plain setting, or a plain setting stored as a secret,
-  is a mismatch of the same kind.
+  is a mismatch of the same kind. A plain value under a secret's name is never
+  shown either; see [Plain values under a secret name](#plain-values-under-a-secret-name).
 
 So a value set in build 2's type leaves build 1 on its previous value with no
 change event, while build 2 uses the new one.
@@ -403,7 +409,9 @@ Three administrative capabilities cover settings. All three are in the default
 A write that touches a secret needs `config.manageSecrets`, and one that
 touches a plain setting needs `config.manage`, so a role can tune settings
 without being able to replace credentials. A rollback needs whichever its
-changes touch. Deleting a revision needs either one.
+changes touch. Deleting a revision that holds a secret destroys that secret,
+so it needs `config.manageSecrets`. `config.manage` can delete a revision with
+no secrets in it. A refusal names the capability that was missing.
 
 No administrator capability reads a secret. Only the deployment's own instances
 receive secret values, through `Config.Own.Get` under
@@ -421,19 +429,24 @@ Console's show button reveals only what you are typing before you save it.
 
 ### Setting a secret
 
-`set-secret` reads the value from a file, or from standard input when
-`--from-file` is left out or is `-`, so it never appears in shell history or the
-process list:
+`set-secret` never takes the value on the command line, so it never appears in
+shell history or the process list. On a terminal, it asks for the value without
+showing what you type, then asks for it again to catch a typo. A script gives
+it a file with `--from-file`, or pipes it to standard input (`--from-file -`
+reads standard input too):
 
 ```sh
+trellis svc orders config set-secret databasePassword
 trellis svc orders config set-secret databasePassword --from-file ./db-password
 trellis svc orders config set-secret databasePassword < ./db-password
 ```
 
+When nothing is piped in and it can't ask, because of `--no-input` or because
+standard error isn't a terminal, it fails at once and names `--from-file`.
+
 It drops trailing newlines and refuses an empty value. A text secret is stored
 as written. Any other declared secret is parsed as JSON, and an undeclared one
-follows the same JSON-or-text rule as `set`. On a terminal with no
-`--from-file`, `set-secret` reads until end of input (Ctrl-D) without a prompt.
+follows the same JSON-or-text rule as `set`.
 
 ### How Auth stores them
 
@@ -460,16 +473,38 @@ therefore leaves the old one in the earlier revisions, where a rollback can
 bring it back. To make a replaced secret stop existing, delete each earlier
 revision that holds it with `config delete-revision REVISION`, or **Delete**
 under **Earlier versions**. `config history` marks the revisions that changed a
-secret with `(secret)`. The current revision can't be deleted.
+secret with `(secret)`. Deleting a revision that holds a secret needs
+`config.manageSecrets`. The current revision can't be deleted, and neither can
+one a build still takes a value from (see
+[Unused and invalid values](#unused-and-invalid-values)).
 
 ### Plain values under a secret name
 
 Auth refuses a plain value for a field the installed build declares secret,
 since it would be stored where every administrator can read it. A plain value
-saved before Trellis had the IDL, under a name the IDL then declares secret, is
-never read as the secret: the build reports it as a mismatch and the field
-counts as missing. Set it again with `set-secret`, and the plain copy goes in
-the same write, since a field is stored either as a setting or as a secret.
+can still end up under a secret's name: it was saved before Trellis had the
+IDL, and the IDL then declares the name secret. From the moment the installed
+build declares it secret:
+
+- The value is never shown again. `Config.Get` reports the field with
+  `storedAsPlain` and no value, `Config.Revisions.List` leaves it out of each
+  revision's `values` and names it in `hiddenValues`, the Console reads
+  "Stored as plain text; set it as a secret", and `config show` prints
+  `(stored as plain text)` with the `set-secret` command to run.
+- It is never delivered to the service, which doesn't read a plain value as a
+  secret. A required field counts as missing, so the service waits and gives
+  the reason.
+
+Fix it by setting the field as a secret, with `set-secret` or in the Console.
+That write also removes the plain copy from the current revision, since a field
+is stored either as a setting or as a secret, and it needs only
+`config.manageSecrets`. The earlier revisions still hold the plain value until
+you delete them.
+
+Trellis doesn't turn the plain value into a secret on its own. Anyone with
+`config.read` could already read it, so sealing it quietly would make it look
+like a secret that never left Auth. Treat it as exposed, and set a new value
+if it matters.
 
 ### Nullable secrets
 

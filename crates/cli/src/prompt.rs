@@ -264,6 +264,21 @@ impl Form {
         Ok((!secret.is_empty()).then_some(secret))
     }
 
+    /// A required secret, typed without echo and then again to confirm,
+    /// else recorded as missing under `flag`.
+    pub fn required_secret(&mut self, question: &str, flag: &str) -> miette::Result<String> {
+        if !self.interactive {
+            self.missing.push(flag.to_owned());
+            return Ok(String::new());
+        }
+        self.asked = true;
+        Password::with_theme(&self.theme)
+            .with_prompt(question)
+            .with_confirmation("Type it again", "The two values don't match.")
+            .interact()
+            .into_diagnostic()
+    }
+
     /// Fail, naming every flag still missing, when the form could not ask.
     pub fn finish(&self) -> miette::Result<()> {
         if self.missing.is_empty() {

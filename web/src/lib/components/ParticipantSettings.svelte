@@ -467,7 +467,12 @@
               >{/if}
           {/snippet}
           {#snippet note()}
-            {#if field.invalid}<details class="text-xs text-warning">
+            {#if field.storedAsPlain}<p class="text-xs text-warning">
+                Stored as plain text; set it as a secret. This build never uses
+                or shows the plain value. Type the value above and save. The old
+                plain value stays in earlier versions until you delete them.
+              </p>
+            {:else if field.invalid}<details class="text-xs text-warning">
                 <summary class="cursor-pointer"
                   >{field.source === "unset"
                     ? "The saved value doesn't fit this build, so it waits for a new one."

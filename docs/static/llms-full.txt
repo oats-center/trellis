@@ -1195,7 +1195,12 @@ the values when it reads them: it ignores fields it doesn't declare (shown as
 not used by this build), and a stored value that doesn't fit its type, or a
 secret stored as a plain setting or the other way round, is reported invalid
 while that build keeps the value stored before it, or the default. Only a
-plain value for a field the installed build declares secret is refused. At
+plain value for a field the installed build declares secret is refused. A
+plain value saved under such a name before the IDL was known is never shown
+again (`Config.Get` marks the field `storedAsPlain`; `Config.Revisions.List`
+names it in `hiddenValues`) and never delivered; set it as a secret to fix it,
+and delete the earlier revisions that still hold the plain value. Trellis
+never converts it into a secret itself. At
 connect the SDK reads the values before handlers start; while a required value
 is missing or doesn't fit, the participant prints which, a Console link, and a
 QR code, and waits until it is fixed. Live fields follow
@@ -1209,9 +1214,13 @@ or the Console's Settings section. For a field the build doesn't declare,
 `set` takes JSON when the value parses as JSON and text otherwise. The RPCs are `Auth.Config.*` under
 `config.read`, `config.manage`, and `config.manageSecrets`. Secrets are sealed
 with AES-256-GCM under `secrets.toml`'s storage key (a backup includes that
-file) and never returned to administrators; `set-secret` reads standard input
-without `--from-file`. Every revision is kept until an administrator deletes it
-with `delete-revision`, which is how a replaced secret stops existing.
+file) and never returned to administrators; without `--from-file`,
+`set-secret` reads piped standard input, asks on a terminal without echo
+(twice), and with `--no-input` fails naming `--from-file`. Every revision is
+kept until an administrator deletes it with `delete-revision`, which is how a
+replaced secret stops existing; deleting a revision that holds a secret needs
+`config.manageSecrets`, and a revision a build in use still takes a fallback
+value from can't be deleted until a fitting value is set.
 `Config.Get` reports `restartPending` for instances whose `restart` fields
 would now read differently; Trellis never restarts anything. Tests set values through the
 same RPCs, never through environment variables. App settings are public to

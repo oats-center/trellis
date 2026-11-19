@@ -141,6 +141,100 @@ fn chosen(client: &Value) -> Value {
     client
 }
 
+/// The secrets `config` reports as stored, by name.
+fn secrets(view: &Value) -> Vec<String> {
+    view["unused"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["secret"] == true)
+        .map(|item| item["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_secret_asks_without_echo_on_a_terminal_and_reads_piped_input_without_one() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime).await;
+    // A service added without its IDL takes secrets by any name.
+    let name = format!("secretive-{}", ulid::Ulid::generate()).to_lowercase();
+    cli.json(&["svc", &name, "create"]).await;
+
+    // Asked on a terminal, the value is typed twice and never shown; a
+    // mismatched second entry is caught and asked again.
+    let typed = format!("typed-{}", ulid::Ulid::generate());
+    let mut session = cli.terminal(&["svc", &name, "config", "set-secret", "apiKey"]);
+    session.exp_string("Value for apiKey").unwrap();
+    session.send_line(&typed).unwrap();
+    session.exp_string("Type it again").unwrap();
+    session.send_line("something else").unwrap();
+    session.exp_string("don't match").unwrap();
+    session.exp_string("Value for apiKey").unwrap();
+    session.send_line(&typed).unwrap();
+    session.exp_string("Type it again").unwrap();
+    session.send_line(&typed).unwrap();
+    let transcript = session.exp_eof().unwrap();
+    let status = format!("{:?}", session.process().wait().unwrap());
+    assert!(
+        status.starts_with("Exited(") && status.ends_with(", 0)"),
+        "{status}: {transcript}"
+    );
+    assert!(
+        !transcript.contains(&typed),
+        "the secret was echoed: {transcript}"
+    );
+    let view = cli.json(&["svc", &name, "config"]).await;
+    assert_eq!(secrets(&view), ["apiKey"]);
+    assert!(!view.to_string().contains(&typed));
+
+    // A script pipes the value in, as before, and nothing is asked.
+    let mut piped = tokio::process::Command::new(CLI)
+        .args([
+            "--format",
+            "json",
+            "svc",
+            &name,
+            "config",
+            "set-secret",
+            "token",
+        ])
+        .env("XDG_CONFIG_HOME", &cli.config)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    {
+        use tokio::io::AsyncWriteExt as _;
+        let mut stdin = piped.stdin.take().unwrap();
+        stdin.write_all(b"piped-value\n").await.unwrap();
+    }
+    let output = tokio::time::timeout(Duration::from_secs(30), piped.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let saved: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(secrets(&saved), ["apiKey", "token"]);
+
+    // With questions turned off, a terminal with no value fails at once,
+    // naming what is missing, and stores nothing.
+    let mut session = cli.terminal(&["--no-input", "svc", &name, "config", "set-secret", "other"]);
+    session
+        .exp_string("missing required input: --from-file")
+        .unwrap();
+    session.exp_eof().unwrap();
+    let after = cli.json(&["svc", &name, "config"]).await;
+    assert_eq!(secrets(&after), ["apiKey", "token"]);
+
+    runtime.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();

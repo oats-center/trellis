@@ -381,6 +381,7 @@ async fn process(
 fn denial_code(error: &AuthError) -> &'static str {
     match error {
         AuthError::Denied
+        | AuthError::DeniedNeeding(_)
         | AuthError::NotFound
         | AuthError::Retired
         | AuthError::RequiredMissing

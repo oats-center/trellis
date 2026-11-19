@@ -139,7 +139,15 @@ secret: writing it as one removes it as the other.
 
 Every revision is kept until an administrator deletes it. That is how a
 replaced password stops existing anywhere. The current revision cannot be
-deleted.
+deleted. Nor can a revision a build in use still takes a value from (see
+[Settings ahead of a build](#settings-ahead-of-a-build)): deleting it would
+change what that build reads with no new revision and no `Config.Changed`, so
+instances that connected before and after the deletion would disagree under
+the same revision. The builds in use are the deployment's installed build and
+the build each active instance runs. Auth compares what each reads with and
+without the revision and refuses, naming the field and the build, when they
+differ. Setting a value that fits releases the revision. Deleting a revision
+that holds a secret destroys that secret, so it needs `config.manageSecrets`.
 
 An instance's values are its own overrides on top of its deployment's, then
 the declared defaults. See [Settings ahead of a build](#settings-ahead-of-a-build)
@@ -256,6 +264,15 @@ Each build reads what is stored through its own declaration:
   is a mismatch of the same kind. The build never reads a plain value as a
   secret or a secret as a plain value, and a secret's value never appears in
   `values_json`, in `Config.Get`, or in the reason given for a mismatch.
+- A plain value under a name the installed build declares secret, saved before
+  Trellis had the IDL, is withheld from then on. `Config.Get` marks the field
+  `storedAsPlain` without a value, `Config.Revisions.List` drops it from each
+  revision's `values` and names it in `hiddenValues`, and the Console and CLI
+  say to set it as a secret, noting that earlier revisions keep the plain value
+  until deleted. Setting the secret removes the plain copy in the same write
+  and needs only `config.manageSecrets`. Auth never converts the plain value
+  into a secret itself: it was readable to every administrator, and sealing it
+  quietly would misrepresent its history.
 
 Auth refuses a write in two cases only. A plain value for a field the
 installed build declares secret is refused, since it would be stored where
@@ -283,7 +300,7 @@ settings screen:
 | `Config.Get`              | Fields with their schema, effective value, source, and status; secrets only as set or not; missing fields; each instance's loaded revisions.                   |
 | `Config.Set`              | Set `values`, set `secrets`, or `unset` fields as one new revision. Names the `expectedRevision` it was based on and is refused if another write landed first. |
 | `Config.Revisions.List`   | Revisions newest first, with what each changed. Secret values never appear.                                                                                    |
-| `Config.Revisions.Delete` | Delete an earlier revision.                                                                                                                                    |
+| `Config.Revisions.Delete` | Delete an earlier revision that no build in use still takes a value from.                                                                                      |
 | `Config.Rollback`         | Write an earlier revision's values as a new revision.                                                                                                          |
 | `Config.Own.Get`          | The calling service or device reads its own effective values.                                                                                                  |
 | `Config.Changed` (event)  | A target's settings changed.                                                                                                                                   |
@@ -297,8 +314,9 @@ Three administrative capabilities cover the surface, all in the default
 administration group: `config.read` sees settings, `config.manage` changes
 them, and `config.manageSecrets` sets secrets. A write that touches secrets
 needs `config.manageSecrets`; one that touches settings needs `config.manage`;
-a rollback needs whichever its changes touch. So a role can tune settings
-without touching credentials.
+a rollback needs whichever its changes touch. Deleting a revision needs either,
+and `config.manageSecrets` when the revision holds a secret. So a role can tune
+settings without touching credentials. A refusal names the capability missing.
 
 The CLI follows the target-first shape: `trellis svc <ID> config` (or
 `trellis dev <ID> config` for a device type) shows the settings, and `set
@@ -306,8 +324,11 @@ FIELD=VALUE`, `set-secret FIELD --from-file PATH`, `unset`, `history`,
 `rollback REVISION`, and `delete-revision REVISION` change them. `--instance`
 selects one instance's overrides. A text setting takes the text as written;
 any other is JSON. `set --null FIELD` stores null for a nullable setting, since
-a text setting would take `null` as text. `set-secret` reads a file or standard input, so a secret
-never appears in shell history or the process list. `set-secret FIELD --null`
+a text setting would take `null` as text. `set-secret` reads a file or piped standard input, or on a
+terminal asks for the value twice without echo, so a secret never appears in
+shell history or the process list. Without a way to ask (`--no-input`, or no
+terminal on standard error) and nothing piped in, it fails naming
+`--from-file`. `set-secret FIELD --null`
 stores null for a secret whose type allows it, such as an instance that should
 go without a secret its deployment has; `unset` instead returns the field to
 the deployment's value or, failing that, null.

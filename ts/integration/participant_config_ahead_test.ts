@@ -258,3 +258,61 @@ test("settings for the next build are set while the current one runs, and its in
     }
   });
 });
+
+test("an earlier revision a build still reads from can't be deleted until a fitting value replaces it", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const key = await runtime.services.createInstance({
+      name: "fallback",
+      deployment: "fallback",
+      contract: v1,
+      config: {
+        values: { endpoint: "https://one.example" },
+        secrets: { apiKey: "k1" },
+      },
+    });
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const remove = (revision: number) =>
+      runtime.callAdminRpc("authConfigRevisionsDelete", {
+        target,
+        revision,
+        idempotencyKey: ulid(),
+      });
+    // An endpoint that doesn't fit the build leaves it on revision 1's.
+    const misfit = await runtime.callAdminRpc("authConfigSet", {
+      target,
+      values: { endpoint: 42 },
+      expectedRevision: 1,
+      idempotencyKey: ulid(),
+    });
+    const endpoint = misfit.fields.find((field) => field.name === "endpoint");
+    assert.equal(endpoint?.value, "https://one.example");
+
+    // Deleting revision 1 would take that value away without a change
+    // anyone hears of, so it is refused, naming the field and the build.
+    await assert.rejects(
+      remove(1),
+      /revision 1 still gives .*ConfiguredService.* build \d+ its value for endpoint/,
+    );
+    const kept = await runtime.callAdminRpc("authConfigGet", { target });
+    assert.equal(
+      kept.fields.find((field) => field.name === "endpoint")?.value,
+      "https://one.example",
+    );
+
+    // Once a fitting value is current, nothing reads revision 1 any more.
+    await runtime.callAdminRpc("authConfigSet", {
+      target,
+      values: { endpoint: "https://two.example" },
+      expectedRevision: 2,
+      idempotencyKey: ulid(),
+    });
+    await remove(1);
+    const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
+      target,
+    });
+    assert.deepEqual(
+      items.map((item) => item.revision),
+      [3, 2],
+    );
+  });
+});

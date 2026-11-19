@@ -21,6 +21,7 @@ import { test } from "node:test";
 import { ulid } from "ulid";
 
 import {
+  apis,
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
@@ -449,6 +450,91 @@ test("an app reads its own settings, which an administrator changes live", async
       assert.equal(client.config.current.greeting, "welcome back");
     } finally {
       await client.connection.close();
+    }
+  });
+});
+
+test("deleting a revision that holds a secret takes the capability that sets secrets", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const key = await runtime.services.createInstance({
+      name: "guarded",
+      deployment: "guarded",
+      contract: participant,
+    });
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const set = (
+      change: Omit<
+        Parameters<typeof runtime.callAdminRpc<"authConfigSet">>[1],
+        "target" | "idempotencyKey"
+      >,
+    ) =>
+      runtime.callAdminRpc("authConfigSet", {
+        target,
+        ...change,
+        idempotencyKey: ulid(),
+      });
+    // Revision 1 has no secrets; 2 and 3 hold the API key.
+    await set({ values: { endpoint: "https://one.example" } });
+    await set({ secrets: { apiKey: "k1" }, expectedRevision: 1 });
+    await set({ values: { level: "debug" }, expectedRevision: 2 });
+
+    const tunerIdentity = await runtime.registerService({
+      name: "config-tuner",
+      contract: participants.ConfigTuner.participant,
+    });
+    const tuner = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.ConfigTuner.participant,
+      seed: tunerIdentity.seed,
+    }).orThrow();
+    const keeperIdentity = await runtime.registerService({
+      name: "config-keeper",
+      contract: participants.ConfigKeeper.participant,
+    });
+    const keeper = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.ConfigKeeper.participant,
+      seed: keeperIdentity.seed,
+    }).orThrow();
+    try {
+      // A role that can't set secrets can't destroy them either, and is told
+      // what it would need.
+      await assert.rejects(
+        tuner
+          .configRevisionsDelete({
+            target,
+            revision: 2,
+            idempotencyKey: ulid(),
+          })
+          .orThrow(),
+        (error) => {
+          assert(error instanceof apis.auth.AuthError);
+          assert.equal(error.data.code, "access_denied");
+          assert.match(
+            error.message,
+            /trellis\.auth\.v1:config\.manageSecrets/,
+          );
+          return true;
+        },
+      );
+      // A revision without secrets is the settings role's to delete, and
+      // the secrets role deletes the one it was refused.
+      await tuner
+        .configRevisionsDelete({ target, revision: 1, idempotencyKey: ulid() })
+        .orThrow();
+      await keeper
+        .configRevisionsDelete({ target, revision: 2, idempotencyKey: ulid() })
+        .orThrow();
+      const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
+        target,
+      });
+      assert.deepEqual(
+        items.map((item) => item.revision),
+        [3],
+      );
+    } finally {
+      await tuner.stop();
+      await keeper.stop();
     }
   });
 });

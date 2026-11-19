@@ -67,6 +67,9 @@ pub(crate) enum AuthError {
     Conflict,
     #[error("not authorized")]
     Denied,
+    /// Denied, with what the caller would need, such as a capability.
+    #[error("not authorized: {0}")]
+    DeniedNeeding(String),
     #[error("required authority unavailable")]
     RequiredMissing,
     #[error("displayed consent changed")]
