@@ -57,7 +57,7 @@ agent cli {
     capability resources.destroy;
     capability resources.read;
   }
-  use health { capability health.query; capability health.observe; }
+  use health { capability health.query; capability health.inspect; capability health.observe; }
   use jobs { capability jobs.query; }
   use events {
     capability consumers.inspect;

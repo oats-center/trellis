@@ -780,12 +780,14 @@ async fn service_instances(
     id: &str,
     args: &SvcInstancesArgs,
 ) -> miette::Result<()> {
-    let deployment_id = resolve_deployment_id(DeploymentKind::Service, id).await?;
     let (_, connected) = connect_authenticated_cli_client().await?;
-    let instances = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+    let deployment = find_deployment(&connected, id, DeploymentKind::Service).await?;
+    let deployment_id = output::field(&deployment, "deploymentId");
+    let client = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected);
+    let instances = client
         .trellis_auth_v1()
         .service_instances_list_items(auth_types::AuthInstancesListRequest {
-            deployment_id: Some(wire(deployment_id)?),
+            deployment_id: Some(wire(&deployment_id)?),
             page: Some(trellis_runtime_apis::CursorQuery {
                 cursor: None,
                 limit: Some(100),
@@ -796,7 +798,131 @@ async fn service_instances(
         .try_collect::<Vec<_>>()
         .await
         .into_diagnostic()?;
+    // Health is what each instance last reported; without it the listing
+    // still shows what Auth knows.
+    let health = client
+        .trellis_health_v1()
+        .inspect(&auth_types::HealthInspectRequest {
+            contract_id: auth_types::HealthInspectRequestContractId(output::field(
+                &deployment,
+                "participantId",
+            )),
+            history_limit: Some(auth_types::HealthInspectRequestHistoryLimit(1.into())),
+            history_since: None,
+            instance_id: None,
+            participant_kind: auth_types::HealthInspectRequestParticipantKind::Service,
+            extra: Default::default(),
+        })
+        .await
+        .ok()
+        .and_then(|health| serde_json::to_value(health).ok());
+    let instances = instances
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .into_diagnostic()?;
+    let instances = with_status(
+        instances,
+        health
+            .as_ref()
+            .map_or(&[][..], |health| output::list(health, "instances")),
+        &output::field(&deployment, "implementationDigest"),
+    );
     print_service_instances_result(format, instances)
+}
+
+/// Joins what Auth knows of each instance with what it last reported, so a
+/// person or a script can follow an upgrade: which build each one runs,
+/// whether that is the deployment's current build, and its state.
+///
+/// An instance that is not connected is `offline`. A connected one is in the
+/// phase its latest heartbeat reports, when that heartbeat is current and
+/// came on this connection; before its first heartbeat it is
+/// `waitingForApproval` while its build's update waits for an administrator,
+/// `waitingForSettings` while required settings have no value, and
+/// `connecting` otherwise.
+fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Value> {
+    instances
+        .into_iter()
+        .map(|mut instance| {
+            let id = output::field(&instance, "instanceId");
+            let report = health
+                .iter()
+                .find(|report| output::field(report, "instanceId") == id);
+            let connected_at = instance.get("connectedAt").and_then(Value::as_str);
+            let heartbeat = report.and_then(|report| report.pointer("/latestSample/sample/time"));
+            let reporting = report.filter(|report| {
+                output::field(report, "effectiveStatus") != "offline"
+                    && match (
+                        connected_at,
+                        report.get("observedAt").and_then(Value::as_str),
+                    ) {
+                        (Some(connected), Some(observed)) => {
+                            output::parse_time(observed) >= output::parse_time(connected)
+                        }
+                        _ => false,
+                    }
+            });
+            let waiting = instance.get("waiting");
+            let state = if connected_at.is_none() {
+                "offline".to_owned()
+            } else if let Some(report) = reporting {
+                report
+                    .pointer("/latestSample/phase")
+                    .and_then(Value::as_str)
+                    .unwrap_or("serving")
+                    .to_owned()
+            } else if waiting.and_then(|waiting| waiting.get("update")).is_some() {
+                "waitingForApproval".to_owned()
+            } else if waiting
+                .and_then(|waiting| waiting.get("missingSettings"))
+                .and_then(Value::as_array)
+                .is_some_and(|missing| !missing.is_empty())
+            {
+                "waitingForSettings".to_owned()
+            } else {
+                "connecting".to_owned()
+            };
+            let digest = reporting
+                .and_then(|report| report.get("contractDigest"))
+                .or_else(|| instance.get("participantDigest"))
+                .and_then(Value::as_str);
+            let version =
+                reporting.and_then(|report| report.pointer("/latestSample/participant/version"));
+            let mut status = json!({
+                "state": state,
+                "build": {
+                    "digest": digest,
+                    "version": version,
+                    "current": digest.is_some_and(|digest| digest == current),
+                },
+                "connectedAt": connected_at,
+                "lastHeartbeat": heartbeat,
+                "reviewUrl": waiting.and_then(|waiting| waiting.pointer("/update/reviewUrl")),
+                "missingSettings": waiting.and_then(|waiting| waiting.get("missingSettings")),
+            });
+            if let Some(status) = status.as_object_mut() {
+                status.retain(|_, value| !value.is_null());
+            }
+            if let Some(build) = status.get_mut("build").and_then(Value::as_object_mut) {
+                build.retain(|_, value| !value.is_null());
+            }
+            // The table shows the build as one short word.
+            let label = match (version.and_then(Value::as_str), digest) {
+                (Some(version), _) => version.to_owned(),
+                (None, Some(digest)) => digest.chars().take(12).collect(),
+                (None, None) => String::new(),
+            };
+            let older = !label.is_empty() && status["build"]["current"] != json!(true);
+            status["build"]["label"] = json!(if older {
+                format!("{label} (older)")
+            } else {
+                label
+            });
+            instance["status"] = status;
+            instance
+        })
+        .collect()
 }
 
 async fn device_instances(
@@ -1003,11 +1129,32 @@ fn print_service_instances_result<T: serde::Serialize>(
             output::list(value, "instances"),
             &[
                 output::col("Name", "principal.title"),
+                output::state_col("State", "status.state"),
+                output::col("Build", "status.build.label"),
+                output::time_col("Connected", "status.connectedAt"),
+                output::time_col("Last heartbeat", "status.lastHeartbeat"),
                 output::state_col("Enabled", "principal.enabled"),
                 output::muted("ID", "instanceId"),
             ],
             "No instances. Provision one with `provision`.",
-        )
+        )?;
+        // What a waiting instance needs, which the table has no room for.
+        for instance in output::list(value, "instances") {
+            let name = output::field(instance, "principal.title");
+            let url = output::field(instance, "status.reviewUrl");
+            if output::field(instance, "status.state") == "waitingForApproval" {
+                if url.is_empty() {
+                    eprintln!("{name} waits for its update to be approved; see `updates`.");
+                } else {
+                    eprintln!("{name} waits for its update to be approved: {url}");
+                }
+            }
+            if output::field(instance, "status.state") == "waitingForSettings" {
+                let missing = output::field(instance, "status.missingSettings");
+                eprintln!("{name} waits for settings: {missing}");
+            }
+        }
+        Ok(())
     })
 }
 

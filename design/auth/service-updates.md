@@ -143,6 +143,21 @@ each instance's `state` (`active`, `disabled`, or `removed`) and `upToDate`,
 whether it holds the deployment's installed revision; an instance that does not
 cannot be enabled until it connects with that build.
 
+It also reports what an upgrade needs to watch: `participantDigest`, the build
+the instance's installed revision names; `connectedAt`, when its current
+logical connection began (the first session issued for a runtime ID that still
+has an admitted attachment), absent while it is not connected; and, while it is
+connected, `waiting`: the pending `update` its build submitted, with the review
+URL, and the `missingSettings` its installed build requires and has no value
+for, with the Console's `settingsUrl`. Auth cannot see what a connected
+instance does after that; its heartbeat says, through `phase` (`connecting`,
+`serving`, `stopping`). The Console's service page and `trellis svc <ID>
+instances` join the two the same way: not connected is `offline`; a current
+heartbeat sent on this connection gives its phase; before one arrives the
+instance is `waitingForApproval`, then `waitingForSettings`, else `connecting`.
+The build is the heartbeat's digest and version, or the installed digest, and is
+current when it equals the deployment's installed build.
+
 ## Built-in services
 
 Trellis's own services (`trellis.platform`, `trellis.healthRuntime`,

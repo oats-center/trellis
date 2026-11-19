@@ -70,20 +70,40 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             })
         }
     );
-    read!(
-        register_service_instances_list,
-        ManagePrincipals,
-        |connection: &Connection, input: &AuthInstancesListRequest| read_instances(
-            connection, input, "service"
-        )
-    );
-    read!(
-        register_devices_list,
-        ManagePrincipals,
-        |connection: &Connection, input: &AuthInstancesListRequest| read_instances(
-            connection, input, "device"
-        )
-    );
+    for kind in ["service", "device"] {
+        let engine = Arc::clone(&oauth);
+        let list = move |context, input: AuthInstancesListRequest| {
+            let engine = Arc::clone(&engine);
+            async move {
+                let actor =
+                    caller(&context, Some(Administration::ManagePrincipals)).map_err(rpc_error)?;
+                blocking(move || {
+                    let storage = engine.server.store();
+                    storage.authority.transaction(|connection| {
+                        SqliteAuthorizationStore::require_administration(
+                            connection,
+                            &actor,
+                            Administration::ManagePrincipals,
+                        )?;
+                        let mut page = read_instances(connection, &input, kind)?;
+                        for item in &mut page.items {
+                            if item.connected_at.is_some() {
+                                item.waiting = waiting(connection, storage, item)?;
+                            }
+                        }
+                        Ok(page)
+                    })
+                })
+                .await
+                .map_err(rpc_error)
+            }
+        };
+        if kind == "service" {
+            provider.register_service_instances_list(list);
+        } else {
+            provider.register_devices_list(list);
+        }
+    }
     let resolver = Arc::clone(&store);
     provider.register_packages_resolve(move |context, input| {
         let store = Arc::clone(&resolver);
@@ -789,6 +809,28 @@ pub(super) fn read_instance(
         [&principal],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
+    let participant_digest: Option<String> = connection
+        .query_row(
+            "SELECT p.participant_digest FROM auth_instances i \
+            JOIN auth_deployments d USING(deployment_id) \
+            JOIN auth_installed_participants p \
+            ON p.participant_id=d.participant_id AND p.revision=i.installed_revision \
+            WHERE i.instance_id=?1",
+            [instance_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // A logical connection keeps its runtime ID across authorization renewals,
+    // so it began when the first session of a still admitted runtime was issued.
+    let connected_at: Option<i64> = connection.query_row(
+        "SELECT min(s.issued_at) FROM auth_authorization_sessions s \
+        WHERE s.principal_id=?1 AND s.runtime_id IN (\
+        SELECT c.runtime_id FROM auth_authorization_sessions c \
+        JOIN auth_attachments a USING(authorization_session_id) \
+        WHERE c.principal_id=?1 AND c.state='active' AND a.state='admitted')",
+        [&principal],
+        |row| row.get(0),
+    )?;
     Ok(AuthProvisionedInstance {
         instance_id: instance_id.parse().map_err(|_| AuthError::Unavailable)?,
         deployment_id: deployment.parse().map_err(|_| AuthError::Unavailable)?,
@@ -800,6 +842,9 @@ pub(super) fn read_instance(
             _ => AuthInstanceState::Disabled,
         },
         up_to_date,
+        participant_digest: participant_digest.map(Into::into),
+        connected_at: connected_at.map(timestamp).transpose()?,
+        waiting: None,
         principal: AuthPrincipal {
             principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
             title,
@@ -1467,6 +1512,47 @@ pub(super) fn read_instances(
         items,
         page: CursorPageInfo { next_cursor },
     })
+}
+
+/// What a connected instance waits for: its build's update to be approved, or
+/// required settings its installed build has no value for.
+fn waiting(
+    connection: &Connection,
+    storage: &super::OAuthStorage,
+    instance: &AuthProvisionedInstance,
+) -> Result<Option<AuthInstanceWaiting>, AuthError> {
+    let instance_id = instance.instance_id.to_string();
+    let deployment = instance.deployment_id.to_string();
+    let update: Option<String> = connection
+        .query_row(
+            "SELECT update_id FROM auth_service_updates \
+            WHERE instance_id=?1 AND state='pending' ORDER BY update_id DESC LIMIT 1",
+            [&instance_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let origin = storage.authority.settings.console_origin.as_ref();
+    let (missing, settings_url) =
+        super::config::missing_settings(connection, storage, &instance_id)?;
+    if update.is_none() && missing.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(AuthInstanceWaiting {
+        update: update
+            .map(|update| {
+                Ok::<_, AuthError>(AuthInstanceWaitingUpdate {
+                    update_id: update.parse().map_err(|_| AuthError::Unavailable)?,
+                    review_url: origin.map(|origin| {
+                        format!("{origin}/console/admin/services/{deployment}?update={update}")
+                    }),
+                    extra: Default::default(),
+                })
+            })
+            .transpose()?,
+        missing_settings: missing.into_iter().map(Into::into).collect(),
+        settings_url,
+        extra: Default::default(),
+    }))
 }
 
 #[cfg(test)]

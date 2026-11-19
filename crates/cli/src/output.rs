@@ -208,13 +208,13 @@ enum Tone {
 fn tone(state: &str) -> Tone {
     match state {
         "enabled" | "active" | "applied" | "approved" | "accepted" | "ready" | "on" | "yes"
-        | "resolved" | "ok" | "healthy" | "verified" | "running" => Tone::Good,
+        | "resolved" | "ok" | "healthy" | "verified" | "running" | "serving" => Tone::Good,
         "pending" | "waiting" | "replay_pending" | "replaying" | "provisioning" | "degraded"
-        | "stalled" | "draining" => Tone::Waiting,
+        | "stalled" | "draining" | "connecting" | "stopping" | "waitingForApproval"
+        | "waitingForSettings" => Tone::Waiting,
         "disabled" | "rejected" | "declined" | "revoked" | "failed" | "dead" | "off" | "no"
-        | "removed" | "expired" | "superseded" | "unverified" | "invalid" | "unhealthy" => {
-            Tone::Bad
-        }
+        | "removed" | "expired" | "superseded" | "unverified" | "invalid" | "unhealthy"
+        | "offline" => Tone::Bad,
         _ => Tone::Plain,
     }
 }
@@ -229,7 +229,7 @@ pub fn state(text: &str) -> String {
     }
 }
 
-fn parse_time(raw: &str) -> Option<time::OffsetDateTime> {
+pub(crate) fn parse_time(raw: &str) -> Option<time::OffsetDateTime> {
     time::OffsetDateTime::parse(raw, &time::format_description::well_known::Rfc3339).ok()
 }
 

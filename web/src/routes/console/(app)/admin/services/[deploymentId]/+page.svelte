@@ -16,6 +16,10 @@
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { instanceIdentities } from "$lib/console/instance_identity.ts";
+  import {
+    instanceStatus,
+    type InstanceState,
+  } from "$lib/console/instance_status.ts";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import CopyButton from "$lib/components/CopyButton.svelte";
@@ -95,11 +99,24 @@
   const turnedOn = $derived(
     current.filter((instance) => instance.state === "active").length,
   );
+  // What each instance is doing now: Auth's view of its connection joined
+  // with its latest heartbeat.
+  const statuses = $derived(
+    new Map(
+      instances.map((instance) => [
+        instance.instanceId,
+        instanceStatus(
+          instance,
+          running.get(instance.instanceId),
+          deployment?.implementationDigest,
+        ),
+      ]),
+    ),
+  );
   const connected = $derived(
-    current.filter((instance) => {
-      const report = running.get(instance.instanceId);
-      return report !== undefined && report.effectiveStatus !== "offline";
-    }).length,
+    current.filter(
+      (instance) => statuses.get(instance.instanceId)?.state !== "offline",
+    ).length,
   );
   // The deployment names its installed build. An administrator can apply a
   // build directly, which leaves no update behind, so the history only dates
@@ -193,6 +210,64 @@
       if (scope.settle(token)) loading = false;
     }
   }
+  // Instances, their heartbeats and the installed build change while an
+  // upgrade runs; reread them every two seconds while the page is visible.
+  $effect(() => {
+    const key = deployment?.deploymentId;
+    if (!key) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void refreshInstances(key);
+    }, 2_000);
+    return () => clearInterval(timer);
+  });
+  let refreshing = false;
+  async function refreshInstances(key: string): Promise<void> {
+    if (refreshing || scope.disposed) return;
+    refreshing = true;
+    try {
+      const { deployment: target } = await trellis
+        .deploymentsGet(
+          apis.auth.API.actions["rpc:Deployments.Get"].input.decode({
+            deploymentId: key,
+          }),
+        )
+        .orThrow();
+      const [listed, reported] = await Promise.all([
+        traverseAll(async (page) => {
+          const response = await trellis
+            .serviceInstancesList({ deploymentId: target.deploymentId, page })
+            .orThrow();
+          return { items: response.items, cursor: response.page.nextCursor };
+        }),
+        loadHealth(target),
+      ]);
+      if (deployment?.deploymentId !== key || !listed.complete) return;
+      deployment = target;
+      instances = [...listed.items];
+      health = reported;
+    } catch {
+      // A missed refresh keeps what the page shows; the next one tries again.
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  const STATE_LABELS: Record<InstanceState, string> = {
+    offline: "Not connected",
+    connecting: "Connecting",
+    waitingForApproval: "Waiting for approval",
+    waitingForSettings: "Waiting for settings",
+    serving: "Serving",
+    stopping: "Stopping",
+  };
+  function stateTone(state: InstanceState): "healthy" | "degraded" | "offline" {
+    return state === "serving"
+      ? "healthy"
+      : state === "offline"
+        ? "offline"
+        : "degraded";
+  }
+
   // Health is context for the instances; the page stands without it.
   async function loadHealth(target: Deployment): Promise<Health | null> {
     try {
@@ -444,9 +519,11 @@
   }
 
   function ago(iso: string): string {
-    const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-    if (!Number.isFinite(minutes)) return "—";
-    if (minutes < 1) return "just now";
+    const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (!Number.isFinite(seconds)) return "—";
+    if (seconds < 5) return "just now";
+    if (seconds < 60) return `${seconds} s ago`;
+    const minutes = Math.floor(seconds / 60);
     if (minutes < 60) return `${minutes} min ago`;
     const hours = Math.floor(minutes / 60);
     return hours < 24 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
@@ -688,7 +765,7 @@
           <tr>
             <th class="trellis-primary">Instance</th>
             <th><span class="max-sm:sr-only">State</span></th>
-            <th class="hidden sm:table-cell">Connection</th>
+            <th class="hidden sm:table-cell">Running</th>
             <th class="hidden sm:table-cell">Build</th>
             <th class="hidden sm:table-cell">Added</th>
             <th><span class="sr-only">Actions</span></th>
@@ -698,9 +775,10 @@
           {#each listed as instance (instance.instanceId)}
             {@const identity = identities.get(instance.instanceId)}
             {@const report = running.get(instance.instanceId)}
+            {@const status = statuses.get(instance.instanceId)}
             {@const build = buildLabel(
-              report?.contractDigest,
-              report?.latestSample.participant.version,
+              status?.build.digest,
+              status?.build.version,
             )}
             <tr
               data-instance-id={instance.instanceId}
@@ -724,13 +802,9 @@
                     >{/if}
                 </span>
                 <span class="block text-xs text-base-content/60 sm:hidden"
-                  >{report
-                    ? report.effectiveStatus === "offline"
-                      ? `Last seen ${ago(report.observedAt)}`
-                      : `Connected · seen ${ago(report.observedAt)}`
-                    : "Never connected"} · {build}</span
+                  >{status ? STATE_LABELS[status.state] : "Not connected"} · {build}</span
                 >
-                {#if report && report.effectiveStatus !== "offline" && !instance.upToDate}<span
+                {#if status && status.state !== "offline" && !status.build.current && status.build.digest}<span
                     class="mt-0.5 flex items-center gap-1 text-xs text-warning"
                     ><Icon name="alert" size={12} />Runs an older build</span
                   >{:else if instance.state === "disabled" && !instance.upToDate}<span
@@ -749,24 +823,57 @@
                   status={instance.state === "active" ? "healthy" : "offline"}
                 />
               </td>
-              <td class="hidden sm:table-cell">
-                {#if report}
+              <td
+                class="hidden sm:table-cell"
+                data-runtime-state={status?.state}
+              >
+                {#if status}
                   <span class="flex flex-col gap-0.5">
-                    <HealthStatus status={report.effectiveStatus} />
-                    <span class="text-xs text-base-content/60"
-                      >Seen {ago(report.observedAt)}</span
-                    >
+                    <StatusBadge
+                      dot
+                      label={STATE_LABELS[status.state]}
+                      status={stateTone(status.state)}
+                    />
+                    {#if status.state === "waitingForApproval"}
+                      {#if status.reviewUrl}<a
+                          class="link text-xs"
+                          href={status.reviewUrl}>Review the update</a
+                        >{:else}<span class="text-xs text-base-content/60"
+                          >Its update waits for approval</span
+                        >{/if}
+                    {:else if status.state === "waitingForSettings"}
+                      <span class="text-xs text-base-content/60"
+                        >Needs {status.missingSettings.join(", ")}</span
+                      >
+                    {/if}
+                    {#if status.connectedAt && status.state !== "offline"}<span
+                        class="text-xs text-base-content/60"
+                        >Connected {ago(status.connectedAt)}</span
+                      >{/if}
+                    {#if status.lastHeartbeat}<span
+                        class="text-xs text-base-content/60"
+                        title={formatDate(status.lastHeartbeat)}
+                        >Last heartbeat {ago(status.lastHeartbeat)}</span
+                      >{:else if !report}<span
+                        class="text-xs text-base-content/55"
+                        >Never reported</span
+                      >{/if}
                   </span>
-                {:else}<span class="text-base-content/55">Never connected</span
-                  >{/if}
+                {/if}
               </td>
               <td class="hidden sm:table-cell">
-                <span
-                  class={report?.latestSample.participant.version
-                    ? undefined
-                    : "trellis-identifier"}
-                  title={report?.contractDigest}>{build}</span
-                >
+                <span class="flex flex-col items-start gap-0.5">
+                  <span
+                    class={status?.build.version
+                      ? undefined
+                      : "trellis-identifier"}
+                    title={status?.build.digest}>{build}</span
+                  >
+                  {#if status?.build.digest}<StatusBadge
+                      label={status.build.current ? "Current" : "Older"}
+                      status={status.build.current ? "healthy" : "degraded"}
+                    />{/if}
+                </span>
               </td>
               <td class="hidden whitespace-nowrap sm:table-cell"
                 >{formatDate(instance.principal.createdAt)}</td

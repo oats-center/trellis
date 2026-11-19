@@ -163,6 +163,15 @@ registers the owner's key as an instance, or selects the instance that already
 has it, and prints no seed. `updates`, `approve`, and `reject`
 accept a waiting claim's ID or name as well as a deployment's.
 
+`svc <id> instances` joins `Auth.ServiceInstances.List` with
+`Health.Inspect` (the `cli` agent selects `health.inspect`) and adds a
+`status` to each instance: `state` (`offline`, `connecting`,
+`waitingForApproval`, `waitingForSettings`, `serving`, `stopping`), `build`
+(`digest`, `version`, `current`, and a short `label`), `connectedAt`,
+`lastHeartbeat`, and while waiting `reviewUrl` or `missingSettings`. The text
+table shows state, build, connected and last heartbeat, and names what a waiting
+instance needs below it. The states follow `design/auth/service-updates.md`.
+
 `svc updates` lists the builds a service submitted for itself
 (`Auth.ServiceUpdates.List`) with what each asks for and gives up;
 `approve` and `reject` decide the pending one, or the named one
