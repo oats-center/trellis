@@ -1694,9 +1694,12 @@ jobs:
           # only when no newer release has pushed its versioned images, which
           # every release does before it promotes, even if it later fails.
           # Version order treats -rc.N as before the release it precedes.
-          newest="$( { skopeo list-tags --authfile "$auth" "docker://$REGISTRY/$owner/trellis-server" |
-            jq -r '.Tags[]' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || true; echo "$RELEASE_TAG"; } |
-            sed 's/-/~/' | sort -V | tail -n 1 | sed 's/~/-/')"
+          # A failed lookup stops the job rather than reading as "no newer
+          # release".
+          listed="$(skopeo list-tags --authfile "$auth" "docker://$REGISTRY/$owner/trellis-server")"
+          versions="$(jq -er '.Tags[]' <<<"$listed")"
+          newest="$( { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' <<<"$versions" || [ $? -eq 1 ]
+            echo "$RELEASE_TAG"; } | sed 's/-/~/' | sort -V | tail -n 1 | sed 's/~/-/')"
           if [[ "$newest" != "$RELEASE_TAG" ]]; then
             echo "::notice::$newest is newer than $RELEASE_TAG, so the image channels stay where they are."
             exit 0
