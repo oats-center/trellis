@@ -1056,7 +1056,10 @@ links. A setup link stays valid until it is used once; recovery and
 administrative reset links expire after five minutes. Once a password exists, startup never issues a link without explicit
 local recovery. Linking requires the exact initiating portal user and a fresh
 nonce/PKCE-verified upstream exchange; provider disablement or a revision change
-invalidates the action, and another user's identity cannot be reassigned. Native
+invalidates the action, and another user's identity cannot be reassigned.
+Administrative linking (`accounts.manage`) writes the same identity row with no
+upstream profile and no flow; it never reassigns another user's identity either,
+and returns `identity_linked_to_another_user` instead. Native
 forms enforce Origin and CSRF without accepting actor IDs from the browser.
 
 Identity-link approval never redirects its form POST to an external provider. It
@@ -1104,6 +1107,9 @@ A password sign-up creates the account and signs it in through the ordinary
 local login. A first sign-in by an unlinked provider subject creates an account
 linked to that subject, in the same transaction as the login; without sign-up
 it is refused as before, and an email match still never selects another user.
+An administrator can link a subject to an account ahead of that first sign-in
+(`Users.Identities.Link`, or `identities` on `Users.Create`); the sign-in then
+resolves through the link as any linked subject does, so it needs no sign-up.
 Every new account, however created, gets the roles marked for new users.
 
 ### Profiles, images, and the directory (`profiles.rs`, `avatars.rs`, `rpc_users.rs`)

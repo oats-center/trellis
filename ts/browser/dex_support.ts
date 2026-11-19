@@ -24,6 +24,8 @@ export type TestDex = {
   readonly clientSecret: string;
   /** SHA-256 fingerprint of the private CA that issued Dex's certificate. */
   readonly fingerprint: string;
+  /** The `sub` Dex gives each email's account, by email. */
+  readonly subjects: ReadonlyMap<string, string>;
   /** Dex's log, for failure messages. */
   log(): Promise<string>;
   stop(): Promise<void>;
@@ -114,11 +116,12 @@ export async function startDex(options: {
   const issuer = `https://127.0.0.1:${reservation.port}/dex`;
   const clientId = "trellis-company-sign-in";
   const clientSecret = `dex-secret-${ulid()}`;
-  const users = options.emails
+  const userIds = new Map(options.emails.map((email) => [email, ulid()]));
+  const users = [...userIds]
     .map(
-      (email) =>
+      ([email, userId]) =>
         `- email: ${email}\n  username: ${email.split("@")[0]}\n` +
-        `  userID: ${ulid()}\n  hash: '${PASSWORD_HASH}'\n`,
+        `  userID: ${userId}\n  hash: '${PASSWORD_HASH}'\n`,
     )
     .join("");
   await writeFile(
@@ -183,7 +186,26 @@ ${users}`,
     clientId,
     clientSecret,
     fingerprint: new X509Certificate(ca).fingerprint256,
+    subjects: new Map(
+      [...userIds].map(([email, userId]) => [email, dexSubject(userId)]),
+    ),
     log,
     stop,
   };
+}
+
+/**
+ * The `sub` Dex issues a static-password user: a protobuf message of its user
+ * ID and the `local` connector ID, base64url-encoded without padding. Both IDs
+ * here are ASCII and shorter than 128 bytes, so each field is a tag byte, a
+ * one-byte length, and the bytes.
+ */
+function dexSubject(userId: string): string {
+  const field = (tag: number, value: string) => {
+    const bytes = Buffer.from(value, "utf8");
+    return Buffer.concat([Buffer.from([tag, bytes.length]), bytes]);
+  };
+  return Buffer.concat([field(0x0a, userId), field(0x12, "local")]).toString(
+    "base64url",
+  );
 }

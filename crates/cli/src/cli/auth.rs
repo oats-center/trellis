@@ -422,13 +422,17 @@ pub enum UsersSubcommand {
     /// Show one user by Trellis user ID.
     Show(UserRefArgs),
     /// Find the user an OIDC sign-in belongs to, by provider ID and exact subject.
-    Find(UserFindArgs),
-    /// Create one Trellis user.
+    Find(UserIdentityArgs),
+    /// Create one Trellis user, optionally with an OIDC sign-in linked.
     Create(UserCreateArgs),
     /// Edit one Trellis user.
     Edit(UserEditArgs),
     /// Delete one Trellis user, signing them out everywhere.
     Delete(UserRefArgs),
+    /// Link an OIDC sign-in to a user, so that sign-in opens their account.
+    Link(UserIdentityChangeArgs),
+    /// Remove an OIDC sign-in from a user and end the sign-ins made with it.
+    Unlink(UserIdentityChangeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -540,14 +544,24 @@ pub struct UserRefArgs {
 }
 
 #[derive(Debug, Args)]
-/// Find a user by a linked OIDC sign-in.
-pub struct UserFindArgs {
+/// An OIDC sign-in: a provider and the provider's subject for the user.
+pub struct UserIdentityArgs {
     /// The sign-in provider's Trellis ID.
     #[arg(long, value_name = "PROVIDER_ID")]
     pub provider: Option<String>,
     /// The provider's `sub` for the user, matched exactly.
     #[arg(long, value_name = "SUBJECT")]
     pub subject: Option<String>,
+}
+
+#[derive(Debug, Args)]
+/// Link or unlink one OIDC sign-in for one user.
+pub struct UserIdentityChangeArgs {
+    #[arg(value_name = "USER_ID")]
+    pub user_id: String,
+
+    #[command(flatten)]
+    pub identity: UserIdentityArgs,
 }
 
 #[derive(Debug, Args)]
@@ -559,6 +573,11 @@ pub struct UserCreateArgs {
 
     #[arg(long)]
     pub username: Option<String>,
+
+    /// Link this OIDC sign-in to the new user. A user created with one gets no
+    /// password setup code.
+    #[command(flatten)]
+    pub identity: UserIdentityArgs,
 }
 
 #[derive(Debug, Args)]

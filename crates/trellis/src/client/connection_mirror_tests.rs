@@ -63,6 +63,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         username: "mirror-user".to_string().into(),
         display_name: "Mirror user".to_string().into(),
         password: Some("ordinary mirror user password".to_string().into()),
+        identities: None,
         idempotency_key: ulid::Ulid::generate().to_string().into(),
         extra: Default::default(),
     };

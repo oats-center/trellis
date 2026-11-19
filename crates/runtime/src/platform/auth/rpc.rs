@@ -244,6 +244,11 @@ pub(super) fn rpc_error(error: AuthError) -> ServerError {
             needed = format!("Not authorized: {detail}");
             (errors::AuthError::TYPE, "access_denied", needed.as_str())
         }
+        AuthError::IdentityTaken => (
+            errors::AuthError::TYPE,
+            "identity_linked_to_another_user",
+            "This OIDC sign-in is linked to another user",
+        ),
         AuthError::RequiredMissing => (
             errors::AuthError::TYPE,
             "required_authority_unavailable",

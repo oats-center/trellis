@@ -190,6 +190,7 @@ pub(super) fn create_user(store: &SqliteAuthorizationStore, actor: &str, now: i6
         given_name: None,
         family_name: None,
         email: None,
+        identities: None,
         idempotency_key: id().into(),
         username: id().into(),
         display_name: "Test user".to_owned().into(),

@@ -691,6 +691,7 @@ fn roles_marked_for_new_users_are_given_to_users_created_afterwards() {
             username: username.to_string().into(),
             display_name: username.to_string().into(),
             password: None,
+            identities: None,
             idempotency_key: id().into(),
             extra: Default::default(),
         };

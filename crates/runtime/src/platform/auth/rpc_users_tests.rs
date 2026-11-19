@@ -91,6 +91,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         username: "Alice".to_string().into(),
         display_name: "Alice Example".to_string().into(),
         password: Some("initial alice password".to_string().into()),
+        identities: None,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -390,6 +391,7 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
         username: "Reserved".to_string().into(),
         display_name: "Pending account".to_string().into(),
         password: None,
+        identities: None,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -403,6 +405,7 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
         email: None,
         username: "RESERVED".to_string().into(),
         password: Some("a usable password".to_string().into()),
+        identities: None,
         idempotency_key: id().into(),
         ..input
     };
@@ -668,6 +671,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         username: "alice".to_string().into(),
         display_name: "Alice".to_string().into(),
         password: None,
+        identities: None,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -789,6 +793,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
         username: "alice".to_string().into(),
         display_name: "Alice".to_string().into(),
         password: Some("initial alice password".to_string().into()),
+        identities: None,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -926,6 +931,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
             username: username.to_string().into(),
             display_name: username.to_string().into(),
             password: Some("initial account password".to_string().into()),
+            identities: None,
             idempotency_key: id().into(),
             extra: Default::default(),
         };
@@ -1118,6 +1124,7 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
         username: "alice".to_string().into(),
         display_name: "Alice".to_string().into(),
         password: None,
+        identities: None,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -1210,6 +1217,7 @@ fn the_sign_in_settings_minimum_governs_created_changed_and_signed_up_passwords(
         username: username.to_string().into(),
         display_name: "Configured".to_string().into(),
         password: Some(password.to_string().into()),
+        identities: None,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -1310,6 +1318,7 @@ fn the_password_minimum_counts_characters_not_bytes() {
         username: username.to_string().into(),
         display_name: "Multibyte".to_string().into(),
         password: Some(password.to_string().into()),
+        identities: None,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -1464,6 +1473,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
             username: username.to_string().into(),
             display_name: username.to_string().into(),
             password: Some("initial account password".to_string().into()),
+            identities: None,
             idempotency_key: id().into(),
             extra: Default::default(),
         };
@@ -1711,4 +1721,110 @@ fn link_providers_lists_active_providers_by_name_and_drops_a_disabled_one() {
             .collect::<Vec<_>>(),
         [(company.provider_id, "Company")]
     );
+}
+
+/// Choosing which OIDC sign-ins open someone's account is account management.
+/// A caller without accounts.manage, even one whose session was allowed the
+/// action, is refused inside the transaction and nothing changes.
+#[test]
+fn linking_and_unlinking_another_persons_sign_ins_needs_accounts_manage() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(open(&directory, SigningKey::from_bytes(&[57; 32])));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[29; 32]).unwrap();
+    let create = |username: &str| {
+        let input = AuthUserCreateRequest {
+            given_name: None,
+            family_name: None,
+            email: None,
+            username: username.to_string().into(),
+            display_name: username.to_string().into(),
+            password: Some("initial account password".to_string().into()),
+            identities: None,
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+        create_user(&store, &mutation(&admin, &input), &input, NOW)
+            .unwrap()
+            .user
+    };
+    let member = create("member").principal_id.to_string();
+    let target = create("target");
+    let provider = AuthOIDCProviderPutRequest {
+        provider_id: None,
+        issuer: "https://identity.example".into(),
+        client_id: "trellis".into(),
+        title: "Company".to_string().into(),
+        scopes: vec!["openid".into()],
+        role_claim: "/roles".into(),
+        claim_freshness_seconds: 300.into(),
+        client_secret: None,
+        certificate_fingerprint: None,
+        expected_revision: 0.into(),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let provider_id = put_provider(
+        &storage,
+        &mutation(&admin, &provider),
+        &provider,
+        IssuerPin::Keep,
+        NOW,
+    )
+    .unwrap()
+    .provider
+    .provider_id;
+    let identity = AuthUserFindIdentity {
+        provider_id,
+        subject: "auth0|target".into(),
+        extra: Default::default(),
+    };
+    let revision = target.account.as_ref().unwrap().principal.revision;
+    let link = AuthUserIdentitiesLinkRequest {
+        user_id: target.principal_id,
+        identity: identity.clone(),
+        expected_revision: revision,
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let subjects = || {
+        let input = AuthUserFindRequest {
+            user_id: Some(target.principal_id),
+            identity: None,
+            extra: Default::default(),
+        };
+        store
+            .transaction(|connection| find_user(&store, connection, &input))
+            .unwrap()
+            .found
+            .unwrap()
+            .identities
+            .into_iter()
+            .map(|identity| identity.subject)
+            .collect::<Vec<_>>()
+    };
+    assert!(matches!(
+        link_user_identity(&store, &mutation(&member, &link), &link, NOW + 1),
+        Err(AuthError::Denied)
+    ));
+    assert!(subjects().is_empty());
+    let linked = link_user_identity(&store, &mutation(&admin, &link), &link, NOW + 1).unwrap();
+    let unlink = AuthUserIdentitiesUnlinkRequest {
+        user_id: target.principal_id,
+        identity,
+        expected_revision: linked.user.account.unwrap().principal.revision,
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    assert!(matches!(
+        unlink_user_identity(&store, &mutation(&member, &unlink), &unlink, NOW + 2),
+        Err(AuthError::Denied)
+    ));
+    assert_eq!(subjects(), ["auth0|target"]);
+    unlink_user_identity(&store, &mutation(&admin, &unlink), &unlink, NOW + 2).unwrap();
+    assert!(subjects().is_empty());
 }
