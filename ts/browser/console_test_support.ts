@@ -270,12 +270,13 @@ export async function wireNatsGate(page: Page): Promise<{
     (url) => url.protocol === "ws:" || url.protocol === "wss:",
     (ws) => {
       const server = ws.connectToServer();
+      const connection = gate.connect();
       pageSocket = ws;
       ws.onMessage((message) => {
-        sendWs(server, gate.ingestClient(toWsBytes(message)));
+        sendWs(server, connection.ingestClient(toWsBytes(message)));
       });
       server.onMessage((message) => {
-        sendWs(ws, gate.ingestServer(toWsBytes(message)));
+        sendWs(ws, connection.ingestServer(toWsBytes(message)));
       });
     },
   );
