@@ -205,6 +205,10 @@ pub struct ServiceConnectOptions<'a> {
     timeout_ms: u64,
     /// Health heartbeat interval override; absence preserves the production default.
     health_heartbeat_interval_ms: Option<u64>,
+    /// Readiness probe and stop timeout.
+    lifecycle: super::lifecycle::LifecycleOptions,
+    /// Whether the service owns its process: signals, systemd and probes.
+    owns_process: bool,
 }
 
 impl<'a> ServiceConnectOptions<'a> {
@@ -221,7 +225,19 @@ impl<'a> ServiceConnectOptions<'a> {
             provisioned_identity_seed_base64url,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             health_heartbeat_interval_ms: None,
+            lifecycle: super::lifecycle::LifecycleOptions::default(),
+            owns_process: true,
         }
+    }
+
+    /// Run as part of a host process that owns its own signals and readiness,
+    /// as Trellis's built-in services do: `run` ignores SIGTERM and Ctrl-C,
+    /// and nothing is sent to systemd.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn embedded_in_host(mut self) -> Self {
+        self.owns_process = false;
+        self
     }
 
     /// Attach optional display metadata without changing the server-owned assignment.
@@ -240,6 +256,35 @@ impl<'a> ServiceConnectOptions<'a> {
     /// The default remains 30 seconds when this method is not called.
     pub const fn with_health_heartbeat_interval_ms(mut self, interval_ms: u64) -> Self {
         self.health_heartbeat_interval_ms = Some(interval_ms);
+        self
+    }
+
+    /// Keep a file at `path` while the service serves, for orchestrators that
+    /// check for a file. It is removed whenever the service stops serving.
+    #[must_use]
+    pub fn with_readiness_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.lifecycle.readiness_file = Some(path.into());
+        self
+    }
+
+    /// Answer HTTP readiness and liveness probes on `address`.
+    ///
+    /// `GET /ready` returns 200 while the service serves and 503 otherwise;
+    /// `GET /live` returns 200 until it has stopped. The listener opens when
+    /// the service starts connecting, so liveness answers while it waits for
+    /// approval or settings.
+    #[must_use]
+    pub const fn with_readiness_http(mut self, address: std::net::SocketAddr) -> Self {
+        self.lifecycle.readiness_http = Some(address);
+        self
+    }
+
+    /// How long a stopping service waits for the requests, deliveries and jobs
+    /// it holds before it hands the rest back. The default is
+    /// [`DEFAULT_STOP_TIMEOUT`](super::DEFAULT_STOP_TIMEOUT).
+    #[must_use]
+    pub const fn with_stop_timeout(mut self, timeout: Duration) -> Self {
+        self.lifecycle.stop_timeout = timeout;
         self
     }
 }
@@ -267,6 +312,10 @@ pub enum ServiceRuntimeError {
     /// The service bootstrap response did not include a resource binding.
     #[error("service bootstrap response did not include a binding")]
     MissingBootstrapBinding,
+
+    /// The HTTP readiness probe could not listen on its address.
+    #[error("readiness probe could not listen: {0}")]
+    ReadinessProbe(#[source] std::io::Error),
 
     /// Readmitted with only the right to submit a build, this running build no
     /// longer answers for its instance: the deployment moved past it.
@@ -495,6 +544,67 @@ impl Drop for ServiceEventListenerHandle {
     }
 }
 
+/// The durable consumer loops a stopping service drains.
+///
+/// `begin` stops every loop from fetching more; `hand_back` makes a loop that
+/// still holds a delivery give it back at once. `idle` resolves when no loop
+/// runs.
+#[derive(Clone)]
+pub(crate) struct EventDrain {
+    draining: Arc<tokio::sync::watch::Sender<bool>>,
+    hand_back: Arc<tokio::sync::watch::Sender<bool>>,
+    running: Arc<tokio::sync::watch::Sender<usize>>,
+}
+
+impl Default for EventDrain {
+    fn default() -> Self {
+        Self {
+            draining: Arc::new(tokio::sync::watch::channel(false).0),
+            hand_back: Arc::new(tokio::sync::watch::channel(false).0),
+            running: Arc::new(tokio::sync::watch::channel(0).0),
+        }
+    }
+}
+
+impl EventDrain {
+    fn begin(&self) {
+        self.draining.send_replace(true);
+    }
+
+    fn hand_back(&self) {
+        self.hand_back.send_replace(true);
+    }
+
+    fn is_draining(&self) -> bool {
+        *self.draining.borrow()
+    }
+
+    async fn hand_back_requested(&self) {
+        let mut hand_back = self.hand_back.subscribe();
+        // The sender lives as long as this drain, so this only ends on a request.
+        let _ = hand_back.wait_for(|hand_back| *hand_back).await;
+    }
+
+    /// Count one running loop until the returned guard drops.
+    fn enter(&self) -> EventLoopGuard {
+        self.running.send_modify(|running| *running += 1);
+        EventLoopGuard(Arc::clone(&self.running))
+    }
+
+    async fn idle(&self) {
+        let mut running = self.running.subscribe();
+        let _ = running.wait_for(|running| *running == 0).await;
+    }
+}
+
+struct EventLoopGuard(Arc<tokio::sync::watch::Sender<usize>>);
+
+impl Drop for EventLoopGuard {
+    fn drop(&mut self) {
+        self.0.send_modify(|running| *running -= 1);
+    }
+}
+
 /// Cloneable handle exposed to registered service handlers.
 #[derive(Clone)]
 pub struct ServiceHandle {
@@ -508,6 +618,7 @@ pub struct ServiceHandle {
     event_failures: mpsc::UnboundedSender<ServiceRuntimeError>,
     auth: LocalAuthVerifier,
     event_subscribe_needs: &'static [&'static str],
+    event_drain: EventDrain,
 }
 
 impl std::fmt::Debug for ServiceHandle {
@@ -1311,6 +1422,10 @@ pub struct ConnectedServiceRuntime<C> {
     event_subscribe_needs: &'static [&'static str],
     /// Live settings, when the participant declares any.
     config: Option<super::config::LiveConfig>,
+    lifecycle: super::lifecycle::ServiceLifecycle,
+    event_drain: EventDrain,
+    /// Whether `run` stops on SIGTERM and Ctrl-C.
+    handle_signals: bool,
     _contract: PhantomData<C>,
 }
 
@@ -1331,6 +1446,7 @@ impl<C> ConnectedServiceRuntime<C> {
         client: Arc<TrellisClient>,
         binding: CoreBootstrapBinding,
         api_id: impl Into<String>,
+        lifecycle: super::lifecycle::ServiceLifecycle,
     ) -> Self {
         let resources = binding.resource_bindings();
         let event_listeners = SharedDurableEventListeners::default();
@@ -1378,8 +1494,18 @@ impl<C> ConnectedServiceRuntime<C> {
             job_hosts: Vec::new(),
             event_subscribe_needs: &[],
             config: None,
+            lifecycle,
+            event_drain: EventDrain::default(),
+            handle_signals: true,
             _contract: PhantomData,
         }
+    }
+
+    /// This service's lifecycle: its phase, whether it serves yet, and a way
+    /// to stop it. Take it before [`run`](Self::run), which consumes the runtime.
+    #[must_use]
+    pub fn lifecycle(&self) -> super::lifecycle::ServiceLifecycle {
+        self.lifecycle.clone()
     }
 
     /// Return the internal Trellis client owned by this runtime.
@@ -1875,6 +2001,11 @@ impl<C> ConnectedServiceRuntime<C> {
         self.router
             .require_live_owner()
             .map_err(ServiceRuntimeError::from)?;
+        let lifecycle = self.lifecycle.clone();
+        lifecycle.attach_health(self.client.health().clone());
+        let client = Arc::clone(&self.client);
+        let event_drain = self.event_drain.clone();
+        let handle_signals = self.handle_signals;
         let mut event_failures = self.event_failure_receiver;
         let subjects: std::sync::Arc<[String]> = self
             .registered_subjects
@@ -1882,6 +2013,10 @@ impl<C> ConnectedServiceRuntime<C> {
             .collect::<Vec<_>>()
             .into();
         let job_hosts = self.job_hosts;
+        let job_drains: Vec<_> = job_hosts
+            .iter()
+            .map(WorkerHostHandle::drain_handle)
+            .collect();
         let manager = self.client.transport_generations();
         let host = std::sync::Arc::new(bootstrap_service_host(
             &self.service_name,
@@ -1890,27 +2025,36 @@ impl<C> ConnectedServiceRuntime<C> {
             self.auth,
         ));
         let peer_routes: std::sync::Arc<[_]> = self.peer_routes.into();
-        let serve = async move {
-            tokio::try_join!(
-                super::provider_ingress::run_provider_intake(manager.clone(), subjects, host),
-                super::provider_ingress::run_peer_intake(manager, peer_routes),
-            )?;
-            Ok(())
-        };
-        let run = async {
-            if job_hosts.is_empty() {
-                return serve.await;
+        let (intake_stop, _) = tokio::sync::watch::channel(false);
+        let (provider_attached, provider_ready) = tokio::sync::oneshot::channel();
+        let (peer_attached, peer_ready) = tokio::sync::oneshot::channel();
+        let serve = {
+            let provider_stop = intake_stop.subscribe();
+            let peer_stop = intake_stop.subscribe();
+            async move {
+                tokio::try_join!(
+                    super::provider_ingress::run_provider_intake(
+                        manager.clone(),
+                        subjects,
+                        host,
+                        provider_attached,
+                        provider_stop,
+                    ),
+                    super::provider_ingress::run_peer_intake(
+                        manager,
+                        peer_routes,
+                        peer_attached,
+                        peer_stop
+                    ),
+                )?;
+                Ok::<(), ServiceRuntimeError>(())
             }
-            let workers = async {
-                futures_util::future::try_join_all(
-                    job_hosts.into_iter().map(WorkerHostHandle::join),
-                )
+        };
+        let workers = async {
+            futures_util::future::try_join_all(job_hosts.into_iter().map(WorkerHostHandle::join))
                 .await
                 .map_err(ServiceRuntimeError::JobWorker)?;
-                Ok(())
-            };
-            tokio::try_join!(serve, workers)?;
-            Ok(())
+            Ok::<(), ServiceRuntimeError>(())
         };
         // A current build installs itself when it connects; this one stops
         // rather than linger without authority of its own.
@@ -1934,13 +2078,108 @@ impl<C> ConnectedServiceRuntime<C> {
                 }
             }
         };
-        let result = tokio::select! {
-            result = run => result,
-            Some(error) = event_failures.recv() => Err(error),
-            error = retired => Err(error),
+        let attached = async {
+            let _ = provider_ready.await;
+            let _ = peer_ready.await;
         };
+        let stop_requested = stop_signal(&lifecycle, handle_signals);
+        tokio::pin!(serve, workers, retired, attached, stop_requested);
+        let mut serve_result: Option<Result<(), ServiceRuntimeError>> = None;
+        let mut workers_result: Option<Result<(), ServiceRuntimeError>> = None;
+        let mut follower: Option<tokio::task::JoinHandle<()>> = None;
+        let mut serving = false;
+        // Serve until the connection ends, something fails, or a stop arrives.
+        let ended = loop {
+            tokio::select! {
+                result = &mut serve, if serve_result.is_none() => {
+                    if result.is_err() || workers_result.is_some() {
+                        break Some(result);
+                    }
+                    serve_result = Some(result);
+                }
+                result = &mut workers, if workers_result.is_none() => {
+                    if result.is_err() || serve_result.is_some() {
+                        break Some(result);
+                    }
+                    workers_result = Some(result);
+                }
+                () = &mut attached, if !serving => {
+                    serving = true;
+                    lifecycle.set(super::lifecycle::ServicePhase::Serving);
+                    follower = Some(tokio::spawn(follow_transport(
+                        lifecycle.clone(),
+                        client.subscribe_transport_publication(),
+                    )));
+                }
+                Some(error) = event_failures.recv() => break Some(Err(error)),
+                error = &mut retired => break Some(Err(error)),
+                () = &mut stop_requested => break None,
+            }
+        };
+        if let Some(follower) = follower {
+            follower.abort();
+        }
+        lifecycle.set(super::lifecycle::ServicePhase::Stopping);
+        if let Some(result) = ended {
+            self.transfer_tasks.shutdown().await;
+            lifecycle.set(super::lifecycle::ServicePhase::Stopped);
+            return result;
+        }
+
+        // A graceful stop. Take no new work anywhere, so the next request,
+        // job and delivery go to another instance, and end open Live streams
+        // so their callers can open them again there.
+        intake_stop.send_replace(true);
+        for drain in &job_drains {
+            drain.drain();
+        }
+        event_drain.begin();
+        if let Some(live) = client.live_manager() {
+            live.end_provider_sessions().await;
+        }
+        // Finish the requests, deliveries and jobs already taken, until the
+        // stop timeout.
+        let drained = async {
+            futures_util::future::join_all(job_drains.iter().map(|drain| drain.idle())).await;
+            event_drain.idle().await;
+        };
+        let deadline = tokio::time::sleep(lifecycle.stop_timeout());
+        tokio::pin!(drained, deadline);
+        let mut drained_done = false;
+        while !(drained_done && serve_result.is_some()) {
+            tokio::select! {
+                result = &mut serve, if serve_result.is_none() => serve_result = Some(result),
+                result = &mut workers, if workers_result.is_none() => {
+                    workers_result = Some(result);
+                }
+                () = &mut drained, if !drained_done => drained_done = true,
+                () = &mut deadline => {
+                    tracing::warn!(
+                        timeout_ms = lifecycle.stop_timeout().as_millis() as u64,
+                        "Stop timeout reached; handing back what is still running"
+                    );
+                    break;
+                }
+            }
+        }
+        // Hand back whatever is still running, at once, rather than leaving it
+        // until its lease or acknowledgement deadline runs out.
+        for drain in &job_drains {
+            drain.hand_back();
+        }
+        event_drain.hand_back();
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            if workers_result.is_none() {
+                let _ = (&mut workers).await;
+            }
+            event_drain.idle().await;
+        })
+        .await;
         self.transfer_tasks.shutdown().await;
-        result
+        let closed = client.shutdown_native_runtime().await;
+        lifecycle.set(super::lifecycle::ServicePhase::Stopped);
+        closed?;
+        Ok(())
     }
 
     /// Return a cloneable service handle for generated participant code.
@@ -1957,6 +2196,7 @@ impl<C> ConnectedServiceRuntime<C> {
             event_failures: self.event_failures.clone(),
             auth: self.auth.clone(),
             event_subscribe_needs: self.event_subscribe_needs,
+            event_drain: self.event_drain.clone(),
         }
     }
 }
@@ -1970,6 +2210,12 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
     /// administrator; meanwhile the review link is logged and printed as a QR
     /// code on standard error.
     pub async fn connect(options: ServiceConnectOptions<'_>) -> Result<Self, ServiceRuntimeError> {
+        let lifecycle = super::lifecycle::ServiceLifecycle::start(
+            options.lifecycle.clone(),
+            options.owns_process,
+        )
+        .await
+        .map_err(ServiceRuntimeError::ReadinessProbe)?;
         let (client, binding) = loop {
             let client = TrellisClient::connect_service_with_contract_with_health_interval(
                 ServiceConnectWithContractOptions {
@@ -1988,7 +2234,7 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             if BootstrapBindingInfo::bootstrap_binding(&binding).digest == C::DIGEST {
                 break (client, binding);
             }
-            await_service_update::<C>(&client).await?;
+            await_service_update::<C>(&client, &lifecycle).await?;
             client.shutdown_native_runtime().await?;
         };
         // Resource-only services have no default inbound API. Explicit generated
@@ -1999,10 +2245,15 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             Arc::new(client),
             binding,
             api_id,
+            lifecycle.clone(),
         );
+        runtime.handle_signals = options.owns_process;
         runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
         if !C::CONFIG_FIELDS.is_empty() {
-            let loaded = super::config::load(&runtime.client, C::ID).await?;
+            let loaded = super::config::load(&runtime.client, C::ID, &|missing| {
+                lifecycle.status(&format!("Waiting for settings: {missing}"));
+            })
+            .await?;
             let instance = runtime.client.own_instance_id()?;
             runtime.config = Some(super::config::follow(
                 Arc::clone(&runtime.client),
@@ -2055,9 +2306,72 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
     }
 }
 
+/// Resolve on the first SIGTERM or Ctrl-C, or when the lifecycle is asked to
+/// stop. After a signal, a second one ends the process at once.
+async fn stop_signal(lifecycle: &super::lifecycle::ServiceLifecycle, signals: bool) {
+    if !signals {
+        lifecycle.stop_requested().await;
+        return;
+    }
+    #[cfg(unix)]
+    let terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+    #[cfg(unix)]
+    let terminated = async {
+        match terminate {
+            Ok(mut terminate) => {
+                terminate.recv().await;
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminated = std::future::pending::<()>();
+    let signalled = tokio::select! {
+        () = terminated => true,
+        result = tokio::signal::ctrl_c() => result.is_ok(),
+        () = lifecycle.stop_requested() => false,
+    };
+    if signalled {
+        tokio::spawn(async {
+            #[cfg(unix)]
+            if let Ok(mut terminate) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            {
+                tokio::select! {
+                    _ = terminate.recv() => std::process::exit(143),
+                    _ = tokio::signal::ctrl_c() => std::process::exit(130),
+                }
+            }
+            let _ = tokio::signal::ctrl_c().await;
+            std::process::exit(130);
+        });
+    }
+}
+
+/// Report serving while the connection has a current generation, and
+/// connecting while it is recovering one.
+async fn follow_transport(
+    lifecycle: super::lifecycle::ServiceLifecycle,
+    mut publication: tokio::sync::watch::Receiver<Option<u64>>,
+) {
+    use super::lifecycle::ServicePhase;
+    loop {
+        let current = *publication.borrow_and_update();
+        match (lifecycle.phase(), current) {
+            (ServicePhase::Serving, None) => lifecycle.set(ServicePhase::Connecting),
+            (ServicePhase::Connecting, Some(_)) => lifecycle.set(ServicePhase::Serving),
+            _ => {}
+        }
+        if publication.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Submit this build's IDL and wait until Auth installs it for this instance.
 async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
     client: &TrellisClient,
+    lifecycle: &super::lifecycle::ServiceLifecycle,
 ) -> Result<(), ServiceRuntimeError> {
     const API: &str = "trellis.auth@v1";
     let action = |name: &str| trellis_protocol::CatalogActionIdentity {
@@ -2103,6 +2417,12 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
             }
             let update_id = update["updateId"].as_str().unwrap_or_default().to_owned();
             if shown.as_deref() != Some(update_id.as_str()) {
+                lifecycle.status(&format!(
+                    "Waiting for approval: {}",
+                    review_url
+                        .clone()
+                        .unwrap_or_else(|| format!("trellis svc {deployment} approve"))
+                ));
                 tracing::warn!(
                     participant = C::ID,
                     review_url,
@@ -2429,6 +2749,7 @@ where
                 Arc::clone(client),
                 auth.clone(),
                 Arc::clone(&event_listeners),
+                service.event_drain.clone(),
                 DurableEventPullConfig {
                     key: key.clone(),
                     subscribe_options: subscribe_options.clone(),
@@ -2549,8 +2870,12 @@ async fn run_durable_event_pull_loop(
     client: Arc<TrellisClient>,
     auth: LocalAuthVerifier,
     event_listeners: SharedDurableEventListeners,
+    drain: EventDrain,
     config: DurableEventPullConfig,
 ) -> Result<(), ServiceRuntimeError> {
+    // Counted while it runs, so a stopping service knows when its deliveries
+    // are settled.
+    let _running = drain.enter();
     let mut replay = false;
     let mut original_consumer_opened = false;
     // Transient transport recovery is paced by the logical connection, not an
@@ -2579,6 +2904,10 @@ async fn run_durable_event_pull_loop(
         };
     }
     loop {
+        // A stopping service fetches no more deliveries.
+        if drain.is_draining() {
+            return Ok(());
+        }
         let is_replay = replay;
         replay = !replay;
         let (messages, auth) = match async {
@@ -2667,6 +2996,12 @@ async fn run_durable_event_pull_loop(
                 }
                 Err(error) => return Err(error.into()),
             };
+            // A pull already issued when the stop began can still return a
+            // delivery; give it straight back for another instance.
+            if drain.is_draining() {
+                let _ = message.nak_after(Duration::ZERO).await;
+                return Ok(());
+            }
             let mut replay_envelope = if is_replay {
                 Some(
                     serde_json::from_slice::<ConsumerReplayEnvelope>(message.payload()).map_err(
@@ -3001,6 +3336,12 @@ async fn run_durable_event_pull_loop(
                 let result = loop {
                     tokio::select! {
                         result = &mut future => break result,
+                        () = drain.hand_back_requested() => {
+                            // Past the stop timeout: hand the delivery back now
+                            // instead of leaving it to its acknowledgement deadline.
+                            let _ = message.nak_after(Duration::ZERO).await;
+                            return Ok(());
+                        }
                         _ = progress.tick() => {
                             // A progress-ack transport failure must never drop the
                             // in-flight handler: it is already-accepted work. Record

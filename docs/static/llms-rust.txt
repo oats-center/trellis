@@ -141,7 +141,13 @@ whose returned registration's `remove()` drops the check. A device's connected
 client has the same `health()`.
 
 Register generated providers before `service.run().await`. The service lifecycle
-supervises its request host and workers. `with_timeout_ms(...)` bounds
+supervises its request host and workers. `run()` handles SIGTERM and Ctrl-C with
+a graceful stop and returns `Ok(())`; do not install signal handlers.
+`ServiceConnectOptions::with_stop_timeout(Duration)` (default 25 s),
+`with_readiness_file(path)` and `with_readiness_http(SocketAddr)` configure the
+stop and the readiness probe. `let lifecycle = service.lifecycle();` before
+`run()` gives `ready().await`, `phase()` (`ServicePhase`), `changed().await` and
+`stop()`. `with_timeout_ms(...)` bounds
 bootstrap, connect, and request operations. No context-store parameter exists.
 Retain generated facades, still-bound resources, and job references across
 transport handoffs.

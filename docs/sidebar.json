@@ -270,6 +270,10 @@
         "to": "/guides/install-service-from-source"
       },
       {
+        "title": "Upgrade a service without downtime",
+        "to": "/guides/upgrade-without-downtime"
+      },
+      {
         "title": "Administer Jobs",
         "to": "/guides/administering-jobs"
       }

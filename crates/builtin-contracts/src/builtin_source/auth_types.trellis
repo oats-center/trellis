@@ -1029,6 +1029,26 @@ model AuthProvisionedInstance {
   upToDate: bool;
   identityPublicKey?: AuthPublicKey;
   revision: AuthRevision;
+  /// Digest of the build the instance's installed revision names.
+  participantDigest?: AuthDigest;
+  /// When the instance's current connection began. Absent while it is not connected.
+  connectedAt?: timestamp;
+  /// What the connected instance waits for before it can serve. Absent when it waits for nothing Trellis holds.
+  waiting?: AuthInstanceWaiting;
+}
+/// What a connected instance waits for before it can serve.
+model AuthInstanceWaiting {
+  /// The update its build submitted, waiting for an administrator.
+  update?: AuthInstanceWaitingUpdate;
+  /// Required settings its build has no value for.
+  missingSettings: list<AuthConfigFieldName>;
+  /// Console page where an administrator sets them.
+  settingsUrl?: string;
+}
+model AuthInstanceWaitingUpdate {
+  updateId: ulid;
+  /// Console page where an administrator reviews the update. Absent when the installation serves no Console.
+  reviewUrl?: string;
 }
 model AuthInstancesListRequest { deploymentId?: ulid; page?: CursorQuery; }
 type AuthInstancesListResponse = CursorPage<AuthProvisionedInstance>;

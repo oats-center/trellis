@@ -591,6 +591,29 @@ impl LiveSessionManager {
         .await;
     }
 
+    /// End every provider session with `local_shutdown`, telling each consumer,
+    /// so a stopping service's callers can open their streams again elsewhere.
+    pub(crate) async fn end_provider_sessions(&self) {
+        let sessions = self
+            .provider_sessions
+            .lock()
+            .map(|sessions| sessions.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let nats = self.current_nats();
+        futures_util::future::join_all(sessions.iter().map(|record| {
+            let nats = nats.clone();
+            async move {
+                let end = LiveEnd::new(LiveEndReason::LocalShutdown, None);
+                let terminal = super::provider::terminal_from_end(&end);
+                let _ = super::provider_engine::publish_end(record, &nats, terminal).await;
+                record.commit_end(end);
+                record.begin_close(tokio::time::Instant::now());
+                record.spawn_close_driver(nats);
+            }
+        }))
+        .await;
+    }
+
     /// Return the manager's current generation.
     #[must_use]
     pub(crate) fn generation(&self) -> u64 {

@@ -541,6 +541,40 @@ A participant can add its own version, structured details, and named checks to
 every heartbeat; checks run at each publication. With any check failing, the
 instance reports degraded, or unhealthy when every check fails.
 
+Each service heartbeat also carries its lifecycle `phase`: `connecting`,
+`serving` or `stopping`, published again at once on every change.
+
+### Readiness, stop and upgrades
+
+A service serves once it is connected, its build is installed (approved if it
+asked for new access), its required settings are set, and every handler, job
+worker and consumer registered before the SDK's serve call (`wait()`, `run()`)
+takes work. With `NOTIFY_SOCKET` set, both SDKs send systemd `READY=1` once
+serving, `STOPPING=1` when stopping, and `STATUS=` text (connecting, waiting
+for approval with the review link, waiting for settings with their names,
+serving, reconnecting, stopping), so `Type=notify` and Quadlet `Notify=true`
+need no health check. An optional readiness probe in the runtime options, a
+file present only while serving and/or HTTP `GET /ready` (200 serving, else
+503) and `GET /live` (200 until stopped), serves orchestrators such as
+Kubernetes. Serving goes false while the connection is lost and reconnecting;
+a build no longer installed for its instance stops with an error.
+
+SIGTERM, SIGINT, or the SDK's stop call stops a service gracefully: it leaves
+every queue group, ends its Live streams with `local_shutdown`, waits up to the
+stop timeout (25 s by default) for requests, event deliveries and jobs it
+holds, then hands what still runs back with no delay (jobs are cancelled for
+shutdown, deliveries are naked) and exits. Operations still recover through
+lease expiry. Do not install signal handlers in service code.
+
+Upgrade by overlapping: run each process as its own instance, start the new
+build, wait until it serves, stop the old one. `trellis svc <ID> instances`
+(`--format json`) and the Console service page show each instance's build,
+whether it is current or older, its state, connected-at and last heartbeat. A
+build that drops an API or a resource such as a job queue the older build
+declares, or that replaces an API with its next major, stops older builds at
+once; add the new major beside the old one and drop the old one in a later
+build. See /guides/upgrade-without-downtime.
+
 ## Identity And Connection
 
 ### Participants and admission

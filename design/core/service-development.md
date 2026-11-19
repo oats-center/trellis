@@ -68,6 +68,34 @@ are transient and owner-cancelled, not durable replay.
 
 Expected domain failures use generated Result-style errors. Preserve request
 correlation, cancellation, timeout, and orderly stop/wait behavior.
+
+## Lifecycle, readiness and stop
+
+Both SDKs give a service process the same lifecycle. Its phase is
+`connecting` from connect until the serve call (`wait()`, `run()`) has every
+registered RPC, Live, operation, job and consumer intake taking work, and again
+while the logical connection has lost its transport; then `serving`;
+`stopping` once a stop begins; `stopped` once closed. Approval and settings
+waits happen inside connect and are reported as status text only. Each phase
+change is published in a heartbeat at once.
+
+With `NOTIFY_SOCKET` set (a path or an `@` abstract name), the SDK sends
+`READY=1` the first time it serves, `STOPPING=1` when it stops, and `STATUS=`
+text for every wait and phase. Rust writes the datagram itself; TypeScript
+calls libc through `node:ffi`, so it needs Node 26 and otherwise warns once.
+The optional readiness probe is a file present only while serving and/or an
+HTTP listener (`/ready` 200 while serving, else 503; `/live` 200 until
+stopped). A build retired by a newer installed revision stops with an error.
+
+SIGTERM, SIGINT and the SDK stop call run one graceful stop: retire provider
+intake on every generation (the queue groups route new work elsewhere), stop job
+workers and durable consumers from taking work, end owned Live sessions with
+`local_shutdown`, then wait up to the stop timeout (25 s default) for accepted
+requests, deliveries and jobs. At the deadline remaining jobs are cancelled for
+shutdown and naked without delay, remaining deliveries are naked without delay,
+and remaining requests are abandoned. The connection then closes. A second
+signal exits at once. Operations are not drained: their leases expire and
+another instance recovers them.
 Authorization refresh is owned SDK maintenance that preserves the logical
 connection; genuine transport loss triggers the owned recovery lifecycle.
 Authorization contexts and route credentials remain process-memory state.

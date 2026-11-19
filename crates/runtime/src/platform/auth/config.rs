@@ -1588,6 +1588,57 @@ pub(super) fn adopt_claim(
     Ok(())
 }
 
+/// Required fields the build an instance runs has no usable value for, and the
+/// Console page where they are set.
+pub(super) fn missing_settings(
+    connection: &Connection,
+    storage: &OAuthStorage,
+    instance: &str,
+) -> Result<(Vec<String>, Option<String>), AuthError> {
+    let Some((deployment, participant, kind, revision)) = connection
+        .query_row(
+            "SELECT i.deployment_id,d.participant_id,d.participant_kind,i.installed_revision \
+            FROM auth_instances i JOIN auth_deployments d USING(deployment_id) \
+            WHERE i.instance_id=?1",
+            [instance],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok((Vec::new(), None));
+    };
+    let declared = Declared::of(connection, &participant, revision)?;
+    let target = Target::Instance {
+        deployment: deployment.clone(),
+        instance: instance.to_owned(),
+    };
+    let layers = layers(connection, storage, &declared, &target, None)?;
+    let missing: Vec<String> = effective(&declared, &layers)
+        .into_iter()
+        .filter(|(_, value)| value.value.is_none())
+        .map(|(name, _)| name)
+        .collect();
+    let section = if kind == "device" {
+        "devices"
+    } else {
+        "services"
+    };
+    let url = storage
+        .authority
+        .settings
+        .console_origin
+        .as_ref()
+        .map(|origin| format!("{origin}/console/admin/{section}/{deployment}#settings"));
+    Ok((missing, url))
+}
+
 /// A service or device reads its own effective configuration, secrets
 /// included, as the build it runs declares it. At connect, the revisions it
 /// loaded are recorded so restart-only settings show which instances still

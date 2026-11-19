@@ -382,6 +382,8 @@ type EventsQueryRequestLimit = int64(min=1, max=500);
 model HealthHeartbeatSample {
   checks: list<HealthHeartbeatSampleChecksItem>;
   participant: HealthHeartbeatSampleParticipant;
+  /// Where a service is in its lifecycle: connected and starting its handlers, serving, or stopping. A participant that does not report it leaves it out.
+  phase?: HealthHeartbeatSamplePhase;
   reportedStatus: HealthHeartbeatSampleReportedStatus;
   sample: HealthHeartbeatSampleSample;
   summary?: HealthHeartbeatSampleSummary;
@@ -673,6 +675,8 @@ model HealthInspectResponseHistoryItemChecksItem {
 model HealthInspectResponseInstancesItemLatestSample {
   checks: list<HealthInspectResponseInstancesItemLatestSampleChecksItem>;
   participant: HealthInspectResponseInstancesItemLatestSampleParticipant;
+  /// The lifecycle phase the instance last reported.
+  phase?: HealthHeartbeatSamplePhase;
   reportedStatus: HealthInspectResponseInstancesItemLatestSampleReportedStatus;
   sample: HealthInspectResponseInstancesItemLatestSampleSample;
   summary?: HealthInspectResponseInstancesItemLatestSampleSummary;
@@ -743,6 +747,13 @@ model HealthInspectResponseInstancesItemLatestSampleParticipantInfo {
 }
 
 type HealthWatchFrame = bytes;
+
+/// `connecting`: connected and starting its handlers, or reconnecting after losing its connection. `serving`: every handler, job worker and consumer takes work. `stopping`: no longer takes new work and is finishing what it holds.
+enum HealthHeartbeatSamplePhase {
+  connecting;
+  serving;
+  stopping;
+}
 
 enum HealthHeartbeatSampleReportedStatus {
   healthy;

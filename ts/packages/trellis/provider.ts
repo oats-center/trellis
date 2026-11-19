@@ -65,6 +65,22 @@ type ProviderBase<TService> = TService extends {
       readonly createTransfer: TCreateTransfer;
       wait(): Promise<void>;
       stop(): Promise<void>;
+    } & ProviderLifecycle<TService>
+  : {};
+
+type ProviderLifecycle<TService> = TService extends {
+  readonly ready: infer TReady;
+  readonly phase: infer TPhase;
+}
+  ? {
+      /**
+       * Resolves the first time the service serves: connected, its build
+       * installed, and every handler, job worker and consumer registered
+       * before `wait()` taking work.
+       */
+      readonly ready: TReady;
+      /** Where the service is in its lifecycle now. */
+      readonly phase: TPhase;
     }
   : {};
 
@@ -285,6 +301,17 @@ export function createProviderRuntime<
     wait: service.wait.bind(service),
     stop: service.stop.bind(service),
   };
+  if ("ready" in service && "phase" in service) {
+    const lifecycle = service as { ready: unknown; phase: unknown };
+    Object.defineProperty(provider, "ready", {
+      enumerable: true,
+      get: () => lifecycle.ready,
+    });
+    Object.defineProperty(provider, "phase", {
+      enumerable: true,
+      get: () => lifecycle.phase,
+    });
+  }
   if ("config" in service) {
     // A getter, so the facade always shows the values in effect now.
     Object.defineProperty(provider, "config", {

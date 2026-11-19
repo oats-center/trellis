@@ -718,7 +718,7 @@ impl Client {
         let client = Arc::new(crate::client::TrellisClient::connect_device(options).await?);
         let mut connected = Self::from_client(Arc::clone(&client));
         if !P::CONFIG_FIELDS.is_empty() {
-            let loaded = crate::service::config::load(&client, P::ID).await?;
+            let loaded = crate::service::config::load(&client, P::ID, &|_| {}).await?;
             connected.config = Some(Arc::new(crate::service::config::follow(
                 Arc::clone(&client),
                 P::CONFIG_FIELDS,

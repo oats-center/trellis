@@ -150,6 +150,7 @@ fn values_of(response: &Value) -> Map<String, Value> {
 pub(crate) async fn load(
     client: &TrellisClient,
     participant: &str,
+    on_missing: &(dyn Fn(&str) + Sync),
 ) -> Result<ConfigState, TrellisClientError> {
     let mut delay = Duration::from_secs(1);
     let mut shown = String::new();
@@ -180,6 +181,7 @@ pub(crate) async fn load(
             .map(|reason| format!("\n  {reason}"))
             .collect::<String>();
         if shown != format!("{missing}{reasons}") {
+            on_missing(&missing);
             let url = response["configUrl"].as_str().map(str::to_owned);
             tracing::warn!(
                 participant,

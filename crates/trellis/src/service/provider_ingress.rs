@@ -81,6 +81,7 @@ impl ProviderIngress {
         subjects: Arc<[String]>,
         handler: Arc<H>,
         owner_stop: tokio::sync::watch::Receiver<bool>,
+        running: RunningIngress,
     ) -> Result<Self, ServerError>
     where
         H: RequestHandler + 'static,
@@ -119,6 +120,9 @@ impl ProviderIngress {
             // signal, so an observer that sees `intake_stopped` also observes the
             // accepted-work lease at zero.
             let lease = lease;
+            // Counted until every accepted handler has drained, so a stopping
+            // owner can wait for the requests it already took.
+            let _running = running;
             let mut owner_stop = owner_stop;
             // Retirement is the union of this generation's own retire signal and
             // the logical owner's stop signal: a supersession retires only this
@@ -206,10 +210,28 @@ impl Drop for ProviderIngress {
     }
 }
 
+/// One installed ingress loop, counted until it has drained.
+struct RunningIngress(Arc<tokio::sync::watch::Sender<usize>>);
+
+impl RunningIngress {
+    fn new(count: &Arc<tokio::sync::watch::Sender<usize>>) -> Self {
+        count.send_modify(|running| *running += 1);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for RunningIngress {
+    fn drop(&mut self) {
+        self.0.send_modify(|running| *running -= 1);
+    }
+}
+
 /// The logical service core's provider intake owner.
 struct ProviderIntake<H> {
     subjects: Arc<[String]>,
     handler: Arc<H>,
+    /// Ingress loops still running on any generation.
+    running: Arc<tokio::sync::watch::Sender<usize>>,
     /// Owner-scoped stop, latched once this logical provider's registration
     /// ends. Every ingress this owner installs carries a receiver, so ending the
     /// owner retires its intake on every receiving generation and an adopted
@@ -258,6 +280,7 @@ where
                 self.subjects.clone(),
                 self.handler.clone(),
                 stop.clone(),
+                RunningIngress::new(&self.running),
             );
             tokio::pin!(start);
             let result = tokio::select! {
@@ -322,23 +345,35 @@ where
 /// while its accepted callbacks finish on it. The registration is owned by this
 /// call for its whole life: ending it - including cancelling this future -
 /// retires the owner's intake and releases the client reference cycle.
+///
+/// `attached` fires once intake is broker-ready. A `stop_requested` of `true`
+/// unsubscribes every generation's intake and returns once each request it
+/// already accepted has been answered.
 pub(crate) async fn run_provider_intake<H>(
     manager: TransportGenerationManager,
     subjects: Arc<[String]>,
     handler: Arc<H>,
+    attached: tokio::sync::oneshot::Sender<()>,
+    mut stop_requested: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), ServiceRuntimeError>
 where
     H: RequestHandler + 'static,
 {
     if subjects.is_empty() {
         // No intake to own: only observe the authoritative outcome.
-        manager.wait_terminal().await;
+        let _ = attached.send(());
+        tokio::select! {
+            _ = manager.wait_terminal() => {}
+            () = stop_signalled(&mut stop_requested) => {}
+        }
         return Ok(());
     }
     let (stop, _) = tokio::sync::watch::channel(false);
+    let running = Arc::new(tokio::sync::watch::channel(0_usize).0);
     let owner = Arc::new(ProviderIntake {
         subjects,
         handler,
+        running: Arc::clone(&running),
         stop,
     });
     // Installed before the first attach await and held across every retry and
@@ -367,11 +402,28 @@ where
             }
         }
     }
+    let _ = attached.send(());
     // Serve until the logical connection is terminally finished. The installed
     // ingress serves intake on every adopted generation; this task only observes
     // the authoritative outcome, so it never retries a dead authority forever.
-    manager.wait_terminal().await;
+    tokio::select! {
+        _ = manager.wait_terminal() => {}
+        () = stop_signalled(&mut stop_requested) => {
+            // Retire intake on every generation: each loop unsubscribes, answers
+            // what it accepted, and only then ends.
+            _registration.owner.stop.send_replace(true);
+            let mut running = running.subscribe();
+            let _ = running.wait_for(|running| *running == 0).await;
+        }
+    }
     Ok(())
+}
+
+/// Resolve once `stop` turns true; a dropped sender never stops intake.
+async fn stop_signalled(stop: &mut tokio::sync::watch::Receiver<bool>) {
+    if stop.wait_for(|stop| *stop).await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 /// Answers raw requests on one exact subject, such as another replica asking
@@ -486,9 +538,15 @@ impl GenerationIntake for PeerIntake {
 pub(crate) async fn run_peer_intake(
     manager: TransportGenerationManager,
     routes: Arc<[(String, PeerHandler)]>,
+    attached: tokio::sync::oneshot::Sender<()>,
+    mut stop_requested: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), ServiceRuntimeError> {
     if routes.is_empty() {
-        manager.wait_terminal().await;
+        let _ = attached.send(());
+        tokio::select! {
+            _ = manager.wait_terminal() => {}
+            () = stop_signalled(&mut stop_requested) => {}
+        }
         return Ok(());
     }
     let (stop, _) = tokio::sync::watch::channel(false);
@@ -524,6 +582,11 @@ pub(crate) async fn run_peer_intake(
             }
         }
     }
-    manager.wait_terminal().await;
+    let _ = attached.send(());
+    // A stop ends peer intake at once: dropping the registration retires it.
+    tokio::select! {
+        _ = manager.wait_terminal() => {}
+        () = stop_signalled(&mut stop_requested) => {}
+    }
     Ok(())
 }

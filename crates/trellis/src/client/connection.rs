@@ -573,7 +573,11 @@ fn build_health_heartbeat(
     let digest = metadata["participantDigest"]
         .as_str()
         .ok_or_else(|| TrellisClientError::Bootstrap("missing signed participant digest".into()))?;
-    let crate::client::health::HealthSnapshot { info, checks } = snapshot;
+    let crate::client::health::HealthSnapshot {
+        info,
+        checks,
+        phase,
+    } = snapshot;
     let failing = checks
         .iter()
         .filter(|(_, check, _)| check.status == HealthCheckStatus::Failed)
@@ -607,6 +611,7 @@ fn build_health_heartbeat(
                 .map(|extra| HealthHeartbeatSampleParticipantInfo { extra }),
             extra: Default::default(),
         },
+        phase,
         reported_status: if failing == 0 {
             HealthHeartbeatSampleReportedStatus::Healthy
         } else if failing == checks.len() {
@@ -757,7 +762,12 @@ fn spawn_health_heartbeat_task(
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(config.publish_interval_ms));
         loop {
-            interval.tick().await;
+            // A phase change publishes at once, so a watcher sees an instance
+            // start serving or stopping without waiting for the interval.
+            tokio::select! {
+                _ = interval.tick() => {}
+                () = config.health.publish_requested() => {}
+            }
             // The heartbeat follows the current generation and never pins one
             // forever: each publish acquires a suitable generation and releases
             // it when the publish completes.

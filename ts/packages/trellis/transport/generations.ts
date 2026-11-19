@@ -907,6 +907,22 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     return this.#terminal;
   }
 
+  /**
+   * Stop provider intake on every open generation, so the broker routes new
+   * work to other instances, and resolve once each intake has finished the
+   * requests it already accepted. The sockets stay open for their replies.
+   * @internal
+   */
+  async retireAllIntake(): Promise<void> {
+    const generations = this.#generations.filter(
+      (generation) => generation.state !== "closed",
+    );
+    for (const generation of generations) this.#options.onDrain?.(generation);
+    await Promise.allSettled(
+      generations.map((generation) => this.#intakeStoppedAll(generation.id)),
+    );
+  }
+
   /** Stop adoption and close every generation. @internal */
   async close(): Promise<void> {
     await this.#terminate({ kind: "closed" });

@@ -329,14 +329,19 @@ export async function startJobCancellationCoverage(
   };
 }
 
-/** Starts one sequential slot; stop accounts its outstanding receive before releasing its source. */
+/**
+ * Starts one sequential slot; stop accounts its outstanding receive before
+ * releasing its source. `drain` stops taking jobs and resolves once the running
+ * one has settled, without cancelling it.
+ */
 export function startQueueWorkerLoop<TResult>(
   options: StartQueueWorkerLoopOptions<TResult>,
-): Promise<{ stop(): Promise<void> }> {
+): Promise<{ drain(): Promise<void>; stop(): Promise<void> }> {
   const registry = options.cancellationRegistry;
   const acquisition = new AbortController();
   const activeTokens = new Set<JobCancellationToken>();
   let stopping = false;
+  let draining = false;
   const hostCancellation = options.hostCancellation;
   const cancelActiveForShutdown = () => {
     for (const token of activeTokens) {
@@ -354,13 +359,13 @@ export function startQueueWorkerLoop<TResult>(
   }
 
   const workTask = (async () => {
-    workLoop: while (!stopping) {
+    workLoop: while (!stopping && !draining) {
       let session: JobReceivingSession<TResult>;
       try {
         session = await options.acquireSession(acquisition.signal);
       } catch (error) {
         if (
-          stopping &&
+          (stopping || draining) &&
           (error === acquisition.signal.reason ||
             (error instanceof DOMException && error.name === "AbortError"))
         )
@@ -405,7 +410,9 @@ export function startQueueWorkerLoop<TResult>(
           }
         };
         try {
-          if (stopping) {
+          // A job received while the slot drains goes straight back, so
+          // another instance takes it now.
+          if (stopping || draining) {
             await disposition("nak");
             continue;
           }
@@ -566,6 +573,12 @@ export function startQueueWorkerLoop<TResult>(
             await disposition("ack");
           } else if (outcome?.outcome === "deferred") {
             await disposition("nak", options.deferralBackoffMs ?? 1_000);
+          } else if (
+            outcome?.outcome === "interrupted" &&
+            token.isHostShutdown()
+          ) {
+            // Handed back by a stopping service: another instance takes it now.
+            await disposition("nak");
           } else {
             await disposition(
               "nak",
@@ -649,6 +662,11 @@ export function startQueueWorkerLoop<TResult>(
   });
 
   return Promise.resolve({
+    async drain(): Promise<void> {
+      draining = true;
+      acquisition.abort();
+      await observedWorkTask;
+    },
     async stop(): Promise<void> {
       hostAbortHandler();
       await observedWorkTask;

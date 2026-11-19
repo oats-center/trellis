@@ -42,6 +42,7 @@ import {
   EventsNotFoundErrorDataType,
   EventsNotFoundErrorDataContext,
   HealthHeartbeatSample,
+  HealthHeartbeatSamplePhase,
   HealthHeartbeatSampleReportedStatus,
   HealthHeartbeatSampleChecksItem,
   HealthHeartbeatSampleChecksItemStatus,

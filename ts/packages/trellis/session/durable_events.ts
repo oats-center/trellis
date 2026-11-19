@@ -118,10 +118,35 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
   readonly #consumers: RuntimeEventConsumers;
   #loops = new Map<string, DurableEventConsumerLoop<TA>>();
   #stopped = false;
+  #draining = false;
+  /** Deliveries a handler is working on now. */
+  readonly #active = new Set<{ nak(): void }>();
+  #workersExited = Promise.withResolvers<void>();
 
   constructor(host: DurableEventHost<TA>, consumers: RuntimeEventConsumers) {
     this.#host = host;
     this.#consumers = consumers;
+  }
+
+  /**
+   * Stops taking deliveries and resolves once every delivery being handled has
+   * been acknowledged. A delivery that arrives meanwhile goes straight back.
+   */
+  async drain(): Promise<void> {
+    this.#draining = true;
+    while (
+      [...this.#loops.values()].some((loop) => loop.startedWorkers.size > 0)
+    ) {
+      await this.#workersExited.promise;
+    }
+  }
+
+  /** Hands every delivery still being handled back at once, for another instance. */
+  abandon(): void {
+    for (const msg of this.#active) {
+      this.#recordEventDisposition("nak", () => msg.nak());
+    }
+    this.#active.clear();
   }
 
   /** Stops durable event listener loops without closing the underlying transport. */
@@ -271,7 +296,11 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
     group: string,
     loop: DurableEventConsumerLoop<TA>,
   ): void {
-    if (this.#stopped || !this.#durableEventConsumerGroupReady(group, loop)) {
+    if (
+      this.#stopped ||
+      this.#draining ||
+      !this.#durableEventConsumerGroupReady(group, loop)
+    ) {
       return;
     }
     for (
@@ -398,6 +427,7 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
           let replay = false;
           while (
             !this.#stopped &&
+            !this.#draining &&
             this.#durableEventConsumerGroupReady(group, loop)
           ) {
             fetchingReplay = replay;
@@ -460,6 +490,8 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
           return err(new UnexpectedError({ cause, context: { group } }));
         } finally {
           loop.startedWorkers.delete(workerIndex);
+          this.#workersExited.resolve();
+          this.#workersExited = Promise.withResolvers<void>();
           if (!this.#stopped) {
             this.#startDurableEventConsumer(group, loop);
           }
@@ -481,167 +513,50 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
         throw new Error(`Event consumer group '${group}' is unavailable`);
       }
       for await (const msg of messages) {
-        let replayEnvelope: ConsumerReplayEnvelope | undefined;
-        let originalPublication: OriginalEventPublication = {
-          publishedAt: new Date(
-            msg.info.timestampNanos / 1_000_000,
-          ).toISOString(),
-          streamSequence: String(msg.info.streamSequence),
-        };
-        let deliveredMessage: Pick<
-          Msg,
-          "data" | "headers" | "subject" | "json"
-        > = msg;
-        if (isReplay) {
-          const parsedReplayEnvelope = JSON.parse(
-            new TextDecoder().decode(msg.data),
-          ) as ConsumerReplayEnvelope;
-          replayEnvelope = parsedReplayEnvelope;
-          if (
-            parsedReplayEnvelope.resourceId !== binding.resourceId ||
-            parsedReplayEnvelope.originalRecordSequence <= 0
-          ) {
-            this.#recordEventDisposition("nak", () => msg.nak());
-            continue;
-          }
-          let inspected: Record<string, unknown>;
-          try {
-            inspected = await this.#requestConsumerManagement(
-              "DeadLetters.Inspect",
-              {
-                resourceId: binding.resourceId,
-                deadLetterId: parsedReplayEnvelope.deadLetterId,
-              },
-            );
-          } catch (error) {
-            this.#host.log.warn(
-              { error, group },
-              "Replay state inspection unavailable",
-            );
-            const delivery = msg.info.deliveryCount;
-            this.#recordEventDisposition("nak", () =>
-              msg.nak(
-                binding.backoffMs[
-                  Math.min(
-                    Math.max(0, delivery - 1),
-                    binding.backoffMs.length - 1,
-                  )
-                ] ?? binding.ackWaitMs,
-              ),
-            );
-            continue;
-          }
-          const detail = Reflect.get(inspected, "deadLetter");
-          const deadLetter =
-            detail && typeof detail === "object"
-              ? Reflect.get(detail, "deadLetter")
-              : undefined;
-          const projectedGeneration =
-            deadLetter && typeof deadLetter === "object"
-              ? Reflect.get(deadLetter, "generation")
-              : undefined;
-          if (
-            typeof projectedGeneration !== "number" ||
-            projectedGeneration < parsedReplayEnvelope.generation
-          ) {
-            this.#recordEventDisposition("nak", () => msg.nak(25));
-            continue;
-          }
-          if (
-            projectedGeneration !== parsedReplayEnvelope.generation ||
-            !["replayPending", "replaying"].includes(
-              Reflect.get(deadLetter, "state"),
-            )
-          ) {
-            this.#recordEventDisposition("ack", () => msg.ack());
-            continue;
-          }
-          if (!detail || typeof detail !== "object") {
-            this.#recordEventDisposition("nak", () =>
-              msg.nak(binding.ackWaitMs),
-            );
-            continue;
-          }
-          const publishedAt = Reflect.get(detail, "originalPublishedAt");
-          const sequence = Reflect.get(deadLetter, "originalSequence");
-          const data = Reflect.get(detail, "originalPayload");
-          const subject = Reflect.get(detail, "originalSubject");
-          const headers = Reflect.get(detail, "originalHeaders");
-          if (
-            typeof publishedAt !== "string" ||
-            !Number.isFinite(Date.parse(publishedAt)) ||
-            typeof sequence !== "bigint" ||
-            !(data instanceof Uint8Array) ||
-            typeof subject !== "string" ||
-            !headers ||
-            typeof headers !== "object"
-          ) {
-            this.#recordEventDisposition("nak", () =>
-              msg.nak(binding.ackWaitMs),
-            );
-            continue;
-          }
-          originalPublication = {
-            publishedAt,
-            streamSequence: String(sequence),
-          };
-          // Use the authenticated inspection's retained bytes with its broker time,
-          // never publisher-supplied replay content with somebody else's provenance.
-          const originalHeaders = natsHeaders();
-          for (const [name, value] of Object.entries(headers)) {
-            if (typeof value === "string") originalHeaders.append(name, value);
-          }
-          deliveredMessage = {
-            data,
-            headers: originalHeaders,
-            subject,
-            json: () => JSON.parse(new TextDecoder().decode(data)),
-          };
-        }
-        if (!this.#durableEventConsumerGroupReady(group, loop)) {
-          messages.stop();
-          break;
-        }
-        const matching = loop.registrations.filter((registration) =>
-          natsSubjectMatches(registration.subject, deliveredMessage.subject),
-        );
-        if (matching.length === 0) {
-          this.#host.log.warn(
-            { group, subject: msg.subject },
-            "Durable event consumer received message without registered handler",
-          );
+        if (this.#draining) {
+          // Fetched as the service began to stop: another instance takes it.
           this.#recordEventDisposition("nak", () => msg.nak());
           continue;
         }
-
-        let failed = false;
-        for (const registration of matching) {
-          const proofResult = await this.#host.validateEventProof(
-            registration.event,
-            registration.ctx,
-            deliveredMessage,
-            originalPublication,
-          );
-          const proofValue = proofResult.take();
-          if (isErr(proofValue)) {
-            recordRuntimeError(proofValue.error, {
-              surface: "event",
-              direction: "consumer",
-              operation: String(registration.event),
-              phase: "auth",
-            });
-            this.#host.log.warn(
-              {
-                error: proofValue.error,
-                event: registration.event,
-                subject: msg.subject,
-              },
-              "Event auth validation failed",
-            );
+        this.#active.add(msg);
+        try {
+          let replayEnvelope: ConsumerReplayEnvelope | undefined;
+          let originalPublication: OriginalEventPublication = {
+            publishedAt: new Date(
+              msg.info.timestampNanos / 1_000_000,
+            ).toISOString(),
+            streamSequence: String(msg.info.streamSequence),
+          };
+          let deliveredMessage: Pick<
+            Msg,
+            "data" | "headers" | "subject" | "json"
+          > = msg;
+          if (isReplay) {
+            const parsedReplayEnvelope = JSON.parse(
+              new TextDecoder().decode(msg.data),
+            ) as ConsumerReplayEnvelope;
+            replayEnvelope = parsedReplayEnvelope;
             if (
-              proofValue.error instanceof EventVerificationAuthError &&
-              proofValue.error.retryable
+              parsedReplayEnvelope.resourceId !== binding.resourceId ||
+              parsedReplayEnvelope.originalRecordSequence <= 0
             ) {
+              this.#recordEventDisposition("nak", () => msg.nak());
+              continue;
+            }
+            let inspected: Record<string, unknown>;
+            try {
+              inspected = await this.#requestConsumerManagement(
+                "DeadLetters.Inspect",
+                {
+                  resourceId: binding.resourceId,
+                  deadLetterId: parsedReplayEnvelope.deadLetterId,
+                },
+              );
+            } catch (error) {
+              this.#host.log.warn(
+                { error, group },
+                "Replay state inspection unavailable",
+              );
               const delivery = msg.info.deliveryCount;
               this.#recordEventDisposition("nak", () =>
                 msg.nak(
@@ -653,10 +568,179 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
                   ] ?? binding.ackWaitMs,
                 ),
               );
-            } else {
+              continue;
+            }
+            const detail = Reflect.get(inspected, "deadLetter");
+            const deadLetter =
+              detail && typeof detail === "object"
+                ? Reflect.get(detail, "deadLetter")
+                : undefined;
+            const projectedGeneration =
+              deadLetter && typeof deadLetter === "object"
+                ? Reflect.get(deadLetter, "generation")
+                : undefined;
+            if (
+              typeof projectedGeneration !== "number" ||
+              projectedGeneration < parsedReplayEnvelope.generation
+            ) {
+              this.#recordEventDisposition("nak", () => msg.nak(25));
+              continue;
+            }
+            if (
+              projectedGeneration !== parsedReplayEnvelope.generation ||
+              !["replayPending", "replaying"].includes(
+                Reflect.get(deadLetter, "state"),
+              )
+            ) {
+              this.#recordEventDisposition("ack", () => msg.ack());
+              continue;
+            }
+            if (!detail || typeof detail !== "object") {
+              this.#recordEventDisposition("nak", () =>
+                msg.nak(binding.ackWaitMs),
+              );
+              continue;
+            }
+            const publishedAt = Reflect.get(detail, "originalPublishedAt");
+            const sequence = Reflect.get(deadLetter, "originalSequence");
+            const data = Reflect.get(detail, "originalPayload");
+            const subject = Reflect.get(detail, "originalSubject");
+            const headers = Reflect.get(detail, "originalHeaders");
+            if (
+              typeof publishedAt !== "string" ||
+              !Number.isFinite(Date.parse(publishedAt)) ||
+              typeof sequence !== "bigint" ||
+              !(data instanceof Uint8Array) ||
+              typeof subject !== "string" ||
+              !headers ||
+              typeof headers !== "object"
+            ) {
+              this.#recordEventDisposition("nak", () =>
+                msg.nak(binding.ackWaitMs),
+              );
+              continue;
+            }
+            originalPublication = {
+              publishedAt,
+              streamSequence: String(sequence),
+            };
+            // Use the authenticated inspection's retained bytes with its broker time,
+            // never publisher-supplied replay content with somebody else's provenance.
+            const originalHeaders = natsHeaders();
+            for (const [name, value] of Object.entries(headers)) {
+              if (typeof value === "string")
+                originalHeaders.append(name, value);
+            }
+            deliveredMessage = {
+              data,
+              headers: originalHeaders,
+              subject,
+              json: () => JSON.parse(new TextDecoder().decode(data)),
+            };
+          }
+          if (!this.#durableEventConsumerGroupReady(group, loop)) {
+            messages.stop();
+            break;
+          }
+          const matching = loop.registrations.filter((registration) =>
+            natsSubjectMatches(registration.subject, deliveredMessage.subject),
+          );
+          if (matching.length === 0) {
+            this.#host.log.warn(
+              { group, subject: msg.subject },
+              "Durable event consumer received message without registered handler",
+            );
+            this.#recordEventDisposition("nak", () => msg.nak());
+            continue;
+          }
+
+          let failed = false;
+          for (const registration of matching) {
+            const proofResult = await this.#host.validateEventProof(
+              registration.event,
+              registration.ctx,
+              deliveredMessage,
+              originalPublication,
+            );
+            const proofValue = proofResult.take();
+            if (isErr(proofValue)) {
+              recordRuntimeError(proofValue.error, {
+                surface: "event",
+                direction: "consumer",
+                operation: String(registration.event),
+                phase: "auth",
+              });
+              this.#host.log.warn(
+                {
+                  error: proofValue.error,
+                  event: registration.event,
+                  subject: msg.subject,
+                },
+                "Event auth validation failed",
+              );
+              if (
+                proofValue.error instanceof EventVerificationAuthError &&
+                proofValue.error.retryable
+              ) {
+                const delivery = msg.info.deliveryCount;
+                this.#recordEventDisposition("nak", () =>
+                  msg.nak(
+                    binding.backoffMs[
+                      Math.min(
+                        Math.max(0, delivery - 1),
+                        binding.backoffMs.length - 1,
+                      )
+                    ] ?? binding.ackWaitMs,
+                  ),
+                );
+              } else {
+                if (replayEnvelope) {
+                  try {
+                    msg.working();
+                    await this.#reportConsumerDelivery({
+                      resourceId: binding.resourceId,
+                      sourceStream: binding.replayBinding.stream,
+                      sourceSequence: BigInt(msg.info.streamSequence),
+                      deliveryCount: msg.info.deliveryCount,
+                      deliveryProof: jetStreamDeliveryProof(msg),
+                      replayGeneration: replayEnvelope.generation,
+                      outcome: "unreplayable",
+                      error: proofValue.error.message,
+                    });
+                  } catch (error) {
+                    this.#host.log.warn(
+                      { error, group },
+                      "Replay delivery report unavailable",
+                    );
+                    failed = true;
+                    break;
+                  }
+                }
+                this.#recordEventDisposition("term", () => msg.term());
+              }
+              failed = true;
+              break;
+            }
+
+            const parsedEvent = this.#host.parseEventMessage(
+              registration.event,
+              registration.ctx,
+              deliveredMessage,
+            );
+            const eventPayload = parsedEvent.take();
+            if (isErr(eventPayload)) {
+              this.#host.log.error(
+                { error: eventPayload.error },
+                "Event validation failed",
+              );
+              recordRuntimeError(eventPayload.error, {
+                surface: "event",
+                direction: "consumer",
+                operation: String(registration.event),
+                phase: "input_validation",
+              });
               if (replayEnvelope) {
                 try {
-                  msg.working();
                   await this.#reportConsumerDelivery({
                     resourceId: binding.resourceId,
                     sourceStream: binding.replayBinding.stream,
@@ -665,42 +749,83 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
                     deliveryProof: jetStreamDeliveryProof(msg),
                     replayGeneration: replayEnvelope.generation,
                     outcome: "unreplayable",
-                    error: proofValue.error.message,
+                    error: eventPayload.error.message,
                   });
                 } catch (error) {
                   this.#host.log.warn(
                     { error, group },
-                    "Replay delivery report unavailable",
+                    "Replay terminal report unavailable",
                   );
                   failed = true;
                   break;
                 }
               }
               this.#recordEventDisposition("term", () => msg.term());
+              failed = true;
+              break;
             }
-            failed = true;
-            break;
+
+            const delivery = msg.info.deliveryCount;
+            const wait =
+              binding.backoffMs[
+                Math.min(
+                  Math.max(0, delivery - 1),
+                  binding.backoffMs.length - 1,
+                )
+              ] ?? binding.ackWaitMs;
+            const progress = setInterval(
+              () => msg.working(),
+              Math.max(1, Math.min(wait - 1, Math.floor(wait / 3))),
+            );
+            const handlerResult = await this.#host
+              .invokeEventHandler({
+                event: registration.event,
+                payload: eventPayload,
+                mode: "durable",
+                group,
+                message: deliveredMessage,
+                fn: registration.fn,
+              })
+              .finally(() => clearInterval(progress));
+            const handlerValue = handlerResult.take();
+            if (isErr(handlerValue)) {
+              recordRuntimeError(handlerValue.error, {
+                surface: "event",
+                direction: "consumer",
+                operation: String(registration.event),
+                phase: "handler_result",
+              });
+              this.#host.log.error(
+                {
+                  error: handlerValue.error.toSerializable(),
+                  event: registration.event,
+                  subject: msg.subject,
+                },
+                "Event handler failed",
+              );
+              if (delivery >= binding.maxDeliver) {
+                // The broker's exhaustion advisory owns DLQ capture, including replay.
+                this.#recordEventDisposition("nak", () => msg.nak());
+                failed = true;
+                break;
+              }
+              const delay =
+                binding.backoffMs[
+                  Math.min(
+                    Math.max(0, delivery - 1),
+                    binding.backoffMs.length - 1,
+                  )
+                ] ?? 0;
+              this.#recordEventDisposition("nak", () => msg.nak(delay));
+              failed = true;
+              break;
+            }
           }
 
-          const parsedEvent = this.#host.parseEventMessage(
-            registration.event,
-            registration.ctx,
-            deliveredMessage,
-          );
-          const eventPayload = parsedEvent.take();
-          if (isErr(eventPayload)) {
-            this.#host.log.error(
-              { error: eventPayload.error },
-              "Event validation failed",
-            );
-            recordRuntimeError(eventPayload.error, {
-              surface: "event",
-              direction: "consumer",
-              operation: String(registration.event),
-              phase: "input_validation",
-            });
+          if (!failed) {
             if (replayEnvelope) {
               try {
+                msg.working();
                 await this.#reportConsumerDelivery({
                   resourceId: binding.resourceId,
                   sourceStream: binding.replayBinding.stream,
@@ -708,99 +833,20 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
                   deliveryCount: msg.info.deliveryCount,
                   deliveryProof: jetStreamDeliveryProof(msg),
                   replayGeneration: replayEnvelope.generation,
-                  outcome: "unreplayable",
-                  error: eventPayload.error.message,
+                  outcome: "succeeded",
                 });
               } catch (error) {
                 this.#host.log.warn(
                   { error, group },
-                  "Replay terminal report unavailable",
+                  "Delivery report unavailable",
                 );
-                failed = true;
-                break;
+                continue;
               }
             }
-            this.#recordEventDisposition("term", () => msg.term());
-            failed = true;
-            break;
+            this.#recordEventDisposition("ack", () => msg.ack());
           }
-
-          const delivery = msg.info.deliveryCount;
-          const wait =
-            binding.backoffMs[
-              Math.min(Math.max(0, delivery - 1), binding.backoffMs.length - 1)
-            ] ?? binding.ackWaitMs;
-          const progress = setInterval(
-            () => msg.working(),
-            Math.max(1, Math.min(wait - 1, Math.floor(wait / 3))),
-          );
-          const handlerResult = await this.#host
-            .invokeEventHandler({
-              event: registration.event,
-              payload: eventPayload,
-              mode: "durable",
-              group,
-              message: deliveredMessage,
-              fn: registration.fn,
-            })
-            .finally(() => clearInterval(progress));
-          const handlerValue = handlerResult.take();
-          if (isErr(handlerValue)) {
-            recordRuntimeError(handlerValue.error, {
-              surface: "event",
-              direction: "consumer",
-              operation: String(registration.event),
-              phase: "handler_result",
-            });
-            this.#host.log.error(
-              {
-                error: handlerValue.error.toSerializable(),
-                event: registration.event,
-                subject: msg.subject,
-              },
-              "Event handler failed",
-            );
-            if (delivery >= binding.maxDeliver) {
-              // The broker's exhaustion advisory owns DLQ capture, including replay.
-              this.#recordEventDisposition("nak", () => msg.nak());
-              failed = true;
-              break;
-            }
-            const delay =
-              binding.backoffMs[
-                Math.min(
-                  Math.max(0, delivery - 1),
-                  binding.backoffMs.length - 1,
-                )
-              ] ?? 0;
-            this.#recordEventDisposition("nak", () => msg.nak(delay));
-            failed = true;
-            break;
-          }
-        }
-
-        if (!failed) {
-          if (replayEnvelope) {
-            try {
-              msg.working();
-              await this.#reportConsumerDelivery({
-                resourceId: binding.resourceId,
-                sourceStream: binding.replayBinding.stream,
-                sourceSequence: BigInt(msg.info.streamSequence),
-                deliveryCount: msg.info.deliveryCount,
-                deliveryProof: jetStreamDeliveryProof(msg),
-                replayGeneration: replayEnvelope.generation,
-                outcome: "succeeded",
-              });
-            } catch (error) {
-              this.#host.log.warn(
-                { error, group },
-                "Delivery report unavailable",
-              );
-              continue;
-            }
-          }
-          this.#recordEventDisposition("ack", () => msg.ack());
+        } finally {
+          this.#active.delete(msg);
         }
       }
     });

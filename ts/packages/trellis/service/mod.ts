@@ -117,6 +117,10 @@ export type {
 } from "../jobs.ts";
 export type { RpcHandlerContext } from "../session.ts";
 export type {
+  ServicePhase,
+  ServiceReadinessOpts,
+} from "./runtime/lifecycle.ts";
+export type {
   ConfigChange,
   ConfigRevision,
   ParticipantConfig,

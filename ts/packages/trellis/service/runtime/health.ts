@@ -153,6 +153,7 @@ export function createHealthHeartbeatSample(args: {
   publishIntervalMs: number;
   checks: HealthCheckResult[];
   info?: ServiceHealthInfo;
+  phase?: HealthHeartbeatSample["phase"];
 }): HealthHeartbeatSample {
   const runtime = detectRuntime();
   const summary = summarizeHealthChecks(args.checks);
@@ -178,6 +179,7 @@ export function createHealthHeartbeatSample(args: {
       ...(args.info?.info ? { info: args.info.info } : {}),
     },
     reportedStatus: summarizeHealthStatus(args.checks),
+    ...(args.phase ? { phase: args.phase } : {}),
     ...(summary ? { summary } : {}),
     checks: args.checks,
   });
@@ -201,6 +203,7 @@ export class ServiceHealthRuntime implements ServiceHealth {
 
   #checks = new Map<string, ServiceHealthCheckFn>();
   #info?: ServiceHealthInfoFn;
+  readonly #phase?: () => string;
 
   constructor(args: {
     serviceName: string;
@@ -209,8 +212,11 @@ export class ServiceHealthRuntime implements ServiceHealth {
     contractId: string;
     contractDigest: string;
     publishIntervalMs: number;
+    /** The service's lifecycle phase, reported with each sample. */
+    phase?: () => string;
   }) {
     this.serviceName = args.serviceName;
+    this.#phase = args.phase;
     this.kind = args.kind ?? "service";
     this.instanceId = args.instanceId ?? ulid();
     this.contractId = args.contractId;
@@ -261,6 +267,15 @@ export class ServiceHealthRuntime implements ServiceHealth {
       publishIntervalMs: this.publishIntervalMs,
       checks,
       info,
+      phase: heartbeatPhase(this.#phase?.()),
     });
   }
+}
+
+function heartbeatPhase(
+  phase: string | undefined,
+): HealthHeartbeatSample["phase"] {
+  return phase === "connecting" || phase === "serving" || phase === "stopping"
+    ? phase
+    : undefined;
 }

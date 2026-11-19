@@ -70,6 +70,8 @@ struct HealthState {
     info: Option<InfoFn>,
     checks: BTreeMap<String, (u64, CheckFn)>,
     next_registration: u64,
+    /// The lifecycle phase a service reports; devices report none.
+    phase: Option<crate::__types::trellis::HealthHeartbeatSamplePhase>,
 }
 
 /// Health details and checks added to a connected participant's heartbeats.
@@ -79,6 +81,8 @@ struct HealthState {
 #[derive(Clone, Default)]
 pub struct ServiceHealth {
     state: Arc<Mutex<HealthState>>,
+    /// Wakes the heartbeat publisher to send a sample now, after a phase change.
+    publish_now: Arc<tokio::sync::Notify>,
 }
 
 impl std::fmt::Debug for ServiceHealth {
@@ -150,8 +154,19 @@ impl ServiceHealth {
         }
     }
 
+    /// Report `phase` from now on and publish a heartbeat at once.
+    pub(crate) fn set_phase(&self, phase: crate::__types::trellis::HealthHeartbeatSamplePhase) {
+        self.state.lock().expect("health state").phase = Some(phase);
+        self.publish_now.notify_one();
+    }
+
+    /// Resolves when a phase change asks for a heartbeat before the next interval.
+    pub(crate) async fn publish_requested(&self) {
+        self.publish_now.notified().await;
+    }
+
     pub(crate) async fn snapshot(&self) -> HealthSnapshot {
-        let (info, checks) = {
+        let (info, checks, phase) = {
             let state = self.state.lock().expect("health state");
             (
                 state.info.clone(),
@@ -160,6 +175,7 @@ impl ServiceHealth {
                     .iter()
                     .map(|(name, (_, check))| (name.clone(), Arc::clone(check)))
                     .collect::<Vec<_>>(),
+                state.phase.clone(),
             )
         };
         let checks =
@@ -178,11 +194,16 @@ impl ServiceHealth {
             Some(info) => info().await,
             None => None,
         };
-        HealthSnapshot { info, checks }
+        HealthSnapshot {
+            info,
+            checks,
+            phase,
+        }
     }
 }
 
 pub(crate) struct HealthSnapshot {
+    pub(crate) phase: Option<crate::__types::trellis::HealthHeartbeatSamplePhase>,
     pub(crate) info: Option<ServiceHealthInfo>,
     /// Name, result and latency in milliseconds of each check.
     pub(crate) checks: Vec<(String, ServiceHealthCheck, f64)>,

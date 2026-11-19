@@ -159,20 +159,19 @@ test("a service's page shows the build applied after an earlier self-update", as
         );
         await completeConsoleEntry(page, BROWSER_ADMIN);
         const row = page.locator(`tr[data-instance-id="${second.instanceId}"]`);
-        // Health is read once per load, so reload until it reports the
-        // instance connected.
-        await runtime.waitFor(async () => {
-          await row.waitFor();
-          if ((await row.getByText(/^Seen /).count()) > 0) return true;
-          await page.reload({ waitUntil: "domcontentloaded" });
-          return false;
-        });
+        // The page follows the instance until its first heartbeat arrives.
+        await row.getByText(/^Last heartbeat /).waitFor();
         const summary = page.locator("p", { hasText: /instances? on/ }).first();
         // The heading names the applied build, the one the instance reports,
         // not the self-update's; no update installed it, so it has no date.
         const updated = pending.participantDigest.slice(0, 8);
         const text = await summary.innerText();
-        const build = await row.locator("td").nth(3).innerText();
+        // The build cell's label, without its Current/Older badge.
+        const build = await row
+          .locator("td")
+          .nth(3)
+          .locator("span[title]")
+          .innerText();
         assert.equal(text.includes(build), true, `${text} / ${build}`);
         assert.equal(text.includes(updated), false, text);
         assert.equal(text.includes("installed"), false, text);

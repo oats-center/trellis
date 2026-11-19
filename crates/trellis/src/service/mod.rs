@@ -19,6 +19,7 @@ pub(crate) mod config;
 mod core_bootstrap;
 mod error;
 mod events_runtime;
+mod lifecycle;
 pub(crate) mod live_router;
 mod local_validator;
 mod operation_repository;
@@ -59,6 +60,7 @@ pub use error::{
     DeclaredRpcError, HandlerResult, SchemaValidationIssue, ServerError, ValidationIssue,
 };
 pub use events_runtime::{EventsMessageStream, EventsRuntime};
+pub use lifecycle::{ServiceLifecycle, ServicePhase, DEFAULT_STOP_TIMEOUT};
 pub(crate) use live_router::LiveProviderOwner;
 #[doc(hidden)]
 pub use local_validator::{
@@ -139,12 +141,17 @@ pub(crate) mod internal {
         // the mistake to the first caller.
         router.require_live_owner()?;
         let router = std::sync::Arc::new(super::AuthenticatedRouter::new(router, validator));
-        super::provider_ingress::run_provider_intake(
+        // A built-in router runs until its connection ends; it never stops itself.
+        let (stop, stop_requested) = tokio::sync::watch::channel(false);
+        let result = super::provider_ingress::run_provider_intake(
             owner.client().transport_generations(),
             subjects.into(),
             router,
+            tokio::sync::oneshot::channel().0,
+            stop_requested,
         )
-        .await
-        .map_err(|error| super::ServerError::Internal(error.to_string()))
+        .await;
+        drop(stop);
+        result.map_err(|error| super::ServerError::Internal(error.to_string()))
     }
 }

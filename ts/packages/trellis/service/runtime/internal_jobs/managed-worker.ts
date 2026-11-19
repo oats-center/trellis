@@ -34,7 +34,11 @@ export function startManagedJobWorkerHost<TResult>(
     queueType: string;
     cancellationRegistry: ActiveJobCancellationRegistry;
   },
-): { ready: Promise<void>; stop(reason?: unknown): Promise<void> } {
+): {
+  ready: Promise<void>;
+  drain(): Promise<void>;
+  stop(reason?: unknown): Promise<void>;
+} {
   const queue = binding.jobs.queues[options.queueType];
   const readLifecycle = options.getLatestLifecycleEvent;
   if (!readLifecycle)
@@ -70,7 +74,7 @@ export function startManagedJobWorkerHost<TResult>(
   );
   // A host can stop after setup completed, when nobody is racing this promise.
   void setupAborted.promise.catch(() => {});
-  const workers: Array<{ stop(): Promise<void> }> = [];
+  const workers: Array<{ drain(): Promise<void>; stop(): Promise<void> }> = [];
   const slotsStopped = Promise.withResolvers<void>();
   let heartbeat:
     Awaited<ReturnType<typeof startWorkerHeartbeatLoop>> | undefined;
@@ -318,6 +322,11 @@ export function startManagedJobWorkerHost<TResult>(
   let stop: Promise<void> | undefined;
   return {
     ready,
+    /** Stop taking jobs; resolves once every running job has settled. */
+    async drain() {
+      await ready.catch(() => {});
+      await Promise.allSettled(workers.map((worker) => worker.drain()));
+    },
     stop(reason?: unknown) {
       return (stop ??= (async () => {
         stopping = true;
