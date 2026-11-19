@@ -2134,9 +2134,9 @@ dependencies = [
  "trellis-builtin-contracts",
  "trellis-codegen-rust",
  "trellis-idl",
- "trellis-models",
- "trellis-protocol",
- "trellis-rs",
+ "trellis-models 0.100.0-rc.50",
+ "trellis-protocol 0.100.0-rc.48",
+ "trellis-rs 0.100.0-rc.50 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3046,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-builtin-contracts"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.50"
 dependencies = [
  "miette",
  "trellis-idl",
@@ -3054,7 +3054,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-codegen-rust"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.50"
 dependencies = [
  "prettyplease",
  "semver",
@@ -3064,12 +3064,12 @@ dependencies = [
  "thiserror",
  "toml",
  "trellis-idl",
- "trellis-protocol",
+ "trellis-protocol 0.100.0-rc.48",
 ]
 
 [[package]]
 name = "trellis-idl"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.50"
 dependencies = [
  "base64 0.23.1",
  "jsonschema",
@@ -3079,17 +3079,29 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tar",
  "toml",
- "trellis-protocol",
+ "trellis-protocol 0.100.0-rc.48",
 ]
 
 [[package]]
 name = "trellis-models"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.50"
 dependencies = [
  "serde",
  "serde_json",
- "trellis-protocol",
+ "trellis-protocol 0.100.0-rc.48",
+]
+
+[[package]]
+name = "trellis-models"
+version = "0.100.0-rc.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3a74babdd3e8562dcf579ea8745f3cdb37daea5f04fc952e8dbd20b07476c0d"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trellis-protocol 0.100.0-rc.48 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3112,8 +3124,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "trellis-rs"
+name = "trellis-protocol"
 version = "0.100.0-rc.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05b8fd4a5aeddfcb208a2245966b2c747c67f38f3568f32aab50cca79e997e27"
+dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "jsonptr",
+ "nkeys",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.11.1",
+ "thiserror",
+ "time",
+ "ulid",
+ "url",
+]
+
+[[package]]
+name = "trellis-rs"
+version = "0.100.0-rc.50"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
@@ -3143,39 +3176,78 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-opentelemetry",
- "trellis-models",
- "trellis-protocol",
+ "trellis-models 0.100.0-rc.50",
+ "trellis-protocol 0.100.0-rc.48",
+ "ulid",
+ "url",
+]
+
+[[package]]
+name = "trellis-rs"
+version = "0.100.0-rc.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5c077c43cc153386a596ab647367287bf501c318a3377560b7c2e835340b2fc"
+dependencies = [
+ "async-nats",
+ "base64 0.23.1",
+ "bytes",
+ "ed25519-dalek 3.0.0",
+ "futures-util",
+ "hkdf",
+ "hmac",
+ "jsonschema",
+ "libc",
+ "nkeys",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "p256",
+ "qrcode",
+ "rand 0.10.4",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
+ "ryu-js",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-opentelemetry",
+ "trellis-models 0.100.0-rc.50 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trellis-protocol 0.100.0-rc.48 (registry+https://github.com/rust-lang/crates.io-index)",
  "ulid",
  "url",
 ]
 
 [[package]]
 name = "trellis-runtime-apis"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.50"
 dependencies = [
  "futures-util",
  "serde",
  "serde_json",
- "trellis-models",
- "trellis-protocol",
- "trellis-rs",
+ "trellis-models 0.100.0-rc.50",
+ "trellis-protocol 0.100.0-rc.48",
+ "trellis-rs 0.100.0-rc.50",
 ]
 
 [[package]]
 name = "trellis-test-fixture"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.50"
 dependencies = [
  "futures-util",
  "serde",
  "serde_json",
- "trellis-models",
- "trellis-protocol",
- "trellis-rs",
+ "trellis-protocol 0.100.0-rc.48 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trellis-rs 0.100.0-rc.50 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "trellis-test-fixture-live"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.50"
 dependencies = [
  "async-nats",
  "futures-util",
@@ -3186,8 +3258,8 @@ dependencies = [
  "tokio",
  "toml",
  "trellis-idl",
- "trellis-protocol",
- "trellis-rs",
+ "trellis-protocol 0.100.0-rc.48 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trellis-rs 0.100.0-rc.50 (registry+https://github.com/rust-lang/crates.io-index)",
  "trellis-runtime-apis",
  "trellis-test-fixture",
  "trellis-testkit",
@@ -3196,7 +3268,9 @@ dependencies = [
 
 [[package]]
 name = "trellis-testkit"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a15054b2ba57628b6a6b5dddfc07dab9cd4fa0d3dd50de2cc2f2d244bbb4c89b"
 dependencies = [
  "base64 0.23.1",
  "flate2",
@@ -3212,9 +3286,9 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
- "trellis-models",
- "trellis-protocol",
- "trellis-rs",
+ "trellis-models 0.100.0-rc.50 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trellis-protocol 0.100.0-rc.48 (registry+https://github.com/rust-lang/crates.io-index)",
+ "trellis-rs 0.100.0-rc.50 (registry+https://github.com/rust-lang/crates.io-index)",
  "ulid",
  "url",
 ]
