@@ -58,6 +58,8 @@ pub(super) async fn users(format: OutputFormat, command: UsersCommand) -> miette
         UsersSubcommand::Create(args) => users_create_command(format, &args).await,
         UsersSubcommand::Edit(args) => users_edit_command(format, &args).await,
         UsersSubcommand::Delete(args) => users_delete_command(format, &args).await,
+        UsersSubcommand::Link(args) => users_identity_command(format, &args, false).await,
+        UsersSubcommand::Unlink(args) => users_identity_command(format, &args, true).await,
     }
 }
 
@@ -1789,11 +1791,13 @@ async fn users_show_command(format: OutputFormat, args: &UserRefArgs) -> miette:
     })
 }
 
-async fn users_find_command(format: OutputFormat, args: &UserFindArgs) -> miette::Result<()> {
-    let mut form = crate::prompt::Form::new(args.provider.is_none() || args.subject.is_none());
-    let (_selection, connected) = connect_authenticated_cli_client().await?;
-    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
-        .trellis_auth_v1();
+/// An OIDC sign-in from `--provider` and `--subject`, asking for whichever is
+/// missing: the provider from the configured ones, the subject as typed.
+async fn oidc_sign_in(
+    form: &mut crate::prompt::Form,
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+    args: &UserIdentityArgs,
+) -> miette::Result<(String, String)> {
     let provider = if args.provider.is_none() && form.is_interactive() {
         let page = serde_json::to_value(
             auth.oidc_providers_list(&auth_types::AuthPageRequest {
@@ -1843,6 +1847,30 @@ async fn users_find_command(format: OutputFormat, args: &UserFindArgs) -> miette
         None,
         |_| Ok(()),
     )?;
+    Ok((provider, subject))
+}
+
+/// Show a user and the OIDC sign-ins linked to it.
+fn print_user_with_identities(found: &Value) {
+    print_user(&found["user"])
+        .section("OIDC sign-ins")
+        .items(output::list(found, "identities").iter().map(|identity| {
+            format!(
+                "{}  {}  {}",
+                output::field(identity, "issuer"),
+                output::field(identity, "subject"),
+                output::relative_time(&output::field(identity, "linkedAt"))
+            )
+        }))
+        .print();
+}
+
+async fn users_find_command(format: OutputFormat, args: &UserIdentityArgs) -> miette::Result<()> {
+    let mut form = crate::prompt::Form::new(args.provider.is_none() || args.subject.is_none());
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let (provider, subject) = oidc_sign_in(&mut form, &auth, args).await?;
     form.finish()?;
     let found = auth
         .users_find(&auth_types::AuthUserFindRequest {
@@ -1859,23 +1887,92 @@ async fn users_find_command(format: OutputFormat, args: &UserFindArgs) -> miette
         .found
         .ok_or_else(|| miette::miette!("no user has that sign-in"))?;
     output::emit(format, &found, |found| {
-        print_user(&found["user"])
-            .section("OIDC sign-ins")
-            .items(output::list(found, "identities").iter().map(|identity| {
-                format!(
-                    "{}  {}  {}",
-                    output::field(identity, "issuer"),
-                    output::field(identity, "subject"),
-                    output::relative_time(&output::field(identity, "linkedAt"))
-                )
-            }))
-            .print();
+        print_user_with_identities(found);
+        Ok(())
+    })
+}
+
+/// Link (`unlink` false) or unlink an OIDC sign-in for a user, at the
+/// account's current revision.
+async fn users_identity_command(
+    format: OutputFormat,
+    args: &UserIdentityChangeArgs,
+    unlink: bool,
+) -> miette::Result<()> {
+    let mut form = crate::prompt::Form::new(
+        args.identity.provider.is_none() || args.identity.subject.is_none(),
+    );
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let (provider, subject) = oidc_sign_in(&mut form, &auth, &args.identity).await?;
+    form.finish()?;
+    let current = auth
+        .users_get(&auth_types::AuthUserGetRequest {
+            user_id: wire(&args.user_id)?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+        .user;
+    let account = current
+        .account
+        .ok_or_else(|| miette::miette!("account management authority is required"))?;
+    form.confirm(
+        &format!(
+            "{} an OIDC sign-in {} {}",
+            if unlink { "Unlink" } else { "Link" },
+            if unlink { "from" } else { "to" },
+            current.display_name
+        ),
+        &[("Provider", provider.clone()), ("Subject", subject.clone())],
+    )?;
+    let identity = auth_types::AuthUserFindIdentity {
+        provider_id: wire(&provider)?,
+        subject: subject.clone(),
+        extra: Default::default(),
+    };
+    let found = if unlink {
+        auth.users_identities_unlink(&auth_types::AuthUserIdentitiesUnlinkRequest {
+            user_id: current.principal_id,
+            identity,
+            expected_revision: account.principal.revision,
+            idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+    } else {
+        auth.users_identities_link(&auth_types::AuthUserIdentitiesLinkRequest {
+            user_id: current.principal_id,
+            identity,
+            expected_revision: account.principal.revision,
+            idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?
+    };
+    output::emit(format, &found, |found| {
+        output::success(format!(
+            "{} {} {} {}",
+            if unlink { "Unlinked" } else { "Linked" },
+            output::strong(&subject),
+            if unlink { "from" } else { "to" },
+            output::field(&found["user"], "displayName")
+        ));
+        print_user_with_identities(found);
         Ok(())
     })
 }
 
 async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> miette::Result<()> {
-    let mut form = crate::prompt::Form::new(args.username.is_none());
+    // An OIDC sign-in is optional, but naming either half asks for the other.
+    let linking = args.identity.provider.is_some() || args.identity.subject.is_some();
+    let mut form = crate::prompt::Form::new(
+        args.username.is_none()
+            || (linking && (args.identity.provider.is_none() || args.identity.subject.is_none())),
+    );
     let username = form
         .required(
             "Username",
@@ -1892,16 +1989,36 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         String::new(),
         |_| Ok(()),
     )?;
+    let connection = if linking {
+        let (_selection, connected) = connect_authenticated_cli_client().await?;
+        Some(connected)
+    } else {
+        None
+    };
+    let identity = match &connection {
+        Some(connected) => {
+            let auth =
+                trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+                    .trellis_auth_v1();
+            Some(oidc_sign_in(&mut form, &auth, &args.identity).await?)
+        }
+        None => None,
+    };
     form.finish()?;
     if username.is_empty() {
         return Err(miette::miette!("--username must not be empty"));
     }
     let name = trimmed_optional(&Some(name)).unwrap_or_else(|| username.clone());
-    form.confirm(
-        &format!("Create user {username}"),
-        &[("Name", name.clone())],
-    )?;
-    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let mut summary = vec![("Name", name.clone())];
+    if let Some((provider, subject)) = &identity {
+        summary.push(("Provider", provider.clone()));
+        summary.push(("Subject", subject.clone()));
+    }
+    form.confirm(&format!("Create user {username}"), &summary)?;
+    let connected = match connection {
+        Some(connected) => connected,
+        None => connect_authenticated_cli_client().await?.1,
+    };
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
     let user = auth
@@ -1912,20 +2029,36 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
             display_name: wire(name)?,
             username: wire(username)?,
             password: None,
+            identities: identity
+                .as_ref()
+                .map(|(provider, subject)| {
+                    Ok::<_, miette::Report>(vec![auth_types::AuthUserFindIdentity {
+                        provider_id: wire(provider)?,
+                        subject: subject.clone(),
+                        extra: Default::default(),
+                    }])
+                })
+                .transpose()?,
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
         .await
         .into_diagnostic()?
         .user;
-    let setup_flow = auth
-        .users_password_reset_create(&auth_types::AuthPasswordResetCreateRequest {
-            user_id: user.principal_id,
-            idempotency_key: wire(cli_idempotency_key())?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?;
+    // A person who signs in through their provider needs no password.
+    let setup_flow = if identity.is_some() {
+        None
+    } else {
+        Some(
+            auth.users_password_reset_create(&auth_types::AuthPasswordResetCreateRequest {
+                user_id: user.principal_id,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        )
+    };
     output::emit(
         format,
         &json!({ "user": user, "setupFlow": setup_flow }),
@@ -1935,6 +2068,12 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
                 output::strong(output::field(&value["user"], "account.username"))
             ));
             let setup = &value["setupFlow"];
+            if setup.is_null() {
+                output::Details::untitled()
+                    .field("ID", output::field(&value["user"], "principalId"))
+                    .print();
+                return Ok(());
+            }
             output::Details::untitled()
                 .field("ID", output::field(&value["user"], "principalId"))
                 .field("Setup code", output::field(setup, "token"))

@@ -636,6 +636,10 @@ model AuthUserCreateRequest {
   givenName?: AuthName;
   familyName?: AuthName;
   email?: string;
+  /// OIDC sign-ins to link to the new account in the same transaction. Each
+  /// provider must be enabled, and a sign-in another user has fails the whole
+  /// creation with `identity_linked_to_another_user`.
+  identities?: list<AuthUserFindIdentity>;
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthUserUpdateRequest {
@@ -684,6 +688,22 @@ model AuthUserIdentity {
 }
 type AuthUserIdentitiesListResponse = CursorPage<AuthUserIdentity>;
 model AuthUserIdentityUnlinkRequest { identityId: ulid; idempotencyKey: AuthIdempotencyKey; }
+/// An administrator links an OIDC sign-in to an account. `expectedRevision` is
+/// the account's `user.account.principal.revision`.
+model AuthUserIdentitiesLinkRequest {
+  userId: ulid;
+  identity: AuthUserFindIdentity;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+/// An administrator removes an OIDC sign-in from an account. `expectedRevision`
+/// is the account's `user.account.principal.revision`.
+model AuthUserIdentitiesUnlinkRequest {
+  userId: ulid;
+  identity: AuthUserFindIdentity;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
 model AuthIdentityLinkCreateRequest { providerId: ulid; idempotencyKey: AuthIdempotencyKey; }
 model AuthIdentityLinkCreateResponse { authorizationUrl: string; expiresAt: timestamp; }
 /** An OIDC provider a person can link to their own account. */

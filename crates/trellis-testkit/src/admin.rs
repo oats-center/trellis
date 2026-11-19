@@ -370,6 +370,7 @@ impl AdminSession {
                 username: username.to_owned().into(),
                 display_name: name.to_owned().into(),
                 password: Some(password.to_owned().into()),
+                identities: None,
                 idempotency_key: ulid::Ulid::generate().to_string().into(),
                 extra: Default::default(),
             })

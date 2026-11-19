@@ -194,14 +194,21 @@ deliveries are not on the page it has loaded.
 ## Users And Portals
 
 ```text
-trellis users ...
+trellis users list|show|find|create|edit|delete ...
+trellis users create [--username <name>] [--name <name>] [--provider <id> --subject <sub>]
+trellis users link|unlink <user> --provider <id> --subject <sub>
 trellis roles list|show|create|edit|delete|assign|revoke ...
 trellis sign-in show|set [--[no-]local-users] [--[no-]local-sign-up] [--password-min-length <8-128>]
 trellis sign-in providers list|show|add|edit|enable|disable|remove ...
 trellis clients sign-up <client> [--[no-]password] [--[no-]providers]
 ```
 
-User commands use generated Auth account operations. Role commands use
+User commands use generated Auth account operations. `users create
+--provider --subject` links that OIDC sign-in in the creating call and prints
+no password setup code; `users link|unlink` read the account's current revision
+and call `Auth.Users.Identities.Link|Unlink`. Naming either `--provider` or
+`--subject` makes the other required input, asked for on a terminal (the
+provider from a list) and reported as missing without one. Role commands use
 `Auth.Roles.*`; `--capability` names each capability a role gives, and
 `--new-users`/`--no-new-users` sets whether users created afterwards get the
 role. `roles show` lists who has the role; `roles assign|revoke <role> <user>`

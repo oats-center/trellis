@@ -367,6 +367,7 @@ staticPasswords:
         username: "alice".to_string().into(),
         display_name: "Alice".to_string().into(),
         password: Some("initial alice password".to_string().into()),
+        identities: None,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -386,6 +387,7 @@ staticPasswords:
         display_name: "Different existing person".to_string().into(),
         email: Some("admin@example.com".into()),
         password: None,
+        identities: None,
         idempotency_key: id().into(),
         ..account.clone()
     };

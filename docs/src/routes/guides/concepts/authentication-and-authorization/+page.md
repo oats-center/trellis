@@ -34,7 +34,7 @@ implemented. CONNECT proves possession of the registered immutable identity key.
 `Auth.Users.PasswordReset.Create` returns a five-minute, one-use token for a
 non-bootstrap user. Open `/account/reset?token=...` on the Trellis origin and submit
 the native password form. Completion requires the requester's original logical
-session and current accepted `principals.manage`, rejects stale credentials, and
+session and current accepted `accounts.manage`, rejects stale credentials, and
 atomically changes the password and signs out existing login/grant families.
 Bootstrap administrators use the existing local recovery path instead.
 
@@ -45,6 +45,58 @@ identity provider's fresh OIDC authentication. Provider revision/state, nonce,
 PKCE, and current portal-user continuity are checked before the identity is linked.
 An identity belonging to another user cannot be reassigned. Creation retries
 return the original response; they do not renew or revive consumed actions.
+
+## Linking someone else's OIDC sign-in
+
+An administrator with `trellis.auth.v1:accounts.manage` can link an OIDC
+sign-in to another person's account without that person signing in:
+`Auth.Users.Identities.Link { userId, identity: { providerId, subject },
+expectedRevision, idempotencyKey }`, where `subject` is the provider's exact
+`sub` and `expectedRevision` is `user.account.principal.revision`. The provider
+must be enabled and the account enabled. The result is the account and its
+linked sign-ins, as `Users.Find` returns them. Linking a sign-in the account
+already has changes nothing and succeeds whatever revision it names, so a
+script can run twice. A sign-in another account has fails with the Auth error
+code `identity_linked_to_another_user`. `Auth.Users.Create` takes the same
+sign-ins as `identities` and links them in the transaction that creates the
+account, so one taken sign-in leaves no account behind.
+
+`Auth.Users.Identities.Unlink` takes the same input and removes the sign-in,
+ending the sign-ins made with it. It is refused when the sign-in is the
+account's only way in, the same rule people meet when they disconnect one
+themselves. Neither call reaches the default administrator's account.
+
+On the command line:
+
+```sh
+trellis users create --username ada --provider <provider id> --subject 'auth0|1234'
+trellis users link <user id> --provider <provider id> --subject 'auth0|1234'
+trellis users unlink <user id> --provider <provider id> --subject 'auth0|1234'
+```
+
+An account created with `--provider` gets no password setup code. In the
+Console, the **OIDC sign-ins** panel of a user's page lists their sign-ins and
+links or unlinks one.
+
+A linked sign-in counts as never seen until its first sign-in. Until then it
+adds no name, email or picture to the profile, and nothing about it is
+verified. That first sign-in is an ordinary OIDC sign-in: it refreshes the
+profile's OIDC fields and applies the provider's role mappings, exactly as for
+a sign-in the person linked themselves. Fields an administrator set, such as
+the display name `Users.Create` requires, stay as set.
+
+### Pre-linking users for a migration
+
+Moving people from another system whose data is keyed by user ID goes like
+this. Add the OIDC provider and mark the roles new users should get. For each
+person, call `Users.Create` with their name and `identities: [{ providerId,
+subject }]`, using the `sub` the provider gives them, and record the old ID
+against the returned `user.principalId` to re-key your own data. The person's
+first sign-in through that provider then opens that account, even with self
+sign-up and local users turned off, and creates no second account. A matching
+email never links accounts, so the `sub` is the only key. Rerunning the script
+is safe: `Users.Find { identity }` shows who already has an account, and a
+repeated `Users.Identities.Link` changes nothing.
 
 ## Profile photos
 

@@ -239,6 +239,11 @@ pub(super) fn rpc_error(error: AuthError) -> ServerError {
             "Revision conflict",
         ),
         AuthError::Denied => (errors::AuthError::TYPE, "access_denied", "Not authorized"),
+        AuthError::IdentityTaken => (
+            errors::AuthError::TYPE,
+            "identity_linked_to_another_user",
+            "This OIDC sign-in is linked to another user",
+        ),
         AuthError::RequiredMissing => (
             errors::AuthError::TYPE,
             "required_authority_unavailable",

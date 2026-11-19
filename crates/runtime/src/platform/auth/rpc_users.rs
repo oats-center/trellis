@@ -113,6 +113,16 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
     admin_mutation!(register_users_create, create_user, ManageAccounts);
     admin_mutation!(register_users_update, update_user, ManageAccounts);
     admin_mutation!(register_users_delete, delete_user, ManageAccounts);
+    admin_mutation!(
+        register_users_identities_link,
+        link_user_identity,
+        ManageAccounts
+    );
+    admin_mutation!(
+        register_users_identities_unlink,
+        unlink_user_identity,
+        ManageAccounts
+    );
     let profiles = Arc::clone(&store);
     provider.register_users_profile_update(move |context, input| {
         let store = Arc::clone(&profiles);
@@ -630,62 +640,18 @@ pub(super) fn unlink_identity(
                 [&identity.actor],
                 |row| row.get(0),
             )?;
-            let alternative: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 \
-                FROM auth_local_credentials \
-                WHERE principal_id=?1 \
-                UNION ALL SELECT 1 FROM auth_provider_identities i \
-                JOIN auth_oidc_providers o ON o.provider_id=i.provider \
-                WHERE i.principal_id=?1 \
-                AND i.identity_id!=?2 \
-                AND o.state='active')",
-                params![identity.actor, input.identity_id.to_string()],
-                |row| row.get(0),
-            )?;
             if protected {
                 return Err(AuthError::Invalid(
                     "the default administrator's OIDC sign-ins cannot be disconnected".into(),
                 ));
             }
-            if !alternative {
-                return Err(AuthError::Invalid(
-                    "this is the account's only way to sign in; set a password or connect \
-                    another OIDC sign-in first"
-                        .into(),
-                ));
-            }
-            let mut statement = connection.prepare(
-                "SELECT login_session_id \
-                FROM auth_login_sessions \
-                WHERE principal_id=?1 \
-                AND provider_id=?2 AND upstream_subject=?3 \
-                AND revoked_at IS NULL",
-            )?;
-            let logins = statement
-                .query_map(params![identity.actor, provider, subject], |row| {
-                    row.get::<_, String>(0)
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for login in logins {
-                let scope = EnforcementScope::Login(login);
-                let root = Mutation {
-                    actor: identity.actor.clone(),
-                    request_id: id(),
-                    request_digest: digest(&scope)?,
-                    session: identity.session.clone(),
-                };
-                store.revoke_root_in_transaction(connection, &root, &scope, now)?;
-            }
-            connection.execute(
-                "DELETE FROM auth_provider_identities \
-                WHERE identity_id=?1 \
-                AND principal_id=?2",
-                params![input.identity_id.to_string(), identity.actor],
-            )?;
-            super::profiles::write(connection, &identity.actor, None, now)?;
-            SqliteAuthorizationStore::policy_changed(
+            remove_identity(
+                store,
                 connection,
-                &EnforcementScope::Principal(identity.actor.clone()),
+                identity,
+                &identity.actor,
+                &input.identity_id.to_string(),
+                (&provider, &subject),
                 now,
             )?;
             Ok(AuthMutationResult {
@@ -693,6 +659,267 @@ pub(super) fn unlink_identity(
                 enforcement: None,
                 extra: Default::default(),
             })
+        },
+    )
+}
+
+/// Remove one linked OIDC sign-in from `principal`, unless it is the account's
+/// only way to sign in: it then needs a password or another sign-in through an
+/// enabled provider. The sign-ins made with it end, and the profile drops what
+/// that provider said.
+fn remove_identity(
+    store: &SqliteAuthorizationStore,
+    connection: &Connection,
+    identity: &Mutation,
+    principal: &str,
+    identity_id: &str,
+    (provider, subject): (&str, &str),
+    now: i64,
+) -> Result<(), AuthError> {
+    let alternative: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 \
+        FROM auth_local_credentials \
+        WHERE principal_id=?1 \
+        UNION ALL SELECT 1 FROM auth_provider_identities i \
+        JOIN auth_oidc_providers o ON o.provider_id=i.provider \
+        WHERE i.principal_id=?1 \
+        AND i.identity_id!=?2 \
+        AND o.state='active')",
+        params![principal, identity_id],
+        |row| row.get(0),
+    )?;
+    if !alternative {
+        return Err(AuthError::Invalid(
+            "this is the account's only way to sign in; set a password or connect \
+            another OIDC sign-in first"
+                .into(),
+        ));
+    }
+    let mut statement = connection.prepare(
+        "SELECT login_session_id \
+        FROM auth_login_sessions \
+        WHERE principal_id=?1 \
+        AND provider_id=?2 AND upstream_subject=?3 \
+        AND revoked_at IS NULL",
+    )?;
+    let logins = statement
+        .query_map(params![principal, provider, subject], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for login in logins {
+        let scope = EnforcementScope::Login(login);
+        let root = Mutation {
+            actor: identity.actor.clone(),
+            request_id: id(),
+            request_digest: digest(&scope)?,
+            session: identity.session.clone(),
+        };
+        store.revoke_root_in_transaction(connection, &root, &scope, now)?;
+    }
+    connection.execute(
+        "DELETE FROM auth_provider_identities \
+        WHERE identity_id=?1 \
+        AND principal_id=?2",
+        params![identity_id, principal],
+    )?;
+    super::profiles::write(connection, principal, None, now)?;
+    SqliteAuthorizationStore::policy_changed(
+        connection,
+        &EnforcementScope::Principal(principal.to_owned()),
+        now,
+    )?;
+    Ok(())
+}
+
+/// Whether `principal` already has the OIDC sign-in `identity`, after checking
+/// that its provider is enabled and that no other account has it. The subject
+/// is matched exactly, as `Users.Find` and sign-in match it.
+fn has_identity(
+    connection: &Connection,
+    principal: &str,
+    identity: &AuthUserFindIdentity,
+) -> Result<bool, AuthError> {
+    if identity.subject.is_empty() {
+        return Err(AuthError::Invalid("the subject must not be empty".into()));
+    }
+    let provider = identity.provider_id.to_string();
+    let state: Option<String> = connection
+        .query_row(
+            "SELECT state FROM auth_oidc_providers WHERE provider_id=?1",
+            [&provider],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match state.as_deref() {
+        Some("active") => {}
+        Some("disabled") => {
+            return Err(AuthError::Invalid(
+                "that OIDC provider is turned off; turn it on first".into(),
+            ))
+        }
+        _ => return Err(AuthError::Invalid("no OIDC provider has that ID".into())),
+    }
+    let owner: Option<String> = connection
+        .query_row(
+            "SELECT principal_id FROM auth_provider_identities \
+            WHERE provider=?1 AND provider_subject=?2",
+            params![provider, identity.subject],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match owner {
+        Some(owner) if owner == principal => Ok(true),
+        Some(_) => Err(AuthError::IdentityTaken),
+        None => Ok(false),
+    }
+}
+
+/// Check that an account is at `expected_revision` and move it on, so another
+/// change made against the same revision fails.
+fn advance_account_revision(
+    connection: &Connection,
+    principal: &str,
+    expected_revision: u64,
+    now: i64,
+) -> Result<(), AuthError> {
+    if connection.execute(
+        "UPDATE auth_principals SET version=version+1,updated_at=?1 \
+        WHERE principal_id=?2 AND kind='user' \
+        AND version=?3 AND state!='revoked'",
+        params![now, principal, expected_revision],
+    )? != 1
+    {
+        return Err(AuthError::Conflict);
+    }
+    Ok(())
+}
+
+/// An administrator changes the sign-ins of every account in reach but the
+/// default administrator's, their own included, as for password resets.
+fn require_identity_administration(
+    connection: &Connection,
+    actor: &str,
+    principal: &str,
+) -> Result<(), AuthError> {
+    SqliteAuthorizationStore::require_account_access(connection, actor, principal)?;
+    let protected: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
+        [principal],
+        |row| row.get(0),
+    )?;
+    if protected {
+        return Err(AuthError::Denied);
+    }
+    Ok(())
+}
+
+/// The account and its linked sign-ins, as `Users.Find` returns them.
+fn account_with_identities(
+    store: &SqliteAuthorizationStore,
+    connection: &Connection,
+    principal: &str,
+) -> Result<AuthUserFindMatch, AuthError> {
+    find_user(
+        store,
+        connection,
+        &AuthUserFindRequest {
+            user_id: Some(principal.parse().map_err(|_| AuthError::Unavailable)?),
+            identity: None,
+            extra: Default::default(),
+        },
+    )?
+    .found
+    .ok_or(AuthError::NotFound)
+}
+
+/// Link an OIDC sign-in to an enabled account. One the account already has is
+/// a success that changes nothing, whatever revision it names, so a script can
+/// run again. The identity has no upstream claims until its first sign-in, so
+/// until then it adds no name, email or verification to the profile.
+pub(super) fn link_user_identity(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthUserIdentitiesLinkRequest,
+    now: i64,
+) -> Result<AuthUserFindMatch, AuthError> {
+    store.mutate(
+        identity,
+        "rpc.users.identities.link",
+        input,
+        now,
+        |connection| {
+            let principal = input.user_id.to_string();
+            require_identity_administration(connection, &identity.actor, &principal)?;
+            let user = read_user(store, connection, &principal, true)?;
+            if !user
+                .account
+                .as_ref()
+                .is_some_and(|account| account.principal.enabled)
+            {
+                return Err(AuthError::Invalid(
+                    "the account is turned off; turn it on first".into(),
+                ));
+            }
+            if !has_identity(connection, &principal, &input.identity)? {
+                advance_account_revision(
+                    connection,
+                    &principal,
+                    input.expected_revision.0 .0,
+                    now,
+                )?;
+                SqliteAuthorizationStore::link_oidc_identity_in(
+                    connection,
+                    &principal,
+                    &input.identity.provider_id.to_string(),
+                    &input.identity.subject,
+                    now,
+                )?;
+            }
+            account_with_identities(store, connection, &principal)
+        },
+    )
+}
+
+/// Remove an OIDC sign-in from an account, as its owner can, and end the
+/// sign-ins made with it.
+pub(super) fn unlink_user_identity(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthUserIdentitiesUnlinkRequest,
+    now: i64,
+) -> Result<AuthUserFindMatch, AuthError> {
+    store.mutate(
+        identity,
+        "rpc.users.identities.unlink",
+        input,
+        now,
+        |connection| {
+            let principal = input.user_id.to_string();
+            require_identity_administration(connection, &identity.actor, &principal)?;
+            read_user(store, connection, &principal, true)?;
+            let provider = input.identity.provider_id.to_string();
+            let identity_id: String = connection
+                .query_row(
+                    "SELECT identity_id FROM auth_provider_identities \
+                    WHERE principal_id=?1 AND provider=?2 \
+                    AND provider_subject=?3 AND provider!='local'",
+                    params![principal, provider, input.identity.subject],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AuthError::NotFound)?;
+            advance_account_revision(connection, &principal, input.expected_revision.0 .0, now)?;
+            remove_identity(
+                store,
+                connection,
+                identity,
+                &principal,
+                &identity_id,
+                (&provider, &input.identity.subject),
+                now,
+            )?;
+            account_with_identities(store, connection, &principal)
         },
     )
 }
@@ -964,7 +1191,11 @@ pub(super) fn create_user(
     }
     // The audit owner serializes its domain input. Keep all credential material,
     // including hashes, out of that input while binding replay to the exact RPC.
-    let audit = serde_json::json!({"requestDigest": identity.request_digest});
+    // The OIDC sign-ins it links carry no credential, and the audit names them.
+    let audit = serde_json::json!({
+        "requestDigest": identity.request_digest,
+        "identities": input.identities,
+    });
     let safe_identity = Mutation {
         request_digest: digest(&audit)?,
         ..identity.clone()
@@ -1014,6 +1245,18 @@ pub(super) fn create_user(
                 },
                 now,
             )?;
+            // Any refused sign-in rolls the whole creation back.
+            for linked in input.identities.iter().flatten() {
+                if !has_identity(connection, &principal, linked)? {
+                    SqliteAuthorizationStore::link_oidc_identity_in(
+                        connection,
+                        &principal,
+                        &linked.provider_id.to_string(),
+                        &linked.subject,
+                        now,
+                    )?;
+                }
+            }
             Ok(AuthUserGetResponse {
                 user: read_user(store, connection, &principal, true)?,
                 extra: Default::default(),

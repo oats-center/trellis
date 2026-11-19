@@ -220,6 +220,18 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Users.PasswordReset.Create"],
     (client, input) => client.usersPasswordResetCreate(input).orThrow(),
   ),
+  authUsersIdentitiesLink: adminMethod(
+    apis.auth.API.actions["rpc:Users.Identities.Link"],
+    (client, input) => client.usersIdentitiesLink(input).orThrow(),
+  ),
+  authOIDCRoleMappingsPut: adminMethod(
+    apis.auth.API.actions["rpc:OIDCRoleMappings.Put"],
+    (client, input) => client.oidcRoleMappingsPut(input).orThrow(),
+  ),
+  authPrincipalsEffectiveAccess: adminMethod(
+    apis.auth.API.actions["rpc:Principals.EffectiveAccess"],
+    (client, input) => client.principalsEffectiveAccess(input).orThrow(),
+  ),
   authServiceInstancesDisable: adminMethod(
     apis.auth.API.actions["rpc:ServiceInstances.Disable"],
     (client, input) => client.serviceInstancesDisable(input).orThrow(),

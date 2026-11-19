@@ -65,6 +65,9 @@ pub(crate) enum AuthError {
     NotFound,
     #[error("revision conflict")]
     Conflict,
+    /// An administrator linked an OIDC sign-in that another account has.
+    #[error("identity linked to another user")]
+    IdentityTaken,
     #[error("not authorized")]
     Denied,
     #[error("required authority unavailable")]

@@ -913,6 +913,23 @@ RPCs acts on the caller's own account.
   `expectedProfileRevision`. A stale combined save rolls back both.
   `Users.Delete` signs the account out everywhere and removes its sign-ins,
   profile, and access; its username becomes free.
+- `accounts.manage` also permits `Users.Identities.Link` and
+  `Users.Identities.Unlink` with `{ userId, identity: { providerId, subject },
+  expectedRevision, idempotencyKey }` (`expectedRevision` is
+  `user.account.principal.revision`); both return `{ user, identities }`.
+  Linking needs an enabled provider and an enabled account; the person's next
+  sign-in through that provider with that exact `sub` opens the account, even
+  with sign-up off, and refreshes its OIDC profile fields and mapped roles.
+  Until then the identity adds no profile field and nothing verified. Linking
+  a sign-in the account already has is a no-op success; one another account
+  has fails with `AuthError` code `identity_linked_to_another_user`.
+  `Users.Create` takes optional `identities` (same shape) linked atomically
+  with the creation. Unlink ends the sign-ins made with it and is refused
+  when it would leave the account no way to sign in. CLI:
+  `trellis users create ... --provider <id> --subject <sub>`,
+  `trellis users link|unlink <user> --provider <id> --subject <sub>`. To
+  migrate users keyed by ID from another system, create each with its
+  provider `sub` in `identities` and re-key to the returned `principalId`.
 
 A handler sees its own caller's profile without any directory capability: a
 verified user caller carries `user` with `displayName`, optional `givenName`,

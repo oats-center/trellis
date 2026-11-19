@@ -19,6 +19,7 @@
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import UserSecurity from "$lib/components/UserSecurity.svelte";
   import UserAccess from "$lib/components/UserAccess.svelte";
+  import UserIdentities from "$lib/components/UserIdentities.svelte";
   import { getTrellis } from "$lib/trellis";
 
   const trellis = getTrellis();
@@ -277,6 +278,11 @@
       </div>
     </form>
     <UserAccess principalId={user.principalId} />
+    {#if canPerform(authority.authority, "usersFind")}<UserIdentities
+        {user}
+        disabled={saving || loading}
+        onchange={(next) => (user = next)}
+      />{/if}
     <UserSecurity
       userId={user.principalId}
       userLabel={user.account.username}

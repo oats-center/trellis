@@ -39,7 +39,10 @@ capabilities the account holds. Its holders are administrators, and what a
 target account can do does not limit them. `Users.Find` looks one account up,
 enabled or not, by user ID or by the exact provider and `sub` of a linked
 OIDC sign-in, and returns its lifecycle state, revision, and linked
-sign-ins; a miss is an empty result. Deleting an account revokes the principal,
+sign-ins; a miss is an empty result. `Users.Identities.Link` and `Unlink`
+choose which OIDC sign-ins open an account, so an administrator can create an
+account and link the person's provider `sub` before their first sign-in; a
+sign-in another account has is refused. Deleting an account revokes the principal,
 signing it out everywhere, and removes its sign-ins, profile, and access; the
 principal ID stays behind for the audit record, and the username and OIDC
 sign-ins are free again, so that person's next OIDC sign-in creates a new
