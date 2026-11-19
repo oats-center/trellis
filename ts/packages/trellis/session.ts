@@ -3626,6 +3626,14 @@ export class Trellis<
   }
 
   /**
+   * Resolves once the broker has the consumer of every durable event group
+   * this connection consumes, so each takes deliveries. @internal
+   */
+  eventListenersAttached(): Promise<void> {
+    return this.#durableEvents.attached();
+  }
+
+  /**
    * Ends every Live session this provider owns as `local_shutdown`, so its
    * callers can open the stream again on another instance. @internal
    */

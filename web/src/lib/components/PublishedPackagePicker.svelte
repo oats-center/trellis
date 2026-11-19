@@ -70,6 +70,12 @@
     const wanted = release.trim();
     pulling = true;
     error = null;
+    // The release looked up before no longer stands for what is asked now,
+    // even if the lookup fails or never returns.
+    if (pulled) {
+      pulled = null;
+      onpulled(null);
+    }
     try {
       const response = await trellis
         .packagesPull({

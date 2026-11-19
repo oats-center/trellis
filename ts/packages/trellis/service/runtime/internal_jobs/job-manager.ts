@@ -1306,13 +1306,24 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     );
 
     try {
-      return await runWithActiveJobContext(
-        {
-          job,
-          waitFor: (target, fn) => this.waitFor(job, target, fn),
-        },
-        () => f(activeJob),
-      );
+      // A stopping service hands the job back without waiting for a handler
+      // that ignores its cancellation; whatever that handler returns later is
+      // discarded, so it never settles the job.
+      const handedBack = Symbol("handed back");
+      const outcome = await Promise.race([
+        runWithActiveJobContext(
+          {
+            job,
+            waitFor: (target, fn) => this.waitFor(job, target, fn),
+          },
+          () => f(activeJob),
+        ),
+        cancellation.shutdown.then((): typeof handedBack => handedBack),
+      ]);
+      if (outcome === handedBack) {
+        throw new ActiveJobRuntimeError("job handed back at shutdown");
+      }
+      return outcome;
     } finally {
       stopProgressAcks();
       stopKeyHeartbeat();

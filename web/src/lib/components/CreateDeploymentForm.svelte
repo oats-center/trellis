@@ -155,7 +155,7 @@
     return "A public key is 43 letters, digits, - or _.";
   });
   const withIdl = $derived(
-    kind === "device" || root !== null || published !== null,
+    kind === "device" || root !== null || from === "published",
   );
   const ready = $derived(
     !busy &&

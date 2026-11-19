@@ -242,7 +242,14 @@
         }),
         loadHealth(target),
       ]);
-      if (deployment?.deploymentId !== key || !listed.complete) return;
+      // A build installed while this poll ran left a newer revision here than
+      // the one it read; the next poll reads that one.
+      if (
+        deployment?.deploymentId !== key ||
+        target.revision < deployment.revision ||
+        !listed.complete
+      )
+        return;
       deployment = target;
       instances = [...listed.items];
       health = reported;

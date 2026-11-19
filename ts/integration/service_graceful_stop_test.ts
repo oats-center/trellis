@@ -8,7 +8,13 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { Result } from "@oatscenter/trellis";
+import { codecs } from "@oatscenter/trellis/generated";
+import { TrellisService } from "@oatscenter/trellis/service";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
+import { ulid } from "ulid";
 import {
   apps,
   participants,
@@ -391,6 +397,280 @@ test("a rust service takes no job or delivery before it serves", async () => {
     } finally {
       service.child.kill("SIGKILL");
       await caller.connection.close();
+    }
+  });
+});
+
+test("a typescript job handler that ignores its cancellation is cut off at the stop timeout, and the process exits", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const contract = participants.Provider.participant;
+    const first = await runtime.registerService({
+      name: "stuck-old",
+      contract,
+    });
+    const second = await runtime.registerService({
+      name: "stuck-new",
+      contract,
+    });
+    const oldNotify = new NotifySocket(
+      `@trellis-notify-${crypto.randomUUID()}`,
+    );
+    const newNotify = new NotifySocket(
+      `@trellis-notify-${crypto.randomUUID()}`,
+    );
+    const stopTimeoutMs = 2_000;
+    const old = startService(runtime, "typescript", {
+      TRELLIS_IDENTITY_SEED: first.seed,
+      ROLE: "old",
+      NOTIFY_SOCKET: oldNotify.path,
+      STOP_TIMEOUT_MS: String(stopTimeoutMs),
+      IGNORE_JOB_CANCEL: "1",
+    });
+    let fresh: ReturnType<typeof startService> | undefined;
+    try {
+      await runtime.waitFor(() => oldNotify.find("READY", "1"), {
+        timeoutMs: 60_000,
+      });
+      await runtime.waitFor(() => old.seen("job-started"), {
+        timeoutMs: 30_000,
+      });
+      fresh = startService(runtime, "typescript", {
+        TRELLIS_IDENTITY_SEED: second.seed,
+        ROLE: "new",
+        NOTIFY_SOCKET: newNotify.path,
+      });
+      await runtime.waitFor(() => newNotify.find("READY", "1"), {
+        timeoutMs: 60_000,
+      });
+
+      const stoppedAt = Date.now();
+      old.child.kill("SIGTERM");
+      // At the deadline the job goes back at once, though its handler never
+      // looks at its cancellation, and the other instance runs it.
+      const handedBack = await runtime.waitFor(
+        () => fresh?.seen("job-started"),
+        { timeoutMs: stopTimeoutMs + 10_000 },
+      );
+      assert(
+        handedBack.at - stoppedAt < stopTimeoutMs + 2_000,
+        `handed back ${handedBack.at - stoppedAt} ms after the stop\n${old.output()}`,
+      );
+      // wait() returns, and the process ends although the stuck handler's
+      // timer would hold it open for ten minutes.
+      const exit = await Promise.race([
+        old.child.exited,
+        new Promise<"running">((resolve) =>
+          setTimeout(() => resolve("running"), stopTimeoutMs + 10_000),
+        ),
+      ]);
+      assert.deepEqual(exit, { code: 0, signal: null }, old.output());
+      assert(old.seen("exited"), old.output());
+    } finally {
+      old.child.kill("SIGKILL");
+      fresh?.child.kill("SIGKILL");
+      oldNotify.close();
+      newNotify.close();
+    }
+  });
+});
+
+test("a stopping typescript instance takes no request on a generation it adopts while it drains", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const contract =
+        participants.TransportGrowthOperationProvider.participant;
+      const stopping = await runtime.registerService({
+        name: "fenced-stopping",
+        contract,
+      });
+      // The stopping instance gets its optional capability only while it
+      // drains, and adopts a new generation for it then.
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
+      const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
+        capabilityId,
+      });
+      assert.equal(grants.items.length, 1);
+      const [grant] = grants.items;
+      await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
+        grantId: grant.grantId,
+        expectedRevision: grant.revision,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+      const serving = await runtime.registerService({
+        name: "fenced-serving",
+        contract,
+      });
+      const release = Promise.withResolvers<void>();
+      let stopBegan = false;
+      let acceptedWhileStopping = 0;
+      const connectService = async (role: string, seed: string) => {
+        const service = await TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: contract,
+          seed,
+          runtime: { stopTimeoutMs: 120_000 },
+        }).orThrow();
+        let parks = 0;
+        await service.handleExtend(() => Result.ok({}));
+        await service.handlePark(async () => {
+          if (role === "stopping" && stopBegan) acceptedWhileStopping++;
+          if (role === "stopping" && ++parks === 1) await release.promise;
+          return Result.ok({ value: role });
+        });
+        const exit = service.wait().catch((error: unknown) => error);
+        await service.ready;
+        return { service, exit };
+      };
+      const caller = await runtime.connectClient({
+        name: "fenced-caller",
+        contract: apps.TransportGrowthCaller.request,
+        timeout: 120_000,
+      });
+      const old = await connectService("stopping", stopping.seed);
+      const services = [old.service];
+      let held: Promise<unknown> | undefined;
+      try {
+        services.push((await connectService("serving", serving.seed)).service);
+        // Queue groups pick at random: call until one call is held by the
+        // instance about to stop.
+        for (let attempt = 0; attempt < 50 && !held; attempt++) {
+          const answer = caller.park({}).orThrow();
+          const settled = await Promise.race([
+            answer.then(() => true),
+            new Promise<false>((resolve) =>
+              setTimeout(() => resolve(false), 200),
+            ),
+          ]);
+          if (!settled) held = answer;
+        }
+        assert(held, "no call reached the instance about to stop");
+
+        stopBegan = true;
+        const stopped = old.service.stop();
+        await runtime.callAdminRpc("authCapabilityGrantsGrant", {
+          principalId: grant.principalId,
+          capabilityId,
+          expectedRevision: 0n,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        });
+        // Its own call needs the grown authority, which its next renewal brings
+        // on a new generation: the call succeeds once it has adopted that.
+        await runtime.waitFor(
+          async () => (await old.service.extend({})).isOk(),
+          { timeoutMs: 90_000 },
+        );
+        const values = await Promise.all(
+          Array.from({ length: 20 }, () => caller.park({}).orThrow()),
+        );
+        assert.deepEqual(
+          values.map((answer) => answer.value),
+          Array(20).fill("serving"),
+        );
+        assert.equal(acceptedWhileStopping, 0);
+
+        release.resolve();
+        assert.deepEqual(await held, { value: "stopping" });
+        await stopped;
+        assert.equal(await old.exit, undefined);
+      } finally {
+        release.resolve();
+        await held?.catch(() => undefined);
+        await caller.connection.close();
+        for (const service of services) await service.stop();
+      }
+      // Short authorization lifetimes, so the grant arrives with a renewal soon.
+    },
+    {
+      authorization: { contextLifetimeSeconds: 27, allowedClockSkewSeconds: 2 },
+    },
+  );
+});
+
+test("a typescript service serves only once the broker has its durable consumer", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "consumer-ready",
+      contract: participants.Provider.participant,
+    });
+    const nats = await connect({
+      servers: runtime.natsUrl,
+      authenticator: credsAuthenticator(
+        await runtime.natsCredentials("trellis"),
+      ),
+    });
+    const notify = new NotifySocket(`@trellis-notify-${crypto.randomUUID()}`);
+    const port = await freePort();
+    let service: ReturnType<typeof startService> | undefined;
+    try {
+      service = startService(runtime, "typescript", {
+        TRELLIS_IDENTITY_SEED: identity.seed,
+        ROLE: "new",
+        NOTIFY_SOCKET: notify.path,
+        READINESS_PORT: String(port),
+        HOLD_REGISTER: "1",
+      });
+      await runtime.waitFor(() => service?.seen("connected"), {
+        timeoutMs: 60_000,
+      });
+      // The `changes` consumer is missing at the broker when the service
+      // registers its handler.
+      const manager = await jetstreamManager(nats);
+      let changes:
+        | {
+            stream: string;
+            config: Parameters<typeof manager.consumers.add>[1];
+          }
+        | undefined;
+      const seen: string[] = [];
+      for await (const stream of manager.streams.list())
+        for await (const consumer of manager.consumers.list(
+          stream.config.name,
+        )) {
+          const filters = [
+            consumer.config.filter_subject,
+            ...(consumer.config.filter_subjects ?? []),
+          ];
+          seen.push(`${stream.config.name}/${consumer.name} ${filters}`);
+          if (filters.some((subject) => subject?.includes(".Changed")))
+            changes = { stream: stream.config.name, config: consumer.config };
+        }
+      assert(changes, `no consumer for the changes group in ${seen}`);
+      assert(changes.config.durable_name);
+      await manager.consumers.delete(
+        changes.stream,
+        changes.config.durable_name,
+      );
+      service.child.stdin.write("register\n");
+      await runtime.waitFor(() => service?.seen("waiting"), {
+        timeoutMs: 60_000,
+      });
+      // Every handler is registered and wait() runs, but a delivery has
+      // nowhere to go yet: not ready.
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      assert.equal(notify.find("READY"), undefined, service.output());
+      assert.equal(await probe(port, "/ready"), 503);
+
+      await manager.consumers.add(changes.stream, changes.config);
+      await runtime.waitFor(() => notify.find("READY", "1"), {
+        timeoutMs: 30_000,
+      });
+      assert.equal(await probe(port, "/ready"), 200);
+      const caller = await runtime.connectClient({
+        name: "consumer-ready-caller",
+        contract: apps.Caller.request,
+      });
+      try {
+        await caller.publishChanged({ value: "after-ready" }).orThrow();
+        await runtime.waitFor(() => service?.seen("delivery-finished"), {
+          timeoutMs: 30_000,
+        });
+      } finally {
+        await caller.connection.close();
+      }
+    } finally {
+      service?.child.kill("SIGKILL");
+      notify.close();
+      await nats.close();
     }
   });
 });

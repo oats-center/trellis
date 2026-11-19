@@ -73,8 +73,10 @@ correlation, cancellation, timeout, and orderly stop/wait behavior.
 
 Both SDKs give a service process the same lifecycle. Its phase is
 `connecting` from connect until the serve call (`wait()`, `run()`) has every
-registered RPC, Live, operation, job and consumer intake taking work, and again
-while the logical connection has lost its transport; then `serving`;
+registered RPC, Live, operation, job and consumer intake taking work (each
+subscription confirmed by the broker, each job and durable event consumer found
+at the broker; a registration that failed fails the serve call instead), and
+again while the logical connection has lost its transport; then `serving`;
 `stopping` once a stop begins; `stopped` once closed. Job workers and durable
 consumers registered before the serve call take no job or delivery until the
 service serves. A serve call that fails to start, or whose intake never
@@ -92,16 +94,18 @@ HTTP listener (`/ready` 200 while serving, else 503; `/live` 200 until
 stopped). A build retired by a newer installed revision stops with an error.
 
 SIGTERM, SIGINT and the SDK stop call run one graceful stop: retire provider
-intake on every generation at once (the queue groups route new work elsewhere),
-stop job workers and durable consumers from taking work, end owned Live sessions
-with `local_shutdown`, and wait for accepted requests, deliveries and jobs. The
-stop timeout (25 s default) starts with the stop and bounds all of it, ending
-Live sessions included. A job or delivery that a pull issued before the stop
-returns afterwards is naked at once rather than run. At the deadline remaining
-jobs are cancelled for shutdown and naked without delay, remaining deliveries
-are naked without delay, and remaining requests are abandoned. The connection
-then closes once it has written everything already sent, such as final replies
-and those naks. A second
+intake on every generation at once (the queue groups route new work elsewhere)
+and fence it, so a generation adopted or still installing while the stop runs
+takes no intake either; stop job workers and durable consumers from taking
+work; end owned Live sessions with `local_shutdown`; and wait for accepted
+requests, deliveries and jobs. The stop timeout (25 s default) starts with the
+stop and bounds all of it, ending Live sessions included. A job or delivery that
+a pull issued before the stop returns afterwards is naked at once rather than
+run. At the deadline remaining jobs are cancelled for shutdown and naked without
+delay, without waiting for a handler that ignores the cancellation (its late
+result is discarded), remaining deliveries are naked without delay, and
+remaining requests are abandoned. The connection then closes once it has
+written everything already sent, such as final replies and those naks. A second
 signal exits at once. Operations are not drained: their leases expire and
 another instance recovers them.
 Authorization refresh is owned SDK maintenance that preserves the logical

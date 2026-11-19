@@ -134,6 +134,7 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
    */
   async drain(): Promise<void> {
     this.#draining = true;
+    for (const loop of this.#loops.values()) loop.attached.resolve();
     while (
       [...this.#loops.values()].some((loop) => loop.startedWorkers.size > 0)
     ) {
@@ -155,7 +156,22 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
     for (const loop of this.#loops.values()) {
       loop.registrations.splice(0, loop.registrations.length);
       for (const messages of loop.messages) messages.stop();
+      loop.attached.resolve();
     }
+  }
+
+  /**
+   * Resolves once the broker has the consumer of every group whose events all
+   * have handlers, so each takes deliveries, or once consumption ends.
+   */
+  async attached(): Promise<void> {
+    await Promise.all(
+      [...this.#loops]
+        .filter(([group, loop]) =>
+          this.#durableEventConsumerGroupReady(group, loop),
+        )
+        .map(([, loop]) => loop.attached.promise),
+    );
   }
 
   resolveGroup(
@@ -262,6 +278,7 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
       concurrency: binding.concurrency,
       startedWorkers: new Set<number>(),
       messages: new Set<ConsumerMessages>(),
+      attached: Promise.withResolvers<void>(),
     };
     if (loop.concurrency !== binding.concurrency) {
       throw new Error(
@@ -424,6 +441,8 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
               binding.replayBinding.consumerName,
             ),
           );
+          // Both consumers exist at the broker: deliveries reach this group.
+          loop.attached.resolve();
           let replay = false;
           while (
             !this.#stopped &&
@@ -473,6 +492,7 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
             // Terminal: a closed or revoked logical transport must stop durable
             // consumption rather than retrying forever against no generation.
             this.#stopped = true;
+            loop.attached.resolve();
             return ok(undefined);
           }
           if (

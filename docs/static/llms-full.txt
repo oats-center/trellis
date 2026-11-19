@@ -555,8 +555,8 @@ Each service heartbeat also carries its lifecycle `phase`: `connecting`,
 A service serves once it is connected, its build is installed (approved if it
 asked for new access), its required settings are set, and every handler, job
 worker and consumer registered before the SDK's serve call (`wait()`, `run()`)
-takes work. None of them takes a job or delivery before that call. With `NOTIFY_SOCKET` set, both SDKs send systemd `READY=1` once
-serving, `STOPPING=1` when stopping, and `STATUS=` text (connecting, waiting
+takes work. None of them takes a job or delivery before that call. With
+`NOTIFY_SOCKET` set, both SDKs send systemd `READY=1` once serving, `STOPPING=1` when stopping, and `STATUS=` text (connecting, waiting
 for approval with the review link, waiting for settings with their names,
 serving, reconnecting, stopping), so `Type=notify` and Quadlet `Notify=true`
 need no health check. An optional readiness probe in the runtime options, a
@@ -569,9 +569,11 @@ SIGTERM, SIGINT, or the SDK's stop call stops a service gracefully: it leaves
 every queue group, ends its Live streams with `local_shutdown`, waits up to the
 stop timeout (25 s by default) for requests, event deliveries and jobs it
 holds, then hands what still runs back with no delay (jobs are cancelled for
-shutdown, deliveries are naked) and exits. A job or delivery it receives after
-the stop began goes straight back without running. Operations still recover through
-lease expiry. Do not install signal handlers in service code.
+shutdown, deliveries are naked; a job handler that ignores its cancellation is
+not waited for and its result is discarded) and exits. A job or delivery it
+receives after the stop began goes straight back without running. Operations
+still recover through lease expiry. Do not install signal handlers in service
+code.
 
 Upgrade by overlapping: run each process as its own instance, start the new
 build, wait until it serves, stop the old one. `trellis svc <ID> instances`
@@ -1670,7 +1672,8 @@ runs, the SDK stops the service gracefully on either signal, as
 service serves and `service.phase` reports `connecting`, `serving`,
 `stopping` or `stopped`. `runtime.readiness: { file?, http?: { port, host? } }`
 adds a readiness probe (`/ready`, `/live`). systemd notification needs Node 26
-or newer.
+or newer. `wait()` rejects without serving when a handler registered before
+it could not subscribe.
 
 A caller that selects this action calls:
 

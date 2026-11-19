@@ -134,6 +134,8 @@ export type DurableEventConsumerLoop<TA extends RuntimeApi> = {
   concurrency: number;
   startedWorkers: Set<number>;
   messages: Set<ConsumerMessages>;
+  /** Resolves once the broker has the group's consumer, or consumption ends. */
+  attached: PromiseWithResolvers<void>;
 };
 
 export type ConsumerReplayEnvelope = {
