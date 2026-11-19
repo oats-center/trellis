@@ -68,6 +68,9 @@ Heartbeat behavior:
   publish baseline samples automatically after authenticated bootstrap
 - baseline heartbeats include runtime metadata, instance identity, publish
   interval, and a built-in NATS connectivity check
+- service heartbeats carry the lifecycle `phase` (`connecting`, `serving`,
+  `stopping`); the SDK publishes a sample at once on every phase change, so a
+  watcher sees an instance move without waiting for the interval
 - `service.health.setInfo(...)` and `service.health.add(...)` (Rust
   `service.health().set_info(...)` and `.add(...)`) extend service heartbeat
   payloads at publish time using callback-based state snapshots; the same

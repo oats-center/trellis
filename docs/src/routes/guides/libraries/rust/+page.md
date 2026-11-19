@@ -116,6 +116,18 @@ Register every handler before `service.run()`, which runs the service until it
 stops or fails. Every generated model has an `extra` map for fields it doesn't
 know, so construct it with `extra: Default::default()`.
 
+`run()` handles SIGTERM and Ctrl-C itself: the service takes no new work, ends
+its Live streams, waits up to the stop timeout (25 s by default,
+`ServiceConnectOptions::with_stop_timeout`) for the requests, event deliveries
+and jobs it holds, hands the rest back to other instances, and returns
+`Ok(())`. A second signal exits at once. Take `service.lifecycle()` before
+`run()` to await `ready()` (true once the service serves), read `phase()`
+(`ServicePhase::Connecting`, `Serving`, `Stopping` or `Stopped`), wait for
+`changed()`, or `stop()` the service the same way from code. With
+`NOTIFY_SOCKET` set the service sends systemd `READY=1` and `STOPPING=1`;
+`with_readiness_file(path)` and `with_readiness_http(address)` add a readiness
+probe. See [Upgrade a service without downtime](/guides/upgrade-without-downtime).
+
 NATS CONNECT carries a signed provisioned admission that proves the identity
 and a fresh session key. Auth Callout resolves the deployment, installed
 participant, and resources, then returns signed session authority and exact

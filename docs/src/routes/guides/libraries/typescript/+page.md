@@ -44,6 +44,17 @@ heartbeat interval. Use the connected service's generated handlers and `kv`,
 `store`, and `jobs` handles. The browser-safe root does not expose native
 filesystem helpers.
 
+`service.wait()` serves and supervises the service. While it runs, SIGTERM and
+Ctrl-C stop it gracefully, as `service.stop()` does: it takes no new work, ends
+its Live streams, waits up to `runtime.stopTimeoutMs` (25 s by default) for
+the requests, event deliveries and jobs it holds, and hands the rest back to
+other instances. `service.ready` resolves once the service serves, and
+`service.phase` says where it is: `connecting`, `serving`, `stopping` or
+`stopped`. With `NOTIFY_SOCKET` set, the service sends systemd `READY=1` and
+`STOPPING=1` (this needs Node 26 or newer); `runtime.readiness` adds a file or
+HTTP readiness probe. See
+[Upgrade a service without downtime](/guides/upgrade-without-downtime).
+
 The SDK's shared protocol verifier is a WebAssembly module, fetched as a
 separate asset next to the SDK module when a client connects; bundlers that
 resolve `new URL(path, import.meta.url)` assets, such as Vite and webpack 5,

@@ -105,8 +105,10 @@ fails as ambiguous instead of guessing.
 
 In the Console, open the service and choose **Add an instance**. The Instances
 table names each instance by its own title, or by its ID when several share a
-title, and shows the start of its identity key, whether it is connected, and
-the build it last ran. Its **⋯** menu turns the instance off or on, opens its
+title, and shows the start of its identity key, its state (offline,
+connecting, waiting for approval or settings, serving, stopping), its build and
+whether that is the deployment's current one, when it connected, and its last
+heartbeat. `trellis svc "$DEPLOYMENT_ID" instances` shows the same. Its **⋯** menu turns the instance off or on, opens its
 settings, and removes it. Removing is permanent: the identity stops working.
 
 ## 4. Run the container
@@ -148,6 +150,9 @@ differs from the one its instance runs and submits its own IDL:
 Settings a new build needs can be set while the old build runs, so its
 instances start at once; see
 [An upgrade without downtime](/guides/settings-and-secrets#an-upgrade-without-downtime).
+To roll the new build out without dropping requests, start it as a second
+instance, wait until it serves, then stop the old one; see
+[Upgrade a service without downtime](/guides/upgrade-without-downtime).
 
 The service's page in the Console keeps the update history: when each build
 asked, what it changed, whether it was installed, rejected, or replaced, and

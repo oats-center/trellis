@@ -40,6 +40,14 @@ connection. The unacknowledged delivery returns after its ack wait, so a job in
 flight during the outage runs again and handlers must already tolerate that.
 Worker panics and undecodable lifecycle records still stop the host.
 
+A stopping service drains its worker hosts first: slots stop receiving, a
+delivery received meanwhile is naked at once, and running handlers continue
+until the service's stop timeout. At the deadline the remaining handlers are
+cancelled for shutdown, and a shutdown-interrupted attempt is naked with no
+delay, so another instance starts the job immediately instead of after the
+interrupted backoff or the ack wait. Hosts still starting are cancelled
+instead of drained.
+
 Progress ACK maintenance is automatic for accepted keyed and unkeyed deliveries
 at one third of the effective broker acknowledgement wait. It covers preflight,
 handler execution, confirmed lifecycle publication, and source disposition on

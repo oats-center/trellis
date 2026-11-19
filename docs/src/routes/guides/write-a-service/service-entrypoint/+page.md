@@ -54,20 +54,10 @@ const service = await TrellisService.connect({
   seed: requiredEnv("TRELLIS_IDENTITY_SEED"),
 }).orThrow();
 
-const stop = () => {
-  void service.stop();
-};
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
-try {
-  await service.handleCreate(createOrder);
-  console.log("Orders service connected; press Ctrl-C to stop.");
-  await service.wait();
-} finally {
-  process.off("SIGINT", stop);
-  process.off("SIGTERM", stop);
-  await service.stop();
-}
+await service.handleCreate(createOrder);
+console.log("Orders service connected; press Ctrl-C to stop.");
+// SIGTERM and Ctrl-C stop it gracefully: it finishes the work it holds first.
+await service.wait();
 ```
 
 Environment variables and their names are this example's configuration
@@ -79,8 +69,9 @@ declared in its IDL and kept by Trellis; see
 
 `connect()` proves the provisioned identity in NATS CONNECT, verifies the signed
 session authority Auth issues for its deployment, and resolves Trellis
-resources. `handleCreate()` registers the provider. `wait()` supervises the
-running service; `stop()` closes its resources. Session authority remains in
+resources. `handleCreate()` registers the provider. `wait()` serves and supervises the
+running service until SIGTERM, Ctrl-C or `stop()` stops it gracefully; see
+[Handle graceful shutdown](/guides/write-a-service/shutdown). Session authority remains in
 process memory and is refreshed proactively as SDK-owned maintenance. Renewal of unchanged transport authority does not replace a healthy
 socket. The SDK adopts newly approved authority automatically, moving fresh
 intake to a ready successor while safe accepted work finishes on its receiving
