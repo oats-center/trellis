@@ -5,12 +5,13 @@
  * `ROLE=old` holds what it is given: a slow Echo sleeps for the requested
  * milliseconds, a `handoffWork` job runs until cancelled, and a `changes`
  * delivery waits `HOLD_DELIVERY_MS`. It creates one held job at startup.
- * `ROLE=new` finishes all of them at once, slow Echo calls included.
+ * `ROLE=new` finishes all of them at once, slow Echo calls included. An Echo
+ * of `hold:<ms>` sleeps that long in either role.
  *
  * `READINESS_FILE`, `READINESS_PORT` and `STOP_TIMEOUT_MS` set the matching
  * runtime options. With `HOLD_SERVE=1` it registers everything and then waits
  * for a `serve` line on standard input before it serves. A `stop` line calls
- * `service.stop()`.
+ * `service.stop()`, and a `create:<value>` line creates a `handoffWork` job.
  */
 import { createInterface } from "node:readline";
 import { Result } from "@oatscenter/trellis";
@@ -50,6 +51,11 @@ await service.handleEcho(async ({ input }) => {
     emit("slow-started");
     await new Promise((resolve) => setTimeout(resolve, Number(slow[1])));
     emit("slow-finished");
+  }
+  const hold = /^hold:(\d+)$/.exec(input.value);
+  if (hold) {
+    emit("hold-started");
+    await new Promise((resolve) => setTimeout(resolve, Number(hold[1])));
   }
   return Result.ok({ value: `${env.ROLE}:${input.value}` });
 });
@@ -94,6 +100,13 @@ void service.ready.then(() => emit("ready"));
 commands.on("line", (line) => {
   if (line === "serve") served.resolve();
   if (line === "stop") void service.stop();
+  if (line.startsWith("create:")) {
+    const value = line.slice("create:".length);
+    void (async () => {
+      const created = await service.jobs.handoffWork.create({ value });
+      emit(created.isOk() ? "created" : "create-failed", { value });
+    })();
+  }
 });
 if (env.HOLD_SERVE === "1") {
   emit("registered");

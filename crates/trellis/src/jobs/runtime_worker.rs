@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
     Arc,
 };
 use std::time::Duration;
@@ -667,6 +667,9 @@ where
     /// job always completes through its ack/nak before the worker exits. A fixed
     /// built-in worker has no retire watcher and never spins on a dropped sender.
     retire: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Set once the host stops taking jobs. A job a pull returns after that is
+    /// handed straight back for another instance instead of being run.
+    stopping: Option<Arc<AtomicBool>>,
     /// Managed slots return after one accounted receive, then select current transport.
     single_receive: bool,
 }
@@ -694,6 +697,7 @@ where
         key_coordinator,
         _lease,
         retire,
+        stopping,
         single_receive,
     } = resources;
     let mut received = false;
@@ -760,6 +764,18 @@ where
                 });
             }
         };
+        // A pull already issued when the host began to stop can still return a
+        // job; hand it straight back for another instance rather than run it.
+        if stopping
+            .as_ref()
+            .is_some_and(|stopping| stopping.load(Ordering::Acquire))
+        {
+            message
+                .ack_with(AckKind::Nak(None))
+                .await
+                .map_err(map_ack_error)?;
+            break;
+        }
         let _delivery_attempt = match message.info() {
             Ok(info) => u64::try_from(info.delivered)
                 .map_err(|error| RuntimeWorkerError::Messages {
@@ -1479,6 +1495,7 @@ where
                     key_coordinator: None,
                     _lease: None,
                     retire: None,
+                    stopping: None,
                     single_receive: false,
                 },
                 worker_handler,
@@ -2024,8 +2041,11 @@ where
     tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     manager: crate::client::TransportGenerationManager,
     history_client: Arc<crate::client::TrellisClient>,
-    /// Set once the host is stopped, so no later candidate can resurrect it.
-    stopped: std::sync::atomic::AtomicBool,
+    /// Set once the host is draining or stopped, so no later candidate can
+    /// resurrect it and a job pulled after that goes straight back.
+    stopped: Arc<AtomicBool>,
+    /// Turns true once the service serves; no slot takes a job before.
+    serving: tokio::sync::watch::Receiver<bool>,
     /// The first unexpected worker failure, surfaced to `join`.
     failure: Arc<tokio::sync::Notify>,
     failure_message: Arc<std::sync::Mutex<Option<String>>>,
@@ -2118,6 +2138,15 @@ where
                 // Metadata identity persists across receives and generations.
                 let meta = Arc::new((self.meta_factory)(&queue_type, worker_index));
                 tasks.push(tokio::spawn(async move {
+                    let mut serving = owner.serving.clone();
+                    tokio::select! {
+                        _ = owner.cancellation.cancelled() => return,
+                        result = serving.wait_for(|serving| *serving) => {
+                            if result.is_err() {
+                                return;
+                            }
+                        }
+                    }
                     let mut publication = owner.manager.subscribe_publication();
                     let mut availability = owner.manager.watch_own_availability();
                     let mut retry_delay = WORKER_RETRY_MIN;
@@ -2201,6 +2230,7 @@ where
                                     key_coordinator: None,
                                     _lease: Some(lease),
                                     retire: Some(source.retire.subscribe()),
+                                    stopping: Some(Arc::clone(&owner.stopped)),
                                     single_receive: true,
                                 },
                                 owner.handler.clone(),
@@ -2490,6 +2520,8 @@ impl Drop for WorkerHostStartupGuard {
 /// safe consumer source only between bounded receives and final dispositions.
 /// The publisher factory receives that selected transport; each receive gets an
 /// immutable publisher while its slot retains the same metadata source.
+/// Slots take no job until `serving` turns true.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_worker_host_generation_following<PF, P, MF, M, H, Fut, E>(
     client: Arc<crate::client::TrellisClient>,
     binding: JobsRuntimeBinding,
@@ -2498,6 +2530,7 @@ pub async fn start_worker_host_generation_following<PF, P, MF, M, H, Fut, E>(
     meta_factory: MF,
     handler: H,
     options: WorkerHostOptions,
+    serving: tokio::sync::watch::Receiver<bool>,
 ) -> Result<WorkerHostHandle, WorkerHostError>
 where
     PF: Fn(async_nats::Client) -> P + Clone + Send + Sync + 'static,
@@ -2558,7 +2591,8 @@ where
         tasks: std::sync::Mutex::new(Vec::new()),
         manager: client.transport_generations(),
         history_client: client.clone(),
-        stopped: std::sync::atomic::AtomicBool::new(false),
+        stopped: Arc::new(AtomicBool::new(false)),
+        serving,
         failure: Arc::new(tokio::sync::Notify::new()),
         failure_message: Arc::new(std::sync::Mutex::new(None)),
     });
@@ -2760,6 +2794,7 @@ mod tests {
                     key_coordinator: Some(coordinator.as_ref().clone()),
                     _lease: None,
                     retire: None,
+                    stopping: None,
                     single_receive: false,
                 },
                 move |_active| {
@@ -3014,6 +3049,7 @@ mod tests {
                     key_coordinator: Some(coordinator.as_ref().clone()),
                     _lease: None,
                     retire: None,
+                    stopping: None,
                     single_receive: false,
                 },
                 move |active| {
@@ -3198,6 +3234,7 @@ mod tests {
                 key_coordinator: None,
                 _lease: None,
                 retire: None,
+                stopping: None,
                 single_receive: false,
             },
             move |_| {
@@ -3444,6 +3481,7 @@ mod tests {
                 key_coordinator: None,
                 _lease: None,
                 retire: Some(retire_rx),
+                stopping: None,
                 single_receive: false,
             },
             {
@@ -3533,6 +3571,7 @@ mod tests {
                         key_coordinator: None,
                         _lease: None,
                         retire: None,
+                        stopping: None,
                         single_receive: true,
                     },
                     |_job| async {

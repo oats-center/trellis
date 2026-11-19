@@ -142,16 +142,14 @@ pub(crate) mod internal {
         router.require_live_owner()?;
         let router = std::sync::Arc::new(super::AuthenticatedRouter::new(router, validator));
         // A built-in router runs until its connection ends; it never stops itself.
-        let (stop, stop_requested) = tokio::sync::watch::channel(false);
         let result = super::provider_ingress::run_provider_intake(
             owner.client().transport_generations(),
             subjects.into(),
             router,
             tokio::sync::oneshot::channel().0,
-            stop_requested,
+            std::sync::Arc::new(tokio::sync::watch::channel(false).0),
         )
         .await;
-        drop(stop);
         result.map_err(|error| super::ServerError::Internal(error.to_string()))
     }
 }

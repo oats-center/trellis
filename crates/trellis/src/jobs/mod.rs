@@ -166,6 +166,7 @@ pub(crate) async fn start_worker_host_from_client<MF, M, H, Fut, E>(
     meta_factory: MF,
     handler: H,
     options: WorkerHostOptions,
+    serving: tokio::sync::watch::Receiver<bool>,
 ) -> Result<WorkerHostHandle, runtime_worker::WorkerHostError>
 where
     MF: Fn(&str, u32) -> M + Clone + Send + Sync + 'static,
@@ -186,6 +187,7 @@ where
         meta_factory,
         handler,
         options,
+        serving,
     )
     .await
 }

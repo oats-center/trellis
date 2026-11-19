@@ -2532,6 +2532,12 @@ async fn shutdown(inner: &Arc<ManagerInner>) {
     for generation in known {
         generation.retire_intake_closed(GenerationIntakeRetireReason::Shutdown);
         let _ = generation.nats.drain().await;
+        // `drain` only queues the close: the connection still has to write
+        // what was published before it, such as a final reply or a delivery
+        // handed back. A flush queued behind it resolves once that is written
+        // or the connection has ended, so a process that exits once the
+        // service stops loses nothing it sent.
+        let _ = generation.nats.flush().await;
     }
 }
 

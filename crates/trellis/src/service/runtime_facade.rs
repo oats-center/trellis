@@ -544,13 +544,15 @@ impl Drop for ServiceEventListenerHandle {
     }
 }
 
-/// The durable consumer loops a stopping service drains.
+/// When a service's job workers and durable consumer loops take work.
 ///
-/// `begin` stops every loop from fetching more; `hand_back` makes a loop that
-/// still holds a delivery give it back at once. `idle` resolves when no loop
-/// runs.
+/// Nothing is fetched until `open`, which the service calls as it starts
+/// serving. `begin` stops every loop from fetching more; `hand_back` makes a
+/// loop that still holds a delivery give it back at once. `idle` resolves when
+/// no loop runs.
 #[derive(Clone)]
 pub(crate) struct EventDrain {
+    serving: Arc<tokio::sync::watch::Sender<bool>>,
     draining: Arc<tokio::sync::watch::Sender<bool>>,
     hand_back: Arc<tokio::sync::watch::Sender<bool>>,
     running: Arc<tokio::sync::watch::Sender<usize>>,
@@ -559,6 +561,7 @@ pub(crate) struct EventDrain {
 impl Default for EventDrain {
     fn default() -> Self {
         Self {
+            serving: Arc::new(tokio::sync::watch::channel(false).0),
             draining: Arc::new(tokio::sync::watch::channel(false).0),
             hand_back: Arc::new(tokio::sync::watch::channel(false).0),
             running: Arc::new(tokio::sync::watch::channel(0).0),
@@ -567,6 +570,25 @@ impl Default for EventDrain {
 }
 
 impl EventDrain {
+    fn open(&self) {
+        self.serving.send_replace(true);
+    }
+
+    /// Turns true once the service serves; job workers wait for it.
+    fn serving(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.serving.subscribe()
+    }
+
+    /// Wait until the service serves. Returns `false` if it stops first.
+    async fn wait_serving(&self) -> bool {
+        let mut serving = self.serving.subscribe();
+        let mut draining = self.draining.subscribe();
+        tokio::select! {
+            result = serving.wait_for(|serving| *serving) => result.is_ok(),
+            _ = draining.wait_for(|draining| *draining) => false,
+        }
+    }
+
     fn begin(&self) {
         self.draining.send_replace(true);
     }
@@ -1793,6 +1815,7 @@ impl<C> ConnectedServiceRuntime<C> {
                 )]),
                 ..WorkerHostOptions::default()
             },
+            self.event_drain.serving(),
         )
         .await?;
         self.job_hosts.push(host);
@@ -1994,13 +2017,21 @@ impl<C> ConnectedServiceRuntime<C> {
     /// one stops accepting new requests, and every accepted callback drains on
     /// the generation that accepted it.
     pub async fn run(self) -> Result<(), ServiceRuntimeError> {
-        self.router.recover_operations().await?;
-        // A live-capable router must be given its connection's provider owner
-        // before it serves any traffic; fail before readiness, not at the first
-        // caller.
-        self.router
-            .require_live_owner()
-            .map_err(ServiceRuntimeError::from)?;
+        // A service that cannot start has stopped: whoever waits for it to
+        // serve learns that it never will.
+        let started = async {
+            self.router.recover_operations().await?;
+            // A live-capable router must be given its connection's provider
+            // owner before it serves any traffic; fail before readiness, not at
+            // the first caller.
+            self.router
+                .require_live_owner()
+                .map_err(ServiceRuntimeError::from)
+        };
+        if let Err(error) = started.await {
+            self.lifecycle.set(super::lifecycle::ServicePhase::Stopped);
+            return Err(error);
+        }
         let lifecycle = self.lifecycle.clone();
         lifecycle.attach_health(self.client.health().clone());
         let client = Arc::clone(&self.client);
@@ -2025,12 +2056,13 @@ impl<C> ConnectedServiceRuntime<C> {
             self.auth,
         ));
         let peer_routes: std::sync::Arc<[_]> = self.peer_routes.into();
-        let (intake_stop, _) = tokio::sync::watch::channel(false);
+        // Latching it stops request intake on every generation at once.
+        let intake_stop = Arc::new(tokio::sync::watch::channel(false).0);
         let (provider_attached, provider_ready) = tokio::sync::oneshot::channel();
         let (peer_attached, peer_ready) = tokio::sync::oneshot::channel();
         let serve = {
-            let provider_stop = intake_stop.subscribe();
-            let peer_stop = intake_stop.subscribe();
+            let provider_stop = Arc::clone(&intake_stop);
+            let peer_stop = Arc::clone(&intake_stop);
             async move {
                 tokio::try_join!(
                     super::provider_ingress::run_provider_intake(
@@ -2078,9 +2110,13 @@ impl<C> ConnectedServiceRuntime<C> {
                 }
             }
         };
+        // Serving needs both intakes attached. One that ends without
+        // attaching, because the connection closed or the stop came first,
+        // leaves the service short of serving.
         let attached = async {
-            let _ = provider_ready.await;
-            let _ = peer_ready.await;
+            if provider_ready.await.is_err() || peer_ready.await.is_err() {
+                std::future::pending::<()>().await;
+            }
         };
         let stop_requested = stop_signal(&lifecycle, handle_signals);
         tokio::pin!(serve, workers, retired, attached, stop_requested);
@@ -2095,6 +2131,14 @@ impl<C> ConnectedServiceRuntime<C> {
                     if result.is_err() || workers_result.is_some() {
                         break Some(result);
                     }
+                    // Intake that ends before it attached means the connection
+                    // closed first: this service will never serve.
+                    if !serving {
+                        break Some(Err(TrellisClientError::TransportUnavailable(
+                            "the connection closed before the service could serve".into(),
+                        )
+                        .into()));
+                    }
                     serve_result = Some(result);
                 }
                 result = &mut workers, if workers_result.is_none() => {
@@ -2105,6 +2149,9 @@ impl<C> ConnectedServiceRuntime<C> {
                 }
                 () = &mut attached, if !serving => {
                     serving = true;
+                    // Jobs and durable deliveries flow from here on, with
+                    // requests.
+                    event_drain.open();
                     lifecycle.set(super::lifecycle::ServicePhase::Serving);
                     follower = Some(tokio::spawn(follow_transport(
                         lifecycle.clone(),
@@ -2128,22 +2175,22 @@ impl<C> ConnectedServiceRuntime<C> {
 
         // A graceful stop. Take no new work anywhere, so the next request,
         // job and delivery go to another instance, and end open Live streams
-        // so their callers can open them again there.
+        // so their callers can open them again there. Then finish the
+        // requests, deliveries and jobs already taken, all within the stop
+        // timeout.
+        let deadline = tokio::time::sleep(lifecycle.stop_timeout());
         intake_stop.send_replace(true);
         for drain in &job_drains {
             drain.drain();
         }
         event_drain.begin();
-        if let Some(live) = client.live_manager() {
-            live.end_provider_sessions().await;
-        }
-        // Finish the requests, deliveries and jobs already taken, until the
-        // stop timeout.
         let drained = async {
+            if let Some(live) = client.live_manager() {
+                live.end_provider_sessions().await;
+            }
             futures_util::future::join_all(job_drains.iter().map(|drain| drain.idle())).await;
             event_drain.idle().await;
         };
-        let deadline = tokio::time::sleep(lifecycle.stop_timeout());
         tokio::pin!(drained, deadline);
         let mut drained_done = false;
         while !(drained_done && serve_result.is_some()) {
@@ -2876,6 +2923,11 @@ async fn run_durable_event_pull_loop(
     // Counted while it runs, so a stopping service knows when its deliveries
     // are settled.
     let _running = drain.enter();
+    // A delivery waits until the service serves; one that stops first takes
+    // none.
+    if !drain.wait_serving().await {
+        return Ok(());
+    }
     let mut replay = false;
     let mut original_consumer_opened = false;
     // Transient transport recovery is paced by the logical connection, not an

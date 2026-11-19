@@ -5,12 +5,14 @@
 //! `ROLE=old` holds what it is given: a slow Echo sleeps for the requested
 //! milliseconds, a `handoffWork` job runs until cancelled, and a `changes`
 //! delivery waits `HOLD_DELIVERY_MS`. It creates one held job at startup.
-//! `ROLE=new` finishes all of them at once, slow Echo calls included.
+//! `ROLE=new` finishes all of them at once, slow Echo calls included. An Echo
+//! of `hold:<ms>` sleeps that long in either role.
 //!
 //! `READINESS_FILE`, `READINESS_PORT` and `STOP_TIMEOUT_MS` set the matching
 //! connect options. With `HOLD_SERVE=1` it registers everything and then waits
 //! for a `serve` line on standard input before it serves. A `stop` line asks
-//! its lifecycle to stop.
+//! its lifecycle to stop, and a `create:<value>` line creates a `handoffWork`
+//! job.
 
 use std::io::Write as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -90,6 +92,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tokio::time::sleep(Duration::from_millis(ms.parse().unwrap_or(0))).await;
             emit("slow-finished", role, None);
         }
+        if let Some(ms) = input.value.strip_prefix("hold:") {
+            emit("hold-started", role, None);
+            tokio::time::sleep(Duration::from_millis(ms.parse().unwrap_or(0))).await;
+        }
         Ok(Value {
             value: format!("{role}:{}", input.value),
             extra: Default::default(),
@@ -119,6 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
             .await?;
     }
+    let jobs = Provider::new(&mut service).jobs_client();
     let lifecycle = service.lifecycle();
     tokio::spawn({
         let lifecycle = lifecycle.clone();
@@ -140,7 +147,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 "stop" => lifecycle.stop(),
-                _ => {}
+                line => {
+                    if let Some(value) = line.strip_prefix("create:") {
+                        let jobs = jobs.clone();
+                        let value = value.to_owned();
+                        tokio::spawn(async move {
+                            let created = jobs
+                                .create_handoff_work(Value {
+                                    value: value.clone(),
+                                    extra: Default::default(),
+                                })
+                                .await;
+                            emit(
+                                if created.is_ok() {
+                                    "created"
+                                } else {
+                                    "create-failed"
+                                },
+                                role,
+                                Some(&value),
+                            );
+                        });
+                    }
+                }
             }
         }
     });

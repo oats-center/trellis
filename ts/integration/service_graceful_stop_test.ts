@@ -211,12 +211,23 @@ for (const language of languages) {
             await new Promise((resolve) => setTimeout(resolve, 100));
           }
         })();
-        // Queue groups pick at random: send until a slow call lands on the old one.
+        // Queue groups pick at random: send one slow call at a time until one
+        // lands on the old instance. The new one answers at once, so a call it
+        // took ends before the next is sent, and the call the old one holds is
+        // the only one outstanding when it reports holding it.
         let slow: Promise<unknown> | undefined;
-        while (!old.seen("slow-started")) {
+        while (!slow) {
           const attempt = caller.echo({ value: "slow:2000" }).orThrow();
-          slow = attempt;
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          let answered = false;
+          attempt.then(
+            () => (answered = true),
+            () => (answered = true),
+          );
+          while (!answered && !old.seen("slow-started")) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          if (old.seen("slow-started")) slow = attempt;
+          else assert.deepEqual(await attempt, { value: "new:slow:2000" });
         }
 
         const stoppedAt = Date.now();
@@ -271,4 +282,115 @@ for (const language of languages) {
       }
     });
   });
+
+  test(`a stopping ${language} instance hands back at once a job it pulls as it stops`, async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const contract = participants.Provider.participant;
+      const first = await runtime.registerService({
+        name: `late-old-${language}`,
+        contract,
+      });
+      const second = await runtime.registerService({
+        name: `late-new-${language}`,
+        contract,
+      });
+      const notify = new NotifySocket(`@trellis-notify-${crypto.randomUUID()}`);
+      const stopping = startService(runtime, language, {
+        TRELLIS_IDENTITY_SEED: first.seed,
+        ROLE: "new",
+        NOTIFY_SOCKET: notify.path,
+        STOP_TIMEOUT_MS: "5000",
+      });
+      let next: ReturnType<typeof startService> | undefined;
+      const caller = await runtime.connectClient({
+        name: `late-caller-${language}`,
+        contract: apps.Caller.request,
+      });
+      try {
+        await runtime.waitFor(() => notify.find("READY", "1"), {
+          timeoutMs: 60_000,
+        });
+        // A request it holds keeps it draining while its idle job worker
+        // still waits on a pull.
+        const held = caller.echo({ value: "hold:2000" }).orThrow();
+        await runtime.waitFor(() => stopping.seen("hold-started"));
+        stopping.child.kill("SIGTERM");
+        await runtime.waitFor(() => notify.find("STOPPING", "1"));
+        stopping.child.stdin.write("create:late\n");
+        await runtime.waitFor(() => stopping.seen("created"));
+        assert.deepEqual(await held, { value: "new:hold:2000" });
+        assert.deepEqual(await stopping.child.exited, {
+          code: 0,
+          signal: null,
+        });
+        // The stopping instance gave the job back rather than run it, and the
+        // next instance runs it.
+        assert.equal(
+          stopping.seen("job-started"),
+          undefined,
+          stopping.output(),
+        );
+        next = startService(runtime, language, {
+          TRELLIS_IDENTITY_SEED: second.seed,
+          ROLE: "new",
+        });
+        const job = await runtime.waitFor(() => next?.seen("job-started"), {
+          timeoutMs: 60_000,
+        });
+        assert.equal(job.value, "late");
+      } finally {
+        stopping.child.kill("SIGKILL");
+        next?.child.kill("SIGKILL");
+        notify.close();
+        await caller.connection.close();
+      }
+    });
+  });
 }
+
+test("a rust service takes no job or delivery before it serves", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "early-rust",
+      contract: participants.Provider.participant,
+    });
+    const service = startService(runtime, "rust", {
+      TRELLIS_IDENTITY_SEED: identity.seed,
+      ROLE: "new",
+      HOLD_SERVE: "1",
+    });
+    const caller = await runtime.connectClient({
+      name: "early-caller-rust",
+      contract: apps.Caller.request,
+    });
+    try {
+      // Registered, so its worker and consumer exist, but not yet serving.
+      await runtime.waitFor(() => service.seen("registered"), {
+        timeoutMs: 60_000,
+      });
+      service.child.stdin.write("create:early\n");
+      await runtime.waitFor(() => service.seen("created"));
+      await caller.publishChanged({ value: "early" }).orThrow();
+      // Both wait for it. One that takes work early starts it well within this.
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      assert.equal(service.seen("job-started"), undefined, service.output());
+      assert.equal(service.seen("delivery-started"), undefined);
+
+      const servedAt = Date.now();
+      service.child.stdin.write("serve\n");
+      const job = await runtime.waitFor(() => service.seen("job-started"), {
+        timeoutMs: 30_000,
+      });
+      const delivery = await runtime.waitFor(
+        () => service.seen("delivery-started"),
+        { timeoutMs: 30_000 },
+      );
+      assert.equal(job.value, "early");
+      assert.equal(delivery.value, "early");
+      assert(job.at >= servedAt && delivery.at >= servedAt);
+    } finally {
+      service.child.kill("SIGKILL");
+      await caller.connection.close();
+    }
+  });
+});
