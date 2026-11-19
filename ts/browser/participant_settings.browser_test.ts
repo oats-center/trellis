@@ -100,6 +100,20 @@ test("an administrator sets a waiting service's settings from the link it printe
         // asks first; cancelling saves nothing and keeps the edit.
         const port = settings.getByLabel("Port", { exact: true });
         await port.fill("9090");
+        // The page keeps rereading the service. A value saved elsewhere
+        // meanwhile shows up for a field left alone, and the edit stays.
+        const saved = await runtime.callAdminRpc("authConfigGet", { target });
+        await runtime.callAdminRpc("authConfigSet", {
+          target,
+          values: { region: "west" },
+          expectedRevision: saved.revision,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        });
+        const region = settings.getByLabel("Region", { exact: true });
+        await runtime.waitFor(
+          async () => (await region.inputValue()) === "west",
+        );
+        assert.equal(await port.inputValue(), "9090");
         const saveSettings = settings.getByRole("button", {
           name: "Save settings",
           exact: true,
