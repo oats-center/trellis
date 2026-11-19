@@ -53,6 +53,10 @@ async fn a_worker_streams_typed_updates_to_job_and_queue_subscribers_until_the_j
 
     // Any task can create and observe jobs through the cloneable handle.
     let jobs = provider.jobs_client();
+    let submitter = jobs.clone();
+    let lifecycle = service.lifecycle();
+    let run = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service must start serving");
     let (job, by_ref, by_id) = tokio::spawn(async move {
         let job = jobs
             .create_work(Value {
@@ -96,7 +100,7 @@ async fn a_worker_streams_typed_updates_to_job_and_queue_subscribers_until_the_j
     assert_eq!(job.wait().await.unwrap().state, JobState::Completed);
 
     // Policy-aware submission accepts an unkeyed job and runs it.
-    let JobSubmitOutcome::Accepted { job_ref, key } = provider
+    let JobSubmitOutcome::Accepted { job_ref, key } = submitter
         .submit_work(Value {
             value: "submitted".into(),
             extra: Default::default(),
@@ -113,6 +117,7 @@ async fn a_worker_streams_typed_updates_to_job_and_queue_subscribers_until_the_j
         .unwrap();
     assert_eq!(finished.state, JobState::Completed);
     assert_eq!(finished.result.unwrap().value, "submitted");
-    drop(service);
+    lifecycle.stop();
+    run.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }

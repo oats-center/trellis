@@ -48,6 +48,9 @@ async fn a_backup_taken_while_running_brings_back_users_sessions_jobs_and_files(
         .unwrap();
     let jobs = provider.jobs_client();
     let files = provider.client().files().await.unwrap();
+    let lifecycle = service.lifecycle();
+    let run = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service must start serving");
     let mut state = 0x9e37_79b9_u32;
     let object: Vec<u8> = (0..300_000)
         .map(|_| {
@@ -123,7 +126,8 @@ async fn a_backup_taken_while_running_brings_back_users_sessions_jobs_and_files(
     runtime.backup(&backup).await.unwrap();
     drop(files);
     drop(jobs);
-    drop(service);
+    lifecycle.stop();
+    run.await.unwrap().unwrap();
     runtime.restore(&backup).await.unwrap();
 
     // The installation signs with the same keys, so the session refreshes

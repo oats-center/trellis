@@ -41,6 +41,9 @@ async fn an_outboxed_job_runs_once_when_a_crashed_dispatcher_submits_it_again() 
         .await
         .unwrap();
     let jobs = provider.jobs_client();
+    let lifecycle = service.lifecycle();
+    let run = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service must start serving");
 
     // The application stores the job inside its own transaction.
     let prepared = jobs.prepare_work(value("outboxed")).unwrap();
@@ -90,7 +93,8 @@ async fn an_outboxed_job_runs_once_when_a_crashed_dispatcher_submits_it_again() 
             (later.identity().id.clone(), "later".to_owned()),
         ]
     );
-    drop(service);
+    lifecycle.stop();
+    run.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }
 
@@ -148,6 +152,9 @@ async fn dispatching_a_finished_keyed_job_again_leaves_its_key_free() {
         .await
         .unwrap();
     let jobs = provider.jobs_client();
+    let lifecycle = service.lifecycle();
+    let run = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service must start serving");
     let dispatcher = jobs.outbox_dispatcher();
     let admin = jobs_admin(&mut runtime).await;
 
@@ -191,7 +198,8 @@ async fn dispatching_a_finished_keyed_job_again_leaves_its_key_free() {
         .await
         .unwrap();
     assert_eq!(next_run(&mut runs).await, "next");
-    drop(service);
+    lifecycle.stop();
+    run.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }
 
@@ -224,6 +232,9 @@ async fn a_refused_outbox_job_can_be_found_as_skipped_by_its_prepared_id() {
         .await
         .unwrap();
     let jobs = provider.jobs_client();
+    let lifecycle = service.lifecycle();
+    let run = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service must start serving");
     let admin = jobs_admin(&mut runtime).await;
 
     jobs.create_rejecting_work(keyed("field", "holder"))
@@ -268,6 +279,7 @@ async fn a_refused_outbox_job_can_be_found_as_skipped_by_its_prepared_id() {
     assert_eq!(found["state"], "skipped");
 
     release.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
-    drop(service);
+    lifecycle.stop();
+    run.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }

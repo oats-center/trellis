@@ -36,8 +36,12 @@ async fn a_failed_cleanup_ends_a_job_instead_of_redelivering_it_forever() {
         })
         .await
         .unwrap();
+    let jobs = provider.jobs_client();
+    let lifecycle = service.lifecycle();
+    let run = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service must start serving");
 
-    let job = provider
+    let job = jobs
         .create_work(Value {
             value: "fails".into(),
             extra: Default::default(),
@@ -60,6 +64,7 @@ async fn a_failed_cleanup_ends_a_job_instead_of_redelivering_it_forever() {
     );
     // Two ordinary attempts, then the one cleanup entry.
     assert_eq!(entries.load(Ordering::SeqCst), 3);
-    drop(service);
+    lifecycle.stop();
+    run.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }

@@ -22,9 +22,7 @@ async fn node_worker_recovers_and_reconstructs_signed_job_history() {
         .await
         .unwrap();
     let mut node = tokio::process::Command::new("node")
-        .args([
-            "ts/packages/trellis/native/jobs_interop.ts",
-        ])
+        .args(["ts/packages/trellis/native/jobs_interop.ts"])
         .current_dir("../../..")
         .env("NODE_EXTRA_CA_CERTS", runtime.trust_roots()[0].clone())
         .stdin(Stdio::piped())
@@ -104,6 +102,9 @@ async fn private_jobs_execute_and_history_is_deployment_scoped() {
         })
         .await
         .unwrap();
+    let lifecycle = first.lifecycle();
+    let run = tokio::spawn(first.run());
+    assert!(lifecycle.ready().await, "the provider must start serving");
     let terminal = tokio::time::timeout(Duration::from_secs(20), job.wait())
         .await
         .unwrap()
@@ -185,5 +186,7 @@ async fn private_jobs_execute_and_history_is_deployment_scoped() {
         );
     }
     drop(terminal);
+    lifecycle.stop();
+    run.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }
