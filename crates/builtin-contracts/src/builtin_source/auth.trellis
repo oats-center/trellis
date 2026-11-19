@@ -209,6 +209,8 @@ api auth@v1 {
   rpc OAuthClients.SignUp.Update { input AuthOAuthClientSignUpUpdateRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Turn an app off. Users can no longer sign in to it.
   rpc OAuthClients.Disable { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Turn a disabled app back on. Saving an app's settings never does.
+  rpc OAuthClients.Enable { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Delete a registered app.
   rpc OAuthClients.Delete { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
@@ -536,7 +538,7 @@ api auth@v1 {
       title "Manage apps";
       description "Register apps and change their sign-in settings.";
       grants "Decides which apps can ask users for access.";
-      allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.SignUp.Update; rpc OAuthClients.Disable; rpc OAuthClients.Delete; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
+      allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.SignUp.Update; rpc OAuthClients.Disable; rpc OAuthClients.Enable; rpc OAuthClients.Delete; rpc PortalThemes.List; rpc PortalThemes.Get; rpc PortalThemes.Put; rpc PortalThemes.Delete; }
     }
     capability security.observe {
       title "Watch security activity";

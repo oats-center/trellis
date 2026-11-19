@@ -211,6 +211,7 @@ export const CONSOLE_OPERATIONS = {
   oAuthClientsPut: authRpc("OAuthClients.Put"),
   oAuthClientsSignUpUpdate: authRpc("OAuthClients.SignUp.Update"),
   oAuthClientsDisable: authRpc("OAuthClients.Disable"),
+  oAuthClientsEnable: authRpc("OAuthClients.Enable"),
   oAuthClientsDelete: authRpc("OAuthClients.Delete"),
   signInSettingsGet: authRpc("SignInSettings.Get"),
   signInSettingsUpdate: authRpc("SignInSettings.Update"),

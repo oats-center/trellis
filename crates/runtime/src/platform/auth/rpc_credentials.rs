@@ -163,6 +163,15 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          now| change_client_state(store, identity, input, "disabled", now)
     );
     mutate!(
+        register_o_auth_clients_enable,
+        Some(Administration::ManageClients),
+        |store: &SqliteAuthorizationStore,
+         identity: &Mutation,
+         _: &AuthenticatedCaller,
+         input: &AuthOAuthClientMutationRequest,
+         now| change_client_state(store, identity, input, "active", now)
+    );
+    mutate!(
         register_o_auth_clients_delete,
         Some(Administration::ManageClients),
         |store: &SqliteAuthorizationStore,
@@ -779,12 +788,9 @@ pub(super) fn put_client(
             request_digest: digest(&registration)?,
             ..identity.clone()
         };
+        // A new registration starts enabled; an existing one keeps its state,
+        // so a settings edit never undoes Disable. Enable turns it back on.
         store.register_client_in_transaction(connection, &domain, &registration, now)?;
-        // Put is the supported create/update/enable operation.
-        connection.execute(
-            "UPDATE auth_oauth_clients SET state='active' WHERE client_id=?1",
-            [input.client_id.as_ref()],
-        )?;
         Ok(AuthOAuthClientGetResponse {
             client: read_client(connection, &input.client_id)?,
             extra: Default::default(),
@@ -801,10 +807,10 @@ pub(super) fn change_client_state(
 ) -> Result<AuthMutationResult, AuthError> {
     store.mutate(
         identity,
-        if state == "deleted" {
-            "rpc.client.delete"
-        } else {
-            "rpc.client.disable"
+        match state {
+            "deleted" => "rpc.client.delete",
+            "active" => "rpc.client.enable",
+            _ => "rpc.client.disable",
         },
         input,
         now,

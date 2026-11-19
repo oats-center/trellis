@@ -978,30 +978,47 @@ pub fn restore(
 
     // The streams wait in the data folder for the next start. Streams still
     // staged there are of a restore whose start didn't finish, and may be in
-    // NATS already; the next start deletes them before loading these.
+    // NATS already; the next start deletes them before loading these. A
+    // restaging that stopped partway left its list without a manifest, so
+    // the list is read on its own and replaced in one rename before anything
+    // else staged goes: no interruption loses a name.
     let staged = paths.data.join(STAGED);
     let mut unfinished = BTreeSet::new();
     if let Ok(contents) = fs::read(staged.join(MANIFEST_FILE)) {
         if let Ok(earlier) = serde_json::from_slice::<Manifest>(&contents) {
             unfinished.extend(earlier.streams().map(str::to_owned));
         }
-        if let Ok(contents) = fs::read(staged.join(UNFINISHED)) {
-            if let Ok(names) = serde_json::from_slice::<Vec<String>>(&contents) {
-                unfinished.extend(names);
-            }
+    }
+    if let Ok(contents) = fs::read(staged.join(UNFINISHED)) {
+        if let Ok(names) = serde_json::from_slice::<Vec<String>>(&contents) {
+            unfinished.extend(names);
         }
     }
-    if staged.exists() {
-        fs::remove_dir_all(&staged).map_err(file_error("remove", &staged))?;
+    if !staged.exists() {
+        private_directory(&staged)?;
     }
-    private_directory(&staged)?;
     if !unfinished.is_empty() {
-        let path = staged.join(UNFINISHED);
+        let partial = staged.join(format!("{UNFINISHED}.partial"));
         trellis_bootstrap::write_private_file(
-            &path,
+            &partial,
             serde_json::to_vec(&unfinished).unwrap_or_default(),
         )
-        .map_err(|error| file_error("write", &path)(std::io::Error::other(error.to_string())))?;
+        .map_err(|error| file_error("write", &partial)(std::io::Error::other(error.to_string())))?;
+        let path = staged.join(UNFINISHED);
+        fs::rename(&partial, &path).map_err(file_error("replace", &path))?;
+    }
+    for entry in fs::read_dir(&staged).map_err(file_error("read", &staged))? {
+        let entry = entry.map_err(file_error("read", &staged))?;
+        let path = entry.path();
+        if entry.file_name() == UNFINISHED {
+            continue;
+        }
+        if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        }
+        .map_err(file_error("remove", &path))?;
     }
     for entry in &manifest.entries {
         if matches!(entry.kind, EntryKind::Stream { .. }) {
@@ -1406,8 +1423,8 @@ mod tests {
 
     /// The first start after a restore can stop after NATS took a stream and
     /// before it removed that stream's snapshot, or lose NATS's answer, and
-    /// the next start then refuses the stream. Restoring again and starting
-    /// finishes the restore: every stream is the backup's, and the
+    /// the next start then refuses the stream. Restoring again, even after a
+    /// restore again that stopped partway, and starting finishes the restore: every stream is the backup's, and the
     /// installation serves. A stream no restore loaded still stops it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_interrupted_restore_finishes_when_restored_again() {
@@ -1499,6 +1516,11 @@ mod tests {
             matches!(refused, Err(BackupError::Refused(_))),
             "{refused:?}"
         );
+
+        // A restore again that stops while copying snapshots leaves the list
+        // of loaded streams and no manifest, which is written last.
+        restore(&saved, &config_file, defaults(&fresh), false).unwrap();
+        fs::remove_file(staged.join(MANIFEST_FILE)).unwrap();
 
         // Restored again, over the same installation, without --force.
         restore(&saved, &config_file, defaults(&fresh), false).unwrap();

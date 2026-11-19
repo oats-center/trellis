@@ -63,8 +63,14 @@ trellis clients list
 
 Redirect ports and origins have to match exactly. Trellis never calls back to
 `localhost` itself; only the browser does. To update a client with `put`, send
-the revision `get` returned. `disable` and `delete` take `--expected-revision`, so
-a stale revision fails instead of overwriting another administrator's change.
+the revision `get` returned. `disable`, `enable` and `delete` take
+`--expected-revision`, so a stale revision fails instead of overwriting another
+administrator's change.
+
+A disabled app stays disabled when you change its settings, whether with
+`edit`, `put` or the Console. To turn it back on, run
+`trellis clients enable my-local-app --expected-revision <n>` or use **Turn on**
+in the Console.
 The commands print the generated JSON, including the cursor for
 `list --cursor`.
 

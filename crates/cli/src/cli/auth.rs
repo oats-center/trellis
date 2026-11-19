@@ -50,8 +50,11 @@ pub enum ClientsCommand {
     /// Choose how users may create their own account while signing in to
     /// this app; options you leave out keep their current value.
     SignUp(ClientSignUpArgs),
-    /// Disable a client at the explicit expected revision.
+    /// Disable a client at the explicit expected revision. Editing it keeps
+    /// it disabled.
     Disable(ClientMutationArgs),
+    /// Enable a disabled client at the explicit expected revision.
+    Enable(ClientMutationArgs),
     /// Delete a client at the explicit expected revision.
     Delete(ClientMutationArgs),
 }
