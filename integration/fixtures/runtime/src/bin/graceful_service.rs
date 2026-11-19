@@ -10,9 +10,10 @@
 //!
 //! `READINESS_FILE`, `READINESS_PORT` and `STOP_TIMEOUT_MS` set the matching
 //! connect options. With `HOLD_SERVE=1` it registers everything and then waits
-//! for a `serve` line on standard input before it serves. A `stop` line asks
-//! its lifecycle to stop, and a `create:<value>` line creates a `handoffWork`
-//! job.
+//! for a `serve` line on standard input before it serves. With
+//! `HOLD_REGISTER=1` it waits for a `register` line once connected, before it
+//! registers anything. A `stop` line asks its lifecycle to stop, and a
+//! `create:<value>` line creates a `handoffWork` job.
 
 use std::io::Write as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -58,6 +59,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut service = Participant::connect(options).await?;
     emit("connected", role, None);
+    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    if std::env::var("HOLD_REGISTER").as_deref() == Ok("1") {
+        while lines
+            .next_line()
+            .await?
+            .is_some_and(|line| line != "register")
+        {}
+    }
     let _changes = service
         .listen_event::<Changed, _, _>(
             move |event, _| async move {
@@ -138,7 +147,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (serve, served) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let mut serve = Some(serve);
-        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             match line.as_str() {
                 "serve" => {

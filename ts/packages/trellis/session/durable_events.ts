@@ -119,6 +119,8 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
   #loops = new Map<string, DurableEventConsumerLoop<TA>>();
   #stopped = false;
   #draining = false;
+  /** Set while deliveries wait for the service to serve. */
+  #serving?: PromiseWithResolvers<void>;
   /** Deliveries a handler is working on now. */
   readonly #active = new Set<{ nak(): void }>();
   #workersExited = Promise.withResolvers<void>();
@@ -134,6 +136,7 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
    */
   async drain(): Promise<void> {
     this.#draining = true;
+    this.#serving?.resolve();
     for (const loop of this.#loops.values()) loop.attached.resolve();
     while (
       [...this.#loops.values()].some((loop) => loop.startedWorkers.size > 0)
@@ -153,11 +156,22 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
   /** Stops durable event listener loops without closing the underlying transport. */
   stop(): void {
     this.#stopped = true;
+    this.#serving?.resolve();
     for (const loop of this.#loops.values()) {
       loop.registrations.splice(0, loop.registrations.length);
       for (const messages of loop.messages) messages.stop();
       loop.attached.resolve();
     }
+  }
+
+  /** Takes no delivery until `serve()`, though consumers still attach. */
+  hold(): void {
+    this.#serving ??= Promise.withResolvers<void>();
+  }
+
+  /** Takes deliveries from here on. */
+  serve(): void {
+    this.#serving?.resolve();
   }
 
   /**
@@ -443,6 +457,8 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
           );
           // Both consumers exist at the broker: deliveries reach this group.
           loop.attached.resolve();
+          // A service takes no delivery before it serves.
+          await this.#serving?.promise;
           let replay = false;
           while (
             !this.#stopped &&

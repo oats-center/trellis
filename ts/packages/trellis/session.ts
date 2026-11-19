@@ -3626,6 +3626,19 @@ export class Trellis<
   }
 
   /**
+   * Takes no durable event delivery until `serveEventDeliveries()`; consumers
+   * still attach meanwhile. @internal
+   */
+  holdEventDeliveries(): void {
+    this.#durableEvents.hold();
+  }
+
+  /** Takes durable event deliveries from here on. @internal */
+  serveEventDeliveries(): void {
+    this.#durableEvents.serve();
+  }
+
+  /**
    * Resolves once the broker has the consumer of every durable event group
    * this connection consumes, so each takes deliveries. @internal
    */

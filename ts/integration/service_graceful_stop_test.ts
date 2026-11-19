@@ -352,54 +352,143 @@ for (const language of languages) {
       }
     });
   });
-}
 
-test("a rust service takes no job or delivery before it serves", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const identity = await runtime.registerService({
-      name: "early-rust",
-      contract: participants.Provider.participant,
-    });
-    const service = startService(runtime, "rust", {
-      TRELLIS_IDENTITY_SEED: identity.seed,
-      ROLE: "new",
-      HOLD_SERVE: "1",
-    });
-    const caller = await runtime.connectClient({
-      name: "early-caller-rust",
-      contract: apps.Caller.request,
-    });
-    try {
-      // Registered, so its worker and consumer exist, but not yet serving.
-      await runtime.waitFor(() => service.seen("registered"), {
-        timeoutMs: 60_000,
+  test(`a ${language} service takes no job or delivery before it serves`, async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const identity = await runtime.registerService({
+        name: `early-${language}`,
+        contract: participants.Provider.participant,
       });
-      service.child.stdin.write("create:early\n");
-      await runtime.waitFor(() => service.seen("created"));
-      await caller.publishChanged({ value: "early" }).orThrow();
-      // Both wait for it. One that takes work early starts it well within this.
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
-      assert.equal(service.seen("job-started"), undefined, service.output());
-      assert.equal(service.seen("delivery-started"), undefined);
+      const service = startService(runtime, language, {
+        TRELLIS_IDENTITY_SEED: identity.seed,
+        ROLE: "new",
+        HOLD_SERVE: "1",
+      });
+      const caller = await runtime.connectClient({
+        name: `early-caller-${language}`,
+        contract: apps.Caller.request,
+      });
+      try {
+        // Registered, so its worker and consumer exist, but not yet serving.
+        await runtime.waitFor(() => service.seen("registered"), {
+          timeoutMs: 60_000,
+        });
+        service.child.stdin.write("create:early\n");
+        await runtime.waitFor(() => service.seen("created"));
+        await caller.publishChanged({ value: "early" }).orThrow();
+        // Both wait for it. One that takes work early starts it well within this.
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        assert.equal(service.seen("job-started"), undefined, service.output());
+        assert.equal(service.seen("delivery-started"), undefined);
 
-      const servedAt = Date.now();
-      service.child.stdin.write("serve\n");
-      const job = await runtime.waitFor(() => service.seen("job-started"), {
-        timeoutMs: 30_000,
-      });
-      const delivery = await runtime.waitFor(
-        () => service.seen("delivery-started"),
-        { timeoutMs: 30_000 },
-      );
-      assert.equal(job.value, "early");
-      assert.equal(delivery.value, "early");
-      assert(job.at >= servedAt && delivery.at >= servedAt);
-    } finally {
-      service.child.kill("SIGKILL");
-      await caller.connection.close();
-    }
+        const servedAt = Date.now();
+        service.child.stdin.write("serve\n");
+        const job = await runtime.waitFor(() => service.seen("job-started"), {
+          timeoutMs: 30_000,
+        });
+        const delivery = await runtime.waitFor(
+          () => service.seen("delivery-started"),
+          { timeoutMs: 30_000 },
+        );
+        assert.equal(job.value, "early");
+        assert.equal(delivery.value, "early");
+        assert(job.at >= servedAt && delivery.at >= servedAt);
+      } finally {
+        service.child.kill("SIGKILL");
+        await caller.connection.close();
+      }
+    });
   });
-});
+
+  test(`a ${language} service serves only once the broker has its durable consumer`, async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const identity = await runtime.registerService({
+        name: `consumer-ready-${language}`,
+        contract: participants.Provider.participant,
+      });
+      const nats = await connect({
+        servers: runtime.natsUrl,
+        authenticator: credsAuthenticator(
+          await runtime.natsCredentials("trellis"),
+        ),
+      });
+      const notify = new NotifySocket(`@trellis-notify-${crypto.randomUUID()}`);
+      const port = await freePort();
+      let service: ReturnType<typeof startService> | undefined;
+      try {
+        service = startService(runtime, language, {
+          TRELLIS_IDENTITY_SEED: identity.seed,
+          ROLE: "new",
+          NOTIFY_SOCKET: notify.path,
+          READINESS_PORT: String(port),
+          HOLD_REGISTER: "1",
+        });
+        await runtime.waitFor(() => service?.seen("connected"), {
+          timeoutMs: 60_000,
+        });
+        // The `changes` consumer is missing at the broker when the service
+        // registers its handler.
+        const manager = await jetstreamManager(nats);
+        let changes:
+          | {
+              stream: string;
+              config: Parameters<typeof manager.consumers.add>[1];
+            }
+          | undefined;
+        const seen: string[] = [];
+        for await (const stream of manager.streams.list())
+          for await (const consumer of manager.consumers.list(
+            stream.config.name,
+          )) {
+            const filters = [
+              consumer.config.filter_subject,
+              ...(consumer.config.filter_subjects ?? []),
+            ];
+            seen.push(`${stream.config.name}/${consumer.name} ${filters}`);
+            if (filters.some((subject) => subject?.includes(".Changed")))
+              changes = { stream: stream.config.name, config: consumer.config };
+          }
+        assert(changes, `no consumer for the changes group in ${seen}`);
+        assert(changes.config.durable_name);
+        await manager.consumers.delete(
+          changes.stream,
+          changes.config.durable_name,
+        );
+        service.child.stdin.write("register\n");
+        await runtime.waitFor(() => service?.seen("waiting"), {
+          timeoutMs: 60_000,
+        });
+        // Every handler is registered and wait() runs, but a delivery has
+        // nowhere to go yet: not ready.
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        assert.equal(notify.find("READY"), undefined, service.output());
+        assert.equal(await probe(port, "/ready"), 503);
+
+        await manager.consumers.add(changes.stream, changes.config);
+        await runtime.waitFor(() => notify.find("READY", "1"), {
+          timeoutMs: 30_000,
+        });
+        assert.equal(await probe(port, "/ready"), 200);
+        const caller = await runtime.connectClient({
+          name: `consumer-ready-caller-${language}`,
+          contract: apps.Caller.request,
+        });
+        try {
+          await caller.publishChanged({ value: "after-ready" }).orThrow();
+          await runtime.waitFor(() => service?.seen("delivery-finished"), {
+            timeoutMs: 30_000,
+          });
+        } finally {
+          await caller.connection.close();
+        }
+      } finally {
+        service?.child.kill("SIGKILL");
+        notify.close();
+        await nats.close();
+      }
+    });
+  });
+}
 
 test("a typescript job handler that ignores its cancellation is cut off at the stop timeout, and the process exits", async () => {
   await withTrellisRuntime(async (runtime) => {
@@ -584,93 +673,4 @@ test("a stopping typescript instance takes no request on a generation it adopts 
       authorization: { contextLifetimeSeconds: 27, allowedClockSkewSeconds: 2 },
     },
   );
-});
-
-test("a typescript service serves only once the broker has its durable consumer", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const identity = await runtime.registerService({
-      name: "consumer-ready",
-      contract: participants.Provider.participant,
-    });
-    const nats = await connect({
-      servers: runtime.natsUrl,
-      authenticator: credsAuthenticator(
-        await runtime.natsCredentials("trellis"),
-      ),
-    });
-    const notify = new NotifySocket(`@trellis-notify-${crypto.randomUUID()}`);
-    const port = await freePort();
-    let service: ReturnType<typeof startService> | undefined;
-    try {
-      service = startService(runtime, "typescript", {
-        TRELLIS_IDENTITY_SEED: identity.seed,
-        ROLE: "new",
-        NOTIFY_SOCKET: notify.path,
-        READINESS_PORT: String(port),
-        HOLD_REGISTER: "1",
-      });
-      await runtime.waitFor(() => service?.seen("connected"), {
-        timeoutMs: 60_000,
-      });
-      // The `changes` consumer is missing at the broker when the service
-      // registers its handler.
-      const manager = await jetstreamManager(nats);
-      let changes:
-        | {
-            stream: string;
-            config: Parameters<typeof manager.consumers.add>[1];
-          }
-        | undefined;
-      const seen: string[] = [];
-      for await (const stream of manager.streams.list())
-        for await (const consumer of manager.consumers.list(
-          stream.config.name,
-        )) {
-          const filters = [
-            consumer.config.filter_subject,
-            ...(consumer.config.filter_subjects ?? []),
-          ];
-          seen.push(`${stream.config.name}/${consumer.name} ${filters}`);
-          if (filters.some((subject) => subject?.includes(".Changed")))
-            changes = { stream: stream.config.name, config: consumer.config };
-        }
-      assert(changes, `no consumer for the changes group in ${seen}`);
-      assert(changes.config.durable_name);
-      await manager.consumers.delete(
-        changes.stream,
-        changes.config.durable_name,
-      );
-      service.child.stdin.write("register\n");
-      await runtime.waitFor(() => service?.seen("waiting"), {
-        timeoutMs: 60_000,
-      });
-      // Every handler is registered and wait() runs, but a delivery has
-      // nowhere to go yet: not ready.
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-      assert.equal(notify.find("READY"), undefined, service.output());
-      assert.equal(await probe(port, "/ready"), 503);
-
-      await manager.consumers.add(changes.stream, changes.config);
-      await runtime.waitFor(() => notify.find("READY", "1"), {
-        timeoutMs: 30_000,
-      });
-      assert.equal(await probe(port, "/ready"), 200);
-      const caller = await runtime.connectClient({
-        name: "consumer-ready-caller",
-        contract: apps.Caller.request,
-      });
-      try {
-        await caller.publishChanged({ value: "after-ready" }).orThrow();
-        await runtime.waitFor(() => service?.seen("delivery-finished"), {
-          timeoutMs: 30_000,
-        });
-      } finally {
-        await caller.connection.close();
-      }
-    } finally {
-      service?.child.kill("SIGKILL");
-      notify.close();
-      await nats.close();
-    }
-  });
 });

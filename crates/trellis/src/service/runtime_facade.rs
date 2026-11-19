@@ -547,8 +547,9 @@ impl Drop for ServiceEventListenerHandle {
 /// When a service's job workers and durable consumer loops take work.
 ///
 /// Nothing is fetched until `open`, which the service calls as it starts
-/// serving. `begin` stops every loop from fetching more; `hand_back` makes a
-/// loop that still holds a delivery give it back at once. `idle` resolves when
+/// serving, once `attached` finds every loop's consumers at the broker.
+/// `begin` stops every loop from fetching more; `hand_back` makes a loop that
+/// still holds a delivery give it back at once. `idle` resolves when
 /// no loop runs.
 #[derive(Clone)]
 pub(crate) struct EventDrain {
@@ -556,6 +557,8 @@ pub(crate) struct EventDrain {
     draining: Arc<tokio::sync::watch::Sender<bool>>,
     hand_back: Arc<tokio::sync::watch::Sender<bool>>,
     running: Arc<tokio::sync::watch::Sender<usize>>,
+    /// Loops that have not yet found their consumers at the broker.
+    attaching: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
 impl Default for EventDrain {
@@ -565,6 +568,7 @@ impl Default for EventDrain {
             draining: Arc::new(tokio::sync::watch::channel(false).0),
             hand_back: Arc::new(tokio::sync::watch::channel(false).0),
             running: Arc::new(tokio::sync::watch::channel(0).0),
+            attaching: Arc::new(tokio::sync::watch::channel(0).0),
         }
     }
 }
@@ -611,6 +615,18 @@ impl EventDrain {
     fn enter(&self) -> EventLoopGuard {
         self.running.send_modify(|running| *running += 1);
         EventLoopGuard(Arc::clone(&self.running))
+    }
+
+    /// Count one loop as attaching until the returned guard drops.
+    fn attaching(&self) -> EventLoopGuard {
+        self.attaching.send_modify(|attaching| *attaching += 1);
+        EventLoopGuard(Arc::clone(&self.attaching))
+    }
+
+    /// Resolves once every loop has found its consumers at the broker.
+    async fn attached(&self) {
+        let mut attaching = self.attaching.subscribe();
+        let _ = attaching.wait_for(|attaching| *attaching == 0).await;
     }
 
     async fn idle(&self) {
@@ -2112,11 +2128,13 @@ impl<C> ConnectedServiceRuntime<C> {
         };
         // Serving needs both intakes attached. One that ends without
         // attaching, because the connection closed or the stop came first,
-        // leaves the service short of serving.
+        // leaves the service short of serving. It also waits until the broker
+        // has every durable event consumer, so a delivery has somewhere to go.
         let attached = async {
             if provider_ready.await.is_err() || peer_ready.await.is_err() {
                 std::future::pending::<()>().await;
             }
+            event_drain.attached().await;
         };
         let stop_requested = stop_signal(&lifecycle, handle_signals);
         tokio::pin!(serve, workers, retired, attached, stop_requested);
@@ -2797,6 +2815,7 @@ where
                 auth.clone(),
                 Arc::clone(&event_listeners),
                 service.event_drain.clone(),
+                service.event_drain.attaching(),
                 DurableEventPullConfig {
                     key: key.clone(),
                     subscribe_options: subscribe_options.clone(),
@@ -2918,11 +2937,56 @@ async fn run_durable_event_pull_loop(
     auth: LocalAuthVerifier,
     event_listeners: SharedDurableEventListeners,
     drain: EventDrain,
+    attaching: EventLoopGuard,
     config: DurableEventPullConfig,
 ) -> Result<(), ServiceRuntimeError> {
     // Counted while it runs, so a stopping service knows when its deliveries
     // are settled.
     let _running = drain.enter();
+    let manager = client.transport_generations();
+    // The service serves only once the broker has this loop's consumers, the
+    // original and the replay one; until then a delivery has nowhere to go.
+    let consumers = [&config.subscribe_options, &config.replay_subscribe_options];
+    loop {
+        if drain.is_draining() {
+            return Ok(());
+        }
+        let found = async {
+            let lease = client
+                .acquire_transport(&[], &[], client.transport_deadline())
+                .await?;
+            let jetstream = async_nats::jetstream::new(lease.nats().clone());
+            for options in consumers {
+                let (Some(stream), Some(name)) = (&options.stream, &options.durable_name) else {
+                    continue;
+                };
+                use async_nats::jetstream::consumer::pull;
+                let lookup = jetstream.get_consumer_from_stream::<pull::Config, _, _>(name, stream);
+                tokio::time::timeout(Duration::from_millis(client.timeout_ms()), lookup)
+                    .await
+                    .map_err(|_| TrellisClientError::Timeout)?
+                    .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+            }
+            Ok::<(), TrellisClientError>(())
+        }
+        .await;
+        match found {
+            Ok(()) => break,
+            Err(error) if is_missing_durable_event_consumer_error(&error) => {
+                tokio::time::sleep(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS)).await;
+            }
+            Err(error) if durable_event_transport_error_is_retryable(&error) => {
+                if let Some(cause) = manager
+                    .pace_or_terminal(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
+                    .await
+                {
+                    return Err(cause.client_error().into());
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    drop(attaching);
     // A delivery waits until the service serves; one that stops first takes
     // none.
     if !drain.wait_serving().await {
@@ -2935,7 +2999,6 @@ async fn run_durable_event_pull_loop(
     // usable generation returns, and stops only on an authoritative logical
     // terminal cause. Application errors and a missing durable consumer keep
     // their own fail-fast paths below.
-    let manager = client.transport_generations();
     let mut settle_failure = false;
     // A message-settle transport failure (ack/nak/term/progress) enters the same
     // paced recovery instead of tearing down the service runtime; a permanent

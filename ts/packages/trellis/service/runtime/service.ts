@@ -478,6 +478,10 @@ type ProviderIngressOwner = {
   abandonEventDeliveries(): void;
   /** Resolves once every started durable consumer exists at the broker. */
   eventListenersAttached(): Promise<void>;
+  /** Takes no durable delivery until `serveEventDeliveries()`. */
+  holdEventDeliveries(): void;
+  /** Takes durable deliveries from here on. */
+  serveEventDeliveries(): void;
   /** Ends every owned Live session as `local_shutdown`. */
   endLiveSessions(): Promise<void>;
 };
@@ -3624,6 +3628,8 @@ export class TrellisServiceSession<
     Object.defineProperty(this, PROVIDER_CALLER, {
       value: providerCaller,
     });
+    // Durable deliveries, like jobs, wait until the service serves.
+    (providerCaller as ProviderIngressOwner).holdEventDeliveries();
     Object.defineProperty(this, SERVICE_PROVIDER_INGRESS, {
       value: {
         // Both the outbound framework surfaces and the operation runtime own
@@ -4168,15 +4174,16 @@ export class TrellisServiceSession<
       const unhandle = this.#handleStopSignals();
       try {
         if (!this.#stopPromise) {
-          await this.#managedJobWorkers.start().orThrow();
+          const outbound = this[PROVIDER_CALLER] as ProviderIngressOwner;
           await Promise.allSettled([...this.#registrations]);
           // A handler that could not subscribe takes no work, so the service
           // never serves without it.
           if (this.#registrationFailure) throw this.#registrationFailure.error;
-          // Durable consumers take work once the broker has their consumer.
-          await (
-            this[PROVIDER_CALLER] as ProviderIngressOwner
-          ).eventListenersAttached();
+          // Serving waits until the broker has every durable consumer.
+          await outbound.eventListenersAttached();
+          // Jobs and durable deliveries flow from here on, with requests.
+          await this.#managedJobWorkers.start().orThrow();
+          outbound.serveEventDeliveries();
           // Serving follows the connection: lost, it reconnects and is not
           // ready meanwhile; recovered, it serves again.
           const follow = () => {
