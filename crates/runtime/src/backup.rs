@@ -1423,9 +1423,10 @@ mod tests {
 
     /// The first start after a restore can stop after NATS took a stream and
     /// before it removed that stream's snapshot, or lose NATS's answer, and
-    /// the next start then refuses the stream. Restoring again, even after a
-    /// restore again that stopped partway, and starting finishes the restore: every stream is the backup's, and the
-    /// installation serves. A stream no restore loaded still stops it.
+    /// the next start then refuses the stream. Restoring again, even after
+    /// another restore stopped partway, and then starting finishes the
+    /// restore: every stream is the backup's, and the installation serves. A
+    /// stream no restore loaded still stops it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_interrupted_restore_finishes_when_restored_again() {
         use crate::platform::auth::tests::runtime_rotation::{
