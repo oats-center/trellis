@@ -6,7 +6,7 @@ use semver::Version;
 use trellis_idl::{
     canonical_package, compare_implementation, compile_project,
     project::{GenerateConfig, PackageManifest, PackageMetadata},
-    CanonicalMode, PackageGraph, SourceUnit,
+    AppKind, CanonicalMode, PackageGraph, SourceUnit,
 };
 
 const SOURCE: &str = r#"
@@ -344,6 +344,25 @@ fn a_capability_action_may_be_dotted() {
         .unwrap_err();
     assert!(
         refused.to_string().contains("must be named 'area.action'"),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn an_agent_is_the_native_app_and_native_app_points_to_it() {
+    let graph = compile(&format!(
+        "{SOURCE}\nagent Tool {{ use documents {{ required capability documents.read; }} }}"
+    ))
+    .unwrap();
+    let tool = graph.root_package().app_requests().values().next().unwrap();
+    assert_eq!(tool.kind(), AppKind::Native);
+    // The spelling people try first is answered with the one that works.
+    let refused = compile(&format!(
+        "{SOURCE}\nnative app Tool {{ use documents {{ required capability documents.read; }} }}"
+    ))
+    .unwrap_err();
+    assert!(
+        format!("{refused:?}").contains("a native app is declared with 'agent'"),
         "{refused:?}"
     );
 }

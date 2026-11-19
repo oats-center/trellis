@@ -54,14 +54,43 @@ service OrdersService { implements orders; }
 agent OrdersCaller { use orders { required capability orders.create; } }
 ```
 
-The service provides `orders`; the agent, a native caller such as a script or
-test, requires the `orders.create` capability, which allows `Create`. Declare
-`app` instead for a browser app. Merely importing an API does not grant permission to call
-it. See the [service walkthrough](/guides/write-a-service) for handlers and a
-working
+The service provides `orders`; the agent, a native app such as a script or
+test, requires the `orders.create` capability, which allows `Create`. Merely
+importing an API does not grant permission to call it. See the
+[service walkthrough](/guides/write-a-service) for handlers and a working
 [Orders example](https://github.com/OATS-Center/trellis/tree/main/docs/examples/orders).
 A participant's settings and secrets are `config` members; see
 [Settings and secrets](/guides/settings-and-secrets).
+
+## Browser apps and native apps
+
+An app that people sign in to is declared one of two ways:
+
+```trellis
+app OrdersWeb { use orders { required capability orders.read; } }
+agent OrdersTool { use orders { required capability orders.create; } }
+```
+
+- `app` declares a browser app. It signs in by sending the user to the Trellis
+  sign-in page and back to its web address, and connects with the browser
+  client.
+- `agent` declares a native app: a desktop, mobile, or command-line program.
+  It signs the user in with a Device Code shown on another screen, through
+  `NativeOAuthClient`, and connects with `connectNativeClient` (Rust:
+  `NativeOAuthClient`, then the generated app `Client`). Writing
+  `native app OrdersTool` is an error that points here.
+
+Nothing else differs: `use` blocks, required and optional capabilities,
+consent, State, and `config` work the same for both. The generated request
+carries the kind, `kind: "browser"` or `kind: "native"`, and the sign-in
+entry points refuse the other kind with an `AppKindMismatch` error that names
+both.
+
+Register the app's OAuth client with the same kind. `trellis clients add
+--source <project> --app <package.App>` takes the kind from the declaration
+and refuses a `--kind` that contradicts it. A native client needs no redirect
+URIs when it signs in only with a code. Device Code sign-in against a browser
+client fails with an error that names both kinds.
 
 ## Operations with progress and live updates
 

@@ -146,9 +146,28 @@ helpers and wire protocol. See
 [Files Transfer Patterns](../core/files-transfer-patterns.md).
 
 Deployable participants are `service` and `device`. The `app` and `agent`
-declarations describe browser/native application requests, not installable
-principals. A device may contain one named `app` or `agent` companion request.
-Only service/device participants implement APIs.
+declarations describe application requests, not installable principals. `app`
+declares a browser app: it signs in with a redirect back to its web origin.
+`agent` declares a native app, such as a desktop, mobile, or command-line tool:
+it signs in with OAuth Device Code through `NativeOAuthClient` and connects with
+`connectNativeClient`. The two differ only in that kind; `use` blocks,
+capabilities, consent, State and `config` behave the same.
+
+```trellis
+app OrdersWeb { use orders { required capability orders.read; } }
+agent OrdersTool { use orders { required capability orders.create; } }
+```
+
+The kind is part of the request's canonical source (`app` or `agent`), so it
+reaches the package digest and package evidence: changing a request between
+`app` and `agent` changes its package's digest, as any other semantic edit
+does. Generated descriptors carry it as `kind: "browser"` or `kind: "native"`
+(Rust `AppKind::Browser` or `AppKind::Native`). Auth checks it where a request
+meets a registration: Device Code sign-in needs a native OAuth client, and
+attaching an app's settings to a client needs the client's kind to match the
+declaration. `native app X` is not a declaration; the parser points at `agent`.
+A device may contain one named `app` or `agent` companion request. Only
+service/device participants implement APIs.
 
 `use Api;` selects nothing. A use body selects whole capabilities:
 `required capability read;` is required; `capability export;` is optional.

@@ -149,7 +149,8 @@ transport handoffs.
 ### Native applications
 
 Apps and agents acquire native OAuth admission through the selected
-authorization origin. Pass the verified `NativeOAuthSession` and explicit broker
+authorization origin; an `agent` request's generated `Request::KIND` is
+`AppKind::Native`. Pass the verified `NativeOAuthSession` and explicit broker
 endpoints to `UserConnectOptions::new(nats_servers, timeout_ms, session)`. Use
 Authorization Code with PKCE or Device Code according to the registered native
 client's flow. For Device Code, show `verification_uri_complete()` (the link

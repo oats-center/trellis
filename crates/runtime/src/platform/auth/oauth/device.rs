@@ -60,7 +60,7 @@ pub(super) async fn start(
         .await
     {
         Ok(response) => Json(response).into_response(),
-        Err(response) => super::http::error(response.error),
+        Err(response) => super::http::described_error(&response),
     }
 }
 
@@ -204,18 +204,39 @@ impl OAuthEngine {
             client_id.as_str().to_owned(),
             requested.capabilities.clone(),
         );
-        blocking(move || {
+        let kind = blocking(move || {
             authority.transaction(|connection| {
-                super::enrollment::validate_selection(
-                    connection,
-                    &client,
-                    &selection.required,
-                    &selection.optional,
-                )
+                let kind = connection.query_row(
+                    "SELECT kind FROM auth_oauth_clients WHERE client_id=?1 \
+                    UNION ALL SELECT kind FROM auth_cimd_clients WHERE client_id=?1 \
+                    AND NOT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)",
+                    [&client],
+                    |row| row.get::<_, String>(0),
+                )?;
+                if kind == "native" {
+                    super::enrollment::validate_selection(
+                        connection,
+                        &client,
+                        &selection.required,
+                        &selection.optional,
+                    )?;
+                }
+                Ok(kind)
             })
         })
         .await
         .map_err(|_| ErrorResponse::new(ErrorCode::InvalidRequest))?;
+        // Device Code is the native flow: a browser client would otherwise fail
+        // later as a bare unauthorized client, hiding the registration mistake.
+        if kind != "native" {
+            return Err(
+                ErrorResponse::new(ErrorCode::UnauthorizedClient).with_description(format!(
+                    "Device Code sign-in needs a native app client, but client '{}' is \
+                    registered as a {kind} app",
+                    client_id.as_str()
+                )),
+            );
+        }
         let uri = format!(
             "{}/device_authorization",
             self.server.store().authority.settings.oauth_issuer

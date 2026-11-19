@@ -235,3 +235,21 @@ test("reacquiring custody preserves its authenticated issuer trust floor", async
     await next.close();
   }
 });
+
+test("opening with a malformed scope reports which field is invalid", async () => {
+  const opened = await NativeOAuthClient.open({
+    scope: { ...scope, credentialHandle: "krishi-tools" },
+    trust,
+  });
+  assert.equal(opened.error?.reason, "InvalidScope");
+  assert.match(
+    opened.error?.message ?? "",
+    /credentialHandle 'krishi-tools' is not a ULID: .*ULID/,
+  );
+  const issuer = await NativeOAuthClient.open({
+    scope: { ...scope, issuer: "http://trellis.example.com" },
+    trust,
+  });
+  assert.equal(issuer.error?.reason, "InvalidScope");
+  assert.match(issuer.error?.message ?? "", /issuer 'http:\/\/trellis/);
+});

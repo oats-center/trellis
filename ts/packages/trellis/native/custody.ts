@@ -81,13 +81,25 @@ const grantSchema = z.object({
 
 /** Validate a selected credential identity before creating or accepting custody. @internal */
 export function validateNativeScope(scope: NativeCredentialScope): void {
-  if (
-    Object.values(scope).some(
-      (value) => typeof value !== "string" || !value || value.length > 4096,
-    )
-  )
-    throw new AuthError({ reason: "InvalidCredential" });
-  const origin = new URL(scope.issuer);
+  // Each failure names the field, so a malformed scope is a quick fix rather
+  // than an opaque custody failure.
+  const invalid = (detail: string, cause?: unknown) =>
+    new AuthError({
+      reason: "InvalidScope",
+      message: `Invalid native credential scope: ${detail}`,
+      cause,
+    });
+  for (const [field, value] of Object.entries(scope))
+    if (typeof value !== "string" || !value || value.length > 4096)
+      throw invalid(
+        `${field} must be a nonempty string of at most 4096 characters`,
+      );
+  let origin: URL;
+  try {
+    origin = new URL(scope.issuer);
+  } catch (cause) {
+    throw invalid(`issuer '${scope.issuer}' is not a URL`, cause);
+  }
   const host = origin.hostname.replace(/^\[|\]$/g, "");
   const loopback =
     host === "localhost" ||
@@ -99,14 +111,31 @@ export function validateNativeScope(scope: NativeCredentialScope): void {
     `${origin.origin}${origin.pathname.replace(/\/+$/, "")}` !== scope.issuer ||
     (origin.protocol !== "https:" && !(origin.protocol === "http:" && loopback))
   )
-    throw new AuthError({ reason: "InvalidCredential" });
-  codecs.ulid.decode(scope.instanceId);
-  codecs.ulid.decode(scope.credentialHandle);
-  if (
-    !scope.account.startsWith("A") ||
-    fromPublic(scope.account).getPublicKey() !== scope.account
-  )
-    throw new AuthError({ reason: "InvalidCredential" });
+    throw invalid(
+      `issuer '${scope.issuer}' must be an https origin (http only on loopback) without a trailing slash`,
+    );
+  for (const field of ["instanceId", "credentialHandle"] as const) {
+    try {
+      codecs.ulid.decode(scope[field]);
+    } catch (cause) {
+      throw invalid(
+        `${field} '${scope[field]}' is not a ULID: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause,
+      );
+    }
+  }
+  let account = false;
+  try {
+    account =
+      scope.account.startsWith("A") &&
+      fromPublic(scope.account).getPublicKey() === scope.account;
+  } catch {
+    // An undecodable key is reported below like any other non-account key.
+  }
+  if (!account)
+    throw invalid(
+      `account '${scope.account}' is not a NATS account public key`,
+    );
 }
 
 /** Validate retained trust and monotonic authenticated replacement. @internal */
