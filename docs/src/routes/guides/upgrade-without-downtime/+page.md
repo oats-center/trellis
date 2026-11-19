@@ -105,13 +105,15 @@ readiness probe still works.
 4. **Hands back the rest at once.** At the deadline a running job is cancelled
    (its handler sees the cancellation) and returned to the queue with no
    delay, so another instance starts it right away. This does not wait for
-   the handler: one that ignores its cancellation runs on in the stopping
-   process until it exits, and what it returns is discarded. An unfinished
-   event delivery is returned the same way. A request still running is
-   abandoned; its caller's own timeout applies.
+   the handler: one that ignores its cancellation, even after its lease was
+   lost, runs on in a stopping TypeScript process until it exits (Rust drops
+   it), and what it returns is discarded. An unfinished event delivery is
+   returned the same way. A request still running is abandoned; its caller's
+   own timeout applies.
 5. **Exits.** `wait()` resolves and `run()` returns `Ok(())`. After a signal the
    TypeScript process exits once nothing holds it open, or 5 s after the stop
-   at the latest. A second signal ends the process at once.
+   timeout at the latest, even if the stop has not finished. A second signal
+   ends the process at once.
 
 Operations keep their own recovery: an operation still running when its
 instance stops is resumed by another instance once its lease expires.

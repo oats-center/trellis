@@ -6,7 +6,9 @@
 //! milliseconds, a `handoffWork` job runs until cancelled, and a `changes`
 //! delivery waits `HOLD_DELIVERY_MS`. It creates one held job at startup.
 //! `ROLE=new` finishes all of them at once, slow Echo calls included. An Echo
-//! of `hold:<ms>` sleeps that long in either role.
+//! of `hold:<ms>` sleeps that long in either role. With `IGNORE_JOB_CANCEL=1`
+//! the old role's job ignores its cancellation and sleeps ten minutes instead,
+//! as a handler stuck in a dependency would.
 //!
 //! `READINESS_FILE`, `READINESS_PORT` and `STOP_TIMEOUT_MS` set the matching
 //! connect options. With `HOLD_SERVE=1` it registers everything and then waits
@@ -39,6 +41,7 @@ fn emit(event: &str, role: &str, value: Option<&str>) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let role: &'static str = std::env::var("ROLE")?.leak();
     let old = role == "old";
+    let ignore_cancel = std::env::var("IGNORE_JOB_CANCEL").as_deref() == Ok("1");
     let hold = Duration::from_millis(
         std::env::var("HOLD_DELIVERY_MS")
             .ok()
@@ -85,6 +88,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_handoff_work(move |job| async move {
             let value = job.payload().value.clone();
             emit("job-started", role, Some(&value));
+            if old && ignore_cancel {
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                emit("job-finished", role, Some(&value));
+                return Ok(job.payload().clone());
+            }
             if old {
                 job.cancellation_token().cancelled().await;
                 emit("job-cancelled", role, Some(&value));

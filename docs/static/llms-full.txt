@@ -571,10 +571,10 @@ every queue group, ends its Live streams with `local_shutdown`, waits up to the
 stop timeout (25 s by default) for requests, event deliveries and jobs it
 holds, then hands what still runs back with no delay (jobs are cancelled for
 shutdown, deliveries are naked; a job handler that ignores its cancellation is
-not waited for and its result is discarded) and exits. A job or delivery it
-receives after the stop began goes straight back without running. Operations
-still recover through lease expiry. Do not install signal handlers in service
-code.
+not waited for, even after its lease was lost, and its result is discarded) and
+exits. A job or delivery it receives after the stop began goes straight back
+without running. Operations still recover through lease expiry. Do not install
+signal handlers in service code.
 
 Upgrade by overlapping: run each process as its own instance, start the new
 build, wait until it serves, stop the old one. `trellis svc <ID> instances`

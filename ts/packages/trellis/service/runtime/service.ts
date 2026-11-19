@@ -3584,8 +3584,11 @@ export class TrellisServiceSession<
   readonly #registrations = new Set<Promise<unknown>>();
   /** The first registration that failed; the service then never serves. */
   #registrationFailure?: { error: unknown };
-  /** Provider intake being installed on a generation; a stop waits for it. */
-  readonly #installing = new Set<Promise<void>>();
+  /**
+   * Provider intake being installed, by generation id. A stop retires it at
+   * once and waits for the work it took.
+   */
+  readonly #installing = new Map<Promise<void>, number>();
   /** Set when a stop begins: no generation takes new intake after that. */
   #intakeFenced = false;
   #waitPromise?: Promise<void>;
@@ -3638,30 +3641,42 @@ export class TrellisServiceSession<
           // A stopping service takes no new work on a later generation either.
           if (this.#intakeFenced) return;
           const outbound = providerCaller as ProviderIngressOwner;
+          // Each owner registers its intake here before its first await, so a
+          // stop can wait for the work even of an install it cut short.
+          const attached: ProviderGenerationAttachment[] = [];
+          const owned: typeof target = {
+            ...target,
+            registerDisposal: (handle) => {
+              attached.push(handle);
+              return target.registerDisposal?.(handle) ?? true;
+            },
+          };
           const installing = (async () => {
-            const attached = [await outbound.installProviderIngress(target)];
-            if (!this.#intakeFenced)
-              attached.push(await this.#runtime.installProviderIngress(target));
-            // A stop that began meanwhile retired only the intake that existed
-            // then; retire this one too, and let the stop wait for its work.
-            if (this.#intakeFenced) {
-              for (const attachment of attached) attachment.retireIntake();
+            try {
+              attached.push(await outbound.installProviderIngress(owned));
+              if (!this.#intakeFenced)
+                attached.push(
+                  await this.#runtime.installProviderIngress(owned),
+                );
+            } catch (error) {
+              // Retired by the stop partway through: nothing more to install.
+              if (!this.#intakeFenced) throw error;
+            }
+            // A stop that began meanwhile retired this intake; wait for the
+            // work it took before it did.
+            if (this.#intakeFenced)
               await Promise.allSettled(
                 attached.map((attachment) => attachment.intakeStopped),
               );
-            }
           })();
-          this.#installing.add(installing);
+          this.#installing.set(installing, target.id);
           try {
             await installing;
           } finally {
             this.#installing.delete(installing);
           }
         },
-        retireIntake: (id) => {
-          (providerCaller as ProviderIngressOwner).retireProviderIngress(id);
-          this.#runtime.retireProviderIngress(id);
-        },
+        retireIntake: (id) => this.#retireIntake(id),
       } satisfies ServiceProviderIngress,
     });
     this.event = event;
@@ -3728,6 +3743,12 @@ export class TrellisServiceSession<
     event: PreparedTrellisEvent,
   ): AsyncResult<void, TransportError | UnexpectedError> {
     return this.#handlerTrellis.publishPrepared(event);
+  }
+
+  /** Stops new provider intake on one generation, for both intake owners. */
+  #retireIntake(id: number): void {
+    (this[PROVIDER_CALLER] as ProviderIngressOwner).retireProviderIngress(id);
+    this.#runtime.retireProviderIngress(id);
   }
 
   /** Keeps a registration until it settles, so serving can wait for it. */
@@ -4163,24 +4184,34 @@ export class TrellisServiceSession<
 
   /**
    * Serves until the service stops, then resolves; rejects when its
-   * connection ends for good, or without serving when a handler registered
-   * before it could not subscribe. SIGTERM and SIGINT stop it gracefully while it
-   * waits, as `stop()` does, and the process then exits once nothing holds it
-   * open, or 5 seconds after the stop at the latest. A second signal ends the
+   * connection ends for good, before serving too, or without serving when a
+   * handler registered before it could not subscribe. SIGTERM and SIGINT stop
+   * it gracefully while it waits, as `stop()` does, and the process then exits
+   * once nothing holds it open, or 5 seconds after the stop timeout at the
+   * latest, even if the stop has not finished. A second signal ends the
    * process at once.
    */
   async wait(): Promise<void> {
     this.#waitPromise ??= (async () => {
       const unhandle = this.#handleStopSignals();
+      const transport = this[SERVICE_TRANSPORT_LIFETIME];
+      const closed = transport?.closed() ?? this.#nc.closed();
       try {
-        if (!this.#stopPromise) {
-          const outbound = this[PROVIDER_CALLER] as ProviderIngressOwner;
+        const outbound = this[PROVIDER_CALLER] as ProviderIngressOwner;
+        const started = (async () => {
           await Promise.allSettled([...this.#registrations]);
           // A handler that could not subscribe takes no work, so the service
           // never serves without it.
           if (this.#registrationFailure) throw this.#registrationFailure.error;
           // Serving waits until the broker has every durable consumer.
           await outbound.eventListenersAttached();
+        })();
+        // A connection that closes first ends the wait: it never serves.
+        const closedFirst = await Promise.race([
+          started.then(() => false),
+          closed.then(() => true),
+        ]);
+        if (!closedFirst && !this.#stopPromise && !transport?.isClosed()) {
           // Jobs and durable deliveries flow from here on, with requests.
           await this.#managedJobWorkers.start().orThrow();
           outbound.serveEventDeliveries();
@@ -4200,10 +4231,9 @@ export class TrellisServiceSession<
         // Supervise the logical connection: an authoritative terminal failure of
         // the logical transport must stop the service. A single physical
         // generation being reaped is not a stop.
-        const closed = await (this[SERVICE_TRANSPORT_LIFETIME]?.closed() ??
-          this.#nc.closed());
-        if (closed instanceof Error) {
-          throw closed;
+        const ended = await closed;
+        if (ended instanceof Error) {
+          throw ended;
         }
         if (!this.#stopPromise) {
           throw new Error("Trellis service connection closed unexpectedly");
@@ -4229,14 +4259,13 @@ export class TrellisServiceSession<
         { service: this.name, signal },
         "Stopping: finishing the work in flight",
       );
-      // A signal asks the process to end. Once the service has stopped, a
-      // handler still running past the deadline must not keep it alive: the
-      // code after wait() gets a few seconds, then the process exits. The
-      // timer never delays a process that ends on its own.
-      const exitSoon = () => {
-        setTimeout(() => process.exit(), 5_000).unref();
-      };
-      void this.stop().then(exitSoon, exitSoon);
+      // A signal asks the process to end. Neither a handler still running
+      // past the deadline nor a stop that never finishes may keep it alive:
+      // 5 seconds after the stop timeout the process exits, which leaves the
+      // code after wait() a few seconds. The timer never delays a process that
+      // ends on its own.
+      setTimeout(() => process.exit(), this.#stopTimeoutMs + 5_000).unref();
+      void this.stop();
     };
     const unhandle = () => {
       process.off("SIGTERM", onSignal);
@@ -4258,6 +4287,8 @@ export class TrellisServiceSession<
   async stop(): Promise<void> {
     this.#stopPromise ??= (async () => {
       this.#intakeFenced = true;
+      // Intake still being installed takes nothing from here on either.
+      for (const id of this.#installing.values()) this.#retireIntake(id);
       this.#lifecycle.set("stopping");
       this[SERVICE_CONFIG]?.stop();
       const transport = this[SERVICE_TRANSPORT_LIFETIME];
@@ -4270,7 +4301,7 @@ export class TrellisServiceSession<
         });
         const settled = Promise.allSettled([
           transport.retireAllIntake(),
-          ...this.#installing,
+          ...this.#installing.keys(),
           this.#managedJobWorkers.drain(),
           outbound.drainEventListeners(),
           outbound.endLiveSessions(),

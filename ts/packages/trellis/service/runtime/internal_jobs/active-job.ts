@@ -35,6 +35,9 @@ export class JobCancellationToken {
   }
 
   cancelForShutdown(): void {
+    // A job whose lease was lost is handed back too: the stop never waits for
+    // its handler.
+    this.#shutdown.resolve();
     if (this.#reason === "lease-lost") return;
     this.#reason = "shutdown";
     this.#controller.abort("shutdown");

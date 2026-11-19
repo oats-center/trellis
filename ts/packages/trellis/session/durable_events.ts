@@ -176,7 +176,8 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
 
   /**
    * Resolves once the broker has the consumer of every group whose events all
-   * have handlers, so each takes deliveries, or once consumption ends.
+   * have handlers, so each takes deliveries, or once consumption is stopped
+   * or drained. A connection that closes first leaves it pending.
    */
   async attached(): Promise<void> {
     await Promise.all(
@@ -443,6 +444,15 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
               await sleep(25);
               return ok(undefined);
             }
+            if (
+              this.#host.adaptiveTransport &&
+              this.#host.transport().isClosed()
+            ) {
+              // A closed connection never attaches: stop retrying.
+              this.#stopped = true;
+              return ok(undefined);
+            }
+            await sleep(25);
             return info;
           }
           originalOpened = true;
@@ -507,8 +517,8 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
           ) {
             // Terminal: a closed or revoked logical transport must stop durable
             // consumption rather than retrying forever against no generation.
+            // A group that never attached does not count as attached.
             this.#stopped = true;
-            loop.attached.resolve();
             return ok(undefined);
           }
           if (

@@ -618,9 +618,9 @@ impl EventDrain {
     }
 
     /// Count one loop as attaching until the returned guard drops.
-    fn attaching(&self) -> EventLoopGuard {
+    fn attaching(&self) -> AttachingGuard {
         self.attaching.send_modify(|attaching| *attaching += 1);
-        EventLoopGuard(Arc::clone(&self.attaching))
+        AttachingGuard(Some(Arc::clone(&self.attaching)))
     }
 
     /// Resolves once every loop has found its consumers at the broker.
@@ -640,6 +640,25 @@ struct EventLoopGuard(Arc<tokio::sync::watch::Sender<usize>>);
 impl Drop for EventLoopGuard {
     fn drop(&mut self) {
         self.0.send_modify(|running| *running -= 1);
+    }
+}
+
+/// One loop counted as attaching. Dropping it stops counting the loop, which
+/// found its consumers or was removed; [`AttachingGuard::failed`] keeps it
+/// counted, so a loop whose lookup failed never lets the service serve.
+struct AttachingGuard(Option<Arc<tokio::sync::watch::Sender<usize>>>);
+
+impl AttachingGuard {
+    fn failed(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for AttachingGuard {
+    fn drop(&mut self) {
+        if let Some(attaching) = self.0.take() {
+            attaching.send_modify(|attaching| *attaching -= 1);
+        }
     }
 }
 
@@ -2937,7 +2956,7 @@ async fn run_durable_event_pull_loop(
     auth: LocalAuthVerifier,
     event_listeners: SharedDurableEventListeners,
     drain: EventDrain,
-    attaching: EventLoopGuard,
+    attaching: AttachingGuard,
     config: DurableEventPullConfig,
 ) -> Result<(), ServiceRuntimeError> {
     // Counted while it runs, so a stopping service knows when its deliveries
@@ -2980,10 +2999,14 @@ async fn run_durable_event_pull_loop(
                     .pace_or_terminal(Duration::from_millis(DURABLE_EVENT_CONSUMER_RETRY_MS))
                     .await
                 {
+                    attaching.failed();
                     return Err(cause.client_error().into());
                 }
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                attaching.failed();
+                return Err(error.into());
+            }
         }
     }
     drop(attaching);
@@ -3876,6 +3899,30 @@ mod tests {
         assert!(!is_missing_durable_event_consumer_error(
             &TrellisClientError::Timeout
         ));
+    }
+
+    #[tokio::test]
+    async fn a_loop_whose_consumer_lookup_failed_never_counts_as_attached() {
+        let drain = EventDrain::default();
+        let found = drain.attaching();
+        let removed = drain.attaching();
+        let failed = drain.attaching();
+        drop(found);
+        drop(removed);
+        failed.failed();
+        // The service would serve once this resolves: it must not, as one
+        // loop's consumers were never found.
+        let serving = tokio::time::timeout(Duration::from_millis(100), drain.attached()).await;
+        assert!(serving.is_err());
+
+        let drain = EventDrain::default();
+        let found = drain.attaching();
+        let removed = drain.attaching();
+        drop(found);
+        drop(removed);
+        tokio::time::timeout(Duration::from_secs(1), drain.attached())
+            .await
+            .expect("every loop attached or was removed");
     }
 
     #[test]

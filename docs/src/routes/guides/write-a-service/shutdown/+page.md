@@ -19,8 +19,8 @@ instances get them, and ends the service's Live streams so their callers can
 open them again elsewhere. It then waits up to `runtime.stopTimeoutMs` (25 s by
 default) for the requests, deliveries and jobs it holds, hands whatever is
 still running back to other instances at once, and closes. After a signal the
-process exits once nothing holds it open, or 5 s after the stop at the latest;
-a second signal ends it at once.
+process exits once nothing holds it open, or 5 s after the stop timeout at the
+latest even if the stop has not finished; a second signal ends it at once.
 
 A supervisor or embedded host can trigger the same lifecycle with
 `service.stop()`. If your application starts additional timers, database

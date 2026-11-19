@@ -14,8 +14,9 @@
  * runtime options. With `HOLD_SERVE=1` it registers everything and then waits
  * for a `serve` line on standard input before it serves. With
  * `HOLD_REGISTER=1` it waits for a `register` line once connected, before it
- * registers anything. A `stop` line calls `service.stop()`, and a
- * `create:<value>` line creates a `handoffWork` job.
+ * registers anything. A `stop` line calls `service.stop()`, a `close` line
+ * closes its connection, and a `create:<value>` line creates a `handoffWork`
+ * job.
  */
 import { createInterface } from "node:readline";
 import { Result } from "@oatscenter/trellis";
@@ -116,6 +117,7 @@ void service.ready.then(() => emit("ready"));
 commands.on("line", (line) => {
   if (line === "serve") served.resolve();
   if (line === "stop") void service.stop();
+  if (line === "close") void service.connection.close();
   if (line.startsWith("create:")) {
     const value = line.slice("create:".length);
     void (async () => {

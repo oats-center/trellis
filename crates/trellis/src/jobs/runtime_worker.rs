@@ -87,6 +87,9 @@ enum ProjectedWorkDecision {
 pub struct JobCancellationToken {
     cancelled: Arc<AtomicU8>,
     signal: tokio_util::sync::CancellationToken,
+    /// Cancelled once the stopping host hands the work back, whatever the
+    /// reason it was cancelled for first.
+    shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl JobCancellationToken {
@@ -119,7 +122,14 @@ impl JobCancellationToken {
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |reason| {
                 (reason != CANCELLATION_LEASE_LOST).then_some(CANCELLATION_HOST_SHUTDOWN)
             });
+        self.shutdown.cancel();
         self.signal.cancel();
+    }
+
+    /// Wait until the stopping host hands this work back, even when an
+    /// earlier reason, such as a lost lease, already cancelled it.
+    async fn handed_back(&self) {
+        self.shutdown.cancelled().await;
     }
 
     fn cancel_for_lease_loss(&self) {
@@ -1024,7 +1034,7 @@ where
                 }) as BoxFuture<'static, Result<(), String>>
             }
         };
-        let process_result = process_job_with_context_heartbeat_and_terminal_hooks(
+        let process = process_job_with_context_heartbeat_and_terminal_hooks(
             &manager,
             job_with_active_key_metadata(parsed_job.clone(), active_key.as_ref()),
             job_cancellation,
@@ -1035,8 +1045,14 @@ where
             terminal_guard,
             terminal_cleanup,
             handler.clone(),
-        )
-        .await;
+        );
+        // A stopping host hands the job back at once rather than wait for a
+        // handler that ignores its cancellation. The attempt is dropped, so
+        // whatever that handler would return never settles the job.
+        let process_result = tokio::select! {
+            result = process => Some(result),
+            () = cancellation.handed_back() => None,
+        };
         if let Some(mut auto_heartbeat) = auto_heartbeat {
             auto_heartbeat.0.abort();
             let _ = (&mut auto_heartbeat.0).await;
@@ -1048,6 +1064,23 @@ where
         let mut forward_cancellation = forward_cancellation;
         forward_cancellation.0.abort();
         let _ = (&mut forward_cancellation.0).await;
+        let Some(process_result) = process_result else {
+            // Best effort: a key lease left behind expires on its own.
+            if let (Some(coordinator), Some(active_key)) =
+                (key_coordinator.as_ref(), active_key.as_ref())
+            {
+                let _ = release_key_lease(coordinator, active_key, &manager.now_iso()).await;
+            }
+            // A delivery whose lease was lost went with its connection, and
+            // the broker sends it again; any other goes back now.
+            if !cancellation.is_lease_lost() {
+                message
+                    .ack_with(AckKind::Nak(None))
+                    .await
+                    .map_err(map_ack_error)?;
+            }
+            continue 'work;
+        };
         let process_result = process_result?;
         if matches!(
             process_result,
@@ -2211,9 +2244,14 @@ where
                             let cancellation = cancellation.clone();
                             AbortWorkerTask(tokio::spawn(async move {
                                 tokio::select! {
-                                    _ = host.cancelled() => cancellation.cancel_for_shutdown(),
-                                    _ = forced.cancelled() => cancellation.cancel_for_lease_loss(),
+                                    _ = host.cancelled() => {}
+                                    _ = forced.cancelled() => {
+                                        cancellation.cancel_for_lease_loss();
+                                        // A stop still hands the lost work back.
+                                        host.cancelled().await;
+                                    }
                                 }
+                                cancellation.cancel_for_shutdown();
                             }))
                         };
                         let result = std::panic::AssertUnwindSafe(
