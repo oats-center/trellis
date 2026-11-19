@@ -1,7 +1,7 @@
 <script lang="ts">
   import { apis } from "$lib/trellis-apis";
   import type { JsonValue } from "@oatscenter/trellis/generated";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { ulid } from "ulid";
   import { codecs } from "@oatscenter/trellis/generated";
   import { formatDate } from "$lib/format";
@@ -109,12 +109,19 @@
     (view?.instances ?? []).filter((instance) => instance.restartPending),
   );
 
+  // Drafts belong to one target: choosing another discards them.
   $effect(() => {
-    scope.setKey(key);
+    if (!scope.setKey(key)) return;
     drafts = {};
     added = [];
     revealed = {};
-    void load();
+  });
+  // The settings are reread whenever the page hands over its target again,
+  // as the service page does each time it rereads the service. The drafts
+  // stay, and fields left alone show what is saved now.
+  $effect(() => {
+    void target;
+    untrack(() => void load());
   });
 
   async function load(): Promise<void> {

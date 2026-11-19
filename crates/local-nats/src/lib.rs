@@ -195,9 +195,14 @@ pub enum LocalNatsError {
     },
     /// The managed server exited during startup.
     #[error(
-        "managed nats-server exited during startup with status {0}; check its dedicated child log"
+        "managed nats-server exited during startup with status {status}; its log ends:\n{log}"
     )]
-    SpawnFailed(String),
+    SpawnFailed {
+        /// How the server exited.
+        status: String,
+        /// The last lines of its dedicated child log, which name the reason.
+        log: String,
+    },
     /// The pid file exists but is not a regular file recording a pid; another owner may
     /// be mid-startup or the path may have been tampered with.
     #[error(
@@ -1392,7 +1397,10 @@ where
     let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = stopped()? {
-            return Err(LocalNatsError::SpawnFailed(status.to_string()));
+            return Err(LocalNatsError::SpawnFailed {
+                status: status.to_string(),
+                log: String::new(),
+            });
         }
         if ports.iter().all(&probe) {
             return Ok(());
@@ -1554,8 +1562,15 @@ impl ManagedNatsServer {
             READINESS_TIMEOUT,
             POLL_INTERVAL,
         );
-        if let Err(error) = readiness {
+        if let Err(mut error) = readiness {
             let _ = server.stop();
+            // The server writes why it stopped last, after any earlier
+            // start's lines in the same log.
+            if let LocalNatsError::SpawnFailed { log, .. } = &mut error {
+                let text = fs::read_to_string(path).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                *log = lines[lines.len().saturating_sub(10)..].join("\n");
+            }
             return Err(error);
         }
         Ok(server)

@@ -602,6 +602,48 @@ async fn cli_server_managed_nats() {
         log_tail(&broken_stderr)
     );
 
+    // 3d. A broker that refuses to start exits with its reason in its own
+    //     log; the startup error carries that reason to the operator.
+    let nats_conf = bundle.join("nats.conf");
+    let authored = fs::read_to_string(&nats_conf).expect("read nats.conf");
+    fs::write(
+        &nats_conf,
+        format!("{authored}\nnot_a_nats_setting: true\n"),
+    )
+    .expect("write a nats.conf the broker refuses");
+    let refused_stderr = workdir.0.join("cli-refused-nats.stderr.log");
+    let mut refused_command = server_command(&workdir.0);
+    let mut refused = ChildGuard::spawn(
+        refused_command
+            .args([
+                "check",
+                "--dev",
+                "--config",
+                config_path.to_str().expect("UTF-8 config path"),
+                local_nats.as_str(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                fs::File::create(&refused_stderr).expect("create refused stderr log"),
+            )),
+        "trellis-server refused nats.conf startup",
+    );
+    let refused_exit = refused
+        .wait_for_exit(SHUTDOWN_TIMEOUT)
+        .expect("a broker that refuses its config must fail startup");
+    assert!(
+        !refused_exit.success(),
+        "a refused broker must fail startup"
+    );
+    assert!(
+        fs::read_to_string(&refused_stderr)
+            .expect("read refused stderr log")
+            .contains("not_a_nats_setting"),
+        "startup must report why the broker refused to start\nstderr tail:\n{}",
+        log_tail(&refused_stderr)
+    );
+    fs::write(&nats_conf, authored).expect("restore nats.conf");
+
     // 4. An installation without `managed` uses configured external NATS and
     //    never owns that process.
     let binary = NatsServerBinary::resolve(&NatsBinarySource::DownloadPinned, Some(&cache_dir))

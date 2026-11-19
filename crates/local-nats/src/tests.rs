@@ -312,7 +312,7 @@ fn readiness_reports_exited_child_before_probing() {
         },
     )
     .expect_err("exited child must fail");
-    assert!(matches!(error, LocalNatsError::SpawnFailed(_)));
+    assert!(matches!(error, LocalNatsError::SpawnFailed { .. }));
     assert_eq!(
         probes.load(Ordering::Relaxed),
         0,
