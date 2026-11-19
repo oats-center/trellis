@@ -39,6 +39,7 @@ ipnet = { version = "2.12.0", features = ["serde"] }
 libc = "0.2.186"
 nats-jwt-rs.workspace = true
 nkeys.workspace = true
+oci-client = { version = "0.18", default-features = false, features = ["rustls-tls-no-provider"] }
 oauth-as.workspace = true
 ring = "0.17.14"
 openidconnect.workspace = true

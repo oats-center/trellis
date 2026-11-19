@@ -346,6 +346,15 @@ returned by name, requirements, dependents, and the versions that do not
 match, for the client to supply. Resolution writes nothing, and the evidence it
 returns is checked again by `Deployments.Create` like any other.
 
+A published release is the other way to hand Auth a build.
+`Auth.Packages.Pull` fetches it from an administrator's named registry and
+offers the resolver only the release and the exact packages its frozen
+resolution names, each pulled by its recorded manifest digest, so the frozen
+resolution is the resolution; the compiled digests must equal the recorded
+ones. The format checks (normalized tar, exact file set, canonical config and
+resolution) live in `trellis_idl::distribution`, shared by the CLI's
+`add`/`publish` and Auth.
+
 Published OCI source bundles contain the manifest, listed source, and frozen
 resolution metadata—not canonical API JSON. Generated implementations are
 disposable build/release artifacts, not committed source; run generation before

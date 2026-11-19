@@ -4,13 +4,13 @@ root = "client-upgrade-fixture"
 [[packages]]
 name = "client-upgrade-fixture"
 version = "0.100.0"
-digest = "88_5mYTc4smqF4i4ixah6glL5xS1oToXDYWecW0WDUo"
-distribution-digest = "sha256:4a731ccf8b57830d2017c8c0b98a8accb3828278eb6086663e2440ffbcf05405"
+digest = "wRVyHAzxFEvATs1nWWUBTVCUur_E3CrE9XxoProJnDU"
+distribution-digest = "sha256:d55e0f2622577eaea7f61df7a74d4ac11b95c197ab8a060285680ea07f87c9ec"
 
 [[packages.dependencies]]
 name = "trellis"
 version = "0.100.0-rc.50"
-digest = "U70gS77B2qZnFdArrdpWoiYNkMQIiEq1QxTiZior4Ic"
+digest = "4gD4YYRfS5xKlXA_MTFRhfFhb28kuTfn9cCvMsXKPCk"
 
 [packages.source]
 kind = "path"
@@ -19,8 +19,8 @@ path = "."
 [[packages]]
 name = "trellis"
 version = "0.100.0-rc.50"
-digest = "U70gS77B2qZnFdArrdpWoiYNkMQIiEq1QxTiZior4Ic"
-distribution-digest = "sha256:cab9c747b1a2fb8cd73c3371f7d97b763f466be078e57dfdec84a90d6ff73445"
+digest = "4gD4YYRfS5xKlXA_MTFRhfFhb28kuTfn9cCvMsXKPCk"
+distribution-digest = "sha256:e6193bb1c0f803997a43f7fe9e55fd811de4c71aeabc9b0481bf958de22386a0"
 dependencies = []
 
 [packages.source]

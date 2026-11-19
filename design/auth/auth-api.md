@@ -84,7 +84,7 @@ the exact request, response, and error types.
 | Portal themes         | `PortalThemes.List/Get/Put/Delete`                                                                                                                                                                                                     |
 | Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                                                                                |
 | Issuers               | `Issuers.Rotate`, `Issuers.Revoke`                                                                                                                                                                                                     |
-| Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`, `Packages.Resolve`                                                                                                                                                          |
+| Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`, `Packages.Resolve`, `Packages.Pull`, `PackageRegistries.List/Put/Remove`                                                                                                    |
 | Service instances     | `ServiceInstances.Provision/List/Disable/Enable/Remove`                                                                                                                                                                                |
 | Devices               | `Devices.Provision/List/Disable/Enable/Remove`, `Devices.Reviews.*`, `DeviceCompanions.Attach/Revoke`                                                                                                                                  |
 | Resources             | `Resources.List/Get/Remove`, `ResourceBindings.Query`                                                                                                                                                                                  |
@@ -160,6 +160,29 @@ fetches nothing. `Packages.Resolve` requires `trellis.auth.v1:users.manage`,
 like `Create`, and changes nothing; `Create` still recompiles and checks the
 evidence it returns. See
 [server-side resolution](../contracts/trellis-idl.md#server-side-resolution).
+
+`Packages.Pull` is the path that does fetch: it takes a registry name, a
+package name, and a version or OCI manifest digest. Auth pulls the release
+from that registry, checks the manifest digest (and the requested one when
+pinned), the config and source-layer digests, that the layer is the
+normalized source tar of exactly the manifest's sources and frozen resolution,
+and that the config names the requested package. It then pulls every package
+of the release's frozen resolution by the exact manifest digest recorded
+there, checks each one's semantic and distribution digests against the
+resolution, and compiles the release from only those packages, so nothing Auth
+holds stands in for one and no version is chosen again. The compiled digests
+must equal the frozen ones. The response carries the pinned release, its
+evidence, its participants with their settings, and its dependencies, for
+`Create` or `Apply`, which still recompile. A dependency's registry is matched
+to a configured registry by prefix for credentials and is otherwise pulled
+anonymously; only loopback registries are reached over plain HTTP.
+
+`PackageRegistries.List/Put/Remove` keep the named registries in the Auth
+store, each a name, an OCI prefix, and optional credentials (a user name and a
+secret sealed with the storage key to the registry's name). The secret is
+never returned and never written to the audit record or the idempotency
+result. `Packages.Pull` and the registry RPCs require
+`trellis.auth.v1:users.manage`, like `Create`.
 
 Deployment Apply is the administrator's direct mutation path. A running
 service can also submit its own build: `ServiceUpdates.Submit` and

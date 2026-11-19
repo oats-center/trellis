@@ -24,6 +24,7 @@ mod avatars;
 mod policy;
 mod portal_themes;
 mod profiles;
+mod registries;
 mod release_check;
 mod remote_http;
 mod resources;

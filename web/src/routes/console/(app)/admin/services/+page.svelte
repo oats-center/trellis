@@ -180,6 +180,9 @@
 <section class="space-y-5">
   <PageToolbar title="Services" description="Services running on Trellis.">
     {#snippet actions()}
+      <a class="btn btn-ghost" href={resolve("/admin/services/registries")}
+        >Package registries</a
+      >
       <a class="btn btn-primary" href={resolve("/admin/services/new")}
         ><Icon name="plus" size={18} />Add service</a
       >

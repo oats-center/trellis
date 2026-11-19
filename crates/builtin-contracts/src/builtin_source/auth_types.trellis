@@ -15,6 +15,7 @@ type AuthDescription = string(max_length=4096);
 type AuthSearch = string(max_length=256);
 type AuthCursor = string(min_length=1, max_length=4096);
 type AuthPath = string(min_length=1, max_length=4096);
+type AuthRegistrySecret = string(min_length=1, max_length=4096);
 type AuthPassword = string(min_length=8, max_length=512);
 type AuthExistingPassword = string(max_length=512);
 type AuthPositiveSeconds = uint32(min=1);
@@ -819,7 +820,7 @@ model AuthPackageResolveRequest {
   /// Packages supplied for dependencies Trellis does not hold. Each is used before any package Trellis holds with the same name.
   packages?: list<AuthPackageSources>;
 }
-enum AuthPackageOrigin { builtin; installed; supplied; }
+enum AuthPackageOrigin { builtin; installed; supplied; registry; }
 /// The package chosen for one dependency.
 model AuthResolvedPackage {
   name: AuthName;
@@ -864,6 +865,62 @@ model AuthRejectedPackage {
   /// The package name its trellis.toml gives.
   name: AuthName;
   reason: string;
+}
+/// A registry Trellis pulls published packages from.
+model AuthPackageRegistry {
+  name: AuthShortName;
+  /// The registry host and repository prefix its packages are published under, such as `ghcr.io/oats-center`. A package's repository is the prefix followed by its name.
+  prefix: AuthName;
+  /// The user Trellis signs in to the registry as; absent when it pulls anonymously.
+  username?: AuthName;
+  updatedAt: timestamp;
+}
+model AuthPackageRegistriesListResponse { registries: list<AuthPackageRegistry>; }
+/// How Trellis signs in to a private registry. The secret is sealed with the storage key and never returned.
+model AuthPackageRegistryCredentials {
+  username: AuthName;
+  /// A password or access token.
+  secret: AuthRegistrySecret;
+}
+model AuthPackageRegistryPutRequest {
+  name: AuthShortName;
+  prefix: AuthName;
+  /// Absent to pull anonymously, as a public registry allows. Putting a registry again replaces its credentials.
+  credentials?: AuthPackageRegistryCredentials;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthPackageRegistryPutResponse { registry: AuthPackageRegistry; }
+model AuthPackageRegistryRemoveRequest {
+  name: AuthShortName;
+  idempotencyKey: AuthIdempotencyKey;
+}
+/// A published package release. Give exactly one of `version` and `digest`.
+model AuthPackagePullRequest {
+  /// The registry an administrator added, by name.
+  registry: AuthShortName;
+  /// The package name; its repository is the registry's prefix followed by it.
+  name: AuthName;
+  /// The release version, such as `1.2.0`.
+  version?: AuthShortName;
+  /// The release's OCI manifest digest, such as `sha256:…`, to get exactly the release that was reviewed.
+  digest?: AuthDigest;
+}
+/// The release a pull fetched and checked.
+model AuthPublishedPackage {
+  registry: AuthShortName;
+  name: AuthName;
+  version: AuthShortName;
+  /// The release's OCI manifest digest; pulling by it gets exactly this release again.
+  digest: AuthDigest;
+}
+model AuthPackagePullResponse {
+  published: AuthPublishedPackage;
+  /// The complete evidence for `Deployments.Create` or `Deployments.Apply`, compiled from the release and the exact dependencies it was published with.
+  packageEvidence: AuthPackageEvidence;
+  /// The package's services and devices.
+  participants: list<AuthResolvedParticipant>;
+  /// The dependencies it was published with.
+  dependencies: list<AuthResolvedPackage>;
 }
 model AuthDeploymentGetRequest { deploymentId: ulid; }
 model AuthDeploymentGetResponse { deployment: AuthDeployment; }

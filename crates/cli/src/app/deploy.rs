@@ -378,48 +378,13 @@ pub fn compile_participant_input(
         .values()
         .filter(|participant| expected_kind.is_none_or(|kind| participant.kind() == kind))
         .collect::<Vec<_>>();
-    let participant = match selected_participant {
-        Some(id) => candidates
+    let participant = candidates[choose_participant(
+        &candidates
             .iter()
-            .find(|participant| participant.identity().as_str() == id)
-            .copied()
-            .ok_or_else(|| {
-                miette::miette!(
-                    "participant '{id}' does not match; candidates: {}",
-                    candidates
-                        .iter()
-                        .map(|candidate| candidate.identity().as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })?,
-        None if candidates.len() == 1 => candidates[0],
-        None if crate::prompt::interactive() && !candidates.is_empty() => {
-            let choices = candidates
-                .iter()
-                .enumerate()
-                .map(|(index, candidate)| (index, candidate.identity().as_str().to_owned()))
-                .collect::<Vec<_>>();
-            let index = crate::prompt::Form::new(true).choose(
-                "Which participant?",
-                "--participant",
-                None,
-                &choices,
-                None,
-            )?;
-            candidates[index]
-        }
-        None => {
-            return Err(miette::miette!(
-                "select one participant with --participant; candidates: {}",
-                candidates
-                    .iter()
-                    .map(|candidate| candidate.identity().as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        }
-    };
+            .map(|candidate| candidate.identity().as_str().to_owned())
+            .collect::<Vec<_>>(),
+        selected_participant,
+    )?];
     let participant_path = participant.name().to_owned();
     let participant_id = participant.identity().as_str().to_owned();
     let participant_digest = trellis_idl::participant_digest(&compiled, participant.identity())?;
@@ -437,6 +402,248 @@ pub fn compile_participant_input(
         package_evidence,
         implemented_apis,
     })
+}
+
+/// The participant `selected` names among `candidates`, the only one, or the
+/// one chosen at a terminal.
+fn choose_participant(candidates: &[String], selected: Option<&str>) -> miette::Result<usize> {
+    match selected {
+        Some(id) => candidates
+            .iter()
+            .position(|candidate| candidate == id)
+            .ok_or_else(|| {
+                miette::miette!(
+                    "participant '{id}' does not match; candidates: {}",
+                    candidates.join(", ")
+                )
+            }),
+        None if candidates.len() == 1 => Ok(0),
+        None if crate::prompt::interactive() && !candidates.is_empty() => {
+            let choices = candidates.iter().cloned().enumerate().collect::<Vec<_>>();
+            crate::prompt::Form::new(true).choose(
+                "Which participant?",
+                "--participant",
+                None,
+                &choices,
+                None,
+            )
+        }
+        None if candidates.is_empty() => Err(miette::miette!(
+            "the package declares no participant of this kind"
+        )),
+        None => Err(miette::miette!(
+            "select one participant with --participant; candidates: {}",
+            candidates.join(", ")
+        )),
+    }
+}
+
+/// The participant and package evidence a create or apply installs: compiled
+/// here from `--source`, or pulled from a registry and checked by Auth from
+/// `--package`.
+async fn build_input(
+    format: OutputFormat,
+    connected: &Client,
+    build: &BuildArgs,
+    kind: trellis_idl::ParticipantKind,
+) -> miette::Result<(String, auth_types::AuthPackageEvidence)> {
+    if let Some(source) = &build.source {
+        let participant =
+            compile_participant_input(source, build.participant.as_deref(), Some(kind))?;
+        return Ok((participant.participant_id, participant.package_evidence));
+    }
+    let package = build
+        .package
+        .as_deref()
+        .ok_or_else(|| miette::miette!("give --source DIR or --package NAME@VERSION"))?;
+    let (name, release) = package.rsplit_once('@').ok_or_else(|| {
+        miette::miette!(
+            help = "Name a release as NAME@1.2.0, or pin it as NAME@sha256:<digest>.",
+            "--package {package} names no release"
+        )
+    })?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
+        .trellis_auth_v1();
+    let registry = match &build.registry {
+        Some(registry) => registry.clone(),
+        None => {
+            let names = auth
+                .package_registries_list(&auth_types::AuthEmpty {
+                    extra: Default::default(),
+                })
+                .await
+                .into_diagnostic()?
+                .registries
+                .into_iter()
+                .map(|registry| registry.name.0)
+                .collect::<Vec<_>>();
+            match names.as_slice() {
+                [] => {
+                    return Err(miette::miette!(
+                        help = "Add one with `trellis registries set NAME --prefix HOST/PATH`.",
+                        "Trellis has no registry to pull {name} from"
+                    ))
+                }
+                [only] => only.clone(),
+                _ if crate::prompt::interactive() => {
+                    let choices = names
+                        .iter()
+                        .map(|name| (name.clone(), name.clone()))
+                        .collect::<Vec<_>>();
+                    crate::prompt::Form::new(true).choose(
+                        "Which registry?",
+                        "--registry",
+                        None,
+                        &choices,
+                        None,
+                    )?
+                }
+                _ => {
+                    return Err(miette::miette!(
+                        "choose a registry with --registry; registries: {}",
+                        names.join(", ")
+                    ))
+                }
+            }
+        }
+    };
+    let pinned = release.starts_with("sha256:");
+    let pulled = auth
+        .packages_pull(&auth_types::AuthPackagePullRequest {
+            registry: wire(&registry)?,
+            name: wire(name)?,
+            version: (!pinned).then(|| wire(release)).transpose()?,
+            digest: pinned.then(|| wire(release)).transpose()?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?;
+    let wanted = match kind {
+        trellis_idl::ParticipantKind::Service => auth_types::AuthDeploymentKind::Service,
+        trellis_idl::ParticipantKind::Device => auth_types::AuthDeploymentKind::Device,
+    };
+    let candidates = pulled
+        .participants
+        .iter()
+        .filter(|participant| participant.kind == wanted)
+        .map(|participant| participant.participant_id.clone())
+        .collect::<Vec<_>>();
+    let participant =
+        candidates[choose_participant(&candidates, build.participant.as_deref())?].clone();
+    if !output::is_json(format) {
+        let published = &pulled.published;
+        output::Details::new(format!(
+            "{} {}",
+            output::strong(&published.name.0),
+            published.version.0
+        ))
+        .field("Registry", &published.registry.0)
+        .field("Digest", &published.digest.0)
+        .field("Participant", &participant)
+        .section("Built with")
+        .items(
+            pulled
+                .dependencies
+                .iter()
+                .map(|dependency| format!("{} {}", dependency.name.0, dependency.version.0)),
+        )
+        .print();
+    }
+    Ok((participant, pulled.package_evidence))
+}
+
+/// Run one `trellis registries` command.
+pub(super) async fn registries(
+    format: OutputFormat,
+    command: RegistriesCommand,
+) -> miette::Result<()> {
+    let (_, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    match command {
+        RegistriesCommand::List => {
+            let listed = auth
+                .package_registries_list(&auth_types::AuthEmpty {
+                    extra: Default::default(),
+                })
+                .await
+                .into_diagnostic()?;
+            if output::is_json(format) {
+                return output::print_json(&listed);
+            }
+            output::table(
+                &listed.registries,
+                &[
+                    output::col("Name", "name"),
+                    output::col("Prefix", "prefix"),
+                    output::col("Signs in as", "username"),
+                ],
+                "No registries. Add one with `trellis registries set NAME --prefix HOST/PATH`.",
+            )
+        }
+        RegistriesCommand::Set(args) => {
+            let credentials = match &args.username {
+                None => None,
+                Some(username) => {
+                    let secret = match &args.secret_file {
+                        Some(path) if path != std::path::Path::new("-") => {
+                            std::fs::read_to_string(path).into_diagnostic()?
+                        }
+                        None if std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+                            let mut form = crate::prompt::Form::new(true);
+                            let typed = form.required_secret(
+                                &format!("Password or token for {username}"),
+                                "--secret-file PATH",
+                            )?;
+                            form.finish()?;
+                            typed
+                        }
+                        _ => std::io::read_to_string(std::io::stdin()).into_diagnostic()?,
+                    };
+                    let secret = secret.trim_end_matches(['\r', '\n']);
+                    miette::ensure!(!secret.is_empty(), "the registry secret is empty");
+                    Some(auth_types::AuthPackageRegistryCredentials {
+                        username: wire(username)?,
+                        secret: wire(secret)?,
+                        extra: Default::default(),
+                    })
+                }
+            };
+            let response = auth
+                .package_registries_put(&auth_types::AuthPackageRegistryPutRequest {
+                    name: wire(&args.name)?,
+                    prefix: wire(&args.prefix)?,
+                    credentials,
+                    idempotency_key: wire(cli_idempotency_key())?,
+                    extra: Default::default(),
+                })
+                .await
+                .into_diagnostic()?;
+            if output::is_json(format) {
+                return output::print_json(&response);
+            }
+            output::success(format!(
+                "Saved registry {} at {}",
+                output::strong(&response.registry.name.0),
+                response.registry.prefix.0
+            ));
+            Ok(())
+        }
+        RegistriesCommand::Remove { name } => {
+            auth.package_registries_remove(&auth_types::AuthPackageRegistryRemoveRequest {
+                name: wire(&name)?,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?;
+            if output::is_json(format) {
+                return output::print_json(&json!({ "removed": name }));
+            }
+            output::success(format!("Removed registry {}", output::strong(&name)));
+            Ok(())
+        }
+    }
 }
 
 async fn list_services(format: OutputFormat, args: &SvcListArgs) -> miette::Result<()> {
@@ -508,22 +715,24 @@ async fn create_service(
     id: &str,
     args: &SvcCreateArgs,
 ) -> miette::Result<()> {
-    let Some(source) = &args.source else {
+    if args.build.source.is_none() && args.build.package.is_none() {
         return create_service_claim(format, id, args.public_key.as_deref()).await;
-    };
-    let participant = compile_participant_input(
-        source,
-        args.participant.as_deref(),
-        Some(trellis_idl::ParticipantKind::Service),
-    )?;
+    }
     let (_, connected) = connect_authenticated_cli_client().await?;
+    let (participant_id, package_evidence) = build_input(
+        format,
+        &connected,
+        &args.build,
+        trellis_idl::ParticipantKind::Service,
+    )
+    .await?;
     let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1()
         .deployments_create(&auth_types::AuthDeploymentCreateRequest {
             kind: auth_types::AuthDeploymentKind::Service,
             title: wire(id)?,
-            participant_id: participant.participant_id,
-            package_evidence: participant.package_evidence,
+            participant_id,
+            package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
@@ -621,19 +830,21 @@ fn shared_api_hint(error: impl std::fmt::Display) -> miette::Report {
 }
 
 async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> miette::Result<()> {
-    let participant = compile_participant_input(
-        &args.source,
-        args.participant.as_deref(),
-        Some(trellis_idl::ParticipantKind::Device),
-    )?;
     let (_, connected) = connect_authenticated_cli_client().await?;
+    let (participant_id, package_evidence) = build_input(
+        format,
+        &connected,
+        &args.build,
+        trellis_idl::ParticipantKind::Device,
+    )
+    .await?;
     let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1()
         .deployments_create(&auth_types::AuthDeploymentCreateRequest {
             kind: auth_types::AuthDeploymentKind::Device,
             title: wire(id)?,
-            participant_id: participant.participant_id,
-            package_evidence: participant.package_evidence,
+            participant_id,
+            package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
@@ -660,15 +871,22 @@ async fn apply_contract(
         DeploymentKind::Service => trellis_idl::ParticipantKind::Service,
         DeploymentKind::Device => trellis_idl::ParticipantKind::Device,
     };
-    let participant = compile_participant_input(
-        &args.source,
-        args.participant.as_deref(),
-        Some(expected_kind),
-    )?;
     let (_, connected) = connect_authenticated_cli_client().await?;
     let current = find_deployment(&connected, deployment_id, kind).await?;
+    // The deployment's own participant is the one to install when none is
+    // named, even in a package with several.
+    let build = BuildArgs {
+        participant: args
+            .build
+            .participant
+            .clone()
+            .or_else(|| current["participantId"].as_str().map(str::to_owned)),
+        ..args.build.clone()
+    };
+    let (participant_id, package_evidence) =
+        build_input(format, &connected, &build, expected_kind).await?;
     miette::ensure!(
-        current["participantId"].as_str() == Some(&participant.participant_id),
+        current["participantId"].as_str() == Some(&participant_id),
         "deployment participant does not match the selected source participant"
     );
     let deployment_id = current["deploymentId"]
@@ -687,7 +905,7 @@ async fn apply_contract(
                     .unwrap_or_else(|| revision.to_owned()),
             )?,
             idempotency_key: wire(cli_idempotency_key())?,
-            package_evidence: participant.package_evidence,
+            package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
             extra: Default::default(),
         })

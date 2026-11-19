@@ -105,6 +105,7 @@ async fn dispatch(command: TopLevelCommand, format: OutputFormat) -> miette::Res
         TopLevelCommand::SignIn(command) => auth::sign_in(format, command).await?,
         TopLevelCommand::Svc(command) => deploy::run_svc(format, command).await?,
         TopLevelCommand::Dev(command) => deploy::run_dev(format, command).await?,
+        TopLevelCommand::Registries(command) => deploy::registries(format, command).await?,
         TopLevelCommand::Resources(command) => resources::run(format, command).await?,
         TopLevelCommand::Events(command) => events::run(format, command).await?,
         TopLevelCommand::Keys(command) => match command.command {

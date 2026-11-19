@@ -3,10 +3,12 @@ title: "Install a service from an image"
 description: "Deploy a published service from an OCI image into a running Trellis environment."
 ---
 
-This guide covers running a service from a published OCI image. The release must
-also distribute the Trellis project metadata used to install the exact
-participant: `trellis.toml`, `trellis.lock`, and native `.trellis` source. The
-runtime never accepts artifacts uploaded by the service process itself.
+This guide covers running a service from a published OCI image. Install the
+service's Trellis package first, so its instances connect with nothing left to
+approve. The service's release pipeline publishes that package with `trellis
+publish`: its `trellis.toml`, its `.trellis` sources, and the exact dependency
+releases it was built with. You can also install from the project directory
+itself, or let the service introduce itself when it first connects.
 
 ## 1. Log in
 
@@ -19,46 +21,84 @@ The detached login prints a Portal URL/QR code. Bind creates the CLI login and
 the CLI refreshes authorization for its installed `trellis-app.cli@v1`
 participant.
 
-## 2. Create and apply
+## 2. Add the registry
 
-Create the deployment from the release's participant project. `my-service` is
-the deployment's display name; `--participant` names the service's identity,
-`<package>.<ServiceName>` from its `trellis.toml` and IDL:
+Trellis pulls published packages from registries an administrator names. Add
+the one the service is published to once:
+
+```sh
+trellis registries set acme --prefix ghcr.io/acme
+```
+
+A package's repository is the prefix followed by its name, so `acme-orders`
+comes from `ghcr.io/acme/acme-orders`. A public registry needs nothing more.
+For a private one, add `--username` and give the password or token with
+`--secret-file PATH` (or `-` for standard input; a terminal asks). Trellis seals
+the secret with its storage key and never shows it again; `trellis registries
+list` shows only the user. In the Console the same list is under **Services**,
+**Package registries**.
+
+## 3. Create the deployment
+
+Create the deployment from the published release. `my-service` is the
+deployment's display name; `--participant` names the service's identity,
+`<package>.<ServiceName>` from its IDL, and is asked for at a terminal when the
+package declares several:
 
 ```sh
 trellis svc my-service create \
-  --source ./release/trellis-project \
-  --participant acme.MyService \
+  --package acme-orders@1.2.3 \
+  --registry acme \
+  --participant acme-orders.MyService \
   --format json
 trellis svc "$DEPLOYMENT_ID" show --format json
 ```
 
+`--registry` can be left out when Trellis has only one. Auth pulls the release,
+checks the manifest, config, and source digests against what the registry
+returned, pulls each dependency by the exact digest the release was published
+with, and compiles the service from exactly those packages, never resolving
+them again. To install exactly the release someone reviewed, pin it by its
+manifest digest, which `trellis publish` prints: `--package
+acme-orders@sha256:…`. A release whose content doesn't match its digests is
+refused.
+
+`--source ./release/trellis-project` instead takes the project directory with
+its `trellis.toml`, `trellis.lock`, and `.trellis` files, and compiles it in the
+CLI.
+
 Creating the deployment also accepts the APIs the service provides into the
 installation's API catalog: approving the service is approving what it
-publishes. `trellis apis review` with the same flags shows them first. Set
-`DEPLOYMENT_ID` to the returned `deployment.deploymentId`. Create compiles
-native IDL in memory, installs an immutable participant revision, sets up
-deployment resources, and writes the participant-scoped binding; later releases
-use `apply` or let the service submit its own build (below).
+publishes. `trellis apis review --source` shows them first. Set
+`DEPLOYMENT_ID` to the returned `deployment.deploymentId`. Create installs an
+immutable participant revision, sets up deployment resources, and writes the
+participant-scoped binding; later releases use `apply` or let the service
+submit its own build (below).
 
 ### From the Console
 
-**Add service** in the Console takes the same project. Give the service a name,
-then under **Service IDL** choose the project's `trellis.toml` and `.trellis`
-files, or its folder. The Console doesn't need `trellis.lock`: Trellis finds
+**Add service** in the Console takes the same release. Give the service a
+name, choose **From a published package**, then the registry, the package name,
+and its version (or a `sha256:` digest), and **Look up package**. The form
+shows the release and the packages it was built with before anything is added;
+pick which service when the package declares several.
+
+Choosing **From IDL files** takes the project's `trellis.toml` and `.trellis`
+files, or its folder, instead. The Console doesn't need `trellis.lock`: Trellis finds
 each dependency itself among the `trellis` package it ships and the packages of
 services already installed, picking the highest version that matches, and the
 form says which it used. A dependency Trellis doesn't have is listed with the
 version it needs; choose that package's `trellis.toml` and `.trellis` files
-beside it. Trellis never downloads a package. When the project declares several
-services, pick which one. Then either let the Console create the instance's key
+beside it. From IDL files, Trellis downloads nothing. When the project declares
+several services, pick which one. Then either let the Console create the instance's key
 (it shows the seed once) or paste a public key the service's operator made, and
 skip the provisioning step below.
 
-### Without the release's project
+### Without the release
 
-When you don't have the service's project, for instance a third party's service
-that should talk to your Trellis, create the service without `--source`:
+When you have neither its package nor its project, for instance a third party's
+service that should talk to your Trellis, create the service without
+`--package` or `--source`:
 
 ```sh
 trellis svc partner-orders create --public-key <key>
@@ -82,7 +122,7 @@ by name, with `trellis svc partner-orders config set` or in **Add service**,
 and approving the claim moves them to the deployment. See
 [Settings and secrets](/guides/settings-and-secrets#a-service-added-without-its-idl).
 
-## 3. Provision an instance
+## 4. Provision an instance
 
 ```sh
 trellis svc "$DEPLOYMENT_ID" provision --public-key <key> --format json
@@ -109,7 +149,7 @@ title, and shows the start of its identity key, whether it is connected, and
 the build it last ran. Its **⋯** menu turns the instance off or on, opens its
 settings, and removes it. Removing is permanent: the identity stops working.
 
-## 4. Run the container
+## 5. Run the container
 
 Pass only the runtime URL and the provisioned identity material required by the
 service's configuration:
@@ -133,10 +173,29 @@ come from Trellis rather than `-e` flags. Set them with `trellis svc
 see [Settings and secrets](/guides/settings-and-secrets). A service that is
 missing a required setting waits and prints a link to set it.
 
-## 5. Upgrade
+## 6. Upgrade
 
-Roll out the new image. When it connects, the service sees that its build
-differs from the one its instance runs and submits its own IDL:
+The smoothest upgrade installs the new release before its image rolls out:
+
+```sh
+trellis svc "$DEPLOYMENT_ID" apply --package acme-orders@1.3.0
+```
+
+Apply pulls and checks the release the same way create does, and installs the
+deployment's own participant from it; `--participant` is needed only to name a
+different one, which apply refuses. It accepts compatible changes to the APIs
+the service provides, installs the new immutable participant revision, updates
+resources, and advances the binding. New instances running that build then
+connect at once, even when it asks for new access, because applying it was the
+approval. In the Console, the service's page does the same under **Install a
+build**, **From a published package**. `apply --source DIR` takes the project
+directory instead. Use a new participant `@vN` lineage for breaking API
+changes. Existing provisioned identity keys remain valid for the same instance
+unless intentionally rotated.
+
+If you roll out the new image without applying it, the service sees that its
+build differs from the one its instance runs and submits its own IDL when it
+connects:
 
 - If the build asks for nothing new (no new capability, resource, or API), Auth
   installs it and the service connects under it at once.
@@ -162,32 +221,21 @@ services. To add capacity or move a service, provision more instances of the sam
 deployment instead. A build whose implemented API changed incompatibly is
 refused until you force-replace that API.
 
-To install a release before rolling it out instead, apply its project:
-
-```sh
-trellis svc "$DEPLOYMENT_ID" apply \
-  --source ./new-release/trellis-project \
-  --participant acme.MyService
-```
-
-Apply accepts compatible changes to the APIs the service provides, validates the replacement, installs the new immutable participant
-revision, updates resources, and advances the binding directly. Use a new
-participant `@vN` lineage for breaking API changes. Existing provisioned
-identity keys remain valid for the same instance unless intentionally rotated.
-
 Console **Admin / Services** shows the current deployment, installed revision,
 resources, instances, and grant state. It does not expose retired authority
 plans.
 
 ## Practical loop
 
-1. Log in as an administrator.
-2. Create the deployment.
-3. Apply the release's Trellis project and inspect the result.
-4. Provision an instance and store its seed securely.
-5. Set the service's settings and secrets.
-6. Start the container with only endpoint and identity configuration.
-7. Confirm expected RPCs, events, jobs, and resource handles.
+1. Log in as an administrator, and add the registry the service is published
+   to once.
+2. Create the deployment from the published package, or `apply` the published
+   package of a new release to the existing one.
+3. Provision an instance and store its seed securely.
+4. Set the service's settings and secrets.
+5. Start the container with only endpoint and identity configuration. Its build
+   is the installed one, so it connects at once.
+6. Confirm expected RPCs, events, jobs, and resource handles.
 
 All required resource evidence must exist before context issuance. Unavailable
 optional evidence removes only its affected optional grants. The service never

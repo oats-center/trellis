@@ -4,6 +4,7 @@ mod ast;
 mod canonical;
 mod compatibility;
 mod compile;
+pub mod distribution;
 mod documentation;
 mod lexer;
 mod parser;

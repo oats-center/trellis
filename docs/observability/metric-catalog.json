@@ -1082,6 +1082,7 @@
           "sign-in",
           "svc",
           "dev",
+          "registries",
           "resources",
           "events",
           "init",

@@ -6280,6 +6280,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tar",
  "toml",
  "trellis-protocol",
 ]
@@ -6433,6 +6434,7 @@ dependencies = [
  "nats-jwt-rs",
  "nkeys",
  "oauth-as",
+ "oci-client",
  "openidconnect",
  "rand 0.10.4",
  "rcgen",

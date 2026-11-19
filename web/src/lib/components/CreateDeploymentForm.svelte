@@ -24,6 +24,7 @@
   import FreeSettingRows from "$lib/components/FreeSettingRows.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
+  import PublishedPackagePicker from "$lib/components/PublishedPackagePicker.svelte";
   import SettingInput from "$lib/components/SettingInput.svelte";
 
   let { kind }: { kind: "service" | "device" } = $props();
@@ -42,6 +43,11 @@
     names: string[];
   };
   let root = $state<PackageFiles | null>(null);
+  // Or the IDL comes from a release published to a registry Trellis pulls
+  // from: Auth pulls it, checks its digests, and builds it from exactly the
+  // dependencies it was published with.
+  let from = $state<"files" | "published">("files");
+  let published = $state.raw<apis.auth.PackagesPullOutput | null>(null);
   let packageName = $state("");
   let packageVersion = $state("");
   let extras = $state<Record<string, PackageFiles>>({});
@@ -104,6 +110,10 @@
     )?.config ?? [],
   );
   const idlProblem = $derived.by((): string | null => {
+    if (from === "published")
+      return published && participants.length === 0
+        ? `This package doesn't declare a ${kind}.`
+        : null;
     if (!root) return null;
     if (root.files.length === 0) return "Choose its .trellis files too.";
     if (!root.manifest && (!packageName.trim() || !packageVersion.trim()))
@@ -124,7 +134,9 @@
             ? "built in"
             : dependency.origin === "supplied"
               ? "your files"
-              : "installed"
+              : dependency.origin === "registry"
+                ? "from its registry"
+                : "installed"
         }${dependency.otherVersions.length > 0 ? `; highest of ${dependency.otherVersions.length + 1} that match` : ""})`,
     ),
   );
@@ -142,7 +154,9 @@
     }
     return "A public key is 43 letters, digits, - or _.";
   });
-  const withIdl = $derived(kind === "device" || root !== null);
+  const withIdl = $derived(
+    kind === "device" || root !== null || published !== null,
+  );
   const ready = $derived(
     !busy &&
       !uncertain &&
@@ -188,6 +202,39 @@
       names: [...(manifest ? [manifest] : []), ...sources].map(
         ({ path }) => path,
       ),
+    };
+  }
+
+  /** Switch between IDL files and a published package, starting over. */
+  function chooseFrom(next: "files" | "published"): void {
+    from = next;
+    root = null;
+    published = null;
+    resolution = null;
+    resolveError = null;
+    rootPicks++;
+    epoch++;
+    drafts = {};
+    revealed = {};
+    extras = {};
+    wanted = [];
+    extraErrors = {};
+    sharing = null;
+  }
+
+  /** Take a release the picker pulled as this form's IDL. */
+  function usePublished(pulled: apis.auth.PackagesPullOutput | null): void {
+    published = pulled;
+    drafts = {};
+    revealed = {};
+    sharing = null;
+    resolution = pulled && {
+      packageEvidence: pulled.packageEvidence,
+      participants: pulled.participants,
+      dependencies: pulled.dependencies,
+      missing: [],
+      unknownImports: [],
+      rejected: [],
     };
   }
 
@@ -598,73 +645,102 @@
           disabled={busy || uncertain}
         /></label
       >
-      <div class="trellis-field">
-        <label class="trellis-field-label" for="deployment-idl"
-          >{kind === "service" ? "Service IDL (optional)" : "Device IDL"}</label
-        >
-        <div class="flex flex-wrap items-center gap-2">
-          <input
-            id="deployment-idl"
-            type="file"
-            multiple
-            class="file-input file-input-sm w-full sm:w-auto"
-            accept=".trellis,.toml"
-            required={kind === "device" && root === null}
-            disabled={busy || uncertain}
-            aria-describedby="deployment-idl-help"
-            aria-invalid={idlProblem !== null}
-            onchange={(event) => void chooseRoot(event)}
-          />
-          <label
-            class={[
-              "btn btn-outline btn-sm",
-              (busy || uncertain) && "btn-disabled",
-            ]}
-            >Choose a folder<input
+      <fieldset class="trellis-field" disabled={busy || uncertain}>
+        <legend class="trellis-field-label mb-1.5">
+          Where its IDL comes from
+        </legend>
+        <div class="flex flex-wrap gap-4">
+          {#each [{ value: "files", label: "From IDL files" }, { value: "published", label: "From a published package" }] as const as option (option.value)}
+            <label class="flex cursor-pointer items-center gap-2 text-sm"
+              ><input
+                type="radio"
+                class="radio radio-sm"
+                name="idl-from"
+                value={option.value}
+                checked={from === option.value}
+                onchange={() => chooseFrom(option.value)}
+              />{option.label}</label
+            >
+          {/each}
+        </div>
+      </fieldset>
+      {#if from === "published"}
+        <PublishedPackagePicker
+          disabled={busy || uncertain}
+          onpulled={usePublished}
+        />
+        {#if idlProblem}<p class="text-sm text-error">{idlProblem}</p>{/if}
+      {:else}
+        <div class="trellis-field">
+          <label class="trellis-field-label" for="deployment-idl"
+            >{kind === "service"
+              ? "Service IDL (optional)"
+              : "Device IDL"}</label
+          >
+          <div class="flex flex-wrap items-center gap-2">
+            <input
+              id="deployment-idl"
               type="file"
-              class="sr-only"
-              webkitdirectory
+              multiple
+              class="file-input file-input-sm w-full sm:w-auto"
+              accept=".trellis,.toml"
+              required={kind === "device" && root === null}
               disabled={busy || uncertain}
+              aria-describedby="deployment-idl-help"
+              aria-invalid={idlProblem !== null}
               onchange={(event) => void chooseRoot(event)}
-            /></label
+            />
+            <label
+              class={[
+                "btn btn-outline btn-sm",
+                (busy || uncertain) && "btn-disabled",
+              ]}
+              >Choose a folder<input
+                type="file"
+                class="sr-only"
+                webkitdirectory
+                disabled={busy || uncertain}
+                onchange={(event) => void chooseRoot(event)}
+              /></label
+            >
+          </div>
+          {#if root}
+            <ul
+              class="font-mono text-xs text-base-content/70"
+              aria-label="Chosen IDL files"
+            >
+              {#each root.names as name (name)}<li>{name}</li>{/each}
+            </ul>
+            <button
+              type="button"
+              class="btn btn-ghost btn-xs self-start"
+              disabled={busy || uncertain}
+              onclick={() => {
+                root = null;
+                rootPicks++;
+                epoch++;
+                extras = {};
+                wanted = [];
+                extraErrors = {};
+                sharing = null;
+                void queue(() => resolvePackages());
+              }}>Remove IDL</button
+            >
+          {/if}
+          <span id="deployment-idl-help" class="trellis-field-help"
+            >{#if idlProblem}<span class="text-error">{idlProblem}</span
+              >{:else if resolving}Checking its IDL…{:else if evidence}{#if participants.length === 1}Adds
+                {participants[0]}.{/if}
+              {#if usedPackages.length > 0}Uses {usedPackages.join(
+                  ", ",
+                )}.{/if}{:else if resolution}Add the packages below.{:else if kind === "service"}Choose
+              its trellis.toml and .trellis files, or their folder. Without
+              them, the service introduces itself when it first connects and you
+              approve what it asks for.{:else}Choose its trellis.toml and
+              .trellis files, or their folder.{/if}</span
           >
         </div>
-        {#if root}
-          <ul
-            class="font-mono text-xs text-base-content/70"
-            aria-label="Chosen IDL files"
-          >
-            {#each root.names as name (name)}<li>{name}</li>{/each}
-          </ul>
-          <button
-            type="button"
-            class="btn btn-ghost btn-xs self-start"
-            disabled={busy || uncertain}
-            onclick={() => {
-              root = null;
-              rootPicks++;
-              epoch++;
-              extras = {};
-              wanted = [];
-              extraErrors = {};
-              sharing = null;
-              void queue(() => resolvePackages());
-            }}>Remove IDL</button
-          >
-        {/if}
-        <span id="deployment-idl-help" class="trellis-field-help"
-          >{#if idlProblem}<span class="text-error">{idlProblem}</span
-            >{:else if resolving}Checking its IDL…{:else if evidence}{#if participants.length === 1}Adds
-              {participants[0]}.{/if}
-            {#if usedPackages.length > 0}Uses {usedPackages.join(
-                ", ",
-              )}.{/if}{:else if resolution}Add the packages below.{:else if kind === "service"}Choose
-            its trellis.toml and .trellis files, or their folder. Without them,
-            the service introduces itself when it first connects and you approve
-            what it asks for.{:else}Choose its trellis.toml and .trellis files,
-            or their folder.{/if}</span
-        >
-      </div>
+      {/if}
       {#if root && !root.manifest}
         <div class="grid gap-3 sm:grid-cols-2">
           <label class="trellis-field"

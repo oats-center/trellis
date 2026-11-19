@@ -21,6 +21,7 @@
   import CopyButton from "$lib/components/CopyButton.svelte";
   import DataTable from "$lib/components/DataTable.svelte";
   import HealthStatus from "$lib/components/HealthStatus.svelte";
+  import InstallPublishedBuild from "$lib/components/InstallPublishedBuild.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
@@ -604,6 +605,12 @@
   {#if loading && !deployment}<LoadingState
       label="Loading service"
     />{:else if deployment}
+    {#if canPerform(authority.authority, "packagesPull") && canPerform(authority.authority, "deploymentsApply")}<InstallPublishedBuild
+        {deployment}
+        onapplied={(applied) => {
+          deployment = applied;
+        }}
+      />{/if}
     <section class="trellis-section" aria-labelledby="instances-title">
       <div
         class="flex flex-wrap items-center justify-between gap-3 px-5 pt-5 pb-3"

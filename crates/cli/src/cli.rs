@@ -88,6 +88,9 @@ pub enum TopLevelCommand {
     Svc(SvcCommand),
     /// Manage device deployments.
     Dev(DevCommand),
+    /// Add and remove the registries Trellis pulls published packages from.
+    #[command(subcommand)]
+    Registries(RegistriesCommand),
     /// Inspect and destroy provisioned resources.
     #[command(subcommand)]
     Resources(ResourcesCommand),
@@ -129,6 +132,7 @@ impl TopLevelCommand {
             Self::SignIn(_) => "sign-in",
             Self::Svc(_) => "svc",
             Self::Dev(_) => "dev",
+            Self::Registries(_) => "registries",
             Self::Resources(_) => "resources",
             Self::Events(_) => "events",
             Self::Keys(_) => "keys",

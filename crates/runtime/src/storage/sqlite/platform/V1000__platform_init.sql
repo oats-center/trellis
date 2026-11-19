@@ -736,6 +736,16 @@ CREATE TABLE auth_portal_themes (
     CHECK ((logo IS NULL) = (logo_format IS NULL)),
     CHECK (stylesheet IS NULL OR client_id = '')
 );
+-- Registries Auth pulls published packages from. A private registry's secret
+-- is sealed with the storage key to its name and never returned.
+CREATE TABLE auth_package_registries (
+    name TEXT PRIMARY KEY CHECK (length(name) BETWEEN 1 AND 128),
+    prefix TEXT NOT NULL CHECK (length(prefix) BETWEEN 1 AND 256),
+    username TEXT,
+    sealed_secret BLOB,
+    updated_at INTEGER NOT NULL,
+    CHECK ((username IS NULL) = (sealed_secret IS NULL))
+);
 -- Retrieved public metadata is not client registration.
 CREATE TABLE auth_cimd_clients (
     client_id TEXT PRIMARY KEY,

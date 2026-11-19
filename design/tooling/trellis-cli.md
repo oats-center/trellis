@@ -123,7 +123,7 @@ manifest, trust-floor, offline-signing, or compatibility command exists.
 Commands that need several values ask for each one their flags leave out:
 `clients add|edit`, `apis force-replace --source`, `roles create`,
 `users create`, `users find`, `sign-in providers add`, and the participant
-choice of every `--source` command when the package has several. A question
+choice of every `--source` and `--package` command when the package has several, and the registry of `--package` when Auth holds several. A question
 lists the choices when they are a known set, starts from the default or current
 value, and checks the answer as it is typed; a write that asked anything shows
 a summary and asks to go ahead. Questions and summaries go to stderr, so
@@ -135,27 +135,50 @@ naming every missing flag. The prompt layer is `crates/cli/src/prompt.rs`.
 ## Deployment Commands
 
 ```text
-trellis svc <name> create --source <project> ... [--acknowledge-shared-apis]
+trellis svc <name> create --source <project> | --package <name>@<version|sha256:digest> [--registry <name>]
+                          [--participant <id>] [--acknowledge-shared-apis]
 trellis svc <name> create [--public-key <key>]
-trellis svc apply <deployment-id> <project> ... [--acknowledge-shared-apis]
-trellis svc get <deployment-id>
+trellis svc <id> apply --source <project> | --package <release> [--registry <name>] ...
+trellis svc <id> show
 trellis svc <deployment-id> provision [--public-key <key>] [--new]
 trellis svc enable|disable|remove ...
 trellis svc <deployment-id> updates
 trellis svc <deployment-id> approve|reject [<update-id>] [--acknowledge-shared-apis]
 
-trellis dev create ...
-trellis dev apply <deployment-id> <project> ...
-trellis dev get <deployment-id>
-trellis dev provision <deployment-id> ...
+trellis dev <name> create --source <project> | --package <release> ...
+trellis dev <id> apply --source <project> | --package <release> ...
+trellis dev <id> show
+trellis dev <id> provision ...
 trellis dev enable|disable|remove ...
+
+trellis registries list
+trellis registries set <name> --prefix <host/path> [--username <user> [--secret-file <path|->]]
+trellis registries remove <name>
 ```
 
-Apply compiles the project source in memory, validates its participant kind and
-selected participant, installs the participant revision when needed, then calls
-the direct deployment mutation. Inspection uses `Auth.Deployments.Get`.
+A build comes from one of two places. `--source` compiles the project
+directory in the CLI from its `trellis.lock`. `--package` names a published
+release (`trellis publish`) by version or by OCI manifest digest; the CLI calls
+`Auth.Packages.Pull`, and Auth pulls the release from the named registry,
+checks every digest, pulls each package of the release's frozen resolution by
+its exact manifest digest, and compiles the release from exactly those
+packages without resolving again. `--registry` names one of the registries
+Auth holds (`Auth.PackageRegistries.*`, edited with `trellis registries` or in
+the Console) and may be left out when there is one; a terminal asks when there
+are several. Both paths then send the same package evidence to
+`Auth.Deployments.Create` or `Apply`, which recompile it. The participant is
+chosen as for every `--source` command; `apply` defaults to the deployment's
+own participant. Inspection uses `Auth.Deployments.Get`.
 
-`svc <name> create` without `--source` creates a service claim
+The CLI pulls nothing itself for `--package`, so the registry names and
+credentials an administrator stores in Auth serve the CLI and the Console alike,
+and a service is deployed from the same bytes whichever client asked. A
+private registry's secret is sealed with the storage key and never returned;
+`registries set --username` reads it from `--secret-file`, standard input, or a
+terminal question. `trellis add`, `update`, and `publish` keep using the
+project's own `[registries]` and the operator's Docker credentials.
+
+`svc <name> create` without `--source` or `--package` creates a service claim
 (`Auth.ServiceClaims.Create`) for the owner's `--public-key`, or for a locally
 generated identity whose seed it prints once; see
 `design/auth/service-updates.md`. `svc <id> provision --public-key <key>`

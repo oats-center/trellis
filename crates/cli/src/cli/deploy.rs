@@ -188,23 +188,42 @@ pub enum DevResourceAction {
     Config(ConfigArgs),
 }
 
-/// Create a service deployment from its native source package. Without
-/// `--source`, create a claim instead: the first service to connect with the
-/// claim's identity submits its own IDL, and approving it creates the
-/// deployment.
+/// Where a deployment's build comes from: a local source package, or a
+/// release published to a registry Trellis pulls from.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct BuildArgs {
+    /// Directory containing the package's `trellis.toml`.
+    #[arg(long, group = "build")]
+    pub source: Option<PathBuf>,
+    /// A published release, `NAME@VERSION` or `NAME@sha256:DIGEST`. Trellis
+    /// pulls it from `--registry`, checks its digests, and builds it from the
+    /// exact dependencies it was published with.
+    #[arg(long, value_name = "NAME@VERSION", group = "build")]
+    pub package: Option<String>,
+    /// The registry to pull `--package` from, by the name `trellis registries
+    /// list` shows; needed when Trellis has more than one.
+    #[arg(long, value_name = "NAME", requires = "package")]
+    pub registry: Option<String>,
+    /// Participant identity; asked for when the package has several.
+    #[arg(long, requires = "build")]
+    pub participant: Option<String>,
+}
+
+/// Create a service deployment from its native source package or a published
+/// release of it. Without `--source` or `--package`, create a claim instead:
+/// the first service to connect with the claim's identity submits its own
+/// IDL, and approving it creates the deployment.
 #[derive(Debug, Clone, Eq, PartialEq, Args)]
 pub struct SvcCreateArgs {
-    #[arg(long)]
-    pub source: Option<PathBuf>,
-    #[arg(long, requires = "source")]
-    pub participant: Option<String>,
+    #[command(flatten)]
+    pub build: BuildArgs,
     /// For a claim: the public key the service's owner made with
     /// `trellis keys new`, so only the owner holds the seed. Without it the
     /// CLI generates an identity and prints its seed once.
     #[arg(
         long,
         value_name = "KEY",
-        conflicts_with = "source",
+        conflicts_with = "build",
         allow_hyphen_values = true
     )]
     pub public_key: Option<String>,
@@ -214,26 +233,25 @@ pub struct SvcCreateArgs {
     pub acknowledge_shared_apis: bool,
 }
 
-/// Create a device deployment from its native source package.
+/// Create a device deployment from its native source package or a published
+/// release of it; one of `--source` and `--package` is required.
 #[derive(Debug, Clone, Eq, PartialEq, Args)]
 pub struct DevCreateArgs {
-    #[arg(long)]
-    pub source: PathBuf,
-    #[arg(long)]
-    pub participant: Option<String>,
+    #[command(flatten)]
+    pub build: BuildArgs,
     /// Confirm that this service may answer an API another service already
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
 }
 
-/// Apply an implementation package to an existing deployment.
+/// Install a build on an existing deployment, from its source package or a
+/// published release, so instances running that build connect at once; one
+/// of `--source` and `--package` is required.
 #[derive(Debug, Clone, Eq, PartialEq, Args)]
 pub struct ApplyArgs {
-    #[arg(long)]
-    pub source: PathBuf,
-    #[arg(long)]
-    pub participant: Option<String>,
+    #[command(flatten)]
+    pub build: BuildArgs,
     /// Deployment revision; omitted reads the current revision once.
     #[arg(long)]
     pub expected_revision: Option<u64>,
@@ -283,4 +301,36 @@ pub struct SvcProvisionArgs {
 pub struct DevProvisionArgs {
     #[arg(long)]
     pub name: Option<String>,
+}
+
+/// Registries Trellis pulls published packages from.
+#[derive(Debug, Subcommand)]
+pub enum RegistriesCommand {
+    /// List each registry with its prefix and the user it signs in as.
+    List,
+    /// Add a registry, or replace the one with the same name.
+    Set(RegistrySetArgs),
+    /// Remove a registry and its stored credentials.
+    Remove {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+}
+
+/// One registry and how Trellis signs in to it.
+#[derive(Debug, Args)]
+pub struct RegistrySetArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// Registry host and repository prefix, such as `ghcr.io/oats-center`.
+    #[arg(long, value_name = "PREFIX")]
+    pub prefix: String,
+    /// Sign in as this user, for a private registry. Without it Trellis pulls
+    /// anonymously.
+    #[arg(long, value_name = "USER")]
+    pub username: Option<String>,
+    /// Read the password or token from this file, or `-` for standard input.
+    /// Without it, a piped value is read and a terminal is asked.
+    #[arg(long, value_name = "PATH", requires = "username")]
+    pub secret_file: Option<PathBuf>,
 }

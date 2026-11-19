@@ -376,7 +376,7 @@ and refuses without a terminal or with `--format json` unless given `-f`.
 
 Commands that need several values (`clients add|edit`, `apis force-replace
 --source`, `roles create`, `users create|find`, `sign-in providers add`, and the
-participant choice of a `--source` command when the package has several) ask
+participant choice of a `--source` or `--package` command when the package has several) ask
 for each required value a flag leaves out, on stderr, then show a summary and
 ask to go ahead. A command given every required flag asks nothing. Without a
 terminal, or with the global `--no-input`, nothing is asked: a missing required
@@ -433,6 +433,26 @@ of these satisfy is returned by name and requirement for the caller to supply;
 nothing is fetched from a registry. The returned evidence goes to
 `Deployments.Create`, which checks it like any other.
 
+A service published with `trellis publish` is installed from its release
+instead, so its container connects at once with nothing to approve:
+`trellis svc <name> create --package <name>@<version> [--registry <name>]
+[--participant <package>.<Name>]`, and for a new release `trellis svc <id>
+apply --package <name>@<version>` before rolling out its image (`dev
+create|apply` take the same flags). `<name>@sha256:<manifest digest>`, as
+`publish` prints, pins exactly the reviewed release. `--package` and `--source`
+exclude each other. `Auth.Packages.Pull` (`users.manage`) does the work for the
+CLI and the Console's "From a published package" option alike: it pulls the
+release from a registry the administrator added, checks the manifest, config,
+and source digests, pulls each dependency by the digest its frozen resolution
+records, compiles from exactly those packages without resolving again, and
+returns the evidence and participants for `Create` or `Apply`. A release whose
+bytes don't match its digests is refused. Registries are Auth state, not server
+config: `trellis registries set <name> --prefix <host>/<path> [--username <user>
+--secret-file <path|->]`, `registries list|remove`, or the Console's Services >
+Package registries (`Auth.PackageRegistries.*`). A public registry needs no
+credentials; a private registry's secret is sealed with the storage key and
+never returned. The repository is the prefix followed by the package name.
+
 A running service updates itself. When its generated participant digest differs
 from the revision its instance runs, the service SDK submits its package evidence
 (`Auth.ServiceUpdates.Submit`, which every service instance may call) and
@@ -453,11 +473,11 @@ acknowledgement on approval (`acknowledgeSharedApis`, or
 group, so requests split at random between services with separate data. Scale or
 move a service with more instances of one deployment instead. A build whose
 implemented API changed incompatibly is refused until the API is force-replaced.
-`trellis svc <deployment-id> apply` still installs a build ahead of time.
+`trellis svc <deployment-id> apply --package|--source` installs a build ahead of time instead, which is the approval.
 
 A service whose IDL the administrator does not have, such as a third party's,
 starts from a claim: `trellis svc <name> create --public-key <key>` without
-`--source` (or `Auth.ServiceClaims.Create` with the service's public key)
+`--package` or `--source` (or `Auth.ServiceClaims.Create` with its public key)
 creates one; without `--public-key` the CLI generates the identity and prints
 its seed once. The first service to connect with that identity submits itself
 as the claim's update. Approving it (`trellis svc <claim-id> approve`, or the Console review
