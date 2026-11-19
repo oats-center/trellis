@@ -24,7 +24,8 @@ Distinct-user tests use ordinary accounts, explicit capability grants, and real
 native OAuth consent. The Node testkit exposes `createUser`,
 `grantUserCapabilities`, and `registerClient`/`connectClient` with `user`; the
 Rust testkit exposes `create_user`, `grant_user_capabilities`,
-`register_native_application`, and `login_native_application_as`. User handles
+`register_native_application`, `login_native_application_as`, and
+`approve_device_login_as` for a device-code login such as the CLI's. User handles
 belong to one runtime, expose no password, and never borrow seeded administrator
 authority. One registered application can have independent logins for multiple
 users. Explicit-user login never adds or restores grants.

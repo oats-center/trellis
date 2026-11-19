@@ -405,7 +405,9 @@ Live user tests use `TrellisTestRuntime::create_user`, explicit
 `register_native_application::<Request>("app")`, then independent
 `login_native_application_as(&app, &user)` calls. `register_client_as` composes
 registration and login, and `register_client` retains its seeded-administrator
-convenience.
+convenience. A tool that signs in with a device code, such as the Trellis
+CLI, is approved as such a user with
+`approve_device_login_as(client_id, user_code, &user)`.
 
 A real-runtime test can also launch a Rust service from a Node test using
 `@oatscenter/trellis-testkit`; see the TypeScript guide.

@@ -7,17 +7,18 @@ use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
-use trellis_testkit::TrellisTestRuntime;
+use trellis_testkit::{TestUserIdentity, TrellisTestRuntime};
 
 const CLI: &str = env!("CARGO_BIN_EXE_trellis");
 
-/// The production CLI signed in to `runtime` as its administrator.
+/// The production CLI signed in to `runtime` as its administrator, or as
+/// `user` with only what that user was granted.
 struct Cli {
     config: PathBuf,
 }
 
 impl Cli {
-    async fn login(runtime: &mut TrellisTestRuntime) -> Self {
+    async fn login(runtime: &mut TrellisTestRuntime, user: Option<&TestUserIdentity>) -> Self {
         let config = runtime
             .workdir()
             .join(format!("cli-{}", ulid::Ulid::generate()));
@@ -53,13 +54,20 @@ impl Cli {
         })
         .await
         .unwrap();
-        runtime
-            .approve_device_login_with_administration(
-                "trellis.cli",
-                challenge["userCode"].as_str().unwrap(),
-            )
-            .await
-            .unwrap();
+        let code = challenge["userCode"].as_str().unwrap();
+        match user {
+            None => {
+                runtime
+                    .approve_device_login_with_administration("trellis.cli", code)
+                    .await
+            }
+            Some(user) => {
+                runtime
+                    .approve_device_login_as("trellis.cli", code, user)
+                    .await
+            }
+        }
+        .unwrap();
         let status = tokio::time::timeout(Duration::from_secs(30), login.wait())
             .await
             .unwrap()
@@ -156,7 +164,7 @@ fn secrets(view: &Value) -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn set_secret_asks_without_echo_on_a_terminal_and_reads_piped_input_without_one() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-    let cli = Cli::login(&mut runtime).await;
+    let cli = Cli::login(&mut runtime, None).await;
     // A service added without its IDL takes secrets by any name.
     let name = format!("secretive-{}", ulid::Ulid::generate()).to_lowercase();
     cli.json(&["svc", &name, "create"]).await;
@@ -239,7 +247,7 @@ async fn set_secret_asks_without_echo_on_a_terminal_and_reads_piped_input_withou
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-    let cli = Cli::login(&mut runtime).await;
+    let cli = Cli::login(&mut runtime, None).await;
 
     // An administrator registers an app by answering questions; an unsafe
     // redirect URI is refused as it is typed, and a safe one accepted.
@@ -462,7 +470,7 @@ async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-    let cli = Cli::login(&mut runtime).await;
+    let cli = Cli::login(&mut runtime, None).await;
     let source = fixture("client-upgrade");
     let native = format!("tool-{}", ulid::Ulid::generate()).to_lowercase();
     // No --kind and no redirect URI: `native app Caller` signs in with a code.
@@ -530,7 +538,7 @@ async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn saving_a_disabled_app_keeps_it_disabled_until_enabled() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-    let cli = Cli::login(&mut runtime).await;
+    let cli = Cli::login(&mut runtime, None).await;
     let client_id = format!("off-{}", ulid::Ulid::generate()).to_lowercase();
     let revision = |client: &Value| match &client["revision"] {
         Value::String(revision) => revision.clone(),
@@ -602,4 +610,57 @@ async fn saving_a_disabled_app_keeps_it_disabled_until_enabled() {
     assert_eq!(enabled["title"], "Put again");
 
     runtime.shutdown().await.unwrap();
+}
+
+/// Someone delegated only accounts.manage links a person's OIDC sign-in by
+/// choosing the provider from the enabled ones, without the authority to
+/// manage the providers themselves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_account_manager_chooses_the_provider_when_linking_a_sign_in() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let admin = Cli::login(&mut runtime, None).await;
+    let provider = admin
+        .json(&[
+            "sign-in",
+            "providers",
+            "add",
+            "--name",
+            "Company",
+            "--issuer",
+            "https://identity.example/",
+            "--client-id",
+            "trellis",
+        ])
+        .await["provider"]["providerId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let person = runtime.create_user("Linked Person").await.unwrap();
+    let manager = runtime.create_user("Account manager").await.unwrap();
+    runtime
+        .grant_user_capabilities(&manager, &["trellis.auth.v1:accounts.manage"])
+        .await
+        .unwrap();
+    let cli = Cli::login(&mut runtime, Some(&manager)).await;
+
+    let mut session = cli.terminal(&["users", "link", person.principal_id()]);
+    session.exp_string("Identity provider").unwrap();
+    session.exp_string("Company").unwrap();
+    session.send_line("").unwrap();
+    session.exp_string("subject (sub)").unwrap();
+    session.send_line("auth0|linked").unwrap();
+    session.exp_string("Go ahead?").unwrap();
+    press(&mut session, "y");
+    succeeded(session);
+    let found = cli
+        .json(&[
+            "users",
+            "find",
+            "--provider",
+            &provider,
+            "--subject",
+            "auth0|linked",
+        ])
+        .await;
+    assert_eq!(found["user"]["principalId"], person.principal_id());
 }

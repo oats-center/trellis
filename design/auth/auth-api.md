@@ -280,8 +280,9 @@ action usable again.
 `Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
 `Auth.Users.IdentityLink.Create` target the current user in the current generated
 contract. `Auth.Users.IdentityLink.Providers` lists the active providers, by ID
-and name, that link creation accepts; it is in `identities.manage`, so any app
-that may link sign-ins can offer the choice without provider administration. Identities have persisted ULIDs. Unlinking enforces owner isolation,
+and name, that link creation accepts; it is in `identities.manage` and
+`accounts.manage`, so any app that may link sign-ins, its user's own or an
+account's, can offer the choice without provider administration. Identities have persisted ULIDs. Unlinking enforces owner isolation,
 last-sign-in-method and protected-administrator checks. Link creation returns a
 five-minute isolated portal URL. The portal requires the exact initiating user to
 be signed in, then starts fresh upstream authentication with server-owned state,

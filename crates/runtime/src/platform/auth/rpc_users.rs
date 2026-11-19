@@ -1192,10 +1192,15 @@ pub(super) fn create_user(
     // The audit owner serializes its domain input. Keep all credential material,
     // including hashes, out of that input while binding replay to the exact RPC.
     // The OIDC sign-ins it links carry no credential, and the audit names them.
-    let audit = serde_json::json!({
-        "requestDigest": identity.request_digest,
-        "identities": input.identities,
-    });
+    // A creation without them keeps the digest it had before they existed, so
+    // a retry of one recorded then still gets its result.
+    let audit = match input.identities.as_deref() {
+        Some(linked) if !linked.is_empty() => serde_json::json!({
+            "requestDigest": identity.request_digest,
+            "identities": linked,
+        }),
+        _ => serde_json::json!({"requestDigest": identity.request_digest}),
+    };
     let safe_identity = Mutation {
         request_digest: digest(&audit)?,
         ..identity.clone()

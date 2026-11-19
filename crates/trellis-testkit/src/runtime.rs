@@ -936,7 +936,7 @@ impl TrellisTestRuntime {
         client_id: &str,
         user_code: &str,
     ) -> Result<(), TrellisTestError> {
-        self.approve_device(client_id, user_code, false).await
+        self.approve_device(client_id, user_code, None, false).await
     }
 
     /// Like [`Self::approve_device_login`], but also approves the optional
@@ -948,16 +948,49 @@ impl TrellisTestRuntime {
         client_id: &str,
         user_code: &str,
     ) -> Result<(), TrellisTestError> {
-        self.approve_device(client_id, user_code, true).await
+        self.approve_device(client_id, user_code, None, true).await
+    }
+
+    /// Like [`Self::approve_device_login_with_administration`], but signs in
+    /// to the portal as `user`, an account from [`Self::create_user`], so the
+    /// approved session holds only what that user was granted, for example
+    /// with [`Self::grant_user_capabilities`].
+    ///
+    /// # Errors
+    /// Rejects foreign handles, and fails like the administrator's approval.
+    pub async fn approve_device_login_as(
+        &mut self,
+        client_id: &str,
+        user_code: &str,
+        user: &TestUserIdentity,
+    ) -> Result<(), TrellisTestError> {
+        self.approve_device(client_id, user_code, Some(user), true)
+            .await
     }
 
     async fn approve_device(
         &mut self,
         client_id: &str,
         user_code: &str,
+        user: Option<&TestUserIdentity>,
         optional_administration: bool,
     ) -> Result<(), TrellisTestError> {
         self.ensure_running()?;
+        let (username, password) = match user {
+            None => (self.username.as_str(), self.password.as_str()),
+            Some(user) => match self.users.get(&user.principal_id) {
+                Some((owned, password)) if owned == user => {
+                    (owned.username.as_str(), password.as_str())
+                }
+                _ => {
+                    return Err(TrellisTestError::new(
+                        TrellisTestErrorKind::Authentication,
+                        TrellisTestStage::Validation,
+                        "test user does not belong to this runtime",
+                    ))
+                }
+            },
+        };
         let result = tokio::time::timeout(
             self.timeouts.request,
             crate::admin::approve_device(
@@ -965,8 +998,8 @@ impl TrellisTestRuntime {
                 &self.trust_roots,
                 client_id,
                 user_code,
-                &self.username,
-                &self.password,
+                username,
+                password,
                 optional_administration,
             ),
         )

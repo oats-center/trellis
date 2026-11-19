@@ -1890,31 +1890,17 @@ async fn oidc_sign_in(
     args: &UserIdentityArgs,
 ) -> miette::Result<(String, String)> {
     let provider = if args.provider.is_none() && form.is_interactive() {
-        let page = serde_json::to_value(
-            auth.oidc_providers_list(&auth_types::AuthPageRequest {
-                search: None,
-                page: Some(trellis_runtime_apis::CursorQuery {
-                    cursor: None,
-                    limit: Some(100),
-                }),
+        // The enabled providers, which accounts.manage may list without the
+        // authority to manage the providers themselves.
+        let choices = auth
+            .users_identity_link_providers(&auth_types::AuthEmpty {
                 extra: Default::default(),
             })
             .await
-            .into_diagnostic()?,
-        )
-        .into_diagnostic()?;
-        let choices = output::list(&page, "items")
-            .iter()
-            .map(|provider| {
-                (
-                    output::field(provider, "providerId"),
-                    format!(
-                        "{} ({})",
-                        output::field(provider, "title"),
-                        output::field(provider, "issuer")
-                    ),
-                )
-            })
+            .into_diagnostic()?
+            .providers
+            .into_iter()
+            .map(|provider| (provider.provider_id.to_string(), provider.title))
             .collect::<Vec<_>>();
         miette::ensure!(
             !choices.is_empty(),

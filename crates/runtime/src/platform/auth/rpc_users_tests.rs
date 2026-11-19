@@ -1828,3 +1828,86 @@ fn linking_and_unlinking_another_persons_sign_ins_needs_accounts_manage() {
     unlink_user_identity(&store, &mutation(&admin, &unlink), &unlink, NOW + 2).unwrap();
     assert!(subjects().is_empty());
 }
+
+/// A creation recorded before Users.Create took `identities` digested only the
+/// request. Retrying it with the same key and request, say after a lost
+/// response across an upgrade, gets the original account; the same key with
+/// sign-ins added is a different request and conflicts.
+#[test]
+fn a_creation_recorded_before_linked_sign_ins_replays_its_result() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = open(&directory, SigningKey::from_bytes(&[58; 32]));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    let input = AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
+        username: "earlier".to_string().into(),
+        display_name: "Earlier Account".to_string().into(),
+        password: None,
+        identities: None,
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let identity = mutation(&admin, &input);
+    // Record the creation the way the release before linked sign-ins did.
+    let earlier = serde_json::json!({"requestDigest": identity.request_digest});
+    let recorded = Mutation {
+        request_digest: digest(&earlier).unwrap(),
+        ..identity.clone()
+    };
+    let original = store
+        .mutate(&recorded, "rpc.users.create", &earlier, NOW, |connection| {
+            let principal = id();
+            insert_user(connection, &principal, NOW)?;
+            insert_local_account(
+                connection,
+                &principal,
+                "earlier",
+                None,
+                &AuthUserProfileUpdateRequest {
+                    display_name: Some(input.display_name.clone()),
+                    given_name: None,
+                    family_name: None,
+                    email: None,
+                    clear_email: None,
+                    picture_provider_id: None,
+                    use_gravatar: None,
+                    expected_revision: AuthRevision(1u64.into()),
+                    idempotency_key: input.idempotency_key.clone(),
+                    extra: Default::default(),
+                },
+                NOW,
+            )?;
+            Ok(AuthUserGetResponse {
+                user: read_user(&store, connection, &principal, true)?,
+                extra: Default::default(),
+            })
+        })
+        .unwrap();
+
+    assert_eq!(
+        create_user(&store, &identity, &input, NOW + 1).unwrap(),
+        original
+    );
+    let linked = AuthUserCreateRequest {
+        identities: Some(vec![AuthUserFindIdentity {
+            provider_id: id().parse().unwrap(),
+            subject: "auth0|earlier".into(),
+            extra: Default::default(),
+        }]),
+        ..input
+    };
+    let changed = Mutation {
+        request_digest: digest(&linked).unwrap(),
+        ..identity
+    };
+    assert!(matches!(
+        create_user(&store, &changed, &linked, NOW + 1),
+        Err(AuthError::Conflict)
+    ));
+}

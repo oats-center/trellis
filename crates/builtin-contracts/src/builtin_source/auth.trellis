@@ -514,7 +514,7 @@ api auth@v1 {
       title "Manage accounts";
       description "Find, add, change and delete users' accounts, link their OIDC sign-ins, and send them password reset links.";
       grants "Can create, change, sign out and delete any account except the default administrator's.";
-      allows { rpc Users.Find; rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.Delete; rpc Users.Identities.Link; rpc Users.Identities.Unlink; rpc Users.PasswordReset.Create; }
+      allows { rpc Users.Find; rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.Delete; rpc Users.Identities.Link; rpc Users.Identities.Unlink; rpc Users.IdentityLink.Providers; rpc Users.PasswordReset.Create; }
     }
     capability users.manage {
       administrative;

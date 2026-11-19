@@ -390,6 +390,22 @@ test(
           .fill("console-linked");
         await page.getByRole("button", { name: "Link sign-in" }).click();
         await row("console-linked").waitFor();
+
+        // Another administrator changes the account while it is open here,
+        // so linking conflicts. The panel's Reload takes the newer account
+        // and keeps the unsaved name; linking and unlinking then work.
+        const name = page.getByLabel("Display name", { exact: true });
+        await name.fill("Unsaved name");
+        await run("users", "edit", second, "--name", "Renamed elsewhere");
+        await page.getByLabel("Subject", { exact: true }).fill("after-reload");
+        await page.getByRole("button", { name: "Link sign-in" }).click();
+        await page.getByRole("button", { name: "Reload", exact: true }).click();
+        await page.getByRole("button", { name: "Link sign-in" }).click();
+        await row("after-reload").waitFor();
+        await unlinkInConsole("after-reload");
+        await row("after-reload").waitFor({ state: "detached" });
+        assert.equal(await name.inputValue(), "Unsaved name");
+
         await unlinkInConsole(subject(emails.second));
         await row(subject(emails.second)).waitFor({ state: "detached" });
         assert.deepEqual(await subjects(second), ["console-linked"]);

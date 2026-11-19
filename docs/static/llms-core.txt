@@ -931,6 +931,7 @@ RPCs acts on the caller's own account.
   `Users.Identities.Unlink` with `{ userId, identity: { providerId, subject },
   expectedRevision, idempotencyKey }` (`expectedRevision` is
   `user.account.principal.revision`); both return `{ user, identities }`.
+  It permits `Users.IdentityLink.Providers` too, to choose the provider.
   Linking needs an enabled provider and an enabled account; the person's next
   sign-in through that provider with that exact `sub` opens the account, even
   with sign-up off, and refreshes its OIDC profile fields and mapped roles.

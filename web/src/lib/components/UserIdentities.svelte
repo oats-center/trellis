@@ -24,7 +24,7 @@
     /** The account, with the revision a link or unlink is checked against. */
     user: User;
     disabled?: boolean;
-    /** The account after a link or unlink moved its revision on. */
+    /** The account after a link, an unlink or a reload, with its current revision. */
     onchange: (user: User) => void;
   } = $props();
   const trellis = getTrellis();
@@ -66,6 +66,9 @@
       ]);
       if (!scope.isCurrent(token)) return;
       identities = found.found?.identities ?? [];
+      // Link and unlink check the account's revision, which another
+      // administrator may have moved on since the page loaded.
+      if (found.found) onchange(found.found.user);
       providers = offered.providers;
       if (!providers.some((provider) => provider.providerId === providerId))
         providerId = providers[0]?.providerId ?? "";

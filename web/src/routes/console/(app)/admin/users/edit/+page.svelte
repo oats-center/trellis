@@ -281,7 +281,13 @@
     {#if canPerform(authority.authority, "usersFind")}<UserIdentities
         {user}
         disabled={saving || loading}
-        onchange={(next) => (user = next)}
+        onchange={(next) => {
+          // Keep unsaved edits; take the rest from the newer account.
+          if (displayName === user?.displayName) displayName = next.displayName;
+          if (enabled === user?.account?.principal.enabled)
+            enabled = next.account?.principal.enabled ?? enabled;
+          user = next;
+        }}
       />{/if}
     <UserSecurity
       userId={user.principalId}
