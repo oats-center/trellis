@@ -8,6 +8,43 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Administrators can link an existing OIDC provider's identity to a user:
+  `Auth.Users.Identities.Link` and `Unlink` (needs `accounts.manage`), an
+  atomic `identities` list on `Auth.Users.Create`, `trellis users link`,
+  `users unlink` and `users create --provider --subject`, and an "OIDC
+  sign-ins" panel on the Console's user page. The first sign-in with a linked
+  identity lands on that user even when self sign-up and local users are off;
+  claims and mapped roles refresh then. An identity owned by another user is
+  refused with `identity_linked_to_another_user`, and an identical repeat
+  changes nothing.
+- `trellis clients enable` and `OAuthClients.Enable` turn a disabled app back
+  on; saving or editing a disabled app keeps it disabled.
+- `trellis clients add --source --app` takes the app's kind from its IDL, so a
+  native app (`agent`) registers without `--kind` or redirect URIs.
+- A "Settings and secrets" guide.
+
+### Changed
+
+- `set-secret` asks for the value twice without echo on a terminal.
+- Deleting a settings revision that holds a secret needs
+  `config.manageSecrets`, and deleting one that still gives a build in use its
+  value is refused, naming the field and build.
+- A plain value stored under a name the build declares secret is never shown or
+  delivered; it is reported as stored as plain text, to be set as a secret.
+- Releases promote their image channels one at a time.
+
+### Fixed
+
+- A browser request passed to the native entry points, or Device Code against
+  a browser client, names both app kinds (`AppKindMismatch`,
+  `unauthorized_client`) instead of a bare credential error, and a malformed
+  native scope reports `InvalidScope` with the field instead of
+  `StorageUnavailable`.
+- Attaching an app's settings to a client of the other kind is refused.
+- An interrupted restore restaging keeps its list of streams to clean up.
+
 ## [0.100.0-rc.49] - 2026-11-18
 
 ### Added
