@@ -77,7 +77,7 @@ application refresh family and clears the selected native credentials.
 ## Authorization Administration
 
 ```text
-trellis clients list|get|add|edit|put|disable|delete ...
+trellis clients list|get|add|edit|put|disable|enable|delete ...
 trellis apis list|get|review|accept|force-replace ...
 trellis issuers revoke <issuer-key-id> ...
 ```
@@ -95,8 +95,12 @@ or native app; Auth checks again on save. Both save with `OAuthClients.Put` at
 the current revision, then `OAuthClients.SignUp.Update` when sign-up changed and
 `Config.Apps.Declare` for `--source`. `clients put <file>` (`-` for standard
 input) stays the scripting path: it sends one `AuthOAuthClientPutRequest` JSON
-file unchanged. `edit` follows the group's verb-first shape (`roles edit`,
-`users edit`), not the target-first `svc <id>` shape.
+file unchanged. A Put of an existing app keeps its enabled state, so saving a
+disabled app's settings by `edit`, `put`, or the Console leaves it disabled;
+only `clients enable <client> --expected-revision <n>` (`OAuthClients.Enable`)
+turns it back on. A new app starts enabled. `edit` follows the group's
+verb-first shape (`roles edit`, `users edit`), not the target-first `svc <id>`
+shape.
 
 `apis review` and `apis accept` take `--source` and an optional
 `--participant`, compile the package's evidence the way `svc create` does, and
@@ -379,7 +383,11 @@ is run again: `restore` over a folder that still has a staged restore keeps
 the names of that restore's streams in `restore/unfinished.json`, and the next
 start, when NATS holds no stream outside that list, deletes those streams
 before loading the snapshots. That covers a start stopped, or an answer lost,
-after NATS took a stream but before its snapshot was removed. The JetStream
+after NATS took a stream but before its snapshot was removed. `restore` reads
+the list whether or not a manifest is staged, and replaces it with one rename
+before clearing the rest of `restore/`; the manifest is written last. A
+`restore` that stopped while copying snapshots therefore leaves the list for
+the next one, even when that one restores a backup with other stream names. The JetStream
 identity marker is one of the restored streams, so the platform's binding
 check passes only when the database and streams came from the same
 installation.

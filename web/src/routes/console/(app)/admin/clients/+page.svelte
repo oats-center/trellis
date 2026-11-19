@@ -107,7 +107,7 @@
   }
 
   async function mutate(
-    operation: "put" | "disable" | "delete",
+    operation: "put" | "disable" | "enable" | "delete",
   ): Promise<void> {
     if (saving) return;
     error = null;
@@ -152,6 +152,11 @@
             .orThrow());
         if (!scope.isCurrent(token)) return;
         selected = client;
+      } else if (operation === "enable") {
+        if (!selected) return;
+        await trellis.oAuthClientsEnable(identity).orThrow();
+        if (!scope.isCurrent(token)) return;
+        editing = false;
       } else {
         if (
           !selected ||
@@ -171,7 +176,9 @@
           ? "App saved."
           : operation === "disable"
             ? "App turned off."
-            : "App deleted.";
+            : operation === "enable"
+              ? "App turned on."
+              : "App deleted.";
       await load();
     } catch (cause) {
       if (scope.isCurrent(token))
@@ -484,11 +491,17 @@
           class="flex flex-wrap justify-between gap-2 border-t border-base-300 pt-4"
         >
           <div class="flex gap-2">
-            {#if selected && canPerform(authority.authority, "oAuthClientsDisable")}<button
+            {#if selected?.enabled && canPerform(authority.authority, "oAuthClientsDisable")}<button
                 type="button"
                 class="btn btn-outline"
-                disabled={saving || !selected.enabled}
+                disabled={saving}
                 onclick={() => void mutate("disable")}>Turn off</button
+              >{/if}
+            {#if selected && !selected.enabled && canPerform(authority.authority, "oAuthClientsEnable")}<button
+                type="button"
+                class="btn btn-outline"
+                disabled={saving}
+                onclick={() => void mutate("enable")}>Turn on</button
               >{/if}
             {#if selected && canPerform(authority.authority, "oAuthClientsDelete")}<button
                 type="button"

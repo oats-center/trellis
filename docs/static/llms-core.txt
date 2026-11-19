@@ -375,7 +375,7 @@ ask to go ahead. A command given every required flag asks nothing. Without a
 terminal, or with the global `--no-input`, nothing is asked: a missing required
 flag fails before any write, naming every missing flag, so scripts never hang.
 
-`trellis clients list|get|add|edit|put|disable|delete` manages public OAuth
+`trellis clients list|get|add|edit|put|disable|enable|delete` manages public OAuth
 registrations, including exact loopback browser redirects. `clients add [ID]`
 registers an app by asking for its kind (browser or native), title,
 development flag, redirect URIs, capabilities allowed without asking, sign-up,
@@ -385,7 +385,9 @@ and optional `--source` settings declaration; each answer is also a flag
 `--source`, `--app`). `clients edit ID` asks the same questions from the
 current values, or changes only the flags given. `put FILE` (`-` for stdin)
 sends generated `AuthOAuthClientPutRequest` JSON for scripts. Mutations are
-revision-fenced. Client flows
+revision-fenced. Put keeps an existing app's enabled state, so saving a
+disabled app leaves it disabled; only `clients enable` (`OAuthClients.Enable`)
+turns it back on. Client flows
 are fixed on every Put: browser callbacks enable Authorization Code + refresh;
 native without callbacks enables Device Code + refresh; native with callbacks
 enables both + refresh. Adding or removing native callbacks updates the

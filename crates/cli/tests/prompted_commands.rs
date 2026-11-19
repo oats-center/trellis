@@ -1,5 +1,6 @@
 //! Commands that ask for missing input, driven through a pseudo-terminal
-//! against a live runtime, and the same commands run by scripts without one.
+//! against a live runtime, the same commands run by scripts without one, and
+//! the app commands that keep a disabled app disabled.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -358,6 +359,86 @@ async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one(
     succeeded(session);
     let replaced = cli.json(&["apis", "get", &api_id]).await["api"].clone();
     assert_ne!(replaced["canonicalDigest"], accepted["canonicalDigest"]);
+
+    runtime.shutdown().await.unwrap();
+}
+
+/// Turning an app off is what an administrator chose; saving its settings,
+/// by `edit` or by `put` from a file, must not turn it back on. Only
+/// `enable` does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saving_a_disabled_app_keeps_it_disabled_until_enabled() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime).await;
+    let client_id = format!("off-{}", ulid::Ulid::generate()).to_lowercase();
+    let revision = |client: &Value| match &client["revision"] {
+        Value::String(revision) => revision.clone(),
+        revision => revision.to_string(),
+    };
+    let added = cli
+        .json(&[
+            "clients",
+            "add",
+            &client_id,
+            "--kind",
+            "browser",
+            "--title",
+            "Switched off",
+            "--description",
+            "Turned off by an administrator",
+            "--development",
+            "--redirect-uri",
+            "http://localhost:49762/callback",
+        ])
+        .await["client"]
+        .clone();
+    assert_eq!(added["enabled"], true);
+    cli.json(&[
+        "clients",
+        "disable",
+        &client_id,
+        "--expected-revision",
+        &revision(&added),
+    ])
+    .await;
+
+    cli.json(&["clients", "edit", &client_id, "--title", "Renamed"])
+        .await;
+    let edited = cli.json(&["clients", "get", &client_id]).await["client"].clone();
+    assert_eq!(edited["title"], "Renamed");
+    assert_eq!(edited["enabled"], false);
+
+    let request = runtime.workdir().join(format!("{client_id}.json"));
+    std::fs::write(
+        &request,
+        serde_json::to_vec(&serde_json::json!({
+            "clientId": client_id, "kind": "browser", "title": "Put again",
+            "description": "Turned off by an administrator",
+            "redirectUris": ["http://localhost:49762/callback"],
+            "development": true, "impliedConsent": [],
+            "expectedRevision": revision(&edited),
+            "idempotencyKey": ulid::Ulid::generate().to_string()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    cli.json(&["clients", "put", request.to_str().unwrap()])
+        .await;
+    let put = cli.json(&["clients", "get", &client_id]).await["client"].clone();
+    assert_eq!(put["title"], "Put again");
+    assert_eq!(put["enabled"], false);
+
+    cli.json(&[
+        "clients",
+        "enable",
+        &client_id,
+        "--expected-revision",
+        &revision(&put),
+    ])
+    .await;
+    let enabled = cli.json(&["clients", "get", &client_id]).await["client"].clone();
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["title"], "Put again");
 
     runtime.shutdown().await.unwrap();
 }

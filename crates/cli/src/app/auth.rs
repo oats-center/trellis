@@ -84,6 +84,7 @@ pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> mi
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
+    let enable = matches!(command, ClientsCommand::Enable(_));
     match command {
         ClientsCommand::List { cursor } => {
             let page = auth
@@ -213,19 +214,29 @@ pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> mi
                 Ok(())
             })
         }
-        ClientsCommand::Disable(args) => {
+        ClientsCommand::Disable(args) | ClientsCommand::Enable(args) => {
             let client_id = args.client_id.clone();
-            let response = auth
-                .o_auth_clients_disable(&auth_types::AuthOAuthClientMutationRequest {
-                    client_id: wire(args.client_id)?,
-                    expected_revision: wire(args.expected_revision.to_string())?,
-                    idempotency_key: wire(cli_idempotency_key())?,
-                    extra: Default::default(),
-                })
-                .await
-                .into_diagnostic()?;
+            let request = auth_types::AuthOAuthClientMutationRequest {
+                client_id: wire(args.client_id)?,
+                expected_revision: wire(args.expected_revision.to_string())?,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            };
+            let response = if enable {
+                auth.o_auth_clients_enable(&request)
+                    .await
+                    .into_diagnostic()?
+            } else {
+                auth.o_auth_clients_disable(&request)
+                    .await
+                    .into_diagnostic()?
+            };
             output::emit(format, &response, |_| {
-                output::success(format!("Disabled app {}", output::strong(&client_id)));
+                output::success(format!(
+                    "{} app {}",
+                    if enable { "Enabled" } else { "Disabled" },
+                    output::strong(&client_id)
+                ));
                 Ok(())
             })
         }
