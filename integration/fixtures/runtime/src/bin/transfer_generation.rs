@@ -111,23 +111,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     let client = service.generated_client();
-    let serving = tokio::spawn(async move { service.run().await });
+    let mut serving = tokio::spawn(async move { service.run().await });
     println!("transfer provider ready");
     std::io::stdout().flush()?;
     let mut commands = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(command) = commands.next_line().await? {
-        match command.as_str() {
-            "REFRESH" => {
-                client.refresh_authorization_context().await?;
-                println!("transfer authority refreshed");
-                std::io::stdout().flush()?;
-            }
-            "EXIT" => break,
-            _ => return Err("unrecognized transfer command".into()),
+    // SIGTERM stops the service gracefully and `run` returns; so does EXIT.
+    let stopped = loop {
+        tokio::select! {
+            served = &mut serving => break Some(served),
+            command = commands.next_line() => match command?.as_deref() {
+                Some("REFRESH") => {
+                    client.refresh_authorization_context().await?;
+                    println!("transfer authority refreshed");
+                    std::io::stdout().flush()?;
+                }
+                Some("EXIT") | None => break None,
+                Some(_) => return Err("unrecognized transfer command".into()),
+            },
         }
+    };
+    if stopped.is_none() {
+        serving.abort();
+        let _ = serving.await;
     }
-    serving.abort();
-    let _ = serving.await;
     telemetry.shutdown().await;
-    Ok(())
+    // The pending stdin read would keep the runtime from shutting down.
+    std::process::exit(0)
 }
