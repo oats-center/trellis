@@ -556,9 +556,10 @@ A service serves once it is connected, its build is installed (approved if it
 asked for new access), its required settings are set, and every handler, job
 worker and consumer registered before the SDK's serve call (`wait()`, `run()`)
 takes work. None of them takes a job or delivery before that call. With
-`NOTIFY_SOCKET` set, both SDKs send systemd `READY=1` once serving, `STOPPING=1` when stopping, and `STATUS=` text (connecting, waiting
-for approval with the review link, waiting for settings with their names,
-serving, reconnecting, stopping), so `Type=notify` and Quadlet `Notify=true`
+`NOTIFY_SOCKET` set, both SDKs send systemd `READY=1` once serving,
+`STOPPING=1` when stopping, and `STATUS=` text (connecting, waiting for
+approval with the review link, waiting for settings with their names, serving,
+reconnecting, stopping), so `Type=notify` and Quadlet `Notify=true`
 need no health check. An optional readiness probe in the runtime options, a
 file present only while serving and/or HTTP `GET /ready` (200 serving, else
 503) and `GET /live` (200 until stopped), serves orchestrators such as
