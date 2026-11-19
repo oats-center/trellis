@@ -1681,15 +1681,6 @@ jobs:
           REGISTRY_USER: ${{ github.actor }}
         run: |
           set -euo pipefail
-          # A retried older release never moves the channels back: they move
-          # only when no published release is newer than this one. Version
-          # order treats -rc.N as before the release it precedes.
-          newest="$( { git ls-remote --tags --refs "https://github.com/$GITHUB_REPOSITORY" 'refs/tags/v*' |
-            sed 's#.*refs/tags/##'; echo "$RELEASE_TAG"; } | sed 's/-/~/' | sort -V | tail -n 1 | sed 's/~/-/')"
-          if [[ "$newest" != "$RELEASE_TAG" ]]; then
-            echo "::notice::$newest is newer than $RELEASE_TAG, so the image channels stay where they are."
-            exit 0
-          fi
           tags=()
           if [[ "$RELEASE_TAG" == *-* ]]; then tags+=(rc); fi
           if [[ "$LATEST" == true ]]; then tags+=(latest); fi
@@ -1699,6 +1690,17 @@ jobs:
           auth="$RUNNER_TEMP/skopeo-auth.json"
           printf '%s' "$REGISTRY_PASSWORD" |
             skopeo login --authfile "$auth" --username "$REGISTRY_USER" --password-stdin "$REGISTRY"
+          # A retried older release never moves the channels back: they move
+          # only when no newer release has pushed its versioned images, which
+          # every release does before it promotes, even if it later fails.
+          # Version order treats -rc.N as before the release it precedes.
+          newest="$( { skopeo list-tags --authfile "$auth" "docker://$REGISTRY/$owner/trellis-server" |
+            jq -r '.Tags[]' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || true; echo "$RELEASE_TAG"; } |
+            sed 's/-/~/' | sort -V | tail -n 1 | sed 's/~/-/')"
+          if [[ "$newest" != "$RELEASE_TAG" ]]; then
+            echo "::notice::$newest is newer than $RELEASE_TAG, so the image channels stay where they are."
+            exit 0
+          fi
           for image in trellis-server console; do
             digest="$(cat "$RUNNER_TEMP/digests/$image.digest")"
             for tag in "${tags[@]}"; do

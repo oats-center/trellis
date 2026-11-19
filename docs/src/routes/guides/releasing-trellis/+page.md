@@ -585,7 +585,7 @@ and the `rc` and `latest` channels move last.
 - `publish-crates` publishes the crates as described above
 - `publish-images` pushes each verified image archive, digest preserved, under the version's own tags (`$RELEASE_TAG` and `sha-<commit>`) and requires the registry to report the recorded digest
 - `publish-npm` publishes the verified tarballs once the crates and images are published
-- `publish-release` points the `rc` and `latest` image tags at the verified digests (unless a newer release is already published, so retrying an older release never moves them back; releases promote one at a time, so two can't interleave), then publishes the draft release, which creates the tag on the verified commit and, for a stable release, marks it latest
+- `publish-release` points the `rc` and `latest` image tags at the verified digests (unless a newer release has already pushed its versioned images, so retrying an older release never moves them back, even after a newer release failed partway; releases promote one at a time, so two can't interleave), then publishes the draft release, which creates the tag on the verified commit and, for a stable release, marks it latest
 - `publish-docs` deploys the docs site when the release is `latest`
 
 npm trusted publishing authorizes `npm publish` but not `npm dist-tag`, so an
