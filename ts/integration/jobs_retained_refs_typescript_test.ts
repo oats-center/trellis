@@ -5,6 +5,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
   admittedConnections,
@@ -31,7 +32,7 @@ test("retained Jobs refs get, wait and cancel after broker-confirmed original so
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -99,7 +100,7 @@ test("retained Jobs refs get, wait and cancel after broker-confirmed original so
           principalId: grant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(async () => (await service.extend({})).isOk(), {
           timeoutMs: 90_000,

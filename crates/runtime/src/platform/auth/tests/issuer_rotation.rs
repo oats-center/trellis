@@ -141,7 +141,7 @@ fn issuer_rotation_replay_does_not_rotate_again_and_stale_requests_do_not_change
     let original = f.store.issuer().unwrap();
     let input = trellis_runtime_apis::types::AuthIssuerRotateRequest {
         expected_current_key_id: original.key_id.clone().into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&f.admin, &input);

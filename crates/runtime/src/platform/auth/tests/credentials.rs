@@ -1,7 +1,7 @@
 //! Real SQLite aggregate checks; transport acceptance remains in the live suite.
 
 use super::{
-    administer, fixture, id, mutation, Administration, AuthError, ClientRegistration, Credential,
+    administer, fixture, mutation, Administration, AuthError, ClientRegistration, Credential,
     EnforcementScope, NOW,
 };
 use crate::platform::auth::rpc_credentials::{
@@ -17,7 +17,7 @@ fn client_put_replay_preserves_original_result_without_overwriting_later_edits()
         description: "Public native application".to_string().into(),
         development: false,
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         implied_consent: vec![],
         kind: AuthPublicClientKind::Native,
         redirect_uris: vec!["http://127.0.0.1:9823/callback".into()],
@@ -29,7 +29,7 @@ fn client_put_replay_preserves_original_result_without_overwriting_later_edits()
     let update = AuthOAuthClientPutRequest {
         title: "Updated".to_string().into(),
         expected_revision: 1.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..input.clone()
     };
     put_client(&f.store, &mutation(&f.admin, &update), &update, NOW + 1).unwrap();
@@ -44,7 +44,7 @@ fn client_put_replay_preserves_original_result_without_overwriting_later_edits()
     assert_eq!(current.title, "Updated");
     let stale = AuthOAuthClientPutRequest {
         title: "Lost edit".to_string().into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..update
     };
     assert!(matches!(
@@ -54,7 +54,7 @@ fn client_put_replay_preserves_original_result_without_overwriting_later_edits()
     let disable = AuthOAuthClientMutationRequest {
         client_id: input.client_id.clone(),
         expected_revision: AuthRevision(2.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&f.admin, &disable);
@@ -85,7 +85,7 @@ fn physical_kick_queues_exact_attachment_without_retiring_its_logical_session() 
     let session = attachment.authorization_session_id.clone();
     let input = AuthConnectionsKickRequest {
         attachment_id: attachment.attachment_id.parse().unwrap(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&f.admin, &input);
@@ -149,7 +149,7 @@ fn client_manager_can_edit_metadata() {
         description: "Updated by a client manager".to_string().into(),
         development: false,
         expected_revision: 1.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         implied_consent: vec![],
         kind: AuthPublicClientKind::Native,
         redirect_uris: registration.redirect_uris.clone(),

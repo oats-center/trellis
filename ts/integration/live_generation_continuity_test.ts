@@ -5,6 +5,7 @@ import { deadline } from "@nats-io/nats-core";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apis,
   apps,
@@ -43,7 +44,7 @@ test("accepted Live survives growth while fresh intake uses the new attachment",
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -117,7 +118,7 @@ test("accepted Live survives growth while fresh intake uses the new attachment",
           principalId: grant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(async () => (await service.extend({})).isOk(), {
           timeoutMs: 90_000,

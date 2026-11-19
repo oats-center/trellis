@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { lstat } from "node:fs/promises";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { TrellisTestRuntime } from "../index.ts";
 
 test(
@@ -40,7 +41,7 @@ test(
         username,
         displayName: "Node lifecycle user",
         password: `native-password-${ulid()}`,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       };
       const { user } = await runtime.callAdminRpc("authUsersCreate", input);
       await runtime.restart();

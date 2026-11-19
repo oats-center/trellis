@@ -44,7 +44,7 @@ test("failed provisional mirror preserves live delivery and real revocation enfo
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -112,7 +112,7 @@ test("failed provisional mirror preserves live delivery and real revocation enfo
           principalId: grant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const candidate = await deadline(hold.held, 90_000);
         const consumer = candidate.requestSubject.slice(infoPrefix.length);
@@ -140,7 +140,7 @@ test("failed provisional mirror preserves live delivery and real revocation enfo
         assert(loginSessionId);
         await runtime.callAdminRpc("authSessionsRevoke", {
           loginSessionId: codecs.ulid.decode(loginSessionId),
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await deadline(drain, 20_000);
         await runtime.waitFor(() => cleanups === 1);

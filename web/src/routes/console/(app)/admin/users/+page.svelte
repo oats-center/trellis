@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { isErr } from "@oatscenter/result";
   import { type apis } from "$lib/trellis-apis";
   import { resolve, consoleUrl } from "$lib/console_paths";
@@ -190,7 +191,7 @@
 
   async function createPasswordReset(user: UserView) {
     if (resetPendingUserId) return;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const intent = captureIntent<ResetInput>({
       operation: "usersPasswordResetCreate",
       targetId: user.principalId,

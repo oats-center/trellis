@@ -1393,6 +1393,11 @@ Declare these dependencies only when the application uses them:
   `attachmentId` and logical authority by `authorizationSessionId`. An expired
   delivery claim alone does not stop Auth; stale workers cannot acknowledge or
   reschedule the intent, which stays recoverable by its next owner.
+- Auth mutations: each takes an `idempotencyKey`, which is a ULID. Generate a
+  fresh one per intended change and reuse it only to retry that change. A retry
+  with the same key and input returns the stored result, the same key with a
+  different input is a conflict, and a key that is not a ULID is refused with
+  an error naming `idempotencyKey`.
 
 ## Test And Troubleshoot
 

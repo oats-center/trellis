@@ -36,7 +36,7 @@ test(
               displayName: "Owner's newer profile",
               email: "owner@example.com",
               expectedRevision: loaded.account.profileRevision,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             })
             .orThrow()
         ).user;
@@ -48,7 +48,7 @@ test(
             enabled: false,
             expectedRevision: loaded.account.principal.revision,
             expectedProfileRevision: loaded.account.profileRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           }),
         );
         const after = (await runtime.callAdminRpc("authUsersGet", { userId }))
@@ -68,14 +68,14 @@ test(
             enabled: true,
             expectedRevision: loaded.account.principal.revision,
             expectedProfileRevision: loaded.account.profileRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           }),
         );
         const lifecycleInput = {
           userId,
           enabled: false,
           expectedRevision: loaded.account.principal.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         };
         const lifecycle = (
           await runtime.callAdminRpc("authUsersUpdate", lifecycleInput)
@@ -98,7 +98,7 @@ test(
           email: "fresh-admin@example.com",
           expectedRevision: current.account.principal.revision,
           expectedProfileRevision: current.account.profileRevision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         };
         await runtime.callAdminRpc("authUsersUpdate", freshInput);
         const fresh = (await runtime.callAdminRpc("authUsersGet", { userId }))
@@ -117,7 +117,7 @@ test(
               ...(expectedProfileRevision === undefined
                 ? {}
                 : { expectedProfileRevision }),
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             }),
           );
         }
@@ -173,7 +173,7 @@ test(
         email: "shared@example.com",
         userId: codecs.ulid.decode(other.principalId),
         expectedRevision: original.account.profileRevision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       };
       const saved = (await alice.usersProfileUpdate(input).orThrow()).user;
       assert.equal(saved.principalId, owner.principalId);
@@ -191,7 +191,7 @@ test(
           await alice.usersProfileUpdate({
             ...input,
             displayName: "Stale overwrite",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
         ).isErr(),
       );
@@ -205,7 +205,7 @@ test(
         .usersProfileUpdate({
           email: "shared@example.com",
           expectedRevision: bobOwn.account.profileRevision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       const found = await alice
@@ -240,7 +240,7 @@ test(
             email: "changed@example.com",
             clearEmail: true,
             expectedRevision: saved.account.profileRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
         ).isErr(),
       );
@@ -250,7 +250,7 @@ test(
           await alice.usersProfileUpdate({
             pictureProviderId: codecs.ulid.decode(ulid()),
             expectedRevision: saved.account.profileRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
         ).isErr(),
       );
@@ -259,7 +259,7 @@ test(
           .usersProfileUpdate({
             clearEmail: true,
             expectedRevision: saved.account.profileRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow()
       ).user;
@@ -275,7 +275,7 @@ test(
           .usersProfileUpdate({
             email: "owner@example.com",
             expectedRevision: cleared.account.profileRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow()
       ).user;

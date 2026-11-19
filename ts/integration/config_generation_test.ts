@@ -47,7 +47,7 @@ async function registerGrowable(runtime: TrellisTestRuntime) {
   await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
     grantId: grant.grantId,
     expectedRevision: grant.revision,
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
   });
   const admitted = async () =>
     (
@@ -68,7 +68,7 @@ async function registerGrowable(runtime: TrellisTestRuntime) {
         principalId: grant.principalId,
         capabilityId,
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       // The service adopts the grant when it next renews its authority.
       await runtime.waitFor(
@@ -94,7 +94,7 @@ async function registerGrowable(runtime: TrellisTestRuntime) {
       runtime.callAdminRpc("authConfigSet", {
         target: { deploymentId: codecs.ulid.decode(key.deploymentId) },
         values: { level },
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       }),
   };
 }

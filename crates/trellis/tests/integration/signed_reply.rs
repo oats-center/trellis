@@ -262,7 +262,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
                 .unwrap()
                 .parse()
                 .unwrap(),
-            idempotency_key: ulid::Ulid::generate().to_string().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         })
         .await
@@ -382,7 +382,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
     auth.service_instances_remove(&AuthInstanceMutationRequest {
         instance_id: identity.instance_id().parse().unwrap(),
         expected_revision: trellis_runtime_apis::types::AuthRevision(1.into()),
-        idempotency_key: ulid::Ulid::generate().to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     })
     .await

@@ -213,13 +213,13 @@ pub(super) fn caller(
 /// IDs and timestamps must not change the identity of a replayed mutation.
 pub(super) fn mutation(
     context: &ServiceHandlerContext,
-    idempotency_key: &str,
+    idempotency_key: &(impl std::fmt::Display + ?Sized),
     administration: Option<Administration>,
     input: &impl Serialize,
 ) -> Result<Mutation, AuthError> {
     Ok(Mutation {
         actor: caller(context, administration)?,
-        request_id: idempotency_key.to_owned(),
+        request_id: idempotency_key.to_string(),
         request_digest: digest(input)?,
         session: context
             .request()

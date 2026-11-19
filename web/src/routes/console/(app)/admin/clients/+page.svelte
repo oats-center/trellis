@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { getTrellis } from "$lib/trellis";
   import { resolve } from "$lib/console_paths";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -118,7 +119,7 @@
       const identity = {
         clientId,
         expectedRevision: selected?.revision ?? 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       };
       if (operation === "put") {
         const input = apis.auth.API.actions[
@@ -147,7 +148,7 @@
               clientId,
               signUp: { password: passwordSignUp, providers: providerSignUp },
               expectedRevision: client.revision,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             })
             .orThrow());
         if (!scope.isCurrent(token)) return;

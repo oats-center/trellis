@@ -23,6 +23,7 @@ import assert from "node:assert/strict";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Readable, Writable } from "node:stream";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -290,7 +291,7 @@ test("Rust transport generations adopt grown authority automatically without an 
     await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
       grantId: grant.grantId,
       expectedRevision: grant.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
 
     // The subject's inbound Live consumer, kept for the whole case so its
@@ -411,7 +412,7 @@ test("Rust transport generations adopt grown authority automatically without an 
             principalId: grant.principalId,
             capabilityId: CAPABILITY_EXTEND,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           await runtime.waitFor(
             async () => ((await attachments()).length >= 2 ? true : undefined),

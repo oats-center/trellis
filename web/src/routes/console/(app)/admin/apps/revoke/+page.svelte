@@ -1,6 +1,7 @@
 <script lang="ts">
   import { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { page } from "$app/state";
   import { onMount, untrack } from "svelte";
   import { getTrellis } from "$lib/trellis";
@@ -87,7 +88,7 @@
       return;
     const captured = target;
     const token = scope.begin();
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const confirmed = await confirmationModal?.confirm({
       title: "Revoke app delegation?",
       message:

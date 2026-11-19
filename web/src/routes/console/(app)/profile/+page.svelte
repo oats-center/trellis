@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { isErr } from "@oatscenter/result";
   import { apis } from "$lib/trellis-apis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -104,12 +105,12 @@
                 ].input.decode({
                   pictureProviderId: providerId,
                   expectedRevision: user.account.profileRevision,
-                  idempotencyKey: ulid(),
+                  idempotencyKey: codecs.ulid.decode(ulid()),
                 }).pictureProviderId,
               }
             : { useGravatar: true }),
           expectedRevision: user.account.profileRevision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       user = response.user;
@@ -135,7 +136,7 @@
       await trellis
         .userIdentitiesUnlink({
           identityId: identity.identityId,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       notifications.success(`${title} disconnected`);
@@ -155,7 +156,10 @@
     try {
       const input = apis.auth.API.actions[
         "rpc:Users.IdentityLink.Create"
-      ].input.decode({ providerId, idempotencyKey: ulid() });
+      ].input.decode({
+        providerId,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
       const response = await trellis.usersIdentityLinkCreate(input).orThrow();
       window.location.assign(response.authorizationUrl);
     } catch (e) {
@@ -190,7 +194,7 @@
       await trellis
         .usersPasswordChange({
           currentPassword,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
           newPassword,
         })
         .orThrow();
@@ -235,7 +239,7 @@
           email: email && email !== user.email ? email : undefined,
           clearEmail: !email && !!user.email ? true : undefined,
           expectedRevision: user.account.profileRevision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       user = response.user;

@@ -21,6 +21,7 @@ import { TransportError } from "@oatscenter/trellis/errors";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 
@@ -94,7 +95,7 @@ test("a retained receipt is answered by the surviving same-route generation", as
     await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
       grantId: grant.grantId,
       expectedRevision: grant.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const subject = await TrellisService.connect({
       trellisUrl: runtime.trellisUrl,
@@ -211,7 +212,7 @@ test("a retained receipt is answered by the surviving same-route generation", as
         principalId: grant.principalId,
         capabilityId: CAPABILITY_B,
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const overlap = await runtime.waitFor(
         async () => {
@@ -268,7 +269,7 @@ test("a retained receipt is answered by the surviving same-route generation", as
       });
       await runtime.callAdminRpc("authConnectionsKick", {
         attachmentId: wider.attachmentId,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.waitFor(
         async () => {

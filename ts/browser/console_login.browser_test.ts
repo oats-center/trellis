@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import type { WebSocketRoute } from "playwright";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
@@ -221,7 +222,7 @@ test("browser carrier interruption resumes a fresh authenticated RPC without rel
       // a fresh authenticated RPC, not merely redisplaying cached data.
       const username = `resume-${ulid()}`.toLowerCase();
       await runtime.callAdminRpc("authUsersCreate", {
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
         displayName: username,
         username,
       });

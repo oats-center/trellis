@@ -42,7 +42,7 @@ test("login revocation removes an uncooperative native attachment and denies rep
       assert(loginSessionId);
       await runtime.callAdminRpc("authSessionsRevoke", {
         loginSessionId: codecs.ulid.decode(loginSessionId),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.waitFor(
         async () =>
@@ -137,7 +137,7 @@ test("required capability reduction retires native service sockets and fences it
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.waitFor(
         async () =>
@@ -162,7 +162,7 @@ test("required capability reduction retires native service sockets and fences it
         principalId: own.principalId,
         capabilityId,
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const restored = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,

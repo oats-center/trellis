@@ -92,7 +92,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         display_name: "Alice Example".to_string().into(),
         password: Some("initial alice password".to_string().into()),
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&admin, &input);
@@ -123,7 +123,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         display_name: Some("Alice Updated".to_string().into()),
         expected_profile_revision: Some(created.user.account.as_ref().unwrap().profile_revision),
         enabled: true,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let updated = update_user(&store, &mutation(&admin, &update), &update, NOW + 1).unwrap();
@@ -135,7 +135,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         clear_email: None,
         enabled: false,
         display_name: Some("Stale write".to_string().into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..update
     };
     assert!(matches!(
@@ -158,7 +158,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         display_name: None,
         expected_profile_revision: None,
         enabled: false,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -211,7 +211,7 @@ fn password_change_keeps_current_login_revokes_siblings_and_replays_without_old_
     let input = AuthPasswordChangeRequest {
         current_password: "administrator password".to_string().into(),
         new_password: "replacement password".to_string().into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&admin, &input);
@@ -337,7 +337,7 @@ fn provider_disable_blocks_verified_login_and_stale_delete_cannot_remove_it() {
     let input = AuthOIDCProviderMutationRequest {
         provider_id: provider.parse().unwrap(),
         expected_revision: AuthRevision(1.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     disable_provider(&store, &mutation(&admin, &input), &input, NOW + 1).unwrap();
@@ -352,7 +352,7 @@ fn provider_disable_blocks_verified_login_and_stale_delete_cannot_remove_it() {
         Err(AuthError::Denied)
     ));
     let stale = AuthOIDCProviderMutationRequest {
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..input
     };
     assert!(matches!(
@@ -392,7 +392,7 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
         display_name: "Pending account".to_string().into(),
         password: None,
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let created = create_user(&store, &mutation(&admin, &input), &input, NOW).unwrap();
@@ -406,7 +406,7 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
         username: "RESERVED".to_string().into(),
         password: Some("a usable password".to_string().into()),
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..input
     };
     assert!(matches!(
@@ -458,7 +458,7 @@ fn racing_password_changes_cannot_both_replace_the_same_credential() {
             let input = AuthPasswordChangeRequest {
                 current_password: "administrator password".to_string().into(),
                 new_password: password.to_string().into(),
-                idempotency_key: id().into(),
+                idempotency_key: trellis_protocol::model::Ulid::generate().into(),
                 extra: Default::default(),
             };
             let identity = mutation(&admin, &input);
@@ -518,7 +518,7 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
         client_secret: Some("upstream confidential credential".into()),
         certificate_fingerprint: None,
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&admin, &input);
@@ -534,7 +534,7 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
         expected_revision: 1.into(),
         client_secret: None,
         certificate_fingerprint: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..input
     };
     let updated = put_provider(
@@ -549,7 +549,7 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
     assert_eq!(updated.provider.title, "Updated company");
     let stale = AuthOIDCProviderPutRequest {
         title: "Stale company".to_string().into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..update
     };
     assert!(matches!(
@@ -604,7 +604,7 @@ async fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
         client_secret: None,
         certificate_fingerprint: None,
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     // Through the whole Put, so the issuer's certificate check cannot replace
@@ -615,7 +615,7 @@ async fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
     }
     let fixed = AuthOIDCProviderPutRequest {
         issuer: "https://identity.example/".into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..bare
     };
     let created = put_provider(
@@ -650,7 +650,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         client_secret: None,
         certificate_fingerprint: None,
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let provider = put_provider(
@@ -672,7 +672,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         display_name: "Alice".to_string().into(),
         password: None,
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let alice = create_user(&store, &mutation(&admin, &account), &account, NOW)
@@ -700,7 +700,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
     assert_eq!(listed.items.len(), 1);
     let unlink = AuthUserIdentityUnlinkRequest {
         identity_id: listed.items[0].identity_id,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -725,7 +725,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         client_secret: None,
         certificate_fingerprint: None,
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let second = put_provider(
@@ -763,7 +763,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         .remove(0);
     let protected = AuthUserIdentityUnlinkRequest {
         identity_id: admin_identity.identity_id,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     match unlink_identity(&store, &mutation(&admin, &protected), &protected, NOW + 2) {
@@ -794,7 +794,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
         display_name: "Alice".to_string().into(),
         password: Some("initial alice password".to_string().into()),
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let alice = create_user(&store, &mutation(&admin, &account), &account, NOW)
@@ -814,7 +814,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
         .unwrap();
     let request = AuthPasswordResetCreateRequest {
         user_id: alice,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&admin, &request);
@@ -871,7 +871,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
         )
         .is_ok());
     let request = AuthPasswordResetCreateRequest {
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..request
     };
     let expired = create_reset(
@@ -896,7 +896,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
     ));
     let protected = AuthPasswordResetCreateRequest {
         user_id: admin.parse().unwrap(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -932,7 +932,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
             display_name: username.to_string().into(),
             password: Some("initial account password".to_string().into()),
             identities: None,
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         principals.push(
@@ -962,7 +962,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     );
     let request = AuthPasswordResetCreateRequest {
         user_id: alice.parse().unwrap(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let reset = create_reset(
@@ -1021,7 +1021,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     )
     .unwrap();
     let request = AuthPasswordResetCreateRequest {
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..request
     };
     let older = create_reset(
@@ -1033,7 +1033,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     )
     .unwrap();
     let newer_request = AuthPasswordResetCreateRequest {
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..request
     };
     let newer = create_reset(
@@ -1066,7 +1066,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     ));
     let revoked_request = AuthPasswordResetCreateRequest {
         user_id: alice.parse().unwrap(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let revoked = create_reset(
@@ -1125,7 +1125,7 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
         display_name: "Alice".to_string().into(),
         password: None,
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let alice = create_user(&store, &mutation(&admin, &account), &account, NOW)
@@ -1134,7 +1134,7 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
         .principal_id;
     let request = AuthPasswordResetCreateRequest {
         user_id: alice,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let reset = create_reset(
@@ -1193,7 +1193,7 @@ fn sign_in_settings(
         local_sign_up: local_users,
         password_min_length: AuthPasswordMinLength(password_min_length),
         expected_revision: AuthRevision(revision.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     crate::platform::auth::sign_in::update(store, &mutation(admin, &input), &input, NOW)
@@ -1218,7 +1218,7 @@ fn the_sign_in_settings_minimum_governs_created_changed_and_signed_up_passwords(
         display_name: "Configured".to_string().into(),
         password: Some(password.to_string().into()),
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     // The default minimum of 12 lets the shorter password in.
@@ -1262,7 +1262,7 @@ fn the_sign_in_settings_minimum_governs_created_changed_and_signed_up_passwords(
         let input = AuthPasswordChangeRequest {
             current_password: exact.to_string().into(),
             new_password: new_password.to_string().into(),
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         change_password(
@@ -1319,7 +1319,7 @@ fn the_password_minimum_counts_characters_not_bytes() {
         display_name: "Multibyte".to_string().into(),
         password: Some(password.to_string().into()),
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let refused = account("short", &short);
@@ -1405,7 +1405,7 @@ fn sign_in_settings_and_providers_always_leave_a_way_to_sign_in() {
         client_secret: Some("upstream confidential credential".into()),
         certificate_fingerprint: None,
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let company = put_provider(
@@ -1420,7 +1420,7 @@ fn sign_in_settings_and_providers_always_leave_a_way_to_sign_in() {
     let change = |revision: AuthRevision| AuthOIDCProviderMutationRequest {
         provider_id: company.provider_id,
         expected_revision: revision,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     // A provider that is off is no way in either.
@@ -1474,7 +1474,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
             display_name: username.to_string().into(),
             password: Some("initial account password".to_string().into()),
             identities: None,
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         create_user(&store, &mutation(actor, &input), &input, NOW).map(|created| created.user)
@@ -1505,7 +1505,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
         client_secret: None,
         certificate_fingerprint: None,
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let provider = put_provider(
@@ -1570,7 +1570,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
         display_name: None,
         expected_profile_revision: None,
         enabled: false,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let input = disable(&found.user);
@@ -1589,7 +1589,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
     let reset = |target: &AuthUser| {
         let request = AuthPasswordResetCreateRequest {
             user_id: target.principal_id,
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         create_reset(
@@ -1605,7 +1605,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
     let delete = |target: &AuthUser| AuthUserDeleteRequest {
         user_id: target.principal_id,
         expected_revision: account(target),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let input = delete(&disabled);
@@ -1691,7 +1691,7 @@ fn link_providers_lists_active_providers_by_name_and_drops_a_disabled_one() {
             client_secret: None,
             certificate_fingerprint: None,
             expected_revision: 0.into(),
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         put_provider(
@@ -1709,7 +1709,7 @@ fn link_providers_lists_active_providers_by_name_and_drops_a_disabled_one() {
     let disable = AuthOIDCProviderMutationRequest {
         provider_id: retired.provider_id,
         expected_revision: retired.revision,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     disable_provider(&store, &mutation(&admin, &disable), &disable, NOW + 1).unwrap();
@@ -1745,7 +1745,7 @@ fn linking_and_unlinking_another_persons_sign_ins_needs_accounts_manage() {
             display_name: username.to_string().into(),
             password: Some("initial account password".to_string().into()),
             identities: None,
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         create_user(&store, &mutation(&admin, &input), &input, NOW)
@@ -1765,7 +1765,7 @@ fn linking_and_unlinking_another_persons_sign_ins_needs_accounts_manage() {
         client_secret: None,
         certificate_fingerprint: None,
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let provider_id = put_provider(
@@ -1788,7 +1788,7 @@ fn linking_and_unlinking_another_persons_sign_ins_needs_accounts_manage() {
         user_id: target.principal_id,
         identity: identity.clone(),
         expected_revision: revision,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let subjects = || {
@@ -1817,7 +1817,7 @@ fn linking_and_unlinking_another_persons_sign_ins_needs_accounts_manage() {
         user_id: target.principal_id,
         identity,
         expected_revision: linked.user.account.unwrap().principal.revision,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -1850,7 +1850,7 @@ fn a_creation_recorded_before_linked_sign_ins_replays_its_result() {
         display_name: "Earlier Account".to_string().into(),
         password: None,
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&admin, &input);

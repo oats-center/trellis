@@ -9,6 +9,7 @@ import {
 } from "@nats-io/nats-core";
 import type { SessionRequest } from "../auth.ts";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { apis, apps } from "../../trellis-testkit/trellis/index.js";
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
 import { connectNativeClient, connectNativeSession } from "../native.ts";
@@ -55,7 +56,7 @@ test(
             username: subjectUsername,
             password: subjectPassword,
             displayName: "Native gate subject",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const approved = [
@@ -72,7 +73,7 @@ test(
                 principalId: subject.user.principalId,
                 capabilityId,
                 expectedRevision: 0n,
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               })
               .orThrow(),
           ),
@@ -109,7 +110,7 @@ test(
           .usersCreate({
             username: `delegated-${ulid()}`,
             displayName: "Delegated",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         await ordinary.connection.close();
@@ -341,7 +342,7 @@ test(
                   .capabilityGrantsRevoke({
                     grantId: grant.grantId,
                     expectedRevision: grant.revision,
-                    idempotencyKey: ulid(),
+                    idempotencyKey: codecs.ulid.decode(ulid()),
                   })
                   .orThrow();
               },

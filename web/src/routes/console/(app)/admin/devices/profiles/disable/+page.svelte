@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { isErr } from "@oatscenter/result";
   import { apis } from "$lib/trellis-apis";
   import { resolve } from "$lib/console_paths";
@@ -121,7 +122,7 @@
     const target = selectedDeployment;
     if (!target || pending || loading || error) return;
     const requestedAtCapture = requestedDeploymentId;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const intent = captureIntent<DisableInput>({
       operation: "deploymentsDisable",
       targetId: target.deploymentId,

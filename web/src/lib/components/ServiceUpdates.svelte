@@ -2,6 +2,7 @@
   import { apis } from "$lib/trellis-apis";
   import { onMount } from "svelte";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { formatDate } from "$lib/format";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -143,7 +144,7 @@
           decision: approve ? "approved" : "declined",
           ...(approve && shared.length ? { acknowledgeSharedApis: true } : {}),
           expectedRevision: update.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       notice =

@@ -4,6 +4,7 @@ import { Readable, Writable } from "node:stream";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
@@ -129,7 +130,7 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const nats = await connect({
         servers: runtime.natsUrl,
@@ -247,7 +248,7 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
               principalId: grant.principalId,
               capabilityId: grant.capability.capabilityId,
               expectedRevision: 0n,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
             let prepared: Awaited<typeof preparation.held> | undefined;
             preparation.held.then((value) => {
@@ -794,7 +795,7 @@ test("Rust retained G1 JobRefs read wait and cancel after physical G1 reap", asy
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const nats = await connect({
         servers: runtime.natsUrl,
@@ -870,7 +871,7 @@ test("Rust retained G1 JobRefs read wait and cancel after physical G1 reap", asy
                 principalId: grant.principalId,
                 capabilityId: grant.capability.capabilityId,
                 expectedRevision: 0n,
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               });
               let prepared: Awaited<typeof preparation.held> | undefined;
               preparation.held.then((value) => {

@@ -54,7 +54,7 @@ test("a service waits for its settings, keeps secrets from administrators, and f
       runtime.callAdminRpc("authConfigSet", {
         target,
         ...change,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
 
     const connect = () =>
@@ -185,7 +185,7 @@ test("a service waits for its settings, keeps secrets from administrators, and f
       target: deployment,
       revision: 1,
       expectedRevision: 2,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     assert.equal(rolledBack.revision, 3);
     assert.equal(
@@ -196,14 +196,14 @@ test("a service waits for its settings, keeps secrets from administrators, and f
       runtime.callAdminRpc("authConfigRevisionsDelete", {
         target: deployment,
         revision: 3,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       }),
       /current revision cannot be deleted/,
     );
     await runtime.callAdminRpc("authConfigRevisionsDelete", {
       target: deployment,
       revision: 1,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const remaining = await runtime.callAdminRpc("authConfigRevisionsList", {
       target: deployment,
@@ -317,19 +317,19 @@ test("a device reads its own settings over its type's and follows live changes",
     const provisioned = await runtime.devices.provision({
       deploymentId,
       title: "Greenhouse sensor",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     assert(provisioned.provisioningSecret);
     // The device type sets a site for every device; this device overrides it.
     await runtime.callAdminRpc("authConfigSet", {
       target: { deploymentId },
       values: { site: "North field" },
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await runtime.callAdminRpc("authConfigSet", {
       target: { deploymentId, instanceId: provisioned.instance.instanceId },
       values: { site: "Greenhouse 2" },
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
 
     const rootSecret = crypto.getRandomValues(new Uint8Array(32));
@@ -359,7 +359,7 @@ test("a device reads its own settings over its type's and follows live changes",
       ...review,
       expectedRevision: pending.revision,
       decision: "approved",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await activation.waitForOnlineApproval();
 
@@ -386,7 +386,7 @@ test("a device reads its own settings over its type's and follows live changes",
         target: { deploymentId },
         values: { interval: 15 },
         expectedRevision: 1,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert.equal(await changed, 15);
     } finally {
@@ -412,7 +412,7 @@ test("an app reads its own settings, which an administrator changes live", async
       const misfit = await runtime.callAdminRpc("authConfigSet", {
         target,
         values: { limit: "many" },
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const limit = misfit.fields.find((field) => field.name === "limit");
       assert.match(limit?.invalid ?? "", /limit/);
@@ -424,7 +424,7 @@ test("an app reads its own settings, which an administrator changes live", async
         target,
         values: { greeting: "welcome back" },
         expectedRevision: 1,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert.equal(saved.revision, 2);
       // The first change the app hears of is the greeting: the misfit limit
@@ -444,7 +444,7 @@ test("an app reads its own settings, which an administrator changes live", async
         clientId: request.id,
         packageEvidence: later.packageEvidence as JsonValue,
         requestId: later.id,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert.equal(await redeclared, 20);
       assert.equal(client.config.current.greeting, "welcome back");
@@ -471,7 +471,7 @@ test("deleting a revision that holds a secret takes the capability that sets sec
       runtime.callAdminRpc("authConfigSet", {
         target,
         ...change,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
     // Revision 1 has no secrets; 2 and 3 hold the API key.
     await set({ values: { endpoint: "https://one.example" } });
@@ -504,7 +504,7 @@ test("deleting a revision that holds a secret takes the capability that sets sec
           .configRevisionsDelete({
             target,
             revision: 2,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow(),
         (error) => {
@@ -520,10 +520,18 @@ test("deleting a revision that holds a secret takes the capability that sets sec
       // A revision without secrets is the settings role's to delete, and
       // the secrets role deletes the one it was refused.
       await tuner
-        .configRevisionsDelete({ target, revision: 1, idempotencyKey: ulid() })
+        .configRevisionsDelete({
+          target,
+          revision: 1,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        })
         .orThrow();
       await keeper
-        .configRevisionsDelete({ target, revision: 2, idempotencyKey: ulid() })
+        .configRevisionsDelete({
+          target,
+          revision: 2,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        })
         .orThrow();
       const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
         target,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { checkDeviceActivation } from "@oatscenter/trellis/device";
 import {
   participants,
@@ -27,7 +28,7 @@ test("an administrator approves a device from its activation link", async () => 
     const provisioned = await runtime.devices.provision({
       deploymentId,
       title: "Loading dock sensor",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     assert(provisioned.provisioningSecret);
     const activation = await checkDeviceActivation({

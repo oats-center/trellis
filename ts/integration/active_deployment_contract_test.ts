@@ -257,7 +257,7 @@ test("active contract replacement keeps covered connections and drops uncovered 
         await runtime.callAdminRpc("authDeploymentsDisable", {
           deploymentId: codecs.ulid.decode(instanceA.deploymentId),
           expectedRevision: current.deployment.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(
           async () =>
@@ -286,7 +286,7 @@ test("active contract replacement keeps covered connections and drops uncovered 
         await runtime.callAdminRpc("authDeploymentsEnable", {
           deploymentId: codecs.ulid.decode(instanceA.deploymentId),
           expectedRevision: disabledRevision.deployment.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const serviceAEnabled = await TrellisService.connect({
           trellisUrl: runtime.trellisUrl,

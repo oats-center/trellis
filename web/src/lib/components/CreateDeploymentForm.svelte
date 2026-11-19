@@ -6,6 +6,7 @@
     publicKeyBase64urlFromSeed,
   } from "@oatscenter/trellis/auth/browser";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { onMount, tick } from "svelte";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -420,7 +421,7 @@
             target,
             values: settings.values,
             secrets: settings.secrets,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
       } catch (cause) {
@@ -444,7 +445,7 @@
             title: name,
             instanceTitle: name,
             identityPublicKey,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         if (disposed) return;
@@ -467,7 +468,7 @@
             ...(sharing && sharingUnderstood
               ? { acknowledgeSharedApis: true }
               : {}),
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         if (disposed) return;
@@ -489,7 +490,7 @@
                 deploymentId,
                 title: name,
                 identityPublicKey,
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               })
               .orThrow();
           } catch (cause) {

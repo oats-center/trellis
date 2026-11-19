@@ -33,7 +33,7 @@ test("a service added without its IDL starts with the settings set before it con
       identityPublicKey: Buffer.from(
         nacl.sign.keyPair.fromSeed(seed).publicKey,
       ).toString("base64url"),
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const claimTarget = { claimId: claim.claimId };
 
@@ -44,7 +44,7 @@ test("a service added without its IDL starts with the settings set before it con
       target: claimTarget,
       values: { endpoint: 42, legacyMode: true, signingKey: "plain-text" },
       secrets: { apiKey: "k1", region: "hidden-region" },
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     assert.equal(stored.declared, false);
     assert.deepEqual(stored.fields, []);
@@ -90,7 +90,7 @@ test("a service added without its IDL starts with the settings set before it con
       updateId: pending.updateId,
       decision: "approved",
       expectedRevision: pending.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const deployment = { deploymentId: update.deploymentId };
 
@@ -135,7 +135,7 @@ test("a service added without its IDL starts with the settings set before it con
       target: deployment,
       values: { endpoint: "https://one.example" },
       expectedRevision: 1,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const service = await connecting;
     try {
@@ -184,7 +184,7 @@ test("settings for the next build are set while the current one runs, and its in
         target: deployment,
         values: { workers: 4, region: ["east", "west"] },
         expectedRevision: 1,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert.deepEqual(ahead.missing, []);
       assert.deepEqual(
@@ -204,7 +204,7 @@ test("settings for the next build are set while the current one runs, and its in
         target: deployment,
         values: { level: "debug" },
         expectedRevision: 2,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await level;
       assert.deepEqual(heard, [["level"]]);
@@ -248,7 +248,7 @@ test("settings for the next build are set while the current one runs, and its in
         target: deployment,
         values: { level: "info" },
         expectedRevision: 3,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert.equal(await back, "info");
       assert.equal(running.config.current.region, "east");
@@ -275,14 +275,14 @@ test("an earlier revision a build still reads from can't be deleted until a fitt
       runtime.callAdminRpc("authConfigRevisionsDelete", {
         target,
         revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
     // An endpoint that doesn't fit the build leaves it on revision 1's.
     const misfit = await runtime.callAdminRpc("authConfigSet", {
       target,
       values: { endpoint: 42 },
       expectedRevision: 1,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const endpoint = misfit.fields.find((field) => field.name === "endpoint");
     assert.equal(endpoint?.value, "https://one.example");
@@ -304,7 +304,7 @@ test("an earlier revision a build still reads from can't be deleted until a fitt
       target,
       values: { endpoint: "https://two.example" },
       expectedRevision: 2,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await remove(1);
     const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {

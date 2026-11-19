@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import {
   apps,
@@ -715,7 +716,7 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
         principalId,
         capabilityId,
         expectedRevision: current.items[0]?.revision ?? 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
     }
     const seeded = await seedProvider(runtime, "z06-provider");

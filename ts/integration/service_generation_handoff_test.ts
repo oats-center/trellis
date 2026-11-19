@@ -5,6 +5,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apps,
   participants,
@@ -34,7 +35,7 @@ test("a service drains accepted RPCs across growth and renews in place after rea
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -96,7 +97,7 @@ test("a service drains accepted RPCs across growth and renews in place after rea
           principalId: grant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const grown = await runtime.waitFor(
           async () => {

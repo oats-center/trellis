@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import nacl from "tweetnacl";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as extendedParticipants } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
@@ -128,7 +129,7 @@ test("a service's page shows the build applied after an earlier self-update", as
         updateId: pending.updateId,
         decision: "approved",
         expectedRevision: pending.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await (await updating).stop();
 
@@ -197,7 +198,7 @@ test("an administrator adds a service that introduced itself from its review lin
         identityPublicKey: Buffer.from(
           nacl.sign.keyPair.fromSeed(seed).publicKey,
         ).toString("base64url"),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const connecting = TrellisService.connect({
         trellisUrl: runtime.trellisUrl,

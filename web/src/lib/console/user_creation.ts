@@ -18,6 +18,7 @@
 
 import type { apis } from "../trellis-apis.ts";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import {
   captureIntent,
@@ -178,7 +179,7 @@ export class UserCreationController {
       return;
     }
     const generation = this.#generation;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const intent = captureIntent<apis.auth.UsersCreateInput>({
       operation: "usersCreate",
       targetId: username,
@@ -257,7 +258,7 @@ export class UserCreationController {
     }
     const userId = created.userId;
     const generation = this.#generation;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const intent = captureIntent<apis.auth.UsersPasswordResetCreateInput>({
       operation: "usersPasswordResetCreate",
       targetId: userId,

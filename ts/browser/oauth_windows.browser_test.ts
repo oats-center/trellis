@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type Browser, type Page, chromium } from "playwright";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { build } from "vite";
 
 import {
@@ -132,7 +133,7 @@ test("windows the app opens sign in on their own, consent's choices hold from th
             development: true,
             impliedConsent: [],
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           const {
             user: { principalId },
@@ -145,7 +146,7 @@ test("windows the app opens sign in on their own, consent's choices hold from th
               principalId,
               capabilityId,
               expectedRevision: 0n,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
           }
           browser = await chromium.launch({

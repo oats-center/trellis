@@ -108,7 +108,7 @@ const association = await attachment
     reviewId,
     confirmationCode: enrollment.confirmationCode,
     expectedRevision: BigInt(review.revision),
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
   })
   .orThrow();
 await attachment.connection.close();

@@ -16,6 +16,7 @@ import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import {
   apps,
@@ -139,7 +140,7 @@ test(
             packageEvidence: types.AuthPackageEvidenceCodec.decode(
               provider.packageEvidence,
             ),
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         // Creating the deployment accepted the provider's own definition. The
@@ -156,7 +157,7 @@ test(
               initialReview.currentAcceptedRevision ?? 0n,
             mappingEdits: [],
             roleEdits: [],
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const seed = generateSessionSeed();
@@ -166,7 +167,7 @@ test(
             deploymentId: deployment.deploymentId,
             identityPublicKey: identity.sessionKey,
             title: "Catalog renewal provider",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const service = await TrellisService.connect({
@@ -183,7 +184,7 @@ test(
             username: `catalog-${ulid()}`,
             password: userPassword,
             displayName: "Catalog caller",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         assert(user.account);
@@ -193,7 +194,7 @@ test(
             principalId: user.principalId,
             capabilityId,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const clientId = `catalog-${ulid()}`;
@@ -207,7 +208,7 @@ test(
             development: true,
             impliedConsent: [],
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const request = apps.EchoCaller.request;
@@ -246,7 +247,7 @@ test(
             expectedAcceptedRevision: review.currentAcceptedRevision,
             mappingEdits: [],
             roleEdits: [],
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         assert.equal(accepted.api.generation, initial.api.generation);
@@ -278,7 +279,7 @@ test(
             roleEdits: [],
             acknowledgeBreakage: true,
             acknowledgeConsentImpact: true,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         assert.equal(forced.api.generation, accepted.api.generation + 1n);

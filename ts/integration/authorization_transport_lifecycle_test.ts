@@ -29,7 +29,7 @@ test("a non-renewing native attachment cannot outlive its required capability gr
         username,
         displayName: "Bounded caller",
         password,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.callAdminRpc("authOAuthClientsPut", {
         clientId,
@@ -40,7 +40,7 @@ test("a non-renewing native attachment cannot outlive its required capability gr
         development: true,
         impliedConsent: [],
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const expiresAt = codecs.timestamp.decode(
         new Date(Date.now() + 25_000).toISOString(),
@@ -54,7 +54,7 @@ test("a non-renewing native attachment cannot outlive its required capability gr
           capabilityId,
           expiresAt,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
       const login = await loginNativeTestClient({
         issuer: runtime.trellisUrl,
@@ -205,7 +205,7 @@ test("recovered service attachments remain subject to server enforcement after r
       await runtime.services.disableInstance({
         instanceId: codecs.ulid.decode(identity.instanceId),
         expectedRevision: 1n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.waitFor(
         async () =>

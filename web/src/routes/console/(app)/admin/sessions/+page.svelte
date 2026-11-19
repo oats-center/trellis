@@ -2,6 +2,7 @@
   import type { apis } from "$lib/trellis-apis";
   import { onMount } from "svelte";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { SvelteSet } from "svelte/reactivity";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -193,11 +194,14 @@
 
   async function run<Id>(
     ids: Id[],
-    send: (id: Id, key: string) => Promise<unknown>,
+    send: (
+      id: Id,
+      key: apis.auth.ConnectionsKickInput["idempotencyKey"],
+    ) => Promise<unknown>,
   ): Promise<void> {
     busy = true;
     const outcome = await runBulk(
-      ids.map((id) => ({ id, key: ulid() })),
+      ids.map((id) => ({ id, key: codecs.ulid.decode(ulid()) })),
       async (target) => {
         await send(target.id, target.key);
       },
@@ -271,13 +275,19 @@
                 selected.has(item.authorizationSessionId) &&
                 item.state === "active",
             )
-            .map((item) => ({ id: item.authorizationSessionId, key: ulid() }))
+            .map((item) => ({
+              id: item.authorizationSessionId,
+              key: codecs.ulid.decode(ulid()),
+            }))
         : attachments
             .filter(
               (item) =>
                 selected.has(item.attachmentId) && item.state === "admitted",
             )
-            .map((item) => ({ id: item.attachmentId, key: ulid() }));
+            .map((item) => ({
+              id: item.attachmentId,
+              key: codecs.ulid.decode(ulid()),
+            }));
     if (!targets.length) return;
     const confirmed = await confirmationModal?.confirm({
       title:

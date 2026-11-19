@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { type Browser, chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { build } from "vite";
 
 import { participants as breakingProviders } from "../../integration/fixtures/client-upgrade-breaking/packages/client-upgrade/index.js";
@@ -97,7 +98,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
             development: true,
             impliedConsent: [],
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           const {
             user: { principalId },
@@ -110,7 +111,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
               principalId,
               capabilityId,
               expectedRevision: 0n,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
           }
           let loginSessionId: string | undefined;
@@ -148,7 +149,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
                   acknowledgeConsentImpact: true,
                   roleEdits: [],
                   mappingEdits: [],
-                  idempotencyKey: ulid(),
+                  idempotencyKey: codecs.ulid.decode(ulid()),
                 });
                 await runtime.contracts.apply({ contract });
               } else {
@@ -168,7 +169,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
                 capabilityId:
                   apps.BrowserCaller.request.requiredCapabilities[0],
                 expectedRevision: grants.items[0].revision,
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               });
               if (variant === "breaking") {
                 await service.stop();

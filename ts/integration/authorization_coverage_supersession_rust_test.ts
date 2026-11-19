@@ -5,6 +5,7 @@ import { deadline } from "@nats-io/nats-core";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apis,
   apps,
@@ -48,7 +49,7 @@ test("Rust preserves accepted Live during blocked preparation and publishes gran
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: first.grantId,
         expectedRevision: first.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const argv = rustFixtureArgv("transport_growth_subject");
       const child = spawnTracked(argv[0], argv.slice(1), {
@@ -121,7 +122,7 @@ test("Rust preserves accepted Live during blocked preparation and publishes gran
           principalId: first.principalId,
           capabilityId: firstCapability,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const candidate = await deadline(hold.held, 90_000);
         assert(!existing.has(candidate.connectionId));

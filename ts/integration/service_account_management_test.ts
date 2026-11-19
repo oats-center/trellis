@@ -63,7 +63,7 @@ test("a service holding accounts.manage finds and deletes a user with access the
           .usersDelete({
             userId,
             expectedRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         // Deleting the account ends every sign-in it had.
@@ -85,7 +85,7 @@ test("a service holding accounts.manage finds and deletes a user with access the
               .usersDelete({
                 userId,
                 expectedRevision,
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               })
               .orThrow(),
           (error) => {

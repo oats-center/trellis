@@ -5,6 +5,7 @@ import { deadline } from "@nats-io/nats-core";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apis,
   apps,
@@ -71,7 +72,7 @@ test("a grown finite capability adopts a new generation without disrupting in-fl
           await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
             grantId: grant.grantId,
             expectedRevision: grant.revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           await runtime.waitFor(
             () => caller.availability().capabilities[capabilityId] === false,
@@ -119,7 +120,7 @@ test("a grown finite capability adopts a new generation without disrupting in-fl
             principalId: grant.principalId,
             capabilityId,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           const candidate = await deadline(hold.held, 90_000);
           assert.notEqual(candidate.connectionId, original.id);

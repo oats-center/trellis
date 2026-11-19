@@ -6,6 +6,7 @@
   import { apis } from "$lib/trellis-apis";
   import { onMount, tick } from "svelte";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { getTrellis } from "$lib/trellis";
   import { resolve } from "$lib/console_paths";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -240,7 +241,7 @@
         .serviceClaimsRemove({
           claimId: target.claimId,
           expectedRevision: target.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       await goto(resolve("/admin/services"));
@@ -270,7 +271,7 @@
       ].input.decode({
         deploymentId: target.deploymentId,
         title: title.trim(),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
         ...(identityPublicKey.trim()
           ? { identityPublicKey: identityPublicKey.trim() }
           : {}),
@@ -367,7 +368,7 @@
     const input = {
       instanceId: instance.instanceId,
       expectedRevision: instance.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     };
     await mutate(() =>
       change === "enable"
@@ -421,7 +422,7 @@
     const input = {
       deploymentId: target.deploymentId,
       expectedRevision: target.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     };
     await mutate(async () => {
       if (change === "enable") await trellis.deploymentsEnable(input).orThrow();

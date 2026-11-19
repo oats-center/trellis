@@ -1295,7 +1295,9 @@ async fn providers_command(
         |provider: &auth_types::AuthOIDCProvider| auth_types::AuthOIDCProviderMutationRequest {
             provider_id: provider.provider_id,
             expected_revision: provider.revision,
-            idempotency_key: Ulid::generate().to_string().into(),
+            idempotency_key: trellis_protocol::model::Ulid::parse(&cli_idempotency_key())
+                .expect("generated ULIDs are canonical")
+                .into(),
             extra: Default::default(),
         };
     let action = match &command {

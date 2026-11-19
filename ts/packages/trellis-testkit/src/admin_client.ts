@@ -206,7 +206,7 @@ export class TrellisTestAdminAutomation {
             principalId: principal,
             capabilityId,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
       }

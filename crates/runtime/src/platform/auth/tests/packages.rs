@@ -34,7 +34,7 @@ fn create(
         participant_id: participant.into(),
         kind: AuthDeploymentKind::Service,
         title: title.to_string().into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     create_deployment(&f.store, &mutation(&f.admin, &input), &input, NOW).unwrap()
@@ -138,7 +138,7 @@ fn a_dependency_on_an_installed_service_package_takes_the_highest_matching_insta
         deployment_id: warehouse.deployment.deployment_id,
         expected_revision: warehouse.deployment.revision,
         package_evidence: second.clone(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     apply_deployment(&f.store, &mutation(&f.admin, &apply), &apply, NOW + 1).unwrap();

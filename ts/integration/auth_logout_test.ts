@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
@@ -21,7 +22,7 @@ test("revoking a closed login is idempotent and preserves a separate login", asy
     await client.connection.close();
     const revoke = {
       loginSessionId: session.loginSessionId,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     };
     await runtime.callAdminRpc("authSessionsRevoke", revoke);
     await runtime.callAdminRpc("authSessionsRevoke", revoke);
@@ -53,7 +54,7 @@ test("authorization-session revocation preserves the login and permits fresh adm
     assert(session != null);
     await runtime.callAdminRpc("authAuthorizationSessionsRevoke", {
       authorizationSessionId: before.authorizationSessionId,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const after = await runtime.waitFor(async () => {
       const result = await client.sessionsMe({}, { timeout: 1000 });

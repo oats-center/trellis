@@ -90,7 +90,7 @@ test("identical deployment apply retains keyed Jobs and durable Events evidence"
         packageEvidence: types.AuthPackageEvidenceCodec.decode(
           contract.packageEvidence,
         ),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert(applied.deployment.revision > current.deployment.revision);
       const queues = await jobs
@@ -163,7 +163,7 @@ test("identical deployment apply retains keyed Jobs and durable Events evidence"
         packageEvidence: types.AuthPackageEvidenceCodec.decode(
           pinnedParticipants.Provider.participant.packageEvidence,
         ),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.callAdminRpc("authDeploymentsApply", {
         deploymentId: ownerId,
@@ -171,7 +171,7 @@ test("identical deployment apply retains keyed Jobs and durable Events evidence"
         packageEvidence: types.AuthPackageEvidenceCodec.decode(
           pinnedParticipants.Provider.participant.packageEvidence,
         ),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const detachedJobs = await jobs
         .resourceBindingsQuery({ kind: "jobQueue", ownerId })
@@ -262,7 +262,7 @@ test("resource evidence is paginated, current, and isolated by Jobs/Events capab
         authApi.actions["rpc:Deployments.Disable"].input.decode({
           deploymentId: key.deploymentId,
           expectedRevision: deployment.revision.toString(),
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         }),
       );
       const disabled = await jobs

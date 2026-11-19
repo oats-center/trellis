@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { z } from "zod";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
@@ -34,7 +35,7 @@ test("Rust device companion renews admitted authority and resumes after restart 
       const { provisioningSecret } = await runtime.devices.provision({
         deploymentId,
         title: "Rust companion device",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert(provisioningSecret);
       const prepared = await runtime.registerClient({
@@ -135,7 +136,7 @@ test("Rust device companion renews admitted authority and resumes after restart 
                     confirmationCode: activation.confirmationCode,
                     expectedRevision: review.revision,
                     decision: "approved",
-                    idempotencyKey: ulid(),
+                    idempotencyKey: codecs.ulid.decode(ulid()),
                   },
                 );
                 child.stdin.write(

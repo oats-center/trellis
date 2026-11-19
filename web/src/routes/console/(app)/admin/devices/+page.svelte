@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { onMount } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import { page } from "$app/state";
@@ -126,7 +127,7 @@
           confirmationCode: code.trim().toUpperCase(),
           decision,
           expectedRevision: review.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       code = "";
@@ -184,7 +185,7 @@
     const intents = candidates
       .filter((item) => selectedIds.has(item.instanceId))
       .map((item) => {
-        const key = ulid();
+        const key = codecs.ulid.decode(ulid());
         return captureIntent<apis.auth.DevicesDisableInput>({
           operation: "devicesDisable",
           targetId: item.instanceId,

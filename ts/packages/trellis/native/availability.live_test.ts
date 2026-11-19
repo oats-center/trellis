@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { join } from "node:path";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { z } from "zod";
 import {
   apps,
@@ -133,7 +134,7 @@ test(
                 packageEvidence: adminTypes.AuthPackageEvidenceCodec.decode(
                   resource.packageEvidence,
                 ),
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               })
               .orThrow();
             const seed = generateSessionSeed();
@@ -143,7 +144,7 @@ test(
                 deploymentId: deployment.deploymentId,
                 identityPublicKey: identity.sessionKey,
                 title: "KV availability provider",
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               })
               .orThrow();
             const before = await connections();
@@ -210,7 +211,7 @@ test(
             expectedAcceptedRevision: review.currentAcceptedRevision ?? 0n,
             mappingEdits: [],
             roleEdits: [],
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const { deployment } = await admin
@@ -219,7 +220,7 @@ test(
             kind: provider.kind,
             participantId: provider.identity,
             packageEvidence: evidence,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const seed = generateSessionSeed();
@@ -229,7 +230,7 @@ test(
             deploymentId: deployment.deploymentId,
             identityPublicKey: identity.sessionKey,
             title: "optional provider",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const service = await TrellisService.connect({
@@ -264,7 +265,7 @@ test(
             impliedConsent: [],
             development: true,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const subjectPassword = `subject-${ulid()}`;
@@ -273,7 +274,7 @@ test(
             username: `optional-${ulid()}`,
             password: subjectPassword,
             displayName: "Optional subject",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         assert(user.account);
@@ -286,7 +287,7 @@ test(
               principalId,
               capabilityId,
               expectedRevision: 0n,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             })
             .orThrow();
         const request = apps.NativeOptionalExtend.request;
@@ -372,7 +373,7 @@ test(
           .capabilityGrantsRevoke({
             grantId: grant.grantId,
             expectedRevision: grant.revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         await withdrew;
@@ -384,7 +385,7 @@ test(
             principalId,
             capabilityId: extend,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         await approved.refreshAuthority();

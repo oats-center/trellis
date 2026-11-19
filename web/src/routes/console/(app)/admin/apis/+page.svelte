@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
@@ -168,7 +169,7 @@
         ).toString(),
         roleEdits: JSON.parse(roleEdits),
         mappingEdits: JSON.parse(mappingEdits),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       };
       const response = force
         ? await trellis

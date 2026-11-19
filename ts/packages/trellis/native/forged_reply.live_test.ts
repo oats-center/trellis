@@ -10,6 +10,7 @@ import { once } from "node:events";
 import { test } from "node:test";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import {
   apps,
@@ -224,7 +225,7 @@ test(
             expectedAcceptedRevision: review.currentAcceptedRevision ?? 0n,
             mappingEdits: [],
             roleEdits: [],
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const { deployment } = await admin
@@ -233,7 +234,7 @@ test(
             kind: provider.kind,
             participantId: provider.identity,
             packageEvidence: evidence,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const seed = generateSessionSeed();
@@ -243,7 +244,7 @@ test(
             deploymentId: deployment.deploymentId,
             identityPublicKey: providerAuth.sessionKey,
             title: "forged reply provider",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const service = await TrellisService.connect({
@@ -262,7 +263,7 @@ test(
             username: `forged-reply-${ulid()}`,
             password: subjectPassword,
             displayName: "Forged reply subject",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         assert(user.account);
@@ -271,7 +272,7 @@ test(
             principalId: user.principalId,
             capabilityId: echoCapability,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
 
@@ -291,7 +292,7 @@ test(
                 impliedConsent: [],
                 development: true,
                 expectedRevision: 0n,
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               })
               .orThrow();
             login = await loginNativeTestClient({

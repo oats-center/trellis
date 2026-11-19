@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Result } from "@oatscenter/result";
 import { deriveDeviceIdentity } from "@oatscenter/trellis/auth";
 import {
@@ -52,7 +53,7 @@ test("an enrolled device uses an independently browser-consented native companio
       const provisioned = await runtime.devices.provision({
         deploymentId,
         title: "Browser-consented device",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert(provisioned.provisioningSecret);
       const rootSecret = crypto.getRandomValues(new Uint8Array(32));
@@ -79,7 +80,7 @@ test("an enrolled device uses an independently browser-consented native companio
         confirmationCode: activation.confirmationCode,
         expectedRevision: review.revision,
         decision: "approved",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await activation.waitForOnlineApproval();
       const prepared = await runtime.registerClient({
@@ -139,7 +140,7 @@ test("an enrolled device uses an independently browser-consented native companio
               reviewId,
               confirmationCode: activation.confirmationCode,
               expectedRevision: approved.review.revision,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             })
             .orThrow();
         } finally {

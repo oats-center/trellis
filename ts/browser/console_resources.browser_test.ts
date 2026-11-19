@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { chromium, type Page } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as removedParticipants } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
@@ -114,7 +115,7 @@ test(
               packageEvidence: adminTypes.AuthPackageEvidenceCodec.decode(
                 provider.packageEvidence,
               ),
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             })
             .orThrow();
           const seed = generateSessionSeed();
@@ -124,7 +125,7 @@ test(
               deploymentId: deployment.deploymentId,
               identityPublicKey: identity.sessionKey,
               title: `console ${label} resources`,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             })
             .orThrow();
           const service = await TrellisService.connect({
@@ -152,7 +153,7 @@ test(
                 packageEvidence: adminTypes.AuthPackageEvidenceCodec.decode(
                   omitted.packageEvidence,
                 ),
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               })
               .orThrow();
           }

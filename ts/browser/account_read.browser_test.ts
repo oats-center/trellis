@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   connectNativeClient,
   discoverNativeOAuth,
@@ -26,12 +27,12 @@ test(
         givenName: "Profile",
         familyName: "Reader",
         email: "reader@example.com",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const { user: other } = await runtime.callAdminRpc("authUsersCreate", {
         username: "other-profile",
         displayName: "Other account",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const request = apps.AccountCaller.request;
       await runtime.callAdminRpc("authOAuthClientsPut", {
@@ -43,7 +44,7 @@ test(
         development: true,
         impliedConsent: [],
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const server = (await discoverNativeOAuth(runtime.trellisUrl)).orThrow();
       const custody = (

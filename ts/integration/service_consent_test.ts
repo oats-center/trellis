@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { types } from "../packages/trellis-testkit/trellis/index.js";
 
 import { Result } from "@oatscenter/trellis";
@@ -52,7 +53,7 @@ test("a stale deployment apply cannot overwrite the accepted implementation", as
       packageEvidence: types.AuthPackageEvidenceCodec.decode(
         contract.packageEvidence,
       ),
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const accepted = await runtime.callAdminRpc("authDeploymentsApply", {
       deploymentId: created.deployment.deploymentId,
@@ -60,7 +61,7 @@ test("a stale deployment apply cannot overwrite the accepted implementation", as
       packageEvidence: types.AuthPackageEvidenceCodec.decode(
         removedParticipants.Provider.participant.packageEvidence,
       ),
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await assert.rejects(() =>
       runtime.callAdminRpc("authDeploymentsApply", {
@@ -69,7 +70,7 @@ test("a stale deployment apply cannot overwrite the accepted implementation", as
         packageEvidence: types.AuthPackageEvidenceCodec.decode(
           contract.packageEvidence,
         ),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       }),
     );
     const current = await runtime.callAdminRpc("authDeploymentsGet", {

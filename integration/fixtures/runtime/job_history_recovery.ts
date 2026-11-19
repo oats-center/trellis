@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { setTimeout } from "node:timers/promises";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Result } from "../../../ts/packages/result/result.ts";
 import { loginNativeTestClient } from "../../../ts/packages/trellis-testkit/src/admin/native_auth.ts";
 import {
@@ -36,7 +37,7 @@ try {
       packageEvidence: types.AuthPackageEvidenceCodec.decode(
         participant.packageEvidence,
       ),
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     })
     .orThrow();
   const seed = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString(
@@ -48,7 +49,7 @@ try {
       deploymentId: deployment.deploymentId,
       title: "History worker",
       identityPublicKey: identity.sessionKey,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     })
     .orThrow();
   const service = await TrellisService.connect({
@@ -81,7 +82,7 @@ try {
     await admin
       .connectionsKick({
         attachmentId: initial.items[0].attachmentId,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       })
       .orThrow();
     for (;;) {

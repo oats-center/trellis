@@ -13,6 +13,7 @@ import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
 import { join } from "node:path";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import {
   apps,
@@ -1206,7 +1207,7 @@ test("generated runtime workflows", async (t) => {
               for (const loginSessionId of logins)
                 await runtime.callAdminRpc("authSessionsRevoke", {
                   loginSessionId,
-                  idempotencyKey: ulid(),
+                  idempotencyKey: codecs.ulid.decode(ulid()),
                 });
               await runtime.waitFor(async () =>
                 (

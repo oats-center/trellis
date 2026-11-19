@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
@@ -28,7 +29,7 @@ test("accepted and fresh Operations retain control and observation across capabi
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -72,7 +73,7 @@ test("accepted and fresh Operations retain control and observation across capabi
           principalId: grant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(async () => (await service.extend({})).isOk(), {
           timeoutMs: 90_000,

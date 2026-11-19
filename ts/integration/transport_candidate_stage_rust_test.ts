@@ -470,7 +470,7 @@ async function reduceExtend(
   await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
     grantId: grant.grantId,
     expectedRevision: grant.revision,
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
   });
 }
 
@@ -509,7 +509,7 @@ for (const outcome of ["recover", "root-revoked", "shutdown"] as const) {
               await runtime.callAdminRpc("authServiceInstancesRemove", {
                 instanceId: codecs.ulid.decode(ctx.subjectInstance.instanceId),
                 expectedRevision: 1n,
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               });
             } else if (outcome === "shutdown") {
               await leg.send("SHUTDOWN_NATIVE");

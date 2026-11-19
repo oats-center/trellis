@@ -170,6 +170,11 @@ impl Ulid {
         }
         Ok(Self(parsed))
     }
+
+    /// Generate a new ULID from the current time and system randomness.
+    pub fn generate() -> Self {
+        Self(ulid::Ulid::generate())
+    }
 }
 impl std::fmt::Display for Ulid {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

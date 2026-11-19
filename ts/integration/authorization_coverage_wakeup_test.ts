@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { deadline } from "@nats-io/nats-core";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
@@ -67,7 +68,7 @@ test("fresh KV acquisitions resume after unrelated signed revocation updates", a
           for (const session of sessions) {
             await runtime.callAdminRpc("authAuthorizationSessionsRevoke", {
               authorizationSessionId: session.authorizationSessionId,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
           }
         })();

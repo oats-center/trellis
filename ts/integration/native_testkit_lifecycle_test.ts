@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { once } from "node:events";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   processIsGone,
   processMatchesIdentity,
@@ -49,11 +50,11 @@ test("native startup rejects another host's ready listener without disturbing th
     const { user } = await runtime.callAdminRpc("authUsersCreate", {
       username: "surviving-host",
       displayName: "Surviving host",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const reset = await runtime.callAdminRpc("authUsersPasswordResetCreate", {
       userId: user.principalId,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     assert(reset.token);
   } finally {
@@ -72,14 +73,14 @@ test("native testkit concurrent hosts isolate mutations, persist through restart
         const { user } = await runtime.callAdminRpc("authUsersCreate", {
           username: "same-user",
           displayName: "Same user",
-          idempotencyKey: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          idempotencyKey: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
         });
         await runtime.restart();
         const reset = await runtime.callAdminRpc(
           "authUsersPasswordResetCreate",
           {
             userId: user.principalId,
-            idempotencyKey: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            idempotencyKey: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAW"),
           },
         );
         assert(reset.token);
@@ -193,13 +194,13 @@ for (const failure of ["stalled", "crashed"] as const) {
       const { user } = await survivor.callAdminRpc("authUsersCreate", {
         username: "after-neighbor-force-close",
         displayName: "Survivor",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const reset = await survivor.callAdminRpc(
         "authUsersPasswordResetCreate",
         {
           userId: user.principalId,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         },
       );
       assert(reset.token);

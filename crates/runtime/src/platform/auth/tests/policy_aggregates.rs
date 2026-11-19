@@ -53,7 +53,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
         external_role: "team".to_string().into(),
         role_ids: roles.iter().map(|role| role.parse().unwrap()).collect(),
         expected_revision: 0.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&f.admin, &input);
@@ -63,7 +63,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
         mapping_id: Some(created.mapping.mapping_id),
         role_ids: vec![roles[1].parse().unwrap()],
         expected_revision: 1.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..input.clone()
     };
     let updated = put_mapping(&f.store, &mutation(&f.admin, &update), &update, NOW + 1).unwrap();
@@ -75,7 +75,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
     let invalid = AuthOIDCRoleMappingPutRequest {
         role_ids: vec![roles[0].parse().unwrap(), id().parse().unwrap()],
         expected_revision: 2.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..update.clone()
     };
     assert!(matches!(
@@ -94,7 +94,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
     let delete = AuthOIDCRoleMappingDeleteRequest {
         mapping_id: created.mapping.mapping_id,
         expected_revision: updated.mapping.revision,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let delete_identity = mutation(&f.admin, &delete);

@@ -145,7 +145,7 @@ test("Auth connection lifecycle events survive the fenced outbox", async () => {
     if (!session) throw new Error("kick session missing");
     const revoke = {
       loginSessionId: session.loginSessionId,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     };
     await runtime.callAdminRpc("authSessionsRevoke", revoke);
     await runtime.callAdminRpc("authSessionsRevoke", revoke);
@@ -491,7 +491,7 @@ test("Rust durable events match registrations and retain unhandled messages", as
         );
         await runtime.callAdminRpc("authSessionsRevoke", {
           loginSessionId: codecs.ulid.decode(revokedSession.loginSessionId),
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(async () =>
           (
@@ -594,7 +594,7 @@ test("Rust durable events match registrations and retain unhandled messages", as
         await runtime.services.disableInstance({
           instanceId: codecs.ulid.decode(identity.instanceId),
           expectedRevision: 1n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
           reason: "event stream regression complete",
         });
       } finally {

@@ -32,7 +32,7 @@ test("an empty later page of users still offers the previous page", async () => 
     // One more than a page, so the list has a second page.
     for (let index = 0; index < 51; index++)
       await runtime.callAdminRpc("authUsersCreate", {
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
         displayName: `Paged ${index} ${suffix}`,
         username: `paged-${index}-${suffix}`,
       });
@@ -83,7 +83,7 @@ test("a late reply to an earlier user search does not replace newer results", as
     const suffix = ulid().toLowerCase();
     for (const name of ["alpha", "beta"])
       await runtime.callAdminRpc("authUsersCreate", {
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
         displayName: `Search ${name} ${suffix}`,
         username: `search-${name}-${suffix}`,
       });
@@ -153,7 +153,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
     const otherUsername = `ct-b25-other-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b25@example.com",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
       image: null,
       displayName: "Console B25",
       username,
@@ -162,7 +162,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
     assert.ok(userId);
     const other = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b25-other@example.com",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
       image: null,
       displayName: "Console B25 Other",
       username: otherUsername,
@@ -305,7 +305,7 @@ test("B27 a disabled user stays disabled after a metadata edit", async () => {
     const username = `ct-b27-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b27@example.com",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
       image: null,
       displayName: "Console B27",
       username,
@@ -379,7 +379,7 @@ test("a permission batch that partly fails finishes after Refresh without regran
     const username = `ct-batch-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-batch@example.com",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
       image: null,
       displayName: "Console batch",
       username,
@@ -410,7 +410,7 @@ test("a permission batch that partly fails finishes after Refresh without regran
         principalId: userId,
         capabilityId: "trellis.jobs.v1:operator",
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await main
         .getByRole("button", { name: "Give 2 permissions", exact: true })
@@ -458,7 +458,7 @@ test("a permission whose earlier version the user held is still given after Refr
     const username = `ct-again-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-again@example.com",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
       image: null,
       displayName: "Console again",
       username,
@@ -474,7 +474,7 @@ test("a permission whose earlier version the user held is still given after Refr
       principalId: userId,
       capabilityId: alpha,
       expectedRevision: 0n,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     for (const contract of [
       removed.EventService.participant,
@@ -495,7 +495,7 @@ test("a permission whose earlier version the user held is still given after Refr
         acknowledgeConsentImpact: true,
         roleEdits: [],
         mappingEdits: [],
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
     }
     const current = (
@@ -529,7 +529,7 @@ test("a permission whose earlier version the user held is still given after Refr
         principalId: userId,
         capabilityId: "trellis.health.v1:monitor",
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await main
         .getByRole("button", { name: "Give 2 permissions", exact: true })
@@ -653,7 +653,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
 test("a password reset receipt clears its token when closed", async () => {
   await withTrellisRuntime(async (runtime) => {
     const created = await runtime.callAdminRpc("authUsersCreate", {
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
       displayName: "Console N07",
       username: `ct-n07-${ulid()}`,
     });
@@ -698,7 +698,7 @@ test("N09 a stale user edit cannot overwrite a concurrent update and can be resu
   await withTrellisRuntime(async (runtime) => {
     const username = `ct-n09-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
       displayName: "Original name",
       username,
     });

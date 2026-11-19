@@ -371,7 +371,7 @@ impl AdminSession {
                 display_name: name.to_owned().into(),
                 password: Some(password.to_owned().into()),
                 identities: None,
-                idempotency_key: ulid::Ulid::generate().to_string().into(),
+                idempotency_key: wire(ulid::Ulid::generate().to_string())?,
                 extra: Default::default(),
             })
             .await
@@ -413,7 +413,7 @@ impl AdminSession {
                     capability_id: (*capability_id).to_owned().into(),
                     expected_revision: 0.into(),
                     expires_at: None,
-                    idempotency_key: ulid::Ulid::generate().to_string().into(),
+                    idempotency_key: wire(ulid::Ulid::generate().to_string())?,
                     extra: Default::default(),
                 })
                 .await
@@ -486,7 +486,7 @@ impl AdminSession {
                         .map_or(0, |value| value.0 .0)
                         .into(),
                     review_id: review.review_id,
-                    idempotency_key: ulid::Ulid::generate().to_string().into(),
+                    idempotency_key: wire(ulid::Ulid::generate().to_string())?,
                     mapping_edits: Vec::new(),
                     role_edits: Vec::new(),
                     extra: Default::default(),
@@ -510,7 +510,7 @@ impl AdminSession {
                 participant_id: P::ID.to_owned(),
                 package_evidence: wire(P::package_evidence())?,
                 acknowledge_shared_apis: acknowledge_shared_apis.then_some(true),
-                idempotency_key: ulid::Ulid::generate().to_string().into(),
+                idempotency_key: wire(ulid::Ulid::generate().to_string())?,
                 extra: Default::default(),
             })
             .await
@@ -564,7 +564,7 @@ impl AdminSession {
                 deployment_id: wire(deployment_id)?,
                 identity_public_key: Some(key.clone().into()),
                 title: "service".to_owned().into(),
-                idempotency_key: ulid::Ulid::generate().to_string().into(),
+                idempotency_key: wire(ulid::Ulid::generate().to_string())?,
                 extra: Default::default(),
             })
             .await
@@ -600,7 +600,7 @@ impl AdminSession {
                 redirect_uris: Vec::new(),
                 implied_consent: Vec::new(),
                 expected_revision: 0.into(),
-                idempotency_key: ulid::Ulid::generate().to_string().into(),
+                idempotency_key: wire(ulid::Ulid::generate().to_string())?,
                 extra: Default::default(),
             })
             .await

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { onDestroy, untrack } from "svelte";
   import { goto } from "$app/navigation";
   import { resolve } from "$lib/console_paths";
@@ -103,7 +104,7 @@
       !canPerform(authority.authority, "rolesPut")
     )
       return;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const input: apis.auth.RolesPutInput = {
       ...(role ? { roleId: role.roleId } : {}),
       expectedRevision: role?.revision ?? 0n,
@@ -154,7 +155,7 @@
         .rolesDelete({
           roleId: role.roleId,
           expectedRevision: role.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       if (scope.key === key) await goto(resolve("/admin/roles"));

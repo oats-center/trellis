@@ -9,6 +9,7 @@ import { TLSSocket } from "node:tls";
 import { test } from "node:test";
 import { createInterface } from "node:readline";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 
 test(
@@ -192,7 +193,7 @@ test(
           await new Promise((resolve) => setTimeout(resolve, 20));
         await runtime.callAdminRpc("authIssuersRotate", {
           expectedCurrentKeyId: rotate.slice("rotate ".length),
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         refuseDiscovery = true;
         release();

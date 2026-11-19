@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { isErr } from "@oatscenter/result";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { apps } from "../../../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { approveNativeDeviceCode } from "../../trellis-testkit/src/admin/native_auth.ts";
@@ -36,7 +37,7 @@ test(
           development: false,
           impliedConsent: [],
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
       const username = `native-app-${ulid()}`;
       const password = `native-password-${ulid()}`;
@@ -44,7 +45,7 @@ test(
         username,
         password,
         displayName: "Native app user",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
 
       const server = (
@@ -117,7 +118,7 @@ test(
           clientId,
           packageEvidence: configured.packageEvidence as JsonValue,
           requestId: configured.id,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
       await declare(nativeClient);
       await assert.rejects(

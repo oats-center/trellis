@@ -10,6 +10,7 @@ import { rootCertificates } from "node:tls";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import {
   apps,
@@ -318,7 +319,7 @@ for (const websocketOnly of [false, true])
             deploymentId: deployment.deploymentId,
           }).deploymentId,
           title: "Accepting device",
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const provisioningSecret = provisioned.provisioningSecret;
         assert(provisioningSecret);
@@ -395,7 +396,7 @@ for (const websocketOnly of [false, true])
             confirmationCode: pending.confirmationCode,
             expectedRevision: review.revision,
             decision: "approved",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           // The device sees the approval over the same accepted certificate.
           const code = await Promise.race([

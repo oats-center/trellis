@@ -1,6 +1,7 @@
 <script lang="ts">
   import { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { onDestroy, untrack } from "svelte";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -114,7 +115,7 @@
             userId: user.principalId,
             identity: { providerId: provider.providerId, subject: linked },
             expectedRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow(),
     );
@@ -140,7 +141,7 @@
               subject: identity.subject,
             },
             expectedRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow(),
     );

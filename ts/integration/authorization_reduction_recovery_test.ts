@@ -5,6 +5,7 @@ import { deadline } from "@nats-io/nats-core";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apis,
   apps,
@@ -49,7 +50,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
         await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
           grantId: grant.grantId,
           expectedRevision: grant.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const service = await TrellisService.connect({
           trellisUrl: runtime.trellisUrl,
@@ -105,7 +106,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
             principalId: grant.principalId,
             capabilityId,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           await runtime.waitFor(
             () =>
@@ -134,7 +135,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
           await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
             grantId: current.items[0].grantId,
             expectedRevision: current.items[0].revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           await deadline(gate.waitForClose(wider[0].id), 30_000);
           await runtime.waitFor(

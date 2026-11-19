@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { ulid } from "ulid";
   import Mark from "./Mark.svelte";
 
   interface Capability {
@@ -145,7 +146,7 @@
   let enrollmentStep = $state<"code" | "login" | "review">("code");
   let enrollmentError = $state("");
   let enrollmentBusy = $state(false);
-  const decisionKey = crypto.randomUUID().replaceAll("-", "").slice(0, 26);
+  const decisionKey = ulid();
 
   function readableName(name: string): string {
     if (!/^[A-Za-z][a-zA-Z0-9]*(\.[A-Za-z][a-zA-Z0-9]*)*$/.test(name))

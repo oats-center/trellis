@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { resolve } from "$lib/console_paths";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -116,7 +117,7 @@
     const captured = target;
     const action = kind;
     const capturedKey = scope.key;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const confirmed = await confirmationModal?.confirm({
       title: action === "revoke" ? "Sign out this session?" : "Disconnect?",
       message:

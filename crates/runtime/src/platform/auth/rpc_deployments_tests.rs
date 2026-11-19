@@ -40,7 +40,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
             .to_string(),
         kind: AuthDeploymentKind::Device,
         title: "Reader device".to_string().into(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let created = create_deployment(&f.store, &mutation(&f.admin, &create), &create, NOW).unwrap();
@@ -49,7 +49,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         deployment_id: created.deployment.deployment_id,
         identity_public_key: Some(URL_SAFE_NO_PAD.encode(public.as_bytes()).into()),
         title: "Reader".to_string().into(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let provisioned = provision_instance(
@@ -77,7 +77,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         deployment_id: created.deployment.deployment_id,
         expected_revision: created.deployment.revision,
         package_evidence: evidence,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let unchanged_identity = mutation(&f.admin, &unchanged);
@@ -143,7 +143,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     let enable = AuthInstanceMutationRequest {
         instance_id: instance.instance_id,
         expected_revision: instance.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -160,7 +160,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     let remove = AuthDeploymentMutationRequest {
         deployment_id: created.deployment.deployment_id,
         expected_revision: applied.deployment.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let removed = change_deployment(
@@ -228,7 +228,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         participant_id: participant,
         kind: AuthDeploymentKind::Service,
         title: "Reader deployment".to_string().into(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -241,7 +241,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         deployment_id: created.deployment.deployment_id,
         identity_public_key: None,
         title: "Reader instance".to_string().into(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let failed_identity = mutation(&f.admin, &missing_key);
@@ -431,7 +431,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
     let instance_command = AuthInstanceMutationRequest {
         instance_id: provisioned.instance.instance_id,
         expected_revision: provisioned.instance.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let disable_identity = mutation(&f.admin, &instance_command);
@@ -530,7 +530,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
     let deployment_command = AuthDeploymentMutationRequest {
         deployment_id: created.deployment.deployment_id,
         expected_revision: created.deployment.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let disabled = change_deployment(
@@ -616,7 +616,7 @@ fn catalog_acceptance_replays_typed_result_after_later_replacement() {
         review_id: review.review_id,
         role_edits: vec![],
         mapping_edits: vec![],
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&f.admin, &input);
@@ -641,7 +641,7 @@ fn catalog_acceptance_replays_typed_result_after_later_replacement() {
         acknowledge_consent_impact: true,
         role_edits: vec![],
         mapping_edits: vec![],
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let replacement =
@@ -820,7 +820,7 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
             participant_id: participant.identity().to_string(),
             kind: AuthDeploymentKind::Service,
             title: format!("Public {name} deployment").into(),
-            idempotency_key: super::super::sqlite::id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         let deployment =
@@ -831,7 +831,7 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
             deployment_id: deployment.deployment.deployment_id,
             identity_public_key: Some(URL_SAFE_NO_PAD.encode(public.as_bytes()).into()),
             title: format!("Public {name} instance").into(),
-            idempotency_key: super::super::sqlite::id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         let identity = mutation(&f.admin, &input);

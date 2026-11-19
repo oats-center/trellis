@@ -3,6 +3,7 @@
   import type { apis } from "$lib/trellis-apis";
   import { isErr } from "@oatscenter/result";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
@@ -185,7 +186,7 @@
           ...(footer.trim() ? { footer: footer.trim() } : {}),
         },
         expectedRevision: revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       })
       .take();
     if (isErr(result)) error = projectConsoleError(result).message;
@@ -206,7 +207,7 @@
       .portalThemesDelete({
         ...(target ? { clientId: target } : {}),
         expectedRevision: revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       })
       .take();
     if (isErr(result)) error = projectConsoleError(result).message;

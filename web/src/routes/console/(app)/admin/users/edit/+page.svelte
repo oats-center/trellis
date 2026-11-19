@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getInitials } from "$lib/control-panel.ts";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { apis } from "$lib/trellis-apis";
   import { page } from "$app/state";
   import { beforeNavigate, goto } from "$app/navigation";
@@ -88,7 +89,7 @@
       !canPerform(authority.authority, "usersUpdate")
     )
       return;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const input: apis.auth.UsersUpdateInput = {
       userId: user.principalId,
       ...(displayName.trim() !== user.displayName
@@ -159,7 +160,7 @@
         .usersDelete({
           userId: target.principalId,
           expectedRevision: target.account.principal.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       if (scope.key === key) await goto(resolve("/admin/users"));

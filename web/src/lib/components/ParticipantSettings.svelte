@@ -3,6 +3,7 @@
   import type { JsonValue } from "@oatscenter/trellis/generated";
   import { onMount } from "svelte";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { formatDate } from "$lib/format";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -277,7 +278,7 @@
             values,
             secrets,
             ...(revision === undefined ? {} : { expectedRevision: revision }),
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow(),
       "Settings saved.",
@@ -310,7 +311,7 @@
                 ? { secrets: nulled }
                 : { values: nulled }),
             ...(revision === undefined ? {} : { expectedRevision: revision }),
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow(),
       done,
@@ -337,7 +338,7 @@
             target: current.target,
             revision: revision.revision,
             expectedRevision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow(),
       "Earlier settings restored.",
@@ -362,7 +363,7 @@
           .configRevisionsDelete({
             target: current.target,
             revision: revision.revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow(),
       "Earlier version deleted.",

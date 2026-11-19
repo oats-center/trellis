@@ -68,7 +68,7 @@ export async function seedServiceWithoutResources(
     // Console tests seed this beside the resource Provider, which serves the
     // same API.
     acknowledgeSharedApis: true,
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
   });
   return { deploymentId: created.deployment.deploymentId, displayName };
 }
@@ -129,7 +129,7 @@ export async function seedDeviceDeployment(
   });
   const created = await runtime.callAdminRpc("authDeploymentsCreate", {
     title: displayName,
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
     kind: "device",
     participantId: participants.Device.participant.identity,
     packageEvidence: types.AuthPackageEvidenceCodec.decode(

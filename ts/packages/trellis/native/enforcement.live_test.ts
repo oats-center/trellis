@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
 import { trustInstallationCa } from "../../trellis-testkit/src/tls_trust.ts";
@@ -221,7 +222,7 @@ test(
       const kicked = await admin
         .connectionsKick({
           attachmentId: target.attachmentId,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       assert.equal(kicked.enforcement.pendingKicks, 1n);

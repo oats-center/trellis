@@ -1,6 +1,7 @@
 <script lang="ts">
   import { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { onDestroy, untrack } from "svelte";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -78,7 +79,7 @@
       await trellis
         .authorizationSessionsRevoke({
           authorizationSessionId: session.authorizationSessionId,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       if (scope.key === key) await load();
@@ -101,7 +102,10 @@
     reset = null;
     try {
       const result = await trellis
-        .usersPasswordResetCreate({ userId, idempotencyKey: ulid() })
+        .usersPasswordResetCreate({
+          userId,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        })
         .orThrow();
       if (scope.key === key) reset = result;
     } catch (cause) {

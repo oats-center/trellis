@@ -15,6 +15,7 @@ import { Result } from "@oatscenter/trellis";
 import type { OperationRefData } from "@oatscenter/trellis";
 import { isErr } from "@oatscenter/result";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import {
   apps,
@@ -54,7 +55,7 @@ test("an in-flight upload transfer finishes with exact bytes across automatic gr
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: providerGrant.grantId,
         expectedRevision: providerGrant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       let service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -172,7 +173,7 @@ test("an in-flight upload transfer finishes with exact bytes across automatic gr
           principalId: providerGrant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const adopted = await runtime.waitFor(
           async () => {
@@ -475,7 +476,7 @@ test("download endAck retires the last caller and provider generation leases", a
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: providerGrant.grantId,
         expectedRevision: providerGrant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const provider = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -515,7 +516,7 @@ test("download endAck retires the last caller and provider generation leases", a
           await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
             grantId: callerGrant.grantId,
             expectedRevision: callerGrant.revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           // Renew the original consented credential after setup reduction, before
           // physical admission: revocation retires an already admitted session.
@@ -579,13 +580,13 @@ test("download endAck retires the last caller and provider generation leases", a
               principalId: callerGrant.principalId,
               capabilityId,
               expectedRevision: 0n,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
             await runtime.callAdminRpc("authCapabilityGrantsGrant", {
               principalId: providerGrant.principalId,
               capabilityId,
               expectedRevision: 0n,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
             // Observe both promotions within this grant's actual validity window.
             // Reserve the final ten seconds for endAck-driven retirement, not expiry.

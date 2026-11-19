@@ -722,7 +722,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
             ...(config.values ? { values: config.values } : {}),
             ...(config.secrets ? { secrets: config.secrets } : {}),
             ...(revision === undefined ? {} : { expectedRevision: revision }),
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
         }
         return key;
@@ -1098,7 +1098,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       displayName: args.name,
       ...(args.email !== undefined ? { email: args.email } : {}),
       password,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const user = Object.freeze({
       principalId: created.principalId,
@@ -1156,7 +1156,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         development: true,
         impliedConsent: [],
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       this.#clientRegistrations.set(clientId, registration);
     }
@@ -1172,7 +1172,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
           clientId,
           packageEvidence: args.contract.packageEvidence as JsonValue,
           requestId: args.contract.id,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         this.#configDeclarations.set(clientId, declared);
       }

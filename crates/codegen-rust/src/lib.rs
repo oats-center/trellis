@@ -925,10 +925,12 @@ fn render_type_definition(
                 -> &Self::Target {{ &self.0 }} }}\nimpl From<{inner}> for {name} {{ fn \
                 from(value: {inner}) -> Self {{ Self(value) }} }}\n"
             );
-            if matches!(
-                primitive,
-                Primitive::String | Primitive::Timestamp | Primitive::Ulid
-            ) {
+            if primitive == Primitive::Ulid {
+                out.push_str(&format!(
+                    "impl std::fmt::Display for {name} {{ fn fmt(&self, formatter: &mut \
+                    std::fmt::Formatter<'_>) -> std::fmt::Result {{ self.0.fmt(formatter) }} }}\n"
+                ));
+            } else if matches!(primitive, Primitive::String | Primitive::Timestamp) {
                 out.push_str(&format!(
                     "impl AsRef<str> for {name} {{ fn as_ref(&self) -> &str {{ \
                     self.0.as_ref() }} }}\nimpl std::fmt::Display for {name} {{ fn \

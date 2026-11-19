@@ -5,6 +5,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstream } from "@nats-io/jetstream";
 import { Result, type SessionCaller } from "@oatscenter/trellis";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
   apps,
@@ -288,7 +289,7 @@ for (const closeWhileHeld of [false, true]) {
             await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
               grantId: grant.grantId,
               expectedRevision: grant.revision,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
             const withheld = await runtime.waitFor(
               () => {

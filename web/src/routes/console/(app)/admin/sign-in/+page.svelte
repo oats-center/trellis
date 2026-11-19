@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import type { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
@@ -168,7 +169,7 @@
             localSignUp: localUsers && localSignUp,
             passwordMinLength,
             expectedRevision: settings.revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
       } catch (cause) {
@@ -186,7 +187,7 @@
       const target = {
         providerId: provider.providerId,
         expectedRevision: provider.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       };
       try {
         if (on) await trellis.oidcProvidersEnable(target).orThrow();
@@ -234,7 +235,7 @@
           roleClaim: groupsClaim.trim(),
           claimFreshnessSeconds: selected?.claimFreshnessSeconds ?? 3600,
           expectedRevision: selected?.revision ?? 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       editing = false;
@@ -250,7 +251,7 @@
         .oidcProvidersDelete({
           providerId: provider.providerId,
           expectedRevision: provider.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       if (selected?.providerId === provider.providerId) editing = false;

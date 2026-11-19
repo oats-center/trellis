@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import type { apis } from "$lib/trellis-apis";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
@@ -80,7 +81,7 @@
           externalRole: group.trim(),
           roleIds: chosen,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
       group = "";
@@ -94,7 +95,7 @@
         .oidcRoleMappingsDelete({
           mappingId: mapping.mappingId,
           expectedRevision: mapping.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
     });

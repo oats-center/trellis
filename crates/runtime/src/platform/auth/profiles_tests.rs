@@ -274,7 +274,7 @@ fn linked_profile_keeps_manual_choices_and_unlink_removes_only_upstream_data() {
         .unwrap();
     let unlink = AuthUserIdentityUnlinkRequest {
         identity_id: link.identity_id,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     rpc_users::unlink_identity(&store, &mutation(&actor, &unlink), &unlink, NOW + 7).unwrap();

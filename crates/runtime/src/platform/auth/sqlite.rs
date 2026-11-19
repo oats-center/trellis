@@ -878,11 +878,16 @@ impl SqliteAuthorizationStore {
         now: i64,
         operation: impl FnOnce(&Connection) -> Result<T, AuthError>,
     ) -> Result<T, AuthError> {
-        if identity.actor.is_empty()
-            || ulid::Ulid::from_string(&identity.request_id).is_err()
-            || identity.request_digest != digest(input)?
-        {
-            return Err(AuthError::Invalid("invalid mutation identity".into()));
+        if ulid::Ulid::from_string(&identity.request_id).is_err() {
+            return Err(AuthError::Invalid("idempotencyKey must be a ULID".into()));
+        }
+        if identity.actor.is_empty() {
+            return Err(AuthError::Invalid("mutation has no actor".into()));
+        }
+        if identity.request_digest != digest(input)? {
+            return Err(AuthError::Invalid(
+                "mutation digest does not match its input".into(),
+            ));
         }
         let previous: Option<(String, String)> = connection
             .query_row(

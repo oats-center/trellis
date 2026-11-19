@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import {
   apps as v1Apps,
@@ -142,7 +143,7 @@ test(
       assert(previousAttachment);
       await runtime.callAdminRpc("authConnectionsKick", {
         attachmentId: previousAttachment.attachmentId,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.waitFor(
         async () => {

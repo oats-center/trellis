@@ -16,7 +16,7 @@ fn omitted_role_id_is_generated_once_and_replay_does_not_overwrite_an_update() {
         title: "Reviewers".to_string().into(),
         description: "Read documents".to_string().into(),
         capability_ids: vec![f.read.clone().into()],
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
         assign_to_new_users: false,
     };
@@ -29,7 +29,7 @@ fn omitted_role_id_is_generated_once_and_replay_does_not_overwrite_an_update() {
         title: "Editors".to_string().into(),
         description: "Write documents".to_string().into(),
         capability_ids: vec![f.write.clone().into()],
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
         assign_to_new_users: false,
     };
@@ -61,7 +61,7 @@ fn omitted_role_id_is_generated_once_and_replay_does_not_overwrite_an_update() {
     let delete = AuthRoleDeleteRequest {
         role_id: role_id.parse().unwrap(),
         expected_revision: AuthRevision(2.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let deletion_identity = mutation(&f.admin, &delete);
@@ -90,7 +90,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
         title: "Reviewers".to_string().into(),
         description: "Read".to_string().into(),
         capability_ids: vec![f.read.clone().into()],
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
         assign_to_new_users: false,
     };
@@ -103,7 +103,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
         role_id,
         expected_revision: 0.into(),
         expires_at: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&f.admin, &assign);
@@ -118,7 +118,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
                 .parse()
                 .unwrap(),
         ),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..assign.clone()
     };
     let updated = assign_role(&f.store, &mutation(&f.admin, &update), &update, NOW + 1).unwrap();
@@ -134,13 +134,13 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
     let revoke = AuthRoleRevokeRequest {
         assignment_id: updated.assignment.assignment_id,
         expected_revision: AuthRevision(2.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let revoke_identity = mutation(&f.admin, &revoke);
     let revoked = revoke_assignment(&f.store, &revoke_identity, &revoke, NOW + 2).unwrap();
     let recreated_input = AuthRoleAssignRequest {
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..assign.clone()
     };
     let recreated = assign_role(
@@ -164,7 +164,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
     );
     let stale = AuthRoleRevokeRequest {
         expected_revision: AuthRevision(1.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..revoke
     };
     assert!(matches!(
@@ -191,7 +191,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
     let deleted_role = AuthRoleDeleteRequest {
         role_id,
         expected_revision: AuthRevision(1.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     delete_role(
@@ -203,12 +203,12 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
     .unwrap();
     let new_role = AuthRolePutRequest {
         role_id: Some(role_id),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..role
     };
     put_role(&f.store, &mutation(&f.admin, &new_role), &new_role, NOW + 6).unwrap();
     let new_assignment = AuthRoleAssignRequest {
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..recreated_input
     };
     let current = assign_role(
@@ -225,7 +225,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
     let old_generation = AuthRoleRevokeRequest {
         assignment_id: recreated.assignment.assignment_id,
         expected_revision: AuthRevision(1.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -265,7 +265,7 @@ fn policy_lists_apply_filters_and_resume_without_duplicating_items() {
             title: "Team".to_string().into(),
             description: "Access".to_string().into(),
             capability_ids: vec![capability.clone().into()],
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
             assign_to_new_users: false,
         };
@@ -278,7 +278,7 @@ fn policy_lists_apply_filters_and_resume_without_duplicating_items() {
             role_id,
             expected_revision: 0.into(),
             expires_at: None,
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         assignments.push(
@@ -407,7 +407,7 @@ fn grant_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids() {
         capability_id: f.read.clone().into(),
         expected_revision: 0.into(),
         expires_at: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let identity = mutation(&f.admin, &grant);
@@ -422,7 +422,7 @@ fn grant_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids() {
                 .parse()
                 .unwrap(),
         ),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..grant.clone()
     };
     let updated =
@@ -436,13 +436,13 @@ fn grant_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids() {
     let revoke = AuthCapabilityRevokeRequest {
         grant_id: updated.grant.grant_id,
         expected_revision: AuthRevision(2.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let revoke_identity = mutation(&f.admin, &revoke);
     let revoked = revoke_grant(&f.store, &revoke_identity, &revoke, NOW + 2).unwrap();
     let recreated_input = AuthCapabilityGrantRequest {
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..grant.clone()
     };
     let recreated = grant_capability(
@@ -463,7 +463,7 @@ fn grant_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids() {
     );
     let stale = AuthCapabilityRevokeRequest {
         expected_revision: AuthRevision(1.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..revoke
     };
     assert!(matches!(
@@ -674,7 +674,7 @@ fn roles_marked_for_new_users_are_given_to_users_created_afterwards() {
         title: title.to_string().into(),
         description: String::new().into(),
         capability_ids: vec![capability.to_string().into()],
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
         assign_to_new_users,
     };
@@ -692,7 +692,7 @@ fn roles_marked_for_new_users_are_given_to_users_created_afterwards() {
             display_name: username.to_string().into(),
             password: None,
             identities: None,
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         let user = crate::platform::auth::rpc_users::create_user(
@@ -728,7 +728,7 @@ fn roles_marked_for_new_users_are_given_to_users_created_afterwards() {
     let unmarked = AuthRolePutRequest {
         role_id: Some(base.role.role_id),
         expected_revision: 1.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..role("Members", &f.read, false)
     };
     put_role(&f.store, &mutation(&f.admin, &unmarked), &unmarked, NOW + 2).unwrap();

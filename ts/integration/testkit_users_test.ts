@@ -157,7 +157,7 @@ test(
         await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
           grantId: grant.grantId,
           expectedRevision: grant.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(async () =>
           (await b1.echo({ value: "read" })).isErr(),
@@ -210,7 +210,7 @@ test(
           userId,
           enabled: false,
           expectedRevision: current.account.principal.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await assert.rejects(() =>
           runtime.registerClient({

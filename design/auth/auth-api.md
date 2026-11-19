@@ -299,7 +299,9 @@ entitlements. Changing who holds an administrative capability, directly or
 through a role or identity-provider mapping, requires `trellis.auth.v1:platform.manage`.
 Mutation authorization and idempotency replay are checked in the same SQL
 transaction using the current principal, login/credential, exact authority
-revision, and expiry.
+revision, and expiry. Every Auth mutation's `idempotencyKey` is a ULID
+(`AuthIdempotencyKey = ulid`), so request validation refuses any other key and
+names the field.
 
 ## Events And Post-Commit Work
 

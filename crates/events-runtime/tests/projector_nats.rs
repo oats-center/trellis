@@ -411,7 +411,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         admin
             .authorization_sessions_revoke(&AuthAuthorizationSessionRevokeRequest {
                 authorization_session_id: session.authorization_session_id,
-                idempotency_key: ulid::Ulid::generate().to_string().into(),
+                idempotency_key: trellis_protocol::model::Ulid::generate().into(),
                 extra: Default::default(),
             })
             .await

@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { type BrowserContext, chromium, type Page } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { join } from "node:path";
@@ -358,7 +359,7 @@ export async function createOrdinaryUserWithPassword(
   user: { username: string; password: string; name?: string },
 ) {
   const created = await runtime.callAdminRpc("authUsersCreate", {
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
     displayName: user.name ?? user.username,
     username: user.username,
     password: user.password,

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import type { apis } from "$lib/trellis-apis";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -121,7 +122,7 @@
       input: Object.freeze({
         resourceId: resource.resourceId,
         expectedRevision: resource.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       }) satisfies apis.auth.ResourcesRemoveInput,
       name: resource.localName,
       owner: `${resource.ownerKind} ${resource.ownerId}`,

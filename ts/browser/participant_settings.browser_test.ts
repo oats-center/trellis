@@ -407,7 +407,7 @@ test("a service added without its IDL starts with the settings entered when it w
           updateId: pending.updateId,
           decision: "approved",
           expectedRevision: pending.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         },
       );
       const service = await connecting;
@@ -454,13 +454,13 @@ test("a plain value saved under a name the IDL then declares secret is never sho
         identityPublicKey: Buffer.from(
           nacl.sign.keyPair.fromSeed(seed).publicKey,
         ).toString("base64url"),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       // Before Trellis has the IDL, the key is saved as a plain value.
       await runtime.callAdminRpc("authConfigSet", {
         target: { claimId: claim.claimId },
         values: { endpoint: "https://one.example", apiKey: plain },
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
 
       // The service connects with an IDL that declares apiKey secret.
@@ -488,7 +488,7 @@ test("a plain value saved under a name the IDL then declares secret is never sho
           updateId: pending.updateId,
           decision: "approved",
           expectedRevision: pending.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         },
       );
       const target = { deploymentId: update.deploymentId };

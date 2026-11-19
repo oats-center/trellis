@@ -60,7 +60,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
       );
       const input = {
         expectedCurrentKeyId: trust.issuer.keyId,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       };
       const [rotated, replay] = await Promise.all([
         runtime.callAdminRpc("authIssuersRotate", input),
@@ -72,7 +72,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
       await assert.rejects(
         runtime.callAdminRpc("authIssuersRotate", {
           ...input,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         }),
       );
       assert.deepEqual(
@@ -81,7 +81,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
       );
       const second = await runtime.callAdminRpc("authIssuersRotate", {
         expectedCurrentKeyId: rotated.keyId,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert.notEqual(second.keyId, rotated.keyId);
       const freshCredentials = await loginNativeTestClient({
@@ -179,7 +179,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
           );
           const third = await runtime.callAdminRpc("authIssuersRotate", {
             expectedCurrentKeyId: second.keyId,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           await runtime.waitFor(
             async () =>
@@ -188,7 +188,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
           );
           await runtime.callAdminRpc("authIssuersRevoke", {
             keyId: second.keyId,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           const userSession = async () =>
             (
@@ -227,7 +227,7 @@ test("startup refuses replaced OAuth custody and restored custody retains client
       await runtime.callAdminRpc("authUsersCreate", {
         username: "retained-custody",
         displayName: "Retained custody",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       })
     ).user;
     const key = join(runtime.workdir, "config", "trellis", "secrets.toml");
@@ -271,7 +271,7 @@ test("authenticating the issuer chain accepts links its shared owner already hol
     await credentials.session.close();
     const rotated = await runtime.callAdminRpc("authIssuersRotate", {
       expectedCurrentKeyId: anchor.issuer.keyId,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const link: { nextPublicKey: string } = JSON.parse(
       new TextDecoder().decode(rotated.rotation),
@@ -366,7 +366,7 @@ test("a renewal holding authority from the previous key survives the next rotati
       try {
         const first = await runtime.callAdminRpc("authIssuersRotate", {
           expectedCurrentKeyId: original.keyId,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await hold.held;
         const mark = gate.connection(proxy.id)?.outboundContexts.length ?? 0;
@@ -382,7 +382,7 @@ test("a renewal holding authority from the previous key survives the next rotati
         // is held.
         await runtime.callAdminRpc("authIssuersRotate", {
           expectedCurrentKeyId: first.keyId,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(
           () => {

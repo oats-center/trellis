@@ -62,7 +62,7 @@ test("generated deployment mutations preserve replay and reject stale revisions"
       ),
       // "catalog-source" already serves this API.
       acknowledgeSharedApis: true,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     };
     const { deployment: created } = await runtime.callAdminRpc(
       "authDeploymentsCreate",
@@ -91,14 +91,14 @@ test("generated deployment mutations preserve replay and reject stale revisions"
     await runtime.callAdminRpc("authDeploymentsDisable", {
       deploymentId: created.deploymentId,
       expectedRevision: created.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await assert.rejects(
       () =>
         runtime.callAdminRpc("authDeploymentsEnable", {
           deploymentId: created.deploymentId,
           expectedRevision: created.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         }),
       revisionConflict,
     );
@@ -118,7 +118,7 @@ test("generated user creation replays the original account and rejects changed i
     const input = {
       username: `replay-${ulid()}`,
       displayName: "Replay User",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     };
     const created = await runtime.callAdminRpc("authUsersCreate", input);
     const replayed = await runtime.callAdminRpc("authUsersCreate", input);

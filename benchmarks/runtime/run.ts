@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { inspect, parseArgs, promisify } from "node:util";
 import { chromium } from "playwright";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { z } from "zod";
 import {
   type TrellisTestClientParticipant,
@@ -423,7 +424,7 @@ try {
       development: true,
       impliedConsent: [],
       expectedRevision: 0n,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
   }
   const options = {

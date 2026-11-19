@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Result } from "@oatscenter/trellis";
 import {
   checkDeviceActivation,
@@ -50,7 +51,7 @@ test("device enrollment and independent companion consent survive restart withou
     const provisioned = await runtime.devices.provision({
       deploymentId,
       title: "Device",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     assert(provisioned.provisioningSecret);
     const rootSecret = crypto.getRandomValues(new Uint8Array(32));
@@ -104,7 +105,7 @@ test("device enrollment and independent companion consent survive restart withou
         confirmationCode: activation.confirmationCode,
         expectedRevision: review.revision,
         decision: "approved",
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await activation.waitForOnlineApproval();
       await assert.rejects(() =>
@@ -145,7 +146,7 @@ test("device enrollment and independent companion consent survive restart withou
             reviewId,
             confirmationCode: activation.confirmationCode,
             expectedRevision: approved.review.revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
       } finally {
@@ -209,7 +210,7 @@ test("device enrollment and independent companion consent survive restart withou
       await runtime.callAdminRpc("authDeploymentsDisable", {
         deploymentId: current.deploymentId,
         expectedRevision: current.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await assert.rejects(() =>
         TrellisDevice.connect(connectOptions).orThrow(),

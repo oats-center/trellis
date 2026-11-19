@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connectNativeClient } from "@oatscenter/trellis/native";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
@@ -19,14 +20,14 @@ test("user updates preserve identity while disabling retires authorization and r
       development: true,
       impliedConsent: [],
       expectedRevision: 0n,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const password = "user-management-password-123";
     const create = {
       username: "managed-user",
       displayName: "Before",
       password,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     };
     const created = (await runtime.callAdminRpc("authUsersCreate", create))
       .user;
@@ -46,7 +47,7 @@ test("user updates preserve identity while disabling retires authorization and r
         principalId: userId,
         capabilityId,
         expectedRevision: 0n,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
     const login = await loginNativeTestClient({
       issuer: runtime.trellisUrl,
@@ -75,7 +76,7 @@ test("user updates preserve identity while disabling retires authorization and r
           enabled: true,
           expectedRevision: created.account.principal.revision,
           expectedProfileRevision: created.account.profileRevision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
       ).user;
       assert.equal(
@@ -102,7 +103,7 @@ test("user updates preserve identity while disabling retires authorization and r
           userId,
           enabled: false,
           expectedRevision: renamed.account.principal.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
       ).user;
       await runtime.waitFor(async () =>
@@ -122,7 +123,7 @@ test("user updates preserve identity while disabling retires authorization and r
         userId,
         enabled: true,
         expectedRevision: disabled.account.principal.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const restored = await loginNativeTestClient({
         issuer: runtime.trellisUrl,

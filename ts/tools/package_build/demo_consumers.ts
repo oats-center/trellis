@@ -115,7 +115,7 @@ try {
     const provisioned = await runtime.devices.provision({
       deploymentId: codecs.ulid.decode(deployment.deploymentId),
       title: "Native demo device",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     assert(provisioned.provisioningSecret);
     // Spawned demos trust exactly this runtime's installation CA.
@@ -195,7 +195,7 @@ try {
               confirmationCode,
               expectedRevision: review.revision,
               decision: "approved",
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
             approved = true;
           }

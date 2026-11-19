@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { deadline } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager, type ConsumerInfo } from "@nats-io/jetstream";
@@ -580,7 +581,7 @@ test("a granted optional RPC waits for coverage rather than being classified as 
         await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
           grantId: grant.grantId,
           expectedRevision: grant.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(
           () =>

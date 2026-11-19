@@ -438,7 +438,7 @@ mod tests {
             dark_colors: palette,
             copy: serde_json::from_value(serde_json::json!({})).unwrap(),
             expected_revision: 0.into(),
-            idempotency_key: "key".to_owned().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         edit(&mut request);

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { err, isErr, ok } from "@oatscenter/result";
   import { apis } from "$lib/trellis-apis";
   import { page } from "$app/state";
@@ -208,7 +209,7 @@
     // separately drifting selection.
     const dispatchTarget = submitTarget;
     if (dispatchTarget === "" || !canSubmit) return;
-    const idempotencyKey = ulid();
+    const idempotencyKey = codecs.ulid.decode(ulid());
     const actingIdentity = authority.identity;
     const token = scope.begin();
     const intent = captureIntent<apis.auth.DevicesProvisionInput>({

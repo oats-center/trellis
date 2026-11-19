@@ -102,7 +102,7 @@ async fn sdk_rotation(mode: &str) {
             display_name: "Other user".to_string().into(),
             password: Some("another strong local password".to_string().into()),
             identities: None,
-            idempotency_key: ulid::Ulid::generate().to_string().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         let other = super::super::rpc_users::create_user(

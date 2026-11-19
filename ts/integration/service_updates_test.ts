@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import nacl from "tweetnacl";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import { participants as breakingProviders } from "../../integration/fixtures/client-upgrade-breaking/packages/client-upgrade/index.js";
 import { participants as upgradeProviders } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
@@ -72,7 +73,7 @@ test("a service update waits for approval only when it asks for new access", asy
         updateId: pending.updateId,
         decision: "approved",
         expectedRevision: pending.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       },
     );
     assert.equal(approved.state, "applied");
@@ -113,7 +114,7 @@ test("a service update waits for approval only when it asks for new access", asy
       updateId: reattach.updateId,
       decision: "approved",
       expectedRevision: reattach.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const fixed = await reattaching;
     assert.deepEqual(await fixed.kv.extended.get("kept").orThrow(), {
@@ -169,7 +170,7 @@ test("a build that implements a force-replaced API connects and installs itself"
       acknowledgeConsentImpact: true,
       roleEdits: [],
       mappingEdits: [],
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
 
     // The build that implements the replacement asks for nothing new, so it
@@ -268,7 +269,7 @@ test("a Rust service waits for its update's approval, then connects under it", a
         updateId: pending.updateId,
         decision: "approved",
         expectedRevision: pending.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.waitFor(() => output.includes("service update stored"));
       assert.match(output, /service update stored approved/);
@@ -333,7 +334,7 @@ test("providing a new API waits for approval; sharing one another service serves
         updateId: shared.updateId,
         decision: "approved",
         expectedRevision: shared.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       }),
       /callers' requests would be split/,
     );
@@ -342,7 +343,7 @@ test("providing a new API waits for approval; sharing one another service serves
       decision: "approved",
       acknowledgeSharedApis: true,
       expectedRevision: shared.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await (await sharing).stop();
 
@@ -372,7 +373,7 @@ test("providing a new API waits for approval; sharing one another service serves
       updateId: pending.updateId,
       decision: "approved",
       expectedRevision: pending.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const service = await connecting;
     await service.stop();
@@ -407,7 +408,7 @@ test("an update keeps an administrator's revocation and grants what new resource
     await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
       grantId: read.grantId,
       expectedRevision: read.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
 
     // A narrower build keeps users.read and drops bindings.readJobs: it asks
@@ -456,7 +457,7 @@ test("an update keeps an administrator's revocation and grants what new resource
       updateId: pending.updateId,
       decision: "approved",
       expectedRevision: pending.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await (await connecting).stop();
   });
@@ -478,7 +479,7 @@ test("a service claim takes whatever service connects first, once an administrat
       title: "third-party",
       instanceTitle: "third-party",
       identityPublicKey: claimed.identityPublicKey,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     assert.equal(claim.state, "waiting");
 
@@ -509,7 +510,7 @@ test("a service claim takes whatever service connects first, once an administrat
         updateId: pending.updateId,
         decision: "approved",
         expectedRevision: pending.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       },
     );
     assert.equal(approved.state, "applied");
@@ -538,13 +539,13 @@ test("a service claim takes whatever service connects first, once an administrat
         title: "unwanted",
         instanceTitle: "unwanted",
         identityPublicKey: unwanted.identityPublicKey,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       },
     );
     await runtime.callAdminRpc("authServiceClaimsRemove", {
       claimId: removable.claimId,
       expectedRevision: removable.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await assert.rejects(
       TrellisService.connect({
@@ -575,7 +576,7 @@ test("a service that uses an API no provider has brought yet is added first, and
         identityPublicKey: Buffer.from(
           nacl.sign.keyPair.fromSeed(seed).publicKey,
         ).toString("base64url"),
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const connecting = TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -599,7 +600,7 @@ test("a service that uses an API no provider has brought yet is added first, and
             updateId: pending.updateId,
             decision: "approved",
             expectedRevision: pending.revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           },
         );
         assert.equal(update.state, "applied");
@@ -718,7 +719,7 @@ test("a provider announced while the caller is renewing is reached without waiti
           assert(current);
           await runtime.callAdminRpc("authIssuersRotate", {
             expectedCurrentKeyId: current.keyId,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           await hold.held;
           const announced = gate.waitForDelivery(notice, proxy.id);
@@ -841,7 +842,7 @@ test("a Rust service connecting to a claim waits for approval, then runs as the 
       identityPublicKey: Buffer.from(
         nacl.sign.keyPair.fromSeed(seed).publicKey,
       ).toString("base64url"),
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     const argv = rustFixtureArgv("service_update");
     const child = spawnTracked(argv[0], argv.slice(1), {
@@ -875,7 +876,7 @@ test("a Rust service connecting to a claim waits for approval, then runs as the 
         updateId: pending.updateId,
         decision: "approved",
         expectedRevision: pending.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       try {
         await runtime.waitFor(() => output.includes("service update stored"));

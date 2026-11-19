@@ -348,7 +348,7 @@ staticPasswords:
             trellis_rs::auth::certificate_fingerprint(&fixture_ca),
         )),
         expected_revision: 0u64.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let put_identity = mutation(&f.admin, &put);
@@ -368,7 +368,7 @@ staticPasswords:
         display_name: "Alice".to_string().into(),
         password: Some("initial alice password".to_string().into()),
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     f.principal = super::super::rpc_users::create_user(
@@ -388,7 +388,7 @@ staticPasswords:
         email: Some("admin@example.com".into()),
         password: None,
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..account.clone()
     };
     let shadow = super::super::rpc_users::create_user(
@@ -466,7 +466,7 @@ staticPasswords:
         .as_secs() as i64;
     let browser_request = trellis_runtime_apis::__types::trellis::AuthIdentityLinkCreateRequest {
         provider_id: provider.parse().unwrap(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let browser_link = super::super::oauth::account::create_link(
@@ -478,7 +478,7 @@ staticPasswords:
     .unwrap();
     let admin_request = trellis_runtime_apis::__types::trellis::AuthIdentityLinkCreateRequest {
         provider_id: provider.parse().unwrap(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let admin_link = super::super::oauth::account::create_link(
@@ -528,7 +528,7 @@ staticPasswords:
     ] {
         let request = trellis_runtime_apis::__types::trellis::AuthIdentityLinkCreateRequest {
             provider_id: provider.parse().unwrap(),
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         let created = super::super::oauth::account::create_link(
@@ -571,7 +571,7 @@ staticPasswords:
             assert_eq!(login.status(), reqwest::StatusCode::SEE_OTHER);
             let wrong = trellis_runtime_apis::__types::trellis::AuthIdentityLinkCreateRequest {
                 provider_id: provider.parse().unwrap(),
-                idempotency_key: id().into(),
+                idempotency_key: trellis_protocol::model::Ulid::generate().into(),
                 extra: Default::default(),
             };
             let wrong = super::super::oauth::account::create_link(
@@ -743,7 +743,7 @@ staticPasswords:
             let reset_request =
                 trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateRequest {
                     user_id: f.principal.parse().unwrap(),
-                    idempotency_key: id().into(),
+                    idempotency_key: trellis_protocol::model::Ulid::generate().into(),
                     extra: Default::default(),
                 };
             let reset = super::super::oauth::account::create_reset(
@@ -1287,7 +1287,7 @@ staticPasswords:
     let delete = trellis_runtime_apis::__types::trellis::AuthOIDCRoleMappingDeleteRequest {
         mapping_id: mapping_id.parse().unwrap(),
         expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let delete_identity = mutation(&f.admin, &delete);
@@ -1434,7 +1434,7 @@ staticPasswords:
             extra: Default::default(),
         },
         expected_revision: revision,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     super::super::rpc_credentials::update_client_sign_up(
@@ -1532,14 +1532,14 @@ staticPasswords:
     let delete = trellis_runtime_apis::__types::trellis::AuthUserDeleteRequest {
         user_id: found.user.principal_id,
         expected_revision: found.user.account.as_ref().unwrap().principal.revision,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     super::super::rpc_users::delete_user(&authority, &mutation(&f.admin, &delete), &delete, now)
         .unwrap();
     assert!(find_newcomer().is_none());
     let retry = trellis_runtime_apis::__types::trellis::AuthUserDeleteRequest {
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..delete
     };
     assert!(matches!(
@@ -1568,7 +1568,7 @@ staticPasswords:
             client_secret: None,
             certificate_fingerprint: Some(fingerprint),
             expected_revision: expected_revision.into(),
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             ..put.clone()
         }
     };
@@ -1617,7 +1617,7 @@ staticPasswords:
         |revision| trellis_runtime_apis::__types::trellis::AuthOIDCProviderMutationRequest {
             provider_id: repinned.provider.provider_id,
             expected_revision: revision,
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
     let off = state_change(repinned.provider.revision);
@@ -1733,7 +1733,7 @@ fn a_deleted_provider_frees_its_issuer_for_a_new_provider() {
     let delete = trellis_runtime_apis::__types::trellis::AuthOIDCProviderMutationRequest {
         provider_id: first.parse().unwrap(),
         expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1.into()),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     super::super::rpc_users::delete_provider(

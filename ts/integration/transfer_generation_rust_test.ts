@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apps,
   participants,
@@ -32,7 +33,7 @@ test("Rust downloads survive growth and open after the original attachment close
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const caller = await runtime.connectClient({
         name: "rust-transfer-caller",
@@ -256,7 +257,7 @@ test("Rust downloads survive growth and open after the original attachment close
           principalId: grant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         child.stdin.write("REFRESH\n");
         await runtime.waitFor(() =>

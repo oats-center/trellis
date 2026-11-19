@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { participants } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { participants as runtimeParticipants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
@@ -42,7 +43,7 @@ test(
             development: true,
             redirectUris: ["http://localhost:49761/callback"],
             impliedConsent: [],
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           }),
         );
         const created = await run("clients", "put", requestPath);
@@ -62,7 +63,7 @@ test(
             development: true,
             redirectUris: ["http://localhost:49761/callback"],
             impliedConsent: [],
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           }),
         );
         await assert.rejects(run("clients", "put", requestPath));
@@ -279,7 +280,7 @@ test(
             development: true,
             redirectUris: ["http://127.0.0.1/callback"],
             impliedConsent: [],
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           }),
         );
         const runtimeSource = new URL(
@@ -307,7 +308,7 @@ test(
             development: true,
             redirectUris: ["http://127.0.0.1/replaced"],
             impliedConsent: [],
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           }),
         );
         await mkdir(`${directory}/broken`);

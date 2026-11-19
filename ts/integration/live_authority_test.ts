@@ -85,7 +85,7 @@ test("G02/T14 revoking the caller fences a quiet live observation", async () => 
         assert(session?.loginSessionId);
         const revoke = {
           loginSessionId: codecs.ulid.decode(session.loginSessionId),
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         };
         await admin.sessionsRevoke(revoke).orThrow();
 

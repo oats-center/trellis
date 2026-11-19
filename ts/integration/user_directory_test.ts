@@ -82,7 +82,7 @@ test(
         userId: disabledId,
         enabled: false,
         expectedRevision: admin.account.principal.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert.equal(
         (await a.usersList({ search: "Directory Hidden" }).orThrow()).items
@@ -109,7 +109,7 @@ test(
           await a.usersCreate({
             username: `forbidden-${ulid()}`,
             displayName: "Forbidden",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
         ).isErr(),
       );
@@ -119,7 +119,7 @@ test(
             userId: bobId,
             enabled: false,
             expectedRevision: 1n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
         ).isErr(),
       );
@@ -175,7 +175,7 @@ test(
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grants.items[0].grantId,
         expectedRevision: grants.items[0].revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await runtime.waitFor(async () =>
         (await a.usersList({}, { timeout: 1000 })).isErr(),

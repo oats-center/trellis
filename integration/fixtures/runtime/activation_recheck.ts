@@ -43,14 +43,14 @@ try {
       packageEvidence: types.AuthPackageEvidenceCodec.decode(
         participant.packageEvidence,
       ),
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     })
     .orThrow();
   const provisioned = await admin
     .devicesProvision({
       deploymentId: deployment.deploymentId,
       title: "Rechecked device",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     })
     .orThrow();
   const args = {
@@ -74,7 +74,7 @@ try {
       confirmationCode: pending.confirmationCode,
       expectedRevision: review.revision,
       decision: "approved",
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     })
     .orThrow();
   await pending.waitForOnlineApproval();
@@ -121,7 +121,7 @@ try {
     .devicesDisable({
       instanceId: instance.instanceId,
       expectedRevision: instance.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     })
     .orThrow();
   await assert.rejects(() => TrellisDevice.connect(connectOptions).orThrow());

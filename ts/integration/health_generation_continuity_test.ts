@@ -4,6 +4,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { Result } from "@oatscenter/trellis";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apps,
   participants,
@@ -33,7 +34,7 @@ test("service health survives generation reaping and stop fences sampling", asyn
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -107,7 +108,7 @@ test("service health survives generation reaping and stop fences sampling", asyn
           principalId: grant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(
           async () => {

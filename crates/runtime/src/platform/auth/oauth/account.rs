@@ -1437,7 +1437,7 @@ mod tests {
         for expires in [true, false] {
             let request = AuthIdentityLinkCreateRequest {
                 provider_id: provider.parse().unwrap(),
-                idempotency_key: id().into(),
+                idempotency_key: trellis_protocol::model::Ulid::generate().into(),
                 extra: Default::default(),
             };
             let created = create_link(

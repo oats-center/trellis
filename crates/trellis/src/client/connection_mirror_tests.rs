@@ -64,7 +64,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         display_name: "Mirror user".to_string().into(),
         password: Some("ordinary mirror user password".to_string().into()),
         identities: None,
-        idempotency_key: ulid::Ulid::generate().to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let user: AuthUserGetResponse = serde_json::from_value(
@@ -88,7 +88,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         capability_id: Query::CALLER_CAPABILITIES[0].to_string().into(),
         expected_revision: 0.into(),
         expires_at: None,
-        idempotency_key: ulid::Ulid::generate().to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     admin
@@ -109,7 +109,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         capability_id: inspect.clone().into(),
         expected_revision: 0.into(),
         expires_at: None,
-        idempotency_key: ulid::Ulid::generate().to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let granted: AuthCapabilityGrantResponse = serde_json::from_value(
@@ -302,7 +302,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
     let revoke = AuthCapabilityRevokeRequest {
         grant_id: granted.grant.grant_id,
         expected_revision: granted.grant.revision,
-        idempotency_key: ulid::Ulid::generate().to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     admin
@@ -366,7 +366,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
             .unwrap()
             .parse()
             .unwrap(),
-        idempotency_key: ulid::Ulid::generate().to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     admin
@@ -558,7 +558,7 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
             .unwrap()
             .parse()
             .unwrap(),
-        idempotency_key: ulid::Ulid::generate().to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     admin

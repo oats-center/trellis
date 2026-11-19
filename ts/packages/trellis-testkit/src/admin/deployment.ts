@@ -1,5 +1,5 @@
 import { createAuth } from "@oatscenter/trellis";
-import type { codecs } from "@oatscenter/trellis/generated";
+import { codecs } from "@oatscenter/trellis/generated";
 import { ulid } from "ulid";
 import { generateSessionSeed } from "../auth/random.ts";
 import type {
@@ -95,7 +95,7 @@ export async function installParticipant(
       expectedAcceptedRevision: review.currentAcceptedRevision ?? 0n,
       mappingEdits: [],
       roleEdits: [],
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     context.acceptedApis.set(api.identity, evidence.rootDigest);
   }
@@ -123,7 +123,7 @@ export async function createDeployment(
       args.contract.packageEvidence,
     ),
     ...(args.acknowledgeSharedApis ? { acknowledgeSharedApis: true } : {}),
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
   });
   context.deploymentIds.set(deployment, created.deploymentId);
   context.deploymentParticipants.set(deployment, args.contract.identity);
@@ -164,7 +164,7 @@ export async function applyParticipant(
         args.contract.packageEvidence,
       ),
       ...(args.acknowledgeSharedApis ? { acknowledgeSharedApis: true } : {}),
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
     context.deploymentRevisions.set(deploymentId, applied.revision);
     context.deploymentDigests.set(
@@ -226,7 +226,7 @@ export async function provisionServiceInstanceOnly(
     deploymentId,
     identityPublicKey: auth.sessionKey,
     title: "service",
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
   });
   return { seed, sessionKey: auth.sessionKey, instanceId: instance.instanceId };
 }

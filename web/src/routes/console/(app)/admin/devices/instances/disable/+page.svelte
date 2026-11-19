@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { isErr } from "@oatscenter/result";
   import { type apis } from "$lib/trellis-apis";
   import { page } from "$app/state";
@@ -114,7 +115,7 @@
     const target = selectedInstance;
     if (!target || pending || loading || error) return;
     const requestedAtCapture = requestedInstanceId;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     const intent = captureIntent<DisableInput>({
       operation: "devicesDisable",
       targetId: target.instanceId,

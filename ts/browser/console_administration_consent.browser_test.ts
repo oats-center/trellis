@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   connectNativeClient,
   discoverNativeOAuth,
@@ -134,7 +135,7 @@ for (const selection of ["select-all", "ordinary"] as const) {
           const created = await cli.usersCreate({
             username: `consented-${ulid().toLowerCase()}`,
             displayName: "Consented",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           strictEqual(created.isOk(), selection === "select-all");
         } finally {

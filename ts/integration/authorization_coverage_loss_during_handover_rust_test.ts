@@ -8,6 +8,7 @@ import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apis,
   apps,
@@ -118,7 +119,7 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
           await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
             grantId: grant.grantId,
             expectedRevision: grant.revision,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           const argv = rustFixtureArgv("transport_growth_subject");
           const child = spawnTracked(argv[0], argv.slice(1), {
@@ -207,7 +208,7 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
                   principalId: grant.principalId,
                   capabilityId,
                   expectedRevision: 0n,
-                  idempotencyKey: ulid(),
+                  idempotencyKey: codecs.ulid.decode(ulid()),
                 });
                 const candidate = await deadline(hold.held, 90_000);
                 assert.notEqual(candidate.connectionId, original.id);

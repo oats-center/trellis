@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Result } from "@oatscenter/trellis";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { PermissionViolationError } from "@nats-io/nats-core";
 import {
@@ -195,7 +196,7 @@ test("generated keyset clients cross the live runtime boundary", async () => {
       for (let index = 0; index < 51; index++) {
         await consoleClient
           .usersCreate({
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
             displayName: `Pagination user ${index}`,
             username: `pagination-user-${index.toString().padStart(2, "0")}`,
           })

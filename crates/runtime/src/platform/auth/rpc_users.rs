@@ -429,7 +429,9 @@ pub(super) fn put_provider(
     now: i64,
 ) -> Result<AuthOIDCProviderGetResponse, AuthError> {
     if identity.request_digest != digest(input)? {
-        return Err(AuthError::Invalid("invalid mutation identity".into()));
+        return Err(AuthError::Invalid(
+            "mutation digest does not match its input".into(),
+        ));
     }
     if (!input.role_claim.is_empty() && !input.role_claim.starts_with('/'))
         || input.scopes.len() > 32
@@ -1179,7 +1181,9 @@ pub(super) fn create_user(
     now: i64,
 ) -> Result<AuthUserGetResponse, AuthError> {
     if identity.request_digest != digest(input)? {
-        return Err(AuthError::Invalid("invalid mutation identity".into()));
+        return Err(AuthError::Invalid(
+            "mutation digest does not match its input".into(),
+        ));
     }
     let username = input.username.trim().to_lowercase();
     if username.is_empty()
@@ -1421,7 +1425,9 @@ pub(super) fn change_password(
     now: i64,
 ) -> Result<AuthMutationResult, AuthError> {
     if identity.request_digest != digest(input)? {
-        return Err(AuthError::Invalid("invalid mutation identity".into()));
+        return Err(AuthError::Invalid(
+            "mutation digest does not match its input".into(),
+        ));
     }
     let audit = serde_json::json!({"requestDigest": identity.request_digest});
     let safe_identity = Mutation {

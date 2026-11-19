@@ -62,7 +62,7 @@ async function prepareOperationProvider(runtime: TrellisTestRuntime) {
   await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
     grantId: grant.grantId,
     expectedRevision: grant.revision,
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
   });
   return {
     ...instance,
@@ -339,7 +339,7 @@ test("Rust operation execution survives transport growth and accepts work after 
           principalId: providerInstance.grantee,
           capabilityId: CAPABILITY_EXTEND,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
 
         // The provider's physical transport actually grows: a new attachment
@@ -501,7 +501,7 @@ test("Rust concurrent held RPC callbacks survive transport cutover", async () =>
           principalId: providerInstance.grantee,
           capabilityId: CAPABILITY_EXTEND,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
 
         await runtime.waitFor(
@@ -584,7 +584,7 @@ test("Rust baseline generation is reclaimed after growth while held and fresh ca
           principalId: providerInstance.grantee,
           capabilityId: CAPABILITY_EXTEND,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
 
         await runtime.waitFor(
@@ -703,7 +703,7 @@ async function revokeProviderExtension(
   await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
     grantId: grant.grantId,
     expectedRevision: grant.revision,
-    idempotencyKey: ulid(),
+    idempotencyKey: codecs.ulid.decode(ulid()),
   });
 }
 
@@ -748,7 +748,7 @@ test("Rust capability reduction retires the old session and the provider serves 
       principalId: providerInstance.grantee,
       capabilityId: CAPABILITY_EXTEND,
       expectedRevision: 0n,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
 
     await withOperationProviderLeg(
@@ -822,7 +822,7 @@ test("Rust held job completes once across transport growth and a fresh job is ac
           principalId: providerInstance.grantee,
           capabilityId: CAPABILITY_EXTEND,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
 
         await runtime.waitFor(
@@ -1056,7 +1056,7 @@ for (const rawConsumer of [false, true]) {
                   principalId: providerInstance.grantee,
                   capabilityId: CAPABILITY_EXTEND,
                   expectedRevision: 0n,
-                  idempotencyKey: ulid(),
+                  idempotencyKey: codecs.ulid.decode(ulid()),
                 });
 
                 await runtime.waitFor(
@@ -1207,7 +1207,7 @@ test("Rust durable event intake recovers when its held delivery's attachment is 
           principalId: providerInstance.grantee,
           capabilityId: CAPABILITY_EXTEND,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
 
         await runtime.waitFor(
@@ -1247,7 +1247,7 @@ test("Rust durable event intake recovers when its held delivery's attachment is 
 
         await runtime.callAdminRpc("authConnectionsKick", {
           attachmentId: wideDigest,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         // Prove the receiving socket is gone while the handler is still held.
         await runtime.waitFor(
@@ -1323,7 +1323,7 @@ test("Rust provider keeps retrying while its deployment is disabled and resumes 
         const disabled = await runtime.callAdminRpc("authDeploymentsDisable", {
           deploymentId,
           expectedRevision: current.deployment.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
           reason: null,
         });
         await runtime.waitFor(
@@ -1338,7 +1338,7 @@ test("Rust provider keeps retrying while its deployment is disabled and resumes 
         await runtime.callAdminRpc("authDeploymentsEnable", {
           deploymentId,
           expectedRevision: disabled.deployment.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const resumed = await runtime.waitFor(
           async () => {

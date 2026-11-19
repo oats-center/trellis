@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
 import { apis, apps } from "../../trellis-testkit/trellis/index.js";
@@ -47,7 +48,7 @@ test(
             username: `management-${suffix}`,
             password: userPassword,
             displayName: "Limited management caller",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         assert(user.account);
@@ -66,7 +67,7 @@ test(
             capabilityIds: [...approved, declined],
             assignToNewUsers: false,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         await admin
@@ -74,7 +75,7 @@ test(
             principalId: user.principalId,
             roleId: role.roleId,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const clientId = `management-${suffix}`;
@@ -88,7 +89,7 @@ test(
             development: true,
             impliedConsent: [],
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const login = await loginNativeTestClient({
@@ -120,7 +121,7 @@ test(
           capabilityIds: [],
           assignToNewUsers: false,
           expectedRevision: role.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         assert.equal(declinedAttempt.isErr(), true);
         assert.equal(
@@ -154,7 +155,7 @@ test(
             capabilityIds: [],
             assignToNewUsers: false,
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
         const stored = await admin

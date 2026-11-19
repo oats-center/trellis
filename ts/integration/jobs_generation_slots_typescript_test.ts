@@ -6,6 +6,7 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
   admittedConnections,
@@ -32,7 +33,7 @@ test("managed Jobs keeps two execution slots and receives new work after generat
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
         grantId: grant.grantId,
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -106,7 +107,7 @@ test("managed Jobs keeps two execution slots and receives new work after generat
           principalId: grant.principalId,
           capabilityId,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(async () => (await service.extend({})).isOk(), {
           timeoutMs: 90_000,

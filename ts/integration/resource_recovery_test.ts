@@ -36,7 +36,7 @@ test("deployment disable and enable preserve KV data and queued work", async () 
       const disabled = await runtime.callAdminRpc("authDeploymentsDisable", {
         deploymentId: codecs.ulid.decode(identity.deploymentId),
         expectedRevision: current.deployment.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       await service.stop();
       await exit;
@@ -49,7 +49,7 @@ test("deployment disable and enable preserve KV data and queued work", async () 
       await runtime.callAdminRpc("authDeploymentsEnable", {
         deploymentId: codecs.ulid.decode(identity.deploymentId),
         expectedRevision: disabled.deployment.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,

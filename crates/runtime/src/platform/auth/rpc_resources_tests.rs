@@ -222,7 +222,7 @@ async fn detached_state_retains_values_and_delayed_destroy_cannot_erase_replacem
     let removal = AuthResourceRemoveRequest {
         resource_id: resource.resource_id,
         expected_revision: resource.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     let manual = mutation(&f.admin, &removal);
@@ -422,7 +422,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     let active_remove = AuthResourceRemoveRequest {
         resource_id: active.resource_id.clone(),
         expected_revision: active.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -447,7 +447,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         deployment_id: current.deployment_id,
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(&omitted).unwrap()).unwrap(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     super::super::rpc_deployments::apply_deployment(
@@ -487,7 +487,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         acknowledge_shared_apis: None,
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..apply.clone()
     };
     super::super::rpc_deployments::apply_deployment(
@@ -505,7 +505,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
                 .into(),
         ),
         title: "New version process".to_string().into(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     super::super::rpc_deployments::provision_instance(
@@ -549,7 +549,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         acknowledge_shared_apis: None,
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(&reduced).unwrap()).unwrap(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..apply.clone()
     };
     assert!(matches!(
@@ -564,7 +564,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     let detach = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
         expected_revision: current.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..apply.clone()
     };
     super::super::rpc_deployments::apply_deployment(
@@ -580,7 +580,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     let removal = AuthResourceRemoveRequest {
         resource_id: resource.resource_id.clone(),
         expected_revision: resource.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     assert!(matches!(
@@ -650,7 +650,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         Err(AuthError::Conflict)
     ));
     let other_request = AuthResourceRemoveRequest {
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..removal.clone()
     };
     assert!(matches!(
@@ -692,7 +692,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     let restore = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
         expected_revision: current.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..readd
     };
     super::super::rpc_deployments::apply_deployment(
@@ -767,7 +767,7 @@ blobs\"; ttl 0; }}{}",
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(changed_kind).unwrap())
             .unwrap(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     super::super::rpc_deployments::apply_deployment(
@@ -801,7 +801,7 @@ blobs\"; ttl 0; }}{}",
                 .into(),
         ),
         title: "Store version".to_string().into(),
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     super::super::rpc_deployments::provision_instance(
@@ -831,7 +831,7 @@ blobs\"; ttl 0; }}{}",
     let remove_kv = AuthResourceRemoveRequest {
         resource_id: retained.resource_id,
         expected_revision: retained.revision,
-        idempotency_key: super::super::sqlite::id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     remove_resource(

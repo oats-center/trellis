@@ -423,9 +423,10 @@ impl SqliteAuthorizationStore {
         let principal = id();
         // Keep the password and its hash out of the audited input.
         let input = (&username, name, email);
+        let request = trellis_protocol::model::Ulid::generate();
         let mutation = Mutation {
             actor: principal.clone(),
-            request_id: id(),
+            request_id: request.to_string(),
             request_digest: digest(&input)?,
             session: None,
         };
@@ -459,7 +460,7 @@ impl SqliteAuthorizationStore {
                     expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(
                         1u64.into(),
                     ),
-                    idempotency_key: mutation.request_id.clone().into(),
+                    idempotency_key: request.into(),
                     extra: Default::default(),
                 },
                 now,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { apis } from "../packages/trellis-testkit/trellis/index.js";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
@@ -83,7 +84,7 @@ test(
               description: "",
               capabilityIds: [],
               assignToNewUsers: false,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
               ...input,
             }),
           );
@@ -98,7 +99,7 @@ test(
             principalId: after,
             roleId: role.roleId,
             expectedRevision: "0",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           }),
         );
         assert.deepEqual((await run("roles", "show", role.roleId)).members, [
@@ -161,7 +162,7 @@ test(
         ).keyId;
         await runtime.callAdminRpc("authIssuersRotate", {
           expectedCurrentKeyId: signer,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         assert.equal((await run("whoami")).loggedIn, true);
         assert.equal((await run("issuers", "revoke", signer)).keyId, signer);

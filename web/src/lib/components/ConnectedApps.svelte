@@ -17,6 +17,7 @@
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import { humanizeName } from "$lib/format";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { canPerform } from "$lib/console/operations.ts";
   import { getNotifications } from "$lib/notifications.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
@@ -169,7 +170,7 @@
         .delegationsRevoke({
           delegationId: delegation.delegationId,
           expectedRevision: delegation.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .take();
       if (isErr(result)) failed += 1;

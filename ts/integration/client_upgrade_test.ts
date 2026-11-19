@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Result } from "@oatscenter/trellis";
 import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
 import {
@@ -122,7 +123,7 @@ test("native request expansion and revised capability meaning require fresh expl
         principalId: grant.principalId,
         capabilityId: apps.Caller.request.requiredCapabilities[0],
         expectedRevision: grant.revision,
-        idempotencyKey: ulid(),
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
       const current = await login(revised.Caller.request);
       assert.notEqual(current.grantId, expanded.grantId);

@@ -178,7 +178,7 @@ pub(super) fn rotate_issuer(
 ) -> Result<trellis_protocol::SignedIssuerRotation, AuthError> {
     let input = trellis_runtime_apis::types::AuthIssuerRotateRequest {
         expected_current_key_id: store.issuer()?.key_id.into(),
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
     store.rotate_issuer(&mutation(actor, &input), &input, now)
@@ -191,7 +191,7 @@ pub(super) fn create_user(store: &SqliteAuthorizationStore, actor: &str, now: i6
         family_name: None,
         email: None,
         identities: None,
-        idempotency_key: id().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         username: id().into(),
         display_name: "Test user".to_owned().into(),
         password: None,

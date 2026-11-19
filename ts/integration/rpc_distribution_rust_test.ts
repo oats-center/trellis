@@ -3,6 +3,7 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
@@ -39,7 +40,7 @@ for (const grow of [false, true]) {
             await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
               grantId: grant.grantId,
               expectedRevision: grant.revision,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
           const nativeIdentity = await runtime.registerService({
             name: "distribution-rust",
@@ -115,7 +116,7 @@ for (const grow of [false, true]) {
                 principalId: grant.principalId,
                 capabilityId,
                 expectedRevision: 0n,
-                idempotencyKey: ulid(),
+                idempotencyKey: codecs.ulid.decode(ulid()),
               });
               await runtime.waitFor(
                 () =>

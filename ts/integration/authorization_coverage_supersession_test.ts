@@ -5,6 +5,7 @@ import { deadline } from "@nats-io/nats-core";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   apps,
   participants,
@@ -40,7 +41,7 @@ test("a superseding capability publication does not wait for a stale mirror repl
         await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
           grantId: grant.grantId,
           expectedRevision: grant.revision,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
       const service = await TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -82,7 +83,7 @@ test("a superseding capability publication does not wait for a stale mirror repl
           principalId: first.principalId,
           capabilityId: firstCapability,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         const candidate = await deadline(hold.held, 90_000);
         assert(!before.has(candidate.connectionId));
@@ -91,7 +92,7 @@ test("a superseding capability publication does not wait for a stale mirror repl
           principalId: second.principalId,
           capabilityId: secondCapability,
           expectedRevision: 0n,
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         });
         await runtime.waitFor(async () => (await service.extend2({})).isOk(), {
           timeoutMs: 90_000,

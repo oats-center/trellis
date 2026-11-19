@@ -4,6 +4,7 @@
   import { capabilityArea } from "$lib/console/capability_areas.ts";
   import { onDestroy, untrack } from "svelte";
   import { ulid } from "ulid";
+  import { codecs } from "@oatscenter/trellis/generated";
   import { apis } from "$lib/trellis-apis";
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -171,7 +172,7 @@
               principalId: id,
               capabilityId: capability,
               expectedRevision: "0",
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
               ...expiry,
             }),
           )
@@ -230,7 +231,7 @@
       return;
     busy = true;
     error = null;
-    const key = ulid();
+    const key = codecs.ulid.decode(ulid());
     try {
       const expiry =
         !existing && expiresAt

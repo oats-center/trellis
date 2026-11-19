@@ -15,6 +15,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type Browser, chromium } from "playwright";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { build } from "vite";
 
 import {
@@ -114,7 +115,7 @@ export { request } from "client-upgrade-fixture/apps/BrowserCaller";
             development: true,
             impliedConsent: [],
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           const {
             user: { principalId },
@@ -125,7 +126,7 @@ export { request } from "client-upgrade-fixture/apps/BrowserCaller";
               principalId,
               capabilityId,
               expectedRevision: 0n,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
           }
           browser = await chromium.launch({

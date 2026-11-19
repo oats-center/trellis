@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type Browser, chromium } from "playwright";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 import { build } from "vite";
 
 import {
@@ -168,7 +169,7 @@ test("an app asks for an optional capability once on load, and when used, in pla
             development: true,
             impliedConsent: [],
             expectedRevision: 0n,
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           });
           const {
             user: { principalId },
@@ -181,7 +182,7 @@ test("an app asks for an optional capability once on load, and when used, in pla
               principalId,
               capabilityId,
               expectedRevision: 0n,
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             });
           }
 

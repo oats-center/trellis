@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import { apis } from "../packages/trellis-testkit/trellis/index.js";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
@@ -123,7 +124,7 @@ test(
             externalRole: emails.first,
             roleIds: [staff.roleId],
             expectedRevision: "0",
-            idempotencyKey: ulid(),
+            idempotencyKey: codecs.ulid.decode(ulid()),
           }),
         );
         // With sign-up on, a sign-in that missed its link would make a
@@ -220,7 +221,7 @@ test(
               userId: administrator,
               identity: { providerId, subject: subject(emails.third) },
               expectedRevision: String(await revision(administrator)),
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             }),
           ),
           failedWith("access_denied"),
@@ -278,7 +279,7 @@ test(
               userId: second,
               identity: { providerId, subject: "stale-revision" },
               expectedRevision: String(Number(settled) - 1),
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             }),
           ),
           failedWith("revision_conflict"),
@@ -307,7 +308,7 @@ test(
               username: "third",
               displayName: "Third",
               identities: subs.map((sub) => ({ providerId, subject: sub })),
-              idempotencyKey: ulid(),
+              idempotencyKey: codecs.ulid.decode(ulid()),
             }),
           );
         await assert.rejects(

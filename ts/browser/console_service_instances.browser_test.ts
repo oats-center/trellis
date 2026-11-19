@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import nacl from "tweetnacl";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -28,7 +29,7 @@ test("replicas titled alike stay distinguishable, and one turned off is turned b
           identityPublicKey: Buffer.from(
             nacl.sign.keyPair.fromSeed(randomBytes(32)).publicKey,
           ).toString("base64url"),
-          idempotencyKey: ulid(),
+          idempotencyKey: codecs.ulid.decode(ulid()),
         },
       );
       provisioned.push(instance);
@@ -38,7 +39,7 @@ test("replicas titled alike stay distinguishable, and one turned off is turned b
     await runtime.callAdminRpc("authServiceInstancesDisable", {
       instanceId: off.instanceId,
       expectedRevision: off.revision,
-      idempotencyKey: ulid(),
+      idempotencyKey: codecs.ulid.decode(ulid()),
     });
 
     const context = await launchProfile(runtime);

@@ -2433,7 +2433,7 @@ async fn people_create_their_own_account_only_where_the_installation_and_the_app
             title: "Members".to_string().into(),
             description: String::new().into(),
             capability_ids: vec![f.read.clone().into()],
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             assign_to_new_users: true,
             extra: Default::default(),
         };
@@ -2448,7 +2448,7 @@ async fn people_create_their_own_account_only_where_the_installation_and_the_app
                 local_sign_up: true,
                 password_min_length: 12.into(),
                 expected_revision: AuthRevision(1u64.into()),
-                idempotency_key: id().into(),
+                idempotency_key: trellis_protocol::model::Ulid::generate().into(),
                 extra: Default::default(),
             };
             super::super::sign_in::update(&f.store, &mutation(&f.admin, &open), &open, now)
@@ -2575,7 +2575,7 @@ async fn people_create_their_own_account_only_where_the_installation_and_the_app
                 extra: Default::default(),
             },
             expected_revision: AuthRevision(1u64.into()),
-            idempotency_key: id().into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
         };
         let allowed = super::super::rpc_credentials::update_client_sign_up(
