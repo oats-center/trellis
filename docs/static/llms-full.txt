@@ -85,7 +85,14 @@ An API defines models and public RPC, event, live, and operation surfaces. A
 deployable participant (`service` or `device`) identifies the API it implements,
 its selected dependencies, and its runtime resources. Apps and agents instead
 author application request descriptors, exported through the generated `apps`
-namespace; they are not installable principals.
+namespace; they are not installable principals. `app X { ... }` declares a
+browser app (redirect sign-in); `agent X { ... }` declares a native app, such
+as a desktop, mobile, or command-line tool, that signs in with Device Code
+(`native app X` is not a declaration). Only the kind differs: `use`
+blocks, capabilities, consent, State, and `config` are the same. The generated
+request carries `kind: "browser"` or `kind: "native"`, the kind is part of the
+package digest, and each sign-in entry point refuses the other kind with an
+error naming both. Register the app's OAuth client with the same kind.
 
 A use body selects whole capabilities, named `area.action`, where the action
 may itself be dotted (`activation.confirmations.read`):
@@ -388,7 +395,10 @@ development flag, redirect URIs, capabilities allowed without asking, sign-up,
 and optional `--source` settings declaration; each answer is also a flag
 (`--kind`, `--title`, `--description`, `--[no-]development`, `--redirect-uri`,
 `--allow-without-asking`, `--[no-]sign-up-password`, `--[no-]sign-up-providers`,
-`--source`, `--app`). `clients edit ID` asks the same questions from the
+`--source`, `--app`). When `--source` names the app (with `--app` when the
+project has several), the kind comes from its IDL declaration and a
+contradicting `--kind` is refused; Auth also refuses attaching an app's
+settings to a client of the other kind. `clients edit ID` asks the same questions from the
 current values, or changes only the flags given. `put FILE` (`-` for stdin)
 sends generated `AuthOAuthClientPutRequest` JSON for scripts. Mutations are
 revision-fenced. Put keeps an existing app's enabled state, so saving a
@@ -599,7 +609,9 @@ The SDK validates OAuth state, callback, PKCE, and DPoP bindings before
 retaining credentials. Browser custody uses nonextractable keys in IndexedDB and
 cross-tab refresh ownership; Rust native custody uses owner-only files and a
 cross-process family lock; Node custody is process-local memory unless the
-application supplies a provider. A valid login can authenticate new consent
+application supplies a provider. Device Code needs a native OAuth client: against
+a browser client, `/device_authorization` answers `unauthorized_client` with an
+`error_description` naming both kinds. A valid login can authenticate new consent
 without another password. Invalid login requires authentication; valid-login
 authorization denial surfaces its machine code and is not a reason to start a
 login loop. Consent cannot grant missing account entitlement.
@@ -1548,8 +1560,14 @@ trust; NATS needs it to hand the connection to Trellis.
 
 Node native applications import `@oatscenter/trellis/native`, not browser
 custody. Use `discoverNativeOAuth`, `NativeOAuthClient.open` with explicit scope
-and trust, Device Code or `resume`, and `connectNativeClient` with a generated
-native request. For Device Code, show `verificationUriComplete` (the link with
+and trust, Device Code or `resume`, and `connectNativeClient` with the
+generated request of an `agent` (native app) declaration. `startDevice` and
+`connectNativeClient` refuse a browser `app` request with reason
+`AppKindMismatch` and a message naming both kinds; Device Code against a
+browser-kind OAuth client fails with `OAuthUnauthorizedClient` and the server's
+message naming both kinds. `NativeOAuthClient.open` reports a malformed scope,
+such as a `credentialHandle` that is not a ULID, as `InvalidScope` with a
+message naming the field. For Device Code, show `verificationUriComplete` (the link with
 the code filled in; fall back to `verificationUri`) and `userCode` for
 comparison. The entrypoint is Node/npm-only and defaults to process-local
 memory, with no credential files or SQLite requirement. Retain an explicit
@@ -2080,7 +2098,8 @@ transport handoffs.
 #### Native applications
 
 Apps and agents acquire native OAuth admission through the selected
-authorization origin. Pass the verified `NativeOAuthSession` and explicit broker
+authorization origin; an `agent` request's generated `Request::KIND` is
+`AppKind::Native`. Pass the verified `NativeOAuthSession` and explicit broker
 endpoints to `UserConnectOptions::new(nats_servers, timeout_ms, session)`. Use
 Authorization Code with PKCE or Device Code according to the registered native
 client's flow. For Device Code, show `verification_uri_complete()` (the link

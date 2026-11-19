@@ -36,8 +36,9 @@ pub enum ClientsCommand {
         /// project, so administrators can set them.
         #[arg(long, value_name = "PATH")]
         source: Option<PathBuf>,
-        /// The app or agent request in `--source` that declares the settings,
+        /// The `app` or `agent` in `--source` that declares the settings,
         /// such as `acme-orders.Panel`; needed when the project has several.
+        /// Its IDL kind is the registration's kind.
         #[arg(long, requires = "source", value_name = "APP")]
         app: Option<String>,
     },
@@ -77,6 +78,7 @@ pub enum ClientKind {
     group(clap::ArgGroup::new("sign_up_providers_state").args(["sign_up_providers", "no_sign_up_providers"]))
 )]
 pub struct ClientSettingsArgs {
+    /// Browser or native; taken from the IDL when `--source` names the app.
     #[arg(long, value_enum)]
     pub kind: Option<ClientKind>,
     /// Name users see when the app asks them to sign in.
@@ -113,8 +115,9 @@ pub struct ClientSettingsArgs {
     /// project, so administrators can set them.
     #[arg(long, value_name = "PATH")]
     pub source: Option<PathBuf>,
-    /// The app or agent request in `--source` that declares the settings,
+    /// The `app` or `agent` in `--source` that declares the settings,
     /// such as `acme-orders.Panel`; needed when the project has several.
+    /// Its IDL kind is the registration's kind.
     #[arg(long, requires = "source", value_name = "APP")]
     pub app: Option<String>,
 }

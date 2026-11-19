@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
-use trellis_idl::{compile_evidence, ConfigFieldDefinition, PackageGraph};
+use trellis_idl::{
+    compile_evidence, AppKind, AppRequestDefinition, ConfigFieldDefinition, PackageGraph,
+};
 use trellis_rs::client::EventDescriptor;
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{
@@ -224,7 +226,24 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                             serde_json::from_value(input.package_evidence.clone())?;
                         let graph = compile_evidence(evidence)
                             .map_err(|error| AuthError::Invalid(error.to_string()))?;
-                        app_fields(&graph, &input.request_id)?;
+                        let declared = match app_request(&graph, &input.request_id)?.kind() {
+                            AppKind::Browser => "browser",
+                            AppKind::Native => "native",
+                        };
+                        // The declaration names the app the client signs in
+                        // as, so its IDL kind must be the registration's kind.
+                        let registered: String = connection.query_row(
+                            "SELECT kind FROM auth_oauth_clients WHERE client_id=?1",
+                            [input.client_id.to_string()],
+                            |row| row.get(0),
+                        )?;
+                        if declared != registered {
+                            return Err(AuthError::Invalid(format!(
+                                "{} is declared as a {declared} app, but app {} is registered \
+                                as a {registered} app",
+                                input.request_id, input.client_id
+                            )));
+                        }
                         // Connected users of the app reread only when told, so a
                         // declaration that changes what they read is announced.
                         let read = |connection: &Connection| -> Result<Vec<_>, AuthError> {
@@ -653,7 +672,7 @@ impl Declared {
         };
         let graph = compile_evidence(decode(&evidence)?)
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
-        let fields = app_fields(&graph, &request)?;
+        let fields = app_request(&graph, &request)?.config().clone();
         Ok(Self {
             graph: Some(graph),
             fields,
@@ -719,17 +738,16 @@ pub(super) fn declaration(
     Ok(entry)
 }
 
-/// The settings one app request in `graph` declares.
-fn app_fields(
-    graph: &PackageGraph,
+/// One app request `graph` declares.
+fn app_request<'a>(
+    graph: &'a PackageGraph,
     request: &str,
-) -> Result<BTreeMap<String, ConfigFieldDefinition>, AuthError> {
+) -> Result<&'a AppRequestDefinition, AuthError> {
     graph
         .packages()
         .values()
         .flat_map(|package| package.app_requests().values())
         .find(|definition| definition.identity().as_str() == request)
-        .map(|definition| definition.config().clone())
         .ok_or_else(|| AuthError::Invalid(format!("the package declares no app named {request}")))
 }
 

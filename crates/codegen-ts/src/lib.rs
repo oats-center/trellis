@@ -3004,6 +3004,7 @@ mod tests {
             }
             service Worker { implements orders; implements catalog; kv optional cache { title "Cache"; description "Cache"; schema PrivateState; version 2; accepts { 1: PrivateV1; } } job work { title "Work"; description "Work queue."; payload Empty; deadline 45s; retry { attempts 3; backoff [5s, 30s]; } } }
             app Viewer { use orders { required capability items.read; capability items.work; capability items.observe; } }
+            agent Tool { use orders { required capability items.read; } }
             device Sensor { app optional Console { use orders { required capability items.read; capability items.work; } state values { title "Values"; description "Values"; schema Node; } } }
             "#,
         );
@@ -3025,6 +3026,14 @@ if (!worker.implements.some((api) => api === Orders) || viewer !== apps.Viewer.r
   throw new Error("A package subpath loaded a second copy of a generated module");
 }
 const requested: AppRequestDescriptor = apps.Viewer.request;
+// The declaration's kind reaches the descriptor's type and value, which the
+// sign-in entry points check.
+const nativeKind: "native" = apps.Tool.request.kind;
+const browserKind: "browser" = apps.Viewer.request.kind;
+if (nativeKind !== "native" || browserKind !== "browser" ||
+  apps.Tool.request.requiredCapabilities.join() !== "example.orders.v1:items.read") {
+  throw new Error("Generated app requests lost their declared kind or capability");
+}
 const codec = apps.Sensor_Console.request.states.values.codec;
 const decoded = codec.decode(JSON.parse(JSON.stringify(codec.encode({
   id: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),

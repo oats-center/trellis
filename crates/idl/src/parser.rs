@@ -108,6 +108,11 @@ impl<'a> Parser<'a> {
                 kind @ ("service" | "device" | "app" | "agent") => {
                     Declaration::Participant(self.participant(kind.to_owned(), false)?)
                 }
+                "native" => {
+                    return Err(self.error_previous(
+                        "a native app is declared with 'agent', such as 'agent Tool { ... }'",
+                    ))
+                }
                 other => {
                     return Err(self.error_previous(format!("unsupported declaration '{other}'")))
                 }

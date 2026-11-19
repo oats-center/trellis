@@ -134,8 +134,20 @@ pub(super) async fn clients(format: OutputFormat, command: ClientsCommand) -> mi
                 serde_json::from_slice(&read_input(&input)?).into_diagnostic()?;
             // Everything local is checked before the first write, so a bad
             // source leaves the stored registration as it was.
-            let declaration =
-                settings_declaration(source.as_deref(), app.as_deref(), &request.client_id)?;
+            let declaration = match &source {
+                Some(source) => {
+                    let app = SourceApp::compile(source, app.as_deref())?;
+                    app.check_kind(
+                        match request.kind {
+                            auth_types::AuthPublicClientKind::Native => ClientKind::Native,
+                            _ => ClientKind::Browser,
+                        },
+                        &request.client_id,
+                    )?;
+                    Some(app.declaration(&request.client_id)?)
+                }
+                None => None,
+            };
             let response = auth.o_auth_clients_put(&request).await.into_diagnostic()?;
             if let Some(declaration) = declaration {
                 if let Err(error) = auth.config_apps_declare(&declaration).await {
@@ -311,47 +323,91 @@ fn read_input(path: &std::path::Path) -> miette::Result<Vec<u8>> {
     }
 }
 
-/// The settings declaration for `client_id` compiled from an app's source
-/// project, checked before any write.
-fn settings_declaration(
-    source: Option<&std::path::Path>,
-    app: Option<&str>,
-    client_id: &str,
-) -> miette::Result<Option<auth_types::AuthConfigAppDeclareRequest>> {
-    let Some(source) = source else {
-        return Ok(None);
-    };
-    let root = source.canonicalize().into_diagnostic()?;
-    let manifest = trellis_idl::project::read_manifest(&root.join("trellis.toml"))?;
-    let compiled = crate::package::compile_project(&root, &manifest)?;
-    let declaring = compiled
-        .root_package()
-        .app_requests()
-        .values()
-        .filter(|request| match app {
-            Some(id) => request.identity().as_str() == id,
-            None => !request.config().is_empty(),
-        })
-        .map(|request| request.identity().as_str().to_owned())
-        .collect::<Vec<_>>();
-    let [request_id] = declaring.as_slice() else {
-        return Err(miette::miette!(
-            help = "Name the app with --app.",
-            "{} in {}",
-            if declaring.is_empty() {
-                "no app declares settings".to_owned()
-            } else {
-                format!("several apps declare settings: {}", declaring.join(", "))
+/// An app request compiled from its source project, checked before any write.
+struct SourceApp {
+    evidence: auth_types::AuthPackageEvidence,
+    request_id: String,
+    kind: ClientKind,
+}
+
+impl SourceApp {
+    /// Compile the project at `source` and find the app `app` names, or else
+    /// the one app there that declares settings.
+    fn compile(source: &std::path::Path, app: Option<&str>) -> miette::Result<Self> {
+        let root = source.canonicalize().into_diagnostic()?;
+        let manifest = trellis_idl::project::read_manifest(&root.join("trellis.toml"))?;
+        let compiled = crate::package::compile_project(&root, &manifest)?;
+        let declaring = compiled
+            .root_package()
+            .app_requests()
+            .values()
+            .filter(|request| match app {
+                Some(id) => request.identity().as_str() == id,
+                None => !request.config().is_empty(),
+            })
+            .collect::<Vec<_>>();
+        let [request] = declaring.as_slice() else {
+            return Err(miette::miette!(
+                help = "Name the app with --app.",
+                "{} in {}",
+                if declaring.is_empty() {
+                    "no app declares settings".to_owned()
+                } else {
+                    format!(
+                        "several apps declare settings: {}",
+                        declaring
+                            .iter()
+                            .map(|request| request.identity().as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+                source.display()
+            ));
+        };
+        Ok(Self {
+            evidence: super::deploy::package_evidence(&compiled)?,
+            request_id: request.identity().as_str().to_owned(),
+            kind: match request.kind() {
+                trellis_idl::AppKind::Browser => ClientKind::Browser,
+                trellis_idl::AppKind::Native => ClientKind::Native,
             },
-            source.display()
-        ));
-    };
-    Ok(Some(wire(serde_json::json!({
-        "clientId": client_id,
-        "packageEvidence": super::deploy::package_evidence(&compiled)?,
-        "requestId": request_id,
-        "idempotencyKey": ulid::Ulid::generate().to_string(),
-    }))?))
+        })
+    }
+
+    /// Refuse to register `client_id` as a kind of app its IDL does not declare.
+    fn check_kind(&self, kind: ClientKind, client_id: &str) -> miette::Result<()> {
+        let name = |kind: ClientKind| match kind {
+            ClientKind::Browser => "browser",
+            ClientKind::Native => "native",
+        };
+        if kind == self.kind {
+            return Ok(());
+        }
+        Err(miette::miette!(
+            help = format!(
+                "Use --kind {}; an existing registration keeps its kind, so give it a new app ID.",
+                name(self.kind)
+            ),
+            "{} is declared as a {} app, but app {client_id} is a {} app",
+            self.request_id,
+            name(self.kind),
+            name(kind)
+        ))
+    }
+
+    /// The settings declaration that attaches this app to `client_id`.
+    fn declaration(
+        &self,
+        client_id: &str,
+    ) -> miette::Result<auth_types::AuthConfigAppDeclareRequest> {
+        wire(serde_json::json!({
+            "clientId": client_id,
+            "packageEvidence": self.evidence,
+            "requestId": self.request_id,
+            "idempotencyKey": ulid::Ulid::generate().to_string(),
+        }))
+    }
 }
 
 /// Whether Auth accepts `uri` as a redirect URI for this kind of app. Auth
@@ -398,6 +454,16 @@ async fn save_client(
     settings: ClientSettingsArgs,
     current: Option<auth_types::AuthOAuthClient>,
 ) -> miette::Result<()> {
+    // An app named in its source project is the kind its IDL declares, so a
+    // native app is not registered as a browser one by mistake.
+    let declared = settings
+        .source
+        .as_deref()
+        .map(|source| SourceApp::compile(source, settings.app.as_deref()))
+        .transpose()?;
+    let given_kind = settings
+        .kind
+        .or(declared.as_ref().map(|declared| declared.kind));
     // An edit asks every question when no setting is given as a flag; an
     // edit given some keeps the rest, as `roles edit` does.
     let asking = match &current {
@@ -416,9 +482,9 @@ async fn save_client(
         }
         None => {
             client_id.is_none()
-                || settings.kind.is_none()
+                || given_kind.is_none()
                 || settings.title.is_none()
-                || (settings.redirect_uris.is_empty() && settings.kind != Some(ClientKind::Native))
+                || (settings.redirect_uris.is_empty() && given_kind != Some(ClientKind::Native))
         }
     };
     let mut form = crate::prompt::Form::new(asking);
@@ -453,8 +519,11 @@ async fn save_client(
             auth_types::AuthPublicClientKind::Native => ClientKind::Native,
             _ => ClientKind::Browser,
         },
-        (_, given) => form.choose("Kind of app", "--kind", given, &kinds, None)?,
+        _ => form.choose("Kind of app", "--kind", given_kind, &kinds, None)?,
     };
+    if let Some(declared) = &declared {
+        declared.check_kind(kind, &client_id)?;
+    }
     let title = form.required(
         "Title users see when the app asks them to sign in",
         "--title",
@@ -582,7 +651,18 @@ async fn save_client(
     for uri in &redirect_uris {
         check_redirect(uri, kind, development).map_err(|message| miette::miette!("{message}"))?;
     }
-    let declaration = settings_declaration(source.as_deref(), app.as_deref(), &client_id)?;
+    // A project named only when asked is checked once it is known.
+    let declared = match (declared, &source) {
+        (Some(declared), _) => Some(declared),
+        (None, Some(source)) => Some(SourceApp::compile(source, app.as_deref())?),
+        (None, None) => None,
+    };
+    if let Some(declared) = &declared {
+        declared.check_kind(kind, &client_id)?;
+    }
+    let declaration = declared
+        .map(|declared| declared.declaration(&client_id))
+        .transpose()?;
     let yes_no = |value: bool| if value { "yes" } else { "no" }.to_owned();
     form.confirm(
         &format!(

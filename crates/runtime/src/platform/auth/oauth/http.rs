@@ -1592,8 +1592,13 @@ async fn portal_logout(
 }
 
 pub(super) fn error(code: ErrorCode) -> Response {
-    let status = StatusCode::from_u16(code.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
-    let mut response = (status, Json(serde_json::json!({"error":code.as_str()}))).into_response();
+    described_error(&oauth_as::error::ErrorResponse::new(code))
+}
+
+/// Reply with an OAuth error and its developer-facing `error_description`.
+pub(super) fn described_error(error: &oauth_as::error::ErrorResponse) -> Response {
+    let status = StatusCode::from_u16(error.error.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+    let mut response = (status, Json(error)).into_response();
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

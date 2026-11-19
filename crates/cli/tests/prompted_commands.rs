@@ -457,6 +457,73 @@ async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one(
     runtime.shutdown().await.unwrap();
 }
 
+/// An app named in its source project is registered as the kind its IDL
+/// declares, so a `native app` never becomes a browser client by mistake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime).await;
+    let source = fixture("client-upgrade");
+    let native = format!("tool-{}", ulid::Ulid::generate()).to_lowercase();
+    // No --kind and no redirect URI: `native app Caller` signs in with a code.
+    let added = cli
+        .json(&[
+            "clients",
+            "add",
+            &native,
+            "--title",
+            "Command-line tool",
+            "--source",
+            &source,
+            "--app",
+            "client-upgrade-fixture.Caller",
+        ])
+        .await["client"]
+        .clone();
+    assert_eq!(added["kind"], "native");
+    assert_eq!(added["redirectUris"], serde_json::json!([]));
+
+    let browser = format!("web-{}", ulid::Ulid::generate()).to_lowercase();
+    let refused = cli
+        .script(&[
+            "clients",
+            "add",
+            &browser,
+            "--kind",
+            "browser",
+            "--title",
+            "Mistaken web app",
+            "--redirect-uri",
+            "https://tool.example.test/callback",
+            "--source",
+            &source,
+            "--app",
+            "client-upgrade-fixture.Caller",
+        ])
+        .await;
+    assert!(!refused.status.success());
+    // The report wraps long lines in a box; compare its words.
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    let words = stderr
+        .replace('│', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        words.contains("client-upgrade-fixture.Caller is declared as a native app, but app")
+            && words.contains("is a browser app")
+            && words.contains("Use --kind native"),
+        "{stderr}"
+    );
+    assert!(!cli
+        .script(&["clients", "get", &browser])
+        .await
+        .status
+        .success());
+
+    runtime.shutdown().await.unwrap();
+}
+
 /// Turning an app off is what an administrator chose; saving its settings,
 /// by `edit` or by `put` from a file, must not turn it back on. Only
 /// `enable` does.

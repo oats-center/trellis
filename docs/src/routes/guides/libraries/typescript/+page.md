@@ -105,6 +105,53 @@ complete Device Code authorization using the generated native request. Ordinary
 provisioned services use their identity seed instead; they need no local user
 credential store.
 
+The request comes from an `agent` declaration in IDL; a plain `app` is a
+browser app. `startDevice` and `connectNativeClient` refuse a browser request
+with an `AppKindMismatch` error that names both kinds. The OAuth client in the
+scope must be registered as native (with no redirect URIs if it signs in only
+with a code): Device Code sign-in against a browser registration fails with
+`OAuthUnauthorizedClient`, and the error message names both kinds.
+
+```ts
+import {
+  connectNativeClient,
+  discoverNativeOAuth,
+  NativeOAuthClient,
+} from "@oatscenter/trellis/native";
+import { ulid } from "ulid";
+import { apps } from "./trellis/index.js";
+
+const request = apps.OrdersTool.request; // agent OrdersTool { ... }
+const server = (
+  await discoverNativeOAuth("https://trellis.example.com")
+).orThrow();
+const login = (
+  await NativeOAuthClient.open({
+    scope: {
+      issuer: server.issuer,
+      instanceId: server.trust.instanceId,
+      account: server.trust.account,
+      clientId: "acme.orders-tool",
+      credentialHandle: ulid(),
+    },
+    trust: server.trust,
+  })
+).orThrow();
+const device = (await login.startDevice(request)).orThrow();
+console.log(`Open ${device.verificationUri} and enter ${device.userCode}`);
+const session = (await device.complete()).orThrow();
+const client = await connectNativeClient({
+  session,
+  servers: server.natsServers,
+  natsSentinel: server.natsSentinel,
+  request,
+}).orThrow();
+```
+
+`open` checks the scope first and reports a malformed one, such as a
+`credentialHandle` that is not a ULID, as `InvalidScope` with a message naming
+the field.
+
 `NativeOAuthClient.open({ scope, trust })` uses a fresh process-local credential
 family. It does not open files or require SQLite. To reconnect as the same user
 within a process, retain a `MemoryNativeOAuthCustody` object and pass it as

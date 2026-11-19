@@ -138,7 +138,11 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
     > => {
       try {
         if (args.request.kind !== "browser")
-          throw new AuthError({ reason: "InvalidCredential" });
+          throw new AuthError({
+            reason: "AppKindMismatch",
+            message: `A browser sign-in needs a browser app request, but '${args.request.id}' is a ${args.request.kind} app request; connect it with connectNativeClient`,
+            context: { expected: "browser", actual: args.request.kind },
+          });
         // An approval popup ends on the app's callback. The window that opened
         // it holds the continuation and reads the outcome; this one only
         // reports where it landed. Any other window, opened by the app or

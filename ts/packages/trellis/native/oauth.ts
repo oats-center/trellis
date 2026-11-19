@@ -144,7 +144,11 @@ export class NativeOAuthClient {
   ): Promise<Result<NativeDeviceAuthorization, AuthError>> {
     return this.#serial(async () => {
       if (request.kind !== "native")
-        throw new AuthError({ reason: "InvalidCredential" });
+        throw new AuthError({
+          reason: "AppKindMismatch",
+          message: `startDevice needs a native app request, but '${request.id}' is a ${request.kind} app request; declare it with 'agent' in IDL`,
+          context: { expected: "native", actual: request.kind },
+        });
       const details = JSON.stringify([
         {
           type: "trellis_capabilities",
@@ -365,8 +369,12 @@ export class NativeOAuthClient {
     });
     if (response.ok) return response.data;
     if (response.status === 429) throw new AuthError({ reason: "OAuthBusy" });
-    const failure = z.object({ error: z.string() }).parse(response.data);
+    const failure = z
+      .object({ error: z.string(), error_description: z.string().optional() })
+      .parse(response.data);
     throw new AuthError({
+      // The server's developer-facing detail, such as a client kind mismatch.
+      message: failure.error_description,
       reason:
         failure.error === "access_denied"
           ? "OAuthAuthorizationDenied"
@@ -375,7 +383,9 @@ export class NativeOAuthClient {
             : failure.error === "authorization_pending" ||
                 failure.error === "slow_down"
               ? failure.error
-              : "OAuthRecoveryRequired",
+              : failure.error === "unauthorized_client"
+                ? "OAuthUnauthorizedClient"
+                : "OAuthRecoveryRequired",
     });
   }
 

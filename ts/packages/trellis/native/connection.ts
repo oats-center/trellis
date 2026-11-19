@@ -196,7 +196,13 @@ export function connectNativeClient<const T extends AppRequestDescriptor>(
   return AsyncResult.from(
     (async () => {
       if (options.request.kind !== "native")
-        return Result.err(new AuthError({ reason: "InvalidCredential" }));
+        return Result.err(
+          new AuthError({
+            reason: "AppKindMismatch",
+            message: `connectNativeClient needs a native app request, but '${options.request.id}' is a ${options.request.kind} app request; declare it with 'agent' in IDL`,
+            context: { expected: "native", actual: options.request.kind },
+          }),
+        );
       const result = (await connectNativeSession(options)).take();
       if (isErr(result)) return Result.err(result.error);
       const connected = result;
