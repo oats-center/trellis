@@ -44,11 +44,10 @@ pub(crate) async fn connect_platform_provider(
     let mut trust = super::auth::blocking(move || reader.runtime_authorization_trust()).await?;
     trust.root_certificates = root_certificates;
     trust.nats_server_name = nats_server_name;
-    let mut provider = ConnectedServiceRuntime::<Participant>::connect(ServiceConnectOptions::new(
-        nats_servers,
-        trust,
-        identity_seed,
-    ))
+    // The server owns its signals and readiness; its built-in service does not.
+    let mut provider = ConnectedServiceRuntime::<Participant>::connect(
+        ServiceConnectOptions::new(nats_servers, trust, identity_seed).embedded_in_host(),
+    )
     .await
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     super::state::StateRuntime::start(operational.clone(), store.clone())

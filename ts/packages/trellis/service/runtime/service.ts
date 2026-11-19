@@ -68,6 +68,11 @@ import {
   type ServiceHealthInfoFn,
   ServiceHealthRuntime,
 } from "./health.ts";
+import {
+  ServiceLifecycle,
+  type ServicePhase,
+  type ServiceReadinessOpts,
+} from "./lifecycle.ts";
 import { createHealthHeartbeatPublisher } from "../../health_transport.ts";
 import type { EventDesc } from "../../participant.ts";
 import type {
@@ -331,6 +336,8 @@ type TrellisServiceRuntimeCreateOpts<
   trellisApi?: TTrellisApi;
   version?: string;
   health?: TrellisServiceHealthOpts;
+  readiness?: ServiceReadinessOpts;
+  stopTimeoutMs?: number;
 };
 
 export type TrellisServiceHealthOpts = {
@@ -343,6 +350,14 @@ export type TrellisServiceRuntimeOpts = {
   stream?: string;
   version?: string;
   health?: TrellisServiceHealthOpts;
+  /** A readiness probe: a file and/or an HTTP endpoint that report serving. */
+  readiness?: ServiceReadinessOpts;
+  /**
+   * How long a stop waits for requests, event deliveries and jobs in flight
+   * before it hands the rest back to other instances. 25 seconds by default,
+   * inside Kubernetes' default 30-second grace period.
+   */
+  stopTimeoutMs?: number;
 };
 
 function resolveServiceLogger(log?: LoggerLike | false): LoggerLike {
@@ -429,6 +444,8 @@ export const SERVICE_TRANSPORT_LIFETIME: unique symbol = Symbol(
 /** Logical transport lifetime surface used by the service wait loop. @internal */
 type ServiceTransportLifetime = {
   closed(): Promise<void | Error>;
+  isClosed(): boolean;
+  retireAllIntake(): Promise<void>;
 };
 
 /** @internal */
@@ -455,6 +472,12 @@ type ProviderIngressOwner = {
     target: Parameters<ServiceProviderIngress["install"]>[0],
   ): Promise<ProviderGenerationAttachment>;
   retireProviderIngress(id: number): void;
+  /** Stops taking durable deliveries; resolves once those in hand are acked. */
+  drainEventListeners(): Promise<void>;
+  /** Hands the durable deliveries still in hand back at once. */
+  abandonEventDeliveries(): void;
+  /** Ends every owned Live session as `local_shutdown`. */
+  endLiveSessions(): Promise<void>;
 };
 
 export abstract class StoreHandle {
@@ -1013,6 +1036,8 @@ const MANAGED_JOB_WORKERS = Symbol("trellis.managedJobWorkers");
 
 type ManagedJobWorkers = {
   start(): AsyncResult<JobWorkerHostAdapter, BaseError>;
+  /** Stop taking jobs; resolves once every running job has settled. */
+  drain(): Promise<void>;
   stop(): AsyncResult<void, BaseError>;
 };
 
@@ -1350,8 +1375,12 @@ export function createConnectedService<
   onTransportEvent?: (event: unknown) => void;
   /** Process-local connection handle started before the transport connected. @internal */
   telemetry?: ReturnType<typeof startConnectionTelemetry>;
+  /** The process's lifecycle, started before the transport connected. @internal */
+  lifecycle?: ServiceLifecycle;
 }): Promise<TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>> {
   const resolvedLog = resolveServiceLogger(args.runtime.log);
+  const lifecycle =
+    args.lifecycle ?? new ServiceLifecycle(args.runtime.readiness, resolvedLog);
   const liveBindings = args.liveBindings ?? (() => args.bindings);
   // Resource handles follow the logical connection's current generation; a
   // runtime without a generation manager wraps its single connection.
@@ -1499,6 +1528,7 @@ export function createConnectedService<
     contractId: args.contractId ?? "unknown",
     contractDigest: args.participantDigest ?? "unknown",
     publishIntervalMs: args.runtime.health?.publishIntervalMs ?? 30_000,
+    phase: () => lifecycle.phase,
   });
   health.add("nats", () => ({
     status:
@@ -1520,11 +1550,16 @@ export function createConnectedService<
     inboxPrefix: args.inboxPrefix,
   });
   let publishingHeartbeat: Promise<void> | undefined;
+  let publishAgain = false;
   const publishHealthHeartbeat = (): Promise<void> => {
     if (!args.healthIdentity || healthPublishingAbort.signal.aborted) {
       return Promise.resolve();
     }
-    if (publishingHeartbeat) return publishingHeartbeat;
+    if (publishingHeartbeat) {
+      // A sample taken before a phase change would hide it; send another.
+      publishAgain = true;
+      return publishingHeartbeat;
+    }
     publishingHeartbeat = (async () => {
       let lease: TransportLease | undefined;
       try {
@@ -1546,6 +1581,10 @@ export function createConnectedService<
       } finally {
         lease?.release();
         publishingHeartbeat = undefined;
+      }
+      if (publishAgain) {
+        publishAgain = false;
+        await publishHealthHeartbeat();
       }
     })();
     return publishingHeartbeat;
@@ -1610,6 +1649,8 @@ export function createConnectedService<
     serviceTransport,
     acquireTimeoutMs,
     resolvedLog,
+    lifecycle,
+    args.runtime.stopTimeoutMs ?? 25_000,
     trellisServiceConstructorToken,
   ]) as TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>;
   resources.handlerResources = {
@@ -1620,6 +1661,8 @@ export function createConnectedService<
   resources.transfer = operationTransfer;
 
   if (heartbeatEnabled) {
+    // A phase change is reported at once, so a watcher sees it move.
+    lifecycle.subscribe(() => void publishHealthHeartbeat());
     // Generation 1 activates after construction, so admission must not block it.
     void publishHealthHeartbeat();
     healthPublishTimer = setInterval(() => {
@@ -2491,6 +2534,8 @@ function createJobsFacade<
     });
   };
   let activeHost: JobWorkerHostAdapter | undefined;
+  // Started hosts that can stop taking jobs without cancelling running ones.
+  const drainable: Array<{ drain(): Promise<void> }> = [];
   let startupPromise:
     Promise<Result<JobWorkerHostAdapter, BaseError>> | undefined;
   let stopPromise: Promise<Result<void, BaseError>> | undefined;
@@ -2698,6 +2743,14 @@ function createJobsFacade<
   }
 
   const managedWorkers: ManagedJobWorkers = {
+    drain: async () => {
+      // Workers still starting have taken no job: cancel their startup.
+      if (startupPromise) {
+        await managedWorkers.stop();
+        return;
+      }
+      await Promise.allSettled(drainable.map((host) => host.drain()));
+    },
     start: () => {
       if (activeHost) {
         return AsyncResult.ok(activeHost);
@@ -2973,6 +3026,7 @@ function createJobsFacade<
                 },
               );
               hosts.push(host);
+              drainable.push(host);
               startingHosts.add(host);
               await host.ready;
             } else {
@@ -3113,6 +3167,7 @@ export function connectTrellisServiceWithRuntimeDeps<
   return AsyncResult.from(
     (async () => {
       let connected: Awaited<ReturnType<typeof connectProvisioned>> | undefined;
+      let lifecycle: ServiceLifecycle | undefined;
       const telemetry = startConnectionTelemetry("service");
       try {
         const runtimeDeps = {
@@ -3120,6 +3175,10 @@ export function connectTrellisServiceWithRuntimeDeps<
           ...deps,
         };
         const name = args.name ?? args.participant.identity;
+        lifecycle = new ServiceLifecycle(
+          args.runtime?.readiness,
+          resolveServiceLogger(args.runtime?.log),
+        );
         if (args.telemetry !== false && args.telemetry?.enabled !== false)
           await runtimeDeps.initTelemetry?.(name);
         let ingress: ServiceProviderIngress | undefined;
@@ -3211,6 +3270,7 @@ export function connectTrellisServiceWithRuntimeDeps<
             connected,
             args.participant,
             resolveServiceLogger(args.runtime?.log),
+            (text) => lifecycle?.status(text),
             args.signal,
           );
           await connected.manager.close();
@@ -3256,6 +3316,7 @@ export function connectTrellisServiceWithRuntimeDeps<
             fields: configFields,
             read: readOwnConfig,
             log: resolveServiceLogger(args.runtime?.log),
+            status: (text) => lifecycle?.status(text),
             ...(args.signal ? { signal: args.signal } : {}),
           });
         }
@@ -3310,6 +3371,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           transport: manager,
           activeNats: () => manager.currentNats(),
           telemetry,
+          lifecycle,
         });
         ingress = service[SERVICE_PROVIDER_INGRESS];
         const generation = manager.currentGeneration();
@@ -3343,6 +3405,7 @@ export function connectTrellisServiceWithRuntimeDeps<
         return Result.ok(service);
       } catch (cause) {
         telemetry.dispose();
+        lifecycle?.set("stopped");
         await connected?.manager.close();
         return Result.err(
           cause instanceof AuthError || cause instanceof TransportError
@@ -3363,6 +3426,7 @@ async function awaitServiceUpdate(
   connected: Awaited<ReturnType<typeof connectProvisioned>>,
   participant: { identity: string; packageEvidence: unknown },
   log: LoggerLike,
+  status: (text: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   const client = createTrellisInternal(
@@ -3400,6 +3464,9 @@ async function awaitServiceUpdate(
       if (shown !== update.updateId) {
         shown = update.updateId;
         const reviewUrl = update.reviewUrl;
+        status(
+          `Waiting for approval: ${reviewUrl ?? `trellis svc ${update.deploymentId} approve`}`,
+        );
         log.warn(
           { participant: participant.identity, reviewUrl },
           "This build asks for new access; waiting for an administrator to approve it",
@@ -3505,6 +3572,10 @@ export class TrellisServiceSession<
   readonly #jobsBinding?: ResourceBindingJobs;
   readonly #ownedOutboxDispatchers = new Set<OutboxDispatcher>();
   readonly #log: LoggerLike;
+  readonly #lifecycle: ServiceLifecycle;
+  readonly #stopTimeoutMs: number;
+  /** Handler registrations still subscribing; serving waits for them. */
+  readonly #registrations = new Set<Promise<unknown>>();
   #waitPromise?: Promise<void>;
   #stopPromise?: Promise<void>;
 
@@ -3526,6 +3597,8 @@ export class TrellisServiceSession<
     transport: TrellisTransportProvider,
     acquireTimeoutMs: number,
     log: LoggerLike,
+    lifecycle: ServiceLifecycle,
+    stopTimeoutMs: number,
     token: typeof trellisServiceConstructorToken,
   ) {
     if (token !== trellisServiceConstructorToken) {
@@ -3536,6 +3609,8 @@ export class TrellisServiceSession<
     this.auth = auth;
     this.#nc = nc;
     this.#log = log;
+    this.#lifecycle = lifecycle;
+    this.#stopTimeoutMs = stopTimeoutMs;
     this.#runtime = runtime;
     this.#handlerTrellis = handlerTrellis;
     Object.defineProperty(this, PROVIDER_CALLER, {
@@ -3546,6 +3621,8 @@ export class TrellisServiceSession<
         // Both the outbound framework surfaces and the operation runtime own
         // per-generation intake on the same generation.
         install: async (target) => {
+          // A stopping service takes no new work on a later generation either.
+          if (this.#stopPromise) return;
           const outbound = providerCaller as ProviderIngressOwner;
           await outbound.installProviderIngress(target);
           await this.#runtime.installProviderIngress(target);
@@ -3622,26 +3699,38 @@ export class TrellisServiceSession<
     return this.#handlerTrellis.publishPrepared(event);
   }
 
+  /** Keeps a registration until it settles, so serving can wait for it. */
+  #registering<T>(registration: Promise<T>): Promise<T> {
+    this.#registrations.add(registration);
+    void registration.then(
+      () => this.#registrations.delete(registration),
+      () => this.#registrations.delete(registration),
+    );
+    return registration;
+  }
+
   #createHandleFacade(): ServiceHandleFacade {
     const rpc: ServiceHandleFacade["rpc"] = {};
     for (const method of Object.keys(this.#runtime.api.rpc ?? {})) {
       addSurfaceLeaf(rpc, method, (handler) =>
-        this.#runtime.mountRuntime(
-          method,
-          async ({ input, context }) =>
-            await Promise.resolve(
-              (
-                handler as (
-                  args: unknown,
-                ) =>
-                  | Promise<Result<unknown, BaseError>>
-                  | Result<unknown, BaseError>
-              )({
-                input,
-                context,
-                client: this.#handlerTrellis,
-              }),
-            ),
+        this.#registering(
+          this.#runtime.mountRuntime(
+            method,
+            async ({ input, context }) =>
+              await Promise.resolve(
+                (
+                  handler as (
+                    args: unknown,
+                  ) =>
+                    | Promise<Result<unknown, BaseError>>
+                    | Result<unknown, BaseError>
+                )({
+                  input,
+                  context,
+                  client: this.#handlerTrellis,
+                }),
+              ),
+          ),
         ),
       );
     }
@@ -3649,11 +3738,13 @@ export class TrellisServiceSession<
     const live: ServiceHandleFacade["live"] = {};
     for (const liveName of Object.keys(this.#runtime.api.lives ?? {})) {
       addSurfaceLeaf(live, liveName, (handler) =>
-        this.#runtime.liveHandle(liveName).handle((context) =>
-          (handler as (args: unknown) => unknown | Promise<unknown>)({
-            ...context,
-            client: this.#handlerTrellis,
-          }),
+        this.#registering(
+          this.#runtime.liveHandle(liveName).handle((context) =>
+            (handler as (args: unknown) => unknown | Promise<unknown>)({
+              ...context,
+              client: this.#handlerTrellis,
+            }),
+          ),
         ),
       );
     }
@@ -3670,11 +3761,13 @@ export class TrellisServiceSession<
       );
       const leaf: ServiceHandleOperationLeaf = Object.assign(
         (handler: (context: unknown) => unknown) =>
-          registration.handle((context) =>
-            handler({
-              ...context,
-              client: this.#handlerTrellis,
-            }),
+          this.#registering(
+            registration.handle((context) =>
+              handler({
+                ...context,
+                client: this.#handlerTrellis,
+              }),
+            ),
           ),
         { control: registration.control, reconcile: registration.reconcile },
       );
@@ -4020,11 +4113,46 @@ export class TrellisServiceSession<
     );
   }
 
+  /**
+   * Resolves the first time the service serves: connected, its build
+   * installed, and every handler, job worker and consumer registered before
+   * `wait()` taking work. It never resolves for a service that stops first.
+   */
+  get ready(): Promise<void> {
+    return this.#lifecycle.ready;
+  }
+
+  /** Where the service is in its lifecycle now. */
+  get phase(): ServicePhase {
+    return this.#lifecycle.phase;
+  }
+
+  /**
+   * Serves until the service stops, then resolves; rejects when its
+   * connection ends for good. SIGTERM and SIGINT stop it gracefully while it
+   * waits, as `stop()` does, and the process then exits once nothing holds it
+   * open, or 5 seconds after the stop at the latest. A second signal ends the
+   * process at once.
+   */
   async wait(): Promise<void> {
     this.#waitPromise ??= (async () => {
+      const unhandle = this.#handleStopSignals();
       try {
         if (!this.#stopPromise) {
           await this.#managedJobWorkers.start().orThrow();
+          await Promise.allSettled([...this.#registrations]);
+          // Serving follows the connection: lost, it reconnects and is not
+          // ready meanwhile; recovered, it serves again.
+          const follow = () => {
+            if (this.#stopPromise) return;
+            this.#lifecycle.set(
+              this.connection.status.phase === "connected"
+                ? "serving"
+                : "connecting",
+            );
+          };
+          this.connection.subscribe(follow);
+          follow();
         }
         // Supervise the logical connection: an authoritative terminal failure of
         // the logical transport must stop the service. A single physical
@@ -4039,15 +4167,76 @@ export class TrellisServiceSession<
         }
       } finally {
         await this.stop();
+        unhandle();
       }
     })();
 
     await this.#waitPromise;
   }
 
+  #handleStopSignals(): () => void {
+    let received = false;
+    const onSignal = (signal: NodeJS.Signals) => {
+      if (received) {
+        // Asked twice: end now, with the status the signal itself gives.
+        process.exit(signal === "SIGINT" ? 130 : 143);
+      }
+      received = true;
+      this.#log.info(
+        { service: this.name, signal },
+        "Stopping: finishing the work in flight",
+      );
+      // A signal asks the process to end. Once the service has stopped, a
+      // handler still running past the deadline must not keep it alive: the
+      // code after wait() gets a few seconds, then the process exits. The
+      // timer never delays a process that ends on its own.
+      void this.stop().then(() => {
+        setTimeout(() => process.exit(), 5_000).unref();
+      });
+    };
+    const unhandle = () => {
+      process.off("SIGTERM", onSignal);
+      process.off("SIGINT", onSignal);
+    };
+    process.on("SIGTERM", onSignal);
+    process.on("SIGINT", onSignal);
+    return unhandle;
+  }
+
+  /**
+   * Stops the service gracefully. It takes no new requests, jobs or event
+   * deliveries, so other instances get them, and ends its Live streams so
+   * their callers can open them again elsewhere. It then waits up to
+   * `stopTimeoutMs` for the requests, deliveries and jobs it holds; whatever
+   * is still running then is handed back at once for another instance, and
+   * the connection closes.
+   */
   async stop(): Promise<void> {
     this.#stopPromise ??= (async () => {
+      this.#lifecycle.set("stopping");
       this[SERVICE_CONFIG]?.stop();
+      const transport = this[SERVICE_TRANSPORT_LIFETIME];
+      const outbound = this[PROVIDER_CALLER] as ProviderIngressOwner;
+      const runtime = this.#runtime;
+      if (transport && !transport.isClosed()) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, this.#stopTimeoutMs);
+        });
+        const settled = Promise.allSettled([
+          transport.retireAllIntake(),
+          this.#managedJobWorkers.drain(),
+          outbound.drainEventListeners(),
+        ]);
+        await Promise.allSettled([
+          outbound.endLiveSessions(),
+          runtime.endLiveSessions(),
+        ]);
+        await Promise.race([settled, deadline]);
+        clearTimeout(timer);
+        // Past the deadline, what still runs goes back for another instance.
+        outbound.abandonEventDeliveries();
+      }
       this.connection.stopObserving();
       this.#handlerTrellis.stopEventListeners();
       for (const dispatcher of this.#ownedOutboxDispatchers) {
@@ -4091,6 +4280,7 @@ export class TrellisServiceSession<
                 await this.connection.close();
               } finally {
                 clearInterval(watchdog);
+                this.#lifecycle.set("stopped");
               }
             }
           }

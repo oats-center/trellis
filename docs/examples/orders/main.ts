@@ -15,17 +15,7 @@ const service = await TrellisService.connect({
   seed: requiredEnv("TRELLIS_IDENTITY_SEED"),
 }).orThrow();
 
-const stop = () => {
-  void service.stop();
-};
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
-try {
-  await service.handleCreate(createOrder);
-  console.log("Orders service connected; press Ctrl-C to stop.");
-  await service.wait();
-} finally {
-  process.off("SIGINT", stop);
-  process.off("SIGTERM", stop);
-  await service.stop();
-}
+await service.handleCreate(createOrder);
+console.log("Orders service connected; press Ctrl-C to stop.");
+// SIGTERM and Ctrl-C stop it gracefully: it finishes the work it holds first.
+await service.wait();

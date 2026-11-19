@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   service.health.add("field-data", async () => {
     const checks = await Promise.all(
       SITE_SUMMARIES.map((summary) =>
-        service.kv.siteSummaries.get(summary.siteId).take()
+        service.kv.siteSummaries.get(summary.siteId).take(),
       ),
     );
     const loadedSites = checks.filter((result) => !isErr(result)).length;
@@ -64,9 +64,7 @@ async function main(): Promise<void> {
     features.sites.createRefreshSiteSummaryHandler(deps),
   );
 
-  await service.handleAssignmentsList(
-    features.assignments.listAssignments,
-  );
+  await service.handleAssignmentsList(features.assignments.listAssignments);
   await service.handleSitesList(features.sites.listSites);
   await service.handleSitesGet(features.sites.getSite);
   await service.handleEvidenceList(features.evidence.listEvidence);
@@ -76,22 +74,18 @@ async function main(): Promise<void> {
   await service.handleEvidenceDelete(features.evidence.deleteEvidence);
   await service.handleReportsList(features.reports.listReports);
   await service.handleSitesRefresh(features.sites.refreshSite);
-  await service.handleReportsGenerate(
-    features.reports.generateReport,
-  );
-  await service.handleEvidenceUpload(
-    features.evidence.uploadEvidence,
-  );
-  await service.handleAuditFeed(
-    async ({ emit, signal }) => {
-      const controller = new AbortController();
-      const stop = () => {
-        controller.abort();
-      };
-      signal.addEventListener("abort", stop, { once: true });
+  await service.handleReportsGenerate(features.reports.generateReport);
+  await service.handleEvidenceUpload(features.evidence.uploadEvidence);
+  await service.handleAuditFeed(async ({ emit, signal }) => {
+    const controller = new AbortController();
+    const stop = () => {
+      controller.abort();
+    };
+    signal.addEventListener("abort", stop, { once: true });
 
-      try {
-        await service.onAuditRecorded(
+    try {
+      await service
+        .onAuditRecorded(
           ({ event }) => {
             return emit({
               name: deps.activityFeedEventNames.auditRecorded,
@@ -100,8 +94,10 @@ async function main(): Promise<void> {
           },
           {},
           { mode: "ephemeral", signal: controller.signal },
-        ).orThrow();
-        await service.onReportsPublished(
+        )
+        .orThrow();
+      await service
+        .onReportsPublished(
           ({ event }) => {
             return emit({
               name: deps.activityFeedEventNames.reportsPublished,
@@ -110,8 +106,10 @@ async function main(): Promise<void> {
           },
           {},
           { mode: "ephemeral", signal: controller.signal },
-        ).orThrow();
-        await service.onEvidenceUploaded(
+        )
+        .orThrow();
+      await service
+        .onEvidenceUploaded(
           ({ event }) => {
             return emit({
               name: deps.activityFeedEventNames.evidenceUploaded,
@@ -120,8 +118,10 @@ async function main(): Promise<void> {
           },
           {},
           { mode: "ephemeral", signal: controller.signal },
-        ).orThrow();
-        await service.onSitesRefreshed(
+        )
+        .orThrow();
+      await service
+        .onSitesRefreshed(
           ({ event }) => {
             return emit({
               name: deps.activityFeedEventNames.sitesRefreshed,
@@ -130,40 +130,20 @@ async function main(): Promise<void> {
           },
           {},
           { mode: "ephemeral", signal: controller.signal },
-        ).orThrow();
+        )
+        .orThrow();
 
-        await new Promise<void>((resolve) => {
-          signal.addEventListener("abort", () => resolve(), { once: true });
-        });
-      } finally {
-        signal.removeEventListener("abort", stop);
-        controller.abort();
-      }
-    },
-  );
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    } finally {
+      signal.removeEventListener("abort", stop);
+      controller.abort();
+    }
+  });
 
   console.log(chalk.green.bold("== Field Ops demo service"));
-  let shuttingDown = false;
-  const shutdown = async () => {
-    if (shuttingDown) {
-      return;
-    }
-
-    shuttingDown = true;
-
-    try {
-      await service.stop();
-      process.exit(0);
-    } catch (error) {
-      console.error(chalk.red.bold("Failed to stop Field Ops demo service"));
-      console.error(error);
-      process.exit(1);
-    }
-  };
-
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
-
+  // SIGTERM and Ctrl-C stop it gracefully; wait() then returns.
   try {
     await service.wait();
   } catch (error) {

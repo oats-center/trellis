@@ -343,6 +343,8 @@ export async function loadConfig<
   fields: ConfigFields;
   read: (atConnect: boolean) => Promise<AuthOwnConfigResponse>;
   log: LoggerLike;
+  /** Reports what the participant waits for, such as to systemd. */
+  status?: (text: string) => void;
   signal?: AbortSignal;
 }): Promise<ConfigHandle<TValues>> {
   const signal = args.signal;
@@ -375,6 +377,7 @@ export async function loadConfig<
       const reported = `${missing}${reasons.map((reason) => `\n  ${reason}`).join("")}`;
       if (shown !== reported) {
         shown = reported;
+        args.status?.(`Waiting for settings: ${missing}`);
         args.log.warn(
           {
             participant: args.participantId,

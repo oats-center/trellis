@@ -344,9 +344,50 @@ pub(crate) trait WorkerIntake: Send + Sync {
     fn failure<'a>(&'a self) -> BoxFuture<'a, Option<WorkerHostError>>;
     /// The logical worker count this host owns across every physical generation.
     fn worker_count(&self) -> usize;
+    /// Stop taking new jobs on every generation while accepted jobs keep running.
+    fn drain(&self);
+    /// Resolve once no accepted job is still running.
+    fn idle<'a>(&'a self) -> BoxFuture<'a, ()>;
+}
+
+/// Lets a stopping service drain one worker host while it is being joined.
+#[derive(Clone)]
+pub(crate) struct WorkerHostDrain {
+    cancellation: JobCancellationToken,
+    intake: Option<Arc<dyn WorkerIntake>>,
+}
+
+impl WorkerHostDrain {
+    /// Stop taking new jobs; running jobs continue.
+    pub(crate) fn drain(&self) {
+        if let Some(intake) = &self.intake {
+            intake.drain();
+        }
+    }
+
+    /// Resolve once the jobs this host accepted have all finished.
+    pub(crate) async fn idle(&self) {
+        if let Some(intake) = &self.intake {
+            intake.idle().await;
+        }
+    }
+
+    /// Cancel the jobs still running for shutdown, so each is handed back at
+    /// once, and let the host's `join` return.
+    pub(crate) fn hand_back(&self) {
+        self.cancellation.cancel_for_shutdown();
+    }
 }
 
 impl WorkerHostHandle {
+    /// A handle that drains this host while its `join` runs elsewhere.
+    pub(crate) fn drain_handle(&self) -> WorkerHostDrain {
+        WorkerHostDrain {
+            cancellation: self.cancellation.clone(),
+            intake: self.intake.clone(),
+        }
+    }
+
     /// Unregister the owner so no future generation can resurrect a stopped host.
     fn detach_owner(&mut self) {
         if let (Some(manager), Some(owner)) = (&self.manager, &self.intake_owner) {
@@ -1007,7 +1048,15 @@ where
             )
             .await?;
         }
+        // A stopping host hands an interrupted job straight back, so another
+        // instance runs it now rather than after the interruption delay.
+        let handed_back = cancellation.is_host_shutdown()
+            && matches!(process_result, JobProcessOutcome::Interrupted { .. });
         match ack_action_for_outcome(Some(&process_result), &queue.backoff_ms) {
+            WorkerAckAction::Nak(_) if handed_back => message
+                .ack_with(AckKind::Nak(None))
+                .await
+                .map_err(map_ack_error)?,
             WorkerAckAction::Ack => message.ack().await.map_err(map_ack_error)?,
             WorkerAckAction::Nak(delay) => message
                 .ack_with(AckKind::Nak(Some(delay)))
@@ -2341,6 +2390,35 @@ where
                 .unwrap_or_else(|e| e.into_inner())
                 .clear();
         }
+    }
+
+    fn drain(&self) {
+        let installed = self
+            .installed
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // No later generation adopts a draining host either.
+        self.stopped.store(true, Ordering::Release);
+        for ingress in installed.values() {
+            ingress.retire();
+        }
+    }
+
+    fn idle<'a>(&'a self) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            loop {
+                let busy = self
+                    .installed
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .values()
+                    .any(|ingress| !ingress.is_finished());
+                if !busy {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
     }
 
     fn failure<'a>(&'a self) -> BoxFuture<'a, Option<WorkerHostError>> {

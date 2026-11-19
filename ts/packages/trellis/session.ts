@@ -3612,6 +3612,33 @@ export class Trellis<
     this.#durableEvents.stop();
   }
 
+  /**
+   * Stops taking durable event deliveries and resolves once every delivery
+   * being handled has been acknowledged. @internal
+   */
+  drainEventListeners(): Promise<void> {
+    return this.#durableEvents.drain();
+  }
+
+  /** Hands every durable delivery still being handled back at once. @internal */
+  abandonEventDeliveries(): void {
+    this.#durableEvents.abandon();
+  }
+
+  /**
+   * Ends every Live session this provider owns as `local_shutdown`, so its
+   * callers can open the stream again on another instance. @internal
+   */
+  async endLiveSessions(): Promise<void> {
+    await Promise.allSettled(
+      [...this.#providerIngress.values()].flatMap((ingress) =>
+        ingress.disposeFns
+          .filter((entry) => entry.owner === "live")
+          .map(async (entry) => await entry.dispose()),
+      ),
+    );
+  }
+
   // FIXME: If are validating things twice in most cases...
   template(
     subject: string,
