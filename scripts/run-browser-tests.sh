@@ -35,7 +35,8 @@ export TRELLIS_TEST_DEX_BIN="$dex_bin"
 export TRELLIS_CACHE_DIR="${TRELLIS_CACHE_DIR:-$root/target/trellis-nats-cache}"
 
 if [[ $# -eq 0 ]]; then
-  set -- ts/browser/*.browser_test.ts
+  # The browser tests and the unit tests of the harness they share.
+  set -- ts/browser/*_test.ts
 fi
 cores="$(nproc)"
 # Each file drives Chromium as well as a server, so one file per two cores.

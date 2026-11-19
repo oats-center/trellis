@@ -316,6 +316,14 @@ export type HeldRequest = {
   requestId?: string;
 };
 
+/** One proxied broker WebSocket's two byte streams through a {@link NatsResponseGate}. */
+export type NatsGateConnection = {
+  /** Server-to-client bytes. Returns the bytes to forward to the page now. */
+  ingestServer(chunk: Uint8Array): Uint8Array[];
+  /** Client-to-server bytes. Always forwarded; records requests for correlation. */
+  ingestClient(chunk: Uint8Array): Uint8Array[];
+};
+
 export type ArmPredicate = (record: ParsedNatsRecord) => boolean;
 
 type ArmedHold = {
@@ -343,8 +351,6 @@ function routeMatches(subject: string, route: string): boolean {
  * Live control/data, PING/PONG, and unrelated subjects are forwarded.
  */
 export class NatsResponseGate {
-  #inbound = new NatsProtocolParser();
-  #outbound = new NatsProtocolParser();
   #armed: ArmedHold[] = [];
   #armedPush: Array<(record: ParsedNatsRecord) => void> = [];
   #held = new Map<string, Uint8Array>();
@@ -452,35 +458,38 @@ export class NatsResponseGate {
     this.#pausedLive = null;
   }
 
-  /** Server-to-client records. Returns bytes that should be forwarded now. */
-  ingestServer(chunk: Uint8Array): Uint8Array[] {
-    if (this.#disposed) return [chunk];
-    this.#inbound.push(chunk);
-    const out: Uint8Array[] = [];
-    for (const record of this.#inbound.takeRecords()) {
-      const forwarded = this.#considerServerRecord(record);
-      if (forwarded) out.push(record.raw);
-    }
-    return out;
-  }
-
-  /** Client-to-server records. Always forwarded; used to arm reply correlation. */
-  ingestClient(chunk: Uint8Array): Uint8Array[] {
-    if (this.#disposed) return [chunk];
-    this.#outbound.push(chunk);
-    const out: Uint8Array[] = [];
-    for (const record of this.#outbound.takeRecords()) {
-      if (record.op === "PUB" || record.op === "HPUB") {
-        if (record.subject) {
-          this.#requests.push({
-            route: record.subject,
-            reply: record.reply,
-          });
+  /**
+   * Starts one proxied broker WebSocket. Each connection splits its own byte
+   * streams: the broker cuts large records across 4 KiB frames, so a socket
+   * that closes mid-record must not leave bytes in front of the next socket's
+   * INFO. Request correlation and holds stay shared across connections.
+   */
+  connect(): NatsGateConnection {
+    const inbound = new NatsProtocolParser();
+    const outbound = new NatsProtocolParser();
+    return {
+      ingestServer: (chunk) => {
+        if (this.#disposed) return [chunk];
+        inbound.push(chunk);
+        const out: Uint8Array[] = [];
+        for (const record of inbound.takeRecords()) {
+          if (this.#considerServerRecord(record)) out.push(record.raw);
         }
-      }
-      out.push(record.raw);
-    }
-    return out;
+        return out;
+      },
+      ingestClient: (chunk) => {
+        if (this.#disposed) return [chunk];
+        outbound.push(chunk);
+        const out: Uint8Array[] = [];
+        for (const record of outbound.takeRecords()) {
+          if ((record.op === "PUB" || record.op === "HPUB") && record.subject) {
+            this.#requests.push({ route: record.subject, reply: record.reply });
+          }
+          out.push(record.raw);
+        }
+        return out;
+      },
+    };
   }
 
   #considerServerRecord(record: ParsedNatsRecord): boolean {
