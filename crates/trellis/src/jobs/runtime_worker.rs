@@ -195,7 +195,12 @@ impl JobCancellationToken {
         Arc::ptr_eq(&self.cancelled, &other.cancelled)
     }
 
-    async fn cancelled(&self) {
+    /// Wait until the job is cancelled for any reason.
+    ///
+    /// A handler that runs for long selects on this so it can return when an
+    /// administrator cancels the job or the service stops and hands it back;
+    /// [`reason`](Self::reason) then says which.
+    pub async fn cancelled(&self) {
         self.signal.cancelled().await;
     }
 }

@@ -66,6 +66,7 @@ fixture_bins=(
   jobs
   service_update
   configured_growth
+  graceful_service
 )
 
 # CI stages the producer-built executables; a missing one is a setup failure.
