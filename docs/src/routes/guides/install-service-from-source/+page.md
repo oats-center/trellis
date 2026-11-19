@@ -36,7 +36,7 @@ updates deployment resources, and writes its participant-scoped grant. See
 provisioning sequence.
 
 A service whose project you don't have can introduce itself instead: see
-[Without the release's project](/guides/install-service-from-image#without-the-releases-project).
+[Without the release](/guides/install-service-from-image#without-the-release).
 
 ## Run and update
 

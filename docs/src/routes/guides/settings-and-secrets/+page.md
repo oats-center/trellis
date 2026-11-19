@@ -96,7 +96,7 @@ service OrdersService {
 A field's type, default, `secret`, and `restart` are part of the participant
 digest. Its title and description are not. Changing a field's shape makes a new
 build, which goes through
-[service updates](/guides/install-service-from-image#5-upgrade) like any other
+[service updates](/guides/install-service-from-image#6-upgrade) like any other
 change. It asks for no new access, so Auth installs it without an
 administrator.
 
@@ -339,7 +339,7 @@ what is stored through its own declaration.
 
 A service created without `--source` is a claim until its service connects and
 an administrator approves it (see
-[Install a service from an image](/guides/install-service-from-image#without-the-releases-project)).
+[Install a service from an image](/guides/install-service-from-image#without-the-release)).
 Set its settings on the claim, by name:
 
 ```sh
