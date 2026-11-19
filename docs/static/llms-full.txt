@@ -1674,7 +1674,8 @@ service serves and `service.phase` reports `connecting`, `serving`,
 `stopping` or `stopped`. `runtime.readiness: { file?, http?: { port, host? } }`
 adds a readiness probe (`/ready`, `/live`). systemd notification needs Node 26
 or newer. `wait()` rejects without serving when a handler registered before
-it could not subscribe.
+it could not subscribe, and rejects with the error of a stop that fails, one a
+signal began included.
 
 A caller that selects this action calls:
 

@@ -98,7 +98,8 @@ stopped). A build retired by a newer installed revision stops with an error.
 SIGTERM, SIGINT and the SDK stop call run one graceful stop: retire provider
 intake on every generation at once (the queue groups route new work elsewhere)
 and fence it, so a generation adopted while the stop runs takes no intake
-either, and intake still being installed when it begins is retired at once;
+either, and intake still being installed when it begins, a Live open
+subscription waiting on its broker flush included, is retired at once;
 stop job workers and durable consumers from taking work; end owned Live
 sessions with `local_shutdown`; and wait for accepted requests, deliveries and
 jobs. The stop timeout (25 s default) starts with the
@@ -109,7 +110,10 @@ delay, without waiting for a handler that ignores the cancellation, even one
 whose lease was already lost (its late result is discarded), remaining
 deliveries are naked without delay, and remaining requests are abandoned. The connection then closes once it has
 written everything already sent, such as final replies and those naks. A second
-signal exits at once. Operations are not drained: their leases expire and
+signal exits at once. A stop that fails, one a signal began included, ends the
+lifecycle call with its error (TypeScript's `wait()` rejects with it); it never
+escapes as an unhandled failure that ends the process another way. Operations
+are not drained: their leases expire and
 another instance recovers them.
 Authorization refresh is owned SDK maintenance that preserves the logical
 connection; genuine transport loss triggers the owned recovery lifecycle.

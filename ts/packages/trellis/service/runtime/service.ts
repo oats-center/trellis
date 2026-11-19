@@ -4185,11 +4185,13 @@ export class TrellisServiceSession<
   /**
    * Serves until the service stops, then resolves; rejects when its
    * connection ends for good, before serving too, or without serving when a
-   * handler registered before it could not subscribe. SIGTERM and SIGINT stop
-   * it gracefully while it waits, as `stop()` does, and the process then exits
-   * once nothing holds it open, or 5 seconds after the stop timeout at the
-   * latest, even if the stop has not finished. A second signal ends the
-   * process at once.
+   * handler registered before it could not subscribe. It also rejects with
+   * the error of a stop that fails. SIGTERM and SIGINT stop it gracefully
+   * while it waits, as `stop()` does, and the process then exits once nothing
+   * holds it open, or 5 seconds after the stop timeout at the latest, even if
+   * the stop has not finished. A stop a signal began that fails is logged and
+   * reported through this rejection, never left unhandled. A second signal
+   * ends the process at once.
    */
   async wait(): Promise<void> {
     this.#waitPromise ??= (async () => {
@@ -4265,7 +4267,15 @@ export class TrellisServiceSession<
       // code after wait() a few seconds. The timer never delays a process that
       // ends on its own.
       setTimeout(() => process.exit(), this.#stopTimeoutMs + 5_000).unref();
-      void this.stop();
+      // wait() rejects with a failed stop, so the application handles it
+      // there; this promise is logged, never left unhandled to kill the
+      // process outside that path.
+      this.stop().catch((error: unknown) => {
+        this.#log.error(
+          { service: this.name, signal, error },
+          "Stopping after the signal failed",
+        );
+      });
     };
     const unhandle = () => {
       process.off("SIGTERM", onSignal);
