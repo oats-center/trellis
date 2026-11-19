@@ -476,6 +476,8 @@ type ProviderIngressOwner = {
   drainEventListeners(): Promise<void>;
   /** Hands the durable deliveries still in hand back at once. */
   abandonEventDeliveries(): void;
+  /** Resolves once every started durable consumer exists at the broker. */
+  eventListenersAttached(): Promise<void>;
   /** Ends every owned Live session as `local_shutdown`. */
   endLiveSessions(): Promise<void>;
 };
@@ -3576,6 +3578,12 @@ export class TrellisServiceSession<
   readonly #stopTimeoutMs: number;
   /** Handler registrations still subscribing; serving waits for them. */
   readonly #registrations = new Set<Promise<unknown>>();
+  /** The first registration that failed; the service then never serves. */
+  #registrationFailure?: { error: unknown };
+  /** Provider intake being installed on a generation; a stop waits for it. */
+  readonly #installing = new Set<Promise<void>>();
+  /** Set when a stop begins: no generation takes new intake after that. */
+  #intakeFenced = false;
   #waitPromise?: Promise<void>;
   #stopPromise?: Promise<void>;
 
@@ -3622,10 +3630,27 @@ export class TrellisServiceSession<
         // per-generation intake on the same generation.
         install: async (target) => {
           // A stopping service takes no new work on a later generation either.
-          if (this.#stopPromise) return;
+          if (this.#intakeFenced) return;
           const outbound = providerCaller as ProviderIngressOwner;
-          await outbound.installProviderIngress(target);
-          await this.#runtime.installProviderIngress(target);
+          const installing = (async () => {
+            const attached = [await outbound.installProviderIngress(target)];
+            if (!this.#intakeFenced)
+              attached.push(await this.#runtime.installProviderIngress(target));
+            // A stop that began meanwhile retired only the intake that existed
+            // then; retire this one too, and let the stop wait for its work.
+            if (this.#intakeFenced) {
+              for (const attachment of attached) attachment.retireIntake();
+              await Promise.allSettled(
+                attached.map((attachment) => attachment.intakeStopped),
+              );
+            }
+          })();
+          this.#installing.add(installing);
+          try {
+            await installing;
+          } finally {
+            this.#installing.delete(installing);
+          }
         },
         retireIntake: (id) => {
           (providerCaller as ProviderIngressOwner).retireProviderIngress(id);
@@ -3704,7 +3729,10 @@ export class TrellisServiceSession<
     this.#registrations.add(registration);
     void registration.then(
       () => this.#registrations.delete(registration),
-      () => this.#registrations.delete(registration),
+      (error: unknown) => {
+        this.#registrations.delete(registration);
+        this.#registrationFailure ??= { error };
+      },
     );
     return registration;
   }
@@ -4129,7 +4157,8 @@ export class TrellisServiceSession<
 
   /**
    * Serves until the service stops, then resolves; rejects when its
-   * connection ends for good. SIGTERM and SIGINT stop it gracefully while it
+   * connection ends for good, or without serving when a handler registered
+   * before it could not subscribe. SIGTERM and SIGINT stop it gracefully while it
    * waits, as `stop()` does, and the process then exits once nothing holds it
    * open, or 5 seconds after the stop at the latest. A second signal ends the
    * process at once.
@@ -4141,6 +4170,13 @@ export class TrellisServiceSession<
         if (!this.#stopPromise) {
           await this.#managedJobWorkers.start().orThrow();
           await Promise.allSettled([...this.#registrations]);
+          // A handler that could not subscribe takes no work, so the service
+          // never serves without it.
+          if (this.#registrationFailure) throw this.#registrationFailure.error;
+          // Durable consumers take work once the broker has their consumer.
+          await (
+            this[PROVIDER_CALLER] as ProviderIngressOwner
+          ).eventListenersAttached();
           // Serving follows the connection: lost, it reconnects and is not
           // ready meanwhile; recovered, it serves again.
           const follow = () => {
@@ -4190,9 +4226,10 @@ export class TrellisServiceSession<
       // handler still running past the deadline must not keep it alive: the
       // code after wait() gets a few seconds, then the process exits. The
       // timer never delays a process that ends on its own.
-      void this.stop().then(() => {
+      const exitSoon = () => {
         setTimeout(() => process.exit(), 5_000).unref();
-      });
+      };
+      void this.stop().then(exitSoon, exitSoon);
     };
     const unhandle = () => {
       process.off("SIGTERM", onSignal);
@@ -4213,6 +4250,7 @@ export class TrellisServiceSession<
    */
   async stop(): Promise<void> {
     this.#stopPromise ??= (async () => {
+      this.#intakeFenced = true;
       this.#lifecycle.set("stopping");
       this[SERVICE_CONFIG]?.stop();
       const transport = this[SERVICE_TRANSPORT_LIFETIME];
@@ -4225,10 +4263,9 @@ export class TrellisServiceSession<
         });
         const settled = Promise.allSettled([
           transport.retireAllIntake(),
+          ...this.#installing,
           this.#managedJobWorkers.drain(),
           outbound.drainEventListeners(),
-        ]);
-        await Promise.allSettled([
           outbound.endLiveSessions(),
           runtime.endLiveSessions(),
         ]);

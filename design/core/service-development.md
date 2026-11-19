@@ -73,8 +73,10 @@ correlation, cancellation, timeout, and orderly stop/wait behavior.
 
 Both SDKs give a service process the same lifecycle. Its phase is
 `connecting` from connect until the serve call (`wait()`, `run()`) has every
-registered RPC, Live, operation, job and consumer intake taking work, and again
-while the logical connection has lost its transport; then `serving`;
+registered RPC, Live, operation, job and consumer intake taking work (each
+subscription confirmed by the broker, each job and durable event consumer found
+at the broker; a registration that failed fails the serve call instead), and
+again while the logical connection has lost its transport; then `serving`;
 `stopping` once a stop begins; `stopped` once closed. Approval and settings
 waits happen inside connect and are reported as status text only. Each phase
 change is published in a heartbeat at once.
@@ -88,12 +90,15 @@ HTTP listener (`/ready` 200 while serving, else 503; `/live` 200 until
 stopped). A build retired by a newer installed revision stops with an error.
 
 SIGTERM, SIGINT and the SDK stop call run one graceful stop: retire provider
-intake on every generation (the queue groups route new work elsewhere), stop job
-workers and durable consumers from taking work, end owned Live sessions with
-`local_shutdown`, then wait up to the stop timeout (25 s default) for accepted
-requests, deliveries and jobs. At the deadline remaining jobs are cancelled for
-shutdown and naked without delay, remaining deliveries are naked without delay,
-and remaining requests are abandoned. The connection then closes. A second
+intake on every generation (the queue groups route new work elsewhere) and
+fence it, so a generation adopted or still installing while the stop runs
+takes no intake either; stop job workers and durable consumers from taking
+work; end owned Live sessions with `local_shutdown`; then wait up to the stop
+timeout (25 s default) for accepted requests, deliveries and jobs. At the
+deadline remaining jobs are cancelled for shutdown and naked without delay,
+without waiting for a handler that ignores the cancellation (its late result is
+discarded), remaining deliveries are naked without delay, and remaining
+requests are abandoned. The connection then closes. A second
 signal exits at once. Operations are not drained: their leases expire and
 another instance recovers them.
 Authorization refresh is owned SDK maintenance that preserves the logical

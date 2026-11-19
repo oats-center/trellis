@@ -5,12 +5,15 @@
  * `ROLE=old` holds what it is given: a slow Echo sleeps for the requested
  * milliseconds, a `handoffWork` job runs until cancelled, and a `changes`
  * delivery waits `HOLD_DELIVERY_MS`. It creates one held job at startup.
- * `ROLE=new` finishes all of them at once, slow Echo calls included.
+ * `ROLE=new` finishes all of them at once, slow Echo calls included. With
+ * `IGNORE_JOB_CANCEL=1` the old role's job ignores its cancellation and waits
+ * on a ten-minute timer instead, as a handler stuck in a dependency would.
  *
  * `READINESS_FILE`, `READINESS_PORT` and `STOP_TIMEOUT_MS` set the matching
  * runtime options. With `HOLD_SERVE=1` it registers everything and then waits
- * for a `serve` line on standard input before it serves. A `stop` line calls
- * `service.stop()`.
+ * for a `serve` line on standard input before it serves. With
+ * `HOLD_REGISTER=1` it waits for a `register` line once connected, before it
+ * registers anything. A `stop` line calls `service.stop()`.
  */
 import { createInterface } from "node:readline";
 import { Result } from "@oatscenter/trellis";
@@ -43,6 +46,13 @@ const service = await TrellisService.connect({
   },
 }).orThrow();
 emit("connected");
+if (env.HOLD_REGISTER === "1") {
+  const register = Promise.withResolvers<void>();
+  commands.on("line", (line) => {
+    if (line === "register") register.resolve();
+  });
+  await register.promise;
+}
 
 await service.handleEcho(async ({ input }) => {
   const slow = /^slow:(\d+)$/.exec(input.value);
@@ -78,6 +88,11 @@ await service
   .orThrow();
 service.jobs.handoffWork.handle(async ({ job }) => {
   emit("job-started", { value: job.payload.value });
+  if (old && env.IGNORE_JOB_CANCEL === "1") {
+    await new Promise((resolve) => setTimeout(resolve, 600_000));
+    emit("job-finished", { value: job.payload.value });
+    return Result.ok(job.payload);
+  }
   if (old) {
     await new Promise<void>((resolve) =>
       job.signal.addEventListener("abort", () => resolve(), { once: true }),

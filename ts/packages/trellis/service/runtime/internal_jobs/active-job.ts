@@ -23,6 +23,7 @@ import type { JobCancellationReason } from "../../../jobs.ts";
 
 export class JobCancellationToken {
   readonly #controller = new AbortController();
+  readonly #shutdown = Promise.withResolvers<void>();
   #reason: "none" | JobCancellationReason = "none";
 
   cancel(): void {
@@ -37,6 +38,15 @@ export class JobCancellationToken {
     if (this.#reason === "lease-lost") return;
     this.#reason = "shutdown";
     this.#controller.abort("shutdown");
+    this.#shutdown.resolve();
+  }
+
+  /**
+   * Resolves once the host hands this job back at shutdown, even when an
+   * earlier reason already cancelled it.
+   */
+  get shutdown(): Promise<void> {
+    return this.#shutdown.promise;
   }
 
   cancelForLeaseLoss(): void {
