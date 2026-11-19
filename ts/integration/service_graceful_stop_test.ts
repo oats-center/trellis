@@ -17,6 +17,7 @@ import { TrellisService } from "@oatscenter/trellis/service";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { ulid } from "ulid";
 import {
+  apis,
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
@@ -95,11 +96,12 @@ async function probe(port: number, path: string): Promise<number> {
 }
 
 /**
- * Deletes the broker consumer of the Provider's `changes` group and returns
- * a function that adds it back.
+ * Deletes the first broker consumer whose filter subject contains `fragment`
+ * and returns a function that adds it back.
  */
-async function deleteChangesConsumer(
+async function deleteConsumer(
   nats: NatsConnection,
+  fragment: string,
 ): Promise<() => Promise<unknown>> {
   const manager = await jetstreamManager(nats);
   const seen: string[] = [];
@@ -110,13 +112,13 @@ async function deleteChangesConsumer(
         ...(consumer.config.filter_subjects ?? []),
       ];
       seen.push(`${stream.config.name}/${consumer.name} ${filters}`);
-      if (!filters.some((subject) => subject?.includes(".Changed"))) continue;
+      if (!filters.some((subject) => subject?.includes(fragment))) continue;
       const { config } = consumer;
       assert(config.durable_name);
       await manager.consumers.delete(stream.config.name, config.durable_name);
       return () => manager.consumers.add(stream.config.name, config);
     }
-  assert.fail(`no consumer for the changes group in ${seen}`);
+  assert.fail(`no consumer for ${fragment} in ${seen}`);
 }
 
 for (const language of languages) {
@@ -461,7 +463,7 @@ for (const language of languages) {
         });
         // The `changes` consumer is missing at the broker when the service
         // registers its handler.
-        const restore = await deleteChangesConsumer(nats);
+        const restore = await deleteConsumer(nats, ".Changed");
         service.child.stdin.write("register\n");
         await runtime.waitFor(() => service?.seen("waiting"), {
           timeoutMs: 60_000,
@@ -663,7 +665,7 @@ test("a typescript service whose connection closes before its durable consumer a
       });
       // wait() waits for a consumer the broker does not have when its
       // connection closes.
-      await deleteChangesConsumer(nats);
+      await deleteConsumer(nats, ".Changed");
       service.child.stdin.write("register\n");
       await runtime.waitFor(() => service?.seen("waiting"), {
         timeoutMs: 60_000,
@@ -683,6 +685,50 @@ test("a typescript service whose connection closes before its durable consumer a
   });
 });
 
+test("a typescript service whose stop fails after a signal reports it through wait() and exits on its own", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "failing-stop",
+      contract: participants.Provider.participant,
+    });
+    const nats = await connect({
+      servers: runtime.natsUrl,
+      authenticator: credsAuthenticator(
+        await runtime.natsCredentials("trellis"),
+      ),
+    });
+    let service: ReturnType<typeof startService> | undefined;
+    try {
+      service = startService(runtime, "typescript", {
+        ROLE: "new",
+        TRELLIS_IDENTITY_SEED: identity.seed,
+      });
+      await runtime.waitFor(() => service?.seen("ready"), {
+        timeoutMs: 60_000,
+      });
+      // Its job queue loses its broker consumer while it serves, so stopping
+      // its job workers fails.
+      await deleteConsumer(nats, "handoffWork");
+      service.child.kill("SIGTERM");
+      const failed = await runtime.waitFor(() => service?.seen("failed"), {
+        timeoutMs: 30_000,
+      });
+      assert.ok(failed.error, service.output());
+      // The process ends on its own once wait() has reported the error: no
+      // unhandled rejection ends it first.
+      assert.deepEqual(
+        await service.child.exited,
+        { code: 0, signal: null },
+        service.output(),
+      );
+      assert.match(service.output(), /Stopping after the signal failed/);
+    } finally {
+      service?.child.kill("SIGKILL");
+      await nats.close();
+    }
+  });
+});
+
 // The stopping instance gets its optional capability around the stop and
 // adopts a new generation for it: either after the stop began, or while that
 // generation's intake is still being installed as the stop begins.
@@ -691,7 +737,7 @@ for (const adoption of ["after", "during"] as const) {
     adoption === "after"
       ? "adopts while it drains"
       : "was still installing when the stop began";
-  test(`a stopping typescript instance takes no request on a generation it ${when}`, async () => {
+  test(`a stopping typescript instance takes no request or Live session on a generation it ${when}`, async () => {
     await withTrellisRuntime(
       async (runtime) => {
         const contract =
@@ -733,13 +779,17 @@ for (const adoption of ["after", "during"] as const) {
             if (role === "stopping" && ++parks === 1) await release.promise;
             return Result.ok({ value: role });
           });
+          await service.handleProgress(async ({ emit }) => {
+            if (role === "stopping" && stopBegan) acceptedWhileStopping++;
+            await emit({ value: role });
+          });
           const exit = service.wait().catch((error: unknown) => error);
           await service.ready;
           return { service, exit };
         };
         const caller = await runtime.connectClient({
           name: "fenced-caller",
-          contract: apps.TransportGrowthCaller.request,
+          contract: apps.RpcDistributionCaller.request,
           timeout: 120_000,
         });
         const gate = runtime.nativeTransportGate();
@@ -784,9 +834,12 @@ for (const adoption of ["after", "during"] as const) {
               { timeoutMs: 90_000 },
             );
           } else {
-            // The new generation's routes reach the broker, but the flush
-            // that ends its install is held: the stop begins mid-install.
-            gate.arm(".Park");
+            // The new generation's routes reach the broker, its Live open
+            // route too, but the flush that ends its Live install is held: the
+            // stop begins mid-install.
+            gate.arm(
+              apis.transport_growth.API.actions["live:Progress"].subject,
+            );
             let installing: number | undefined;
             void gate.barrierHeld().then((id) => (installing = id));
             await grow();
@@ -801,6 +854,20 @@ for (const adoption of ["after", "during"] as const) {
             values.map((answer) => answer.value),
             Array(20).fill("serving"),
           );
+          // One at a time: a provider admits only a few concurrent sessions
+          // per caller.
+          const observed: string[][] = [];
+          for (let open = 0; open < 20; open++) {
+            const observation = await caller.progress({}).orThrow();
+            const frames: string[] = [];
+            try {
+              for await (const frame of observation) frames.push(frame.value);
+            } finally {
+              await observation.close().orThrow();
+            }
+            observed.push(frames);
+          }
+          assert.deepEqual(observed, Array(20).fill(["serving"]));
           assert.equal(acceptedWhileStopping, 0);
 
           await gate.release();

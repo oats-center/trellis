@@ -461,6 +461,11 @@ export class Trellis<
         contextDigest: string;
         retainAuthority?: () => VerifiedAuthority;
         lease?: () => TransportLease;
+        /** Records the open intake once it subscribes, before its flush. */
+        registerIntake: (intake: {
+          drain: () => Promise<void>;
+          done: Promise<void>;
+        }) => void;
       }) => Promise<{
         drain: () => Promise<void>;
         done: Promise<void>;
@@ -1478,6 +1483,10 @@ export class Trellis<
       contextDigest: string;
       retainAuthority?: () => VerifiedAuthority;
       lease?: () => TransportLease;
+      registerIntake?: (intake: {
+        drain: () => Promise<void>;
+        done: Promise<void>;
+      }) => void;
     }) =>
       this.#startLiveProvider({
         ...target,
@@ -1501,19 +1510,17 @@ export class Trellis<
     this.#liveRegistrations.set(live, { install: start });
     for (const ingress of this.#providerIngress.values()) {
       if (ingress.retired) continue;
+      let entry: ProviderIngress["retireFns"][number] | undefined;
       const installed = await start({
         id: ingress.id,
         nc: ingress.nc,
         contextDigest: ingress.contextDigest,
         retainAuthority: ingress.retainAuthority,
         lease: ingress.lease,
+        registerIntake: (intake) =>
+          (entry = this.#recordLiveIntake(ingress, intake)),
       });
-      ingress.retireFns.push({
-        owner: "live",
-        drain: installed.drain,
-        done: installed.done,
-        reopen: installed.reopen,
-      });
+      if (entry) entry.reopen = installed.reopen;
       ingress.disposeFns.push({ owner: "live", dispose: installed.dispose });
     }
   }
@@ -1533,6 +1540,14 @@ export class Trellis<
     contextDigest: string;
     retainAuthority?: () => VerifiedAuthority;
     lease?: () => TransportLease;
+    /**
+     * Records the open intake on its generation as soon as it subscribes, so
+     * a retirement during the install's broker flush drains it too.
+     */
+    registerIntake?: (intake: {
+      drain: () => Promise<void>;
+      done: Promise<void>;
+    }) => void;
     live: string;
     subject: string;
     descriptor: LiveDesc;
@@ -1662,6 +1677,7 @@ export class Trellis<
       // session; `dispose()` unregisters it transactionally on failure.
       provider.registerRoute(subject);
       open = openIntake();
+      args.registerIntake?.(open);
       // Registration is usable only once the broker has acknowledged SUB, as
       // for RPC handlers: an opening sent right after it must find the route.
       await nc.flush();
@@ -2260,26 +2276,39 @@ export class Trellis<
       }
       if (!reinstateGeneric) {
         for (const registration of this.#liveRegistrations.values()) {
+          // The open intake is recorded when it subscribes, before the
+          // install's broker flush, so a stop that begins during the flush
+          // retires it at once and waits for the sessions it took.
+          let entry: ProviderIngress["retireFns"][number] | undefined;
           const installed = await registration.install({
             id: ingress.id,
             nc: ingress.nc,
             contextDigest: ingress.contextDigest,
             retainAuthority: ingress.retainAuthority,
             lease: ingress.lease,
+            registerIntake: (intake) =>
+              (entry = this.#recordLiveIntake(ingress, intake)),
           });
           if (!stillOwned()) {
-            // Release both the just-created generic open subscription and the
-            // control/authority scope; an open sub left running until the socket
-            // closes would keep accepting sessions on a retired generation.
-            await this.#releaseDetached(installed.drain, installed.dispose);
+            if (
+              this.#providerIngress.get(ingress.id) === ingress &&
+              !ingress.disposing
+            ) {
+              // Retired, its open intake with it: the generation's disposal
+              // releases the control/authority scope once its sessions end.
+              ingress.disposeFns.push({
+                owner: "live",
+                dispose: installed.dispose,
+              });
+            } else {
+              // Disposal has begun: release the open subscription and the
+              // control/authority scope here, or the subscription would keep
+              // accepting sessions on a disposed generation.
+              await this.#releaseDetached(installed.drain, installed.dispose);
+            }
             throw ingressRetiredError(target.id);
           }
-          ingress.retireFns.push({
-            owner: "live",
-            drain: installed.drain,
-            done: installed.done,
-            reopen: installed.reopen,
-          });
+          if (entry) entry.reopen = installed.reopen;
           ingress.disposeFns.push({
             owner: "live",
             dispose: installed.dispose,
@@ -2333,6 +2362,31 @@ export class Trellis<
       },
       dispose: () => this.disposeProviderIngress(id),
     };
+  }
+
+  /**
+   * Record a Live open intake on its generation. One that subscribes after
+   * the generation was retired or began disposal is retired at once, and the
+   * generation's intake-stopped promise waits for it too.
+   */
+  #recordLiveIntake(
+    ingress: ProviderIngress,
+    intake: { drain: () => Promise<void>; done: Promise<void> },
+  ): ProviderIngress["retireFns"][number] {
+    const entry = {
+      owner: "live" as const,
+      drain: intake.drain,
+      done: intake.done,
+    };
+    ingress.retireFns.push(entry);
+    if (ingress.retired || ingress.disposing) {
+      const drained = intake.drain().then(() => intake.done);
+      ingress.intakeStopped = Promise.allSettled([
+        ingress.intakeStopped,
+        drained,
+      ]).then(() => undefined);
+    }
+    return entry;
   }
 
   /** Stop new intake and record when every outstanding intake loop settles. */
