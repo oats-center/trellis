@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.50] - 2026-11-19
+
 ### Added
 
 - Administrators can link an existing OIDC provider's identity to a user:
@@ -33,10 +35,19 @@ and this project adheres to
   value is refused, naming the field and build.
 - A plain value stored under a name the build declares secret is never shown or
   delivered; it is reported as stored as plain text, to be set as a secret.
-- Releases promote their image channels one at a time.
+- Releases promote their image channels one at a time, and move them only when
+  no newer release has pushed its versioned images; a failed registry lookup
+  stops promotion.
+- `accounts.manage` can list the providers to link (`Users.IdentityLink.Providers`),
+  so the CLI's provider picker works with it alone.
 
 ### Fixed
 
+- The Console's OIDC sign-ins panel picks up the account's current revision on
+  Reload, keeping unsaved edits, so link and unlink work after another
+  administrator's change.
+- Retrying a `Users.Create` recorded before linked sign-ins existed, with the
+  same idempotency key, returns its original result.
 - A browser request passed to the native entry points, or Device Code against
   a browser client, names both app kinds (`AppKindMismatch`,
   `unauthorized_client`) instead of a bare credential error, and a malformed
