@@ -1131,6 +1131,10 @@ model AuthConfigField {
   /// secret stored as a plain setting or the other way round. This build
   /// ignores it and keeps the value stored before it, or the default.
   invalid?: string;
+  /// A plain value is stored under this secret's name, saved before the
+  /// build declared it secret. It is never shown or delivered; setting the
+  /// field as a secret replaces it.
+  storedAsPlain: bool;
 }
 /// A field a build declares, before anything is stored for it.
 model AuthConfigDeclaration {
@@ -1198,8 +1202,12 @@ model AuthConfigRevision {
   revision: AuthConfigRevisionNumber;
   createdAt: timestamp;
   createdBy: string;
-  /// Stored settings; secrets are never included.
+  /// Stored settings; secrets are never included, nor plain values stored
+  /// under a name the installed build declares secret.
   values: map<json>;
+  /// Fields whose plain values are left out of `values` because the
+  /// installed build declares them secret.
+  hiddenValues: list<AuthConfigFieldName>;
   /// Fields this revision changed from the one before it.
   changed: list<AuthConfigFieldName>;
   /// Secret fields whose value this revision changed.

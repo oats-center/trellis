@@ -124,6 +124,37 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                                 "the current revision cannot be deleted".into(),
                             ));
                         }
+                        // Deleting a revision that holds secrets destroys
+                        // them, which only a role that can set secrets may do.
+                        let holds_secrets = stored(connection, &key, Some(revision))?
+                            .is_some_and(|stored| stored.sealed.is_some());
+                        if holds_secrets {
+                            require(
+                                connection,
+                                &identity.actor,
+                                Administration::ManageConfigSecrets,
+                                "deleting a revision that holds secrets",
+                            )?;
+                        }
+                        // A build reads an earlier revision's value when a
+                        // newer one doesn't fit it, so deleting that revision
+                        // would change what the build uses with no new
+                        // revision or `Config.Changed`. Every build in use
+                        // must read the same values without it.
+                        let builds = builds_in_use(connection, &target)?;
+                        let read = |connection: &Connection| {
+                            builds
+                                .iter()
+                                .map(|(_, declared)| {
+                                    Ok(layer(connection, storage, declared, &key, None, "")?
+                                        .fields
+                                        .into_iter()
+                                        .map(|(name, (value, _))| (name, value))
+                                        .collect::<Vec<_>>())
+                                })
+                                .collect::<Result<Vec<_>, AuthError>>()
+                        };
+                        let before = read(connection)?;
                         let deleted = connection.execute(
                             "DELETE FROM auth_config_revisions \
                             WHERE target_key=?1 AND revision=?2",
@@ -131,6 +162,20 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                         )?;
                         if deleted == 0 {
                             return Err(AuthError::NotFound);
+                        }
+                        let after = read(connection)?;
+                        for (((build, _), before), after) in builds.iter().zip(&before).zip(&after)
+                        {
+                            if let Some(((name, _), _)) = before
+                                .iter()
+                                .zip(after)
+                                .find(|(before, after)| before != after)
+                            {
+                                return Err(AuthError::Invalid(format!(
+                                    "revision {revision} still gives {build} its value for {name}; \
+                                    set a value for {name} that fits that build, then delete it"
+                                )));
+                            }
                         }
                         response(connection, storage, &target)
                     },
@@ -277,6 +322,74 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                 .map_err(rpc_error)
         }
     });
+}
+
+/// Every build that reads `target`'s values, each named for an administrator:
+/// the declaration the target is shown against and, for a deployment or an
+/// instance, the build each of its active instances runs.
+fn builds_in_use(
+    connection: &Connection,
+    target: &Target,
+) -> Result<Vec<(String, Declared)>, AuthError> {
+    let mut builds = Vec::new();
+    let mut seen = BTreeSet::new();
+    if let Some(deployment) = target.deployment() {
+        let installed: Option<(String, u64)> = connection
+            .query_row(
+                "SELECT d.participant_id,b.installed_revision \
+                FROM auth_deployments d JOIN auth_deployment_bindings b USING(deployment_id) \
+                WHERE d.deployment_id=?1",
+                [deployment],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let running = connection
+            .prepare(
+                "SELECT DISTINCT d.participant_id,i.installed_revision \
+                FROM auth_instances i JOIN auth_deployments d USING(deployment_id) \
+                WHERE i.deployment_id=?1 AND i.state='active' \
+                AND (?2 IS NULL OR i.instance_id=?2)",
+            )?
+            .query_map(params![deployment, target.instance()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (participant, revision) in installed.into_iter().chain(running) {
+            if seen.insert((participant.clone(), revision)) {
+                builds.push((
+                    format!("{participant} build {revision}"),
+                    Declared::of(connection, &participant, revision)?,
+                ));
+            }
+        }
+    } else {
+        let label = if target.client().is_some() {
+            "the app's declaration"
+        } else {
+            "the build the service submitted"
+        };
+        builds.push((label.to_owned(), Declared::of_target(connection, target)?));
+    }
+    Ok(builds)
+}
+
+/// Like [`SqliteAuthorizationStore::require_administration`], but a denial
+/// names the capability `action` needs.
+fn require(
+    connection: &Connection,
+    actor: &str,
+    administration: Administration,
+    action: &str,
+) -> Result<(), AuthError> {
+    SqliteAuthorizationStore::require_administration(connection, actor, administration).map_err(
+        |error| match error {
+            AuthError::Denied => AuthError::DeniedNeeding(format!(
+                "{action} needs {}",
+                administration.capability_id()
+            )),
+            other => other,
+        },
+    )
 }
 
 fn require_any(
@@ -925,6 +1038,12 @@ fn response(
                 json!(matches!(value.source, "instance" | "deployment" | "client")),
             );
             entry.insert("source".into(), json!(value.source));
+            // A plain value saved here before the build declared the field
+            // secret: never shown, only reported, so it can be set as one.
+            entry.insert(
+                "storedAsPlain".into(),
+                json!(field.secret && layers[0].values.contains_key(name.as_str())),
+            );
             if let (false, Some(current)) = (field.secret, &value.value) {
                 entry.insert("value".into(), current.clone());
             }
@@ -1237,18 +1356,25 @@ fn set_values(
             }
             let changed = changed_keys(&before_values, &after_values);
             let changed_secrets = changed_keys(&before_secrets, &after_secrets);
-            if touches_settings || !changed.is_empty() {
-                SqliteAuthorizationStore::require_administration(
+            // A plain value under a name the build declares secret goes when
+            // the secret is set, which is the secret's business alone.
+            let changes_settings = changed
+                .iter()
+                .any(|name| !declared.fields.get(name).is_some_and(|field| field.secret));
+            if touches_settings || changes_settings {
+                require(
                     connection,
                     &identity.actor,
                     Administration::ManageConfig,
+                    "changing settings",
                 )?;
             }
             if touches_secrets || !changed_secrets.is_empty() {
-                SqliteAuthorizationStore::require_administration(
+                require(
                     connection,
                     &identity.actor,
                     Administration::ManageConfigSecrets,
+                    "setting secrets",
                 )?;
             }
             if previous.as_ref().map(|stored| stored.revision)
@@ -1297,17 +1423,19 @@ fn roll_back(
             let changed = changed_keys(&previous.values, &earlier.values);
             let changed_secrets = changed_keys(&before_secrets, &after_secrets);
             if !changed.is_empty() {
-                SqliteAuthorizationStore::require_administration(
+                require(
                     connection,
                     &identity.actor,
                     Administration::ManageConfig,
+                    "rolling back settings",
                 )?;
             }
             if !changed_secrets.is_empty() {
-                SqliteAuthorizationStore::require_administration(
+                require(
                     connection,
                     &identity.actor,
                     Administration::ManageConfigSecrets,
+                    "rolling back secrets",
                 )?;
             }
             if changed.is_empty() && changed_secrets.is_empty() {
@@ -1358,6 +1486,9 @@ fn revisions(
         .transpose()?;
     let key = target.key();
     let latest = current(connection, &key)?.map(|stored| stored.revision);
+    // A plain value saved before the build declared its field secret is
+    // never shown again once it is.
+    let declared = Declared::of_target(connection, target)?;
     let mut statement = connection.prepare(
         "SELECT revision,values_json,changed_json,changed_secrets_json,created_by,created_at \
         FROM auth_config_revisions WHERE target_key=?1 AND (?2 IS NULL OR revision<?2) \
@@ -1380,11 +1511,19 @@ fn revisions(
     let items = rows
         .into_iter()
         .map(|(revision, values, changed, secrets, by, at)| {
+            let mut values = decode::<Map<String, Value>>(&values)?;
+            let hidden = declared
+                .fields
+                .iter()
+                .filter(|(name, field)| field.secret && values.remove(name.as_str()).is_some())
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>();
             Ok(serde_json::from_value(json!({
                 "revision": revision,
                 "createdAt": timestamp(at)?,
                 "createdBy": by,
-                "values": decode::<Value>(&values)?,
+                "values": values,
+                "hiddenValues": hidden,
                 "changed": decode::<Value>(&changed)?,
                 "changedSecrets": decode::<Value>(&secrets)?,
                 "current": Some(revision) == latest,

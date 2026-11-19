@@ -404,7 +404,8 @@ api auth@v1 {
   rpc Config.Set { input AuthConfigSetRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// List configuration revisions, newest first.
   rpc Config.Revisions.List { input AuthConfigRevisionsListRequest; output AuthConfigRevisionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
-  /// Delete an old configuration revision. The current one cannot be deleted.
+  /// Delete an old configuration revision. The current one cannot be deleted,
+  /// and one that holds a secret needs `config.manageSecrets`.
   rpc Config.Revisions.Delete { input AuthConfigRevisionDeleteRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Make an earlier revision's values current again, as a new revision.
   rpc Config.Rollback { input AuthConfigRollbackRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }

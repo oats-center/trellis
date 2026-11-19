@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { once } from "node:events";
+import { promisify } from "node:util";
 import { test } from "node:test";
 import { chromium } from "playwright";
 import nacl from "tweetnacl";
@@ -432,6 +435,162 @@ test("a service added without its IDL starts with the settings entered when it w
       } finally {
         await viewer.close();
       }
+    }, browserRuntimeOptions());
+  } finally {
+    await services.stop();
+  }
+});
+
+test("a plain value saved under a name the IDL then declares secret is never shown or used, and setting the secret starts the service", async () => {
+  const services = startedServices();
+  try {
+    await withTrellisRuntime(async (runtime) => {
+      await runtime.ensureAdmin();
+      const plain = `plain-${ulid()}`;
+      const seed = randomBytes(32);
+      const { claim } = await runtime.callAdminRpc("authServiceClaimsCreate", {
+        title: "plain-key",
+        instanceTitle: "plain-key",
+        identityPublicKey: Buffer.from(
+          nacl.sign.keyPair.fromSeed(seed).publicKey,
+        ).toString("base64url"),
+        idempotencyKey: ulid(),
+      });
+      // Before Trellis has the IDL, the key is saved as a plain value.
+      await runtime.callAdminRpc("authConfigSet", {
+        target: { claimId: claim.claimId },
+        values: { endpoint: "https://one.example", apiKey: plain },
+        idempotencyKey: ulid(),
+      });
+
+      // The service connects with an IDL that declares apiKey secret.
+      const connecting = services.add(
+        TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant,
+          seed: seed.toString("base64url"),
+          signal: services.signal,
+        }).orThrow(),
+      );
+      const pending = await runtime.waitFor(async () => {
+        const { items } = await runtime.callAdminRpc(
+          "authServiceUpdatesList",
+          {},
+        );
+        return items.find(
+          (update) =>
+            update.deploymentId === claim.claimId && update.state === "pending",
+        );
+      });
+      const { update } = await runtime.callAdminRpc(
+        "authServiceUpdatesDecide",
+        {
+          updateId: pending.updateId,
+          decision: "approved",
+          expectedRevision: pending.revision,
+          idempotencyKey: ulid(),
+        },
+      );
+      const target = { deploymentId: update.deploymentId };
+
+      // The plain value is reported, never shown, and the service waits.
+      const waiting = await runtime.waitFor(async () => {
+        const view = await runtime.callAdminRpc("authConfigGet", { target });
+        return view.instances[0]?.connectedAt === undefined ? undefined : view;
+      });
+      assert.deepEqual(waiting.missing, ["apiKey"]);
+      const apiKey = waiting.fields.find((field) => field.name === "apiKey");
+      assert.equal(apiKey?.storedAsPlain, true);
+      assert.match(apiKey?.invalid ?? "", /stored as a plain setting/);
+      assert.doesNotMatch(JSON.stringify(waiting), new RegExp(plain));
+      const history = await runtime.callAdminRpc("authConfigRevisionsList", {
+        target,
+      });
+      assert.deepEqual(history.items[0]?.hiddenValues, ["apiKey"]);
+      assert.doesNotMatch(JSON.stringify(history), new RegExp(plain));
+      assert.equal(
+        await Promise.race([
+          connecting.then(() => "connected"),
+          Promise.resolve("waiting"),
+        ]),
+        "waiting",
+      );
+
+      // The Console says what happened and how to fix it.
+      const admin = await launchProfile(runtime);
+      try {
+        const page = await admin.newPage();
+        await page.goto(
+          `${runtime.trellisUrl}/console/admin/services/${update.deploymentId}#settings`,
+          { waitUntil: "domcontentloaded" },
+        );
+        await completeConsoleEntry(page, BROWSER_ADMIN);
+        const settings = page.getByRole("region", { name: "Settings" });
+        await settings
+          .getByText(/Stored as plain text; set it as a secret/)
+          .waitFor();
+        await settings
+          .getByText(/old\s+plain\s+value\s+stays\s+in\s+earlier\s+versions/)
+          .waitFor();
+        assert.doesNotMatch(await settings.innerText(), new RegExp(plain));
+      } finally {
+        await admin.close();
+      }
+
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      try {
+        const { directory, run } = await loginCliAsAdministrator(
+          runtime,
+          await browser.newPage(),
+        );
+        const binary = process.env.TRELLIS_TEST_CLI_BIN!;
+        const env = { ...process.env, XDG_CONFIG_HOME: directory };
+        // The CLI's table names the fix and never prints the value.
+        const shown = await promisify(execFile)(
+          binary,
+          ["svc", "plain-key", "config"],
+          { env, timeout: 15_000 },
+        );
+        const text = shown.stdout + shown.stderr;
+        assert.match(text, /stored as plain text/);
+        assert.match(text, /config set-secret apiKey/);
+        assert.doesNotMatch(text, new RegExp(plain));
+        assert.doesNotMatch(
+          JSON.stringify(await run("svc", "plain-key", "config", "history")),
+          new RegExp(plain),
+        );
+
+        // Setting it as a secret, piped as a script would, starts the
+        // service with the secret, never the plain value.
+        const setSecret = spawn(
+          binary,
+          [
+            "--format",
+            "json",
+            "svc",
+            "plain-key",
+            "config",
+            "set-secret",
+            "apiKey",
+          ],
+          { env, stdio: ["pipe", "pipe", "pipe"] },
+        );
+        setSecret.stdin.end("sealed-key\n");
+        const [code] = await once(setSecret, "exit");
+        assert.equal(code, 0);
+      } finally {
+        await browser.close();
+      }
+      const service = await connecting;
+      assert.equal(service.config.current.apiKey, "sealed-key");
+      const fixed = await runtime.callAdminRpc("authConfigGet", { target });
+      assert.equal(
+        fixed.fields.find((field) => field.name === "apiKey")?.storedAsPlain,
+        false,
+      );
     }, browserRuntimeOptions());
   } finally {
     await services.stop();

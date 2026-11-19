@@ -117,17 +117,19 @@ pub enum ConfigCommand {
         #[arg(long, value_name = "FIELD")]
         null: Vec<String>,
     },
-    /// Set a secret from a file, or from standard input with `-`, so the value
-    /// never appears in the shell history or process list.
+    /// Set a secret from a file or standard input, so the value never
+    /// appears in the shell history or process list. On a terminal given
+    /// neither, it asks for the value without showing it, twice.
     SetSecret {
         #[arg(value_name = "FIELD")]
         field: String,
         /// Read the value from this file, or `-` for standard input. A text
         /// secret takes the contents without the trailing newline; any other
         /// takes JSON. A field the build doesn't declare is stored as a
-        /// secret under the same rule as `set`.
-        #[arg(long, value_name = "PATH", default_value = "-")]
-        from_file: PathBuf,
+        /// secret under the same rule as `set`. Without it, a value piped to
+        /// standard input is read, and a terminal is asked.
+        #[arg(long, value_name = "PATH")]
+        from_file: Option<PathBuf>,
         /// Store null instead of reading a value. Only a secret whose type
         /// allows null takes it, such as one an instance should go without.
         #[arg(long, conflicts_with = "from_file")]
