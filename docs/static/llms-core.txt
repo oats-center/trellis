@@ -563,8 +563,9 @@ SIGTERM, SIGINT, or the SDK's stop call stops a service gracefully: it leaves
 every queue group, ends its Live streams with `local_shutdown`, waits up to the
 stop timeout (25 s by default) for requests, event deliveries and jobs it
 holds, then hands what still runs back with no delay (jobs are cancelled for
-shutdown, deliveries are naked) and exits. Operations still recover through
-lease expiry. Do not install signal handlers in service code.
+shutdown, deliveries are naked; a job handler that ignores its cancellation is
+not waited for and its result is discarded) and exits. Operations still
+recover through lease expiry. Do not install signal handlers in service code.
 
 Upgrade by overlapping: run each process as its own instance, start the new
 build, wait until it serves, stop the old one. `trellis svc <ID> instances`

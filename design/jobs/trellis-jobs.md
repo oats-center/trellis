@@ -45,7 +45,9 @@ delivery received meanwhile is naked at once, and running handlers continue
 until the service's stop timeout. At the deadline the remaining handlers are
 cancelled for shutdown, and a shutdown-interrupted attempt is naked with no
 delay, so another instance starts the job immediately instead of after the
-interrupted backoff or the ack wait. Hosts still starting are cancelled
+interrupted backoff or the ack wait. The attempt does not wait for a handler
+that ignores its cancellation: it is naked at once and whatever the handler
+returns later is discarded, never settled. Hosts still starting are cancelled
 instead of drained.
 
 Progress ACK maintenance is automatic for accepted keyed and unkeyed deliveries
