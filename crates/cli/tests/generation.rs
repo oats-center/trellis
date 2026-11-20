@@ -101,7 +101,15 @@ fn generated_rust_sdk_reuses_the_trellis_models_cargo_resolves() {
         .unwrap();
     let target = repository.join("target/codegen-consumers");
     let cli_version = env!("CARGO_PKG_VERSION");
-    let mut later = semver::Version::parse(cli_version).unwrap();
+    // trellis-models keeps its own version, which a release need not bump.
+    let models_version = toml::from_str::<toml::Table>(
+        &fs::read_to_string(repository.join("crates/models/Cargo.toml")).unwrap(),
+    )
+    .unwrap()["package"]["version"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut later = semver::Version::parse(&models_version).unwrap();
     if later.pre.is_empty() {
         later.patch += 1;
     } else {
@@ -225,7 +233,7 @@ api who@v1 {
     let snapshot = fs::read_to_string(repository.join("crates/models/generated/__types.rs"))
         .unwrap()
         .replacen(
-            &format!("version: \"{cli_version}\""),
+            &format!("version: \"{models_version}\""),
             &format!("version: \"{later}\""),
             1,
         );
@@ -254,7 +262,7 @@ fn main() {
         format!(
             "[package]\nname = \"shared-model-consumer\"\nversion = \"1.0.0\"\nedition = \
             \"2021\"\n[workspace]\n[dependencies]\nbuiltin-consumer = {{ path = \"sdk\" }}\n\
-            trellis-models = \"{cli_version}\"\nserde_json = \"1\"\n[patch.crates-io]\n\
+            trellis-models = \"{models_version}\"\nserde_json = \"1\"\n[patch.crates-io]\n\
             trellis-rs = {{ path = {:?} }}\ntrellis-protocol = {{ path = {:?} }}\n\
             trellis-models = {{ path = {models:?} }}\n",
             root.path().join(format!("trellis-rs-{cli_version}")),
@@ -268,7 +276,7 @@ fn main() {
     // With no Cargo graph yet, the SDK brings in the trellis-models the CLI
     // bundles, so that binding applies.
     trellis(root.path(), "install");
-    assert!(sdk_manifest().contains(&format!("\"trellis-models\" = \"{cli_version}\"")));
+    assert!(sdk_manifest().contains(&format!("\"trellis-models\" = \"{models_version}\"")));
     assert!(sdk_types().contains("pub use trellis_models::trellis::*;"));
     // Cargo resolves the later release, whose identical snapshot satisfies the
     // SDK's compile-time model check.
