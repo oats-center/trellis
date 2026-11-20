@@ -8,7 +8,7 @@
 /** Where an instance is in its lifecycle. */
 export type InstanceState =
   | "offline"
-  | "connecting"
+  | "starting"
   | "waitingForApproval"
   | "waitingForSettings"
   | "serving"
@@ -56,16 +56,24 @@ export type InstanceStatus = {
   readonly settingsUrl?: string;
 };
 
-/** A reported phase; one this Console does not know reads as serving. */
+/**
+ * A reported phase. A connected instance still reporting `connecting` has not
+ * started serving, so it reads as starting; a phase this Console does not know
+ * reads as serving.
+ */
 function reportedPhase(phase: string | undefined): InstanceState {
-  return phase === "connecting" || phase === "stopping" ? phase : "serving";
+  return phase === "connecting"
+    ? "starting"
+    : phase === "stopping"
+      ? "stopping"
+      : "serving";
 }
 
 /**
  * An instance that is not connected is offline. A connected one is in the
  * phase its latest heartbeat reports, when that heartbeat is current and came
  * on this connection. Before its first heartbeat it waits for its update's
- * approval, then for missing settings, and is otherwise connecting.
+ * approval, then for missing settings, and is otherwise starting.
  */
 export function instanceStatus(
   instance: ListedInstance,
@@ -90,7 +98,7 @@ export function instanceStatus(
           ? "waitingForApproval"
           : missingSettings.length > 0
             ? "waitingForSettings"
-            : "connecting";
+            : "starting";
   const digest = reporting?.contractDigest ?? instance.participantDigest;
   return {
     state,

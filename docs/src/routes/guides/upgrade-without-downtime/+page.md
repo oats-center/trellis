@@ -166,7 +166,7 @@ Then, for each upgrade:
 `trellis svc "$DEPLOYMENT_ID" instances` and the service's page in the Console
 show, for each instance, its build and version, whether that is the
 deployment's current build or an older one still running, its state
-(connecting, waiting for approval with the review link, waiting for settings
+(starting, waiting for approval with the review link, waiting for settings
 naming the missing ones, serving, stopping), when it connected and its last
 heartbeat. `--format json` gives a script the same. During a switch you see the
 new instance move to serving and then the old one leave.

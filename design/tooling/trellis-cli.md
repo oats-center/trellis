@@ -188,7 +188,7 @@ accept a waiting claim's ID or name as well as a deployment's.
 
 `svc <id> instances` joins `Auth.ServiceInstances.List` with
 `Health.Inspect` (the `cli` agent selects `health.inspect`) and adds a
-`status` to each instance: `state` (`offline`, `connecting`,
+`status` to each instance: `state` (`offline`, `starting`,
 `waitingForApproval`, `waitingForSettings`, `serving`, `stopping`), `build`
 (`digest`, `version`, `current`, and a short `label`), `connectedAt`,
 `lastHeartbeat`, and while waiting `reviewUrl` or `missingSettings`. The text

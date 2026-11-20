@@ -262,7 +262,7 @@
 
   const STATE_LABELS: Record<InstanceState, string> = {
     offline: "Not connected",
-    connecting: "Connecting",
+    starting: "Starting",
     waitingForApproval: "Waiting for approval",
     waitingForSettings: "Waiting for settings",
     serving: "Serving",

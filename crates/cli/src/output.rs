@@ -210,8 +210,8 @@ fn tone(state: &str) -> Tone {
         "enabled" | "active" | "applied" | "approved" | "accepted" | "ready" | "on" | "yes"
         | "resolved" | "ok" | "healthy" | "verified" | "running" | "serving" => Tone::Good,
         "pending" | "waiting" | "replay_pending" | "replaying" | "provisioning" | "degraded"
-        | "stalled" | "draining" | "connecting" | "stopping" | "waitingForApproval"
-        | "waitingForSettings" => Tone::Waiting,
+        | "stalled" | "draining" | "connecting" | "starting" | "stopping"
+        | "waitingForApproval" | "waitingForSettings" => Tone::Waiting,
         "disabled" | "rejected" | "declined" | "revoked" | "failed" | "dead" | "off" | "no"
         | "removed" | "expired" | "superseded" | "unverified" | "invalid" | "unhealthy"
         | "offline" => Tone::Bad,

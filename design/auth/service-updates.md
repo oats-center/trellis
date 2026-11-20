@@ -154,7 +154,9 @@ instance does after that; its heartbeat says, through `phase` (`connecting`,
 `serving`, `stopping`). The Console's service page and `trellis svc <ID>
 instances` join the two the same way: not connected is `offline`; a current
 heartbeat sent on this connection gives its phase; before one arrives the
-instance is `waitingForApproval`, then `waitingForSettings`, else `connecting`.
+instance is `waitingForApproval`, then `waitingForSettings`, else `starting`.
+A connected instance whose heartbeat still reports `connecting` is `starting`
+too: connected, not serving yet.
 The build is the heartbeat's digest and version, or the installed digest, and is
 current when it equals the deployment's installed build.
 

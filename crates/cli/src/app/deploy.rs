@@ -1058,7 +1058,8 @@ async fn service_instances(
 /// came on this connection; before its first heartbeat it is
 /// `waitingForApproval` while its build's update waits for an administrator,
 /// `waitingForSettings` while required settings have no value, and
-/// `connecting` otherwise.
+/// `starting` otherwise. A heartbeat still reporting `connecting` also reads
+/// as `starting`: the instance is connected but not serving yet.
 fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Value> {
     instances
         .into_iter()
@@ -1088,6 +1089,13 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
                 report
                     .pointer("/latestSample/phase")
                     .and_then(Value::as_str)
+                    .map(|phase| {
+                        if phase == "connecting" {
+                            "starting"
+                        } else {
+                            phase
+                        }
+                    })
                     .unwrap_or("serving")
                     .to_owned()
             } else if waiting.and_then(|waiting| waiting.get("update")).is_some() {
@@ -1099,7 +1107,7 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
             {
                 "waitingForSettings".to_owned()
             } else {
-                "connecting".to_owned()
+                "starting".to_owned()
             };
             let digest = reporting
                 .and_then(|report| report.get("contractDigest"))

@@ -69,3 +69,21 @@ test("a disconnected instance is offline whatever it last reported", () => {
     "waitingForSettings",
   );
 });
+
+test("a connected instance that has not started serving reads as starting", () => {
+  // Connected and heartbeating, but `wait()` has not attached its intake yet.
+  equal(
+    instanceStatus(
+      { connectedAt: "2026-11-19T10:05:00Z" },
+      report("2026-11-19T10:05:01Z", "connecting"),
+      "x",
+    ).state,
+    "starting",
+  );
+  // Connected, no heartbeat yet, nothing to wait for.
+  equal(
+    instanceStatus({ connectedAt: "2026-11-19T10:05:00Z" }, undefined, "x")
+      .state,
+    "starting",
+  );
+});
