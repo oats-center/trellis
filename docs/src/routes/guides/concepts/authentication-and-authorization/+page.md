@@ -179,6 +179,19 @@ that provider only. Clearing the field, or
 even while the provider still needs it; its sign-ins then fail until you pin it
 again.
 
+Some providers need extra parameters on the sign-in request. An Auth0
+application that requires an organization refuses every sign-in with
+"parameter organization is required for this client" until the request names
+one. Add it under the provider's Authorization parameters in the Console, or
+with `trellis sign-in providers add|edit --authorization-param
+organization=org_123` (repeat the flag for more). Trellis sends them on every
+sign-in and account link through that provider. `edit` replaces the list when
+you give any and keeps it when you don't; `--clear-authorization-params`
+removes them all. Names Trellis sets itself, such as `redirect_uri`, `state`
+and `prompt`, are refused. Trellis doesn't check the provider honored a
+parameter: it doesn't compare an Auth0 ID token's `org_id` with the
+organization you set.
+
 ## Installed participants
 
 Every participant is installed in Auth before it can be granted access. An

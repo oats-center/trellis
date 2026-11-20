@@ -348,6 +348,7 @@ staticPasswords:
             trellis_rs::auth::certificate_fingerprint(&fixture_ca),
         )),
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 0u64.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),

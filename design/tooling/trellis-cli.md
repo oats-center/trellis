@@ -261,7 +261,10 @@ asks for it without echo when it asks for its other values), and
 the issuer of a provider's certificate when nothing on the server vouches for
 it; `edit --no-certificate-fingerprint` removes the pin, even while the
 provider still needs it, after which its sign-ins fail until it is pinned
-again. `clients sign-up` chooses whether people may create their own account while signing in to one app. The separately originated
+again. `--authorization-param NAME=VALUE`, repeatable, adds a parameter to
+every authorization request sent to the provider, such as Auth0's
+`organization=<org id>`; `edit` replaces the list when any are given, and
+`--clear-authorization-params` empties it. `clients sign-up` chooses whether people may create their own account while signing in to one app. The separately originated
 OAuth portal owns interactive login, device-code confirmation and consent;
 authenticated administration remains on NATS.
 

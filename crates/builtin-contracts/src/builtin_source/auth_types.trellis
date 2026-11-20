@@ -719,6 +719,11 @@ model AuthIdentityLinkProvidersResponse { providers: list<AuthIdentityLinkProvid
 /// prompt, so the provider may sign the person straight back in.
 enum AuthOIDCSignOutPrompt { login; selectAccount; consent; none; }
 
+/// A parameter Auth adds to every authorization request it sends the
+/// provider, for sign-in and for linking, such as Auth0's
+/// `organization=<org id>`.
+model AuthOIDCAuthorizationParameter { name: string; value: string; }
+
 model AuthOIDCProvider {
   providerId: ulid;
   issuer: string;
@@ -734,6 +739,7 @@ model AuthOIDCProvider {
   /// hex. Absent when the provider relies on the system trust store alone.
   certificateFingerprint?: string;
   promptAfterSignOut: AuthOIDCSignOutPrompt;
+  authorizationParameters: list<AuthOIDCAuthorizationParameter>;
   revision: AuthRevision;
 }
 model AuthOIDCProviderGetRequest { providerId: ulid; }
@@ -756,6 +762,11 @@ model AuthOIDCProviderPutRequest {
   certificateFingerprint?: string | null;
   /// Left out, `login`.
   promptAfterSignOut?: AuthOIDCSignOutPrompt;
+  /// At most 16, with unique names of letters, digits, `-`, `_` and `.`.
+  /// Names Auth sets itself (`client_id`, `redirect_uri`, `response_type`,
+  /// `scope`, `state`, `nonce`, `code_challenge`, `code_challenge_method` and
+  /// `prompt`) are refused. Left out, none.
+  authorizationParameters?: list<AuthOIDCAuthorizationParameter>;
   expectedRevision: uint64;
   idempotencyKey: AuthIdempotencyKey;
 }

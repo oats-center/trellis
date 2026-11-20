@@ -50,6 +50,7 @@
   let scopes = $state("");
   let groupsClaim = $state("");
   let promptAfterSignOut = $state<Provider["promptAfterSignOut"]>("login");
+  let authorizationParameters = $state<{ name: string; value: string }[]>([]);
 
   const editableSettings = $derived(
     canPerform(authority.authority, "signInSettingsUpdate"),
@@ -212,6 +213,9 @@
     // Most providers list a person's groups in a `groups` claim.
     groupsClaim = provider ? provider.roleClaim : "/groups";
     promptAfterSignOut = provider?.promptAfterSignOut ?? "login";
+    authorizationParameters = (provider?.authorizationParameters ?? []).map(
+      ({ name, value }) => ({ name, value }),
+    );
     editing = true;
     error = null;
     notice = null;
@@ -236,6 +240,10 @@
           scopes: scopes.split(/\s+/).filter(Boolean),
           roleClaim: groupsClaim.trim(),
           promptAfterSignOut,
+          // Rows left without a name are dropped.
+          authorizationParameters: authorizationParameters
+            .map(({ name, value }) => ({ name: name.trim(), value }))
+            .filter(({ name }) => name),
           claimFreshnessSeconds: selected?.claimFreshnessSeconds ?? 3600,
           expectedRevision: selected?.revision ?? 0n,
           idempotencyKey: codecs.ulid.decode(ulid()),
@@ -585,6 +593,52 @@
                       Change it only for a provider that refuses the default.</span
                     ></label
                   >
+                  <div class="trellis-field">
+                    <span class="trellis-field-label"
+                      >Authorization parameters</span
+                    >
+                    {#each authorizationParameters as parameter, index (parameter)}
+                      <div class="flex items-center gap-2">
+                        <input
+                          class="input w-2/5 font-mono"
+                          aria-label="Parameter name"
+                          autocomplete="off"
+                          spellcheck="false"
+                          placeholder="name"
+                          bind:value={parameter.name}
+                        /><input
+                          class="input flex-1 font-mono"
+                          aria-label="Parameter value"
+                          autocomplete="off"
+                          spellcheck="false"
+                          placeholder="value"
+                          bind:value={parameter.value}
+                        /><button
+                          type="button"
+                          class="btn btn-ghost btn-sm btn-square"
+                          aria-label="Remove parameter"
+                          onclick={() =>
+                            authorizationParameters.splice(index, 1)}
+                          ><Icon name="close" size={16} /></button
+                        >
+                      </div>
+                    {/each}
+                    <div>
+                      <button
+                        type="button"
+                        class="btn btn-sm"
+                        onclick={() =>
+                          authorizationParameters.push({ name: "", value: "" })}
+                        ><Icon name="plus" size={16} /> Add parameter</button
+                      >
+                    </div>
+                    <span class="trellis-field-help"
+                      >Added to every sign-in request sent to the provider. An
+                      Auth0 application that requires an organization needs
+                      <code>organization</code> set to the organization's ID,
+                      such as <code>org_123</code>.</span
+                    >
+                  </div>
                 </div>
               </details>
               {#if selected && canPerform(authority.authority, "oidcRoleMappingsList")}

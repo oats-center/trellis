@@ -932,6 +932,23 @@ prompt, so a provider that rejects it cannot block sign-in; Trellis never
 quietly drops the prompt before the provider has refused it. Trellis does not
 yet call the provider's own `end_session_endpoint`.
 
+A provider can also carry custom authorization parameters: name/value pairs,
+stored with it in the Auth DB (`authorizationParameters` on
+`Auth.OIDCProviders.Put`, the Console provider form,
+`trellis sign-in providers add|edit --authorization-param NAME=VALUE`), that
+`/portal/oidc/{provider}/begin` adds to every authorization request, for sign-in
+and for linking. An Auth0 application that requires an organization refuses
+sign-ins without `organization`, so it gets `organization=<org id>`; Trellis
+itself names no provider-specific parameter. Put allows at most 16, with unique
+names of letters, digits, `-`, `_` and `.` and values of at most 1024 bytes,
+and refuses the names Auth sets itself (`client_id`, `redirect_uri`,
+`response_type`, `scope`, `state`, `nonce`, `code_challenge`,
+`code_challenge_method`, and `prompt`, which has its own setting), since a
+second copy could redirect the code or defeat the state and PKCE bindings
+depending on which one the provider reads. Auth does not check that the ID
+token reflects a parameter: an Auth0 token's `org_id` is not compared with the
+configured organization.
+
 A later authorization may bind the cleared app handle to another account; an uncleared
 handle still rejects a different principal, and stale tabs cannot restore it.
 

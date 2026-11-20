@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
-use trellis_runtime_apis::__types::trellis::AuthOIDCSignOutPrompt;
+use trellis_runtime_apis::__types::trellis::{
+    AuthOIDCAuthorizationParameter, AuthOIDCSignOutPrompt,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Claims {
@@ -512,6 +514,8 @@ pub(super) struct ConfiguredProvider {
     pub(super) scopes: Vec<String>,
     /// The OIDC `prompt` value for the first sign-in after a sign-out, if any.
     pub(super) sign_out_prompt: Option<&'static str>,
+    /// Name/value pairs added to every authorization request.
+    pub(super) authorization_parameters: Vec<AuthOIDCAuthorizationParameter>,
 }
 
 impl super::super::SqliteAuthorizationStore {
@@ -538,6 +542,7 @@ impl super::super::SqliteAuthorizationStore {
                             issuer_certificate: row.get(5)?,
                             scopes: Vec::new(),
                             sign_out_prompt: None,
+                            authorization_parameters: Vec::new(),
                         },
                         row.get::<_, String>(4)?,
                     ))
@@ -551,6 +556,8 @@ impl super::super::SqliteAuthorizationStore {
             scopes: Vec<String>,
             #[serde(default, rename = "promptAfterSignOut")]
             prompt_after_sign_out: Option<AuthOIDCSignOutPrompt>,
+            #[serde(default, rename = "authorizationParameters")]
+            authorization_parameters: Vec<AuthOIDCAuthorizationParameter>,
         }
         let options: Options = serde_json::from_str(&config)?;
         if options.scopes.len() > 32
@@ -566,6 +573,7 @@ impl super::super::SqliteAuthorizationStore {
         }
         Ok(ConfiguredProvider {
             scopes: options.scopes,
+            authorization_parameters: options.authorization_parameters,
             sign_out_prompt: match options
                 .prompt_after_sign_out
                 .unwrap_or(AuthOIDCSignOutPrompt::Login)

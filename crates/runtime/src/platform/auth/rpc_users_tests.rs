@@ -518,6 +518,7 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
         client_secret: Some("upstream confidential credential".into()),
         certificate_fingerprint: None,
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 0.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
@@ -533,6 +534,7 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
         provider_id: Some(created.provider.provider_id),
         title: "Updated company".to_string().into(),
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 1.into(),
         client_secret: None,
         certificate_fingerprint: None,
@@ -606,6 +608,7 @@ async fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
         client_secret: None,
         certificate_fingerprint: None,
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 0.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
@@ -632,6 +635,76 @@ async fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
     assert_eq!(created.provider.issuer, "https://identity.example/");
 }
 
+/// A custom authorization parameter must not replace one Auth sets itself:
+/// a second `redirect_uri` or `state` could send the code elsewhere or defeat
+/// the CSRF binding, depending on which copy the provider reads.
+#[test]
+fn provider_put_refuses_custom_authorization_parameters_trellis_sets_itself() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(open(&directory, SigningKey::from_bytes(&[52; 32])));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[19; 32]).unwrap();
+    let put = |parameters: &[(&str, &str)]| {
+        let input = AuthOIDCProviderPutRequest {
+            provider_id: None,
+            issuer: "https://identity.example/".into(),
+            client_id: "trellis".into(),
+            title: "Company".to_string().into(),
+            scopes: vec!["openid".into()],
+            role_claim: String::new(),
+            claim_freshness_seconds: 300.into(),
+            client_secret: None,
+            certificate_fingerprint: None,
+            prompt_after_sign_out: None,
+            authorization_parameters: Some(
+                parameters
+                    .iter()
+                    .map(|(name, value)| {
+                        trellis_runtime_apis::__types::trellis::AuthOIDCAuthorizationParameter {
+                            name: (*name).into(),
+                            value: (*value).into(),
+                            extra: Default::default(),
+                        }
+                    })
+                    .collect(),
+            ),
+            expected_revision: 0.into(),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+            extra: Default::default(),
+        };
+        put_provider(
+            &storage,
+            &mutation(&admin, &input),
+            &input,
+            IssuerPin::Keep,
+            NOW,
+        )
+    };
+    for (parameters, expected) in [
+        (
+            vec![("redirect_uri", "https://attacker.example/")],
+            "set by Trellis",
+        ),
+        (vec![("state", "fixed")], "set by Trellis"),
+        (
+            vec![("organization", "org_1"), ("organization", "org_2")],
+            "more than once",
+        ),
+        (vec![("org id", "org_1")], "letters, digits"),
+    ] {
+        match put(&parameters) {
+            Err(AuthError::Invalid(detail)) => assert!(detail.contains(expected), "{detail}"),
+            other => panic!("{parameters:?} was not refused: {other:?}"),
+        }
+    }
+    let created = put(&[("organization", "org_123")]).unwrap();
+    assert_eq!(created.provider.authorization_parameters.len(), 1);
+}
+
 #[test]
 fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() {
     let directory = tempfile::tempdir().unwrap();
@@ -653,6 +726,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         client_secret: None,
         certificate_fingerprint: None,
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 0.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
@@ -729,6 +803,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         client_secret: None,
         certificate_fingerprint: None,
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 0.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
@@ -1410,6 +1485,7 @@ fn sign_in_settings_and_providers_always_leave_a_way_to_sign_in() {
         client_secret: Some("upstream confidential credential".into()),
         certificate_fingerprint: None,
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 0.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
@@ -1511,6 +1587,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
         client_secret: None,
         certificate_fingerprint: None,
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 0.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
@@ -1698,6 +1775,7 @@ fn link_providers_lists_active_providers_by_name_and_drops_a_disabled_one() {
             client_secret: None,
             certificate_fingerprint: None,
             prompt_after_sign_out: None,
+            authorization_parameters: None,
             expected_revision: 0.into(),
             idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             extra: Default::default(),
@@ -1773,6 +1851,7 @@ fn linking_and_unlinking_another_persons_sign_ins_needs_accounts_manage() {
         client_secret: None,
         certificate_fingerprint: None,
         prompt_after_sign_out: None,
+        authorization_parameters: None,
         expected_revision: 0.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),

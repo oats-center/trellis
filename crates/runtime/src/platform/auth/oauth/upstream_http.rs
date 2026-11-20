@@ -329,6 +329,10 @@ pub(super) async fn start(
     } else if let Some(prompt) = sign_out_prompt {
         request = request.add_extra_param("prompt", prompt);
     }
+    // Put refuses the names Auth sets itself.
+    for parameter in configured.authorization_parameters {
+        request = request.add_extra_param(parameter.name, parameter.value);
+    }
     for scope in configured
         .scopes
         .into_iter()

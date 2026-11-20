@@ -451,6 +451,64 @@ pub(super) fn put_provider(
             "invalid upstream claims or scopes".into(),
         ));
     }
+    let parameters = input
+        .authorization_parameters
+        .as_deref()
+        .unwrap_or_default();
+    if parameters.len() > 16 {
+        return Err(AuthError::Invalid(
+            "a provider takes at most 16 custom authorization parameters".into(),
+        ));
+    }
+    for (index, parameter) in parameters.iter().enumerate() {
+        let name = parameter.name.as_str();
+        if name.is_empty()
+            || name.len() > 64
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+        {
+            return Err(AuthError::Invalid(format!(
+                "authorization parameter name {name:?} must be 1 to 64 letters, digits, \
+                '-', '_' or '.'"
+            )));
+        }
+        if matches!(
+            name,
+            "client_id"
+                | "redirect_uri"
+                | "response_type"
+                | "scope"
+                | "state"
+                | "nonce"
+                | "code_challenge"
+                | "code_challenge_method"
+                | "prompt"
+        ) {
+            return Err(AuthError::Invalid(format!(
+                "authorization parameter {name} is set by Trellis itself{}",
+                if name == "prompt" {
+                    "; use the provider's prompt after sign-out setting instead"
+                } else {
+                    ""
+                }
+            )));
+        }
+        if parameters[..index]
+            .iter()
+            .any(|earlier| earlier.name == name)
+        {
+            return Err(AuthError::Invalid(format!(
+                "authorization parameter {name} is given more than once"
+            )));
+        }
+        if parameter.value.len() > 1024 || parameter.value.chars().any(char::is_control) {
+            return Err(AuthError::Invalid(format!(
+                "authorization parameter {name} needs a value of at most 1024 bytes without \
+                control characters"
+            )));
+        }
+    }
     let audit = serde_json::json!({"requestDigest": identity.request_digest});
     let safe_identity = Mutation {
         request_digest: digest(&audit)?,
@@ -518,6 +576,7 @@ pub(super) fn put_provider(
                         .prompt_after_sign_out
                         .clone()
                         .unwrap_or(AuthOIDCSignOutPrompt::Login),
+                    "authorizationParameters": parameters,
                 }),
                 claim_freshness_seconds: input.claim_freshness_seconds.0,
                 expected_revision: input.expected_revision.0,
@@ -1594,6 +1653,11 @@ pub(super) fn read_provider(
             .map(|value| serde_json::from_value(value.clone()))
             .transpose()?
             .unwrap_or(AuthOIDCSignOutPrompt::Login),
+        authorization_parameters: config
+            .get("authorizationParameters")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()?
+            .unwrap_or_default(),
         claim_freshness_seconds: freshness.into(),
         enabled: state == "active",
         revision: AuthRevision(revision.into()),

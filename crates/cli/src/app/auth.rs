@@ -1440,6 +1440,7 @@ async fn providers_command(
                 certificate_fingerprint: (!certificate_fingerprint.trim().is_empty())
                     .then(|| Nullable::Value(certificate_fingerprint.trim().to_owned())),
                 prompt_after_sign_out: args.prompt_after_sign_out.map(sign_out_prompt),
+                authorization_parameters: Some(authorization_parameters(args.authorization_params)),
                 expected_revision: 0u64.into(),
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
@@ -1478,6 +1479,13 @@ async fn providers_command(
                     args.prompt_after_sign_out
                         .map_or(current.prompt_after_sign_out, sign_out_prompt),
                 ),
+                authorization_parameters: Some(if args.clear_authorization_params {
+                    Vec::new()
+                } else if args.authorization_params.is_empty() {
+                    current.authorization_parameters
+                } else {
+                    authorization_parameters(args.authorization_params)
+                }),
                 expected_revision: current.revision.0,
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
@@ -1558,6 +1566,20 @@ async fn providers_command(
                     output::field(provider, "promptAfterSignOut"),
                 )
                 .field(
+                    "Authorization parameters",
+                    output::list(provider, "authorizationParameters")
+                        .iter()
+                        .map(|parameter| {
+                            format!(
+                                "{}={}",
+                                output::field(parameter, "name"),
+                                output::field(parameter, "value")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+                .field(
                     "Certificate issuer",
                     provider["certificateFingerprint"]
                         .as_str()
@@ -1571,6 +1593,20 @@ async fn providers_command(
             Ok(())
         },
     )
+}
+
+/// The wire list for `--authorization-param` pairs.
+fn authorization_parameters(
+    pairs: Vec<(String, String)>,
+) -> Vec<auth_types::AuthOIDCAuthorizationParameter> {
+    pairs
+        .into_iter()
+        .map(|(name, value)| auth_types::AuthOIDCAuthorizationParameter {
+            name,
+            value,
+            extra: Default::default(),
+        })
+        .collect()
 }
 
 /// The wire value for a `--prompt-after-sign-out` choice.

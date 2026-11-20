@@ -885,7 +885,17 @@ Certificate fingerprint field, `--certificate-fingerprint <sha256>`, or
 against the chain the provider presents and trusts that issuer for that
 provider only. Adding a provider nothing vouches for is refused with the
 fingerprint it presents. Removing a pin is saved even while the provider still
-needs it; its sign-ins then fail until it is pinned again. `disable` and
+needs it; its sign-ins then fail until it is pinned again. Custom
+authorization parameters (`authorizationParameters` on `Auth.OIDCProviders.Put`,
+the Console provider form, `--authorization-param NAME=VALUE`, repeatable;
+`edit` replaces the list when any are given, `--clear-authorization-params`
+empties it) are added to every sign-in and linking request to the provider,
+such as `organization=<org id>` for an Auth0 application that requires an
+organization. At most 16, unique names of letters, digits, `-`, `_`, `.`;
+names Auth sets itself (`client_id`, `redirect_uri`, `response_type`, `scope`,
+`state`, `nonce`, `code_challenge`, `code_challenge_method`, `prompt`) are
+refused. Auth does not check the ID token against them (an Auth0 `org_id` is
+not verified). `disable` and
 `enable` (`Auth.OIDCProviders.Disable/Enable`) turn a provider off and back on.
 People can create their
 own account only where the installation allows it and the app they are signing

@@ -221,6 +221,10 @@ pub struct ProviderAddArgs {
     /// to `login`.
     #[arg(long, value_enum, value_name = "PROMPT")]
     pub prompt_after_sign_out: Option<SignOutPrompt>,
+    /// A parameter added to every authorization request sent to the provider,
+    /// such as `organization=org_123` for Auth0 Organizations; repeat for each.
+    #[arg(long = "authorization-param", value_name = "NAME=VALUE", value_parser = authorization_param)]
+    pub authorization_params: Vec<(String, String)>,
 }
 
 #[derive(Debug, Args)]
@@ -251,6 +255,26 @@ pub struct ProviderEditArgs {
     /// What the provider is asked to do on the first sign-in after a sign-out.
     #[arg(long, value_enum, value_name = "PROMPT")]
     pub prompt_after_sign_out: Option<SignOutPrompt>,
+    /// Replace the parameters added to every authorization request; repeat
+    /// for each.
+    #[arg(
+        long = "authorization-param",
+        value_name = "NAME=VALUE",
+        value_parser = authorization_param,
+        conflicts_with = "clear_authorization_params"
+    )]
+    pub authorization_params: Vec<(String, String)>,
+    /// Stop adding custom parameters to authorization requests.
+    #[arg(long)]
+    pub clear_authorization_params: bool,
+}
+
+/// Splits a `--authorization-param` at its first `=`.
+fn authorization_param(argument: &str) -> Result<(String, String), String> {
+    argument
+        .split_once('=')
+        .map(|(name, value)| (name.trim().to_owned(), value.to_owned()))
+        .ok_or_else(|| format!("expected NAME=VALUE, got {argument:?}"))
 }
 
 #[derive(Debug, Args)]
