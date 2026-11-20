@@ -8,6 +8,56 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.51] - 2026-11-20
+
+### Added
+
+- Services report readiness and stop gracefully, in TypeScript and Rust. With
+  `NOTIFY_SOCKET` set they send `READY=1` once serving, `STOPPING=1` when they
+  begin to stop and `STATUS=` lines, so systemd `Type=notify` and Quadlet
+  `Notify=true` work with no health check (TypeScript needs Node 26 for this).
+  An optional readiness file or HTTP `/ready` and `/live` serve orchestrators.
+  `service.ready`/`service.phase` (TS) and `lifecycle()` (Rust) expose the same.
+  A service serves only once connected, its build installed, its settings
+  present and every handler, job worker and durable consumer attached; it
+  takes no job or delivery before then.
+- On SIGTERM, Ctrl-C or `stop()` a service leaves its queue groups at once,
+  ends Live streams with `local_shutdown`, finishes requests, deliveries and
+  jobs within the stop timeout (25 s by default) and hands the rest back
+  immediately. A TypeScript process exits at most 5 s after that.
+- `trellis svc <ID> instances` and the Console's service page show each
+  instance's build (current or older), state (starting, waiting for approval
+  with its link, waiting for settings naming them, serving, stopping, offline),
+  when it connected and its last heartbeat. The `cli` agent now selects
+  `health.inspect`, so administrators approve it again.
+- Install a service from its published package: `trellis svc create
+--package NAME@VERSION` (or `@sha256:...`) and `svc <ID> apply --package`,
+  the Console's "From a published package" and "Install a build", and
+  `trellis registries` plus a Package registries page for the registries Auth
+  pulls from. Auth pulls and verifies the frozen release, so the service
+  connects with nothing to approve.
+- A guide, "Upgrade a service without downtime".
+
+### Changed
+
+- Auth idempotency keys are ULIDs in the contract; a bad key is refused naming
+  `idempotencyKey`.
+- A request whose connection is closed ends as `trellis.request.closed`.
+- A Live session whose data subscription fails or is refused ends at once as
+  `disconnected`, in both SDKs, during activation or later.
+
+### Fixed
+
+- A request in flight when its connection closes no longer leaves a timer that
+  rejects unhandled after the connection is gone.
+- A stopping TypeScript service ends Live sessions a still-installing
+  connection accepted, and takes no intake once it starts stopping.
+- The Console keeps unsaved settings edits, a refused save's error and an
+  update decision's outcome while the service page refreshes.
+- A managed NATS that fails to start includes the end of its own log in the
+  error.
+- The docs site builds again.
+
 ## [0.100.0-rc.50] - 2026-11-19
 
 ### Added
