@@ -711,6 +711,14 @@ model AuthIdentityLinkCreateResponse { authorizationUrl: string; expiresAt: time
 model AuthIdentityLinkProvider { providerId: ulid; title: string; }
 model AuthIdentityLinkProvidersResponse { providers: list<AuthIdentityLinkProvider>; }
 
+/// The `prompt` Auth sends the provider on the first OIDC sign-in after this
+/// browser signed out: `login` (OIDC `prompt=login`) asks for credentials
+/// again; `selectAccount` (`select_account`) shows an account chooser, which
+/// lets the person pick an account but does not prove they signed in again;
+/// `consent` asks the person to approve this Trellis again; `none` sends no
+/// prompt, so the provider may sign the person straight back in.
+enum AuthOIDCSignOutPrompt { login; selectAccount; consent; none; }
+
 model AuthOIDCProvider {
   providerId: ulid;
   issuer: string;
@@ -725,6 +733,7 @@ model AuthOIDCProvider {
   /// provider besides the system trust store, as colon-separated uppercase
   /// hex. Absent when the provider relies on the system trust store alone.
   certificateFingerprint?: string;
+  promptAfterSignOut: AuthOIDCSignOutPrompt;
   revision: AuthRevision;
 }
 model AuthOIDCProviderGetRequest { providerId: ulid; }
@@ -745,6 +754,8 @@ model AuthOIDCProviderPutRequest {
   /// its issuer has another fingerprint. Left out, the provider keeps its
   /// current pin; `null` removes it.
   certificateFingerprint?: string | null;
+  /// Left out, `login`.
+  promptAfterSignOut?: AuthOIDCSignOutPrompt;
   expectedRevision: uint64;
   idempotencyKey: AuthIdempotencyKey;
 }

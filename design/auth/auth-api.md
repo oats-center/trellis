@@ -35,11 +35,11 @@ All routes are served only by the Trellis listener (`[http]`), beside
 | `POST` | `/auth/device/enroll`                     | Create or resume a proof-bound device review                                                                                     |
 | `GET`  | `/login`, `/consent`, `/device`           | Portal pages for sign-in, capability consent, and Device Code entry; sign-in and consent embed their methods, request, and theme |
 | `GET`  | `/device/complete`                        | Portal page shown after a Device Code decision                                                                                   |
-| `GET`  | `/logout`                                 | `end_session_endpoint`: ends the portal login, then returns to `post_logout_redirect_uri`                                        |
+| `GET`  | `/logout`                                 | `end_session_endpoint`: ends the portal login, marks the browser for a post-sign-out OIDC prompt, then returns                   |
 | `GET`  | `/portal-assets/{path}`                   | Embedded portal assets                                                                                                           |
 | `POST` | `/portal/session`                         | Create a portal session cookie and CSRF token                                                                                    |
 | `POST` | `/portal/login`                           | Local username/password sign-in                                                                                                  |
-| `POST` | `/portal/logout`                          | End the portal login; the next upstream OIDC sign-in from that browser sends `prompt=login`                                      |
+| `POST` | `/portal/logout`                          | End the portal login                                                                                                             |
 | `GET`  | `/portal/providers`                       | List enabled upstream OIDC providers, and this browser's last provider refusal for a sign-in                                     |
 | `GET`  | `/portal/oidc/{provider}/begin`           | Start upstream OIDC with server-owned state, nonce, and PKCE                                                                     |
 | `GET`  | `/portal/oidc/callback`                   | Verify the upstream OIDC callback                                                                                                |

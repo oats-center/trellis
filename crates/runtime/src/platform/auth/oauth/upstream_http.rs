@@ -312,16 +312,22 @@ pub(super) async fn start(
             Nonce::new_random,
         )
         .set_pkce_challenge(challenge);
-    // Linking must prove the provider account now, and a browser that ended
-    // its Portal login must not be signed back in by the provider's session.
+    // Linking must prove the provider account now. A browser that signed out
+    // gets the provider's configured prompt, so its session does not sign the
+    // person straight back in.
     let signed_out = headers
         .get_all(axum::http::header::COOKIE)
         .iter()
         .filter_map(|line| line.to_str().ok())
         .flat_map(|line| line.split(';'))
         .any(|part| part.trim() == "__Host-trellis-portal-reauth=1");
-    if account_token.is_some() || signed_out {
+    let sign_out_prompt = configured
+        .sign_out_prompt
+        .filter(|_| signed_out && account_token.is_none());
+    if account_token.is_some() {
         request = request.add_extra_param("prompt", "login");
+    } else if let Some(prompt) = sign_out_prompt {
+        request = request.add_extra_param("prompt", prompt);
     }
     for scope in configured
         .scopes
@@ -343,6 +349,7 @@ pub(super) async fn start(
         pkce_verifier: verifier.secret().clone(),
         expires_at: deadline.min(now + 300),
         request_id: super::super::sqlite::id(),
+        sign_out_prompt: sign_out_prompt.map(str::to_owned),
     };
     let state = state.secret().clone();
     if let Err(cause) = with_store(&engine, move |store| {
@@ -478,7 +485,36 @@ pub(super) async fn callback(
             description,
             "OIDC provider refused the sign-in"
         );
-        return refused(ErrorCode::AccessDenied, reason, description, true);
+        // A provider that cannot honour the prompt sent after a sign-out would
+        // refuse every retry the same way, so this browser stops sending it and
+        // the person learns which setting to change.
+        let rejected_prompt = flow.sign_out_prompt.as_deref().filter(|_| {
+            matches!(
+                reason.as_str(),
+                "login_required"
+                    | "interaction_required"
+                    | "consent_required"
+                    | "account_selection_required"
+            ) || (reason == "invalid_request" && description.to_lowercase().contains("prompt"))
+        });
+        let Some(prompt) = rejected_prompt else {
+            return refused(ErrorCode::AccessDenied, reason, description, true);
+        };
+        let explained = format!(
+            "it would not accept prompt={prompt}, sent on the first sign-in after a sign-out. \
+            An administrator can change the provider's \"Prompt after sign-out\" setting; \
+            this browser won't send it again. {}",
+            description.chars().take(90).collect::<String>()
+        );
+        let mut response = refused(ErrorCode::AccessDenied, reason, explained.trim_end(), true);
+        response.headers_mut().append(
+            axum::http::header::SET_COOKIE,
+            axum::http::HeaderValue::from_static(
+                "__Host-trellis-portal-reauth=; Path=/; Secure; HttpOnly; SameSite=Lax; \
+                Max-Age=0",
+            ),
+        );
+        return response;
     }
     let Some(code) = form
         .get("code")

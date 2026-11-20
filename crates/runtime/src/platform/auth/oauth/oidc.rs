@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
+use trellis_runtime_apis::__types::trellis::AuthOIDCSignOutPrompt;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Claims {
@@ -87,6 +88,8 @@ pub(super) struct UpstreamFlow {
     pub(super) pkce_verifier: String,
     pub(super) expires_at: i64,
     pub(super) request_id: String,
+    /// The `prompt` sent because this browser had signed out, if any.
+    pub(super) sign_out_prompt: Option<String>,
 }
 
 /// The upstream providers' HTTP client. openidconnect's own adapter is for an
@@ -507,6 +510,8 @@ pub(super) struct ConfiguredProvider {
     /// The DER issuer certificate pinned for this provider, if any.
     pub(super) issuer_certificate: Option<Vec<u8>>,
     pub(super) scopes: Vec<String>,
+    /// The OIDC `prompt` value for the first sign-in after a sign-out, if any.
+    pub(super) sign_out_prompt: Option<&'static str>,
 }
 
 impl super::super::SqliteAuthorizationStore {
@@ -532,6 +537,7 @@ impl super::super::SqliteAuthorizationStore {
                             secret: row.get(3)?,
                             issuer_certificate: row.get(5)?,
                             scopes: Vec::new(),
+                            sign_out_prompt: None,
                         },
                         row.get::<_, String>(4)?,
                     ))
@@ -543,6 +549,8 @@ impl super::super::SqliteAuthorizationStore {
         struct Options {
             #[serde(default)]
             scopes: Vec<String>,
+            #[serde(default, rename = "promptAfterSignOut")]
+            prompt_after_sign_out: Option<AuthOIDCSignOutPrompt>,
         }
         let options: Options = serde_json::from_str(&config)?;
         if options.scopes.len() > 32
@@ -558,6 +566,16 @@ impl super::super::SqliteAuthorizationStore {
         }
         Ok(ConfiguredProvider {
             scopes: options.scopes,
+            sign_out_prompt: match options
+                .prompt_after_sign_out
+                .unwrap_or(AuthOIDCSignOutPrompt::Login)
+            {
+                // Put refuses values Auth does not know.
+                AuthOIDCSignOutPrompt::Login | AuthOIDCSignOutPrompt::Unknown(_) => Some("login"),
+                AuthOIDCSignOutPrompt::SelectAccount => Some("select_account"),
+                AuthOIDCSignOutPrompt::Consent => Some("consent"),
+                AuthOIDCSignOutPrompt::None => None,
+            },
             ..configured
         })
     }

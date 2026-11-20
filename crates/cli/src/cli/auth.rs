@@ -70,6 +70,21 @@ pub enum ClientKind {
     Native,
 }
 
+/// What an OIDC provider is asked to do on the first sign-in after a sign-out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SignOutPrompt {
+    /// Send `prompt=login`: the provider asks for credentials again.
+    Login,
+    /// Send `prompt=select_account`: an account chooser, which does not prove
+    /// the person signed in again.
+    SelectAccount,
+    /// Send `prompt=consent`: the provider asks the person to approve this
+    /// Trellis again.
+    Consent,
+    /// Send no prompt: the provider may sign the person straight back in.
+    None,
+}
+
 /// The settings of an app registration, each also asked for when left out.
 #[derive(Debug, Args)]
 #[command(
@@ -201,6 +216,11 @@ pub struct ProviderAddArgs {
     /// Confirm it with the provider's operator first.
     #[arg(long, value_name = "FINGERPRINT")]
     pub certificate_fingerprint: Option<String>,
+    /// What the provider is asked to do on the first sign-in after a sign-out.
+    /// Use another value only for a provider that refuses `login`. Defaults
+    /// to `login`.
+    #[arg(long, value_enum, value_name = "PROMPT")]
+    pub prompt_after_sign_out: Option<SignOutPrompt>,
 }
 
 #[derive(Debug, Args)]
@@ -228,6 +248,9 @@ pub struct ProviderEditArgs {
     /// Stop trusting a pinned certificate issuer; use the system trust store alone.
     #[arg(long)]
     pub no_certificate_fingerprint: bool,
+    /// What the provider is asked to do on the first sign-in after a sign-out.
+    #[arg(long, value_enum, value_name = "PROMPT")]
+    pub prompt_after_sign_out: Option<SignOutPrompt>,
 }
 
 #[derive(Debug, Args)]

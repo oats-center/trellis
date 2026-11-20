@@ -21,9 +21,26 @@ They are not separate authorization containers. Durable Auth sessions represent
 user logins only; services and devices authenticate without a login row.
 
 Signing out of the Portal doesn't sign the person out of their OIDC provider.
-The next OIDC sign-in from that browser sends the provider `prompt=login`, so
-the provider asks for credentials instead of quietly reusing its session. After
-that sign-in succeeds, later sign-ins use the provider's session as usual.
+So the next OIDC sign-in from that browser sends the provider a `prompt`, set
+per provider by its "Prompt after sign-out" setting in the Console, or
+`trellis sign-in providers add|edit --prompt-after-sign-out`:
+
+- `login`, the default, sends `prompt=login`: the provider asks for
+  credentials again instead of quietly reusing its session. Not every provider
+  supports it; Google documents that it doesn't.
+- `select-account` sends `prompt=select_account`: the provider shows an
+  account chooser. Picking an account doesn't prove the person signed in
+  again.
+- `consent` sends `prompt=consent`: the person approves this Trellis again,
+  which also isn't proof of a fresh sign-in.
+- `none` sends nothing, so the provider may sign the person straight back in.
+
+This applies after any sign-out from an app, including the Console's "Sign in
+again" after a failed sign-in, even when the Portal login had already ended. A
+Portal login that just expires doesn't count. After the sign-in succeeds, later
+sign-ins use the provider's session as usual. If the provider refuses the
+prompt, the sign-in page names the setting to change, and the next try from
+that browser goes without the prompt.
 
 Immediate `Auth.ServiceInstances.Provision` and `Auth.Devices.Provision` require
 `identityPublicKey`: generate the Ed25519 identity key on the client and submit

@@ -667,7 +667,20 @@ async fn logout_page(
     {
         return error(ErrorCode::InvalidRequest);
     }
-    super::assets::page(&engine, None, None)
+    let mut response = super::assets::page(&engine, None, None);
+    // Signing out does not end the OIDC provider's own session, so the next
+    // OIDC sign-in from this browser sends the provider's configured prompt
+    // instead of being signed straight back in. The page sets this even when
+    // no Portal login is left to end; at worst a forged navigation makes the
+    // next sign-in ask again.
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_static(
+            "__Host-trellis-portal-reauth=1; Path=/; Secure; HttpOnly; SameSite=Lax; \
+            Max-Age=2592000",
+        ),
+    );
+    response
 }
 
 async fn consent_page(
@@ -1586,21 +1599,7 @@ async fn portal_logout(
     })
     .await;
     match logged_out {
-        Ok(()) => {
-            let mut response =
-                cookie_response("", Some(""), 0, Json(serde_json::json!({})).into_response());
-            // Ending the Portal login does not end the provider's session, so
-            // the next OIDC sign-in from this browser asks the provider to
-            // sign the person in again instead of returning them silently.
-            response.headers_mut().append(
-                header::SET_COOKIE,
-                HeaderValue::from_static(
-                    "__Host-trellis-portal-reauth=1; Path=/; Secure; HttpOnly; SameSite=Lax; \
-                    Max-Age=2592000",
-                ),
-            );
-            response
-        }
+        Ok(()) => cookie_response("", Some(""), 0, Json(serde_json::json!({})).into_response()),
         Err(code) => error(code),
     }
 }

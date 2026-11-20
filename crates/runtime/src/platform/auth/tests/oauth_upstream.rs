@@ -347,6 +347,7 @@ staticPasswords:
         certificate_fingerprint: Some(trellis_runtime_apis::__types::Nullable::Value(
             trellis_rs::auth::certificate_fingerprint(&fixture_ca),
         )),
+        prompt_after_sign_out: None,
         expected_revision: 0u64.into(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
@@ -1567,6 +1568,7 @@ staticPasswords:
         trellis_runtime_apis::__types::trellis::AuthOIDCProviderPutRequest {
             client_secret: None,
             certificate_fingerprint: Some(fingerprint),
+            prompt_after_sign_out: None,
             expected_revision: expected_revision.into(),
             idempotency_key: trellis_protocol::model::Ulid::generate().into(),
             ..put.clone()

@@ -434,6 +434,10 @@ pub(super) fn put_provider(
         ));
     }
     if (!input.role_claim.is_empty() && !input.role_claim.starts_with('/'))
+        || matches!(
+            input.prompt_after_sign_out,
+            Some(AuthOIDCSignOutPrompt::Unknown(_))
+        )
         || input.scopes.len() > 32
         || input.scopes.iter().any(|scope| {
             scope.is_empty()
@@ -507,7 +511,14 @@ pub(super) fn put_provider(
                     super::oauth::oidc::IssuerPin::Remove => None,
                     super::oauth::oidc::IssuerPin::Set(certificate) => Some(certificate.clone()),
                 },
-                config: serde_json::json!({"scopes": input.scopes, "roleClaim": input.role_claim}),
+                config: serde_json::json!({
+                    "scopes": input.scopes,
+                    "roleClaim": input.role_claim,
+                    "promptAfterSignOut": input
+                        .prompt_after_sign_out
+                        .clone()
+                        .unwrap_or(AuthOIDCSignOutPrompt::Login),
+                }),
                 claim_freshness_seconds: input.claim_freshness_seconds.0,
                 expected_revision: input.expected_revision.0,
             };
@@ -1578,6 +1589,11 @@ pub(super) fn read_provider(
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_owned(),
+        prompt_after_sign_out: config
+            .get("promptAfterSignOut")
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()?
+            .unwrap_or(AuthOIDCSignOutPrompt::Login),
         claim_freshness_seconds: freshness.into(),
         enabled: state == "active",
         revision: AuthRevision(revision.into()),

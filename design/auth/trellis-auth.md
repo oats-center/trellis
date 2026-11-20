@@ -898,14 +898,39 @@ navigation can only sign someone out, never in or into another account.
 
 Ending the Portal login does not end the OIDC provider's own session. So that
 the next OIDC sign-in from that browser does not sign the person straight back
-in, `/portal/logout` also sets `__Host-trellis-portal-reauth` (HttpOnly,
-`SameSite=Lax`, 30 days). While it is present, `/portal/oidc/{provider}/begin`
-sends `prompt=login`, the standard value every provider honours, so the
-provider asks for credentials again. Account linking always sends it. A
-successful OIDC sign-in clears the cookie, so later sign-ins without a sign-out
-keep the provider's single sign-on. An abandoned or failed provider sign-in
-leaves it in place. Trellis does not yet call the provider's own
-`end_session_endpoint`.
+in, the validated `/logout` page sets `__Host-trellis-portal-reauth` (HttpOnly,
+`SameSite=Lax`, 30 days) when it is served, whether or not a Portal login is
+left to end. An app that lost its Portal login (the Console's "Sign in again"
+after a failed connection) still marks the browser. CSRF and the login check
+still guard `/portal/logout` itself, and a Portal login that simply expires
+sets nothing, so it keeps the provider's single sign-on. A forged navigation
+to `/logout` can only make the next sign-in ask again.
+
+While the cookie is present, `/portal/oidc/{provider}/begin` sends the
+provider's `promptAfterSignOut` setting, stored with the provider in the Auth
+DB and edited through `Auth.OIDCProviders.Put` (the Console provider form,
+`trellis sign-in providers add|edit --prompt-after-sign-out`). Providers do
+not all honour the same values, so each setting promises only what the
+provider does with it:
+
+| Setting           | Sent                    | What it guarantees                                                                                    |
+| ----------------- | ----------------------- | ----------------------------------------------------------------------------------------------------- |
+| `login` (default) | `prompt=login`          | The provider re-authenticates the person, if it supports the value. Google documents that it doesn't. |
+| `selectAccount`   | `prompt=select_account` | An account chooser. Choosing an account is not proof the person signed in again.                      |
+| `consent`         | `prompt=consent`        | The person approves this Trellis again. Not proof of a fresh sign-in.                                 |
+| `none`            | nothing                 | Nothing: the provider may sign the person straight back in.                                           |
+
+Account linking always sends `prompt=login`. A successful OIDC sign-in clears
+the cookie, so later sign-ins without a sign-out keep the provider's single
+sign-on. An abandoned sign-in leaves it in place. If the provider answers a
+sign-in that carried the post-sign-out prompt with `login_required`,
+`interaction_required`, `consent_required`, `account_selection_required`, or
+`invalid_request` whose description mentions `prompt`, the callback clears the
+cookie and the sign-in page tells the person the provider refused that prompt
+and names the "Prompt after sign-out" setting. Their next try goes without the
+prompt, so a provider that rejects it cannot block sign-in; Trellis never
+quietly drops the prompt before the provider has refused it. Trellis does not
+yet call the provider's own `end_session_endpoint`.
 
 A later authorization may bind the cleared app handle to another account; an uncleared
 handle still rejects a different principal, and stale tabs cannot restore it.

@@ -777,9 +777,20 @@ confirms revocation through signed HTTP recovery. Unrelated authorization
 failures do not count as successful logout.
 
 Ending the Portal login (the `end_session_endpoint`, `/logout`) does not end
-the OIDC provider's session. The browser's next OIDC sign-in sends the provider
-`prompt=login`, so the provider asks for credentials instead of signing the
-person straight back in; later sign-ins reuse the provider's session again.
+the OIDC provider's session. Every app sign-out through `/logout` marks the
+browser, even when no Portal login was left to end; a Portal login that expires
+does not. The browser's next OIDC sign-in sends the provider's
+`promptAfterSignOut` setting (Auth DB, `Auth.OIDCProviders.Put`, Console
+provider form, `trellis sign-in providers add|edit --prompt-after-sign-out`):
+`login` (default, `prompt=login`, asks for credentials if the provider supports
+it), `selectAccount` (`prompt=select_account`, an account chooser, not proof of
+a fresh sign-in), `consent` (`prompt=consent`, re-approval, not proof of a
+fresh sign-in), or `none` (no prompt; the provider may sign the person straight
+back in). Later sign-ins reuse the provider's session again. If the provider
+refuses the prompt (`login_required`, `interaction_required`,
+`consent_required`, `account_selection_required`, or `invalid_request` about
+`prompt`), the sign-in page names the setting and the browser's next try goes
+without the prompt.
 
 ### Authorization
 

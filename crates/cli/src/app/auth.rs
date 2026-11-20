@@ -1439,6 +1439,7 @@ async fn providers_command(
                 client_secret,
                 certificate_fingerprint: (!certificate_fingerprint.trim().is_empty())
                     .then(|| Nullable::Value(certificate_fingerprint.trim().to_owned())),
+                prompt_after_sign_out: args.prompt_after_sign_out.map(sign_out_prompt),
                 expected_revision: 0u64.into(),
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
@@ -1473,6 +1474,10 @@ async fn providers_command(
                     args.certificate_fingerprint
                         .map(|fingerprint| Nullable::Value(fingerprint.trim().to_owned()))
                 },
+                prompt_after_sign_out: Some(
+                    args.prompt_after_sign_out
+                        .map_or(current.prompt_after_sign_out, sign_out_prompt),
+                ),
                 expected_revision: current.revision.0,
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
@@ -1549,6 +1554,10 @@ async fn providers_command(
                 )
                 .field("Groups claim", output::field(provider, "roleClaim"))
                 .field(
+                    "Prompt after sign-out",
+                    output::field(provider, "promptAfterSignOut"),
+                )
+                .field(
                     "Certificate issuer",
                     provider["certificateFingerprint"]
                         .as_str()
@@ -1562,6 +1571,18 @@ async fn providers_command(
             Ok(())
         },
     )
+}
+
+/// The wire value for a `--prompt-after-sign-out` choice.
+fn sign_out_prompt(prompt: crate::cli::SignOutPrompt) -> auth_types::AuthOIDCSignOutPrompt {
+    match prompt {
+        crate::cli::SignOutPrompt::Login => auth_types::AuthOIDCSignOutPrompt::Login,
+        crate::cli::SignOutPrompt::SelectAccount => {
+            auth_types::AuthOIDCSignOutPrompt::SelectAccount
+        }
+        crate::cli::SignOutPrompt::Consent => auth_types::AuthOIDCSignOutPrompt::Consent,
+        crate::cli::SignOutPrompt::None => auth_types::AuthOIDCSignOutPrompt::None,
+    }
 }
 
 /// A client secret from a file, or from standard input for `-`, without its

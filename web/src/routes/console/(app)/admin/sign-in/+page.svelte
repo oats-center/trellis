@@ -49,6 +49,7 @@
   let certificateFingerprint = $state("");
   let scopes = $state("");
   let groupsClaim = $state("");
+  let promptAfterSignOut = $state<Provider["promptAfterSignOut"]>("login");
 
   const editableSettings = $derived(
     canPerform(authority.authority, "signInSettingsUpdate"),
@@ -210,6 +211,7 @@
     scopes = (provider?.scopes ?? ["openid", "profile", "email"]).join(" ");
     // Most providers list a person's groups in a `groups` claim.
     groupsClaim = provider ? provider.roleClaim : "/groups";
+    promptAfterSignOut = provider?.promptAfterSignOut ?? "login";
     editing = true;
     error = null;
     notice = null;
@@ -233,6 +235,7 @@
             : { certificateFingerprint: fingerprint || null }),
           scopes: scopes.split(/\s+/).filter(Boolean),
           roleClaim: groupsClaim.trim(),
+          promptAfterSignOut,
           claimFreshnessSeconds: selected?.claimFreshnessSeconds ?? 3600,
           expectedRevision: selected?.revision ?? 0n,
           idempotencyKey: codecs.ulid.decode(ulid()),
@@ -561,6 +564,25 @@
                     /><span class="trellis-field-help"
                       >Where the provider lists a person's groups, for giving
                       roles.</span
+                    ></label
+                  >
+                  <label class="trellis-field"
+                    ><span class="trellis-field-label"
+                      >Prompt after sign-out</span
+                    ><select
+                      class="select w-full"
+                      bind:value={promptAfterSignOut}
+                      ><option value="login">Ask to sign in again</option
+                      ><option value="selectAccount">Choose an account</option
+                      ><option value="consent"
+                        >Approve this Trellis again</option
+                      ><option value="none">Nothing</option></select
+                    ><span class="trellis-field-help"
+                      >What the provider is asked on the first sign-in after
+                      someone signs out. Only "Ask to sign in again" makes them
+                      sign in again; choosing an account doesn't, and with
+                      "Nothing" the provider may sign them straight back in.
+                      Change it only for a provider that refuses the default.</span
                     ></label
                   >
                 </div>
