@@ -659,8 +659,9 @@ function safeCode(raw: Uint8Array): string | undefined {
 class MsgIngress {
   #queue: Msg[] = [];
   #bytes = 0;
-  #messageWaiter: (() => void) | undefined;
+  #messageWaiter: ((state: "message" | "closed") => void) | undefined;
   #closed = false;
+  #failure: unknown;
 
   push(msg: Msg): boolean {
     if (this.#queue.length + 1 > C.windowFrames + 8) return false;
@@ -674,7 +675,7 @@ class MsgIngress {
     this.#bytes += msg.data.length;
     const waiter = this.#messageWaiter;
     this.#messageWaiter = undefined;
-    waiter?.();
+    waiter?.("message");
     return true;
   }
 
@@ -685,19 +686,30 @@ class MsgIngress {
     return msg;
   }
 
-  /** Resolve once a new message is retained (or the ingress is closed). */
-  waitMessage(): Promise<void> {
-    if (this.#closed || this.#queue.length > 0) return Promise.resolve();
-    return new Promise<void>((resolve) => {
+  /**
+   * Resolve with `"message"` once a message is retained, or with `"closed"`
+   * once the ingress is closed and every retained message has been read.
+   */
+  waitMessage(): Promise<"message" | "closed"> {
+    if (this.#queue.length > 0) return Promise.resolve("message");
+    if (this.#closed) return Promise.resolve("closed");
+    return new Promise((resolve) => {
       this.#messageWaiter = resolve;
     });
   }
 
-  close(): void {
+  /** Why the subscription feeding this ingress failed, if it did. */
+  get failure(): unknown {
+    return this.#failure;
+  }
+
+  close(failure?: unknown): void {
+    if (this.#closed) return;
     this.#closed = true;
+    this.#failure = failure;
     const waiter = this.#messageWaiter;
     this.#messageWaiter = undefined;
-    waiter?.();
+    waiter?.(this.#queue.length > 0 ? "message" : "closed");
   }
 }
 
@@ -743,11 +755,24 @@ async function runPump<T>(
     }
     return false;
   };
+  // The data subscription fails only when the broker refuses or ends it, so
+  // no provider frame can reach this session any more.
+  const subscriptionFailed = (): void => {
+    core.commitEnd(
+      new LiveEnd(
+        "disconnected",
+        new LiveStreamError(
+          "disconnected",
+          `live data subscription failed: ${String(ingress.failure)}`,
+        ),
+      ),
+    );
+  };
   try {
     subscription = host.nats.subscribe(offer.dataSubject, {
       callback: (error, msg) => {
         if (error) {
-          ingress.close();
+          ingress.close(error);
           return;
         }
         if (!ingress.push(msg)) {
@@ -797,11 +822,17 @@ async function runPump<T>(
           deadlineMs,
           providerGuard,
         ),
-        ingress.waitMessage().then(() => "frame" as const),
+        ingress
+          .waitMessage()
+          .then((state) => (state === "message" ? "frame" : "closed")),
       ]);
       // A provider frame before the reply, such as the END of a session its
       // stopping provider ended, is read by the loop below.
       if (response === "frame") break;
+      if (response === "closed") {
+        subscriptionFailed();
+        return;
+      }
       if (
         response &&
         response.kind === "ack" &&
@@ -912,7 +943,7 @@ async function runPump<T>(
         );
       }
 
-      let winner: "cancel" | "credit" | "timer" | "msg" | "change";
+      let winner: "cancel" | "credit" | "timer" | "msg" | "change" | "closed";
       let message = ingress.tryNext();
       if (message) {
         winner = "msg";
@@ -923,16 +954,19 @@ async function runPump<T>(
             cancellation.cancelled().then(() => "cancel" as const),
             core.waitCredit().then(() => "credit" as const),
             waiter.promise.then(() => "timer" as const),
-            ingress.waitMessage().then(() => "msg" as const),
+            ingress
+              .waitMessage()
+              .then((state) => (state === "message" ? "msg" : "closed")),
             changeResolvers.promise.then(() => "change" as const),
           ]);
         } finally {
           waiter.dispose();
         }
-        if (winner === "msg") {
-          message = ingress.tryNext();
-          if (!message) continue;
-        }
+        if (winner === "msg") message = ingress.tryNext();
+      }
+      if (winner === "closed") {
+        subscriptionFailed();
+        return;
       }
       if (winner === "cancel") {
         core.discardQueue();

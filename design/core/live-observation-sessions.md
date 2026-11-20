@@ -40,7 +40,10 @@ schemas, constants, and error codes live in the shared protocol crate
    one finite reply. No producer starts here.
 3. The first consumer iteration installs a distinct **exact** data subscription
    and sends `activate`. The provider enters `ACTIVATING`, returns an activating
-   acknowledgement, and publishes one signed delivery-path challenge.
+   acknowledgement, and publishes one signed delivery-path challenge. If the
+   broker refuses or fails that data subscription, at any point in the
+   session, the consumer ends the session abnormally at once. It reads any
+   frames it already received first, and it does not wait out the reservation.
 4. The consumer answers the challenge with a signed `pulse`. A fresh, verified
    pulse acknowledgement **commits `ACTIVE`**, and only then does the provider
    invoke the source factory exactly once.

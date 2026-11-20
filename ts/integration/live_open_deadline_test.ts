@@ -1,4 +1,4 @@
-/** A Live opening is never sent after its deadline, first send or resend. */
+/** Live openings and activations end within their deadlines. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TransportError } from "@oatscenter/trellis";
@@ -79,6 +79,63 @@ test("a Live opening resend that wakes after the caller's timeout is never sent"
       } finally {
         await client.connection.close();
         await stopService?.();
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
+
+test("a Live session whose data subscription is refused during activation ends at once", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const gate = runtime.nativeTransportGate();
+      const identity = await runtime.registerService({
+        name: "live-refused-provider",
+        contract: participants.Provider.participant,
+      });
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.Provider.participant,
+        seed: identity.seed,
+      }).orThrow();
+      await service.handleWatch(async ({ emit }) => {
+        await emit({ value: "ready" }).orThrow();
+      });
+      const client = await runtime.connectClient({
+        name: "live-refused-caller",
+        contract: apps.Caller.request,
+      });
+      try {
+        const observation = await client.runtimeWatch({}).orThrow();
+        // The broker refuses the caller's subscription to the session's frames,
+        // which the caller opens as it starts to activate.
+        const refused = gate.refuseNextSubscription("live.v1.data.");
+        const started = Date.now();
+        const first = observation.next().then(
+          (next) => next,
+          (error: unknown) => error,
+        );
+        assert.match(await refused, /^live\.v1\.data\./);
+        const end = await Promise.race([
+          observation.closed,
+          new Promise<"open">((resolve) =>
+            setTimeout(() => resolve("open"), 10_000),
+          ),
+        ]);
+        assert(end !== "open", "the refused Live session never ended");
+        assert.equal(end.reason, "disconnected");
+        assert.match(String(end.error), /data subscription failed/);
+        // Its 15 s activation reservation never runs out first.
+        const elapsed = Date.now() - started;
+        assert(elapsed < 3_000, `ended ${elapsed} ms after activation began`);
+        assert(
+          (await first) instanceof Error,
+          "the caller's read reports the end",
+        );
+      } finally {
+        await client.connection.close();
+        await service.stop();
+        await service.wait();
       }
     },
     { interruptibleNativeProxy: true },

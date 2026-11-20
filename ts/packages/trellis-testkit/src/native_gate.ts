@@ -4,8 +4,9 @@
  * The gate watches the real NATS client protocol on each proxied connection so
  * a test can (a) hold one generation's post-subscription readiness flush, (b)
  * prove which connection a real served RPC was delivered to, (c) read the
- * exact `authorization-context` an outbound request was signed with, and (d)
- * withhold exactly one request's server reply on the wire. It never inspects or
+ * exact `authorization-context` an outbound request was signed with, (d)
+ * withhold exactly one request's server reply on the wire, and (e) refuse one
+ * subscription as broker permissions would. It never inspects or
  * records credentials: `CONNECT` payloads are ignored and only the logical
  * request header used for authorization binding is read.
  */
@@ -129,6 +130,9 @@ export class NativeTransportGate {
   #released = false;
   #responseHold: ResponseHold | undefined;
   #pongHold: PongHold | undefined;
+  #subscriptionRefusal:
+    | { subjectPrefix: string; refused: PromiseWithResolvers<string> }
+    | undefined;
 
   /** Allocate the next proxied connection id. */
   connectionOpened(writer: SerialWriter): number {
@@ -233,6 +237,24 @@ export class NativeTransportGate {
           await held.writer.write(hold.frame);
       },
     };
+  }
+
+  /**
+   * Refuse the next client `SUB` whose subject starts with `subjectPrefix`, as
+   * a broker refuses a subscription its permissions do not allow: the `SUB`
+   * never reaches the broker, and the client receives the broker's
+   * `-ERR 'Permissions Violation for Subscription to "<subject>"'` for it.
+   * Resolves with the refused subject once that error is written. Arming while
+   * a refusal is still pending, or with an empty prefix, is rejected.
+   */
+  refuseNextSubscription(subjectPrefix: string): Promise<string> {
+    if (subjectPrefix.length === 0)
+      throw new Error("a subscription refusal needs a subject prefix");
+    if (this.#subscriptionRefusal !== undefined)
+      throw new Error("a subscription refusal is already armed");
+    const refused = Promise.withResolvers<string>();
+    this.#subscriptionRefusal = { subjectPrefix, refused };
+    return refused.promise;
   }
 
   /**
@@ -351,7 +373,22 @@ export class NativeTransportGate {
         connection.unansweredPings++;
         if (this.#pongHold?.connectionId === id) this.#pongHold.pinged = true;
         break;
-      case "sub":
+      case "sub": {
+        const refusal = this.#subscriptionRefusal;
+        if (refusal && op.subject.startsWith(refusal.subjectPrefix)) {
+          this.#subscriptionRefusal = undefined;
+          void connection.writer
+            .write(
+              new TextEncoder().encode(
+                `-ERR 'Permissions Violation for Subscription to "${op.subject}"'\r\n`,
+              ),
+            )
+            .then(
+              () => refusal.refused.resolve(op.subject),
+              (error: unknown) => refusal.refused.reject(error),
+            );
+          return true;
+        }
         connection.subs.push({
           subject: op.subject,
           sid: op.sid,
@@ -368,6 +405,7 @@ export class NativeTransportGate {
           this.#gatedConnectionId = id;
         }
         break;
+      }
       case "pub": {
         connection.outboundContexts.push({
           subject: op.subject,
