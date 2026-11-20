@@ -131,7 +131,13 @@ export class NativeTransportGate {
   #responseHold: ResponseHold | undefined;
   #pongHold: PongHold | undefined;
   #subscriptionRefusal:
-    | { subjectPrefix: string; refused: PromiseWithResolvers<string> }
+    | {
+        subjectPrefix: string;
+        remaining: number;
+        subjects: string[];
+        writes: Promise<void>[];
+        refused: PromiseWithResolvers<string[]>;
+      }
     | undefined;
 
   /** Allocate the next proxied connection id. */
@@ -247,13 +253,36 @@ export class NativeTransportGate {
    * Resolves with the refused subject once that error is written. Arming while
    * a refusal is still pending, or with an empty prefix, is rejected.
    */
-  refuseNextSubscription(subjectPrefix: string): Promise<string> {
+  async refuseNextSubscription(subjectPrefix: string): Promise<string> {
+    const [subject] = await this.refuseNextSubscriptions(subjectPrefix, 1);
+    return subject!;
+  }
+
+  /**
+   * Refuse the next `count` client `SUB`s whose subjects start with
+   * `subjectPrefix`, each as {@link refuseNextSubscription} refuses one.
+   * Resolves with the refused subjects, in wire order, once every error is
+   * written. Arming while a refusal is still pending, with an empty prefix, or
+   * with a count below one is rejected.
+   */
+  refuseNextSubscriptions(
+    subjectPrefix: string,
+    count: number,
+  ): Promise<string[]> {
     if (subjectPrefix.length === 0)
       throw new Error("a subscription refusal needs a subject prefix");
+    if (!Number.isInteger(count) || count < 1)
+      throw new Error("a subscription refusal needs a positive count");
     if (this.#subscriptionRefusal !== undefined)
       throw new Error("a subscription refusal is already armed");
-    const refused = Promise.withResolvers<string>();
-    this.#subscriptionRefusal = { subjectPrefix, refused };
+    const refused = Promise.withResolvers<string[]>();
+    this.#subscriptionRefusal = {
+      subjectPrefix,
+      remaining: count,
+      subjects: [],
+      writes: [],
+      refused,
+    };
     return refused.promise;
   }
 
@@ -376,17 +405,23 @@ export class NativeTransportGate {
       case "sub": {
         const refusal = this.#subscriptionRefusal;
         if (refusal && op.subject.startsWith(refusal.subjectPrefix)) {
-          this.#subscriptionRefusal = undefined;
-          void connection.writer
-            .write(
-              new TextEncoder().encode(
-                `-ERR 'Permissions Violation for Subscription to "${op.subject}"'\r\n`,
-              ),
-            )
-            .then(
-              () => refusal.refused.resolve(op.subject),
+          refusal.subjects.push(op.subject);
+          const written = connection.writer.write(
+            new TextEncoder().encode(
+              `-ERR 'Permissions Violation for Subscription to "${op.subject}"'\r\n`,
+            ),
+          );
+          // A failed write is reported through `refused` once every refusal
+          // is armed, not as an unhandled rejection before then.
+          written.catch(() => {});
+          refusal.writes.push(written);
+          if (--refusal.remaining === 0) {
+            this.#subscriptionRefusal = undefined;
+            void Promise.all(refusal.writes).then(
+              () => refusal.refused.resolve(refusal.subjects),
               (error: unknown) => refusal.refused.reject(error),
             );
+          }
           return true;
         }
         connection.subs.push({

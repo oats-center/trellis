@@ -76,13 +76,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if std::env::var("TRELLIS_CALLER_MODE").as_deref() == Ok("live-activation") {
-        // Prepare a Watch, wait until the test has armed the broker, then
-        // activate it and report how and how fast the session ended.
-        let mut frames = runtime
-            .watch(&lives::WatchInput {
-                extra: Default::default(),
-            })
-            .await?;
+        // Prepare TRELLIS_CALLER_SESSIONS Watches (one by default) on this one
+        // connection, wait until the test has armed the broker, then activate
+        // them together and report how and how fast each session ended.
+        let sessions: usize =
+            std::env::var("TRELLIS_CALLER_SESSIONS").map_or(Ok(1), |count| count.parse())?;
+        let mut prepared = Vec::with_capacity(sessions);
+        let mut attempts = 0;
+        while prepared.len() < sessions {
+            match runtime
+                .watch(&lives::WatchInput {
+                    extra: Default::default(),
+                })
+                .await
+            {
+                Ok(frames) => prepared.push(frames),
+                // A provider replica holding its per-caller session bound
+                // refuses the opening; a retry can reach another replica.
+                Err(error) if error.to_string().contains("exhausted") && attempts < 100 => {
+                    attempts += 1;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         println!("prepared");
         std::io::stdout().flush()?;
         use tokio::io::AsyncBufReadExt as _;
@@ -91,17 +107,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .read_line(&mut line)
             .await?;
         let started = std::time::Instant::now();
-        let first = frames.next().await;
-        let end = frames.closed().await;
-        println!(
-            "{}",
-            serde_json::json!({
-                "first": format!("{first:?}"),
-                "reason": end.reason().as_str(),
-                "error": end.error().map(ToString::to_string),
-                "ms": started.elapsed().as_millis(),
-            })
-        );
+        let ends =
+            futures_util::future::join_all(prepared.into_iter().map(|mut frames| async move {
+                let first = frames.next().await;
+                let end = frames.closed().await;
+                serde_json::json!({
+                    "first": format!("{first:?}"),
+                    "reason": end.reason().as_str(),
+                    "error": end.error().map(ToString::to_string),
+                    "ms": started.elapsed().as_millis(),
+                })
+            }))
+            .await;
+        for end in ends {
+            println!("{end}");
+        }
         std::io::stdout().flush()?;
         return Ok(());
     }

@@ -19,13 +19,14 @@
 //! credential. The worker then promotes a safe survivor or opens a new
 //! generation from the latest authorization.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use async_nats::ConnectOptions;
 use futures_util::future::BoxFuture;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 use trellis_protocol::{TransportAuthorizationV1, TransportPolicyClass};
 
 use crate::client::authorization::{
@@ -165,11 +166,11 @@ pub(crate) struct TransportGeneration {
     nats: async_nats::Client,
     context_digest: String,
     admitted_policy: TransportAuthorizationV1,
-    /// Subjects whose subscription the broker refused on this attachment. The
+    /// Refusal notices registered by exact subject on this attachment. The
     /// broker reports a refusal only as a connection error, and the refused
     /// subscriber stays open with no messages, so a subscriber that must
-    /// notice the refusal listens here.
-    subscription_refusals: broadcast::Sender<String>,
+    /// notice the refusal registers its subject here before subscribing.
+    subscription_refusals: RefusalNotices,
     /// Terminal state is monotonic: once `Closed`, it never reactivates.
     state: Arc<AtomicU8>,
     /// Authoritative lease admission and live-count predicate. `closed` is the
@@ -603,6 +604,45 @@ async fn wait_lease_idle(
     }
 }
 
+/// Subscription refusal notices on one attachment, keyed by exact subject.
+type RefusalNotices = Arc<std::sync::Mutex<HashMap<String, watch::Sender<bool>>>>;
+
+/// A retained notice that the broker refused the subscription to one subject.
+///
+/// Registered before the subscription is issued, so the refusal is kept until
+/// the holder looks, however many other subscriptions are refused meanwhile.
+/// Dropping it unregisters the subject.
+pub(crate) struct SubscriptionRefusal {
+    subject: String,
+    notices: RefusalNotices,
+    refused: watch::Receiver<bool>,
+}
+
+impl SubscriptionRefusal {
+    /// Wait until the broker has refused the subscription.
+    ///
+    /// Never resolves when the attachment is gone without a refusal.
+    pub(crate) async fn refused(&mut self) {
+        if self.refused.wait_for(|refused| *refused).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+impl Drop for SubscriptionRefusal {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.notices.lock() {
+            // Keep the entry while another holder of the same subject remains.
+            if map
+                .get(&self.subject)
+                .is_some_and(|sender| sender.receiver_count() <= 1)
+            {
+                map.remove(&self.subject);
+            }
+        }
+    }
+}
+
 /// One RAII lease that pins a generation for the duration of physical work.
 ///
 /// The lease releases on drop. A superseded generation closes once its state is
@@ -630,10 +670,24 @@ impl TransportLease {
         &self.generation.nats
     }
 
-    /// Listen for subjects whose subscription the broker refuses on the pinned
-    /// attachment from now on.
-    pub(crate) fn subscription_refusals(&self) -> broadcast::Receiver<String> {
-        self.generation.subscription_refusals.subscribe()
+    /// Retain notice of the broker refusing a later subscription to `subject`
+    /// on the pinned attachment, until the returned notice is dropped.
+    pub(crate) fn watch_subscription_refusal(&self, subject: &str) -> SubscriptionRefusal {
+        let notices = Arc::clone(&self.generation.subscription_refusals);
+        let refused = match notices.lock() {
+            Ok(mut map) => map
+                .entry(subject.to_owned())
+                .or_insert_with(|| watch::channel(false).0)
+                .subscribe(),
+            // A poisoned registry can no longer deliver notices; the subscriber
+            // still ends through its other loss paths.
+            Err(_) => watch::channel(false).1,
+        };
+        SubscriptionRefusal {
+            subject: subject.to_owned(),
+            notices,
+            refused,
+        }
     }
 
     /// The immutable identity of the generation this lease pins.
@@ -2665,8 +2719,8 @@ async fn open_generation(
     }
 
     let event_inner = inner.clone();
-    let (subscription_refusals, _) = broadcast::channel(16);
-    let event_refusals = subscription_refusals.clone();
+    let subscription_refusals = RefusalNotices::default();
+    let event_refusals = Arc::clone(&subscription_refusals);
     let auth_state = state.clone();
     let authenticated = Arc::new(AtomicBool::new(false));
     let nats_sentinel = inner.contexts.nats_sentinel();
@@ -2714,7 +2768,7 @@ async fn open_generation(
     .max_reconnects(native.nats_servers.len().max(1))
     .event_callback(move |event| {
         let inner = event_inner.clone();
-        let refusals = event_refusals.clone();
+        let refusals = Arc::clone(&event_refusals);
         async move {
             // The broker writes `Permissions Violation for Subscription to
             // "<subject>"`, optionally followed by a queue group.
@@ -2723,7 +2777,11 @@ async fn open_generation(
                     .strip_prefix("Permissions Violation for Subscription to \"")
                     .and_then(|rest| rest.split('"').next())
                 {
-                    let _ = refusals.send(subject.to_owned());
+                    if let Ok(map) = refusals.lock() {
+                        if let Some(notice) = map.get(subject) {
+                            notice.send_replace(true);
+                        }
+                    }
                 }
             }
             inner.on_generation_event(id, event);
