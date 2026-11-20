@@ -46,7 +46,9 @@ schemas, constants, and error codes live in the shared protocol crate
    It reads any frames it already received first, and it does not wait out the
    reservation. A broker reports a refused subscription as a connection error,
    not by ending the subscriber, so the consumer watches its attachment's
-   errors for the data subject. `peer_lost` stays reserved for a provider that
+   errors for the data subject. It registers that subject before subscribing
+   and the refusal is kept until the session ends, so other subscriptions
+   refused on the same connection at the same time never hide it. `peer_lost` stays reserved for a provider that
    goes silent past the inactivity bound.
 4. The consumer answers the challenge with a signed `pulse`. A fresh, verified
    pulse acknowledgement **commits `ACTIVE`**, and only then does the provider

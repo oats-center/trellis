@@ -227,3 +227,98 @@ test("a Rust Live session whose data subscription is refused during activation e
     { interruptibleNativeProxy: true },
   );
 });
+
+test("every Rust Live session in a burst of data subscription refusals ends at once", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const gate = runtime.nativeTransportGate();
+      const identity = await runtime.registerService({
+        name: "live-refused-burst-provider",
+        contract: participants.Provider.participant,
+      });
+      // A provider holds at most 16 sessions per caller, so two replicas of
+      // one deployment carry more sessions than that on one caller connection.
+      const replicas = await Promise.all(
+        ["a", "b"].map(async (replica) => {
+          const service = await TrellisService.connect({
+            trellisUrl: runtime.trellisUrl,
+            participant: participants.Provider.participant,
+            name: `live-refused-burst-${replica}`,
+            seed: identity.seed,
+          }).orThrow();
+          await service.handleWatch(async ({ emit }) => {
+            await emit({ value: "ready" }).orThrow();
+          });
+          return service;
+        }),
+      );
+      // More refusals at once than any fixed-size backlog of refusal notices
+      // on the connection would hold.
+      const sessions = 24;
+      const callerArgv = rustFixtureArgv("caller");
+      const caller = spawnTracked(callerArgv[0], callerArgv.slice(1), {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.trellisUrl,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CALLER_MODE: "live-activation",
+          TRELLIS_CALLER_SESSIONS: String(sessions),
+          XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),
+        },
+      });
+      caller.stderr.pipe(process.stderr);
+      let output = "";
+      caller.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      try {
+        await runtime.waitFor(() => /^NATIVE_LOGIN .+\n/m.test(output), {
+          timeoutMs: 60_000,
+        });
+        await authorizeRustNativeLogin(runtime, output, apps.Caller.request);
+        await runtime.waitFor(() => output.includes("prepared\n"), {
+          timeoutMs: 60_000,
+        });
+        // The broker refuses every session's subscription to its frames, which
+        // all the sessions open together as they start to activate.
+        const refused = gate.refuseNextSubscriptions("live.v1.data.", sessions);
+        caller.stdin.write("activate\n");
+        assert.equal(new Set(await refused).size, sessions);
+        const ends = await runtime.waitFor(
+          () => {
+            const lines = output
+              .split("\n")
+              .filter((candidate) => candidate.startsWith('{"error"'));
+            return lines.length === sessions
+              ? lines.map(
+                  (line) =>
+                    JSON.parse(line) as {
+                      reason: string;
+                      error: string | null;
+                      ms: number;
+                    },
+                )
+              : false;
+          },
+          { timeoutMs: 30_000 },
+        );
+        for (const end of ends) {
+          assert.equal(end.reason, "disconnected", JSON.stringify(end));
+          assert.match(String(end.error), /data subscription failed/);
+          // Its 15 s activation reservation never runs out first.
+          assert(end.ms < 3_000, `ended ${end.ms} ms after activation began`);
+        }
+      } finally {
+        caller.kill("SIGKILL");
+        await caller.exited;
+        await Promise.all(
+          replicas.map(async (service) => {
+            await service.stop();
+            await service.wait();
+          }),
+        );
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
+});

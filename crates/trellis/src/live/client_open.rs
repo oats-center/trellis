@@ -620,24 +620,6 @@ fn guard_deadline(guard: &LiveAuthorityGuard) -> Option<tokio::time::Instant> {
     Some(tokio::time::Instant::now() + Duration::from_secs(remaining))
 }
 
-/// Wait until the broker refuses the subscription to `subject`.
-///
-/// Never resolves when the attachment's refusal channel closes.
-async fn subscription_refused(
-    refusals: &mut tokio::sync::broadcast::Receiver<String>,
-    subject: &str,
-) {
-    loop {
-        match refusals.recv().await {
-            Ok(refused) if refused == subject => return,
-            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                std::future::pending::<()>().await;
-            }
-        }
-    }
-}
-
 /// Releases the consumer session when the pump task actually exits.
 struct PumpCleanup<T>(Arc<ConsumerCore<T>>);
 
@@ -722,9 +704,9 @@ impl<T> ConsumerPump<T> {
         T: Send + 'static,
         F: Fn(serde_json::Value) -> Result<Option<T>, TrellisClientError> + Send + 'static,
     {
-        // Listen before subscribing, so the broker's refusal of the data
-        // subscription is never missed.
-        let mut refusals = lease.subscription_refusals();
+        // Register before subscribing, so the broker's refusal of the data
+        // subscription is retained until this pump exits.
+        let mut refusal = lease.watch_subscription_refusal(&data_subject);
         tokio::spawn(async move {
             // The pump releases its independent lease and any leftover handle
             // slot when this task ends, so a naturally terminal session frees
@@ -789,7 +771,7 @@ impl<T> ConsumerPump<T> {
                         return;
                     }
                     // No provider frame can reach this session any more.
-                    () = subscription_refused(&mut refusals, &data_subject) => {
+                    () = refusal.refused() => {
                         self.core.commit_end(consumer_failure(
                             LiveErrorCode::Disconnected,
                             "live data subscription failed: the broker refused it",
@@ -975,7 +957,7 @@ impl<T> ConsumerPump<T> {
                             _ => {}
                         }
                     }
-                    () = subscription_refused(&mut refusals, &data_subject) => {
+                    () = refusal.refused() => {
                         self.core.commit_end(consumer_failure(
                             LiveErrorCode::Disconnected,
                             "live data subscription failed: the broker refused it",
