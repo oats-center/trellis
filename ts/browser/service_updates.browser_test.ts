@@ -64,30 +64,40 @@ test("an administrator approves a waiting service update from its review link", 
           .getByRole("button", { name: "Approve update", exact: true })
           .click();
         // The decision's outcome, or whatever the page shows instead.
-        await page
-          .getByText(/^Approved\./)
-          .waitFor()
-          .catch(async (cause: unknown) => {
-            const shown = await page.locator("main").innerText();
-            throw new Error(`no approval notice; the page shows: ${shown}`, {
-              cause,
-            });
+        const approved = page.getByText(/^Approved\./);
+        await approved.waitFor().catch(async (cause: unknown) => {
+          const shown = await page.locator("main").innerText();
+          throw new Error(`no approval notice; the page shows: ${shown}`, {
+            cause,
           });
+        });
         await review.getByText("Installed").waitFor();
+
+        // Approved, the service connects with its new build and serves.
+        const service = await connecting;
+        const exit = service.wait().catch((error: unknown) => error);
+        try {
+          await service.kv.extended
+            .put("approved", { value: "from the Console" })
+            .orThrow();
+          assert.deepEqual(
+            await service.kv.extended.get("approved").orThrow(),
+            { value: "from the Console" },
+          );
+          // Only a reread of the service shows the instance serving, so the
+          // notice has outlasted at least one.
+          await page
+            .locator(`tr[data-instance-id="${instance.instanceId}"]`)
+            .locator('[data-runtime-state="serving"]')
+            .getByText("Serving", { exact: true })
+            .waitFor();
+          assert.equal(await approved.isVisible(), true);
+        } finally {
+          await service.stop();
+          assert.equal(await exit, undefined);
+        }
       } finally {
         await admin.close();
-      }
-
-      const service = await connecting;
-      try {
-        await service.kv.extended
-          .put("approved", { value: "from the Console" })
-          .orThrow();
-        assert.deepEqual(await service.kv.extended.get("approved").orThrow(), {
-          value: "from the Console",
-        });
-      } finally {
-        await service.stop();
       }
     }, browserRuntimeOptions());
   } finally {

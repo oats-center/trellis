@@ -1,6 +1,6 @@
 <script lang="ts">
   import { apis } from "$lib/trellis-apis";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { ulid } from "ulid";
   import { codecs } from "@oatscenter/trellis/generated";
   import { formatDate } from "$lib/format";
@@ -43,6 +43,10 @@
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("service-updates");
+  // A failed read of the updates; the next read clears it.
+  let loadError = $state<string | null>(null);
+  // The outcome of the administrator's last decision. Rereads leave it; it
+  // lasts until they decide again or the page shows another target.
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
   let busy = $state(false);
@@ -58,10 +62,17 @@
       updates.find((update) => update.state === "pending"),
   );
 
+  // The updates are reread whenever the page hands over its target again, as
+  // the service page does each time it rereads the service. A decision's
+  // outcome belongs to one target: only choosing another discards it.
   $effect(() => {
-    const target = `${deploymentId}:${focus ?? ""}`;
-    scope.setKey(target);
-    void load();
+    if (scope.setKey(`${deploymentId}:${focus ?? ""}`)) {
+      error = null;
+      notice = null;
+      unfinished = null;
+      sharingUnderstood = false;
+    }
+    untrack(() => void load());
   });
 
   async function load(): Promise<void> {
@@ -92,9 +103,10 @@
       }
       if (!scope.isCurrent(token)) return;
       updates = listed;
-      error = null;
+      loadError = null;
     } catch (cause) {
-      if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
+      if (scope.isCurrent(token))
+        loadError = projectConsoleError(cause).message;
     } finally {
       scope.settle(token);
     }
@@ -219,6 +231,7 @@
 {/snippet}
 
 {#if notice}<Notice variant="success">{notice}</Notice>{/if}
+{#if loadError}<Notice variant="warning">{loadError}</Notice>{/if}
 {#if error}<Notice variant="warning"
     >{error}{#if unfinished}{@const retry = updates.find(
         (item) => item.updateId === unfinished,

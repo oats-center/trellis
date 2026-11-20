@@ -99,9 +99,21 @@ test("an administrator sets a waiting service's settings from the link it printe
         // Trellis restarts nothing, so a setting that applies after a restart
         // asks first; cancelling saves nothing and keeps the edit.
         const port = settings.getByLabel("Port", { exact: true });
+        const saveSettings = settings.getByRole("button", {
+          name: "Save settings",
+          exact: true,
+        });
+        // A save refused says why until the administrator acts again.
+        await port.fill("nine");
+        await saveSettings.click();
+        const refused = settings.getByText(
+          "Port must be JSON, such as 9090 or true.",
+        );
+        await refused.waitFor();
         await port.fill("9090");
         // The page keeps rereading the service. A value saved elsewhere
-        // meanwhile shows up for a field left alone, and the edit stays.
+        // meanwhile shows up for a field left alone, and the edit and the
+        // refusal stay.
         const saved = await runtime.callAdminRpc("authConfigGet", { target });
         await runtime.callAdminRpc("authConfigSet", {
           target,
@@ -114,10 +126,7 @@ test("an administrator sets a waiting service's settings from the link it printe
           async () => (await region.inputValue()) === "west",
         );
         assert.equal(await port.inputValue(), "9090");
-        const saveSettings = settings.getByRole("button", {
-          name: "Save settings",
-          exact: true,
-        });
+        assert.equal(await refused.isVisible(), true);
         await saveSettings.click();
         const restart = page.getByRole("dialog", { name: "Restart to apply" });
         await restart.getByText(/restart its instances yourself/).waitFor();
@@ -135,6 +144,7 @@ test("an administrator sets a waiting service's settings from the link it printe
         await settings.getByText("Settings saved.").waitFor();
         assert.equal(await saveSettings.isEnabled(), false);
         assert.equal(await port.inputValue(), "9090");
+        assert.equal(await refused.count(), 0);
       } finally {
         await admin.close();
       }

@@ -74,6 +74,10 @@
   // never sent back, so only a draft can be shown. A choice lasts only as long
   // as its draft: the next value typed for that field starts masked.
   let revealed = $state<Record<string, boolean>>({});
+  // A failed read of the settings; the next read clears it.
+  let loadError = $state<string | null>(null);
+  // The outcome of the administrator's last change. Rereads leave it; it
+  // lasts until they act again or choose another target.
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
   let busy = $state(false);
@@ -115,6 +119,8 @@
     drafts = {};
     added = [];
     revealed = {};
+    error = null;
+    notice = null;
   });
   // The settings are reread whenever the page hands over its target again,
   // as the service page does each time it rereads the service. The drafts
@@ -143,9 +149,10 @@
         available = loaded.fields.length > 0 || loaded.unused.length > 0;
       }
       revisions = history.items;
-      error = null;
+      loadError = null;
     } catch (cause) {
-      if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
+      if (scope.isCurrent(token))
+        loadError = projectConsoleError(cause).message;
     } finally {
       scope.settle(token);
     }
@@ -397,7 +404,7 @@
             >{#each instances as instance (instance.instanceId)}<option
                 value={instance.instanceId}>{nameOf(instance)}</option
               >{/each}</select
-          >{#if !ready && !error}<span
+          >{#if !ready && !loadError}<span
               class="loading loading-spinner loading-xs"
               aria-label="Loading settings"
             ></span>{/if}</label
@@ -406,6 +413,7 @@
     </div>
     {#if notice}<Notice variant="success">{notice}</Notice>{/if}
     {#if error}<Notice variant="error">{error}</Notice>{/if}
+    {#if loadError}<Notice variant="warning">{loadError}</Notice>{/if}
     {#if behind.length > 0}<Notice variant="info"
         >{behind.map(nameOf).join(", ")}
         {behind.length === 1 ? "uses" : "use"} the settings from when
