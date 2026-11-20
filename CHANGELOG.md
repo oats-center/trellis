@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.52] - 2026-11-20
+
+### Fixed
+
+- After a Portal sign-out, the browser's next OIDC sign-in sends the provider
+  `prompt=login`, so it asks for the account again instead of silently
+  reusing the provider's session.
+
 ## [0.100.0-rc.51] - 2026-11-20
 
 ### Added

@@ -12,8 +12,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@oatscenter/result": "0.100.0-rc.51",
-    "@oatscenter/trellis": "0.100.0-rc.51",
-    "@oatscenter/trellis-svelte": "0.100.0-rc.51"
+    "@oatscenter/result": "0.100.0-rc.52",
+    "@oatscenter/trellis": "0.100.0-rc.52",
+    "@oatscenter/trellis-svelte": "0.100.0-rc.52"
   }
 }
