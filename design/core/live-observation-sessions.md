@@ -167,6 +167,11 @@ uses Transfer v1.
   immediately; the application need not poll once more. Abort, disposal, own
   authority loss, or a decode/protocol failure before the remaining queue is
   handed out discards it and commits the corresponding non-complete outcome.
+- A non-complete `end` resolves the caller's outcome as soon as it is verified;
+  its end-ack only settles remote cleanup. An `end` that arrives while the
+  caller still waits for its activation reply ends the session too, so a
+  provider that ends a session it had not yet activated, as a stopping one
+  does, reaches its caller at once rather than at the reservation deadline.
 - Explicit close and end-ack share one bounded best-effort exchange with fresh
   proofs per retry and a single total budget. `session_not_found`, transport
   loss, or no response leaves remote cleanup **unconfirmed**. A repeated logical

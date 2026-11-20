@@ -101,7 +101,8 @@ and fence it, so a generation adopted while the stop runs takes no intake
 either, and intake still being installed when it begins, a Live open
 subscription waiting on its broker flush included, is retired at once;
 stop job workers and durable consumers from taking work; end owned Live
-sessions with `local_shutdown`; and wait for accepted requests, deliveries and
+sessions with `local_shutdown`, including those a generation still installing
+had already accepted; and wait for accepted requests, deliveries and
 jobs. The stop timeout (25 s default) starts with the
 stop and bounds all of it, ending Live sessions included. A job or delivery that
 a pull issued before the stop returns afterwards is naked at once rather than
