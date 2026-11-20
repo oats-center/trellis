@@ -75,6 +75,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::io::stdout().flush()?;
         return Ok(());
     }
+    if std::env::var("TRELLIS_CALLER_MODE").as_deref() == Ok("live-activation") {
+        // Prepare a Watch, wait until the test has armed the broker, then
+        // activate it and report how and how fast the session ended.
+        let mut frames = runtime
+            .watch(&lives::WatchInput {
+                extra: Default::default(),
+            })
+            .await?;
+        println!("prepared");
+        std::io::stdout().flush()?;
+        use tokio::io::AsyncBufReadExt as _;
+        let mut line = String::new();
+        tokio::io::BufReader::new(tokio::io::stdin())
+            .read_line(&mut line)
+            .await?;
+        let started = std::time::Instant::now();
+        let first = frames.next().await;
+        let end = frames.closed().await;
+        println!(
+            "{}",
+            serde_json::json!({
+                "first": format!("{first:?}"),
+                "reason": end.reason().as_str(),
+                "error": end.error().map(ToString::to_string),
+                "ms": started.elapsed().as_millis(),
+            })
+        );
+        std::io::stdout().flush()?;
+        return Ok(());
+    }
     let echo = runtime
         .echo(&rpc::EchoInput {
             value: "from TypeScript".to_owned(),

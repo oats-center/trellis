@@ -42,8 +42,12 @@ schemas, constants, and error codes live in the shared protocol crate
    and sends `activate`. The provider enters `ACTIVATING`, returns an activating
    acknowledgement, and publishes one signed delivery-path challenge. If the
    broker refuses or fails that data subscription, at any point in the
-   session, the consumer ends the session abnormally at once. It reads any
-   frames it already received first, and it does not wait out the reservation.
+   session, the consumer ends the session at once with reason `disconnected`.
+   It reads any frames it already received first, and it does not wait out the
+   reservation. A broker reports a refused subscription as a connection error,
+   not by ending the subscriber, so the consumer watches its attachment's
+   errors for the data subject. `peer_lost` stays reserved for a provider that
+   goes silent past the inactivity bound.
 4. The consumer answers the challenge with a signed `pulse`. A fresh, verified
    pulse acknowledgement **commits `ACTIVE`**, and only then does the provider
    invoke the source factory exactly once.

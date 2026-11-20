@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use async_nats::ConnectOptions;
 use futures_util::future::BoxFuture;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use trellis_protocol::{TransportAuthorizationV1, TransportPolicyClass};
 
 use crate::client::authorization::{
@@ -165,6 +165,11 @@ pub(crate) struct TransportGeneration {
     nats: async_nats::Client,
     context_digest: String,
     admitted_policy: TransportAuthorizationV1,
+    /// Subjects whose subscription the broker refused on this attachment. The
+    /// broker reports a refusal only as a connection error, and the refused
+    /// subscriber stays open with no messages, so a subscriber that must
+    /// notice the refusal listens here.
+    subscription_refusals: broadcast::Sender<String>,
     /// Terminal state is monotonic: once `Closed`, it never reactivates.
     state: Arc<AtomicU8>,
     /// Authoritative lease admission and live-count predicate. `closed` is the
@@ -623,6 +628,12 @@ impl TransportLease {
     /// The pinned physical NATS connection.
     pub(crate) fn nats(&self) -> &async_nats::Client {
         &self.generation.nats
+    }
+
+    /// Listen for subjects whose subscription the broker refuses on the pinned
+    /// attachment from now on.
+    pub(crate) fn subscription_refusals(&self) -> broadcast::Receiver<String> {
+        self.generation.subscription_refusals.subscribe()
     }
 
     /// The immutable identity of the generation this lease pins.
@@ -2654,6 +2665,8 @@ async fn open_generation(
     }
 
     let event_inner = inner.clone();
+    let (subscription_refusals, _) = broadcast::channel(16);
+    let event_refusals = subscription_refusals.clone();
     let auth_state = state.clone();
     let authenticated = Arc::new(AtomicBool::new(false));
     let nats_sentinel = inner.contexts.nats_sentinel();
@@ -2701,7 +2714,18 @@ async fn open_generation(
     .max_reconnects(native.nats_servers.len().max(1))
     .event_callback(move |event| {
         let inner = event_inner.clone();
+        let refusals = event_refusals.clone();
         async move {
+            // The broker writes `Permissions Violation for Subscription to
+            // "<subject>"`, optionally followed by a queue group.
+            if let async_nats::Event::ServerError(async_nats::ServerError::Other(text)) = &event {
+                if let Some(subject) = text
+                    .strip_prefix("Permissions Violation for Subscription to \"")
+                    .and_then(|rest| rest.split('"').next())
+                {
+                    let _ = refusals.send(subject.to_owned());
+                }
+            }
             inner.on_generation_event(id, event);
         }
     })
@@ -2802,6 +2826,7 @@ async fn open_generation(
         nats,
         context_digest: marker.clone(),
         admitted_policy: policy,
+        subscription_refusals,
         state,
         lease_state: Arc::new(std::sync::Mutex::new(LeaseState::default())),
         lease_wake,
