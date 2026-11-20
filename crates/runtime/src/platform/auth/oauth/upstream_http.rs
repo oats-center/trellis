@@ -312,7 +312,15 @@ pub(super) async fn start(
             Nonce::new_random,
         )
         .set_pkce_challenge(challenge);
-    if account_token.is_some() {
+    // Linking must prove the provider account now, and a browser that ended
+    // its Portal login must not be signed back in by the provider's session.
+    let signed_out = headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|line| line.to_str().ok())
+        .flat_map(|line| line.split(';'))
+        .any(|part| part.trim() == "__Host-trellis-portal-reauth=1");
+    if account_token.is_some() || signed_out {
         request = request.add_extra_param("prompt", "login");
     }
     for scope in configured
@@ -692,16 +700,28 @@ pub(super) async fn callback(
     })
     .await
     {
-        Ok(login) => cookie_response(
-            &replacement,
-            Some(&csrf),
-            (login.expires_at - now) as u32,
-            Redirect::to(&match &device_review {
-                Some(review) => format!("/device-enrollment?reviewId={review}"),
-                None => format!("/consent?transaction={transaction}"),
-            })
-            .into_response(),
-        ),
+        Ok(login) => {
+            let mut response = cookie_response(
+                &replacement,
+                Some(&csrf),
+                (login.expires_at - now) as u32,
+                Redirect::to(&match &device_review {
+                    Some(review) => format!("/device-enrollment?reviewId={review}"),
+                    None => format!("/consent?transaction={transaction}"),
+                })
+                .into_response(),
+            );
+            // The provider has just signed the person in, so later sign-ins
+            // may reuse its session again.
+            response.headers_mut().append(
+                axum::http::header::SET_COOKIE,
+                axum::http::HeaderValue::from_static(
+                    "__Host-trellis-portal-reauth=; Path=/; Secure; HttpOnly; SameSite=Lax; \
+                    Max-Age=0",
+                ),
+            );
+            response
+        }
         Err(cause) => {
             tracing::warn!(
                 %provider_id,

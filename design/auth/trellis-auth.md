@@ -894,8 +894,20 @@ RP-initiated logout with `client_id` and `post_logout_redirect_uri`). The server
 serves that page only for a return address on an origin the client registered a
 redirect URI on, so it is no open redirector; the page then posts the Portal's
 CSRF-protected logout and returns. It asks for no confirmation: a forged
-navigation can only sign someone out, never in or into another account. A later
-authorization may bind the cleared app handle to another account; an uncleared
+navigation can only sign someone out, never in or into another account.
+
+Ending the Portal login does not end the OIDC provider's own session. So that
+the next OIDC sign-in from that browser does not sign the person straight back
+in, `/portal/logout` also sets `__Host-trellis-portal-reauth` (HttpOnly,
+`SameSite=Lax`, 30 days). While it is present, `/portal/oidc/{provider}/begin`
+sends `prompt=login`, the standard value every provider honours, so the
+provider asks for credentials again. Account linking always sends it. A
+successful OIDC sign-in clears the cookie, so later sign-ins without a sign-out
+keep the provider's single sign-on. An abandoned or failed provider sign-in
+leaves it in place. Trellis does not yet call the provider's own
+`end_session_endpoint`.
+
+A later authorization may bind the cleared app handle to another account; an uncleared
 handle still rejects a different principal, and stale tabs cannot restore it.
 
 `Delegations.List` returns live grants only: an expired grant can no longer

@@ -20,6 +20,11 @@ OIDC identities and local passwords are sign-in methods for a Trellis user.
 They are not separate authorization containers. Durable Auth sessions represent
 user logins only; services and devices authenticate without a login row.
 
+Signing out of the Portal doesn't sign the person out of their OIDC provider.
+The next OIDC sign-in from that browser sends the provider `prompt=login`, so
+the provider asks for credentials instead of quietly reusing its session. After
+that sign-in succeeds, later sign-ins use the provider's session as usual.
+
 Immediate `Auth.ServiceInstances.Provision` and `Auth.Devices.Provision` require
 `identityPublicKey`: generate the Ed25519 identity key on the client and submit
 only its public key. Keep the private seed client-side; Trellis never generates,

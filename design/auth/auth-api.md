@@ -39,7 +39,7 @@ All routes are served only by the Trellis listener (`[http]`), beside
 | `GET`  | `/portal-assets/{path}`                   | Embedded portal assets                                                                                                           |
 | `POST` | `/portal/session`                         | Create a portal session cookie and CSRF token                                                                                    |
 | `POST` | `/portal/login`                           | Local username/password sign-in                                                                                                  |
-| `POST` | `/portal/logout`                          | End the portal login                                                                                                             |
+| `POST` | `/portal/logout`                          | End the portal login; the next upstream OIDC sign-in from that browser sends `prompt=login`                                      |
 | `GET`  | `/portal/providers`                       | List enabled upstream OIDC providers, and this browser's last provider refusal for a sign-in                                     |
 | `GET`  | `/portal/oidc/{provider}/begin`           | Start upstream OIDC with server-owned state, nonce, and PKCE                                                                     |
 | `GET`  | `/portal/oidc/callback`                   | Verify the upstream OIDC callback                                                                                                |

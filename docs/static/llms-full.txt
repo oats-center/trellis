@@ -776,6 +776,11 @@ Auth refuses the session from the cutoff. If a reply is still lost, `logout()`
 confirms revocation through signed HTTP recovery. Unrelated authorization
 failures do not count as successful logout.
 
+Ending the Portal login (the `end_session_endpoint`, `/logout`) does not end
+the OIDC provider's session. The browser's next OIDC sign-in sends the provider
+`prompt=login`, so the provider asks for credentials instead of signing the
+person straight back in; later sign-ins reuse the provider's session again.
+
 ### Authorization
 
 #### Model

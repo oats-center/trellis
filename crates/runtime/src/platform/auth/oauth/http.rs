@@ -1586,7 +1586,21 @@ async fn portal_logout(
     })
     .await;
     match logged_out {
-        Ok(()) => cookie_response("", Some(""), 0, Json(serde_json::json!({})).into_response()),
+        Ok(()) => {
+            let mut response =
+                cookie_response("", Some(""), 0, Json(serde_json::json!({})).into_response());
+            // Ending the Portal login does not end the provider's session, so
+            // the next OIDC sign-in from this browser asks the provider to
+            // sign the person in again instead of returning them silently.
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                HeaderValue::from_static(
+                    "__Host-trellis-portal-reauth=1; Path=/; Secure; HttpOnly; SameSite=Lax; \
+                    Max-Age=2592000",
+                ),
+            );
+            response
+        }
         Err(code) => error(code),
     }
 }
