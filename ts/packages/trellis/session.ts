@@ -4116,6 +4116,11 @@ export class Trellis<
           | undefined;
         const result = await AsyncResult.try(async () => {
           const response = Promise.withResolvers<Msg>();
+          // The promise is awaited only once the request is sent. When the
+          // connection closes first, subscribing or publishing throws and that
+          // error is the outcome, so a watcher that settles the promise
+          // afterwards must not surface as an unhandled rejection.
+          response.promise.catch(() => undefined);
           const owner = this.#auth.authorityOwner;
           if (!owner) throw new Error("session authority owner unavailable");
           const pending: PendingSessionRequest = {
@@ -4153,10 +4158,6 @@ export class Trellis<
             }
             nc.publish(args.subject, args.payload, { headers, reply });
           };
-          const timer = setTimeout(
-            expire,
-            Math.max(1, deadlineMs - Date.now()),
-          );
           const abort = () => {
             waitFailure = {
               cause:
@@ -4166,7 +4167,8 @@ export class Trellis<
             };
             response.reject(waitFailure.cause);
           };
-          args.signal?.addEventListener("abort", abort, { once: true });
+          // A closed or draining connection refuses this subscription, so the
+          // deadline timer and abort listener are set only after it exists.
           const subscription = nc.subscribe(reply, {
             callback: (error, message) => {
               if (error) response.reject(error);
@@ -4251,6 +4253,11 @@ export class Trellis<
             )
               response.reject(error);
           });
+          const timer = setTimeout(
+            expire,
+            Math.max(1, deadlineMs - Date.now()),
+          );
+          args.signal?.addEventListener("abort", abort, { once: true });
           try {
             if (args.signal?.aborted) {
               abort();
@@ -4284,6 +4291,21 @@ export class Trellis<
                   ? "The request wait was cancelled."
                   : "The request deadline elapsed.",
               hint: "Stopping the wait does not undo work already accepted by the service.",
+              cause,
+              method: args.method,
+              subject: args.subject,
+            }),
+          );
+        }
+        if (this.#transport.isClosed()) {
+          // Closing the connection ended the request: its subscription or
+          // publish was refused, or its reply subscription closed.
+          recordAttempt("unavailable");
+          return err(
+            requestFailedTransportError({
+              code: "trellis.request.closed",
+              message: "The Trellis connection is closed.",
+              hint: "Connect to Trellis again before making another request.",
               cause,
               method: args.method,
               subject: args.subject,

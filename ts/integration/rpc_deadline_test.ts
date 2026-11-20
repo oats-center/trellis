@@ -116,3 +116,76 @@ test("a request whose deadline passes before it is sent is never sent", async ()
     { interruptibleNativeProxy: true },
   );
 });
+
+test("a request in flight when its connection closes ends as closed and leaves nothing behind", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      await runtime.registerService({
+        name: "closing-provider",
+        contract: participants.Provider.participant,
+      });
+      const client = await runtime.connectClient({
+        name: "closing-caller",
+        contract: apps.Caller.request,
+      });
+      const gate = runtime.nativeTransportGate();
+      // The caller is the only proxied participant; its admitted generation is
+      // the open connection carrying subscriptions.
+      const connection = await runtime.waitFor(
+        () =>
+          gate
+            .connections()
+            .filter((candidate) => !candidate.closed && candidate.subs.length)
+            .at(-1) ?? false,
+        { timeoutMs: 30_000 },
+      );
+      const fifos = await mkdtemp(join(tmpdir(), "rpc-closing-"));
+      const unhandled: unknown[] = [];
+      const record = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", record);
+      let closing: Promise<void> | undefined;
+      try {
+        // Stall proof creation on the libuv thread pool, as in the deadline
+        // test above, so the request has its transport but has not subscribed
+        // to its reply when the connection starts to close.
+        const poolSize = Number(process.env.UV_THREADPOOL_SIZE ?? 4);
+        const readers: Promise<FileHandle>[] = [];
+        for (let index = 0; index < poolSize; index++) {
+          const fifo = join(fifos, String(index));
+          execFileSync("mkfifo", [fifo]);
+          readers.push(open(fifo, "r"));
+        }
+        const started = Date.now();
+        const request = client.echo({ value: "closing" }, { timeout: 1_500 });
+        // Let the request acquire its transport and reach proof creation.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Closing drains the connection, which ends with a flush; withholding
+        // the broker's answer keeps it draining while the proof completes.
+        const drain = gate.holdNextPong(connection.id);
+        closing = client.connection.close();
+        await drain.held;
+        for (let index = 0; index < poolSize; index++)
+          closeSync(openSync(join(fifos, String(index)), "w"));
+        for (const reader of await Promise.all(readers)) await reader.close();
+
+        const outcome = await request;
+        await drain.release();
+        // Past the request's deadline nothing it started is still running: no
+        // deadline timer fires and no settlement is left unhandled.
+        await new Promise((resolve) =>
+          setTimeout(resolve, started + 2_000 - Date.now()),
+        );
+        assert.deepEqual(unhandled.map(String), []);
+        assert(outcome.isErr());
+        assert(outcome.error instanceof TransportError, String(outcome.error));
+        assert.equal(outcome.error.code, "trellis.request.closed");
+      } finally {
+        process.off("unhandledRejection", record);
+        await rm(fifos, { recursive: true, force: true });
+        await closing;
+        await client.connection.close();
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
