@@ -151,6 +151,50 @@ test("service wait rejects an unrequested transport close but accepts stop", asy
   });
 });
 
+test("a Rust provider runs one keyed job at a time per key and retries a retryable failure", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "rust",
+      contract: participants.OperationProvider.participant,
+    });
+    // The provider checks its keyed jobs once it serves, then stops.
+    const child = spawnTracked(
+      "setsid",
+      rustFixtureArgv("trellis-runtime-acceptance"),
+      {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.trellisUrl,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: identity.seed,
+          TRELLIS_KEYED_JOB_CHECKS: "1",
+        },
+      },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    try {
+      const exit = await Promise.race([
+        child.exited,
+        new Promise<"running">((resolve) =>
+          setTimeout(() => resolve("running"), 120_000),
+        ),
+      ]);
+      assert.deepEqual(exit, { code: 0, signal: null }, output);
+      assert.match(output, /keyed job checks complete/);
+    } finally {
+      if (child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // Already exited.
+        }
+      }
+    }
+  });
+});
+
 test("generated TypeScript caller reaches Rust provider", async () => {
   const providerArgv = rustFixtureArgv("trellis-runtime-acceptance");
 

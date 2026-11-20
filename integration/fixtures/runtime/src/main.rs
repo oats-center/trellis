@@ -249,71 +249,79 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
             Ok(())
         });
-    // Workers take no job before the service serves, so the keyed-job
-    // checks run once it does. A failed check ends the process.
+    // With TRELLIS_KEYED_JOB_CHECKS set, the provider checks its keyed jobs
+    // once it serves, since workers take no job before then. It prints
+    // `keyed job checks complete` and stops when they pass, and exits with an
+    // error when one fails.
     let jobs = provider.jobs_client();
     let lifecycle = service.lifecycle();
-    let keyed_checks = tokio::spawn(async move {
-        if !lifecycle.ready().await {
-            return Ok(());
-        }
-        let first = jobs
-            .create_keyed_work(KeyedValue {
-                key: "shared".to_owned(),
-                value: "first".to_owned(),
-                extra: Default::default(),
-            })
-            .await?;
-        loop {
-            if first.get().await?.state == trellis_rs::jobs::JobState::Active {
-                break;
+    let keyed_checks = std::env::var_os("TRELLIS_KEYED_JOB_CHECKS").map(|_| {
+        tokio::spawn(async move {
+            if !lifecycle.ready().await {
+                return Err("the service stopped before it served".into());
             }
-            tokio::task::yield_now().await;
-        }
-        let second = jobs
-            .create_keyed_work(KeyedValue {
-                key: "shared".to_owned(),
-                value: "second".to_owned(),
-                extra: Default::default(),
-            })
-            .await?;
-        assert!(tokio::time::timeout(Duration::from_secs(26), second.wait())
-            .await
-            .is_err());
-        let blocked = second.get().await?;
-        assert_eq!(blocked.state, trellis_rs::jobs::JobState::Pending);
-        assert_eq!(blocked.tries, 0);
-        assert_eq!(second_runs.load(Ordering::SeqCst), 0);
-        release_first.notify_one();
-        first.wait().await?;
-        second.wait().await?;
-        assert_eq!(first_runs.load(Ordering::SeqCst), 1);
-        assert_eq!(second_runs.load(Ordering::SeqCst), 1);
+            let first = jobs
+                .create_keyed_work(KeyedValue {
+                    key: "shared".to_owned(),
+                    value: "first".to_owned(),
+                    extra: Default::default(),
+                })
+                .await?;
+            loop {
+                if first.get().await?.state == trellis_rs::jobs::JobState::Active {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            let second = jobs
+                .create_keyed_work(KeyedValue {
+                    key: "shared".to_owned(),
+                    value: "second".to_owned(),
+                    extra: Default::default(),
+                })
+                .await?;
+            assert!(tokio::time::timeout(Duration::from_secs(26), second.wait())
+                .await
+                .is_err());
+            let blocked = second.get().await?;
+            assert_eq!(blocked.state, trellis_rs::jobs::JobState::Pending);
+            assert_eq!(blocked.tries, 0);
+            assert_eq!(second_runs.load(Ordering::SeqCst), 0);
+            release_first.notify_one();
+            first.wait().await?;
+            second.wait().await?;
+            assert_eq!(first_runs.load(Ordering::SeqCst), 1);
+            assert_eq!(second_runs.load(Ordering::SeqCst), 1);
 
-        let retry = jobs
-            .create_keyed_work(KeyedValue {
-                key: "retry".to_owned(),
-                value: "retry".to_owned(),
-                extra: Default::default(),
-            })
-            .await?;
-        retry.wait().await?;
-        assert_eq!(retry_runs.load(Ordering::SeqCst), 2);
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+            let retry = jobs
+                .create_keyed_work(KeyedValue {
+                    key: "retry".to_owned(),
+                    value: "retry".to_owned(),
+                    extra: Default::default(),
+                })
+                .await?;
+            retry.wait().await?;
+            assert_eq!(retry_runs.load(Ordering::SeqCst), 2);
+            println!("keyed job checks complete");
+            lifecycle.stop();
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })
     });
-    tokio::spawn(async move {
-        match keyed_checks.await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                eprintln!("keyed job checks failed: {error}");
-                std::process::exit(1);
+    if let Some(keyed_checks) = keyed_checks {
+        tokio::spawn(async move {
+            match keyed_checks.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    eprintln!("keyed job checks failed: {error}");
+                    std::process::exit(1);
+                }
+                Err(error) => {
+                    eprintln!("keyed job checks failed: {error}");
+                    std::process::exit(1);
+                }
             }
-            Err(error) => {
-                eprintln!("keyed job checks failed: {error}");
-                std::process::exit(1);
-            }
-        }
-    });
+        });
+    }
     service.run().await?;
     telemetry.shutdown().await;
     Ok(())

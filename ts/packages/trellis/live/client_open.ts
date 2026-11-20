@@ -783,19 +783,25 @@ async function runPump<T>(
     const activateSeq = nextSeq(session).toString();
     let activated = false;
     while (!activated) {
-      const response = await controlAttempt(
-        host,
-        core,
-        offer,
-        {
-          action: "activate",
-          controlSeq: activateSeq,
-          receivedSeq: "0",
-          consumedSeq: "0",
-        },
-        deadlineMs,
-        providerGuard,
-      );
+      const response = await Promise.race([
+        controlAttempt(
+          host,
+          core,
+          offer,
+          {
+            action: "activate",
+            controlSeq: activateSeq,
+            receivedSeq: "0",
+            consumedSeq: "0",
+          },
+          deadlineMs,
+          providerGuard,
+        ),
+        ingress.waitMessage().then(() => "frame" as const),
+      ]);
+      // A provider frame before the reply, such as the END of a session its
+      // stopping provider ended, is read by the loop below.
+      if (response === "frame") break;
       if (
         response &&
         response.kind === "ack" &&
@@ -1152,7 +1158,7 @@ async function runPump<T>(
           );
           return;
         }
-        await controlAttempt(
+        const endAck = controlAttempt(
           host,
           core,
           offer,
@@ -1176,12 +1182,17 @@ async function runPump<T>(
             )
           : new LiveEnd(frame.terminal.reason);
         if (end.isComplete()) {
+          await endAck;
           core.setPendingEnd(end);
           core.setPhase("draining");
           deadlines.beginDraining();
           deadlines.dataAdmitted(clock.nowMs());
         } else {
+          // The caller learns of an abnormal end at once; the provider's
+          // acknowledgement of the end-ack only settles its cleanup, and a
+          // provider that has shut down may never send it.
           core.commitEnd(end);
+          void endAck.catch(() => undefined);
           return;
         }
       }

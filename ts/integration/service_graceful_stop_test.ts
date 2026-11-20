@@ -895,3 +895,170 @@ for (const adoption of ["after", "during"] as const) {
     );
   });
 }
+
+test("a stopping typescript instance ends at once a Live session it accepted on a generation still installing", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const contract =
+        participants.TransportGrowthOperationProvider.participant;
+      const identity = await runtime.registerService({
+        name: "installing-live",
+        contract,
+      });
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
+      const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
+        capabilityId,
+      });
+      const [grant] = grants.items;
+      assert(grant);
+      await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
+        grantId: grant.grantId,
+        expectedRevision: grant.revision,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: contract,
+        seed: identity.seed,
+        runtime: { stopTimeoutMs: 120_000 },
+      }).orThrow();
+      const sessionsEnded = Promise.withResolvers<void>();
+      let stopBegan = false;
+      let handled = 0;
+      await service.handleExtend(() => Result.ok({}));
+      await service.handlePark(() => Result.ok({ value: "park" }));
+      // Each session stays open until the provider ends it.
+      await service.handleProgress(async ({ emit, signal }) => {
+        if (stopBegan) handled++;
+        await emit({ value: "open" });
+        await Promise.race([
+          new Promise((resolve) => signal.addEventListener("abort", resolve)),
+          sessionsEnded.promise,
+        ]);
+      });
+      const exit = service.wait().catch((error: unknown) => error);
+      await service.ready;
+      const caller = await runtime.connectClient({
+        name: "installing-live-caller",
+        contract: apps.RpcDistributionCaller.request,
+        timeout: 120_000,
+      });
+      const gate = runtime.nativeTransportGate();
+      const subject =
+        apis.transport_growth.API.actions["live:Progress"].subject;
+      try {
+        // The grant brings a new generation whose Live open route reaches the
+        // broker while the flush that ends its install is held.
+        gate.arm(subject);
+        let installing: number | undefined;
+        void gate.barrierHeld().then((id) => (installing = id));
+        await runtime.callAdminRpc("authCapabilityGrantsGrant", {
+          principalId: grant.principalId,
+          capabilityId,
+          expectedRevision: 0n,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        });
+        const connection = await runtime.waitFor(() => installing, {
+          timeoutMs: 90_000,
+        });
+        const deliveredToInstalling = () =>
+          gate
+            .connection(connection)
+            ?.deliveries.filter((delivery) => delivery.subject === subject)
+            .length ?? 0;
+        // Openings go to either generation: open one at a time until the
+        // installing generation accepts one.
+        type Observation = Awaited<
+          ReturnType<ReturnType<typeof caller.progress>["orThrow"]>
+        >;
+        let accepted: Observation | undefined;
+        for (let attempt = 0; attempt < 40 && !accepted; attempt++) {
+          const before = deliveredToInstalling();
+          const observation = await caller.progress({}).orThrow();
+          if (deliveredToInstalling() > before) accepted = observation;
+          else {
+            assert.deepEqual((await observation.next()).value, {
+              value: "open",
+            });
+            await observation.close().orThrow();
+          }
+        }
+        assert(accepted, "no Live session reached the installing generation");
+        // Its caller asks it to activate, which that generation can do only
+        // once its install ends. The request reaching it shows the caller
+        // already listens for the session's frames. Every generation of the
+        // instance hears each session's controls, so the request is the one
+        // naming the session whose frames the caller now subscribes to.
+        const dataSubscriptions = () =>
+          gate
+            .connections()
+            .flatMap((observed) => observed.subs)
+            .filter((sub) => sub.subject.startsWith("live.v1.data."));
+        const earlier = dataSubscriptions().length;
+        const first = accepted.next().then(
+          (next) => next,
+          (error: unknown) => error,
+        );
+        await runtime.waitFor(
+          () => {
+            const session = dataSubscriptions()
+              .slice(earlier)
+              .at(0)
+              ?.subject.split(".")
+              .at(-1);
+            return (
+              session !== undefined &&
+              gate
+                .connection(connection)
+                ?.deliveries.some(
+                  (delivery) =>
+                    delivery.subject.startsWith(`${subject}.observe.`) &&
+                    delivery.subject.endsWith(`.${session}`),
+                )
+            );
+          },
+          { timeoutMs: 10_000 },
+        );
+
+        const stoppedAt = Date.now();
+        stopBegan = true;
+        const stopped = service.stop();
+        // The session ends as the stop begins, while that generation's
+        // install, and so its connection, is still held.
+        const end = await Promise.race([
+          accepted.closed,
+          new Promise<"open">((resolve) =>
+            setTimeout(() => resolve("open"), 10_000),
+          ),
+        ]);
+        assert(end !== "open", "the Live session outlived the stop");
+        assert.equal(end.reason, "local_shutdown");
+        assert(
+          Date.now() - stoppedAt < 5_000,
+          `ended ${Date.now() - stoppedAt} ms after the stop`,
+        );
+        assert.deepEqual(await first, { done: true, value: undefined });
+        assert.equal(gate.isClosed(connection), false);
+        assert.equal(handled, 0);
+
+        await gate.release();
+        await stopped;
+        assert.equal(await exit, undefined);
+      } finally {
+        sessionsEnded.resolve();
+        await gate.release();
+        await caller.connection.close();
+        await service.stop();
+      }
+    },
+    {
+      interruptibleNativeProxy: true,
+      // Short authorization lifetimes, so the grant arrives with a renewal
+      // soon.
+      authorization: {
+        contextLifetimeSeconds: 27,
+        allowedClockSkewSeconds: 2,
+      },
+    },
+  );
+});
