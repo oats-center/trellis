@@ -92,8 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 Ok(frames) => prepared.push(frames),
                 // A provider replica holding its per-caller session bound
-                // refuses the opening; a retry can reach another replica.
-                Err(error) if error.to_string().contains("exhausted") && attempts < 100 => {
+                // refuses the opening as resource_exhausted; a retry can reach
+                // another replica.
+                Err(error)
+                    if error.to_string().contains("'resource_exhausted'") && attempts < 100 =>
+                {
                     attempts += 1;
                 }
                 Err(error) => return Err(error.into()),

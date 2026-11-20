@@ -4,7 +4,8 @@
  * Proves production admission against a real broker and real issued caller
  * credentials: a correctly signed opening whose reply is foreign is dropped
  * without reflection, and a foreign principal's session control cannot disturb
- * the owner's active observation.
+ * the owner's active observation. A provider holding its per-caller session
+ * bound refuses that caller's next opening with a typed, retryable code.
  */
 
 import { headers as natsHeaders, type Msg } from "@nats-io/nats-core";
@@ -12,13 +13,20 @@ import { credsAuthenticator } from "@nats-io/nats-core";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { TransportError } from "@oatscenter/trellis";
 import type { SessionRequest } from "@oatscenter/trellis/auth";
+import { TrellisService } from "@oatscenter/trellis/service";
 import { connectNativeClient } from "@oatscenter/trellis/native";
 import { ulid } from "ulid";
 import { apis as webApis } from "../packages/trellis/internal_sdk/generated/index.js";
-import { apps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { spawnTracked } from "./_support/process.ts";
+import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 import {
   admitRawNativeClient,
   type RawNativeConnection,
@@ -310,6 +318,119 @@ test("P08 another authenticated runtime cannot close the owner's observation", a
         // The owner feed may already be settling after the assertion.
       }
       await owner.connection.close().catch(() => undefined);
+    }
+  });
+});
+
+/** Connects one ordinary caller of the runtime fixture's `Watch`. */
+function connectCaller(runtime: Runtime, name: string) {
+  return runtime.connectClient({ name, contract: apps.Caller.request });
+}
+
+type Caller = Awaited<ReturnType<typeof connectCaller>>;
+
+/**
+ * Fills one provider's per-caller bound of 16 sessions, then proves the next
+ * opening is refused as `resource_exhausted` rather than as a provider fault,
+ * and that closing one session admits a new opening.
+ */
+async function assertPerCallerBound(caller: Caller): Promise<void> {
+  const feeds: Awaited<ReturnType<Caller["runtimeWatch"]>>[] = [];
+  try {
+    for (let index = 0; index < 16; index += 1) {
+      const feed = await caller.runtimeWatch({});
+      assert(feed.isOk(), `opening ${index + 1} of 16: ${String(feed)}`);
+      feeds.push(feed);
+    }
+    const refused = await caller.runtimeWatch({});
+    assert(refused.isErr(), "the 17th opening must be refused");
+    assert(refused.error instanceof TransportError, String(refused.error));
+    assert.equal(refused.error.code, "trellis.live.resource_exhausted");
+
+    await feeds.pop()!.orThrow().close().orThrow();
+    const admitted = await caller.runtimeWatch({});
+    assert(admitted.isOk(), `opening after a close: ${String(admitted)}`);
+    feeds.push(admitted);
+  } finally {
+    await Promise.all(
+      feeds.map(async (feed) => {
+        if (feed.isOk()) await feed.orThrow().close();
+      }),
+    );
+  }
+}
+
+test("a TypeScript Live provider holding one caller's session bound refuses the next opening as resource_exhausted", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "ts-bound-provider",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+    }).orThrow();
+    try {
+      await service.handleWatch(async ({ emit }) => {
+        await emit({ value: "ready" }).orThrow();
+      });
+      const caller = await connectCaller(runtime, "ts-bound-caller");
+      await assertPerCallerBound(caller);
+    } finally {
+      await service.stop();
+      await service.wait();
+    }
+  });
+});
+
+test("a Rust Live provider holding one caller's session bound refuses the next opening as resource_exhausted", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const identity = await runtime.registerService({
+      name: "rust-bound-provider",
+      contract: participants.OperationProvider.participant,
+    });
+    const provider = spawnTracked(
+      "setsid",
+      rustFixtureArgv("trellis-runtime-acceptance"),
+      {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.trellisUrl,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: identity.seed,
+          CARGO_TARGET_DIR: fileURLToPath(
+            new URL("../../target", import.meta.url),
+          ),
+        },
+      },
+    );
+    provider.stderr.pipe(process.stderr);
+    let exited = false;
+    const status = provider.exited.then((value) => {
+      exited = true;
+      return value;
+    });
+    try {
+      const caller = await connectCaller(runtime, "rust-bound-caller");
+      await runtime.waitFor(
+        async () => {
+          if (exited) {
+            throw new Error(
+              `Rust provider exited: ${JSON.stringify(await status)}`,
+            );
+          }
+          return (
+            await caller.echo({ value: "from TypeScript" }, { timeout: 1000 })
+          ).isOk();
+        },
+        { timeoutMs: 120_000 },
+      );
+      await assertPerCallerBound(caller);
+    } finally {
+      if (!exited && provider.pid !== undefined)
+        process.kill(-provider.pid, "SIGTERM");
+      await status;
     }
   });
 });

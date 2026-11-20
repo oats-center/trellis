@@ -37,7 +37,11 @@ schemas, constants, and error codes live in the shared protocol crate
    passed, so a late opening never reserves a session.
 2. The provider authenticates the exact Live `Subscribe` (or Operation
    `Observe`) authority, reserves a session, and returns a **signed offer** over
-   one finite reply. No producer starts here.
+   one finite reply. No producer starts here. A provider that cannot reserve
+   the session, such as one already holding its per-caller session bound,
+   answers instead with a signed `open-error` carrying the typed code
+   (`resource_exhausted` for a full provider). The caller may retry; on a
+   canonical route the retry can reach another replica.
 3. The first consumer iteration installs a distinct **exact** data subscription
    and sends `activate`. The provider enters `ACTIVATING`, returns an activating
    acknowledgement, and publishes one signed delivery-path challenge. If the

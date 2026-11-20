@@ -66,7 +66,8 @@ pub enum HandlerResponse {
 
 /// One prepared live reservation produced by a live-capable route.
 pub struct LivePreparedResponse {
-    /// Signed offer body published as the one finite opening reply.
+    /// Signed offer body published as the one finite opening reply, or the
+    /// signed `open-error` when the provider refused to reserve a session.
     pub offer: Bytes,
     /// Provider proof headers that authenticate the offer's exact bytes.
     pub headers: async_nats::HeaderMap,

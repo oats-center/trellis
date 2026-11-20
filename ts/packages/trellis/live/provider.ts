@@ -419,7 +419,12 @@ export class LiveProvider {
     } catch (cause) {
       this.#routeTelemetry.rejection("over_capacity");
       callerGuard.release();
-      throw cause;
+      if (!(cause instanceof LiveStreamError)) throw cause;
+      // A full provider refuses with the protocol's typed opening error, so the
+      // caller can tell a bound it may retry (possibly on another replica) from
+      // a provider fault.
+      await this.#publishOpenError(msg, open.openId, cause);
+      return;
     }
     let record: ProviderSessionRecord;
     try {
@@ -997,6 +1002,23 @@ export class LiveProvider {
     const reply = msg.reply?.toString();
     if (!reply) return;
     await this.#withLane(() => this.#tryPublishSigned(reply, jsonBytes(body)));
+  }
+
+  /** Answer one opening with the signed `open-error` envelope. */
+  async #publishOpenError(
+    msg: Msg,
+    openId: string,
+    error: LiveStreamError,
+  ): Promise<void> {
+    const body = {
+      format: LIVE_VERSION,
+      type: "open-error",
+      openId,
+      requestId: singletonHeader(msg.headers, "request-id") ?? "",
+      code: error.code,
+      message: error.message,
+    };
+    await this.#publishSigned(msg.reply!.toString(), jsonBytes(body));
   }
 
   async #publishReceiptAck(

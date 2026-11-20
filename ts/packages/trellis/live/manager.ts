@@ -7,6 +7,7 @@
 // KV entry or central relay.
 
 import { liveConstants } from "../auth/protocol_wasm.ts";
+import { LiveStreamError } from "./types.ts";
 
 const C = liveConstants();
 
@@ -190,13 +191,21 @@ export class LiveSessionManager {
     return permit;
   }
 
-  /** Reserve one provider admission permit for a specific caller. */
+  /**
+   * Reserve one provider admission permit for a specific caller.
+   *
+   * Throws a `resource_exhausted` {@link LiveStreamError} when the manager is
+   * unavailable or the combined or per-caller bound is reached.
+   */
   admitProvider(
     consumerConnectionId: string,
     consumerSessionKey: string,
   ): ProviderPermit {
     if (!this.isAvailable()) {
-      throw new Error("live provider admission exhausted");
+      throw new LiveStreamError(
+        "resource_exhausted",
+        "live provider admission exhausted",
+      );
     }
     const key = `${consumerConnectionId}:${consumerSessionKey}`;
     const release = this.#admission().admit(key);
@@ -359,11 +368,17 @@ class ProviderAdmission {
 
   admit(callerKey: string): () => void {
     if (this.#total >= this.#maxTotal) {
-      throw new Error("live provider admission exhausted");
+      throw new LiveStreamError(
+        "resource_exhausted",
+        "live provider admission exhausted",
+      );
     }
     const current = this.#perCaller.get(callerKey) ?? 0;
     if (current >= this.#maxPerCaller) {
-      throw new Error("live provider admission exhausted for caller");
+      throw new LiveStreamError(
+        "resource_exhausted",
+        "live provider admission exhausted for caller",
+      );
     }
     this.#total += 1;
     this.#perCaller.set(callerKey, current + 1);

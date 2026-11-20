@@ -430,9 +430,22 @@ where
         consumer_max_payload_bytes: opening.receive_max_payload_bytes,
         canonical_open_hash,
     };
-    let (session, permit) = ProviderSessionRecord::reserve(manager, &open_request, now_ms)
-        .await
-        .map_err(|code| ServerError::Internal(format!("live reservation rejected: {code:?}")))?;
+    let (session, permit) =
+        match ProviderSessionRecord::reserve(manager, &open_request, now_ms).await {
+            Ok(reserved) => reserved,
+            Err(code) => {
+                return refuse_open(
+                    client,
+                    manager,
+                    &own_context_digest,
+                    context,
+                    &opening.open_id,
+                    &request_id,
+                    code,
+                )
+                .map(|prepared| ReservedLive { prepared });
+            }
+        };
     let limits = LiveOfferLimits {
         max_data_body_bytes: negotiated,
         window_frames: trellis_protocol::WINDOW_FRAMES,
@@ -632,9 +645,22 @@ where
         consumer_max_payload_bytes: opening.receive_max_payload_bytes,
         canonical_open_hash,
     };
-    let (session, permit) = ProviderSessionRecord::reserve(manager, &open_request, now_ms)
-        .await
-        .map_err(|code| ServerError::Internal(format!("live reservation rejected: {code:?}")))?;
+    let (session, permit) =
+        match ProviderSessionRecord::reserve(manager, &open_request, now_ms).await {
+            Ok(reserved) => reserved,
+            Err(code) => {
+                return refuse_open(
+                    client,
+                    manager,
+                    &own_context_digest,
+                    context,
+                    &opening.open_id,
+                    &request_id,
+                    code,
+                )
+                .map(|prepared| ReservedOperationWatch { prepared });
+            }
+        };
     let limits = LiveOfferLimits {
         max_data_body_bytes: negotiated,
         window_frames: trellis_protocol::WINDOW_FRAMES,
@@ -771,6 +797,50 @@ fn earliest_deadline(
         (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
         (None, None) => None,
     }
+}
+
+/// Answer one opening the provider cannot reserve with the signed `open-error`.
+///
+/// A full provider refuses with the protocol's typed code, so the caller can
+/// tell a bound it may retry, possibly on another replica, from a provider
+/// fault. Nothing is reserved; the reply carries no session.
+///
+/// # Errors
+///
+/// Returns an error when the refusal cannot be encoded or signed.
+fn refuse_open(
+    client: &TrellisClient,
+    manager: &std::sync::Arc<LiveSessionManager>,
+    own_context_digest: &str,
+    context: &RequestContext,
+    open_id: &str,
+    request_id: &str,
+    code: LiveErrorCode,
+) -> Result<LivePreparedResponse, ServerError> {
+    let refusal = trellis_protocol::LiveOpenError {
+        format: trellis_protocol::LIVE_VERSION.to_owned(),
+        kind: trellis_protocol::LiveOfferKind::OpenError,
+        open_id: Some(open_id.to_owned()),
+        request_id: request_id.to_owned(),
+        code,
+        message: format!("live opening refused: {}", code.as_str()),
+    };
+    let body = Bytes::from(
+        serde_json::to_vec(&refusal).map_err(|error| ServerError::Internal(error.to_string()))?,
+    );
+    let headers = sign_live_offer(
+        client.auth(),
+        own_context_digest,
+        context.reply_to.as_deref().unwrap_or_default(),
+        &body,
+    )
+    .map_err(|error| ServerError::Internal(error.to_string()))?;
+    Ok(LivePreparedResponse {
+        offer: body,
+        headers,
+        manager: std::sync::Arc::clone(manager),
+        request_id: request_id.to_owned(),
+    })
 }
 
 /// Sign one provider-origin message with the provider's live proof.
