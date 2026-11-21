@@ -51,8 +51,9 @@ Each endpoint has a **mode** that decides when Trellis answers the sender:
 
 - **`async`** stores the request, answers 2xx at once, and verifies afterwards.
   The sender gets 2xx even for a request that later fails verification. In
-  return, nothing is lost while the service is down, and a request rejected
-  because of a wrong secret can be verified again once the secret is fixed.
+  return, nothing is lost while the service is down, and a request whose
+  signature failed because of a wrong secret can be verified again once the
+  secret is fixed.
 - **`sync`** verifies first and answers only after the request is recorded. A
   request that fails verification gets 401. Handshakes, and senders that read
   the response body, need this mode.
@@ -219,9 +220,21 @@ verify basic { username config partnerUser; password config partnerPassword; }
 ```
 
 `token` requires a header value (after `prefix`) or a query parameter to equal
-a secret. `basic` requires matching HTTP Basic credentials. Trellis removes the
-header or query parameter that carried the secret from everything it records
-and delivers.
+a secret. `basic` requires matching HTTP Basic credentials.
+
+In both modes, `token`, `basic`, and `address` run at intake, when the request
+arrives and before anything is written. Trellis then removes the header or
+query parameter that carried the credential and writes the request without it.
+Only the verdict is stored, so the credential never reaches the intake stream,
+the request record, or the event. A wrong credential gets 401. A secret the
+administrator has not set yet gets 503, so the sender retries later. Either
+way, Trellis stores only the request record, without the credential.
+
+A request refused this way cannot be verified again after the configuration is
+fixed, because its credential is gone. Only the sender's retry can get it in.
+`hmac` is different: in `async` mode it runs after the 2xx, from the stored
+request. A signature proves only that one message and cannot be reused for
+another, so storing the signature header is safe.
 
 ### `address`
 
@@ -257,8 +270,9 @@ service secrets.
 
 Verifiers use the service's own settings. Per-instance overrides do not apply,
 because the endpoint belongs to the whole service. While a required secret is
-not set, an `async` request is stored as `pending` and verified once the secret
-is set, and a `sync` request gets 503.
+not set, an `async` request for an `hmac` endpoint is stored as `pending` and
+verified once the secret is set. A `sync` request, and any request for a
+`token` or `basic` endpoint, gets 503.
 
 ### Changing a secret
 
@@ -277,14 +291,15 @@ administrator can see when the sender has switched.
 
 **`async`:**
 
-1. Trellis runs the cheap checks.
-2. Trellis writes the raw request to the intake stream and waits until NATS
+1. Trellis runs the cheap checks and the intake verifiers (`token`, `basic`,
+   `address`), then removes the credential.
+2. Trellis writes the request to the intake stream and waits until NATS
    JetStream confirms the write. The intake stream is a JetStream stream, one per
-   deployment, that holds each request's method, URL, headers,
-   body, client address, and receive time.
+   deployment, that holds each request's method, URL, headers without the
+   credential, body, client address, receive time, and intake verdicts.
 3. Trellis answers the declared status, or 503 if the write failed.
-4. A worker reads the request back, runs the verifiers and the decide handler,
-   and checks for duplicates. A request that passes becomes a `Received` event.
+4. A worker reads the request back, runs `hmac` and the decide handler, and
+   checks for duplicates. A request that passes becomes a `Received` event.
 
 **`sync`:**
 
@@ -295,8 +310,10 @@ administrator can see when the sender has switched.
    fails, it answers 503 even when the service accepted, so the sender retries
    and Trellis never confirms a request it has not stored.
 
-A rejected `sync` request is written to the intake stream too, so an
-administrator can see what failed and verify it again.
+A `sync` request rejected by `hmac` or the decide handler is written to the
+intake stream too, so an administrator can see what failed and verify it
+again. A request refused at intake is recorded without its credential and
+cannot be verified again.
 
 | Situation                                               | Status                                                          |
 | ------------------------------------------------------- | --------------------------------------------------------------- |
@@ -307,7 +324,9 @@ administrator can see what failed and verify it again.
 | Content encoding not declared                           | 415                                                             |
 | Rate limit reached                                      | 429 with `Retry-After`                                          |
 | `verify address` fails                                  | 403                                                             |
-| `sync`: a verifier fails, or the service rejects        | 401                                                             |
+| `token` or `basic` credential wrong                     | 401, and only the request record is stored                      |
+| `token` or `basic` secret not set                       | 503, and only the request record is stored                      |
+| `sync`: `hmac` fails, or the service rejects            | 401                                                             |
 | `sync`: the decide handler fails or misses its deadline | 503                                                             |
 | Storage unavailable or full                             | 503                                                             |
 | Accepted, ignored, or duplicate                         | The service's response if it gave one, else the declared status |
@@ -339,6 +358,12 @@ The handler returns a verdict:
   pings, and requests the handler already fully processed return `ignore`, so
   the service does not handle them twice.
 - `reject`: the request is not genuine. An unknown verdict counts as `reject`.
+
+The handler runs before duplicate detection, so it can run more than once for
+the same delivery. If it acts, returns `ignore`, and the HTTP response is lost,
+the sender retries and the handler runs again. A service that needs an effect
+to happen once must enforce that itself, using the identifiers its provider
+supplies.
 
 If the handler fails or misses its deadline, a `sync` request gets 503. An
 `async` request is tried again after 5 s, 30 s, 2 min, and 10 min, then every
@@ -400,8 +425,11 @@ as `invalid_decision`.
 
 ## Examples
 
-**GitHub** signs only the body and sends no timestamp, so its delivery ID is
-the only guard against a replayed request:
+**GitHub** signs only the body and sends no timestamp. `X-GitHub-Delivery`
+lets Trellis recognize GitHub's own retries, but the signature does not cover
+it. Someone who captures a request can send it again with a new delivery ID,
+and Trellis cannot stop that, so the service should rely on the business IDs in
+the payload:
 
 ```trellis
 webhook github {
@@ -492,7 +520,8 @@ replayed, and dead-lettered by the same rules as every other event.
   `content_encoding`. The SDK offers text, JSON, and form views of them.
 - **Headers.** The event carries all request headers in order, with lowercase
   names. Trellis removes hop-by-hop headers, `Cookie`, `Proxy-Authorization`,
-  any header that carried a `token` or `basic` secret, and the forwarding
+  any header that carried a `token` or `basic` credential (a query parameter
+  that carried one is removed from `url`), and the forwarding
   headers that `clientAddress` replaces. Signature headers stay, since they are not secret.
   A request may have at most 100 headers and 32 KiB of header data.
 - **Batches.** One HTTP request is one event. When a sender batches many
@@ -510,17 +539,24 @@ records.
 ## Duplicates
 
 Senders retry, so a request can arrive twice. An attacker who captures a request
-can also send it again later. Two mechanisms handle this.
+can also send it again later.
 
 For senders that sign a timestamp, the `hmac` tolerance rejects a request whose
-timestamp is too old.
+timestamp is too old. Trellis provides no replay protection for senders that
+sign neither a timestamp nor the delivery ID.
 
 `dedupe` names where the sender's delivery ID is, usually a header. After a
 request passes verification, Trellis keeps its ID for the dedupe window, 72
-hours by default. A later verified request with the same ID is recorded as
-`duplicate`, gets the original's answer, and publishes nothing. Trellis keeps
-an ID only after verification. Otherwise anyone who learned a delivery ID could
-send a forged request first and make Trellis drop the real one.
+hours by default. A later verified request with the same ID within the window
+is recorded as `duplicate`, gets the original's answer, and publishes nothing.
+Trellis keeps an ID only after verification. Otherwise anyone who learned a
+delivery ID could send a forged request first and make Trellis drop the real
+one.
+
+This suppression is best effort. After an uncertain outcome, such as a crash
+between publishing the event and recording the ID, the same delivery can be
+published again. That fits at-least-once delivery. Deduplication by business
+meaning, such as one charge per payment ID, is the service's job.
 
 An endpoint without `dedupe` gets no deduplication. Trellis does not compare
 bodies instead, because two identical pings are both legitimate. The event's
@@ -669,12 +705,12 @@ outcome), `trellis.webhooks.request.duration`,
 Following [data-retention.md](./data-retention.md), each new kind of data has a
 policy:
 
-| Data              | Where                               | Default                           | Needed for                                     |
-| ----------------- | ----------------------------------- | --------------------------------- | ---------------------------------------------- |
-| Raw requests      | the deployment's intake stream      | the deployment's intake retention | `async` verification, retries, verifying again |
-| Request records   | `webhooks.sqlite`                   | 30 days after receipt             | Console and CLI request views                  |
-| Dedupe IDs        | KV bucket `trellis_webhook_dedupe`  | the endpoint's dedupe window      | Dropping duplicates                            |
-| `Received` events | the event stream and Events history | the normal event policies         | Delivery and replay                            |
+| Data                              | Where                               | Default                           | Needed for                                     |
+| --------------------------------- | ----------------------------------- | --------------------------------- | ---------------------------------------------- |
+| Raw requests, without credentials | the deployment's intake stream      | the deployment's intake retention | `async` verification, retries, verifying again |
+| Request records                   | `webhooks.sqlite`                   | 30 days after receipt             | Console and CLI request views                  |
+| Dedupe IDs                        | KV bucket `trellis_webhook_dedupe`  | the endpoint's dedupe window      | Dropping duplicates                            |
+| `Received` events                 | the event stream and Events history | the normal event policies         | Delivery and replay                            |
 
 When a deployment's intake stream is full, Trellis refuses new requests with 503 rather
 than remove old ones, so a flood cannot push out requests still waiting for
