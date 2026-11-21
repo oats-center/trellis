@@ -577,7 +577,9 @@ Upgrade by overlapping: run each process as its own instance, start the new
 build, wait until it serves, stop the old one. `trellis svc <ID> instances`
 (`--format json`) and the Console service page show each instance's build,
 whether it is current or older, its state, its health with the name and
-message of each failing check, connected-at and last heartbeat. A
+message of each failing check, connected-at and last heartbeat. A connected
+instance whose heartbeats stopped shows `offline` health beside the state it
+last reported. A
 build that drops an API or a resource such as a job queue the older build
 declares, or that replaces an API with its next major, stops older builds at
 once; add the new major beside the old one and drop the old one in a later
@@ -787,8 +789,8 @@ fresh sign-in), or `none` (no prompt; the provider may sign the person straight
 back in). Later sign-ins reuse the provider's session again. If the provider
 refuses the prompt (`login_required`, `interaction_required`,
 `consent_required`, `account_selection_required`, or `invalid_request` about
-`prompt`), the sign-in page names the setting and the browser's next try goes
-without the prompt.
+`prompt`), the sign-in page names the setting and the browser's next try with
+that provider goes without the prompt; other providers still get theirs.
 
 ## Authorization
 
@@ -892,7 +894,7 @@ such as `organization=<org id>` for an Auth0 application that requires an
 organization. At most 16, unique names of letters, digits, `-`, `_`, `.`;
 names Auth sets itself (`client_id`, `redirect_uri`, `response_type`, `scope`,
 `state`, `nonce`, `code_challenge`, `code_challenge_method`, `prompt`) are
-refused. Auth does not check the ID token against them (an Auth0 `org_id` is
+refused, and so is `response_mode`, because the callback reads only the query. Auth does not check the ID token against them (an Auth0 `org_id` is
 not verified). `disable` and
 `enable` (`Auth.OIDCProviders.Disable/Enable`) turn a provider off and back on.
 People can create their

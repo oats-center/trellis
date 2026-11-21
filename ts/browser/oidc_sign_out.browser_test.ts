@@ -24,8 +24,10 @@ import { startDex } from "./dex_support.ts";
 // every later sign-in, which would take away the provider's single sign-on.
 // It also catches the Console's "Sign in again" recovery skipping the prompt
 // when the Portal login had already ended, the provider's configured prompt
-// not being sent, and a provider that refuses the prompt being sent it on
-// every retry, so the person could never sign in.
+// not being sent, a provider that refuses the prompt being sent it on every
+// retry, so the person could never sign in, and that refusal also dropping
+// another provider's prompt, which would let its session sign the person
+// straight back in.
 test(
   "after signing out, the next OIDC sign-in sends the provider's prompt, and later ones do not",
   { timeout: 300_000 },
@@ -33,6 +35,11 @@ test(
     await withTrellisRuntime(async (runtime) => {
       const email = "person@example.com";
       const dex = await startDex({
+        directory: runtime.workdir,
+        redirectUri: `${runtime.trellisUrl}/portal/oidc/callback`,
+        emails: [email],
+      });
+      const partnerDex = await startDex({
         directory: runtime.workdir,
         redirectUri: `${runtime.trellisUrl}/portal/oidc/callback`,
         emails: [email],
@@ -63,6 +70,22 @@ test(
           "--certificate-fingerprint",
           dex.fingerprint,
         );
+        await writeFile(secretFile, partnerDex.clientSecret);
+        await run(
+          "sign-in",
+          "providers",
+          "add",
+          "--name",
+          "Partner",
+          "--issuer",
+          partnerDex.issuer,
+          "--client-id",
+          partnerDex.clientId,
+          "--client-secret-file",
+          secretFile,
+          "--certificate-fingerprint",
+          partnerDex.fingerprint,
+        );
         const subject = dex.subjects.get(email);
         assert.ok(subject);
         await runtime.callAdminRpc(
@@ -80,6 +103,7 @@ test(
         // the steps Dex sends itself through the same path.
         const dexAuthorize = `${new URL(dex.issuer).pathname}/auth`;
         const toDex: URL[] = [];
+        const toPartnerDex: URL[] = [];
         const toConsoleAuthorize: string[] = [];
         context.on("request", (request) => {
           const url = new URL(request.url());
@@ -89,6 +113,12 @@ test(
             url.searchParams.has("client_id")
           )
             toDex.push(url);
+          if (
+            url.origin === new URL(partnerDex.issuer).origin &&
+            url.pathname === dexAuthorize &&
+            url.searchParams.has("client_id")
+          )
+            toPartnerDex.push(url);
           if (
             url.searchParams.get("response_type") === "code" &&
             url.searchParams.get("client_id") === "trellis.console"
@@ -236,6 +266,20 @@ test(
         assert.match(await refusal.innerText(), /prompt=select_account/);
         assert.deepEqual(sentPrompts, ["select_account"]);
         await context.unroute(begin);
+        // The refusal was Company's alone: choosing Partner from the same
+        // page still sends Partner's prompt.
+        await user
+          .getByRole("link", { name: "Continue with Partner", exact: true })
+          .click();
+        await user.waitForURL(
+          (url) => url.origin === new URL(partnerDex.issuer).origin,
+        );
+        await runtime.waitFor(async () => toPartnerDex.length > 0);
+        assert.deepEqual(
+          toPartnerDex.map((url) => url.searchParams.get("prompt")),
+          ["login"],
+        );
+        await user.goBack({ waitUntil: "domcontentloaded" });
         assert.deepEqual(await continueWithDex(), [null]);
         await signInAtDex();
       } catch (error) {
@@ -244,10 +288,12 @@ test(
             `${page.url()}\n${await page.locator("body").innerText()}`,
           );
         t.diagnostic(await dex.log());
+        t.diagnostic(await partnerDex.log());
         throw error;
       } finally {
         await browser.close();
         await dex.stop();
+        await partnerDex.stop();
       }
     }, browserRuntimeOptions());
   },

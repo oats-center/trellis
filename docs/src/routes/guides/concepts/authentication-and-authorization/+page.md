@@ -39,8 +39,9 @@ This applies after any sign-out from an app, including the Console's "Sign in
 again" after a failed sign-in, even when the Portal login had already ended. A
 Portal login that just expires doesn't count. After the sign-in succeeds, later
 sign-ins use the provider's session as usual. If the provider refuses the
-prompt, the sign-in page names the setting to change, and the next try from
-that browser goes without the prompt.
+prompt, the sign-in page names the setting to change, and the next try with
+that provider from that browser goes without the prompt. Choosing another
+provider from that page still sends that provider's prompt.
 
 Immediate `Auth.ServiceInstances.Provision` and `Auth.Devices.Provision` require
 `identityPublicKey`: generate the Ed25519 identity key on the client and submit

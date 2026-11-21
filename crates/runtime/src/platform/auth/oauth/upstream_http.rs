@@ -314,16 +314,23 @@ pub(super) async fn start(
         .set_pkce_challenge(challenge);
     // Linking must prove the provider account now. A browser that signed out
     // gets the provider's configured prompt, so its session does not sign the
-    // person straight back in.
-    let signed_out = headers
-        .get_all(axum::http::header::COOKIE)
-        .iter()
-        .filter_map(|line| line.to_str().ok())
-        .flat_map(|line| line.split(';'))
-        .any(|part| part.trim() == "__Host-trellis-portal-reauth=1");
+    // person straight back in, unless this provider already refused it.
+    let cookies = || {
+        headers
+            .get_all(axum::http::header::COOKIE)
+            .iter()
+            .filter_map(|line| line.to_str().ok())
+            .flat_map(|line| line.split(';'))
+            .map(str::trim)
+    };
+    let signed_out = cookies().any(|part| part == "__Host-trellis-portal-reauth=1");
+    let refused_here = cookies()
+        .filter_map(|part| part.strip_prefix("__Host-trellis-portal-reauth-refused="))
+        .flat_map(|value| value.split('.'))
+        .any(|refused| refused == snapshot.identity.provider_id);
     let sign_out_prompt = configured
         .sign_out_prompt
-        .filter(|_| signed_out && account_token.is_none());
+        .filter(|_| signed_out && !refused_here && account_token.is_none());
     if account_token.is_some() {
         request = request.add_extra_param("prompt", "login");
     } else if let Some(prompt) = sign_out_prompt {
@@ -490,8 +497,9 @@ pub(super) async fn callback(
             "OIDC provider refused the sign-in"
         );
         // A provider that cannot honour the prompt sent after a sign-out would
-        // refuse every retry the same way, so this browser stops sending it and
-        // the person learns which setting to change.
+        // refuse every retry the same way, so this browser stops sending it to
+        // that provider and the person learns which setting to change. The
+        // sign-out marker stays, so other providers still get their prompt.
         let rejected_prompt = flow.sign_out_prompt.as_deref().filter(|_| {
             matches!(
                 reason.as_str(),
@@ -511,13 +519,34 @@ pub(super) async fn callback(
             description.chars().take(90).collect::<String>()
         );
         let mut response = refused(ErrorCode::AccessDenied, reason, explained.trim_end(), true);
-        response.headers_mut().append(
-            axum::http::header::SET_COOKIE,
-            axum::http::HeaderValue::from_static(
-                "__Host-trellis-portal-reauth=; Path=/; Secure; HttpOnly; SameSite=Lax; \
-                Max-Age=0",
-            ),
-        );
+        // Provider ids are ULIDs, so the list needs no escaping. It only has an
+        // effect while the sign-out marker is present.
+        let mut providers = headers
+            .get_all(axum::http::header::COOKIE)
+            .iter()
+            .filter_map(|line| line.to_str().ok())
+            .flat_map(|line| line.split(';'))
+            .filter_map(|part| {
+                part.trim()
+                    .strip_prefix("__Host-trellis-portal-reauth-refused=")
+            })
+            .flat_map(|value| value.split('.'))
+            .filter(|refused| ulid::Ulid::from_string(refused).is_ok())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if !providers.contains(&flow.provider.provider_id) {
+            providers.push(flow.provider.provider_id.clone());
+        }
+        let keep = providers.len().saturating_sub(32);
+        if let Ok(cookie) = axum::http::HeaderValue::from_str(&format!(
+            "__Host-trellis-portal-reauth-refused={}; Path=/; Secure; HttpOnly; \
+            SameSite=Lax; Max-Age=2592000",
+            providers[keep..].join(".")
+        )) {
+            response
+                .headers_mut()
+                .append(axum::http::header::SET_COOKIE, cookie);
+        }
         return response;
     }
     let Some(code) = form
@@ -753,13 +782,17 @@ pub(super) async fn callback(
             );
             // The provider has just signed the person in, so later sign-ins
             // may reuse its session again.
-            response.headers_mut().append(
-                axum::http::header::SET_COOKIE,
-                axum::http::HeaderValue::from_static(
-                    "__Host-trellis-portal-reauth=; Path=/; Secure; HttpOnly; SameSite=Lax; \
-                    Max-Age=0",
-                ),
-            );
+            for cleared in [
+                "__Host-trellis-portal-reauth=; Path=/; Secure; HttpOnly; SameSite=Lax; \
+                Max-Age=0",
+                "__Host-trellis-portal-reauth-refused=; Path=/; Secure; HttpOnly; \
+                SameSite=Lax; Max-Age=0",
+            ] {
+                response.headers_mut().append(
+                    axum::http::header::SET_COOKIE,
+                    axum::http::HeaderValue::from_static(cleared),
+                );
+            }
             response
         }
         Err(cause) => {

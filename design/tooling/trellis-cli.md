@@ -209,12 +209,15 @@ accept a waiting claim's ID or name as well as a deployment's.
 (`healthy`, `degraded`, `unhealthy`, `offline`) and each check not `ok`
 (`degraded` or `failed`) with its `name`, `status`, and the `summary` and
 `error` it reported. A disconnected
-instance is `offline` with no checks; a connected one with no current
-heartbeat has no `health`. The text table shows state, health, build,
-connected and last heartbeat, and below it prints one line per failing check
-(`<instance ID>: check <name> <status>: <error or summary>`, the status
-colored like other states on a terminal) and what a waiting
-instance needs. The Console's service page shows the same health and failing
+instance is `offline` with no checks; a connected one that has not reported
+on this connection has no `health`; a connected one whose heartbeats stopped
+keeps the state it last reported and has `offline` health with no checks. The
+text table shows state, health, build, connected and last heartbeat, and below
+it prints one line per failing check (`<instance ID>: check <name> <status>:
+<error or summary>`, the status colored like other states on a terminal), a
+`<instance ID>: heartbeats stopped; last heartbeat <time>` line for a
+connected instance whose heartbeats stopped, and what a waiting instance
+needs. The Console's service page shows the same health and failing
 checks. The states follow `design/auth/service-updates.md`.
 
 `svc updates` lists the builds a service submitted for itself

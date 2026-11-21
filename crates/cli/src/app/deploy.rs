@@ -1021,7 +1021,9 @@ async fn service_instances(
 /// as `starting`: the instance is connected but not serving yet.
 ///
 /// Its health is the report's effective status and the checks that heartbeat
-/// carries as failing; an instance with no current heartbeat has none.
+/// carries as failing; an instance that has not reported on this connection
+/// has none. Once a connected instance's heartbeats stop, it keeps the phase
+/// it last reported and its health is `offline` with no failing checks.
 fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Value> {
     instances
         .into_iter()
@@ -1032,22 +1034,24 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
                 .find(|report| output::field(report, "instanceId") == id);
             let connected_at = instance.get("connectedAt").and_then(Value::as_str);
             let heartbeat = report.and_then(|report| report.pointer("/latestSample/sample/time"));
-            let reporting = report.filter(|report| {
-                output::field(report, "effectiveStatus") != "offline"
-                    && match (
-                        connected_at,
-                        report.get("observedAt").and_then(Value::as_str),
-                    ) {
-                        (Some(connected), Some(observed)) => {
-                            output::parse_time(observed) >= output::parse_time(connected)
-                        }
-                        _ => false,
+            // A report from an earlier connection says nothing about this one.
+            let reported = report.filter(|report| {
+                match (
+                    connected_at,
+                    report.get("observedAt").and_then(Value::as_str),
+                ) {
+                    (Some(connected), Some(observed)) => {
+                        output::parse_time(observed) >= output::parse_time(connected)
                     }
+                    _ => false,
+                }
             });
+            let reporting =
+                reported.filter(|report| output::field(report, "effectiveStatus") != "offline");
             let waiting = instance.get("waiting");
             let state = if connected_at.is_none() {
                 "offline".to_owned()
-            } else if let Some(report) = reporting {
+            } else if let Some(report) = reported {
                 report
                     .pointer("/latestSample/phase")
                     .and_then(Value::as_str)
@@ -1071,15 +1075,17 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
             } else {
                 "starting".to_owned()
             };
-            let digest = reporting
+            let digest = reported
                 .and_then(|report| report.get("contractDigest"))
                 .or_else(|| instance.get("participantDigest"))
                 .and_then(Value::as_str);
             let version =
-                reporting.and_then(|report| report.pointer("/latestSample/participant/version"));
+                reported.and_then(|report| report.pointer("/latestSample/participant/version"));
             // Health is the instance's effective status with the checks its
-            // current heartbeat reports failing; a disconnected instance is
-            // offline whatever it last reported.
+            // current heartbeat reports failing. A connected instance whose
+            // heartbeats stopped is offline, without the checks it last
+            // reported; a disconnected instance is offline whatever it last
+            // reported.
             let health = if connected_at.is_none() {
                 json!({ "status": "offline", "failingChecks": [] })
             } else if let Some(report) = reporting {
@@ -1103,6 +1109,8 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
                     })
                     .collect::<Vec<_>>();
                 json!({ "status": report.get("effectiveStatus"), "failingChecks": failing })
+            } else if reported.is_some() {
+                json!({ "status": "offline", "failingChecks": [] })
             } else {
                 Value::Null
             };
@@ -1377,6 +1385,15 @@ fn print_service_instances_result<T: serde::Serialize>(
                     output::field(instance, "instanceId"),
                     output::field(check, "name"),
                     output::state(&output::field(check, "status")),
+                );
+            }
+            if output::field(instance, "status.health.status") == "offline"
+                && output::field(instance, "status.state") != "offline"
+            {
+                anstream::println!(
+                    "{}: heartbeats stopped; last heartbeat {}",
+                    output::field(instance, "instanceId"),
+                    output::field(instance, "status.lastHeartbeat"),
                 );
             }
             let url = output::field(instance, "status.reviewUrl");
