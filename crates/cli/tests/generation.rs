@@ -115,11 +115,35 @@ fn generated_rust_sdk_reuses_the_trellis_models_cargo_resolves() {
     } else {
         later.pre = semver::Prerelease::new(&format!("{}.1", later.pre)).unwrap();
     }
+    let root = tempfile::tempdir().unwrap();
+    // Cargo and generation share a Cargo home that holds the real registry
+    // crates plus the copies this test adds. A dead proxy keeps every step
+    // offline; only the local file:// git repository below is fetched.
+    let cargo_home = root.path().join("cargo-home");
+    let real_home = std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("HOME").unwrap()).join(".cargo"));
+    for kind in ["index", "cache", "src"] {
+        fs::create_dir_all(cargo_home.join("registry").join(kind)).unwrap();
+        for entry in fs::read_dir(real_home.join("registry").join(kind)).unwrap() {
+            let entry = entry.unwrap();
+            std::os::unix::fs::symlink(
+                entry.path(),
+                cargo_home
+                    .join("registry")
+                    .join(kind)
+                    .join(entry.file_name()),
+            )
+            .unwrap();
+        }
+    }
     let cargo = |root: &std::path::Path, args: &[&str]| {
         let result = std::process::Command::new(env!("CARGO"))
             .args(args)
             .current_dir(root)
             .env("CARGO_TARGET_DIR", &target)
+            .env("CARGO_HOME", &cargo_home)
+            .env("CARGO_HTTP_PROXY", "http://127.0.0.1:9")
             .output()
             .unwrap();
         assert!(
@@ -133,13 +157,14 @@ fn generated_rust_sdk_reuses_the_trellis_models_cargo_resolves() {
         let result = std::process::Command::new(env!("CARGO_BIN_EXE_trellis"))
             .args(["-v", command, "--root"])
             .arg(root)
+            .env("CARGO_HOME", &cargo_home)
+            .env("CARGO_HTTP_PROXY", "http://127.0.0.1:9")
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
         assert!(result.status.success(), "trellis {command}: {stderr}");
         stderr
     };
-    let root = tempfile::tempdir().unwrap();
     fs::write(
         root.path().join("trellis.toml"),
         format!(
@@ -183,17 +208,25 @@ api who@v1 {
 
     // The published trellis-rs archive names trellis-models by registry
     // version, so Cargo resolves it to whatever the project patches in.
-    cargo(
-        &repository,
-        &[
+    // Packaging checks the registry index, so it runs with the ordinary Cargo
+    // home rather than through the offline `cargo` above.
+    let packaged = std::process::Command::new(env!("CARGO"))
+        .args([
             "package",
             "-p",
             "trellis-rs",
             "--no-verify",
             "--allow-dirty",
-            "--config",
-            ".cargo/publication.toml",
-        ],
+        ])
+        .args(["--config", ".cargo/publication.toml"])
+        .current_dir(&repository)
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .unwrap();
+    assert!(
+        packaged.status.success(),
+        "cargo package: {}",
+        String::from_utf8_lossy(&packaged.stderr)
     );
     // `cargo package` stamps a fixed 2006 mtime; extract with current mtimes so
     // the shared target directory does not reuse a stale build.
@@ -213,36 +246,41 @@ api who@v1 {
         .as_str()
         .unwrap()
         .to_owned();
+    // A model crate is the repository's models source under a given version,
+    // carrying a given generated snapshot.
+    let model_crate = |directory: &std::path::Path, version: &str, types: &str| {
+        fs::create_dir_all(directory.join("src")).unwrap();
+        fs::create_dir_all(directory.join("generated")).unwrap();
+        fs::copy(
+            repository.join("crates/models/src/lib.rs"),
+            directory.join("src/lib.rs"),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"trellis-models\"\nversion = \"{version}\"\nedition = \
+                \"2021\"\n[dependencies]\ntrellis-protocol = \"{protocol_version}\"\nserde = {{ \
+                version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
+            ),
+        )
+        .unwrap();
+        fs::write(directory.join("generated/__types.rs"), types).unwrap();
+    };
+    let original =
+        fs::read_to_string(repository.join("crates/models/generated/__types.rs")).unwrap();
+    let changed = |types: &str| types.replacen("digest: \"", "digest: \"changed-", 1);
+    let snapshot = original.replacen(
+        &format!("version: \"{models_version}\""),
+        &format!("version: \"{later}\""),
+        1,
+    );
     let models = root.path().join("trellis-models-later");
-    fs::create_dir_all(models.join("src")).unwrap();
-    fs::create_dir_all(models.join("generated")).unwrap();
-    fs::copy(
-        repository.join("crates/models/src/lib.rs"),
-        models.join("src/lib.rs"),
-    )
-    .unwrap();
-    fs::write(
-        models.join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"trellis-models\"\nversion = \"{later}\"\nedition = \
-            \"2021\"\n[dependencies]\ntrellis-protocol = \"{protocol_version}\"\nserde = {{ \
-            version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n"
-        ),
-    )
-    .unwrap();
-    let snapshot = fs::read_to_string(repository.join("crates/models/generated/__types.rs"))
-        .unwrap()
-        .replacen(
-            &format!("version: \"{models_version}\""),
-            &format!("version: \"{later}\""),
-            1,
-        );
-    fs::write(models.join("generated/__types.rs"), &snapshot).unwrap();
+    model_crate(&models, &later.to_string(), &snapshot);
 
-    fs::create_dir(root.path().join("src")).unwrap();
-    fs::write(
-        root.path().join("src/main.rs"),
-        r#"
+    // `identity` passes trellis-models values through the SDK's types, which
+    // compiles only when the SDK reuses the crate Cargo builds.
+    let identity = r#"
 fn main() {
     let wire = serde_json::json!({
         "principalId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -254,25 +292,69 @@ fn main() {
     let back: trellis_models::trellis::AuthUser = generated;
     assert_eq!(serde_json::to_value(back).unwrap(), wire);
 }
-"#,
-    )
+"#;
+    let standalone = r#"
+fn main() {
+    let user: builtin_consumer::types::AuthUser = serde_json::from_value(serde_json::json!({
+        "principalId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "displayName": "Peer",
+        "emailVerified": true
+    }))
     .unwrap();
-    fs::write(
-        root.path().join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"shared-model-consumer\"\nversion = \"1.0.0\"\nedition = \
-            \"2021\"\n[workspace]\n[dependencies]\nbuiltin-consumer = {{ path = \"sdk\" }}\n\
-            trellis-models = \"{models_version}\"\nserde_json = \"1\"\n[patch.crates-io]\n\
-            trellis-rs = {{ path = {:?} }}\ntrellis-protocol = {{ path = {:?} }}\n\
-            trellis-models = {{ path = {models:?} }}\n",
-            root.path().join(format!("trellis-rs-{cli_version}")),
-            repository.join("crates/protocol"),
-        ),
-    )
-    .unwrap();
+    println!("{}", serde_json::to_string(&user).unwrap());
+}
+"#;
+    fs::create_dir(root.path().join("src")).unwrap();
+    let consumer = |patch: &str, main: &str| {
+        fs::write(root.path().join("src/main.rs"), main).unwrap();
+        fs::write(
+            root.path().join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"shared-model-consumer\"\nversion = \"1.0.0\"\nedition = \
+                \"2021\"\n[workspace]\n[dependencies]\nbuiltin-consumer = {{ path = \"sdk\" }}\n\
+                trellis-models = \"{models_version}\"\nserde_json = \"1\"\n[patch.crates-io]\n\
+                trellis-rs = {{ path = {:?} }}\ntrellis-protocol = {{ path = {:?} }}\n\
+                trellis-models = {patch}\n",
+                root.path().join(format!("trellis-rs-{cli_version}")),
+                repository.join("crates/protocol"),
+            ),
+        )
+        .unwrap();
+    };
     let sdk_manifest = || fs::read_to_string(root.path().join("sdk/Cargo.toml")).unwrap();
     let sdk_types = || fs::read_to_string(root.path().join("sdk/src/__types.rs")).unwrap();
 
+    // The CLI bundles its version's crates.io release. The same version from
+    // another source may carry other models, as this path copy does, so the
+    // bundled binding would fail the SDK's compile-time model check. The
+    // trellis-rs built here expects that copy's models, as a trellis-rs from
+    // the same source would.
+    let bundled_version_copy = root.path().join("trellis-models-bundled-version");
+    model_crate(&bundled_version_copy, &models_version, &changed(&original));
+    let runtime_types = root
+        .path()
+        .join(format!("trellis-rs-{cli_version}/generated/__types.rs"));
+    let runtime_snapshot = fs::read_to_string(&runtime_types).unwrap();
+    fs::write(&runtime_types, changed(&runtime_snapshot)).unwrap();
+    consumer(
+        &format!("{{ path = {bundled_version_copy:?} }}"),
+        standalone,
+    );
+    trellis(root.path(), "install");
+    cargo(root.path(), &["generate-lockfile", "--offline"]);
+    let stderr = trellis(root.path(), "generate");
+    assert!(
+        stderr.contains(&format!(
+            "resolves trellis-models {models_version} for trellis-rs {cli_version} from a path"
+        )) && stderr.contains("emitting models inline"),
+        "{stderr}"
+    );
+    assert!(!sdk_manifest().contains("trellis-models"));
+    cargo(root.path(), &["check", "--quiet", "--offline"]);
+    fs::write(&runtime_types, runtime_snapshot).unwrap();
+    fs::remove_file(root.path().join("Cargo.lock")).unwrap();
+
+    consumer(&format!("{{ path = {models:?} }}"), identity);
     // With no Cargo graph yet, the SDK brings in the trellis-models the CLI
     // bundles, so that binding applies.
     trellis(root.path(), "install");
@@ -317,37 +399,8 @@ fn main() {
         "{tree}"
     );
 
-    // A fresh checkout has Cargo.lock but no generated SDK yet, so Cargo cannot
-    // load the graph; the release's unpacked registry source still binds it.
-    fs::remove_dir_all(root.path().join("sdk")).unwrap();
-    let cargo_home = root.path().join("cargo-home");
-    let unpacked = cargo_home.join(format!(
-        "registry/src/index.crates.io-test/trellis-models-{later}"
-    ));
-    for file in ["Cargo.toml", "src/lib.rs", "generated/__types.rs"] {
-        fs::create_dir_all(unpacked.join(file).parent().unwrap()).unwrap();
-        fs::copy(models.join(file), unpacked.join(file)).unwrap();
-    }
-    let result = std::process::Command::new(env!("CARGO_BIN_EXE_trellis"))
-        .args(["-v", "generate", "--root"])
-        .arg(root.path())
-        .env("CARGO_HOME", &cargo_home)
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(
-        result.status.success() && stderr.contains("(Cargo registry sources)"),
-        "{stderr}"
-    );
-    assert!(sdk_manifest().contains(&format!("\"trellis-models\" = \"{later}\"")));
-    assert!(sdk_types().contains("pub use trellis_models::trellis::*;"));
-
     // A resolved release with a different snapshot is not reused.
-    fs::write(
-        models.join("generated/__types.rs"),
-        snapshot.replacen("digest: \"", "digest: \"changed-", 1),
-    )
-    .unwrap();
+    fs::write(models.join("generated/__types.rs"), changed(&snapshot)).unwrap();
     let stderr = trellis(root.path(), "generate");
     assert!(
         stderr.contains(&format!(
@@ -357,4 +410,122 @@ fn main() {
     );
     assert!(!sdk_manifest().contains("trellis-models"));
     assert!(sdk_types().contains("pub struct AuthUser"));
+    fs::write(models.join("generated/__types.rs"), &snapshot).unwrap();
+    trellis(root.path(), "generate");
+
+    // A project locked to a git commit binds that commit's checkout, not a
+    // same-version registry copy whose models differ.
+    let git = |args: &[&str]| {
+        let result = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Trellis",
+                "-c",
+                "user.email=trellis@example.com",
+            ])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&models)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        String::from_utf8(result.stdout).unwrap()
+    };
+    fs::create_dir_all(models.join("anchor/src")).unwrap();
+    fs::write(models.join("anchor/src/lib.rs"), "").unwrap();
+    fs::write(
+        models.join("anchor/Cargo.toml"),
+        "[package]\nname = \"git-anchor\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    git(&["init", "--quiet"]);
+    git(&["add", "."]);
+    git(&["commit", "--quiet", "-m", "models"]);
+    let commit = git(&["rev-parse", "HEAD"]).trim().to_owned();
+    let registry_copy = |index: &str, types: &str, archive: &str| {
+        let unpacked = cargo_home.join(format!("registry/src/{index}/trellis-models-{later}"));
+        model_crate(&unpacked, &later.to_string(), types);
+        fs::write(unpacked.join(".cargo-ok"), "{\"v\":1}").unwrap();
+        let cache = cargo_home.join(format!("registry/cache/{index}"));
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join(format!("trellis-models-{later}.crate")), archive).unwrap();
+    };
+    registry_copy("index.crates.io-test", &changed(&snapshot), "impostor");
+    consumer(
+        &format!("{{ git = \"file://{}\" }}", models.display()),
+        identity,
+    );
+    // Resolving a git crate with registry dependencies, or a changed patch,
+    // would query the registry index. Fetching a dependency-free crate in the
+    // same repository instead brings the commit into Cargo's git cache, from
+    // which the consumer then resolves offline.
+    let fetcher = root.path().join("git-fetch");
+    fs::create_dir_all(fetcher.join("src")).unwrap();
+    fs::write(fetcher.join("src/lib.rs"), "").unwrap();
+    fs::write(
+        fetcher.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"git-fetch\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
+            [workspace]\n[dependencies]\ngit-anchor = {{ git = \"file://{}\" }}\n",
+            models.display(),
+        ),
+    )
+    .unwrap();
+    cargo(&fetcher, &["fetch", "--quiet"]);
+    cargo(root.path(), &["build", "--quiet", "--offline"]);
+    let stderr = trellis(root.path(), "generate");
+    assert!(
+        stderr.contains(&format!("from git+file://{}#{commit}", models.display()))
+            && stderr.contains(&format!("(the Cargo checkout of commit {commit})")),
+        "{stderr}"
+    );
+    assert!(sdk_manifest().contains(&format!("\"trellis-models\" = \"{later}\"")));
+    assert!(sdk_types().contains("pub use trellis_models::trellis::*;"));
+    cargo(root.path(), &["run", "--quiet", "--offline"]);
+
+    // A registry lock names the crate archive by checksum, so of two
+    // same-version registry copies generation reads the one locked.
+    registry_copy("example.com-test", &snapshot, "genuine");
+    let lock = fs::read_to_string(root.path().join("Cargo.lock")).unwrap();
+    let relock = |archive: &[u8]| {
+        use sha2::Digest as _;
+        let checksum = sha2::Sha256::digest(archive)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let relocked = lock
+            .lines()
+            .map(|line| {
+                if line.starts_with("source = \"git+") {
+                    format!(
+                        "source = \"registry+https://github.com/rust-lang/crates.io-index\"\n\
+                        checksum = \"{checksum}\""
+                    )
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(root.path().join("Cargo.lock"), relocked).unwrap();
+        trellis(root.path(), "generate")
+    };
+    let stderr = relock(b"genuine");
+    assert!(
+        stderr.contains(&format!("example.com-test/trellis-models-{later}"))
+            && stderr.contains("the registry copy whose archive has the locked checksum"),
+        "{stderr}"
+    );
+    assert!(sdk_types().contains("pub use trellis_models::trellis::*;"));
+    let stderr = relock(b"impostor");
+    assert!(
+        stderr.contains(&format!("index.crates.io-test/trellis-models-{later}"))
+            && stderr.contains("emitting models inline"),
+        "{stderr}"
+    );
+    assert!(!sdk_manifest().contains("trellis-models"));
 }

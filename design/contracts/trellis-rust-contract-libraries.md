@@ -47,16 +47,27 @@ select shared models.
 The CLI offers the independently versioned `trellis-models` bundle through this
 binding mechanism. The provider must be the `trellis-models` the consuming Cargo
 graph builds, because a second copy would make the SDK's models different Rust
-types from the ones `trellis-rs` exposes. The CLI takes that version from the
-nearest `Cargo.lock` above the Rust output (the version `trellis-rs` links there)
-and reads its binding from the crate's own published `generated/__types.rs`. It
-finds that source with `cargo metadata --offline --locked`, which honors path
-overrides, vendoring, and registries, or, when Cargo cannot load the graph yet
-(before the SDK being generated exists, for instance), in Cargo's unpacked
-registry sources. A resolved version equal to the CLI's own uses the binding the
-CLI embeds. With no lock, or no `trellis-models` in it, the generated SDK brings
-in the CLI's version, so the embedded binding applies. A resolved version whose
-source is not on disk cannot be compared, and its models are emitted inline.
+types from the ones `trellis-rs` exposes. The CLI takes that crate from the
+nearest `Cargo.lock` above the Rust output (the one `trellis-rs` links there),
+including its exact source, and reads its binding from that source's own
+`generated/__types.rs`. Generation stays offline and downloads nothing; it
+finds each kind of source as the lock identifies it:
+
+- A path source, which the lock does not record, comes from
+  `cargo pkgid --offline --locked`. When Cargo cannot load the graph yet
+  (before the SDK being generated exists, for instance), the path is unknown.
+- A git source is the checkout Cargo made of the locked commit under
+  `$CARGO_HOME/git/checkouts`, accepted only when its `HEAD` is that commit.
+- A registry source is the unpacked copy under `$CARGO_HOME/registry/src`
+  whose `.crate` archive in the matching `registry/cache` directory has the
+  SHA-256 checksum the lock records. Another same-version copy, from another
+  registry or with other contents, is never used.
+
+The CLI's version from crates.io uses the binding the CLI embeds; the same
+version from any other source is read like any other version. With no lock, or
+no `trellis-models` in it, the generated SDK brings in the CLI's version, so the
+embedded binding applies. A locked source that is not on disk or does not
+verify cannot be compared, and its models are emitted inline.
 `trellis generate -v` (and `trellis install -v`) logs the lock, the resolved
 version, and where its binding was read, then, for each package, whether its
 models are reused or inlined and which provider's digest differed.

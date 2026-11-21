@@ -381,11 +381,13 @@ pub(crate) fn generate_compiled(
 ///
 /// Reused models must come from the `trellis-models` the consuming Cargo graph
 /// builds, so the SDK's types are the ones `trellis-rs` exposes. The nearest
-/// `Cargo.lock` above `output` names that version, and its models are read
-/// from the crate source Cargo already holds. Without a lock, or without
-/// `trellis-models` in it, the SDK itself brings in the CLI's version, so the
-/// binding the CLI bundles applies. A resolved version whose source is not on
-/// disk cannot be compared, so its models are emitted inline.
+/// `Cargo.lock` above `output` names that crate's version and source (a path,
+/// a git commit, or a registry archive checksum), and its models are read from
+/// that exact source on disk. Without a lock, or without `trellis-models` in
+/// it, the SDK itself brings in the CLI's version, so the binding the CLI
+/// bundles applies; it also applies to that version's crates.io release. A
+/// locked source that is not on disk, or not verifiably the one locked,
+/// cannot be compared, so its models are emitted inline.
 fn project_model_bindings(
     output: &Path,
     bundled: Vec<trellis_codegen_rust::RustModelBinding>,
@@ -429,8 +431,9 @@ fn project_model_bindings(
     };
     let models = locked("trellis-models");
     let runtime = locked("trellis-rs");
-    // trellis-rs's entry names the trellis-models it links; Cargo adds the
-    // version only when the lock holds more than one.
+    // trellis-rs's entry names the trellis-models it links as `name [version
+    // [(source)]]`: Cargo adds the version only when the lock holds more than
+    // one, and the source only when one version comes from several sources.
     let linked = runtime.first().and_then(|(runtime_version, entry)| {
         let dependency = entry
             .get("dependencies")?
@@ -438,63 +441,210 @@ fn project_model_bindings(
             .iter()
             .filter_map(toml::Value::as_str)
             .find(|dependency| dependency.split(' ').next() == Some("trellis-models"))?;
-        let version = match dependency.split(' ').nth(1) {
-            Some(version) => version.parse().ok()?,
-            None => models.first()?.0.clone(),
-        };
-        Some((version, runtime_version))
+        let mut fields = dependency.splitn(3, ' ').skip(1);
+        let version = fields
+            .next()
+            .map(str::parse::<semver::Version>)
+            .transpose()
+            .ok()?;
+        let source = fields
+            .next()
+            .map(|source| source.trim_start_matches('(').trim_end_matches(')'));
+        Some((version, source, runtime_version))
     });
-    let (version, via) = match linked {
-        Some((version, runtime_version)) => (version, format!(" for trellis-rs {runtime_version}")),
-        None => match models.first() {
-            Some((version, _)) => (version.clone(), String::new()),
-            None => {
-                tracing::info!(
-                    "rust models: {} resolves no trellis-models; using trellis-models \
-                    {bundled_version}, which the CLI bundles",
-                    lock.display()
-                );
-                return Ok(bundled);
+    fn source_of(entry: &toml::Value) -> Option<&str> {
+        entry.get("source").and_then(toml::Value::as_str)
+    }
+    let candidates = models
+        .iter()
+        .filter(|(locked, entry)| match &linked {
+            Some((version, source, _)) => {
+                version.as_ref().is_none_or(|version| version == locked)
+                    && source.is_none_or(|source| source_of(entry) == Some(source))
             }
-        },
+            None => models.first().is_some_and(|(highest, _)| highest == locked),
+        })
+        .collect::<Vec<_>>();
+    let via = linked
+        .as_ref()
+        .map(|(_, _, runtime_version)| format!(" for trellis-rs {runtime_version}"))
+        .unwrap_or_default();
+    let [(version, entry)] = candidates.as_slice() else {
+        if models.is_empty() {
+            tracing::info!(
+                "rust models: {} resolves no trellis-models; using trellis-models \
+                {bundled_version}, which the CLI bundles",
+                lock.display()
+            );
+            return Ok(bundled);
+        }
+        tracing::info!(
+            "rust models: {} does not name one trellis-models{via}; its models cannot be \
+            compared, so they are emitted inline",
+            lock.display()
+        );
+        return Ok(Vec::new());
     };
-    let resolved = format!("{} resolves trellis-models {version}{via}", lock.display());
-    if version == bundled_version {
-        tracing::info!("rust models: {resolved}, the version the CLI bundles");
+    let source = source_of(entry);
+    let resolved = format!(
+        "{} resolves trellis-models {version}{via} from {}",
+        lock.display(),
+        source.unwrap_or("a path")
+    );
+    // The CLI bundles the models of its version's crates.io release. The same
+    // version from any other source may carry other models, so it is read.
+    if *version == bundled_version
+        && source.is_some_and(|source| {
+            source == "registry+https://github.com/rust-lang/crates.io-index"
+                || source == "sparse+https://index.crates.io/"
+        })
+    {
+        tracing::info!("rust models: {resolved}, the release the CLI bundles");
         return Ok(bundled);
     }
 
-    // Cargo's lock resolution covers path overrides and patches. `cargo pkgid`
-    // reads it without downloading anything, unlike `cargo metadata`, which
-    // fetches every crate in the lock, even ones the build never compiles.
-    // Registry versions are found in the registry's unpacked sources below.
-    let workspace = lock.with_file_name("Cargo.toml");
-    let from_lock =
-        std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-            .args(["pkgid", "--offline", "--manifest-path"])
-            .arg(&workspace)
-            .arg(format!("trellis-models@{version}"))
-            .output()
-            .ok()
-            .filter(|result| result.status.success())
-            .and_then(|result| {
-                let id = String::from_utf8(result.stdout).ok()?;
-                let path = id.trim().strip_prefix("path+file://")?.split('#').next()?;
-                Some((PathBuf::from(path), "the Cargo lock"))
-            });
-    let from_registry = || {
-        let home = std::env::var_os("CARGO_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cargo")))?;
-        fs::read_dir(home.join("registry/src"))
-            .ok()?
-            .filter_map(|index| Some(index.ok()?.path().join(format!("trellis-models-{version}"))))
-            .find(|source| source.join("Cargo.toml").is_file())
-            .map(|source| (source, "Cargo registry sources"))
+    // Each source is found offline exactly as the lock identifies it.
+    let home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".cargo")));
+    let located = match source {
+        // The lock records no path. `cargo pkgid` reads it from the manifests
+        // without downloading anything, unlike `cargo metadata`, which fetches
+        // every crate in the lock, even ones the build never compiles;
+        // `--locked` keeps it from resolving anything other than the lock.
+        None => {
+            std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+                .args(["pkgid", "--offline", "--locked", "--manifest-path"])
+                .arg(lock.with_file_name("Cargo.toml"))
+                .arg(format!("trellis-models@{version}"))
+                .output()
+                .ok()
+                .filter(|result| result.status.success())
+                .and_then(|result| {
+                    let id = String::from_utf8(result.stdout).ok()?;
+                    let url = url::Url::parse(id.trim().strip_prefix("path+")?).ok()?;
+                    Some((
+                        url.to_file_path().ok()?,
+                        "its path, from `cargo pkgid`".to_owned(),
+                    ))
+                })
+        }
+        // Cargo checks a locked commit out to git/checkouts/<repository>/<short
+        // commit>, writing `.cargo-ok` once the checkout is complete.
+        Some(source) if source.starts_with("git+") => {
+            source.rsplit_once('#').and_then(|(_, commit)| {
+                fn manifests(
+                    directory: &Path,
+                    version: &semver::Version,
+                    found: &mut Vec<PathBuf>,
+                ) {
+                    for entry in fs::read_dir(directory).into_iter().flatten().flatten() {
+                        let name = entry.file_name();
+                        let Ok(kind) = entry.file_type() else {
+                            continue;
+                        };
+                        if kind.is_dir()
+                            && !name.to_string_lossy().starts_with('.')
+                            && name != "target"
+                        {
+                            manifests(&entry.path(), version, found);
+                        } else if kind.is_file()
+                            && name == "Cargo.toml"
+                            && fs::read_to_string(entry.path())
+                                .ok()
+                                .and_then(|text| toml::from_str::<toml::Table>(&text).ok())
+                                .and_then(|manifest| {
+                                    let package = manifest.get("package")?;
+                                    Some(
+                                        package.get("name")?.as_str()? == "trellis-models"
+                                            && package.get("version")?.as_str()?.parse().ok()
+                                                == Some(version.clone()),
+                                    )
+                                })
+                                == Some(true)
+                        {
+                            found.push(directory.to_path_buf());
+                        }
+                    }
+                }
+                let head = |checkout: &Path| {
+                    let git = checkout.join(".git");
+                    let head = fs::read_to_string(git.join("HEAD")).ok()?;
+                    let Some(reference) = head.trim().strip_prefix("ref: ") else {
+                        return Some(head.trim().to_owned());
+                    };
+                    fs::read_to_string(git.join(reference))
+                        .ok()
+                        .map(|id| id.trim().to_owned())
+                        .or_else(|| {
+                            fs::read_to_string(git.join("packed-refs"))
+                                .ok()?
+                                .lines()
+                                .find_map(|line| {
+                                    let (id, name) = line.split_once(' ')?;
+                                    (name == reference).then(|| id.to_owned())
+                                })
+                        })
+                };
+                let checkouts = fs::read_dir(home.as_ref()?.join("git/checkouts")).ok()?;
+                checkouts
+                    .flatten()
+                    .flat_map(|repository| fs::read_dir(repository.path()).into_iter().flatten())
+                    .flatten()
+                    .map(|checkout| checkout.path())
+                    .filter(|checkout| {
+                        checkout
+                            .file_name()
+                            .and_then(|short| short.to_str())
+                            .is_some_and(|short| short.len() >= 7 && commit.starts_with(short))
+                            && checkout.join(".cargo-ok").is_file()
+                            && head(checkout).as_deref() == Some(commit)
+                    })
+                    .find_map(|checkout| {
+                        let mut found = Vec::new();
+                        manifests(&checkout, version, &mut found);
+                        let [package] = <[PathBuf; 1]>::try_from(found).ok()?;
+                        Some((package, format!("the Cargo checkout of commit {commit}")))
+                    })
+            })
+        }
+        // A registry crate is the archive whose SHA-256 the lock records; its
+        // unpacked source sits under the same index directory name, with
+        // `.cargo-ok` once Cargo finished unpacking it.
+        Some(_) => entry
+            .get("checksum")
+            .and_then(toml::Value::as_str)
+            .and_then(|checksum| {
+                use sha2::Digest as _;
+                let home = home.as_ref()?;
+                let crate_name = format!("trellis-models-{version}");
+                fs::read_dir(home.join("registry/cache"))
+                    .ok()?
+                    .flatten()
+                    .find_map(|index| {
+                        let archive =
+                            fs::read(index.path().join(format!("{crate_name}.crate"))).ok()?;
+                        let digest = sha2::Sha256::digest(&archive)
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>();
+                        let unpacked = home
+                            .join("registry/src")
+                            .join(index.file_name())
+                            .join(&crate_name);
+                        (digest == checksum && unpacked.join(".cargo-ok").is_file()).then(|| {
+                            (
+                                unpacked,
+                                "the registry copy whose archive has the locked checksum"
+                                    .to_owned(),
+                            )
+                        })
+                    })
+            }),
     };
-    let Some((source, found_by)) = from_lock.or_else(from_registry) else {
+    let Some((source, found_by)) = located else {
         tracing::info!(
-            "rust models: {resolved}, whose source is not available offline (run `cargo \
+            "rust models: {resolved}, which is not available offline as locked (run `cargo \
             fetch`); its models cannot be compared, so they are emitted inline"
         );
         return Ok(Vec::new());

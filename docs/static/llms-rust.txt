@@ -44,8 +44,11 @@ package-name equality alone never substitutes one schema for another.
 Generation binds the `trellis-models` version your `Cargo.lock` resolves (the
 CLI's own version when there is no lock yet) and reuses it when its semantic
 digest equals the `trellis` dependency's; the two package versions may differ.
-A resolved version missing from the local Cargo cache is inlined; run
-`cargo fetch` and generate again. Run `trellis generate -v` to see the resolved
+The binding comes from the exact source the lock names (a path, a git commit,
+or a registry archive with the locked checksum), never from another
+same-version copy. A locked source missing from the local Cargo cache, or a
+path dependency before Cargo can load the graph, is inlined; run `cargo fetch`
+(for a path dependency, build once with the inlined SDK) and generate again. Run `trellis generate -v` to see the resolved
 version, where its models were read, and, per package, whether models were
 reused or inlined and why. A
 support-ABI mismatch fails compilation and is not resolved through compatibility
